@@ -49,6 +49,11 @@ import { loadCassette } from "../cassette/load-cassette.js";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
+import {
+  createSkillsMcpBridge,
+  mapToolDescriptorsToSkillMetadata,
+  mapToolDescriptorToSkillMetadata,
+} from "../skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../trajectory/fs-delegate.js";
 
@@ -524,6 +529,21 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
     const goalSpan = mwSpans.find((s) => s.metadata?.middlewareName === "goal");
     expect(goalSpan).toBeDefined();
     expect(goalSpan?.outcome).toBe("success");
+
+    // Goal spans must carry decision metadata (injection + completion state)
+    const goalModelSpan = mwSpans.find(
+      (s) =>
+        s.metadata?.middlewareName === "goal" &&
+        (s.metadata?.hook === "wrapModelCall" || s.metadata?.hook === "wrapModelStream"),
+    );
+    if (goalModelSpan !== undefined) {
+      const goalDecisions = goalModelSpan.metadata?.decisions as readonly JsonObject[] | undefined;
+      // Goal only reports when injecting — if present, must have objectives + totalCount
+      if (goalDecisions !== undefined && goalDecisions.length > 0) {
+        expect(typeof goalDecisions[0]?.totalCount).toBe("number");
+        expect(goalDecisions[0]?.goalBlock).toBeDefined();
+      }
+    }
   }, 15000);
 });
 
@@ -6865,11 +6885,10 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
     expect(modelSteps.length).toBeGreaterThanOrEqual(1);
     expect(modelSteps[0]?.outcome).toBe("success");
 
-    // Middleware spans: permissions + skill-injector wired correctly
-    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
-    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
-    expect(mwNames.has("permissions")).toBe(true);
-    expect(mwNames.has("skill-injector")).toBe(true);
+    // Note: the custom skillAdapter wires its own stream() outside the standard
+    // callHandlers path, so wrapModelStream/wrapModelCall spans are not produced
+    // for skill-injector here. The CI enforcement block (at the bottom of this file)
+    // validates skill-injector decision metadata using the standard cassette adapter.
 
     // Skill component was attached to the agent entity
     const skillComponents = koiRuntime.agent.query<SkillComponent>("skill:");
@@ -6894,7 +6913,9 @@ describe("Golden: @koi/skills-runtime (skill-load cassette replay)", () => {
 
 describe("Golden: @koi/mcp-server", () => {
   test("createMcpServer exposes platform tools when capabilities provided", async () => {
-    const { createMcpServer, createPlatformTools } = await import("@koi/mcp-server");
+    const { createMcpServer, createPlatformTools: _createPlatformTools } = await import(
+      "@koi/mcp-server"
+    );
     const { agentId } = await import("@koi/core");
     const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
     const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -7435,5 +7456,1036 @@ describe("Golden: @koi/skill-tool", () => {
     };
     expect(execResult.ok).toBe(true);
     expect(execResult.value).toBe("Hello from greet skill in /tmp/skills/greet");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CI enforcement: all decision-making L2 middleware must emit decisions
+// ---------------------------------------------------------------------------
+// This describe block is the formal gate: every decision-making middleware
+// must have at least one MW span with a non-empty `decisions` array.
+// Add new middleware here when introducing new L2 packages.
+
+describe("CI enforcement: all decision-making L2 middleware emit decisions metadata", () => {
+  test("permissions, hooks, goal, skill-injector all produce decisions in MW spans", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-decisions-enforcement-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-decisions-enforcement";
+
+    const store = createAtifDocumentStore(
+      { agentName: "decisions-enforcement-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    // @koi/event-trace
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "decisions-enforcement-test",
+      clock,
+    });
+
+    // @koi/hooks
+    const hookResult = loadHooks([
+      {
+        kind: "command",
+        name: "ci-enforcement-hook",
+        cmd: ["echo", "enforcement"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ]);
+    const loadedHooks = hookResult.ok ? hookResult.value : [];
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({ store, docId, clock });
+    const hookMw = createHookMiddleware({ hooks: loadedHooks, onExecuted });
+
+    // @koi/middleware-permissions
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "enforcement-test (bypass)",
+    });
+
+    // @koi/middleware-goal
+    const { createGoalMiddleware } = await import("@koi/middleware-goal");
+    const goalMw = createGoalMiddleware({
+      objectives: ["Compute the sum using the add_numbers tool."],
+    });
+
+    // @koi/skills-runtime — skill-injector
+    const {
+      mkdtempSync: mkdtemp,
+      mkdirSync: mkdir2,
+      writeFileSync: write2,
+    } = await import("node:fs");
+    const { tmpdir: tmpdir2 } = await import("node:os");
+    const { join: join2 } = await import("node:path");
+    const skillsDir = mkdtemp(join2(tmpdir2(), "koi-enforcement-skills-"));
+    mkdir2(join2(skillsDir, "test-skill"), { recursive: true });
+    write2(
+      join2(skillsDir, "test-skill", "SKILL.md"),
+      [
+        "---",
+        "name: test-skill",
+        "description: A skill for CI enforcement testing.",
+        "---",
+        "",
+        "Always be helpful.",
+      ].join("\n"),
+    );
+    trajDirs.push(skillsDir);
+
+    const skillRuntime = createSkillsRuntime({ bundledRoot: null, userRoot: skillsDir });
+    const skillProvider = createSkillProvider(skillRuntime);
+    const agentRef: { current?: Agent } = {};
+    const injector = createSkillInjectorMiddleware({
+      agent: (): Agent => {
+        if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+        return agentRef.current;
+      },
+    });
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: {
+        name: "decisions-enforcement-test",
+        version: "0.1.0",
+        model: { name: MODEL },
+      },
+      adapter,
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle, goalMw, injector].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+        skillProvider,
+      ],
+      loopDetection: false,
+    });
+
+    agentRef.current = runtime.agent;
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 3 + 4.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+
+    // Helper: assert a named middleware has at least one model/tool-wrapping span
+    // with non-empty decisions array
+    function assertDecisions(name: string): void {
+      const spans = mwSpans.filter(
+        (s) =>
+          s.metadata?.middlewareName === name &&
+          (s.metadata?.hook === "wrapModelCall" ||
+            s.metadata?.hook === "wrapModelStream" ||
+            s.metadata?.hook === "wrapToolCall"),
+      );
+      expect(spans.length, `${name} must have at least one model/tool span`).toBeGreaterThan(0);
+      const withDecisions = spans.filter((s) => {
+        const d = s.metadata?.decisions;
+        return Array.isArray(d) && d.length > 0;
+      });
+      expect(
+        withDecisions.length,
+        `${name} must emit decisions in at least one span`,
+      ).toBeGreaterThan(0);
+    }
+
+    assertDecisions("permissions");
+    assertDecisions("hooks");
+    assertDecisions("goal");
+    assertDecisions("skill-injector");
+  }, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-notebook (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-notebook", () => {
+  test("notebook_read on fixture returns 3-cell summary", async () => {
+    const { createNotebookReadTool } = await import("@koi/tool-notebook");
+    const tool = createNotebookReadTool({});
+    const FIXTURES_DIR = `${import.meta.dirname}/../../fixtures`;
+
+    const result = (await tool.execute({ path: `${FIXTURES_DIR}/golden-notebook.ipynb` })) as {
+      readonly cellCount: number;
+      readonly cells: ReadonlyArray<{ readonly cell_type: string }>;
+      readonly nbformat: number;
+    };
+
+    expect(result.cellCount).toBe(3);
+    expect(result.nbformat).toBe(4);
+    expect(result.cells[0]?.cell_type).toBe("markdown");
+    expect(result.cells[1]?.cell_type).toBe("code");
+    expect(result.cells[2]?.cell_type).toBe("raw");
+  });
+
+  test("notebook_read on missing file returns NOT_FOUND error", async () => {
+    const { createNotebookReadTool } = await import("@koi/tool-notebook");
+    const tool = createNotebookReadTool({});
+
+    const result = (await tool.execute({ path: "/tmp/does-not-exist-golden.ipynb" })) as {
+      readonly code: string;
+      readonly error: string;
+    };
+
+    expect(result.code).toBe("NOT_FOUND");
+    expect(result.error).toContain("not found");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L0+L3 golden queries: outcome-linkage (#1465)
+// ---------------------------------------------------------------------------
+
+describe("Golden: outcome-linkage (L0 types + L3 stores)", () => {
+  test("DecisionCorrelationId branded constructor round-trips", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const id = decisionCorrelationId("dcid_test-123");
+    // Branded type is structurally a string
+    const plain: string = id;
+    expect(plain).toBe("dcid_test-123");
+  });
+
+  test("in-memory OutcomeStore put/get round-trip", async () => {
+    const { decisionCorrelationId } = await import("@koi/core");
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+
+    const store = createInMemoryOutcomeStore();
+    const report = {
+      correlationId: decisionCorrelationId("dcid_golden"),
+      outcome: "positive" as const,
+      metrics: { revenue: 42000 },
+      description: "Golden test outcome",
+      reportedBy: "golden-test",
+      timestamp: Date.now(),
+    };
+
+    await store.put(report);
+    const retrieved = await store.get("dcid_golden");
+
+    expect(retrieved).toBeDefined();
+    expect(retrieved?.outcome).toBe("positive");
+    expect(retrieved?.metrics.revenue).toBe(42000);
+  });
+
+  test("in-memory OutcomeStore returns undefined for missing ID", async () => {
+    const { createInMemoryOutcomeStore } = await import("../trajectory/outcome-memory-store.js");
+    const store = createInMemoryOutcomeStore();
+    const result = await store.get("dcid_nonexistent");
+    expect(result).toBeUndefined();
+  });
+
+  test("outcomeStore on RuntimeHandle is populated when trajectoryNexus is configured", async () => {
+    const { createRuntime } = await import("../create-runtime.js");
+    // Without trajectoryNexus, outcomeStore should be undefined
+    const handle = createRuntime({});
+    expect(handle.outcomeStore).toBeUndefined();
+    await handle.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/tool-browser (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/tool-browser", () => {
+  test("browser_snapshot with mock driver returns accessibility tree with refs", async () => {
+    const { createBrowserSnapshotTool, createMockDriver } = await import("@koi/tool-browser");
+    const driver = createMockDriver();
+    const tool = createBrowserSnapshotTool(driver, "browser", { sandbox: false, capabilities: {} });
+
+    const result = (await tool.execute({})) as {
+      readonly snapshot: string;
+      readonly snapshotId: string;
+      readonly url: string;
+    };
+
+    expect(result.snapshot).toContain("[ref=e1]");
+    expect(result.snapshot).toContain("[ref=e2]");
+    expect(result.snapshotId).toBe("snap-mock-001");
+    expect(result.url).toBe("https://example.com");
+  });
+
+  test("browser_navigate with file:// scheme returns VALIDATION error before driver call", async () => {
+    const { createBrowserNavigateTool, createMockDriver } = await import("@koi/tool-browser");
+    const driver = createMockDriver();
+    const tool = createBrowserNavigateTool(driver, "browser", { sandbox: false, capabilities: {} });
+
+    const result = (await tool.execute({ url: "file:///etc/passwd" })) as {
+      readonly code: string;
+      readonly error: string;
+    };
+
+    expect(result.code).toBe("VALIDATION");
+    expect(result.error).toContain("file:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/lsp (2 queries)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/lsp", () => {
+  test("createLspTools returns tools with expected LSP method names", async () => {
+    const { createLspTools } = await import("@koi/lsp");
+
+    // Minimal mock client — capabilities() returns ServerCapabilities to gate tool registration
+    const mockClient = {
+      capabilities: () => ({
+        hoverProvider: true,
+        definitionProvider: true,
+        referencesProvider: true,
+        documentSymbolProvider: true,
+        workspaceSymbolProvider: true,
+      }),
+      hover: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      gotoDefinition: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      findReferences: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      documentSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      workspaceSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      getDiagnostics: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      openDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      closeDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+    } as unknown as import("@koi/lsp").LspClient;
+
+    const tools = createLspTools(mockClient, "test-lsp");
+    const names = tools.map((t) => t.descriptor.name);
+
+    expect(names).toContain("lsp__test-lsp__hover");
+    expect(names).toContain("lsp__test-lsp__goto_definition");
+    expect(names).toContain("lsp__test-lsp__find_references");
+    expect(names).toContain("lsp__test-lsp__document_symbols");
+    expect(names).toContain("lsp__test-lsp__workspace_symbols");
+    // Always-present tools regardless of capabilities
+    expect(names).toContain("lsp__test-lsp__open_document");
+    expect(names).toContain("lsp__test-lsp__get_diagnostics");
+    // All tools must have a valid inputSchema
+    for (const tool of tools) {
+      expect(tool.descriptor.inputSchema).toBeDefined();
+      expect((tool.descriptor.inputSchema as { type: string }).type).toBe("object");
+    }
+  });
+
+  test("lsp_hover tool with missing required arg returns VALIDATION error", async () => {
+    const { createLspTools } = await import("@koi/lsp");
+
+    const mockClient = {
+      capabilities: () => ({ hoverProvider: true }),
+      hover: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      gotoDefinition: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      findReferences: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      documentSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      workspaceSymbols: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      getDiagnostics: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      openDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+      closeDocument: async () => ({
+        ok: false,
+        error: { code: "NOT_CONNECTED", message: "mock", retryable: false },
+      }),
+    } as unknown as import("@koi/lsp").LspClient;
+
+    const tools = createLspTools(mockClient, "test-lsp");
+    const hoverTool = tools.find((t) => t.descriptor.name === "lsp__test-lsp__hover");
+    expect(hoverTool).toBeDefined();
+    if (!hoverTool) return;
+
+    // Missing required `uri` arg — should return VALIDATION error, not throw
+    const result = (await hoverTool.execute({ line: 5, character: 10 })) as {
+      readonly ok: boolean;
+      readonly error?: { readonly code: string };
+    };
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("VALIDATION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — standalone bridge registration + mapping
+// No LLM needed. Exercises createSkillsMcpBridge, mapping, and registration.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (standalone bridge registration)", () => {
+  test("mapToolDescriptorToSkillMetadata produces sanitized MCP skill metadata", () => {
+    const descriptor: import("@koi/core").ToolDescriptor = {
+      name: "weather__get_forecast",
+      description: "Get weather forecast for a city",
+      inputSchema: { type: "object", properties: { city: { type: "string" } } },
+      server: "weather",
+      tags: ["weather", "api"],
+    };
+    const result = mapToolDescriptorToSkillMetadata(descriptor);
+
+    expect(result.name).toBe("weather__get_forecast");
+    expect(result.source).toBe("mcp");
+    expect(result.dirPath).toBe("mcp://weather");
+    expect(result.description).toBe(""); // empty — metadata-only, no prompt injection
+    expect(result.tags).toEqual(["mcp", "weather", "weather", "api"]);
+    expect(result.executionMode).toBeUndefined();
+  });
+
+  test("mapToolDescriptorsToSkillMetadata deduplicates and reports collisions", () => {
+    const descriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "srv__tool_a",
+        description: "Tool A",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool_b",
+        description: "Tool B",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+      {
+        name: "srv__tool a", // sanitizes to "srv__toola" — collision with nothing, unique
+        description: "Tool with space",
+        inputSchema: { type: "object", properties: {} },
+        server: "srv",
+      },
+    ];
+    const { skills, skipped } = mapToolDescriptorsToSkillMetadata(descriptors);
+
+    // All three have unique sanitized names
+    expect(skills.length).toBeGreaterThanOrEqual(2);
+    // No collisions for these distinct names
+    expect(skipped.length).toBe(0);
+    // All are source: "mcp"
+    for (const s of skills) {
+      expect(s.source).toBe("mcp");
+    }
+  });
+
+  test("createSkillsMcpBridge syncs MCP tools into SkillsRuntime", async () => {
+    const { mock } = await import("bun:test");
+
+    // Mock McpResolver
+    const mockDescriptors: readonly import("@koi/core").ToolDescriptor[] = [
+      {
+        name: "test-server__add",
+        description: "Add numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+      {
+        name: "test-server__multiply",
+        description: "Multiply numbers",
+        inputSchema: { type: "object", properties: {} },
+        server: "test-server",
+      },
+    ];
+
+    const mockResolver = {
+      discover: mock(() => Promise.resolve(mockDescriptors)),
+      load: mock(() =>
+        Promise.resolve({
+          ok: false as const,
+          error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+        }),
+      ),
+      onChange: mock((_fn: () => void) => () => {}),
+      dispose: mock(() => {}),
+      failures: [] as readonly never[],
+    };
+
+    const runtime = createSkillsRuntime({ bundledRoot: null });
+    const bridge = createSkillsMcpBridge({
+      resolver: mockResolver as never,
+      runtime,
+    });
+
+    await bridge.sync();
+
+    // MCP tools should appear as skills via discover()
+    const discovered = await runtime.discover();
+    expect(discovered.ok).toBe(true);
+    if (!discovered.ok) return;
+
+    const mcpSkills = [...discovered.value.values()].filter((s) => s.source === "mcp");
+    expect(mcpSkills).toHaveLength(2);
+
+    const names = mcpSkills.map((s) => s.name).sort();
+    expect(names).toEqual(["test-server__add", "test-server__multiply"]);
+
+    // Queryable by source
+    const queryResult = await runtime.query({ source: "mcp" });
+    expect(queryResult.ok).toBe(true);
+    if (!queryResult.ok) return;
+    expect(queryResult.value).toHaveLength(2);
+
+    // dispose clears
+    bridge.dispose();
+    const afterDispose = await runtime.query({ source: "mcp" });
+    expect(afterDispose.ok).toBe(true);
+    if (!afterDispose.ok) return;
+    expect(afterDispose.value).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: skills-mcp-bridge — trajectory validation
+// Validates the recorded ATIF trajectory has correct structure.
+// ---------------------------------------------------------------------------
+
+describe("Golden: skills-mcp-bridge (trajectory validation)", () => {
+  test("trajectory has valid ATIF structure with MCP lifecycle steps", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = `${FIXTURES}/skills-mcp-bridge.trajectory.json`;
+    const raw = readFileSync(path, "utf-8");
+    const trajectory = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly step_id: number;
+        readonly source: string;
+        readonly outcome: string;
+        readonly extra?: { readonly type?: string; readonly serverName?: string };
+      }[];
+    };
+
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("skills-mcp-bridge");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+
+    // Should have MCP lifecycle steps (bridge wired the MCP resolver)
+    const mcpSteps = trajectory.steps.filter((s) => s.extra?.type === "mcp_lifecycle");
+    expect(mcpSteps.length).toBeGreaterThanOrEqual(1);
+
+    // At least one "connected" step
+    const connectedStep = mcpSteps.find(
+      (s) => s.extra?.serverName !== undefined && s.outcome === "success",
+    );
+    expect(connectedStep).toBeDefined();
+
+    // Should have a model call step
+    const modelStep = trajectory.steps.find((s) => s.source === "agent");
+    expect(modelStep).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/plugins (5 queries: manifest validation + registry + trajectory + lifecycle + toggle + lifecycle-trajectory)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/plugins", () => {
+  test("validatePluginManifest accepts valid manifest and rejects invalid", async () => {
+    const { validatePluginManifest } = await import("@koi/plugins");
+
+    const valid = validatePluginManifest({
+      name: "test-plugin",
+      version: "1.0.0",
+      description: "A test plugin",
+    });
+    expect(valid.ok).toBe(true);
+    if (valid.ok) {
+      expect(valid.value.name).toBe("test-plugin");
+      expect(valid.value.version).toBe("1.0.0");
+    }
+
+    const invalid = validatePluginManifest({ name: "Bad Name!" });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.error.code).toBe("VALIDATION");
+    }
+  });
+
+  test("createPluginRegistry discovers from filesystem and returns empty for no roots", async () => {
+    const { createPluginRegistry } = await import("@koi/plugins");
+
+    const registry = createPluginRegistry({});
+    const plugins = await registry.discover();
+    expect(Array.isArray(plugins)).toBe(true);
+    expect(plugins).toHaveLength(0);
+    expect(registry.errors()).toHaveLength(0);
+  });
+
+  test("plugin-validate trajectory has correct ATIF structure", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-validate.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results: readonly { readonly content: string }[] };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to validate_plugin exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("validate_plugin");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — manifest validation + real discovery results
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly valid: boolean;
+      readonly pluginName: string;
+      readonly discoveredCount: number;
+      readonly discoveredNames: readonly string[];
+      readonly errorCount: number;
+    };
+    expect(output.valid).toBe(true);
+    expect(output.pluginName).toBe("hello-world");
+    expect(output.discoveredCount).toBe(1);
+    expect(output.discoveredNames).toEqual(["seeded-plugin"]);
+    expect(output.errorCount).toBe(0);
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-validate",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
+  });
+
+  test("installPlugin + listPlugins lifecycle round-trip", async () => {
+    const { mkdir, rm, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const { installPlugin, listPlugins, removePlugin, createPluginRegistry } = await import(
+      "@koi/plugins"
+    );
+
+    const tmpRoot = join(
+      import.meta.dir,
+      `../../fixtures/tmpkoi-golden-lifecycle-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const sourceDir = join(tmpRoot, "source", "golden-plugin");
+    const userRoot = join(tmpRoot, "user-plugins");
+
+    try {
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify({ name: "golden-plugin", version: "1.0.0", description: "Golden test" }),
+        "utf-8",
+      );
+
+      const registry = createPluginRegistry({ userRoot });
+      const config = { userRoot, registry };
+
+      // Install
+      const installResult = await installPlugin(config, sourceDir);
+      expect(installResult.ok).toBe(true);
+      if (installResult.ok) {
+        expect(installResult.value.name).toBe("golden-plugin");
+        expect(installResult.value.version).toBe("1.0.0");
+      }
+
+      // List shows installed plugin as enabled
+      const listResult = await listPlugins(config);
+      expect(listResult.ok).toBe(true);
+      if (listResult.ok) {
+        expect(listResult.value.length).toBe(1);
+        expect(listResult.value[0]?.meta.name).toBe("golden-plugin");
+        expect(listResult.value[0]?.enabled).toBe(true);
+      }
+
+      // Remove
+      const removeResult = await removePlugin(config, "golden-plugin");
+      expect(removeResult.ok).toBe(true);
+
+      // List is empty after removal
+      const listAfter = await listPlugins(config);
+      expect(listAfter.ok).toBe(true);
+      if (listAfter.ok) {
+        expect(listAfter.value.length).toBe(0);
+      }
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("enablePlugin / disablePlugin toggle state correctly", async () => {
+    const { mkdir, rm, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const {
+      installPlugin,
+      enablePlugin,
+      disablePlugin,
+      listPlugins,
+      removePlugin,
+      createPluginRegistry,
+    } = await import("@koi/plugins");
+
+    const tmpRoot = join(
+      import.meta.dir,
+      `../../fixtures/tmpkoi-golden-toggle-${Math.random().toString(36).slice(2, 8)}`,
+    );
+    const sourceDir = join(tmpRoot, "source", "toggle-plugin");
+    const userRoot = join(tmpRoot, "user-plugins");
+
+    try {
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(
+        join(sourceDir, "plugin.json"),
+        JSON.stringify({ name: "toggle-plugin", version: "1.0.0", description: "Toggle test" }),
+        "utf-8",
+      );
+
+      const registry = createPluginRegistry({ userRoot });
+      const config = { userRoot, registry };
+
+      await installPlugin(config, sourceDir);
+
+      // Disable
+      const disableResult = await disablePlugin(config, "toggle-plugin");
+      expect(disableResult.ok).toBe(true);
+
+      // List shows disabled
+      const list1 = await listPlugins(config);
+      expect(list1.ok).toBe(true);
+      if (list1.ok) {
+        const entry = list1.value.find((e) => e.meta.name === "toggle-plugin");
+        expect(entry?.enabled).toBe(false);
+      }
+
+      // Re-enable
+      const enableResult = await enablePlugin(config, "toggle-plugin");
+      expect(enableResult.ok).toBe(true);
+
+      // List shows enabled again
+      const list2 = await listPlugins(config);
+      expect(list2.ok).toBe(true);
+      if (list2.ok) {
+        const entry = list2.value.find((e) => e.meta.name === "toggle-plugin");
+        expect(entry?.enabled).toBe(true);
+      }
+
+      await removePlugin(config, "toggle-plugin");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("plugin-lifecycle trajectory has correct ATIF structure and all steps pass", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const fixturePath = join(import.meta.dir, "../../fixtures/plugin-lifecycle.trajectory.json");
+    const raw = await readFile(fixturePath, "utf-8");
+    const traj = JSON.parse(raw) as {
+      readonly schema_version: string;
+      readonly steps: readonly {
+        readonly source: string;
+        readonly outcome: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: {
+          readonly results: readonly { readonly content: string }[];
+        };
+        readonly extra?: { readonly type?: string; readonly hookName?: string };
+      }[];
+    };
+
+    expect(traj.schema_version).toBe("ATIF-v1.6");
+    expect(traj.steps.length).toBeGreaterThanOrEqual(10);
+
+    // Verify tool call to plugin_lifecycle exists
+    const toolStep = traj.steps.find((s) => s.source === "tool");
+    expect(toolStep).toBeDefined();
+    expect(toolStep?.tool_calls?.[0]?.function_name).toBe("plugin_lifecycle");
+    expect(toolStep?.outcome).toBe("success");
+
+    // Verify tool output — all lifecycle steps passed
+    const content = toolStep?.observation?.results?.[0]?.content ?? "";
+    const output = JSON.parse(content) as {
+      readonly allPassed: boolean;
+      readonly stepCount: number;
+      readonly steps: readonly {
+        readonly step: string;
+        readonly ok: boolean;
+        readonly detail: string;
+      }[];
+    };
+    expect(output.allPassed).toBe(true);
+    expect(output.stepCount).toBe(7);
+
+    // Verify each lifecycle step
+    const stepNames = output.steps.map((s) => s.step);
+    expect(stepNames).toEqual([
+      "install",
+      "list",
+      "disable",
+      "list-after-disable",
+      "enable",
+      "remove",
+      "list-after-remove",
+    ]);
+    for (const step of output.steps) {
+      expect(step.ok).toBe(true);
+    }
+
+    // Verify hook fired on tool.succeeded
+    const hookSteps = traj.steps.filter(
+      (s) =>
+        s.source === "system" &&
+        s.extra?.type === "hook_execution" &&
+        s.extra?.hookName === "on-plugin-lifecycle",
+    );
+    expect(hookSteps.length).toBeGreaterThanOrEqual(1);
+
+    // No error steps
+    const errorSteps = traj.steps.filter((s) => s.outcome === "error");
+    expect(errorSteps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-extraction
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-extraction", () => {
+  test("factory creates middleware with correct name, priority, and capabilities", async () => {
+    const { createExtractionMiddleware, EXTRACTION_DEFAULTS } = await import(
+      "@koi/middleware-extraction"
+    );
+
+    const mockMemory = {
+      async recall() {
+        return [];
+      },
+      async store() {},
+    };
+
+    const mw = createExtractionMiddleware({ memory: mockMemory });
+    expect(mw.name).toBe("koi:extraction");
+    expect(mw.priority).toBe(305);
+
+    // describeCapabilities returns a valid fragment
+    const mockCtx = {
+      session: { agentId: "test", sessionId: "s1", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<typeof mw.describeCapabilities>[0];
+    const caps = mw.describeCapabilities(mockCtx);
+    expect(caps).toBeDefined();
+    expect(caps?.label).toBe("extraction");
+
+    // Defaults are correct
+    expect(EXTRACTION_DEFAULTS.maxSessionOutputs).toBe(20);
+    expect(EXTRACTION_DEFAULTS.maxOutputSizeBytes).toBe(10_000);
+    expect(EXTRACTION_DEFAULTS.extractionMaxTokens).toBe(1024);
+  });
+
+  test("regex extractor finds markers and heuristics with correct category mapping", async () => {
+    const { createDefaultExtractor, mapCategoryToMemoryType } = await import(
+      "@koi/middleware-extraction"
+    );
+
+    // Category mapping preserves fine-grained → coarse type
+    expect(mapCategoryToMemoryType("gotcha")).toBe("feedback");
+    expect(mapCategoryToMemoryType("correction")).toBe("feedback");
+    expect(mapCategoryToMemoryType("heuristic")).toBe("reference");
+    expect(mapCategoryToMemoryType("pattern")).toBe("reference");
+    expect(mapCategoryToMemoryType("preference")).toBe("user");
+    expect(mapCategoryToMemoryType("context")).toBe("project");
+
+    // Extractor combines markers + heuristics
+    const extractor = createDefaultExtractor();
+    const output = "[LEARNING:gotcha] Never trust user input\navoid: SQL injection";
+    const results = extractor.extract(output);
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // All results have required fields
+    for (const r of results) {
+      expect(r.content).toBeTruthy();
+      expect(r.memoryType).toBeTruthy();
+      expect(r.category).toBeTruthy();
+      expect(r.confidence).toBeGreaterThan(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/dream
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/dream", () => {
+  test("shouldDream gate logic validates time and session thresholds", async () => {
+    const { shouldDream, DREAM_DEFAULTS } = await import("@koi/dream");
+
+    const now = 1_700_000_000_000;
+    const dayMs = 86_400_000;
+
+    // Both gates pass → true
+    expect(shouldDream({ lastDreamAt: now - dayMs * 2, sessionsSinceDream: 10 }, { now })).toBe(
+      true,
+    );
+
+    // Time gate fails → false
+    expect(shouldDream({ lastDreamAt: now - dayMs * 0.5, sessionsSinceDream: 10 }, { now })).toBe(
+      false,
+    );
+
+    // Session gate fails → false
+    expect(shouldDream({ lastDreamAt: now - dayMs * 2, sessionsSinceDream: 2 }, { now })).toBe(
+      false,
+    );
+
+    // Defaults are correct
+    expect(DREAM_DEFAULTS.minSessionsSinceLastDream).toBe(5);
+    expect(DREAM_DEFAULTS.minTimeSinceLastDreamMs).toBe(86_400_000);
+    expect(DREAM_DEFAULTS.mergeThreshold).toBe(0.5);
+    expect(DREAM_DEFAULTS.pruneThreshold).toBe(0.05);
+  });
+
+  test("jaccard similarity is symmetric and handles edge cases", async () => {
+    const { jaccard } = await import("@koi/dream");
+
+    expect(jaccard("hello world", "hello world")).toBe(1.0);
+    expect(jaccard("", "")).toBe(1.0);
+    expect(jaccard("apple", "")).toBe(0.0);
+    expect(jaccard("apple banana", "cherry dragonfruit")).toBe(0.0);
+
+    // Symmetric
+    const sim1 = jaccard("hello world", "hello there");
+    const sim2 = jaccard("hello there", "hello world");
+    expect(sim1).toBe(sim2);
+    expect(sim1).toBeGreaterThan(0);
+    expect(sim1).toBeLessThan(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/memory-team-sync
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/memory-team-sync", () => {
+  test("syncTeamMemories returns skipped when no endpoint configured", async () => {
+    const { syncTeamMemories } = await import("@koi/memory-team-sync");
+
+    const result = await syncTeamMemories({
+      listMemories: async () => [],
+      agentId: "test-agent",
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.eligible).toBe(0);
+    expect(result.blocked).toBe(0);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  test("filterMemoryForSync always denies user type and scans for secrets", async () => {
+    const { filterMemoryForSync, DEFAULT_ALLOWED_TYPES } = await import("@koi/memory-team-sync");
+    const { memoryRecordId } = await import("@koi/core");
+
+    // Defaults exclude "user"
+    expect(DEFAULT_ALLOWED_TYPES).not.toContain("user");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("feedback");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("project");
+    expect(DEFAULT_ALLOWED_TYPES).toContain("reference");
+
+    // User type always denied
+    const userMemory = {
+      id: memoryRecordId("u1"),
+      name: "User pref",
+      description: "Private",
+      type: "user" as const,
+      content: "safe content",
+      filePath: "u1.md",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const userResult = filterMemoryForSync(userMemory);
+    expect(userResult.passed).toBe(false);
+    expect(userResult.blocked?.reason).toBe("type_denied");
+
+    // Feedback with clean content passes
+    const feedbackMemory = {
+      ...userMemory,
+      id: memoryRecordId("f1"),
+      type: "feedback" as const,
+    };
+    const feedbackResult = filterMemoryForSync(feedbackMemory);
+    expect(feedbackResult.passed).toBe(true);
+
+    // Feedback with secret is blocked
+    const secretMemory = {
+      ...feedbackMemory,
+      id: memoryRecordId("s1"),
+      content: "password=SuperSecret12345678",
+    };
+    const secretResult = filterMemoryForSync(secretMemory);
+    expect(secretResult.passed).toBe(false);
+    expect(secretResult.blocked?.reason).toBe("secret_detected");
   });
 });

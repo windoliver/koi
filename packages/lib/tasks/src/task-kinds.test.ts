@@ -4,15 +4,15 @@ import { createOutputStream } from "./output-stream.js";
 import {
   type DreamTask,
   type InProcessTeammateTask,
-  type LocalAgentTask,
-  type LocalShellTask,
-  type RemoteAgentTask,
   isDreamTask,
   isInProcessTeammateTask,
   isLocalAgentTask,
   isLocalShellTask,
   isRemoteAgentTask,
   isRuntimeTask,
+  type LocalAgentTask,
+  type LocalShellTask,
+  type RemoteAgentTask,
 } from "./task-kinds.js";
 
 /** Helper to build a base runtime task for testing. */

@@ -245,7 +245,7 @@ export async function drainEngineStream(
  * Runtime assembly (tools, middleware, providers) is delegated to createTuiRuntime().
  * The conversation loop is driven by KoiRuntime.run() from @koi/engine.
  */
-export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
+export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // TTY check first — createTuiApp will also check, but early exit gives a
   // cleaner error before any setup allocations.
   if (!process.stdout.isTTY) {
@@ -324,6 +324,8 @@ export async function runTuiCommand(_flags: TuiFlags): Promise<void> {
     cwd: process.cwd(),
     systemPrompt,
     session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
+    skillsRuntime: skillRuntime,
+    ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

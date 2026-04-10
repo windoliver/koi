@@ -1,50 +1,50 @@
 {
   "name": "task-board",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775531774292,
+  "recordedAt": 1775698498222,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "task_create",
-      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS"
+      "callId": "tool_task_create_SVcL0xIZHg8FHUCjEoLp"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
+      "callId": "tool_task_create_SVcL0xIZHg8FHUCjEoLp",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
+      "callId": "tool_task_create_SVcL0xIZHg8FHUCjEoLp",
       "delta": "{\"description\":\"Review the README for typos\",\"subject\":\"Review README\"}"
     },
     {
       "kind": "tool_call_start",
       "toolName": "task_list",
-      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF"
+      "callId": "tool_task_list_22M5zW9mGkrOxr76rGWn"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
+      "callId": "tool_task_list_22M5zW9mGkrOxr76rGWn",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
+      "callId": "tool_task_list_22M5zW9mGkrOxr76rGWn",
       "delta": "{}"
     },
     {
       "kind": "usage",
-      "inputTokens": 811,
+      "inputTokens": 810,
       "outputTokens": 15
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_create_m3pZV3lb3dPURTtNgHMS"
+      "callId": "tool_task_create_SVcL0xIZHg8FHUCjEoLp"
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_task_list_1ozsZrYwxbJVbGuEkXgF"
+      "callId": "tool_task_list_22M5zW9mGkrOxr76rGWn"
     },
     {
       "kind": "done",
@@ -52,11 +52,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775531773-Ai4rEdZi5lx2J6sYTQ9Q",
+        "responseId": "gen-1775698497-S1u8TNExHpxSMnznUFV2",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_task_create_m3pZV3lb3dPURTtNgHMS",
+            "id": "tool_task_create_SVcL0xIZHg8FHUCjEoLp",
             "name": "task_create",
             "arguments": {
               "description": "Review the README for typos",
@@ -65,17 +65,17 @@
           },
           {
             "kind": "tool_call",
-            "id": "tool_task_list_1ozsZrYwxbJVbGuEkXgF",
+            "id": "tool_task_list_22M5zW9mGkrOxr76rGWn",
             "name": "task_list",
             "arguments": {}
           }
         ],
         "usage": {
-          "inputTokens": 811,
+          "inputTokens": 810,
           "outputTokens": 15
         },
         "metadata": {
-          "promptPrefixFingerprint": "3fb77b2db4b49888f23a9ce3df5fd5ec719431cb471b5f69783fcad9297526ff"
+          "promptPrefixFingerprint": "9657f07cc2c4ed849584f74d658ff63b08e4f93589753a4ed79378e03721c5f5"
         }
       }
     }

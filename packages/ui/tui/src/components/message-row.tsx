@@ -9,6 +9,7 @@ import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
 import { SpawnBlock } from "./SpawnBlock.js";
+import { DEFAULT_SPINNER } from "./spinners.js";
 import { TextBlock } from "./text-block.js";
 import { ThinkingBlock } from "./thinking-block.js";
 import { ToolCallBlock } from "./tool-call-block.js";
@@ -116,8 +117,6 @@ function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
   );
 }
 
-const THINKING_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
 /** Duration after which "thought for Xs" label auto-hides. */
 const THOUGHT_LABEL_HIDE_MS = 3000;
 
@@ -159,7 +158,7 @@ function AssistantMessage(props: {
     <box flexDirection="column">
       <Show when={isThinking()}>
         <text fg="gray">
-          {THINKING_SPINNER[props.spinnerFrame() % THINKING_SPINNER.length] ?? "⠋"}{" "}
+          {DEFAULT_SPINNER.frames[props.spinnerFrame() % DEFAULT_SPINNER.frames.length] ?? " "}{" "}
           <i>Thinking…</i>
         </text>
       </Show>

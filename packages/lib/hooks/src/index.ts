@@ -19,6 +19,12 @@ export type { EnvExpandResult, EnvRecordExpandResult } from "./env.js";
 export { buildEnvAllowSet, expandEnvVars, expandEnvVarsInRecord, matchEnvGlob } from "./env.js";
 export { executeHooks } from "./executor.js";
 export { matchesHookFilter } from "./filter.js";
+export {
+  checkReservedHeaders,
+  RESERVED_HEADER_NAMES,
+  validateHeaders,
+  validateHeaderValue,
+} from "./header-sanitize.js";
 export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
 export type { LoadHooksResult } from "./loader.js";
@@ -27,6 +33,8 @@ export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middlewa
 export { aggregateDecisions, aggregatePostDecisions, createHookMiddleware } from "./middleware.js";
 export type { PayloadStatus, RedactedPayload } from "./payload-redaction.js";
 export { extractStructure, redactEventData } from "./payload-redaction.js";
+export type { CreatePromptAdapterOptions } from "./prompt-adapter.js";
+export { PromptExecutorAdapter } from "./prompt-adapter.js";
 export type { CreateHookRegistryOptions, HookRegistry } from "./registry.js";
 export { createHookRegistry } from "./registry.js";
 export {
@@ -37,3 +45,10 @@ export {
   httpHookSchema,
   promptHookSchema,
 } from "./schema.js";
+export type { DnsResolverFn, DnsValidationResult, PinnedUrl } from "./ssrf.js";
+export {
+  defaultHookDnsResolver,
+  isBlockedHookIp,
+  pinResolvedIp,
+  resolveAndValidateHookUrl,
+} from "./ssrf.js";

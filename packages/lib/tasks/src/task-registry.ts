@@ -25,7 +25,11 @@ export interface TaskKindLifecycle<
 > {
   readonly kind: TaskKindName;
   /** Start a task. Receives a pre-created output stream from the runner. */
-  readonly start: (taskId: TaskItemId, output: TaskOutputStream, config: TConfig) => Promise<TState>;
+  readonly start: (
+    taskId: TaskItemId,
+    output: TaskOutputStream,
+    config: TConfig,
+  ) => Promise<TState>;
   /** Stop a running task and clean up resources. */
   readonly stop: (state: TState) => Promise<void>;
 }

@@ -115,6 +115,30 @@ configurable threshold (default 3) and per-key intervention budgets (default 2).
 - `{ kind: "custom", type: "doom_loop_detected", data: { toolNames, consecutiveTurns, turnIndex } }` — full intervention
 - `{ kind: "custom", type: "doom_loop_filtered", data: { blockedTools, turnIndex } }` — mixed-turn filtering
 
+## Tool Argument Type Coercion
+
+`coerceToolArgs(args, schema)` performs shallow string-to-type coercion before validation (#1611).
+Models (especially weaker ones) sometimes send string values where the tool schema declares
+numeric or boolean types (e.g., `{"count": "5"}` instead of `{"count": 5}`).
+
+### Coercion rules (top-level properties only)
+
+- `string → number/integer`: via `Number()`, rejected if non-finite (`NaN`, `Infinity`, overflow)
+- `string → boolean`: `"true"` → `true`, `"false"` → `false`, else unchanged
+- Non-string values: pass through unchanged
+- Missing/empty schema: args returned unchanged
+
+### Integration
+
+- Runs **before** `validateToolArgs()` so validation sees coerced types.
+- Coerced args are used consistently for dedup keys, doom-loop keys, and tool execution.
+- Transcript records raw model args for replay fidelity; an `args_coerced` custom event is
+  emitted when coercion changes values for observability.
+
+### Observability
+
+- `{ kind: "custom", type: "args_coerced", data: { coerced: [{ toolName, callId }] } }` — emitted when coercion changes tool arguments.
+
 ## Not in scope
 
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.

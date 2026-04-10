@@ -56,6 +56,7 @@ import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { loadPluginComponents } from "../plugin-activation.js";
 import { ExitCode } from "../types.js";
 
 const DEFAULT_MAX_TURNS = 10;
@@ -328,14 +329,60 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // ---------------------------------------------------------------------------
 
   const cwd = process.cwd();
-  const [mcpProvider, hookMiddleware, staticProviders] = await Promise.all([
+  const pluginUserRoot = join(homedir(), ".koi", "plugins");
+  const [mcpProvider, hookMiddleware, staticProviders, pluginComponents] = await Promise.all([
     loadMcpProvider(cwd),
     loadHookMiddleware(),
     buildStaticProviders(cwd),
+    loadPluginComponents(pluginUserRoot),
   ]);
+
+  // Log plugin activation errors (non-fatal)
+  for (const err of pluginComponents.errors) {
+    console.warn(`[koi start] plugin "${err.plugin}": ${err.error}`);
+  }
+  if (pluginComponents.middlewareNames.length > 0) {
+    console.warn(
+      `[koi start] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+    );
+  }
+
+  // Plugin MCP provider (additional MCP servers from installed plugins)
+  let pluginMcpProvider: ComponentProvider | undefined;
+  if (pluginComponents.mcpServers.length > 0) {
+    const connections = pluginComponents.mcpServers.map((server) =>
+      createMcpConnection(resolveServerConfig(server)),
+    );
+    const resolver = createMcpResolver(connections);
+    pluginMcpProvider = createMcpComponentProvider({ resolver });
+  }
+
+  // Plugin hooks merged into hook middleware
+  let mergedHookMiddleware = hookMiddleware;
+  if (pluginComponents.hooks.length > 0) {
+    const pluginHooks = pluginComponents.hooks;
+    if (hookMiddleware !== undefined) {
+      // Rebuild with merged hooks (user hooks loaded via loadHookMiddleware don't
+      // expose the underlying array, so re-load user hooks and merge)
+      const userHooksPath = join(homedir(), ".koi", "hooks.json");
+      let userHooks: readonly import("@koi/core").HookConfig[] = [];
+      try {
+        const raw: unknown = await Bun.file(userHooksPath).json();
+        const result = loadHooks(raw);
+        if (result.ok) userHooks = result.value;
+      } catch {
+        // Already loaded above — fallback to empty
+      }
+      mergedHookMiddleware = createHookMiddleware({ hooks: [...pluginHooks, ...userHooks] });
+    } else {
+      mergedHookMiddleware = createHookMiddleware({ hooks: pluginHooks });
+    }
+  }
+
   const providers: ComponentProvider[] = [
     ...staticProviders,
     ...(mcpProvider !== undefined ? [mcpProvider] : []),
+    ...(pluginMcpProvider !== undefined ? [pluginMcpProvider] : []),
   ];
 
   const sessionTranscriptMiddleware = createSessionTranscriptMiddleware({
@@ -346,7 +393,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   const middleware: KoiMiddleware[] = [
     sessionTranscriptMiddleware,
     buildPermissionsMiddleware(),
-    ...(hookMiddleware !== undefined ? [hookMiddleware] : []),
+    ...(mergedHookMiddleware !== undefined ? [mergedHookMiddleware] : []),
     ...(manifestInstructions !== undefined
       ? [createSystemPromptMiddleware(manifestInstructions)]
       : []),

@@ -45,11 +45,44 @@ describe("loadHooks", () => {
     }
   });
 
-  it("returns error for unsupported hook type", () => {
-    const result = loadHooks([{ kind: "prompt", name: "test", prompt: "hello" }]);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
+  it("loads prompt hooks successfully", () => {
+    const result = loadHooks([{ kind: "prompt", name: "safety-check", prompt: "Is this safe?" }]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      expect(result.value[0]?.kind).toBe("prompt");
+      expect(result.value[0]?.name).toBe("safety-check");
+    }
+  });
+
+  it("preserves all fields on valid prompt hook", () => {
+    const result = loadHooks([
+      {
+        kind: "prompt",
+        name: "full-prompt",
+        prompt: "Verify this action",
+        model: "sonnet",
+        maxTokens: 128,
+        timeoutMs: 5000,
+        filter: { events: ["tool.before"], tools: ["Bash"] },
+        serial: true,
+        failClosed: false,
+      },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value).toHaveLength(1);
+      const hook = result.value[0];
+      if (hook === undefined) throw new Error("expected hook");
+      expect(hook.kind).toBe("prompt");
+      if (hook.kind === "prompt") {
+        expect(hook.prompt).toBe("Verify this action");
+        expect(hook.model).toBe("sonnet");
+        expect(hook.maxTokens).toBe(128);
+        expect(hook.timeoutMs).toBe(5000);
+        expect(hook.serial).toBe(true);
+        expect(hook.failClosed).toBe(false);
+      }
     }
   });
 

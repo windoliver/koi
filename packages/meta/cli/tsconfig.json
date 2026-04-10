@@ -11,7 +11,9 @@
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/harness" },
     { "path": "../../mm/model-openai-compat" },
+    { "path": "../../lib/plugins" },
     { "path": "../../lib/query-engine" },
+    { "path": "../../mm/middleware-extraction" },
     { "path": "../runtime" },
     { "path": "../../lib/tools-builtin" }
   ]

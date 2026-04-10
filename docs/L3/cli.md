@@ -86,7 +86,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 - Model: `anthropic/claude-sonnet-4-6` via OpenRouter (`OPENROUTER_API_KEY` required)
 - Transcript: sliding window of last 20 messages; committed only on `stopReason === "completed"`
 - Turn limit: 50 interactive turns, 10 agent loop turns per prompt
-- **Tools wired:** Glob, Grep, web_fetch, Bash, and **TodoWrite** (in-conversation task tracking). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
+- **Tools wired:** Glob, Grep, web_fetch, Bash, **TodoWrite** (in-conversation task tracking), and **notebook tools** (notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell — workspace-contained via `cwd`). MCP tools loaded from `.mcp.json` in cwd (optional). Hooks loaded from `~/.koi/hooks.json` (optional).
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT wired — plan-mode requires a real permission backend to enforce the read-only gate; without it the mode flag flips but no permissions are restricted. The TUI wires the full interaction provider because it has a real permission backend. `koi start` uses `TodoWrite` only.
 - **No Spawn**: `agent_spawn` is not registered — built-in agents (researcher, coder, coordinator) depend on Glob/Grep/web/task tools that require manifest-level wiring (#1264).
 - Error handling: truncated streams throw and map to `ExitCode.FAILURE` + stderr message
@@ -100,6 +100,29 @@ Standalone admin panel server or proxy for a running `koi serve --admin` instanc
 koi admin                          # Manifest-backed admin server on :9200
 koi admin --connect localhost:9100 # Proxy a running koi serve --admin instance
 ```
+
+### `koi plugin`
+
+Plugin lifecycle management. Subcommands operate on `~/.koi/plugins/` (user root).
+
+```bash
+koi plugin install <path>         # Copy plugin from local directory
+koi plugin remove <name>          # Remove installed plugin
+koi plugin enable <name>          # Enable a disabled plugin
+koi plugin disable <name>         # Disable a plugin
+koi plugin update <name> <path>   # Rollback-safe update from new source
+koi plugin list [--json]          # List plugins with enabled/disabled status
+```
+
+Install copies the source directory into `~/.koi/plugins/<name>/` with TOCTOU validation and symlink dereferencing (`dereference: true`).
+Update uses a backup+rename swap with automatic rollback on failure and crash recovery via `recoverOrphanedUpdates()`.
+Enable/disable persists state in `~/.koi/plugins/state.json`; all plugins are enabled by default.
+Name validation rejects non-kebab-case names to prevent path traversal.
+The gated registry fails closed on corrupt state — all plugins blocked until `state.json` is readable.
+
+**Session activation:** When `koi tui` or `koi start` launches, `loadPluginComponents()` discovers
+enabled plugins via `createGatedRegistry` and wires their skills, hooks, and MCP servers into the
+session. Plugin middleware names are collected but not resolved (no factory registry yet).
 
 ### `koi tui`
 
@@ -131,7 +154,13 @@ koi tui
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
 so the key is not forwarded to OpenRouter.
 
-**Flags:** none — engine adapter is wired directly from environment variables. Manifest-based
+**Flags:**
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--goal` | string (repeatable) | — | Goal objectives for adaptive reminder middleware |
+
+Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
 
 **Behaviour:**
@@ -145,9 +174,12 @@ so the key is not forwarded to OpenRouter.
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT registered until real TUI dialogs are wired (tracked in #1582). Without dialog integration: plan-mode would flip a boolean without gating Bash/fs access, and AskUserQuestion would auto-answer without showing the user.
 - **No agent_spawn:** `agent_spawn` is intentionally not registered — child workers only have Glob/Grep (read-only) but the child prompt says "write files, run commands" which they cannot do. Deferred until workers route through `createKoi` with full middleware (#1582).
 - **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp).
-- **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode (when `spawnFn` is available) delegates to a sub-agent. The Skill tool is only registered when `createSkillTool()` succeeds at startup.
+- **MCP wiring:** If `.mcp.json` exists in CWD, `createTuiRuntime()` loads MCP server configs, creates an `McpResolver` + `McpComponentProvider` (tools appear as available tools), and bridges MCP tools into the skill registry via `createSkillsMcpBridge` (tools discoverable via `query({ source: "mcp" })`). MCP connections are cleaned up on shutdown. Without `.mcp.json`, MCP loading is silently skipped.
+- **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode is disabled in TUI (no `spawnFn`). The Skill tool is only registered when `createSkillTool()` succeeds at startup.
+- **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
 - The exfiltration guard middleware is now enabled (`exfiltrationGuard: {}`) for the TUI session to prevent accidental credential leakage through shell commands or web_fetch, even on the user's own machine.
 - **Hook loading:** At startup, `loadHooks()` reads `~/.koi/hooks.json` (if present) and passes the loaded hooks to `createHookMiddleware()`. The hook observer tap (`createHookObserver`) records hook executions as ATIF trajectory steps. If the hooks file is absent or unreadable, no hooks are configured (middleware is a no-op).
+- **Plugin activation:** At startup, `loadPluginComponents()` discovers enabled plugins from `~/.koi/plugins/` via `createGatedRegistry` and merges their components into the session: plugin hooks are prepended to user hooks before `createHookMiddleware()`; plugin MCP server configs create additional `McpConnection`s and a separate `McpComponentProvider`; plugin skill directories are scanned for `SKILL.md` files and registered via `skillsRuntime.registerExternal()`. Plugin MCP connections are cleaned up on shutdown alongside workspace MCP.
 - Multi-turn conversation history is maintained in-process and replayed with every submit.
 - Ctrl+C (or palette → Interrupt) aborts the active stream; partial turns are not persisted to history.
 - `/clear` and `session:new` abort the in-flight stream, drop buffered events, clear rendered messages, and reset conversation history atomically. `activeController` is nulled immediately so a fresh submit is unblocked even if the aborted stream's async teardown settles late.
@@ -247,18 +279,25 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/harness` | L2 | `createCliHarness()` — single-prompt + interactive REPL loop, TUI bridge. Renders `plan_update`/`task_progress` in verbose mode (#1555) |
 | `@koi/channel-cli` | L2 | stdin/stdout REPL channel (`start` interactive mode) |
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
-| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop + doom loop detection (#1593) |
+| `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop, doom loop detection (#1593), tool arg type coercion (#1611) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
-| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555) |
+| `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
+| `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
+| `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
-| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording |
-| `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory` |
+| `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
+| `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json`, wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279) |
+| `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory`. Spinner frames/interval centralized in `src/components/spinners.ts` (`DEFAULT_SPINNER`); no CLI-facing change |
+
+> **`@koi/sandbox-os` Linux backend hardening (PR #1617, issue #1339):** No CLI wiring changes. Internal improvements to the integrated `@koi/sandbox-os` L2 package: AppArmor usability probe (real `bwrap --unshare-all` smoke-test replaces sysctl-only check), per-exec named systemd transient scopes (`--unit=koi-sb-<id>`) for cgroup teardown on abort, `denyRead` file vs. directory differentiation (`--bind /dev/null` for files like `~/.netrc`/`~/.npmrc`; `--tmpfs` for directories), and `/bin/bash` absolute path in the ulimit wrapper. Linux bwrap confinement behavior in `tui-command.ts` improves on Ubuntu 24.04+ and systems with systemd user sessions.
+
+> **Outcome linkage (#1465):** `@koi/event-trace` allowlist updated with `decisionCorrelationId` for decision-outcome correlation. No CLI-facing changes — the correlation ID is internal trajectory metadata set by upstream middleware.
 
 ---
 
@@ -307,6 +346,29 @@ InboundMessage → deriveSessionKey() → serial queue → runtime.run()
 
 ---
 
+## ATIF Decision Metadata in TUI
+
+All decision-making middleware wired into the CLI runtime emit structured
+decision metadata via `ctx.reportDecision`. Spans with decisions are persisted
+to the ATIF store and surfaced in the TUI via the `/trajectory` command.
+
+The TUI reads from the store directly — no mid-turn EngineEvent streaming is
+needed. When users type `/trajectory` in the TUI, they see:
+- Permission decisions per tool call (allow/deny + reason + source)
+- Hook dispatch results (tool.before / tool.succeeded / compact.before)
+- Goal injection events (which objectives were active + the injected block)
+- Skill attachments (which skills + systemPrompt preview)
+- Exfiltration-guard detections (when secrets were blocked or redacted)
+- Semantic-retry actions (rewrite/abort with failure history)
+
+See each L2 package's "ATIF Trace Integration" section in `docs/L2/*.md` for
+the exact decision payload shapes. The CI enforcement test in
+`packages/meta/runtime/src/__tests__/golden-replay.test.ts` ensures every
+decision-making middleware wired into the runtime emits at least one span
+with non-empty `decisions` metadata in full-stack replay.
+
+---
+
 ## Testing
 
 31 tests across 4 test files:
@@ -347,3 +409,5 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 - [x] Listed in `L3_PACKAGES` in `scripts/layers.ts`
 
 > **`createTuiRuntime` extraction + full L2 wiring (current branch):** `koi tui` now delegates runtime assembly to `createTuiRuntime()` in `tui-runtime.ts`. This factory wires the full L2 tool stack: `@koi/memory-tools` (in-memory backend), `@koi/spawn-tools` (stub `SpawnFn`), `@koi/middleware-semantic-retry` (retry signal coordination), `@koi/hooks` (hook middleware with `loadHooks()` from `~/.koi/hooks.json`), and `createHookObserver` (ATIF trajectory recording of hook executions). Returns `TuiRuntimeHandle` with `runtime`, `transcript`, `getTrajectorySteps()`, `resetSessionState()`, `shutdownBackgroundTasks()`, `hasActiveBackgroundTasks()`, and `sandboxActive`. The `check:cli-wiring` CI gate (`scripts/check-cli-wiring.ts`) dynamically enforces that every `@koi/runtime` L2 dependency is wired into the CLI.
+
+> **Task system hardening (PR #1659, issue #1557 review):** The CLI's TUI runtime picks up the `@koi/tasks` / `@koi/task-tools` / `@koi/spawn-tools` / `@koi/task-board` improvements from the review punch list automatically — no wiring changes in `tui-runtime.ts`. User-visible effects: `task_update(completed)` now reports accurate `durationMs` even if `activeForm` was patched mid-run (anchored to the new `Task.startedAt`); `task_list` polling is cheaper thanks to per-snapshot `board.blockedBy()` caching; on coordinator restart, pending tasks whose delegated child never claimed can be cleaned up via `recoverStaleDelegations()` (complements the existing `recoverOrphanedTasks`); file-store write paths refuse malformed task IDs and enforce single-writer PID locking for safety against accidental multi-process collisions. See `docs/L2/tasks.md`, `docs/L2/task-tools.md`, and `docs/L2/spawn-tools.md` for the package-level details.

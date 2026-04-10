@@ -42,10 +42,13 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
+import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAgentExecutor } from "./agent-executor.js";
 import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
+import { PromptExecutorAdapter } from "./prompt-adapter.js";
 import { createHookRegistry } from "./registry.js";
+import type { DnsResolverFn } from "./ssrf.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -60,8 +63,18 @@ export interface CreateHookMiddlewareOptions {
    * Provided by the L1 engine at middleware wiring time.
    */
   readonly spawnFn?: SpawnFn | undefined;
+  /**
+   * Model caller for prompt-type hooks. Required when any hook has `kind: "prompt"`.
+   * Provided by the L1 engine at middleware wiring time.
+   */
+  readonly promptCallFn?: PromptModelCaller | undefined;
   /** System-wide env-var policy for allowlisting. */
   readonly envPolicy?: HookEnvPolicy | undefined;
+  /**
+   * Custom DNS resolver for SSRF validation. Defaults to Bun.dns.lookup.
+   * Injectable for testing or environments with custom DNS infrastructure.
+   */
+  readonly dnsResolver?: DnsResolverFn | undefined;
   /**
    * Maximum time (ms) to wait for post-tool hooks before suppressing output.
    * Defaults to `POST_TOOL_HOOK_DEADLINE_MS` (5000ms).
@@ -75,6 +88,53 @@ export interface CreateHookMiddlewareOptions {
   readonly onExecuted?:
     | ((results: readonly HookExecutionResult[], event: HookEvent) => void)
     | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Decision reporting helpers
+// ---------------------------------------------------------------------------
+
+/** Safely serialize a value to a JSON preview string, truncated to maxLen. */
+function safePreview(value: unknown, maxLen: number): string {
+  try {
+    const s = JSON.stringify(value);
+    return s.length <= maxLen ? s : `${s.slice(0, maxLen)}…`;
+  } catch {
+    return "[unserializable]";
+  }
+}
+
+/**
+ * Build a per-hook record for decision reporting.
+ * Captures the full decision shape — not just the `kind` but also the
+ * reason (block), patch (modify), outputPatch (transform), and failure details.
+ */
+function buildHookRecord(r: HookExecutionResult): JsonObject {
+  if (!r.ok) {
+    return {
+      name: r.hookName,
+      decision: "error",
+      durationMs: r.durationMs,
+      error: r.error,
+      failClosed: r.failClosed !== false,
+      ...(r.aborted === true ? { aborted: true } : {}),
+    } as JsonObject;
+  }
+  const d = r.decision;
+  return {
+    name: r.hookName,
+    decision: d.kind,
+    durationMs: r.durationMs,
+    ...(r.executionFailed === true ? { executionFailed: true } : {}),
+    ...(d.kind === "block" ? { reason: d.reason } : {}),
+    ...(d.kind === "modify" ? { patch: safePreview(d.patch, 300) } : {}),
+    ...(d.kind === "transform"
+      ? {
+          outputPatch: safePreview(d.outputPatch, 300),
+          ...(d.metadata !== undefined ? { metadata: d.metadata } : {}),
+        }
+      : {}),
+  } as JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +327,7 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
   const {
     hooks,
     spawnFn,
+    promptCallFn,
     envPolicy,
     postToolHookDeadlineMs = POST_TOOL_HOOK_DEADLINE_MS,
   } = options;
@@ -279,9 +340,24 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     );
   }
 
+  // Fail-fast: prompt hooks require promptCallFn
+  const hasPromptHooks = hooks.some((h) => h.kind === "prompt");
+  if (hasPromptHooks && promptCallFn === undefined) {
+    throw new Error(
+      "Prompt hooks require promptCallFn — provide it via CreateHookMiddlewareOptions.promptCallFn",
+    );
+  }
+
   const agentExecutor: HookExecutor | undefined =
     spawnFn !== undefined ? createAgentExecutor({ spawnFn }) : undefined;
-  const registry = createHookRegistry({ agentExecutor, onExecuted: options.onExecuted });
+  const promptExecutor: HookExecutor | undefined =
+    promptCallFn !== undefined ? new PromptExecutorAdapter({ caller: promptCallFn }) : undefined;
+  const registry = createHookRegistry({
+    agentExecutor,
+    promptExecutor,
+    onExecuted: options.onExecuted,
+    dnsResolver: options.dnsResolver,
+  });
 
   /**
    * Per-session set of pending post-hook promises. Drained in onSessionEnd
@@ -376,6 +452,17 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     });
     const preResults = await registry.execute(sessionId, preEvent);
     const aggregated = aggregateDecisions(preResults);
+    // Report hook fire records + aggregated decision for trace recording
+    if (preResults.length > 0) {
+      ctx.reportDecision?.({
+        event: "compact.before",
+        aggregated: aggregated.decision.kind,
+        ...(aggregated.decision.kind === "block"
+          ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+          : {}),
+        hooks: preResults.map((r) => buildHookRecord(r)),
+      });
+    }
 
     if (aggregated.decision.kind === "block") {
       return {
@@ -421,8 +508,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       // from being aborted by the session controller
       await drainPendingPostHooks(sessionId);
       registry.cleanup(sessionId);
-      // Reset agent executor per-session state (token budgets)
+      // Reset executor per-session state (token budgets)
       agentExecutor?.cleanupSession?.(sessionId);
+      promptExecutor?.cleanupSession?.(sessionId);
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
@@ -483,6 +571,23 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       });
       const preResults = await registry.execute(sessionId, preEvent, ctx.signal);
       const aggregated = aggregateDecisions(preResults);
+
+      // Report pre-call hook fire records + aggregated decision for trace recording
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.before",
+          toolId: request.toolId,
+          toolInput: safePreview(request.input, 300),
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
+          ...(aggregated.decision.kind === "modify"
+            ? { patch: safePreview(aggregated.decision.patch, 300) }
+            : {}),
+          hooks: preResults.map((r) => buildHookRecord(r)),
+        });
+      }
 
       if (aggregated.decision.kind === "block") {
         return {
@@ -573,6 +678,20 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
 
       const postDecision = aggregatePostDecisions(postResultsOrTimeout);
 
+      // Report post-call hook fire records + aggregated post-decision for trace recording
+      if (Array.isArray(postResultsOrTimeout) && postResultsOrTimeout.length > 0) {
+        ctx.reportDecision?.({
+          event: "tool.succeeded",
+          toolId: request.toolId,
+          toolOutput: safePreview(response.output, 300),
+          aggregated: postDecision.kind,
+          ...(postDecision.kind === "block" ? { reason: postDecision.reason } : {}),
+          hooks: (postResultsOrTimeout as readonly HookExecutionResult[]).map((r) =>
+            buildHookRecord(r),
+          ),
+        });
+      }
+
       if (postDecision.kind === "transform") {
         const isPlainObject =
           typeof response.output === "object" &&
@@ -609,7 +728,37 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       next: ModelHandler,
     ): Promise<ModelResponse> {
       const sessionId = ctx.session.sessionId as string;
-      const preResult = await dispatchModelPre(sessionId, ctx, request);
+      const preEvent = buildEvent(ctx.session, "compact.before", {
+        data: buildModelPreData(request),
+      });
+      const preResults = await registry.execute(sessionId, preEvent);
+      const aggregated = aggregateDecisions(preResults);
+      // Report model pre-call hook fire records + aggregated decision
+      if (preResults.length > 0) {
+        ctx.reportDecision?.({
+          event: "compact.before",
+          aggregated: aggregated.decision.kind,
+          ...(aggregated.decision.kind === "block"
+            ? { reason: aggregated.decision.reason, hookName: aggregated.hookName }
+            : {}),
+          hooks: preResults.map((r) => buildHookRecord(r)),
+        });
+      }
+      const preResult =
+        aggregated.decision.kind === "block"
+          ? {
+              blocked: true as const,
+              reason: aggregated.decision.reason,
+              hookName: aggregated.hookName,
+            }
+          : aggregated.decision.kind === "modify"
+            ? (() => {
+                const safePatch = filterModelPatch(aggregated.decision.patch);
+                return safePatch !== undefined
+                  ? { blocked: false as const, request: { ...request, ...safePatch } }
+                  : { blocked: false as const, request };
+              })()
+            : { blocked: false as const, request };
 
       if (preResult.blocked) {
         // Observability: emit custom event for telemetry/audit (fire-and-forget)

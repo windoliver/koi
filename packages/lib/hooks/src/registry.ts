@@ -15,6 +15,7 @@ import type { HookConfig, HookEnvPolicy, HookEvent, HookExecutionResult } from "
 import { executeHooks } from "./executor.js";
 import { matchesHookFilter } from "./filter.js";
 import type { HookExecutor } from "./hook-executor.js";
+import type { DnsResolverFn } from "./ssrf.js";
 
 /** Maximum retries for a once-hook before it is permanently consumed. */
 const MAX_ONCE_RETRIES = 3;
@@ -124,6 +125,10 @@ export interface HookRegistry {
 export interface CreateHookRegistryOptions {
   /** Optional executor for agent-type hooks, threaded through to executeHooks. */
   readonly agentExecutor?: HookExecutor | undefined;
+  /** Optional executor for prompt-type hooks, threaded through to executeHooks. */
+  readonly promptExecutor?: HookExecutor | undefined;
+  /** Custom DNS resolver for SSRF validation in HTTP hooks. */
+  readonly dnsResolver?: DnsResolverFn | undefined;
   /**
    * Synchronous observer tap — called after every non-empty execute() with
    * the results and the trigger event. Used by ATIF trajectory recording.
@@ -227,6 +232,8 @@ export function createHookRegistry(options?: CreateHookRegistryOptions): HookReg
         effectiveSignal,
         state.envPolicy,
         options?.agentExecutor,
+        options?.promptExecutor,
+        options?.dnsResolver,
       );
     } catch (e: unknown) {
       // executeHooks rejected unexpectedly — roll back all claimed hooks

@@ -1,22 +1,22 @@
 {
   "name": "ask-user",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775519228591,
+  "recordedAt": 1775698505926,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "AskUserQuestion",
-      "callId": "tool_AskUserQuestion_4gXIVQpqZVjX114efJ8S"
+      "callId": "tool_AskUserQuestion_Wh7CjS5cOk9WW7ElHiyb"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_AskUserQuestion_4gXIVQpqZVjX114efJ8S",
+      "callId": "tool_AskUserQuestion_Wh7CjS5cOk9WW7ElHiyb",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_AskUserQuestion_4gXIVQpqZVjX114efJ8S",
-      "delta": "{\"questions\":[{\"question\":\"Which refactoring approach should be used?\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"label\":\"Inline Method\",\"description\":\"Removes the function and inlines the code\"}],\"header\":\"Refactoring\"}]}"
+      "callId": "tool_AskUserQuestion_Wh7CjS5cOk9WW7ElHiyb",
+      "delta": "{\"questions\":[{\"header\":\"Refactoring\",\"options\":[{\"description\":\"Pulls logic into a new function\",\"label\":\"Extract Method\"},{\"description\":\"Removes the function and inlines the code\",\"label\":\"Inline Method\"}],\"question\":\"Which refactoring approach should be used?\"}]}"
     },
     {
       "kind": "usage",
@@ -25,7 +25,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_AskUserQuestion_4gXIVQpqZVjX114efJ8S"
+      "callId": "tool_AskUserQuestion_Wh7CjS5cOk9WW7ElHiyb"
     },
     {
       "kind": "done",
@@ -33,27 +33,27 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775519227-jmq0HVYOquIla6TA2slX",
+        "responseId": "gen-1775698504-aDnZl59EBmHVdyIetzWW",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_AskUserQuestion_4gXIVQpqZVjX114efJ8S",
+            "id": "tool_AskUserQuestion_Wh7CjS5cOk9WW7ElHiyb",
             "name": "AskUserQuestion",
             "arguments": {
               "questions": [
                 {
-                  "question": "Which refactoring approach should be used?",
+                  "header": "Refactoring",
                   "options": [
                     {
                       "description": "Pulls logic into a new function",
                       "label": "Extract Method"
                     },
                     {
-                      "label": "Inline Method",
-                      "description": "Removes the function and inlines the code"
+                      "description": "Removes the function and inlines the code",
+                      "label": "Inline Method"
                     }
                   ],
-                  "header": "Refactoring"
+                  "question": "Which refactoring approach should be used?"
                 }
               ]
             }
@@ -62,6 +62,9 @@
         "usage": {
           "inputTokens": 190,
           "outputTokens": 41
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "387afd8e6f028ddb228928db009bbb66018e6300a624a41ff85d9063e7272d95"
         }
       }
     }

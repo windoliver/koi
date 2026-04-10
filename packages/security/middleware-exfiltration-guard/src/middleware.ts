@@ -77,7 +77,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
@@ -106,6 +106,12 @@ export function createExfiltrationGuardMiddleware(
           kinds: ["redaction_failure"],
           action: "block",
         });
+        ctx.reportDecision?.({
+          location: "model-output",
+          matchCount: 0,
+          action: "block",
+          error: "redaction_failure",
+        });
         return sanitizeModelResponse(
           response,
           "[BLOCKED: exfiltration guard redaction engine failure]",
@@ -118,6 +124,12 @@ export function createExfiltrationGuardMiddleware(
           matchCount: result.matchCount,
           kinds: [],
           action: config.action,
+        });
+        ctx.reportDecision?.({
+          location: "model-output",
+          matchCount: result.matchCount,
+          action: config.action,
+          scanLength: textToScan.length,
         });
 
         if (config.action === "block") {
@@ -142,7 +154,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async wrapToolCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
@@ -161,6 +173,13 @@ export function createExfiltrationGuardMiddleware(
             kinds: ["redaction_failure"],
             action: "block",
           });
+          ctx.reportDecision?.({
+            location: "tool-input",
+            toolId: request.toolId,
+            matchCount: 0,
+            action: "block",
+            error: "redaction_failure",
+          });
           return {
             output: {
               error: "Exfiltration guard: redaction engine failure — request blocked (fail-closed)",
@@ -177,6 +196,14 @@ export function createExfiltrationGuardMiddleware(
             matchCount: result.secretCount,
             kinds,
             action: config.action,
+          });
+          ctx.reportDecision?.({
+            location: "tool-input",
+            toolId: request.toolId,
+            matchCount: result.secretCount,
+            action: config.action,
+            ...(kinds.length > 0 ? { kinds } : {}),
+            scanLength: JSON.stringify(request.input).length,
           });
 
           if (config.action === "block") {
@@ -220,6 +247,13 @@ export function createExfiltrationGuardMiddleware(
           kinds: ["redaction_failure"],
           action: "block",
         });
+        ctx.reportDecision?.({
+          location: "tool-output",
+          toolId: request.toolId,
+          matchCount: 0,
+          action: "block",
+          error: "redaction_failure",
+        });
         return {
           output: {
             error:
@@ -236,6 +270,13 @@ export function createExfiltrationGuardMiddleware(
           matchCount: outputResult.matchCount,
           kinds: [],
           action: config.action,
+        });
+        ctx.reportDecision?.({
+          location: "tool-output",
+          toolId: request.toolId,
+          matchCount: outputResult.matchCount,
+          action: config.action,
+          scanLength: outputToScan.length,
         });
 
         if (config.action === "block") {
@@ -266,7 +307,7 @@ export function createExfiltrationGuardMiddleware(
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
@@ -330,6 +371,13 @@ export function createExfiltrationGuardMiddleware(
                 kinds: ["buffer_overflow"],
                 action: "block",
               });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: 0,
+                action: "block",
+                reason: "buffer_overflow",
+                bufferLength: buffer.length,
+              });
               yield {
                 kind: "error",
                 message:
@@ -356,6 +404,13 @@ export function createExfiltrationGuardMiddleware(
                 action: config.action,
               });
             }
+            ctx.reportDecision?.({
+              location: "model-output-stream",
+              matchCount: overflowResult.matchCount > 0 ? overflowResult.matchCount : 0,
+              action: config.action,
+              reason: "buffer_overflow",
+              bufferLength: buffer.length,
+            });
             if (config.action === "redact") {
               // Only emit user-visible text (redacted). Never emit the full buffer as
               // text_delta — it contains thinking/tool_call content that must stay hidden.
@@ -397,6 +452,12 @@ export function createExfiltrationGuardMiddleware(
                 kinds: ["redaction_failure"],
                 action: "block",
               });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: 0,
+                action: "block",
+                error: "redaction_failure",
+              });
               yield {
                 kind: "error",
                 message:
@@ -413,6 +474,12 @@ export function createExfiltrationGuardMiddleware(
                 matchCount: result.matchCount,
                 kinds: [],
                 action: config.action,
+              });
+              ctx.reportDecision?.({
+                location: "model-output-stream",
+                matchCount: result.matchCount,
+                action: config.action,
+                bufferLength: buffer.length,
               });
 
               if (config.action === "block") {
@@ -457,6 +524,12 @@ export function createExfiltrationGuardMiddleware(
                   matchCount: doneResult.matchCount,
                   kinds: [],
                   action: config.action,
+                });
+                ctx.reportDecision?.({
+                  location: "model-output-stream",
+                  matchCount: doneResult.matchCount,
+                  action: config.action,
+                  reason: "done_payload_secrets",
                 });
                 if (config.action === "block") {
                   yield {
@@ -504,6 +577,13 @@ export function createExfiltrationGuardMiddleware(
             matchCount: Math.max(0, result.matchCount),
             kinds: result.matchCount === -1 ? ["redaction_failure"] : [],
             action: config.action,
+          });
+          ctx.reportDecision?.({
+            location: "model-output-stream",
+            matchCount: Math.max(0, result.matchCount),
+            action: config.action,
+            reason: result.matchCount === -1 ? "redaction_failure" : "stream_end_secrets",
+            bufferLength: buffer.length,
           });
           if (config.action === "block") {
             yield {

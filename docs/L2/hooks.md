@@ -4,7 +4,7 @@
 
 ## Layer
 
-L2 — depends on `@koi/core` (L0) and `@koi/validation` (L0u).
+L2 — depends on `@koi/core` (L0), `@koi/hook-prompt` (L0u), `@koi/redaction` (L0u), and `@koi/validation` (L0u).
 
 ## Purpose
 
@@ -55,11 +55,41 @@ vocabulary.
 
 ## Hook Types
 
-| Type | Trigger | Transport |
-|------|---------|-----------|
-| `command` | Shell command via `Bun.spawn` | Local process |
-| `http` | HTTP POST/PUT to a URL | Network |
-| `agent` | Sub-agent LLM loop via `SpawnFn` | In-process spawn |
+| Type | Trigger | Transport | Cost |
+|------|---------|-----------|------|
+| `command` | Shell command via `Bun.spawn` | Local process | 0 tokens |
+| `http` | HTTP POST/PUT to a URL | Network | 0 tokens |
+| `prompt` | Single-shot LLM verification | Model API call | ~100-200 tokens |
+| `agent` | Sub-agent LLM loop via `SpawnFn` | In-process spawn | ~4,000+ tokens |
+
+### Prompt Hook Type
+
+Prompt hooks make a single-shot LLM call for pass/fail verification. They fill
+the gap between static hooks (command/http) and expensive agent hooks — use them
+for simple semantic checks like "does this look safe?" without the overhead of a
+multi-turn agent loop.
+
+**Config example:**
+```typescript
+{
+  kind: "prompt",
+  name: "safety-check",
+  prompt: "Is this tool call safe? Respond with ok:true if safe, ok:false with reason if not.",
+  model: "anthropic/claude-sonnet-4-6",  // override model (default: cheap/fast)
+  maxTokens: 256,                         // default: 256
+  timeoutMs: 10000,                       // default: 10s
+  filter: { events: ["tool.before"], tools: ["Bash"] },
+  failClosed: true,                       // block on parse/API errors (default)
+}
+```
+
+**Decision mapping:** Same as agent hooks — `{ ok: true }` → `continue`, `{ ok: false, reason }` → `block`. No `modify` support.
+
+**Verdict parsing:** Uses `@koi/hook-prompt`'s hardened parser which handles fenced JSON extraction, string-boolean coercion (`"false"` → `false`), and plain-text denial language detection.
+
+**Per-session token budget:** `DEFAULT_PROMPT_SESSION_TOKEN_BUDGET` (50,000 tokens) prevents cost amplification from rapid-fire prompt hook invocations.
+
+**Wiring:** Requires a `PromptModelCaller` injected via `CreateHookMiddlewareOptions.promptCallFn`. The caller provides the model API call — the TUI wires this from its model adapter.
 
 ### Agent Hook Type
 
@@ -213,9 +243,14 @@ than string-matching error messages.
 ## Security
 
 - **HTTPS-only URLs** — HTTP loopback allowed only in dev mode (`NODE_ENV=development|test` or `KOI_DEV=1`)
+- **DNS-level SSRF guard** — pre-flight DNS resolution validates all resolved IPs against blocked CIDR ranges (RFC 1918, CGNAT, link-local/cloud metadata, TEST-NETs, broadcast). IPv6 transition mechanisms handled: IPv4-mapped (all forms), IPv4-compatible, 6to4 (2002::/16), NAT64 (64:ff9b::/96). Zone IDs stripped before validation. Narrow loopback allowed (127.0.0.1, ::1 only)
+- **IP pinning** — HTTP hook URLs are rewritten to the resolved IP with the original hostname in the `Host` header, closing the DNS rebinding TOCTOU gap. HTTPS skips pinning (Bun TLS SNI unverified with IP URLs)
 - **No redirects** — `fetch()` uses `redirect: "error"` to prevent SSRF via 30x
-- **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook
+- **Header injection prevention** — expanded header values are validated for CRLF/NUL control characters (fail-closed). Reserved headers (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`) are rejected at both schema and runtime
+- **Strict env-var expansion** — unresolved `${VAR}` in headers/secrets fails the hook. Double-whitelist model: per-hook `allowedEnvVars` intersected with system-wide `HookEnvPolicy`
+- **Bounded response body** — HTTP hook responses are read via streaming with a 64KB byte-level cap. Truncated responses fail the hook (fail-closed) to prevent oversized responses from silently downgrading a `block` decision to `continue`
 - **Trusted identity** — registry binds `agentId` at registration and overwrites caller-supplied identity on execute
+- **Injectable DNS resolver** — `DnsResolverFn` parameter on `CreateHookMiddlewareOptions` allows custom resolvers for testing or environments with special DNS infrastructure. Defaults to `Bun.dns.lookup`
 
 ## Middleware Dispatch
 
@@ -282,6 +317,53 @@ hook bugs from corrupting request shape or disabling safeguards.
 - **Mid-dispatch guard** — if `ctx.signal` aborts during pre-hook dispatch (registry returns `[]`), throws `AbortError` before `next()`
 - **Post-hook cancel-redaction** — if `ctx.signal` aborts during post-hook dispatch AND a fail-closed hook matches the event, output is redacted to prevent leaking unredacted data past a skipped security hook
 
+### ATIF Trace Integration
+
+When `wrapMiddlewareWithTrace` wraps the hook middleware (as it does in `@koi/runtime`),
+hook execution decisions are captured in ATIF `middleware_span` metadata via
+`ctx.reportDecision`. This surfaces per-hook timing and outcome in trajectory
+documents without polling or introspection on the middleware itself.
+
+**HookFireRecord** — the object pushed per `reportDecision` call:
+
+```typescript
+{
+  event: "tool.before" | "compact.before"; // which lifecycle event fired
+  toolId?: string;                          // present for tool events only
+  hooks: Array<{
+    name: string;                           // hook config name
+    decision: "continue" | "block" | "modify" | "transform" | "error";
+    durationMs: number;                     // wall-clock time for this hook
+    error?: string;                         // only present when decision is "error"
+  }>;
+}
+```
+
+**When it fires:**
+- `wrapToolCall` — after pre-call `tool.before` dispatch (blocking gate results only; post-call hooks are fire-and-forget and not traced)
+- `wrapModelCall` — after pre-call `compact.before` dispatch
+- `wrapModelStream` — after pre-call `compact.before` dispatch (via `dispatchModelPre`)
+
+In ATIF, these appear inside the `decisions` array of a `middleware_span` step
+for the `hooks` middleware:
+
+```json
+{
+  "type": "middleware_span",
+  "middlewareName": "hooks",
+  "hook": "wrapToolCall",
+  "decisions": [
+    {
+      "event": "tool.before",
+      "toolId": "Bash",
+      "hooks": [
+        { "name": "security-reviewer", "decision": "continue", "durationMs": 142 }
+      ]
+    }
+  ]
+}
+```
+
 ### Phase & Priority
 
 The hook middleware runs at `resolve` phase, priority 400. Hooks are
@@ -296,14 +378,15 @@ if (!result.ok) throw new Error(result.error.message);
 const middleware = createHookMiddleware({
   hooks: result.value,
   spawnFn,       // Required when any hook has kind: "agent" — provided by L1 engine
+  promptCallFn,  // Required when any hook has kind: "prompt" — PromptModelCaller
   onExecuted,    // Optional observer tap — e.g., from @koi/runtime's createHookObserver
 });
 // Wire into engine: createKoi({ middleware: [permissions, middleware, ...] })
 ```
 
-> **Note:** `createHookMiddleware()` throws at creation time if any agent hooks
-> are present but `spawnFn` is not provided. This is a fail-fast design — the
-> error surfaces during setup, not during event dispatch.
+> **Note:** `createHookMiddleware()` throws at creation time if agent hooks are
+> present without `spawnFn`, or prompt hooks are present without `promptCallFn`.
+> This is a fail-fast design — errors surface during setup, not during dispatch.
 
 ### Fail Mode
 
@@ -326,7 +409,10 @@ advisory agent hooks.
 | `agent-executor.ts` | `AgentHookExecutor` — sub-agent spawn, token accounting, verdict handling |
 | `agent-verdict.ts` | `HookVerdict` tool schema, verdict parsing, decision mapping |
 | `hook-executor.ts` | `HookExecutor` interface — extensible executor dispatch contract |
+| `prompt-adapter.ts` | `PromptExecutorAdapter` — bridges `@koi/hook-prompt` into `HookExecutor` with abort handling, token budgeting, payload capping |
 | `hook-validation.ts` | Shared validation — URL policy, timeout resolution, fail mode defaults |
+| `ssrf.ts` | DNS-level SSRF guard — IP validation, DNS resolution, IP pinning |
+| `header-sanitize.ts` | Header injection prevention — CRLF/NUL validation, reserved header blocking |
 | `filter.ts` | `matchesHookFilter()` — event/tool/channel matching |
 | `env.ts` | `expandEnvVars()` — `${VAR}` substitution with strict validation |
 | `middleware.ts` | `createHookMiddleware()` — KoiMiddleware bridging hooks to engine lifecycle |
@@ -334,5 +420,7 @@ advisory agent hooks.
 ## Dependencies
 
 - `@koi/core` — `HookConfig`, `HookFilter`, `HookEvent`, `Result`, `KoiError`
+- `@koi/hook-prompt` — `PromptModelCaller`, `createPromptExecutor`, `VerdictParseError`
+- `@koi/redaction` — secret redaction for payload forwarding
 - `@koi/validation` — `validateWith`, `zodToKoiError`
 - `zod` — schema definitions

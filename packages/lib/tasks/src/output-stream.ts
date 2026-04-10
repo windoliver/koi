@@ -58,29 +58,53 @@ const encoder = new TextEncoder();
 export function createOutputStream(config?: OutputStreamConfig): TaskOutputStream {
   const maxBytes = Math.max(config?.maxBytes ?? DEFAULT_MAX_BYTES, 1);
 
-  let chunks: OutputChunk[] = [];
+  // Deque-style buffer: chunks[headIndex .. chunks.length - 1] is the live
+  // window. Eviction increments headIndex (O(1)) instead of array-shifting.
+  // Periodic compaction via splice keeps the array from growing unboundedly
+  // under a write-heavy workload. Before the head-pointer refactor, every
+  // evict() call was O(N) and eviction-heavy workloads were O(N²).
+  const chunks: OutputChunk[] = [];
+  // let justified: mutable head pointer for deque-style eviction
+  let headIndex = 0;
   let totalBytes = 0;
   let bufferedBytes = 0;
   const listeners = new Set<(chunk: OutputChunk) => void>();
 
+  /** Compact the buffer when enough dead entries accumulate. */
+  const compactIfNeeded = (): void => {
+    // Only compact when headIndex is both absolutely large (>64) AND relatively
+    // large (majority of the array is dead). Avoids thrashing for small buffers.
+    if (headIndex > 64 && headIndex > chunks.length / 2) {
+      chunks.splice(0, headIndex);
+      headIndex = 0;
+    }
+  };
+
   const evict = (): void => {
-    while (bufferedBytes > maxBytes && chunks.length > 1) {
-      const evicted = chunks[0]!;
-      chunks = chunks.slice(1);
+    // Keep at least one chunk live so read() always has something to return
+    // when the caller's offset straddles the tail.
+    while (bufferedBytes > maxBytes && chunks.length - headIndex > 1) {
+      const evicted = chunks[headIndex];
+      if (evicted === undefined) break;
+      headIndex += 1;
       bufferedBytes -= evicted.byteLength;
     }
+    compactIfNeeded();
   };
 
   /**
    * Binary search for the first chunk whose offset >= targetOffset.
    * Chunks are sorted by offset (monotonically increasing).
+   *
+   * The search window starts at headIndex so evicted entries are ignored.
    */
   const findStartIndex = (targetOffset: number): number => {
-    let lo = 0;
+    let lo = headIndex;
     let hi = chunks.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (chunks[mid]!.offset + chunks[mid]!.byteLength <= targetOffset) {
+      const midChunk = chunks[mid];
+      if (midChunk !== undefined && midChunk.offset + midChunk.byteLength <= targetOffset) {
         lo = mid + 1;
       } else {
         hi = mid;
@@ -90,7 +114,7 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
   };
 
   const read = (fromOffset: number): readonly OutputChunk[] => {
-    if (chunks.length === 0) return [];
+    if (chunks.length - headIndex === 0) return [];
     const idx = findStartIndex(fromOffset);
     if (idx >= chunks.length) return [];
 
@@ -106,7 +130,7 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
       let skipBytes = fromOffset - first.offset;
       // UTF-8 continuation bytes start with 0b10xxxxxx (0x80-0xBF).
       // Advance past any continuation bytes to the next character start.
-      while (skipBytes < encoded.byteLength && (encoded[skipBytes]! & 0xc0) === 0x80) {
+      while (skipBytes < encoded.byteLength && ((encoded[skipBytes] ?? 0) & 0xc0) === 0x80) {
         skipBytes += 1;
       }
       if (skipBytes < encoded.byteLength) {
@@ -143,7 +167,9 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
       while (bytePos < encoded.byteLength) {
         const sliceEnd = Math.min(bytePos + maxBytes, encoded.byteLength);
         const sliceBytes = encoded.slice(bytePos, sliceEnd);
-        const sliceContent = decoder.decode(sliceBytes, { stream: bytePos + maxBytes < encoded.byteLength });
+        const sliceContent = decoder.decode(sliceBytes, {
+          stream: bytePos + maxBytes < encoded.byteLength,
+        });
         writeChunk(sliceContent, now);
         bytePos = sliceEnd;
       }
@@ -186,7 +212,8 @@ export function createOutputStream(config?: OutputStreamConfig): TaskOutputStrea
   };
 
   const dispose = (): void => {
-    chunks = [];
+    chunks.length = 0;
+    headIndex = 0;
     totalBytes = 0;
     bufferedBytes = 0;
     listeners.clear();

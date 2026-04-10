@@ -23,16 +23,9 @@ import type {
   TaskBoardConfig,
   TaskBoardEvent,
   TaskBoardStore,
-  TaskInput,
-  TaskItemId,
-  TaskPatch,
   TaskResult,
 } from "@koi/core";
-import {
-  buildPlanUpdate,
-  createTaskBoard,
-  mapTaskBoardEventToEngineEvents,
-} from "@koi/task-board";
+import { buildPlanUpdate, createTaskBoard, mapTaskBoardEventToEngineEvents } from "@koi/task-board";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -195,9 +188,7 @@ export async function createManagedTaskBoard(
   if (resultsDir !== undefined) {
     await mkdir(resultsDir, { recursive: true });
     const allResults = await loadResultsFromDir(resultsDir);
-    const completedIds = new Set(
-      items.filter((t) => t.status === "completed").map((t) => t.id),
-    );
+    const completedIds = new Set(items.filter((t) => t.status === "completed").map((t) => t.id));
     initialResults = allResults.filter((r) => completedIds.has(r.taskId));
   }
 
@@ -231,7 +222,7 @@ export async function createManagedTaskBoard(
   ): Promise<Result<TaskBoard, KoiError>> {
     // Chain behind any in-flight mutation
     const prev = pending;
-    let release: () => void;
+    let release: (() => void) | undefined;
     pending = new Promise<void>((r) => {
       release = r;
     });
@@ -305,7 +296,7 @@ export async function createManagedTaskBoard(
         },
       };
     } finally {
-      release!();
+      release?.();
     }
   }
 
@@ -345,9 +336,7 @@ export async function createManagedTaskBoard(
     complete: (taskId, taskResult) =>
       applyMutation(
         (b) => b.complete(taskId, taskResult),
-        resultsDir !== undefined
-          ? async () => persistResult(resultsDir, taskResult)
-          : undefined,
+        resultsDir !== undefined ? async () => persistResult(resultsDir, taskResult) : undefined,
       ),
 
     completeOwnedTask: (taskId, agentId, taskResult) =>
@@ -372,9 +361,7 @@ export async function createManagedTaskBoard(
           }
           return b.complete(taskId, taskResult);
         },
-        resultsDir !== undefined
-          ? async () => persistResult(resultsDir, taskResult)
-          : undefined,
+        resultsDir !== undefined ? async () => persistResult(resultsDir, taskResult) : undefined,
       ),
 
     fail: (taskId, error) => applyMutation((b) => b.fail(taskId, error)),
@@ -402,6 +389,60 @@ export async function createManagedTaskBoard(
       }),
 
     kill: (taskId) => applyMutation((b) => b.kill(taskId)),
+
+    killIfPending: (taskId, options) =>
+      applyMutation((b) => {
+        const task = b.get(taskId);
+        if (task === undefined) {
+          return {
+            ok: false,
+            error: { code: "NOT_FOUND", message: `Task not found: ${taskId}`, retryable: false },
+          };
+        }
+        if (task.status !== "pending") {
+          return {
+            ok: false,
+            error: {
+              code: "CONFLICT",
+              message: `Cannot kill task '${taskId}': status is '${task.status}', expected 'pending'`,
+              retryable: false,
+            },
+          };
+        }
+        // Verify expected kind if provided and task has metadata.kind.
+        // Reject on mismatch; allow through if task has no persisted kind
+        // (metadata.kind is optional/advisory).
+        const expectedKind = options?.expectedKind;
+        if (expectedKind !== undefined) {
+          const persistedKind = (task.metadata as Readonly<Record<string, unknown>> | undefined)
+            ?.kind as string | undefined;
+          if (persistedKind !== undefined && persistedKind !== expectedKind) {
+            return {
+              ok: false,
+              error: {
+                code: "CONFLICT",
+                message: `Task '${taskId}' has kind '${persistedKind}', expected '${expectedKind}'`,
+                retryable: false,
+              },
+            };
+          }
+        }
+        // No dependency readiness check: unsupported/unrunnable tasks should
+        // be killed immediately regardless of prerequisite state. The board's
+        // kill() will correctly propagate unreachable to dependents.
+        // Merge metadata patch into existing metadata (preserves existing keys)
+        const metadataPatch = options?.metadata;
+        // let justified: board is immutable — each mutation returns a new board
+        let current = b;
+        if (metadataPatch !== undefined) {
+          const existing = (task.metadata ?? {}) as Readonly<Record<string, unknown>>;
+          const merged = { ...existing, ...metadataPatch };
+          const updateResult = current.update(taskId, { metadata: merged });
+          if (!updateResult.ok) return updateResult;
+          current = updateResult.value;
+        }
+        return current.kill(taskId);
+      }),
 
     killOwnedTask: (taskId, agentId) =>
       applyMutation((b) => {

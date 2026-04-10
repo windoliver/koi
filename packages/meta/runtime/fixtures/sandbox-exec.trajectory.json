@@ -7,7 +7,7 @@
     "tool_definitions": [
       {
         "name": "Bash",
-        "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+        "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
       }
     ]
   },
@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.184Z",
+      "timestamp": "2026-04-09T01:36:14.766Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.185Z",
+      "timestamp": "2026-04-09T01:36:14.767Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,9 +50,9 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-07T02:01:13.187Z",
+      "timestamp": "2026-04-09T01:36:14.769Z",
       "model_name": "google/gemini-2.0-flash-001",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
       "observation": {
         "results": [
           {
@@ -61,165 +61,56 @@
         ]
       },
       "metrics": {
-        "prompt_tokens": 206,
-        "completion_tokens": 9
+        "prompt_tokens": 310,
+        "completion_tokens": 11
       },
-      "duration_ms": 612,
+      "duration_ms": 697,
       "outcome": "success",
       "extra": {
-        "totalMessages": 1,
+        "totalMessages": 2,
         "requestModel": "google/gemini-2.0-flash-001",
         "toolCount": 1,
         "tools": [
           {
             "name": "Bash",
-            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "1d9570682f132b532816b5129e24787eba83966916e1b4793974aeac4eb27a70"
       }
     },
     {
       "step_id": 3,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.803Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
-      "duration_ms": 618.0527920000022,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "semantic-retry",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 420,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:semantic-retry"
-        }
-      }
-    },
-    {
-      "step_id": 4,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.804Z",
-      "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
-      "duration_ms": 618.1859170000025,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapModelStream",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 5,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.805Z",
-      "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
-      "duration_ms": 618.3528750000041,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
-      }
-    },
-    {
-      "step_id": 6,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.806Z",
-      "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.",
-      "duration_ms": 618.3940829999992,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "exfiltration-guard",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 50,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:exfiltration-guard"
-        }
-      }
-    },
-    {
-      "step_id": 7,
       "source": "tool",
-      "timestamp": "2026-04-07T02:01:13.807Z",
+      "timestamp": "2026-04-09T01:36:15.467Z",
       "tool_calls": [
         {
-          "tool_call_id": "call_Bash_1",
+          "tool_call_id": "call_Bash_3",
           "function_name": "Bash",
           "arguments": {
-            "path": "/usr/bin"
+            "command": "ls /usr/bin | wc -l"
           }
         }
       ],
       "observation": {
         "results": [
           {
-            "source_call_id": "call_Bash_1",
-            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.30.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolldef\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.30\\nconfig_data5.34\\ncorelist\\ncorelist5.30\\ncorelist5.34\\ncpan\\ncpan5.30\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.30\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.30\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.30\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.30\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.30\\ndbiproxy5.34\\ndc\\ndebinhex.pl\\ndebinhex5.30.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nderq\\ndesdp\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.30\\nenc2xs5.34\\nencguess\\nencguess5.30\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\nextcheck\\neyapp\\neyapp5.30\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.30\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfs_usage\\nfunzip\\nfuser\\nfwkdp\\nfwkpfv\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.30\\nh2ph5.34\\nh2xs\\nh2xs5.30\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.30\\nhtmltree5.34\\nibtool\\niconutil\\niconv\\nictool\\nid\\nidlj\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.30\\ninstmodsh5.34\\niofile.d\\niofileb.d\\niopattern\\niopending\\niosnoop\\niotop\\nip2cc\\nip2cc5.30\\nip2cc5.34\\nipcount\\nipcount5.30\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.30\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavah\\njavap\\njavapackager\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhat\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njmc\\njobs\\njoin\\njot\\njpackage\\njps\\njrunscript\\njsadebugd\\njshell\\njson_pp\\njson_pp5.30\\njson_pp5.34\\njson_xs\\njson_xs5.30\\njson_xs5.34\\njstack\\njstat\\njstatd\\njvisualvm\\nkcc\\nkdestroy\\nkextutil\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlex\\nlibnetcfg\\nlibne\n...[truncated]...\n5.30\\nperlbug5.34\\nperldoc\\nperldoc5.30\\nperldoc5.34\\nperlivp\\nperlivp5.30\\nperlivp5.34\\nperlthanks\\nperlthanks5.30\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.30\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.30\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.30\\npod2html5.34\\npod2man\\npod2man5.30\\npod2man5.34\\npod2readme\\npod2readme5.30\\npod2readme5.34\\npod2text\\npod2text5.30\\npod2text5.34\\npod2usage\\npod2usage5.30\\npod2usage5.34\\npodchecker\\npodchecker5.30\\npodchecker5.34\\npodselect\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.30\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.30\\nprove5.34\\npsm\\nptar\\nptar5.30\\nptar5.34\\nptardiff\\nptardiff5.30\\nptardiff5.34\\nptargrep\\nptargrep5.30\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nresolveLinks\\nrev\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.30.pl\\nscandeps5.34.pl\\nschemagen\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.30\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.30\\nspfd5.34\\nspfquery\\nspfquery5.30\\nspfquery5.34\\nsplain\\nsplain5.30\\nsplain5.34\\nsplit\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstringdups\\nstrings\\nstrip\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.30\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.30\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.30\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntreereg\\ntreereg5.30\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nwsgen\\nwsimport\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.30.pl\\nxgettext5.34.pl\\nxip\\nxjc\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.30\\nxpath5.34\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.30\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.30\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.30\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.30\\nyamlpp-load-dump5.34\\nyamlpp-load5.30\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.30\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.30\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.30\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":982,\"platform\":\"seatbelt\"}"
+            "source_call_id": "call_Bash_3",
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
           }
         ]
       },
       "duration_ms": 35,
-      "outcome": "success",
-      "extra": {
-        "_original_timestamp": 1775527273800
-      }
+      "outcome": "success"
     },
     {
-      "step_id": 8,
+      "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.837Z",
-      "model_name": "middleware:semantic-retry",
-      "message": "Bash({\"path\":\"/usr/bin\"})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
-          }
-        ]
-      },
-      "duration_ms": 37.77733299999818,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "semantic-retry",
-        "hook": "wrapToolCall",
-        "phase": "resolve",
-        "priority": 420,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:semantic-retry"
-        }
-      }
-    },
-    {
-      "step_id": 9,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.839Z",
+      "timestamp": "2026-04-09T01:36:15.507Z",
       "model_name": "hook:on-sandbox-tool",
       "message": "tool.succeeded → on-sandbox-tool",
-      "duration_ms": 1.463499999998021,
+      "duration_ms": 4.6710000000020955,
       "outcome": "success",
       "extra": {
         "type": "hook_execution",
@@ -234,73 +125,40 @@
       }
     },
     {
-      "step_id": 10,
+      "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:13.840Z",
-      "model_name": "middleware:hooks",
-      "message": "Bash({\"path\":\"/usr/bin\"})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
-          }
-        ]
-      },
-      "duration_ms": 39.48612499999581,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapToolCall",
-        "phase": "resolve",
-        "priority": 400,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:hooks"
-        }
-      }
-    },
-    {
-      "step_id": 11,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.841Z",
-      "model_name": "middleware:permissions",
-      "message": "Bash({\"path\":\"/usr/bin\"})",
-      "observation": {
-        "results": [
-          {
-            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
-          }
-        ]
-      },
-      "duration_ms": 39.71858400000201,
-      "outcome": "success",
-      "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapToolCall",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
-      }
-    },
-    {
-      "step_id": 12,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:13.842Z",
+      "timestamp": "2026-04-09T01:36:15.508Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Bash({\"path\":\"/usr/bin\"})",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.4164999999921,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1775698575475,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.511Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\"
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
           }
         ]
       },
-      "duration_ms": 40.19612500000221,
+      "duration_ms": 40.266333999999915,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -315,44 +173,220 @@
       }
     },
     {
-      "step_id": 13,
-      "source": "agent",
-      "timestamp": "2026-04-07T02:01:13.844Z",
-      "model_name": "google/gemini-2.0-flash-001",
-      "message": "{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narch\\nas\\nasa\\nassetutil\\nat\\natos\\natq\\natrm\\natsutil\\nautomationmodetool\\nautomator\\nauval\\nauvaltool\\navbdiagnose\\navbutil\\navconvert\\navmediainfo\\navmetareadwrite\\nawk\\nbanner\\nbase64\\nbasename\\nbashbug\\nbatch\\nbc\\nbg\\nbinhex\\nbinhex.pl\\nbinhex5.30.pl\\nbinhex5.34.pl\\nbintrans\\nbioutil\\nbison\\nbitesize.d\\nbm4\\nbputil\\nbrctl\\nbsdtar\\nbspatch\\nbundle\\nbundler\\nbunzip2\\nbzcat\\nbzcmp\\nbzdiff\\nbzegrep\\nbzfgrep\\nbzgrep\\nbzip2\\nbzip2recover\\nbzless\\nbzmore\\nc++\\nc++filt\\nc89\\nc99\\ncaffeinate\\ncal\\ncalendar\\ncancel\\ncap_mkdb\\ncaptoinfo\\ncc\\ncd\\ncerttool\\nchflags\\nchfn\\nchgrp\\nchpass\\nchsh\\ncksum\\nclang\\nclang++\\nclangd\\nclear\\ncmp\\ncmpdylib\\ncodecctl\\ncodesign\\ncodesign_allocate\\ncol\\ncolldef\\ncolrm\\ncolumn\\ncomm\\ncommand\\ncompress\\ncompression_tool\\nconfig_data\\nconfig_data5.30\\nconfig_data5.34\\ncorelist\\ncorelist5.30\\ncorelist5.34\\ncpan\\ncpan5.30\\ncpan5.34\\ncpio\\ncpp\\ncpu_profiler.d\\ncpuctl\\ncpuwalk.d\\ncrc32\\ncrc325.30\\ncrc325.34\\ncreatbyproc.d\\ncrlrefresh\\ncrontab\\ncsplit\\ncsreq\\ncsrutil\\nctags\\nctf_insert\\ncu\\ncups-config\\ncupstestppd\\ncurl\\ncurl-config\\ncut\\ncvaffinity\\ncvcp\\ncvmkdir\\ncvmkfile\\ndappprof\\ndapptrace\\ndb_archive\\ndb_checkpoint\\ndb_codegen\\ndb_deadlock\\ndb_dump\\ndb_hotbackup\\ndb_load\\ndb_printlog\\ndb_recover\\ndb_stat\\ndb_upgrade\\ndb_verify\\ndbicadmin\\ndbicadmin5.30\\ndbicadmin5.34\\ndbilogstrip\\ndbilogstrip5.30\\ndbilogstrip5.34\\ndbiprof\\ndbiprof5.30\\ndbiprof5.34\\ndbiproxy\\ndbiproxy5.30\\ndbiproxy5.34\\ndc\\ndebinhex.pl\\ndebinhex5.30.pl\\ndebinhex5.34.pl\\ndefaults\\ndelv\\ndemandoc\\nderq\\ndesdp\\ndevmodectl\\ndiagnose-fu\\ndiff\\ndiff3\\ndiffstat\\ndig\\ndirname\\ndispqlen.d\\ndist_package_tool\\nditto\\ndmc\\ndns-sd\\ndrutil\\ndscacheutil\\ndscl\\ndserr\\ndsexport\\ndsimport\\ndsmemberutil\\ndsymutil\\ndtruss\\ndu\\ndwarfdump\\ndyld_info\\ndyld_usage\\negrep\\nenc2xs\\nenc2xs5.30\\nenc2xs5.34\\nencguess\\nencguess5.30\\nencguess5.34\\nencode_keychange\\nenv\\nerb\\nerrinfo\\neslogger\\nex\\nexecsnoop\\nexpand\\nexpect\\nextcheck\\neyapp\\neyapp5.30\\neyapp5.34\\nfalse\\nfc\\nfddist\\nfdesetup\\nfg\\nfgrep\\nfile\\nfilebyproc.d\\nfileproviderctl\\nfiltercalltree\\nfind\\nfindrule\\nfindrule5.30\\nfindrule5.34\\nfinger\\nfixproc\\nflex\\nflex++\\nfmt\\nfold\\nfontrestore\\nfootprint\\nfs_usage\\nfunzip\\nfuser\\nfwkdp\\nfwkpfv\\ng++\\ngatherheaderdoc\\ngcc\\ngcore\\ngcov\\ngem\\ngen_bridge_metadata\\ngencat\\ngenstrings\\ngetconf\\ngetopt\\ngetopts\\ngit\\ngit-receive-pack\\ngit-shell\\ngit-upload-archive\\ngit-upload-pack\\ngktool\\ngm4\\ngnumake\\ngperf\\ngrep\\ngroups\\ngunzip\\ngzcat\\ngzexe\\ngzip\\nh2ph\\nh2ph5.30\\nh2ph5.34\\nh2xs\\nh2xs5.30\\nh2xs5.34\\nhash\\nhdid\\nhdiutil\\nhdxml2manxml\\nhead\\nheaderdoc2html\\nheap\\nhexdump\\nhidutil\\nhiutil\\nhost\\nhostinfo\\nhotspot.d\\nhpmdiagnose\\nhtmltree\\nhtmltree5.30\\nhtmltree5.34\\nibtool\\niconutil\\niconv\\nictool\\nid\\nidlj\\nimptrace\\nindent\\ninfocmp\\ninfotocap\\ninstall\\ninstall_name_tool\\ninstmodsh\\ninstmodsh5.30\\ninstmodsh5.34\\niofile.d\\niofileb.d\\niopattern\\niopending\\niosnoop\\niotop\\nip2cc\\nip2cc5.30\\nip2cc5.34\\nipcount\\nipcount5.30\\nipcount5.34\\nipcrm\\nipcs\\niperf3-darwin\\nippeveprinter\\nippfind\\nipptool\\niptab\\niptab5.30\\niptab5.34\\nirb\\njar\\njarsigner\\njava\\njavac\\njavadoc\\njavah\\njavap\\njavapackager\\njavaws\\njcmd\\njconsole\\njcontrol\\njdb\\njdeps\\njhat\\njhsdb\\njimage\\njinfo\\njjs\\njlink\\njmap\\njmc\\njobs\\njoin\\njot\\njpackage\\njps\\njrunscript\\njsadebugd\\njshell\\njson_pp\\njson_pp5.30\\njson_pp5.34\\njson_xs\\njson_xs5.30\\njson_xs5.34\\njstack\\njstat\\njstatd\\njvisualvm\\nkcc\\nkdestroy\\nkextutil\\nkeytool\\nkgetcred\\nkill.d\\nkillall\\nkinit\\nklist\\nkmutil\\nkpasswd\\nkrb5-config\\nkswitch\\nktrace\\nlam\\nlast\\nlastcomm\\nlastwords\\nlatency\\nlayerutil\\nld\\nldapadd\\nldapcompare\\nldapdelete\\nldapexop\\nldapmodify\\nldapmodrdn\\nldappasswd\\nldapsearch\\nldapurl\\nldapwhoami\\nleaks\\nleave\\nless\\nlessecho\\nlex\\nlibnetcfg\\nlibnetcfg5.30\\nlibnetcfg5.34\\nlibtool\\nlipo\\nlldb\\nllvm-g++\\nllvm-gcc\\nloads.d\\nlocale\\nlocaledef\\nlocate\\nlockstat\\nlog\\nlogger\\nlogin\\nlogname\\nlook\\nlorder\\nlp\\nlpoptions\\nlpq\\nlpr\\nlprm\\nlpstat\\nlsappinfo\\nlsbom\\nlskq\\nlsm\\nlsmp\\nlsvfs\\nlwp-download\\nlwp-download5.30\\nlwp-download5.34\\nlwp-dump\\nlwp-dump5.30\\nlwp-dump5.34\\nlwp-mirror\\nlwp-mirror5.30\\nlwp-mirror5.34\\nlwp-request\\nlwp-request5.30\\nlwp-request5.34\\nm4\\nmacbinary\\nmacerror\\nmacerror5.30\\nmacerror5.34\\nmachine\\nmail\\nmailq\\nmailx\\nmake\\nmalloc_history\\nman\\nmandoc\\nmandoc_soelim\\nmanpath\\nmcxquery\\nmcxrefresh\\nmddiagnose\\nmdfind\\nmdimport\\nmdls\\nmdutil\\nmemory_pressure\\nmesg\\nmg\\nmib2c\\nmib2c-update\\nmig\\nmkbom\\nmkfifo\\nmklocale\\nmktemp\\nmnthome\\nmoose-outdated\\nmoose-outdated5.30\\nmoose-outdated5.34\\nmore\\nmp2bug\\nmpsgraphtool\\nnano\\nnative2ascii\\nnbdst\\nnc\\nncal\\nncctl\\nncdestroy\\nncinit\\nnclist\\nncurses5.4-config\\nnet-server\\nnet-server5.30\\nnet-server5.34\\nnet-snmp-cert\\nnet-snmp-config\\nnet-snmp-create-v3-user\\nnettop\\nnetworkQuality\\nnewaliases\\nnewgrp\\nnewproc.d\\nnfsstat\\nnice\\nnl\\nnm\\nnmedit\\nnohup\\nnotifyutil\\nnscurl\\nnslookup\\nnsupdate\\nobjdump\\nocspcheck\\nod\\nodutil\\nopen\\nopendiff\\nopensnoop\\nopenssl\\norbd\\nosacompile\\nosadecompile\\nosalang\\nosascript\\notool\\npack200\\npackage-stash-conflicts\\npackage-stash-conflicts5.30\\npackage-stash-conflicts5.34\\npagesize\\npagestuff\\npar.pl\\npar5.30.pl\\npar5.34.pl\\nparl\\nparl5.30\\nparl5.34\\nparldyn\\nparldyn5.30\\nparldyn5.34\\npasswd\\npaste\\npatch\\npathchk\\npathopens.d\\npbcopy\\npbpaste\\npcap-config\\npcsctest\\nperl\\nperl5.30\\nperl5.34\\nperlbug\\nperlbug5.30\\nperlbug5.34\\nperldoc\\nperldoc5.30\\nperldoc5.34\\nperlivp\\nperlivp5.30\\nperlivp5.34\\nperlthanks\\nperlthanks5.30\\nperlthanks5.34\\npgrep\\npico\\npiconv\\npiconv5.30\\npiconv5.34\\npidpersec.d\\npip3\\npkgbuild\\npkill\\npl\\npl2pm\\npl2pm5.30\\npl2pm5.34\\nplockstat\\npluginkit\\nplutil\\npmset\\npod2html\\npod2html5.30\\npod2html5.34\\npod2man\\npod2man5.30\\npod2man5.34\\npod2readme\\npod2readme5.30\\npod2readme5.34\\npod2text\\npod2text5.30\\npod2text5.34\\npod2usage\\npod2usage5.30\\npod2usage5.34\\npodchecker\\npodchecker5.30\\npodchecker5.34\\npodselect\\npolicytool\\npower_report.sh\\npowermetrics\\npp\\npp5.30\\npp5.34\\nppdc\\nppdhtml\\nppdi\\nppdmerge\\nppdpo\\npr\\npriclass.d\\npridist.d\\nprintenv\\nprintf\\nprocsystime\\nproductbuild\\nproductsign\\nprofiles\\nprove\\nprove5.30\\nprove5.34\\npsm\\nptar\\nptar5.30\\nptar5.34\\nptardiff\\nptardiff5.30\\nptardiff5.34\\nptargrep\\nptargrep5.30\\nptargrep5.34\\npwpolicy\\npython3\\nqlmanage\\nquota\\nrails\\nrake\\nranlib\\nrdoc\\nread\\nreadlink\\nrenice\\nreset\\nresolveLinks\\nrev\\nri\\nrmic\\nrmid\\nrmiregistry\\nrpcgen\\nrs\\nrsync\\nruby\\nrview\\nrvim\\nrwbypid.d\\nrwbytype.d\\nrwsnoop\\nsafaridriver\\nsample\\nsampleproc\\nsandbox-exec\\nsay\\nsc_usage\\nscandeps.pl\\nscandeps5.30.pl\\nscandeps5.34.pl\\nschemagen\\nscp\\nscreen\\nscript\\nsdef\\nsdiff\\nsdp\\nsdx\\nsecurity\\nsed\\nseeksize.d\\nsegedit\\nseq\\nserialver\\nservertool\\nsetregion\\nsetuids.d\\nsfltool\\nsftp\\nshar\\nshasum\\nshasum5.30\\nshasum5.34\\nshazam\\nshlock\\nshortcuts\\nshowmount\\nsigdist.d\\nsips\\nsize\\nslogin\\nsmbutil\\nsnfsdefrag\\nsnmp-bridge-mib\\nsnmpbulkget\\nsnmpbulkwalk\\nsnmpconf\\nsnmpdelta\\nsnmpdf\\nsnmpget\\nsnmpgetnext\\nsnmpinform\\nsnmpnetstat\\nsnmpset\\nsnmpstatus\\nsnmptable\\nsnmptest\\nsnmptranslate\\nsnmptrap\\nsnmpusm\\nsnmpvacm\\nsnmpwalk\\nsntp\\nsort\\nsourcekit-lsp\\nspfd\\nspfd5.30\\nspfd5.34\\nspfquery\\nspfquery5.30\\nspfquery5.34\\nsplain\\nsplain5.30\\nsplain5.34\\nsplit\\nsqlite3\\nssh\\nssh-add\\nssh-agent\\nssh-copy-id\\nssh-keygen\\nssh-keyscan\\nstapler\\nstat\\nstreamzip\\nstringdups\\nstrings\\nstrip\\nsu\\nsudo\\nsum\\nsw_vers\\nswcutil\\nswift\\nswift-inspect\\nswiftc\\nsymbols\\nsymbolscache\\nsyscallbypid.d\\nsyscallbyproc.d\\nsyscallbysysc.d\\nsysdiagnose\\nsyslog\\nsyspolicy_check\\nsystem-override\\nsystemextensionsctl\\ntab2space\\ntabs\\ntail\\ntailspin\\ntalk\\ntar\\ntaskinfo\\ntbtdiagnose\\ntccutil\\ntclsh\\ntclsh8.5\\ntee\\ntest-yaml\\ntest-yaml5.30\\ntest-yaml5.34\\ntextutil\\ntftp\\nthermal\\ntic\\ntidy\\ntidy_changelog\\ntidy_changelog5.30\\ntidy_changelog5.34\\ntiff2icns\\ntiffutil\\ntime\\ntimer_analyser.d\\ntimerfires\\ntimesyncanalyse\\ntkcon\\ntkmib\\ntkpp\\ntkpp5.30\\ntkpp5.34\\ntmdiagnose\\ntmutil\\ntnameserv\\ntoe\\ntop\\ntops\\ntopsyscall\\ntopsysproc\\ntouch\\ntput\\ntr\\ntrace\\ntraptoemail\\ntreereg\\ntreereg5.30\\ntreereg5.34\\ntrimforce\\ntrue\\ntruncate\\ntrustcachectl\\ntset\\ntsort\\ntty\\ntype\\nul\\nulimit\\numask\\numtool\\nunalias\\nuname\\nuncompress\\nunexpand\\nunifdef\\nunifdefall\\nuniq\\nunits\\nunpack200\\nunvis\\nunzip\\nunzipsfx\\nupdate_dyld_shared_cache\\nupdate_mcdp29xx\\nuptime\\nusbcfwflasher\\nusbdiagnose\\nusers\\nuttype\\nuucp\\nuudecode\\nuuencode\\nuuidgen\\nuulog\\nuuname\\nuupick\\nuustat\\nuuto\\nuux\\nvi\\nview\\nviewdiagnostic\\nvim\\nvimdiff\\nvimtutor\\nvis\\nvm_stat\\nvmmap\\nvtool\\nw\\nwait\\nwall\\nwc\\nwdutil\\nwhat\\nwhatis\\nwhereis\\nwhich\\nwho\\nwhoami\\nwhois\\nwish\\nwish8.5\\nwrite\\nwsgen\\nwsimport\\nxar\\nxargs\\nxattr\\nxcdebug\\nxcode-select\\nxcodebuild\\nxcrun\\nxcscontrol\\nxcsdiagnose\\nxctrace\\nxed\\nxgettext.pl\\nxgettext5.30.pl\\nxgettext5.34.pl\\nxip\\nxjc\\nxml2-config\\nxml2man\\nxmlcatalog\\nxmllint\\nxpath\\nxpath5.30\\nxpath5.34\\nxslt-config\\nxsltproc\\nxsubpp\\nxsubpp5.30\\nxsubpp5.34\\nxxd\\nyaa\\nyacc\\nyamlpp-events\\nyamlpp-events5.30\\nyamlpp-events5.34\\nyamlpp-highlight\\nyamlpp-highlight5.30\\nyamlpp-highlight5.34\\nyamlpp-load\\nyamlpp-load-dump\\nyamlpp-load-dump5.30\\nyamlpp-load-dump5.34\\nyamlpp-load5.30\\nyamlpp-load5.34\\nyamlpp-parse-emit\\nyamlpp-parse-emit5.30\\nyamlpp-parse-emit5.34\\nyapp\\nyapp5.30\\nyapp5.34\\nyes\\nzcat\\nzcmp\\nzdiff\\nzegrep\\nzfgrep\\nzforce\\nzgrep\\nzip\\nzipcloak\\nzipdetails\\nzipdetails5.30\\nzipdetails5.34\\nzipgrep\\nzipinfo\\nzipnote\\nzipsplit\\nzless\\nzmore\\nznew\\nzprint\",\"stderr\":\"\",\"exitCode\":0,\"timedOut\":false,\"entry_count\":982,\"platform\":\"seatbelt\"}",
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.512Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.4030000000057,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775698575474,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.513Z",
+      "model_name": "middleware:permissions",
+      "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
       "observation": {
         "results": [
           {
-            "content": "I listed the files in /usr/bin, and the tool found 982 executables."
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
           }
         ]
       },
-      "metrics": {
-        "prompt_tokens": 4239,
-        "completion_tokens": 21
-      },
-      "duration_ms": 665,
+      "duration_ms": 40.19691600000078,
       "outcome": "success",
       "extra": {
-        "totalMessages": 3,
-        "requestModel": "google/gemini-2.0-flash-001",
-        "toolCount": 1,
-        "tools": [
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
           {
-            "name": "Bash",
-            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via wrapCommand."
+            "phase": "execute",
+            "toolId": "Bash",
+            "toolInput": "{\"command\":\"ls /usr/bin | wc -l\"}",
+            "action": "allow",
+            "durationMs": 0,
+            "source": "policy"
           }
         ],
-        "responseModel": "google/gemini-2.0-flash-001"
+        "_original_timestamp": 1775698575510,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.514Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.310249999995,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775698575473,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.515Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.302416999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin."
+          }
+        ],
+        "_original_timestamp": 1775698575472,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.516Z",
+      "model_name": "middleware:goal",
+      "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
+          }
+        ]
+      },
+      "duration_ms": 40.09816599999613,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775698575509,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.517Z",
+      "model_name": "middleware:hooks",
+      "message": "## Active Goals\n\n- [ ] Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.2862920000043,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775698575471,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:15.518Z",
+      "model_name": "middleware:hooks",
+      "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
+          }
+        ]
+      },
+      "duration_ms": 40.086292000007234,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.succeeded",
+            "toolId": "Bash",
+            "toolOutput": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+            "aggregated": "continue",
+            "hooks": [
+              {
+                "name": "on-sandbox-tool",
+                "decision": "continue",
+                "durationMs": 4.6710000000020955
+              }
+            ]
+          }
+        ],
+        "_original_timestamp": 1775698575508,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
       }
     },
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:14.511Z",
+      "timestamp": "2026-04-09T01:36:15.519Z",
       "model_name": "middleware:semantic-retry",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
-      "duration_ms": 670.2468339999978,
+      "message": "## Active Goals\n\n- [ ] Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.",
+      "duration_ms": 703.2410419999942,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -361,6 +395,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
+        "_original_timestamp": 1775698575470,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -369,50 +404,71 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:14.512Z",
-      "model_name": "middleware:hooks",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
-      "duration_ms": 670.3994999999995,
+      "timestamp": "2026-04-09T01:36:15.520Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Bash({\"command\":\"ls /usr/bin | wc -l\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}"
+          }
+        ]
+      },
+      "duration_ms": 35.22879199999443,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
-        "middlewareName": "hooks",
-        "hook": "wrapModelStream",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
         "phase": "resolve",
-        "priority": 400,
+        "priority": 420,
         "nextCalled": true,
+        "_original_timestamp": 1775698575503,
         "__koi": {
-          "identifier": "middleware:hooks"
+          "identifier": "middleware:semantic-retry"
         }
       }
     },
     {
       "step_id": 16,
-      "source": "system",
-      "timestamp": "2026-04-07T02:01:14.513Z",
-      "model_name": "middleware:permissions",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
-      "duration_ms": 670.6178750000036,
+      "source": "agent",
+      "timestamp": "2026-04-09T01:36:15.527Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "observation": {
+        "results": [
+          {
+            "content": "There are 921 executables in /usr/bin."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 312,
+        "completion_tokens": 14
+      },
+      "duration_ms": 633,
       "outcome": "success",
       "extra": {
-        "type": "middleware_span",
-        "middlewareName": "permissions",
-        "hook": "wrapModelStream",
-        "phase": "intercept",
-        "priority": 100,
-        "nextCalled": true,
-        "__koi": {
-          "identifier": "middleware:permissions"
-        }
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 1,
+        "tools": [
+          {
+            "name": "Bash",
+            "description": "Execute a bash command. The working directory is validated against the workspace root. Known-dangerous patterns (reverse shells, privilege escalation, injection vectors) are blocked by classifier. File path arguments inside the command string are NOT further restricted — for full filesystem confinement use an OS sandbox via sandboxAdapter."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "1d9570682f132b532816b5129e24787eba83966916e1b4793974aeac4eb27a70"
       }
     },
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-07T02:01:14.514Z",
+      "timestamp": "2026-04-09T01:36:16.167Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "Use the Bash tool to list the files in /usr/bin. Report the path you listed and how many executables were found.\n\n{\"stdout\":\"AssetCacheLocatorUtil\\nAssetCacheManagerUtil\\nAssetCacheTetheratorUtil\\nDeRez\\nGetFileInfo\\nIOAccelMemory\\nIOMFB_FDR_Loader\\nIOSDebug\\nResMerger\\nRez\\nSafeEjectGPU\\nSetFile\\nSplitForks\\naa\\nactool\\naea\\nafclip\\nafconvert\\nafhash\\nafida\\nafinfo\\nafktool\\nafplay\\nafscexpand\\nagentxtrap\\nagvtool\\nalias\\napp-sso\\napplesingle\\nappletviewer\\napply\\napropos\\napt\\nar\\narc…",
-      "duration_ms": 670.6897089999984,
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.9684589999961,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -423,6 +479,111 @@
         "nextCalled": true,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:16.168Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.9503750000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775698576166,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:16.169Z",
+      "model_name": "middleware:skill-injector",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.848708000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775698576164,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:16.170Z",
+      "model_name": "middleware:goal",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.8126250000059,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1775698576163,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:16.171Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.7899580000085,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775698576162,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-09T01:36:16.172Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the Bash tool to run `ls /usr/bin | wc -l` and tell me how many executables are in /usr/bin.{\"stdout\":\"     921\\n\",\"stderr\":\"\",\"exitCode\":0,\"durationMs\":34}",
+      "duration_ms": 634.7540840000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775698576161,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
         }
       }
     }

@@ -56,7 +56,10 @@ export function runTaskBoardStoreContract(
 
     it("get returns undefined for unknown ID", async () => {
       const store = await factory();
-      const result = await store.get(taskItemId("nonexistent"));
+      // Use a canonical task_<N> ID — some backends (file store) validate the
+      // shape at the I/O boundary. The semantic being tested is "no such task
+      // exists", not "malformed ID".
+      const result = await store.get(taskItemId("task_999999"));
       expect(result).toBeUndefined();
     });
 
@@ -83,8 +86,8 @@ export function runTaskBoardStoreContract(
 
     it("delete is a no-op for unknown ID", async () => {
       const store = await factory();
-      // Should not throw
-      await store.delete(taskItemId("nonexistent"));
+      // Should not throw (canonical task_<N> shape passes file store guard)
+      await store.delete(taskItemId("task_999999"));
     });
 
     it("list returns all items when no filter is provided", async () => {
@@ -161,7 +164,7 @@ export function runTaskBoardStoreContract(
 
       const assigned = await store.list({ assignedTo: agent });
       expect(assigned).toHaveLength(1);
-      expect(assigned[0]!.id).toBe(id1);
+      expect(assigned[0]?.id).toBe(id1);
     });
 
     it("filters by status AND assignedTo", async () => {
@@ -176,7 +179,7 @@ export function runTaskBoardStoreContract(
 
       const result = await store.list({ status: "in_progress", assignedTo: agent });
       expect(result).toHaveLength(1);
-      expect(result[0]!.id).toBe(id1);
+      expect(result[0]?.id).toBe(id1);
     });
   });
 
@@ -220,8 +223,8 @@ export function runTaskBoardStoreContract(
 
     it("HWM preserved after deleting the highest-ID task", async () => {
       const store = await factory();
-      const id1 = await store.nextId();
-      const id2 = await store.nextId();
+      const _id1 = await store.nextId();
+      const _id2 = await store.nextId();
       const id3 = await store.nextId();
       await store.put(createTestTask({ id: id3 }));
 
@@ -325,7 +328,7 @@ export function runTaskBoardStoreContract(
       const listener = mock(() => undefined);
       store.watch(listener);
 
-      await store.delete(taskItemId("nonexistent"));
+      await store.delete(taskItemId("task_999999"));
 
       expect(listener).not.toHaveBeenCalled();
     });

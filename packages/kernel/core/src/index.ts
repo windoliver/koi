@@ -626,6 +626,9 @@ export {
   DEFAULT_AGENT_SESSION_TOKEN_BUDGET,
   DEFAULT_HOOK_TIMEOUT_MS,
   DEFAULT_MAX_STOP_RETRIES,
+  DEFAULT_PROMPT_HOOK_TIMEOUT_MS,
+  DEFAULT_PROMPT_MAX_TOKENS,
+  DEFAULT_PROMPT_SESSION_TOKEN_BUDGET,
   HOOK_EVENT_KINDS,
 } from "./hook.js";
 // inbox — message steering queue for autonomous agents
@@ -763,6 +766,15 @@ export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // nexus-path — branded string type for Nexus namespace paths
 export type { NexusPath } from "./nexus-path.js";
 export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
+// outcome linkage — decision-to-business-outcome correlation
+export type {
+  DecisionCorrelationId,
+  OutcomeReport,
+  OutcomeReportInput,
+  OutcomeStore,
+  OutcomeValence,
+} from "./outcome-linkage.js";
+export { decisionCorrelationId } from "./outcome-linkage.js";
 // permission backend — pluggable authorization contract
 export type {
   PermissionBackend,
@@ -1059,8 +1071,11 @@ export type {
 export {
   DEFAULT_TASK_BOARD_CONFIG,
   isTerminalTaskStatus,
+  isValidTaskKindName,
   isValidTransition,
+  TASK_KIND_NAMES,
   taskItemId,
+  VALID_TASK_KIND_NAMES,
   VALID_TASK_TRANSITIONS,
 } from "./task-board.js";
 // thread — unified execution model with persistent threads and checkpoints

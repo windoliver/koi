@@ -154,8 +154,8 @@ const backend = createPatternPermissionBackend({
 | `db` | `db:*` | All database operations |
 | `db_read` | `db:query`, `db:read`, `db:select` | Read-only database |
 | `db_write` | `db:write`, `db:insert`, `db:update`, `db:delete` | Database mutations |
-| `lsp` | `lsp/*` | Language server tools |
-| `mcp` | `mcp/*` | MCP server tools |
+| `lsp` | `lsp/*`, `lsp__*` | Language server tools (supports both `/` and `__` naming) |
+| `mcp` | `mcp/*`, `mcp__*` | MCP server tools (supports both `/` and `__` naming) |
 
 Extend with custom groups:
 
@@ -375,6 +375,48 @@ Each step carries:
 - `outcome`: `"success"` or `"failure"` per table above
 - `stepIndex`: assigned by `emitExternalStep` (monotonic session-local index)
 - `metadata`: same structured fields as the audit entry (decision, userId, delta)
+
+### MW Span Decision Metadata (ATIF Trace)
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the permissions
+middleware also emits structured decision metadata via `ctx.reportDecision`
+on **every** tool permission check (security audit boundary — all decisions
+matter, not just denies).
+
+**Filter phase** (`filterTools` on `wrapModelCall` / `wrapModelStream`):
+```typescript
+{
+  phase: "filter";
+  totalTools: number;
+  allowedCount: number;
+  filteredCount: number;
+  filteredTools: Array<{
+    tool: string;
+    reason: string;
+    source: "policy" | "escalation" | "backend-error" | "approval";
+  }>;
+}
+```
+Only emitted when `filteredCount > 0` (filter that changed the tool list).
+
+**Execute phase** (`wrapToolCall`):
+```typescript
+{
+  phase: "execute";
+  toolId: string;
+  toolInput: string;          // JSON preview, truncated to 300 chars
+  action: "allow" | "deny" | "ask";
+  durationMs: number;
+  reason?: string;            // Present when action !== "allow"
+  source: "policy" | "escalation" | "backend-error" | "approval";
+}
+```
+
+The decision appears in the ATIF trajectory as `metadata.decisions[]` on the
+`middleware:permissions` span. This is distinct from the approval-trajectory
+steps above — approval steps are standalone `source: "user"` steps for human
+judgment, while MW decisions ride on the middleware span for the permission
+check itself.
 
 ---
 

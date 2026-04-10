@@ -25,6 +25,7 @@ import {
   type ResultDisplay,
   type ToolDisplay,
 } from "../tool-display.js";
+import { DEFAULT_SPINNER } from "./spinners.js";
 
 /** Line-count limits per tool category (#7). */
 const BODY_LINE_LIMITS: Record<string, number> = {
@@ -55,11 +56,10 @@ interface ToolCallBlockProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
-const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
-
 /**
  * Status indicator — uses SolidJS Switch/Match for reactive status transitions.
- * Plain `switch(props.status)` runs once on mount; Switch/Match re-evaluates.
+ * Plain `switch(props.status)` runs once on mount; Switch/Match re-evaluates
+ * so long-running tools progress from "running" → "complete" correctly.
  */
 function StatusIndicator(props: {
   readonly status: ToolCallData["status"];
@@ -67,8 +67,9 @@ function StatusIndicator(props: {
   readonly startedAt?: number | undefined;
   readonly durationMs?: number | undefined;
 }): JSX.Element {
+  const frames = DEFAULT_SPINNER.frames;
   // #8: elapsed time derived from spinnerFrame tick
-  const elapsed = () => {
+  const elapsed = (): string => {
     if (props.startedAt === undefined) return "";
     props.spinnerFrame(); // subscribe to tick
     const ms = Date.now() - props.startedAt;
@@ -79,7 +80,7 @@ function StatusIndicator(props: {
     <Switch>
       <Match when={props.status === "running"}>
         <text fg={COLORS.cyan}>
-          {SPINNER[props.spinnerFrame() % SPINNER.length] ?? "⠋"}
+          {frames[props.spinnerFrame() % frames.length] ?? " "}
           {elapsed()}
         </text>
       </Match>

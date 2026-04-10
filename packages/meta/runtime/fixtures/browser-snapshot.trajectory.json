@@ -1,0 +1,595 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "browser-snapshot",
+  "agent": {
+    "name": "golden-browser-snapshot",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "browser_snapshot",
+        "description": "Capture the current page as an accessibility-tree text snapshot. Interactive elements get [ref=eN] markers (e.g., [button] Submit [ref=e3]). Always call this before interacting with the page. Pass the returned snapshotId to every interaction tool — if the page changes and a ref becomes stale, you will receive a STALE_REF error telling you to re-snapshot. Loop: snapshot → act → snapshot (after DOM-changing actions)."
+      },
+      {
+        "name": "browser_click",
+        "description": "Click an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — if the ref is stale you receive STALE_REF, meaning you must call browser_snapshot again before retrying. Clicking may change the DOM: re-snapshot if you need to interact with elements that appear or move after the click."
+      },
+      {
+        "name": "browser_hover",
+        "description": "Hover over an element to trigger hover effects such as dropdowns, tooltips, and context menus. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Call browser_snapshot again after hovering if new elements appear."
+      },
+      {
+        "name": "browser_press",
+        "description": "Press a keyboard key or key combination globally on the current page. Use for: Enter (submit forms), Tab (move focus), Escape (close modals/dialogs), ArrowDown/ArrowUp (navigate dropdowns and lists), Control+a (select all), Control+c/v (copy/paste), Shift+Tab (reverse focus). Key names follow Playwright conventions — single keys or combinations with Control, Shift, Alt, Meta separated by \"+\". Key presses may trigger DOM changes: re-snapshot if the page content changes."
+      },
+      {
+        "name": "browser_type",
+        "description": "Type text into an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Typing may trigger DOM changes (e.g., autocomplete): re-snapshot if needed."
+      },
+      {
+        "name": "browser_select",
+        "description": "Select an option in a combobox or listbox identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Selecting an option may trigger DOM changes: re-snapshot if needed."
+      },
+      {
+        "name": "browser_fill_form",
+        "description": "Fill multiple form fields in one call. More efficient than calling browser_type/browser_select per field for multi-field forms. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error on any field means the snapshot is outdated: re-snapshot and retry with fresh refs."
+      },
+      {
+        "name": "browser_scroll",
+        "description": "Scroll the page in a direction, or scroll to bring an element into view. Provide ref to scroll to an element; provide direction to scroll the page. When using ref, always pass snapshotId — a STALE_REF error means the ref is outdated and you must call browser_snapshot first."
+      },
+      {
+        "name": "browser_screenshot",
+        "description": "Capture a screenshot of the current page. Returns base64-encoded JPEG by default. Use browser_snapshot instead when the page has standard HTML/ARIA content — it is ~100x cheaper. Reserve screenshot for canvases, CAPTCHAs, or visual-only content."
+      },
+      {
+        "name": "browser_wait",
+        "description": "Wait for a timeout duration, a selector to reach a state, or a navigation event."
+      },
+      {
+        "name": "browser_tab_close",
+        "description": "Close a browser tab. Closes the current tab if tabId is not specified."
+      },
+      {
+        "name": "browser_tab_focus",
+        "description": "Switch focus to a specific browser tab, making it the active page. After switching, call browser_snapshot to get refs for the new tab's content."
+      },
+      {
+        "name": "browser_console",
+        "description": "Read buffered console messages from the current browser page. Captures log, warning, error, debug, and info level messages from the page's JavaScript console. Useful for diagnosing JavaScript errors and page-side issues without needing browser_evaluate."
+      },
+      {
+        "name": "browser_navigate",
+        "description": "Navigate the current tab to a URL. Invalidates all refs from previous snapshots — call browser_snapshot after navigating to get fresh refs."
+      },
+      {
+        "name": "browser_tab_new",
+        "description": "Open a new browser tab, optionally navigating to a URL immediately."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.107Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.108Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:28.110Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 1979,
+        "completion_tokens": 3
+      },
+      "duration_ms": 775,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 1,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 15,
+        "tools": [
+          {
+            "name": "browser_snapshot",
+            "description": "Capture the current page as an accessibility-tree text snapshot. Interactive elements get [ref=eN] markers (e.g., [button] Submit [ref=e3]). Always call this before interacting with the page. Pass the returned snapshotId to every interaction tool — if the page changes and a ref becomes stale, you will receive a STALE_REF error telling you to re-snapshot. Loop: snapshot → act → snapshot (after DOM-changing actions)."
+          },
+          {
+            "name": "browser_click",
+            "description": "Click an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — if the ref is stale you receive STALE_REF, meaning you must call browser_snapshot again before retrying. Clicking may change the DOM: re-snapshot if you need to interact with elements that appear or move after the click."
+          },
+          {
+            "name": "browser_hover",
+            "description": "Hover over an element to trigger hover effects such as dropdowns, tooltips, and context menus. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Call browser_snapshot again after hovering if new elements appear."
+          },
+          {
+            "name": "browser_press",
+            "description": "Press a keyboard key or key combination globally on the current page. Use for: Enter (submit forms), Tab (move focus), Escape (close modals/dialogs), ArrowDown/ArrowUp (navigate dropdowns and lists), Control+a (select all), Control+c/v (copy/paste), Shift+Tab (reverse focus). Key names follow Playwright conventions — single keys or combinations with Control, Shift, Alt, Meta separated by \"+\". Key presses may trigger DOM changes: re-snapshot if the page content changes."
+          },
+          {
+            "name": "browser_type",
+            "description": "Type text into an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Typing may trigger DOM changes (e.g., autocomplete): re-snapshot if needed."
+          },
+          {
+            "name": "browser_select",
+            "description": "Select an option in a combobox or listbox identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Selecting an option may trigger DOM changes: re-snapshot if needed."
+          },
+          {
+            "name": "browser_fill_form",
+            "description": "Fill multiple form fields in one call. More efficient than calling browser_type/browser_select per field for multi-field forms. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error on any field means the snapshot is outdated: re-snapshot and retry with fresh refs."
+          },
+          {
+            "name": "browser_scroll",
+            "description": "Scroll the page in a direction, or scroll to bring an element into view. Provide ref to scroll to an element; provide direction to scroll the page. When using ref, always pass snapshotId — a STALE_REF error means the ref is outdated and you must call browser_snapshot first."
+          },
+          {
+            "name": "browser_screenshot",
+            "description": "Capture a screenshot of the current page. Returns base64-encoded JPEG by default. Use browser_snapshot instead when the page has standard HTML/ARIA content — it is ~100x cheaper. Reserve screenshot for canvases, CAPTCHAs, or visual-only content."
+          },
+          {
+            "name": "browser_wait",
+            "description": "Wait for a timeout duration, a selector to reach a state, or a navigation event."
+          },
+          {
+            "name": "browser_tab_close",
+            "description": "Close a browser tab. Closes the current tab if tabId is not specified."
+          },
+          {
+            "name": "browser_tab_focus",
+            "description": "Switch focus to a specific browser tab, making it the active page. After switching, call browser_snapshot to get refs for the new tab's content."
+          },
+          {
+            "name": "browser_console",
+            "description": "Read buffered console messages from the current browser page. Captures log, warning, error, debug, and info level messages from the page's JavaScript console. Useful for diagnosing JavaScript errors and page-side issues without needing browser_evaluate."
+          },
+          {
+            "name": "browser_navigate",
+            "description": "Navigate the current tab to a URL. Invalidates all refs from previous snapshots — call browser_snapshot after navigating to get fresh refs."
+          },
+          {
+            "name": "browser_tab_new",
+            "description": "Open a new browser tab, optionally navigating to a URL immediately."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "dd72f354513b03954253fd568ce4751f481236438403ced86e1bd06202ad5c37"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-08T06:15:28.886Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_browser_snapshot_3",
+          "function_name": "browser_snapshot",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_browser_snapshot_3",
+            "content": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.888Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "browser_snapshot({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}"
+          }
+        ]
+      },
+      "duration_ms": 0.31866599999921164,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.889Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+      "duration_ms": 777.0692079999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.890Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+      "duration_ms": 777.1167500000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.891Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+      "duration_ms": 777.2070840000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.892Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+      "duration_ms": 777.2323340000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.893Z",
+      "model_name": "hook:on-browser-snapshot",
+      "message": "tool.succeeded → on-browser-snapshot",
+      "duration_ms": 2.5716670000001614,
+      "outcome": "success",
+      "extra": {
+        "type": "hook_execution",
+        "triggerEvent": "tool.succeeded",
+        "hookName": "on-browser-snapshot",
+        "decision": {
+          "kind": "continue"
+        },
+        "__koi": {
+          "identifier": "hook:on-browser-snapshot"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.894Z",
+      "model_name": "middleware:hooks",
+      "message": "browser_snapshot({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}"
+          }
+        ]
+      },
+      "duration_ms": 3.024874999999156,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.895Z",
+      "model_name": "middleware:permissions",
+      "message": "browser_snapshot({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}"
+          }
+        ]
+      },
+      "duration_ms": 3.103500000001077,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:28.896Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "browser_snapshot({})",
+      "observation": {
+        "results": [
+          {
+            "content": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}"
+          }
+        ]
+      },
+      "duration_ms": 3.1635839999999007,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "agent",
+      "timestamp": "2026-04-08T06:15:28.898Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "The page contains a heading \"Welcome\", a submit button, a link to \"Home\", and a textbox labeled \"Email\"."
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 2066,
+        "completion_tokens": 25
+      },
+      "duration_ms": 778,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 15,
+        "tools": [
+          {
+            "name": "browser_snapshot",
+            "description": "Capture the current page as an accessibility-tree text snapshot. Interactive elements get [ref=eN] markers (e.g., [button] Submit [ref=e3]). Always call this before interacting with the page. Pass the returned snapshotId to every interaction tool — if the page changes and a ref becomes stale, you will receive a STALE_REF error telling you to re-snapshot. Loop: snapshot → act → snapshot (after DOM-changing actions)."
+          },
+          {
+            "name": "browser_click",
+            "description": "Click an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — if the ref is stale you receive STALE_REF, meaning you must call browser_snapshot again before retrying. Clicking may change the DOM: re-snapshot if you need to interact with elements that appear or move after the click."
+          },
+          {
+            "name": "browser_hover",
+            "description": "Hover over an element to trigger hover effects such as dropdowns, tooltips, and context menus. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Call browser_snapshot again after hovering if new elements appear."
+          },
+          {
+            "name": "browser_press",
+            "description": "Press a keyboard key or key combination globally on the current page. Use for: Enter (submit forms), Tab (move focus), Escape (close modals/dialogs), ArrowDown/ArrowUp (navigate dropdowns and lists), Control+a (select all), Control+c/v (copy/paste), Shift+Tab (reverse focus). Key names follow Playwright conventions — single keys or combinations with Control, Shift, Alt, Meta separated by \"+\". Key presses may trigger DOM changes: re-snapshot if the page content changes."
+          },
+          {
+            "name": "browser_type",
+            "description": "Type text into an element identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Typing may trigger DOM changes (e.g., autocomplete): re-snapshot if needed."
+          },
+          {
+            "name": "browser_select",
+            "description": "Select an option in a combobox or listbox identified by its snapshot ref. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error means the ref is outdated and you must re-snapshot. Selecting an option may trigger DOM changes: re-snapshot if needed."
+          },
+          {
+            "name": "browser_fill_form",
+            "description": "Fill multiple form fields in one call. More efficient than calling browser_type/browser_select per field for multi-field forms. Always pass snapshotId from the last browser_snapshot call — a STALE_REF error on any field means the snapshot is outdated: re-snapshot and retry with fresh refs."
+          },
+          {
+            "name": "browser_scroll",
+            "description": "Scroll the page in a direction, or scroll to bring an element into view. Provide ref to scroll to an element; provide direction to scroll the page. When using ref, always pass snapshotId — a STALE_REF error means the ref is outdated and you must call browser_snapshot first."
+          },
+          {
+            "name": "browser_screenshot",
+            "description": "Capture a screenshot of the current page. Returns base64-encoded JPEG by default. Use browser_snapshot instead when the page has standard HTML/ARIA content — it is ~100x cheaper. Reserve screenshot for canvases, CAPTCHAs, or visual-only content."
+          },
+          {
+            "name": "browser_wait",
+            "description": "Wait for a timeout duration, a selector to reach a state, or a navigation event."
+          },
+          {
+            "name": "browser_tab_close",
+            "description": "Close a browser tab. Closes the current tab if tabId is not specified."
+          },
+          {
+            "name": "browser_tab_focus",
+            "description": "Switch focus to a specific browser tab, making it the active page. After switching, call browser_snapshot to get refs for the new tab's content."
+          },
+          {
+            "name": "browser_console",
+            "description": "Read buffered console messages from the current browser page. Captures log, warning, error, debug, and info level messages from the page's JavaScript console. Useful for diagnosing JavaScript errors and page-side issues without needing browser_evaluate."
+          },
+          {
+            "name": "browser_navigate",
+            "description": "Navigate the current tab to a URL. Invalidates all refs from previous snapshots — call browser_snapshot after navigating to get fresh refs."
+          },
+          {
+            "name": "browser_tab_new",
+            "description": "Open a new browser tab, optionally navigating to a URL immediately."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "dd72f354513b03954253fd568ce4751f481236438403ced86e1bd06202ad5c37"
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:29.678Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.\n\n{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}",
+      "duration_ms": 788.1294999999991,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:29.679Z",
+      "model_name": "middleware:hooks",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.\n\n{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}",
+      "duration_ms": 788.1786250000005,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:29.680Z",
+      "model_name": "middleware:permissions",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.\n\n{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}",
+      "duration_ms": 788.3266660000008,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-08T06:15:29.681Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.\n\n{\"snapshot\":\"[heading] Welcome [level=1]\\n  [button] Submit [ref=e1]\\n  [link] Home [ref=e2]\\n  [textbox] Email [ref=e3]\",\"snapshotId\":\"snap-mock-001\",\"truncated\":false,\"url\":\"https://example.com\",\"title\":\"Example Page\"}",
+      "duration_ms": 788.3628749999989,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    }
+  ]
+}

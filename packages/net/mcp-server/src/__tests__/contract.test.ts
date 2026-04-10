@@ -120,6 +120,7 @@ function createMockTaskBoard(tasks: readonly Task[] = []): ManagedTaskBoard {
     blocked: () => [],
     unreachable: () => [],
     dependentsOf: () => [],
+    blockedBy: () => undefined,
     size: () => taskMap.size,
     result: (id: TaskItemId) => results.get(id),
     add: () => ({ ok: true, value: board }) as Result<TaskBoard, KoiError>,

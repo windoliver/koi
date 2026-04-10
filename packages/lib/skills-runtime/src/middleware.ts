@@ -8,6 +8,7 @@
 import type {
   Agent,
   CapabilityFragment,
+  JsonObject,
   KoiMiddleware,
   ModelChunk,
   ModelHandler,
@@ -72,7 +73,10 @@ function sortedSkills(agent: Agent): readonly SkillComponent[] {
 function collectSkillContent(agent: Agent): string | undefined {
   const sorted = sortedSkills(agent);
   if (sorted.length === 0) return undefined;
-  return sorted.map((s) => s.content).join(SEPARATOR);
+  // Filter empty content (e.g., MCP-derived metadata-only skills)
+  const bodies = sorted.map((s) => s.content).filter((c) => c !== "");
+  if (bodies.length === 0) return undefined;
+  return bodies.join(SEPARATOR);
 }
 
 /**
@@ -95,6 +99,31 @@ function injectSkills(agent: Agent, request: ModelRequest): ModelRequest {
     existing !== undefined && existing.length > 0 ? `${content}\n\n${existing}` : content;
 
   return { ...request, systemPrompt };
+}
+
+/** Max chars of systemPrompt to include in decision metadata. */
+const PROMPT_PREVIEW_LIMIT = 800;
+
+/**
+ * Build the decision payload for skill injection.
+ * Captures skill names, per-skill content length, and a preview of
+ * the final systemPrompt so the trajectory shows what was actually injected.
+ */
+function buildDecision(agent: Agent, systemPrompt: string | undefined): JsonObject {
+  const sorted = sortedSkills(agent);
+  return {
+    injected: sorted.length > 0,
+    skillCount: sorted.length,
+    skills: sorted.map((s) => ({ name: s.name, contentLength: s.content.length })),
+    ...(systemPrompt !== undefined
+      ? {
+          systemPrompt:
+            systemPrompt.length <= PROMPT_PREVIEW_LIMIT
+              ? systemPrompt
+              : `${systemPrompt.slice(0, PROMPT_PREVIEW_LIMIT)}… (${String(systemPrompt.length)} chars)`,
+        }
+      : {}),
+  } as JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,19 +150,32 @@ export function createSkillInjectorMiddleware(config: SkillInjectorConfig): KoiM
     priority: 300,
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelHandler,
     ): Promise<ModelResponse> {
-      return next(injectSkills(resolveAgent(agentOrFn), request));
+      const agent = resolveAgent(agentOrFn);
+      const injected = injectSkills(agent, request);
+      // Only report when skills are actually injected (injectSkills returns
+      // original request unchanged when no skills — reference equality check)
+      if (injected !== request) {
+        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      }
+      return next(injected);
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      yield* next(injectSkills(resolveAgent(agentOrFn), request));
+      const agent = resolveAgent(agentOrFn);
+      const injected = injectSkills(agent, request);
+      // Only report when skills are actually injected (reference equality check)
+      if (injected !== request) {
+        ctx.reportDecision?.(buildDecision(agent, injected.systemPrompt));
+      }
+      yield* next(injected);
     },
 
     describeCapabilities(_ctx: TurnContext): CapabilityFragment | undefined {

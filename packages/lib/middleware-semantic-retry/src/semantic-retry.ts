@@ -382,6 +382,15 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         const reason = state.pendingAction.reason;
         state.pendingAction = undefined;
         signalWriter?.clearRetrySignal(sessionId);
+        ctx.reportDecision?.({
+          action: "abort",
+          reason,
+          retryCount: state.records.length,
+          failureHistory: state.records.map((r) => ({
+            failureClass: r.failureClass.kind,
+            succeeded: r.succeeded,
+          })),
+        });
         throw new Error(`Semantic retry aborted: ${reason}`);
       }
 
@@ -400,6 +409,19 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
         rewriteCtx,
         rewriterTimeoutMs,
       );
+      ctx.reportDecision?.({
+        action: "rewrite",
+        rewriteKind: state.pendingAction.kind,
+        failureClass: lastClass.kind,
+        retryCount: state.records.length,
+        budgetRemaining: minBudget(state.budgets),
+        requestModified: modifiedRequest !== request,
+        messageCount: modifiedRequest.messages.length,
+        failureHistory: state.records.map((r) => ({
+          failureClass: r.failureClass.kind,
+          succeeded: r.succeeded,
+        })),
+      });
       state.pendingAction = undefined;
 
       try {
@@ -453,6 +475,15 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           const reason = state.pendingAction.reason;
           state.pendingAction = undefined;
           signalWriter?.clearRetrySignal(sessionId);
+          ctx.reportDecision?.({
+            action: "abort",
+            reason,
+            retryCount: state.records.length,
+            failureHistory: state.records.map((r) => ({
+              failureClass: r.failureClass.kind,
+              succeeded: r.succeeded,
+            })),
+          });
           throw new Error(`Semantic retry aborted: ${reason}`);
         }
 
@@ -470,6 +501,19 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           rewriteCtx,
           rewriterTimeoutMs,
         );
+        ctx.reportDecision?.({
+          action: "rewrite",
+          rewriteKind: state.pendingAction.kind,
+          failureClass: lastClass.kind,
+          retryCount: state.records.length,
+          budgetRemaining: minBudget(state.budgets),
+          requestModified: effectiveRequest !== request,
+          messageCount: effectiveRequest.messages.length,
+          failureHistory: state.records.map((r) => ({
+            failureClass: r.failureClass.kind,
+            succeeded: r.succeeded,
+          })),
+        });
         state.pendingAction = undefined;
       }
 

@@ -30,6 +30,7 @@
 
 import { createAgentResolver } from "@koi/agent-runtime";
 import type {
+  Agent,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -53,6 +54,8 @@ import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-tra
 import { createLocalFileSystem } from "@koi/fs-local";
 import { createLocalTransport, createNexusFileSystem } from "@koi/fs-nexus";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import type { LspClient } from "@koi/lsp";
+import { createLspTools } from "@koi/lsp";
 import {
   createMcpComponentProvider,
   createMcpConnection,
@@ -65,6 +68,7 @@ import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -74,6 +78,15 @@ import {
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import {
+  createPluginRegistry,
+  disablePlugin,
+  enablePlugin,
+  installPlugin,
+  listPlugins,
+  removePlugin,
+  validatePluginManifest,
+} from "@koi/plugins";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { createOsAdapter, restrictiveProfile } from "@koi/sandbox-os";
 import {
@@ -82,10 +95,21 @@ import {
   resumeFromTranscript,
 } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
-import { createSkillProvider, createSkillsRuntime } from "@koi/skills-runtime";
+import {
+  createSkillInjectorMiddleware,
+  createSkillProvider,
+  createSkillsRuntime,
+} from "@koi/skills-runtime";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import {
+  createBrowserProvider,
+  createBrowserSnapshotTool,
+  createMockDriver,
+} from "@koi/tool-browser";
+import type { NotebookToolConfig } from "@koi/tool-notebook";
+import { createNotebookAddCellTool, createNotebookReadTool } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashTool } from "@koi/tools-bash";
 import {
   createAskUserTool,
@@ -107,6 +131,7 @@ import { createInteractionProvider } from "../src/create-interaction-provider.js
 import { createHookObserver } from "../src/middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../src/middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../src/middleware/trace-wrapper.js";
+import { createSkillsMcpBridge } from "../src/skills-mcp-bridge.js";
 import { createAtifDocumentStore } from "../src/trajectory/atif-store.js";
 import { createFsAtifDelegate } from "../src/trajectory/fs-delegate.js";
 
@@ -1032,12 +1057,29 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     signalWriter: retryBroker,
   });
 
+  // @koi/middleware-goal — objective tracking (fires decisions on injection turns)
+  const goalMw = createGoalMiddleware({
+    objectives: [config.prompt.slice(0, 120)],
+  });
+
+  // @koi/skills-runtime — skill-injector (fires decisions when skills are attached)
+  // Lazy agent ref: middleware created before createKoi, agent wired after assembly.
+  const agentRef: { current?: Agent } = {};
+  const skillInjectorMw = createSkillInjectorMiddleware({
+    agent: (): Agent => {
+      if (agentRef.current === undefined) throw new Error("Agent not yet wired");
+      return agentRef.current;
+    },
+  });
+
   const tracedMiddleware = [
     eventTrace,
     coreHookMw,
     hookObserverMw,
     exfiltrationGuard,
     permHandle,
+    goalMw,
+    skillInjectorMw,
     semanticRetryMw,
     ...(config.extraMiddleware ?? []),
   ].map((mw) => wrapMiddlewareWithTrace(mw, { store, docId, clock }));
@@ -1060,6 +1102,9 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
     providers: [...resolvedProviders],
     loopDetection: false,
   });
+
+  // Wire the lazy agent ref now that assembly is complete.
+  agentRef.current = runtime.agent;
 
   // Hook registration is handled internally by createHookMiddleware — hooks are
   // registered per session in onSessionStart and cleaned up in onSessionEnd.
@@ -1368,6 +1413,140 @@ const skillToolProvider = createSingleToolProvider({
 console.log(
   `SkillTool golden query: Skill tool created, advertising ${discoverResult.value.size} skill(s)`,
 );
+
+// ---------------------------------------------------------------------------
+// @koi/tool-notebook setup
+// ---------------------------------------------------------------------------
+
+const NOTEBOOK_FIXTURE = `${FIXTURES}/golden-notebook.ipynb`;
+const notebookConfig: NotebookToolConfig = {};
+const notebookReadTool = createNotebookReadTool(notebookConfig);
+const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
+
+// Copy fixture to a temp path so notebook-add-cell doesn't mutate the committed fixture
+const notebookTmpPath = `/tmp/koi-golden-notebook-${Date.now()}.ipynb`;
+await Bun.write(notebookTmpPath, await Bun.file(NOTEBOOK_FIXTURE).text());
+
+// ---------------------------------------------------------------------------
+// @koi/tool-browser setup (mock driver — no real browser for golden queries)
+// ---------------------------------------------------------------------------
+
+const goldenMockDriver = createMockDriver();
+const goldenBrowserPolicy = { sandbox: false, capabilities: {} } as const;
+const browserProvider = createBrowserProvider({
+  backend: goldenMockDriver,
+  prefix: "browser",
+  policy: goldenBrowserPolicy,
+});
+// Standalone tool for cassette descriptor extraction
+const browserSnapshotForCassette = createBrowserSnapshotTool(
+  goldenMockDriver,
+  "browser",
+  goldenBrowserPolicy,
+);
+
+// ---------------------------------------------------------------------------
+// @koi/lsp setup (mock client — no real LSP server for golden queries)
+// ---------------------------------------------------------------------------
+
+const goldenLspClient: LspClient = {
+  capabilities: () => ({
+    hoverProvider: true,
+    definitionProvider: true,
+    referencesProvider: true,
+    documentSymbolProvider: true,
+    workspaceSymbolProvider: true,
+  }),
+  hover: async (_uri, _line, _char) => ({
+    ok: true as const,
+    value: {
+      contents: {
+        kind: "markdown" as const,
+        value: "```typescript\nfunction greet(name: string): string\n```\nSays hello.",
+      },
+      range: {
+        start: { line: _line, character: _char },
+        end: { line: _line, character: _char + 5 },
+      },
+    },
+  }),
+  gotoDefinition: async (_uri, _line, _char) => ({
+    ok: true as const,
+    value: [
+      {
+        uri: "file:///src/greet.ts",
+        range: { start: { line: 10, character: 0 }, end: { line: 10, character: 20 } },
+      },
+    ],
+  }),
+  findReferences: async () => ({
+    ok: true as const,
+    value: [
+      {
+        uri: "file:///src/main.ts",
+        range: { start: { line: 5, character: 2 }, end: { line: 5, character: 7 } },
+      },
+      {
+        uri: "file:///src/test.ts",
+        range: { start: { line: 12, character: 4 }, end: { line: 12, character: 9 } },
+      },
+    ],
+  }),
+  documentSymbols: async () => ({
+    ok: true as const,
+    value: [
+      {
+        name: "greet",
+        kind: 12,
+        location: {
+          uri: "file:///src/greet.ts",
+          range: { start: { line: 0, character: 0 }, end: { line: 3, character: 1 } },
+        },
+      },
+    ],
+  }),
+  workspaceSymbols: async () => ({
+    ok: true as const,
+    value: [
+      {
+        name: "greet",
+        kind: 12,
+        location: {
+          uri: "file:///src/greet.ts",
+          range: { start: { line: 0, character: 0 }, end: { line: 3, character: 1 } },
+        },
+      },
+    ],
+  }),
+  openDocument: async () => ({ ok: true as const, value: undefined }),
+  closeDocument: async () => ({ ok: true as const, value: undefined }),
+  getDiagnostics: () => new Map(),
+  close: async () => {},
+  isConnected: () => true,
+  serverName: () => "golden-lsp",
+} as unknown as LspClient;
+
+const lspTools = createLspTools(goldenLspClient, "golden-lsp");
+const lspToolProvider: ComponentProvider = {
+  name: "lsp-golden",
+  attach: async () => {
+    const components = new Map<string, unknown>();
+    for (const tool of lspTools) {
+      components.set(`tool:${tool.descriptor.name}`, tool);
+    }
+    return { components, skipped: [] };
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Skills-MCP bridge setup (reuses MCP server tools as skills via bridge)
+// ---------------------------------------------------------------------------
+
+// Create a separate skill runtime for the bridge test (no filesystem skills)
+const bridgeSkillRuntime = createSkillsRuntime({ bundledRoot: null });
+
+// Bridge will be wired after MCP provider is created (needs resolver)
+// See the skills-mcp-bridge query injection below the MCP provider setup
 
 // ---------------------------------------------------------------------------
 // MCP test server (in-process, real MCP protocol)
@@ -2761,6 +2940,116 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
+  // notebook-read: @koi/tool-notebook — reads a .ipynb fixture, returns cell summary
+  {
+    name: "notebook-read",
+    prompt: `Use the notebook_read tool to read the notebook at "${NOTEBOOK_FIXTURE}" and report how many cells it has and their types.`,
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-notebook-read",
+        cmd: ["echo", "notebook-read-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "notebook-read",
+        toolName: "notebook_read",
+        createTool: () => notebookReadTool,
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // notebook-add-cell: @koi/tool-notebook — adds a code cell, then reads back to confirm
+  {
+    name: "notebook-add-cell",
+    prompt: `Use the notebook_add_cell tool to add a new code cell with source "print('added by golden query')" at index 1 in the notebook at "${notebookTmpPath}". Then use notebook_read to confirm the cell count increased to 4.`,
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-notebook-add",
+        cmd: ["echo", "notebook-add-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "notebook-read",
+        toolName: "notebook_read",
+        createTool: () => notebookReadTool,
+      }),
+      createSingleToolProvider({
+        name: "notebook-add-cell",
+        toolName: "notebook_add_cell",
+        createTool: () => notebookAddCellTool,
+      }),
+    ],
+    maxTurns: 3,
+  },
+
+  // lsp-hover: @koi/lsp — LLM opens a document and gets hover info via mock LSP client
+  {
+    name: "lsp-hover",
+    prompt:
+      'First use the "lsp__golden-lsp__open_document" tool to open a document with uri "file:///src/main.ts" and content "function greet(name: string) { return name; }". ' +
+      'Then use the "lsp__golden-lsp__hover" tool to get hover info at uri "file:///src/main.ts", line 0, character 9. ' +
+      "Report the hover result.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-lsp-hover",
+        cmd: ["echo", "lsp-hover-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [lspToolProvider],
+    maxTurns: 3,
+    modelAdapter: sonnetAdapter,
+    modelName: SONNET_MODEL,
+  },
+
+  // browser-snapshot: @koi/tool-browser — LLM calls browser_snapshot via mock driver
+  {
+    name: "browser-snapshot",
+    prompt:
+      "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+    permissionMode: "bypass" as const,
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-browser-snapshot",
+        cmd: ["echo", "browser-snapshot-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [browserProvider],
+    maxTurns: 2,
+  },
+
+  // skills-mcp-bridge: @koi/runtime bridge — MCP tools registered as skills
+  {
+    name: "skills-mcp-bridge",
+    prompt: "What is 7 + 3? Reply with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [], // Set dynamically below (after MCP + bridge setup)
+  },
+
   // MCP server: @koi/mcp-server exercised — platform tools exposed via MCP
   {
     name: "mcp-server-send",
@@ -2778,6 +3067,245 @@ const queries: readonly QueryConfig[] = [
       },
     ],
     providers: [], // Set dynamically below (after MCP server setup)
+    maxTurns: 2,
+  },
+
+  // plugin-validate: exercises @koi/plugins manifest validation + registry discovery
+  {
+    name: "plugin-validate",
+    prompt:
+      'Use the validate_plugin tool to check this manifest: {"name": "hello-world", "version": "1.0.0", "description": "A greeting plugin"}. Report whether it is valid.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-plugin-validate",
+        cmd: ["echo", "plugin-validated"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "plugin-validator",
+        toolName: "validate_plugin",
+        createTool: () => {
+          const result = buildTool({
+            name: "validate_plugin",
+            description:
+              "Validates a plugin manifest JSON object against the @koi/plugins schema and discovers plugins from the registry.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                manifest: {
+                  type: "object",
+                  description: "The plugin manifest to validate",
+                },
+              },
+              required: ["manifest"],
+            },
+            origin: "primordial",
+            execute: async (args: JsonObject) => {
+              const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+              const { join } = await import("node:path");
+              const { tmpdir } = await import("node:os");
+
+              const validation = validatePluginManifest(args.manifest);
+
+              // Create a real plugin root with a seeded plugin for non-trivial discovery
+              const pluginRoot = await mkdtemp(join(tmpdir(), "koi-golden-plugins-"));
+              const seededDir = join(pluginRoot, "seeded-plugin");
+              await mkdir(seededDir, { recursive: true });
+              await writeFile(
+                join(seededDir, "plugin.json"),
+                JSON.stringify({
+                  name: "seeded-plugin",
+                  version: "0.1.0",
+                  description: "Golden test plugin",
+                }),
+              );
+
+              const registry = createPluginRegistry({ bundledRoot: pluginRoot });
+              const plugins = await registry.discover();
+              const errors = registry.errors();
+
+              // Cleanup temp dir
+              await rm(pluginRoot, { recursive: true, force: true });
+
+              return {
+                valid: validation.ok,
+                error: validation.ok ? undefined : validation.error.message,
+                pluginName: validation.ok ? validation.value.name : undefined,
+                discoveredCount: plugins.length,
+                discoveredNames: plugins.map((p) => p.name),
+                errorCount: errors.length,
+              };
+            },
+          });
+          if (!result.ok)
+            throw new Error(`Failed to build validate_plugin tool: ${result.error.message}`);
+          return result.value;
+        },
+      }),
+    ],
+    maxTurns: 2,
+  },
+
+  // plugin-lifecycle: exercises @koi/plugins install, list, enable/disable, remove
+  {
+    name: "plugin-lifecycle",
+    prompt:
+      "Use the plugin_lifecycle tool to install a plugin, list plugins, disable it, re-enable it, and remove it. Report each step's result.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command" as const,
+        name: "on-plugin-lifecycle",
+        cmd: ["echo", "lifecycle-step"],
+        filter: { events: ["tool.succeeded"], tools: ["plugin_lifecycle"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "plugin-lifecycle",
+        toolName: "plugin_lifecycle",
+        createTool: () => {
+          const result = buildTool({
+            name: "plugin_lifecycle",
+            description:
+              "Runs a full plugin lifecycle: install → list → disable → enable → remove, exercising @koi/plugins lifecycle operations.",
+            inputSchema: {
+              type: "object",
+              properties: {},
+              required: [],
+            },
+            origin: "primordial",
+            execute: async () => {
+              const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+              const { join } = await import("node:path");
+              const { tmpdir } = await import("node:os");
+
+              const tmpRoot = await mkdtemp(join(tmpdir(), "koi-golden-lifecycle-"));
+              const userRoot = join(tmpRoot, "user-plugins");
+              const sourceDir = join(tmpRoot, "source", "lifecycle-plugin");
+
+              try {
+                // Create source plugin
+                await mkdir(sourceDir, { recursive: true });
+                await writeFile(
+                  join(sourceDir, "plugin.json"),
+                  JSON.stringify({
+                    name: "lifecycle-plugin",
+                    version: "1.0.0",
+                    description: "Golden lifecycle test plugin",
+                  }),
+                );
+
+                const registry = createPluginRegistry({ userRoot });
+                const config = { userRoot, registry };
+                const steps: {
+                  readonly step: string;
+                  readonly ok: boolean;
+                  readonly detail: string;
+                }[] = [];
+
+                // Install — verify API success AND returned metadata
+                const installResult = await installPlugin(config, sourceDir);
+                const installOk =
+                  installResult.ok &&
+                  installResult.value.name === "lifecycle-plugin" &&
+                  installResult.value.version === "1.0.0";
+                steps.push({
+                  step: "install",
+                  ok: installOk,
+                  detail: installResult.ok
+                    ? `${installResult.value.name}@${installResult.value.version}`
+                    : installResult.error.message,
+                });
+
+                // List — verify exactly 1 plugin, enabled, correct name
+                const listResult = await listPlugins(config);
+                const listOk =
+                  listResult.ok &&
+                  listResult.value.length === 1 &&
+                  listResult.value[0]?.meta.name === "lifecycle-plugin" &&
+                  listResult.value[0]?.enabled === true;
+                steps.push({
+                  step: "list",
+                  ok: listOk,
+                  detail: listResult.ok
+                    ? `count=${String(listResult.value.length)}, enabled=${String(listResult.value[0]?.enabled)}`
+                    : listResult.error.message,
+                });
+
+                // Disable — verify API success
+                const disableResult = await disablePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "disable",
+                  ok: disableResult.ok,
+                  detail: disableResult.ok ? "disabled" : disableResult.error.message,
+                });
+
+                // List after disable — verify plugin shows as disabled
+                const listAfterDisable = await listPlugins(config);
+                const disableListOk =
+                  listAfterDisable.ok &&
+                  listAfterDisable.value.length === 1 &&
+                  listAfterDisable.value[0]?.enabled === false;
+                steps.push({
+                  step: "list-after-disable",
+                  ok: disableListOk,
+                  detail: listAfterDisable.ok
+                    ? `enabled=${String(listAfterDisable.value[0]?.enabled)}`
+                    : listAfterDisable.error.message,
+                });
+
+                // Enable — verify API success
+                const enableResult = await enablePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "enable",
+                  ok: enableResult.ok,
+                  detail: enableResult.ok ? "enabled" : enableResult.error.message,
+                });
+
+                // Remove — verify API success
+                const removeResult = await removePlugin(config, "lifecycle-plugin");
+                steps.push({
+                  step: "remove",
+                  ok: removeResult.ok,
+                  detail: removeResult.ok ? "removed" : removeResult.error.message,
+                });
+
+                // Final list — verify empty
+                const finalList = await listPlugins(config);
+                const finalListOk = finalList.ok && finalList.value.length === 0;
+                steps.push({
+                  step: "list-after-remove",
+                  ok: finalListOk,
+                  detail: finalList.ok
+                    ? `count=${String(finalList.value.length)}`
+                    : finalList.error.message,
+                });
+
+                return {
+                  allPassed: steps.every((s) => s.ok),
+                  stepCount: steps.length,
+                  steps,
+                };
+              } finally {
+                await rm(tmpRoot, { recursive: true, force: true });
+              }
+            },
+          });
+          if (!result.ok)
+            throw new Error(`Failed to build plugin_lifecycle tool: ${result.error.message}`);
+          return result.value;
+        },
+      }),
+    ],
     maxTurns: 2,
   },
 ];
@@ -2995,6 +3523,50 @@ if (mcpQuery !== undefined) {
   (mcpQuery as { providers: ComponentProvider[] }).providers = [mcpSetup.provider];
 }
 
+// Wire skills-mcp bridge: MCP resolver tools → skill registry via bridge
+{
+  const bridgeMcpServer = createTestMcpServer();
+  const [bridgeClientSide, bridgeServerSide] = InMemoryTransport.createLinkedPair();
+  await bridgeMcpServer.connect(bridgeServerSide);
+  const bridgeConn = createMcpConnection(
+    resolveServerConfig({ kind: "stdio", name: "bridge-mcp", command: "echo" }),
+    undefined,
+    {
+      createClient: () => new McpSdkClient({ name: "bridge-client", version: "1.0.0" }) as never,
+      createTransport: () => ({
+        start: async () => {},
+        close: async () => {
+          await bridgeClientSide.close();
+        },
+        sdkTransport: bridgeClientSide,
+        get sessionId() {
+          return undefined;
+        },
+        onEvent: () => () => {},
+      }),
+    },
+  );
+  const bridgeResolver = createMcpResolver([bridgeConn]);
+  const bridge = createSkillsMcpBridge({
+    resolver: bridgeResolver,
+    runtime: bridgeSkillRuntime,
+  });
+  await bridge.sync();
+  // Verify MCP tools appeared as skills
+  const bridgeDiscovered = await bridgeSkillRuntime.discover();
+  if (bridgeDiscovered.ok) {
+    const mcpSkills = [...bridgeDiscovered.value.values()].filter((s) => s.source === "mcp");
+    console.log(
+      `Skills-MCP bridge: ${mcpSkills.length} MCP tools registered as skills: [${mcpSkills.map((s) => s.name).join(", ")}]`,
+    );
+  }
+  const bridgeProvider = createSkillProvider(bridgeSkillRuntime);
+  const bridgeQuery = queries.find((q) => q.name === "skills-mcp-bridge");
+  if (bridgeQuery !== undefined) {
+    (bridgeQuery as { providers: ComponentProvider[] }).providers = [bridgeProvider];
+  }
+}
+
 // Also record a cassette for MCP tool-use (model sees the MCP tool)
 const mcpToolDescriptors = await mcpSetup.provider.attach({
   pid: { id: "record" as never, name: "record", type: "worker", depth: 0 },
@@ -3194,6 +3766,19 @@ await recordCassette("skill-tool-use", () =>
   }),
 );
 
+// skills-mcp-bridge: text-only response (bridge registers MCP tools as skills)
+await recordCassette("skills-mcp-bridge", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text: "What is 7 + 3? Reply with just the number." }],
+      },
+    ],
+  }),
+);
+
 await recordCassette("exfiltration-guard-block", () =>
   modelAdapter.stream({
     messages: [
@@ -3209,6 +3794,85 @@ await recordCassette("exfiltration-guard-block", () =>
       },
     ],
     tools: [sendMessageTool.descriptor],
+  }),
+);
+
+await recordCassette("notebook-read", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: `Use the notebook_read tool to read the notebook at "${NOTEBOOK_FIXTURE}" and report how many cells it has and their types.`,
+          },
+        ],
+      },
+    ],
+    tools: [notebookReadTool.descriptor],
+  }),
+);
+
+await recordCassette("notebook-add-cell", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: `Use the notebook_add_cell tool to add a new code cell with source "print('added by golden query')" at index 1 in the notebook at "${notebookTmpPath}". Then use notebook_read to confirm the cell count increased to 4.`,
+          },
+        ],
+      },
+    ],
+    tools: [notebookReadTool.descriptor, notebookAddCellTool.descriptor],
+  }),
+);
+
+// lsp-hover uses Sonnet 4.6 — Gemini 2.0 Flash returns 400 on tool names with '/' separators
+await recordCassette(
+  "lsp-hover",
+  () =>
+    sonnetAdapter.stream({
+      messages: [
+        {
+          senderId: "user",
+          timestamp: Date.now(),
+          content: [
+            {
+              kind: "text",
+              text:
+                'First use the "lsp__golden-lsp__open_document" tool to open a document with uri "file:///src/main.ts" and content "function greet(name: string) { return name; }". ' +
+                'Then use the "lsp__golden-lsp__hover" tool to get hover info at uri "file:///src/main.ts", line 0, character 9. ' +
+                "Report the hover result.",
+            },
+          ],
+        },
+      ],
+      tools: lspTools.map((t) => t.descriptor),
+    }),
+  { model: SONNET_MODEL },
+);
+
+await recordCassette("browser-snapshot", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Use the browser_snapshot tool to take a snapshot of the current page. Report what page elements you see.",
+          },
+        ],
+      },
+    ],
+    tools: [browserSnapshotForCassette.descriptor],
   }),
 );
 
@@ -3315,7 +3979,7 @@ await mcpServerClient.close();
 await mcpPlatformServer.stop();
 nexusTransport?.close();
 
-console.log(`\nDone. ${8 + queries.length} fixture files ready:`);
+console.log(`\nDone. ${12 + queries.length} fixture files ready:`);
 console.log("  fixtures/simple-text.cassette.json");
 console.log("  fixtures/tool-use.cassette.json");
 console.log("  fixtures/task-tools.cassette.json");
@@ -3326,6 +3990,10 @@ console.log("  fixtures/plan-mode.cassette.json");
 console.log("  fixtures/ask-user.cassette.json");
 console.log("  fixtures/interaction-full.cassette.json");
 console.log("  fixtures/mcp-tool-use.cassette.json");
+console.log("  fixtures/notebook-read.cassette.json");
+console.log("  fixtures/notebook-add-cell.cassette.json");
+console.log("  fixtures/lsp-hover.cassette.json");
+console.log("  fixtures/browser-snapshot.cassette.json");
 for (const q of queries) {
   console.log(`  fixtures/${q.name}.trajectory.json`);
 }

@@ -2,6 +2,7 @@
 
 exports[`@koi/hooks API surface . has stable type surface 1`] = `
 "import { HookConfig, HookEvent, HookExecutionResult, SpawnFn, HookDecision, HookEnvPolicy, HookFilter, Result, KoiError, KoiMiddleware, JsonObject, HookRedactionConfig, AgentHookConfig, CommandHookConfig, HttpHookConfig, PromptHookConfig } from '@koi/core';
+import { PromptModelCaller } from '@koi/hook-prompt';
 import { z } from 'zod';
 
 /**
@@ -237,6 +238,65 @@ type EnvRecordExpandResult = EnvRecordExpandOk | EnvRecordExpandError;
 declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>, allowedVars?: ReadonlySet<string> | undefined): EnvRecordExpandResult;
 
 /**
+ * DNS-level SSRF protection for HTTP hooks.
+ *
+ * Validates resolved IPs against blocked ranges to prevent DNS rebinding
+ * attacks. Adapted from @koi/tools-web url-policy.ts with one key
+ * difference: narrow loopback (127.0.0.1, ::1) is ALLOWED for dev hooks.
+ *
+ * Defense layers:
+ * 1. URL string validation (hook-validation.ts — HTTPS/loopback policy)
+ * 2. DNS resolution + IP validation (this module)
+ * 3. IP pinning for HTTP (rewrites URL to resolved IP + Host header)
+ * 4. Redirect blocking (executor.ts — \`redirect: "error"\`)
+ */
+/** Injectable DNS resolver — returns all resolved IPs for a hostname. */
+type DnsResolverFn = (hostname: string) => Promise<readonly string[]>;
+interface ResolvedUrl {
+    readonly blocked: false;
+    readonly hostname: string;
+    readonly ip: string;
+}
+interface BlockedUrl {
+    readonly blocked: true;
+    readonly reason: string;
+}
+/** Result of DNS resolution + IP validation. */
+type DnsValidationResult = ResolvedUrl | BlockedUrl;
+/** IP-pinned fetch target with original Host header. */
+interface PinnedUrl {
+    readonly url: string;
+    readonly hostHeader: string;
+}
+/**
+ * Check whether an IP is in a blocked range.
+ *
+ * Narrow loopback is allowed: exactly \`127.0.0.1\` and \`::1\`.
+ * All other loopback IPs (127.0.0.2, etc.) are blocked to prevent
+ * manifest-driven probing of services bound on other loopback addresses.
+ */
+declare function isBlockedHookIp(ip: string): boolean;
+/**
+ * Resolve a hook URL's hostname and validate all resolved IPs.
+ * Returns the first valid IP or a blocked result with reason.
+ *
+ * IP literals are validated directly without DNS resolution.
+ */
+declare function resolveAndValidateHookUrl(url: string, resolver: DnsResolverFn): Promise<DnsValidationResult>;
+/**
+ * Rewrite an HTTP URL to connect to a specific resolved IP.
+ * Returns undefined for HTTPS — Bun's TLS SNI behavior with IP URLs
+ * is unverified, so HTTPS hooks accept a small TOCTOU window mitigated
+ * by redirect blocking and the HTTPS-only default policy.
+ */
+declare function pinResolvedIp(originalUrl: string, resolvedIp: string): PinnedUrl | undefined;
+/**
+ * Default DNS resolver using Bun.dns.lookup.
+ * Returns all resolved addresses (IPv4 + IPv6).
+ */
+declare function defaultHookDnsResolver(hostname: string): Promise<readonly string[]>;
+
+/**
  * Hook executor — dispatches matching hooks with parallel/serial execution.
  *
  * Uses AbortSignal.any() to compose per-hook timeouts with session-level
@@ -257,7 +317,7 @@ declare function expandEnvVarsInRecord(record: Readonly<Record<string, string>>,
  * @param agentExecutor - Optional executor for agent-type hooks (injected via middleware)
  * @returns Results for all matching hooks, in declaration order
  */
-declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined): Promise<readonly HookExecutionResult[]>;
+declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, sessionSignal?: AbortSignal | undefined, envPolicy?: HookEnvPolicy | undefined, agentExecutor?: HookExecutor | undefined, promptExecutor?: HookExecutor | undefined, dnsResolver?: DnsResolverFn | undefined): Promise<readonly HookExecutionResult[]>;
 
 /**
  * Hook filter matching — determines whether a hook should fire for a given event.
@@ -274,6 +334,33 @@ declare function executeHooks(hooks: readonly HookConfig[], event: HookEvent, se
  * @param event - The event to test against.
  */
 declare function matchesHookFilter(filter: HookFilter | undefined, event: HookEvent): boolean;
+
+/**
+ * Header validation for HTTP hooks.
+ *
+ * Rejects headers containing control characters (CRLF/NUL) rather than
+ * silently stripping them — fail-closed prevents silent mutation of
+ * auth tokens or signing keys after env-var expansion.
+ *
+ * Also blocks reserved headers that could interfere with SSRF pinning
+ * or HTTP framing.
+ */
+/** Headers reserved for the SSRF layer or HTTP framing — must not be set by hook configs. */
+declare const RESERVED_HEADER_NAMES: ReadonlySet<string>;
+/**
+ * Returns true if the header value is safe (no CRLF or NUL bytes).
+ */
+declare function validateHeaderValue(value: string): boolean;
+/**
+ * Validate all values in a header record.
+ * Returns undefined on success, or an error message naming the first offending key.
+ */
+declare function validateHeaders(headers: Readonly<Record<string, string>>): string | undefined;
+/**
+ * Check whether any header name is reserved (case-insensitive).
+ * Returns undefined on success, or an error message naming the offending header.
+ */
+declare function checkReservedHeaders(headers: Readonly<Record<string, string>>): string | undefined;
 
 /**
  * Shared hook validation — URL policy, timeout resolution, fail mode defaults.
@@ -361,8 +448,18 @@ interface CreateHookMiddlewareOptions {
      * Provided by the L1 engine at middleware wiring time.
      */
     readonly spawnFn?: SpawnFn | undefined;
+    /**
+     * Model caller for prompt-type hooks. Required when any hook has \`kind: "prompt"\`.
+     * Provided by the L1 engine at middleware wiring time.
+     */
+    readonly promptCallFn?: PromptModelCaller | undefined;
     /** System-wide env-var policy for allowlisting. */
     readonly envPolicy?: HookEnvPolicy | undefined;
+    /**
+     * Custom DNS resolver for SSRF validation. Defaults to Bun.dns.lookup.
+     * Injectable for testing or environments with custom DNS infrastructure.
+     */
+    readonly dnsResolver?: DnsResolverFn | undefined;
     /**
      * Maximum time (ms) to wait for post-tool hooks before suppressing output.
      * Defaults to \`POST_TOOL_HOOK_DEADLINE_MS\` (5000ms).
@@ -454,6 +551,42 @@ interface RedactedPayload {
 declare function redactEventData(data: JsonObject | undefined, config: HookRedactionConfig | undefined): RedactedPayload;
 
 /**
+ * Prompt executor adapter — bridges @koi/hook-prompt into the HookExecutor interface.
+ *
+ * Wraps the lightweight PromptHookExecutor (which returns bare HookDecision) with
+ * the full HookExecutionResult contract required by the hooks pipeline: duration
+ * measurement, abort/timeout discrimination, executionFailed flags for once-hook
+ * retry, and payload size capping.
+ */
+
+/** Options for creating a prompt executor adapter. */
+interface CreatePromptAdapterOptions {
+    /** Model caller injected by L1 at middleware wiring time. */
+    readonly caller: PromptModelCaller;
+}
+/**
+ * Adapts @koi/hook-prompt's PromptHookExecutor to the HookExecutor interface.
+ *
+ * Adds pipeline-level concerns that the inner executor intentionally omits:
+ * - AbortSignal handling with timeout/cancellation discrimination
+ * - HookExecutionResult with executionFailed/aborted flags for once-hook correctness
+ * - Per-session token budget tracking
+ * - Event data size capping
+ */
+declare class PromptExecutorAdapter implements HookExecutor {
+    readonly name = "prompt";
+    private readonly inner;
+    private readonly sessions;
+    constructor(options: CreatePromptAdapterOptions);
+    canHandle(hook: HookConfig): boolean;
+    execute(hook: HookConfig, event: HookEvent, signal: AbortSignal): Promise<HookExecutionResult>;
+    cleanupSession(sessionId: string): void;
+    private checkBudget;
+    private consumeBudget;
+    private getOrCreateBudget;
+}
+
+/**
  * Hook registry — session-scoped hook registration and cleanup.
  *
  * Manages the lifecycle of hooks within a session: registration on session
@@ -507,6 +640,10 @@ interface HookRegistry {
 interface CreateHookRegistryOptions {
     /** Optional executor for agent-type hooks, threaded through to executeHooks. */
     readonly agentExecutor?: HookExecutor | undefined;
+    /** Optional executor for prompt-type hooks, threaded through to executeHooks. */
+    readonly promptExecutor?: HookExecutor | undefined;
+    /** Custom DNS resolver for SSRF validation in HTTP hooks. */
+    readonly dnsResolver?: DnsResolverFn | undefined;
     /**
      * Synchronous observer tap — called after every non-empty execute() with
      * the results and the trigger event. Used by ATIF trajectory recording.
@@ -533,6 +670,6 @@ declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, promptHookSchema, redactEventData, resolveFailMode, resolveTimeout, validateHookUrl, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookVerdictResult, type LoadHooksResult, type PayloadStatus, type PinnedUrl, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, agentHookSchema, aggregateDecisions, aggregatePostDecisions, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, validateHeaderValue, validateHeaders, validateHookUrl, verdictToDecision };
 "
 `;

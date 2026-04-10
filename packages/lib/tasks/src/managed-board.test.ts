@@ -3,13 +3,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { KoiError, TaskResult } from "@koi/core";
+import type { EngineEvent, KoiError, TaskBoardEvent, TaskResult } from "@koi/core";
 import { taskItemId } from "@koi/core";
 import { createManagedTaskBoard } from "./managed-board.js";
 import { createMemoryTaskBoardStore } from "./memory-store.js";
+import { createFlakyStore } from "./test-helpers.js";
 
 function agentId(id: string): import("@koi/core").AgentId {
   return id as import("@koi/core").AgentId;
@@ -299,5 +300,155 @@ describe("nextId", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.value.get(id)).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Event buffering (#1557 review fix 11A)
+// ---------------------------------------------------------------------------
+//
+// ManagedTaskBoard buffers all onEvent and onEngineEvent notifications during
+// a mutation and flushes them ONLY after persistence succeeds. This prevents
+// the "observer saw committed state that never actually landed on disk" bug.
+// These tests pin the invariant with a flaky store that can fail puts on demand.
+
+describe("ManagedTaskBoard — event buffering", () => {
+  test("persistence failure drops all buffered user events for that mutation", async () => {
+    const store = createFlakyStore({ failOnPut: 1 });
+    const events: TaskBoardEvent[] = [];
+    const managed = await createManagedTaskBoard({
+      store,
+      boardConfig: {
+        onEvent: (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    // The first put() will throw — mutation should return ok:false
+    // AND onEvent must NOT be called for this mutation.
+    const r = await managed.add({ id: taskItemId("task_1"), description: "will fail" });
+    expect(r.ok).toBe(false);
+    expect(events).toHaveLength(0);
+  });
+
+  test("persistence success flushes user events AFTER store.put returns", async () => {
+    const store = createMemoryTaskBoardStore();
+    const eventOrder: string[] = [];
+
+    // Spy on store.put to record call order
+    const originalPut = store.put.bind(store);
+    Object.assign(store, {
+      put: (item: import("@koi/core").Task): void | Promise<void> => {
+        eventOrder.push(`put:${item.id}`);
+        return originalPut(item);
+      },
+    });
+
+    const managed = await createManagedTaskBoard({
+      store,
+      boardConfig: {
+        onEvent: (event) => {
+          if (event.kind === "task:added") {
+            eventOrder.push(`onEvent:${event.task.id}`);
+          }
+        },
+      },
+    });
+
+    const r = await managed.add({ id: taskItemId("task_1"), description: "success path" });
+    expect(r.ok).toBe(true);
+    // The put must happen BEFORE the onEvent fires (no split-brain)
+    expect(eventOrder).toEqual(["put:task_1", "onEvent:task_1"]);
+  });
+
+  test("onEvent throwing does not fail the mutation", async () => {
+    const store = createMemoryTaskBoardStore();
+    const errors: unknown[] = [];
+    const managed = await createManagedTaskBoard({
+      store,
+      boardConfig: {
+        onEvent: () => {
+          throw new Error("boom from onEvent");
+        },
+        onEventError: (err) => {
+          errors.push(err);
+        },
+      },
+    });
+
+    const r = await managed.add({ id: taskItemId("task_1"), description: "test" });
+    // Mutation result is still ok:true — the thrown observer didn't break it
+    expect(r.ok).toBe(true);
+    // onEventError received the throw
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("boom from onEvent");
+
+    // And the next mutation still works
+    const r2 = await managed.add({ id: taskItemId("task_2"), description: "test2" });
+    expect(r2.ok).toBe(true);
+  });
+
+  test("multi-event mutations (addAll) flush all events in order", async () => {
+    const store = createMemoryTaskBoardStore();
+    const events: TaskBoardEvent[] = [];
+    const managed = await createManagedTaskBoard({
+      store,
+      boardConfig: {
+        onEvent: (event) => {
+          events.push(event);
+        },
+      },
+    });
+
+    const r = await managed.addAll([
+      { id: taskItemId("task_1"), description: "first" },
+      { id: taskItemId("task_2"), description: "second" },
+      { id: taskItemId("task_3"), description: "third" },
+    ]);
+    expect(r.ok).toBe(true);
+    // All 3 task:added events fired, in input order
+    expect(events).toHaveLength(3);
+    const addedIds = events
+      .filter((e): e is TaskBoardEvent & { readonly kind: "task:added" } => e.kind === "task:added")
+      .map((e) => e.task.id);
+    expect(addedIds).toEqual([taskItemId("task_1"), taskItemId("task_2"), taskItemId("task_3")]);
+  });
+
+  test("persistence failure also suppresses engine events (plan_update/task_progress)", async () => {
+    const store = createFlakyStore({ failOnPut: 1 });
+    const engineEvents: EngineEvent[] = [];
+    const managed = await createManagedTaskBoard({
+      store,
+      agentId: agentId("a1"),
+      onEngineEvent: (e) => {
+        engineEvents.push(e);
+      },
+    });
+
+    const r = await managed.add({ id: taskItemId("task_1"), description: "will fail" });
+    expect(r.ok).toBe(false);
+    // No task_progress / plan_update for the failed mutation
+    expect(engineEvents).toHaveLength(0);
+  });
+
+  test("engine events fire AFTER persistence on success", async () => {
+    const store = createMemoryTaskBoardStore();
+    const engineEvents: EngineEvent[] = [];
+    const managed = await createManagedTaskBoard({
+      store,
+      agentId: agentId("a1"),
+      onEngineEvent: (e) => {
+        engineEvents.push(e);
+      },
+    });
+
+    const r = await managed.add({ id: taskItemId("task_1"), description: "success" });
+    expect(r.ok).toBe(true);
+    // At least one task_progress event for the added task
+    const taskProgress = engineEvents.filter((e) => e.kind === "task_progress");
+    expect(taskProgress.length).toBeGreaterThanOrEqual(1);
+    // And the task is actually persisted in the store
+    expect(await store.get(taskItemId("task_1"))).toBeDefined();
   });
 });

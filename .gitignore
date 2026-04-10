@@ -29,4 +29,7 @@ nexus-data/
 session/
 !packages/lib/session/
 tasks/
+!packages/lib/tasks/
+!packages/lib/task-tools/
+!packages/lib/task-board/
 varfolders/

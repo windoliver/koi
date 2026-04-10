@@ -379,6 +379,42 @@ describeE2E("Full-stack golden: ALL L2 packages in ATIF trajectory", () => {
       expect(span.durationMs).toBeGreaterThanOrEqual(0);
     }
 
+    // --- Issue 11: Schema-level assertions for reportDecision data in MW spans ---
+    // @koi/hooks: wrapToolCall span must have a HookFireRecord in decisions
+    const hooksToolSpan = mwSpans.find(
+      (s) => s.metadata?.middlewareName === "hooks" && s.metadata?.hook === "wrapToolCall",
+    );
+    if (hooksToolSpan !== undefined) {
+      const decisions = hooksToolSpan.metadata?.decisions as readonly JsonObject[] | undefined;
+      if (decisions !== undefined && decisions.length > 0) {
+        const record = decisions[0] as JsonObject;
+        // HookFireRecord: { event, toolId?, hooks: [{ name, decision, durationMs, error? }] }
+        expect(record.event).toMatch(/^(tool\.before|compact\.before)$/);
+        const hookEntries = record.hooks as readonly JsonObject[] | undefined;
+        if (hookEntries !== undefined && hookEntries.length > 0) {
+          expect(typeof hookEntries[0]?.name).toBe("string");
+          expect(hookEntries[0]?.decision).toMatch(/^(continue|block|modify|transform|error)$/);
+          expect(typeof hookEntries[0]?.durationMs).toBe("number");
+        }
+      }
+    }
+
+    // @koi/middleware-permissions: wrapToolCall span must have a decision record
+    const permToolSpan = mwSpans.find(
+      (s) => s.metadata?.middlewareName === "permissions" && s.metadata?.hook === "wrapToolCall",
+    );
+    if (permToolSpan !== undefined) {
+      const decisions = permToolSpan.metadata?.decisions as readonly JsonObject[] | undefined;
+      if (decisions !== undefined && decisions.length > 0) {
+        const record = decisions[0] as JsonObject;
+        expect(record.phase).toMatch(/^(filter|execute)$/);
+        if (record.phase === "execute") {
+          expect(typeof record.toolId).toBe("string");
+          expect(record.action).toMatch(/^(allow|deny|ask)$/);
+        }
+      }
+    }
+
     // --- Verify ATIF file on disk ---
     const files = await readdir(trajDir);
     expect(files.filter((f) => f.endsWith(".atif.json")).length).toBeGreaterThan(0);

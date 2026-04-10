@@ -34,9 +34,10 @@ import {
 } from "../auto-scroll/auto-scroll-state.js";
 import { useTuiStore } from "../store-context.js";
 import { MessageRow } from "./message-row.js";
+import { DEFAULT_SPINNER } from "./spinners.js";
 
-const SPINNER_FRAME_COUNT = 10;
-const SPINNER_INTERVAL_MS = 80;
+const SPINNER_FRAME_COUNT = DEFAULT_SPINNER.frames.length;
+const SPINNER_INTERVAL_MS = DEFAULT_SPINNER.intervalMs;
 
 interface MessageListProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;

@@ -13,10 +13,14 @@
  *   @koi/tasks                — in-memory task board for background job tracking
  *   @koi/task-tools           — task_create, task_get, task_update, task_list, task_stop, task_output
  *   @koi/tools-web            — web_fetch
+ *   @koi/tool-notebook        — notebook_read, notebook_add_cell, notebook_replace_cell, notebook_delete_cell
  *   @koi/session              — JSONL transcript recording (optional, via config.session)
  *   @koi/engine               — system prompt middleware (optional, via config.systemPrompt)
+ *   @koi/middleware-goal       — adaptive goal reminders (optional, via config.goals)
+ *   @koi/skills-runtime        — three-tier skill discovery (bundled → user → project)
+ *   @koi/skill-tool            — on-demand skill loading meta-tool (Skill)
  *
- * MCP transport wiring is deferred — tracked as a follow-up to #1542.
+ * MCP wired: loads .mcp.json, creates resolver + provider, bridges MCP tools → skills.
  * Hook loading from user config is deferred — currently passes empty hooks.
  *
  * Returns the KoiRuntime, the mutable transcript array (for session resets),
@@ -52,10 +56,21 @@ import {
 } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
+import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import type { McpResolver } from "@koi/mcp";
+import {
+  createMcpComponentProvider,
+  createMcpConnection,
+  createMcpResolver,
+  loadMcpJsonFile,
+  resolveServerConfig,
+} from "@koi/mcp";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createExtractionMiddleware } from "@koi/middleware-extraction";
+import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
   createRetrySignalBroker,
@@ -64,12 +79,22 @@ import {
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { runTurn } from "@koi/query-engine";
-import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
+import type { SkillsMcpBridge } from "@koi/runtime";
+import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
-// createSpawnTools replaced by createSpawnToolProvider from @koi/engine for real spawning
+import { createSkillTool } from "@koi/skill-tool";
+import type { SkillsRuntime } from "@koi/skills-runtime";
+// NOTE: createSpawnTools (legacy stub-based spawn) is replaced by
+// createSpawnToolProvider from @koi/engine for real agent spawning (#1583).
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
+import {
+  createNotebookAddCellTool,
+  createNotebookDeleteCellTool,
+  createNotebookReadTool,
+  createNotebookReplaceCellTool,
+} from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
 import {
   createBuiltinSearchProvider,
@@ -79,6 +104,7 @@ import {
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createTranscriptAdapter } from "./engine-adapter.js";
+import { loadPluginComponents } from "./plugin-activation.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -230,6 +256,13 @@ export interface TuiRuntimeConfig {
    */
   readonly systemPrompt?: string | undefined;
   /**
+   * Goal objectives for the middleware-goal adaptive reminder system.
+   * When provided, createGoalMiddleware is installed in the middleware stack
+   * to inject goal reminders and detect drift/completion.
+   * When omitted, no goal middleware is installed.
+   */
+  readonly goals?: readonly string[] | undefined;
+  /**
    * Session transcript config for JSONL recording + session resume.
    * When omitted, no session transcript middleware is installed.
    */
@@ -239,6 +272,12 @@ export interface TuiRuntimeConfig {
         readonly sessionId: SessionId;
       }
     | undefined;
+  /**
+   * Optional SkillsRuntime for MCP bridge integration.
+   * When provided and .mcp.json exists, MCP tools are registered as skills
+   * via createSkillsMcpBridge.
+   */
+  readonly skillsRuntime?: SkillsRuntime | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -312,6 +351,55 @@ export interface TuiRuntimeHandle {
 }
 
 // ---------------------------------------------------------------------------
+// MCP loading (optional, from .mcp.json)
+// ---------------------------------------------------------------------------
+
+interface McpSetup {
+  readonly resolver: McpResolver;
+  readonly provider: import("@koi/core").ComponentProvider;
+  readonly bridge: SkillsMcpBridge | undefined;
+  readonly dispose: () => void;
+}
+
+async function loadMcp(
+  cwd: string,
+  skillsRuntime: SkillsRuntime | undefined,
+): Promise<McpSetup | undefined> {
+  const mcpConfigPath = join(cwd, ".mcp.json");
+  const result = await loadMcpJsonFile(mcpConfigPath);
+  if (!result.ok) return undefined;
+  if (result.value.servers.length === 0) return undefined;
+
+  const connections = result.value.servers.map((server) =>
+    createMcpConnection(resolveServerConfig(server)),
+  );
+  const resolver = createMcpResolver(connections);
+  const provider = createMcpComponentProvider({ resolver });
+
+  // Wire bridge if skillsRuntime provided
+  let bridge: SkillsMcpBridge | undefined;
+  if (skillsRuntime !== undefined) {
+    bridge = createSkillsMcpBridge({ resolver, runtime: skillsRuntime });
+    try {
+      await bridge.sync();
+    } catch {
+      // Non-fatal — MCP tools just won't appear as skills
+      bridge = undefined;
+    }
+  }
+
+  return {
+    resolver,
+    provider,
+    bridge,
+    dispose: () => {
+      bridge?.dispose();
+      resolver.dispose();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -320,10 +408,50 @@ export interface TuiRuntimeHandle {
  *
  * Blueprint: record-cassettes.ts — this is the same composition used in
  * golden query recording, simplified to the TUI's surface (no ATIF file writes,
- * no hook agent executor, no MCP server lifecycle).
+ * no hook agent executor). MCP loaded from .mcp.json when present.
  */
 export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRuntimeHandle> {
-  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd() } = config;
+  const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+
+  // --- MCP setup (optional, from .mcp.json) ---
+  const mcpSetup = await loadMcp(cwd, skillsRuntime);
+
+  // --- Plugin activation: load enabled plugins' hooks, MCP, skills ---
+  const pluginUserRoot = join(homedir(), ".koi", "plugins");
+  const pluginComponents = await loadPluginComponents(pluginUserRoot);
+  if (pluginComponents.errors.length > 0) {
+    for (const err of pluginComponents.errors) {
+      console.warn(`[koi tui] plugin "${err.plugin}": ${err.error}`);
+    }
+  }
+  if (pluginComponents.middlewareNames.length > 0) {
+    console.warn(
+      `[koi tui] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+    );
+  }
+
+  // Register plugin skills with the SkillsRuntime (if any)
+  if (skillsRuntime !== undefined && pluginComponents.skillMetadata.length > 0) {
+    skillsRuntime.registerExternal(pluginComponents.skillMetadata);
+  }
+
+  // Create additional MCP connections from plugins
+  let pluginMcpSetup: McpSetup | undefined;
+  if (pluginComponents.mcpServers.length > 0) {
+    const connections = pluginComponents.mcpServers.map((server) =>
+      createMcpConnection(resolveServerConfig(server)),
+    );
+    const resolver = createMcpResolver(connections);
+    const provider = createMcpComponentProvider({ resolver });
+    pluginMcpSetup = {
+      resolver,
+      provider,
+      bridge: undefined,
+      dispose: () => {
+        resolver.dispose();
+      },
+    };
+  }
 
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
@@ -373,6 +501,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Absent/unreadable file = no hooks (empty array, middleware is a no-op).
   // Agent hooks (kind: "agent") are filtered out because the TUI does not provide
   // a spawnFn — createHookMiddleware throws if any agent hook is present without one.
+  // Prompt hooks (kind: "prompt") are supported via a lightweight PromptModelCaller
+  // that delegates to the TUI's model adapter for single-shot verification.
   const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
   // let: justified — set after async load
   let loadedHooks: readonly import("@koi/core").HookConfig[] = [];
@@ -392,8 +522,40 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   } catch {
     // Absent or unreadable — silently skip (no hooks configured)
   }
+
+  // Merge plugin hooks with user hooks (plugin hooks run first, user hooks override)
+  const allHooks: readonly import("@koi/core").HookConfig[] = [
+    ...pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+    ...loadedHooks,
+  ];
+
+  // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
+  // single-shot LLM verification. Builds a minimal ModelRequest with the
+  // verification prompt as a user message and the system prompt in the
+  // trusted systemPrompt field.
+  const promptCallFn: PromptModelCaller = {
+    complete: async (req) => {
+      const userMessage: InboundMessage = {
+        content: [{ kind: "text", text: req.userPrompt }],
+        senderId: "hook-prompt",
+        timestamp: Date.now(),
+      };
+      const response = await modelAdapter.complete({
+        messages: [userMessage],
+        model: req.model,
+        maxTokens: req.maxTokens,
+        systemPrompt: req.systemPrompt,
+        signal: AbortSignal.timeout(req.timeoutMs),
+        tools: [], // No tools for single-shot verification
+      });
+      return { text: response.content };
+    },
+  };
+
+  const hasPromptHooks = allHooks.some((h) => h.kind === "prompt");
   const hookMw = createHookMiddleware({
-    hooks: loadedHooks,
+    hooks: allHooks,
+    promptCallFn: hasPromptHooks ? promptCallFn : undefined,
     onExecuted: hookObserverTap,
   });
 
@@ -419,6 +581,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
+    { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
   ] as const;
   const permBackend = createPermissionBackend({
     mode: "default",
@@ -591,6 +754,35 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     operations: ["fetch"],
   });
 
+  // --- @koi/tool-notebook: .ipynb read/add/replace/delete ---
+  const notebookConfig = { cwd };
+  const notebookReadTool = createNotebookReadTool(notebookConfig);
+  const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
+  const notebookReplaceCellTool = createNotebookReplaceCellTool(notebookConfig);
+  const notebookDeleteCellTool = createNotebookDeleteCellTool(notebookConfig);
+  const notebookProviders = [
+    createSingleToolProvider({
+      name: "notebook-read",
+      toolName: "notebook_read",
+      createTool: () => notebookReadTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-add-cell",
+      toolName: "notebook_add_cell",
+      createTool: () => notebookAddCellTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-replace-cell",
+      toolName: "notebook_replace_cell",
+      createTool: () => notebookReplaceCellTool,
+    }),
+    createSingleToolProvider({
+      name: "notebook-delete-cell",
+      toolName: "notebook_delete_cell",
+      createTool: () => notebookDeleteCellTool,
+    }),
+  ];
+
   // --- @koi/memory-tools: in-memory memory backend ---
   // Same pattern as golden-query recording: in-memory Map-based backend.
   // Provides memory_store, memory_recall, memory_search, memory_delete tools.
@@ -600,6 +792,45 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     memoryDir: join(tmpdir(), "koi-tui-memory"),
   });
   const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
+
+  // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
+  // Three-tier discovery: bundled → user (~/.claude/skills) → project (.claude/skills).
+  // Project skills shadow user skills which shadow bundled skills.
+  //
+  // Known limitation: the Skill tool descriptor bakes the skill listing at creation
+  // time. After session reset, resolver.load() sees fresh files but the model still
+  // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
+  // in createKoi — tracked as a known limitation. The system prompt skill snapshot
+  // (built in tui-command.ts) is also static for the process lifetime.
+  // AbortController for skill loading — lives for the entire runtime lifetime.
+  // Not rotated on session reset (skill loading is stateless file reads).
+  const skillAbortController = new AbortController();
+  // skillsRuntime is provided by the caller (tui-command.ts) — reuse it for
+  // both MCP bridge wiring and the Skill meta-tool.
+  const skillToolResult =
+    skillsRuntime !== undefined
+      ? await createSkillTool({
+          resolver: skillsRuntime,
+          signal: skillAbortController.signal,
+          // No spawnFn — fork-mode skills via the legacy SpawnFn path are not supported.
+          // Real spawning happens via createSpawnToolProvider below (#1583).
+        })
+      : undefined;
+  const skillProvider = skillToolResult?.ok
+    ? createSingleToolProvider({
+        name: "skill",
+        toolName: "Skill",
+        createTool: () => skillToolResult.value,
+      })
+    : undefined;
+
+  // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
+  // Only installed when the caller provides objectives. Injects goal blocks
+  // into model messages and tracks drift/completion across turns.
+  const goalMw =
+    config.goals !== undefined && config.goals.length > 0
+      ? createGoalMiddleware({ objectives: config.goals })
+      : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -617,6 +848,31 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
+
+  // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
+  // Wraps the in-memory memory backend as a MemoryComponent for the extraction
+  // middleware. Extracted learnings are stored as standard MemoryRecord entries.
+  const extractionMw = createExtractionMiddleware({
+    memory: {
+      async recall() {
+        const result = await memoryBackend.recall("", undefined);
+        if (!result.ok) return [];
+        return result.value.map((r: MemoryRecord) => ({
+          content: r.content,
+          score: 1.0,
+          record: r,
+        }));
+      },
+      async store(content: string, options?: { readonly category?: string | undefined }) {
+        memoryBackend.store({
+          name: `extracted-${Date.now()}`,
+          description: options?.category ?? "extracted learning",
+          type: "feedback",
+          content,
+        });
+      },
+    },
+  });
 
   // --- System prompt middleware (C3-A) ---
   // Built before spawnToolProvider so children can inherit it. The system
@@ -732,7 +988,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     hookObserverMw,
     permMw,
     exfiltrationGuardMw,
+    extractionMw,
     semanticRetryMw,
+    ...(goalMw !== undefined ? [goalMw] : []),
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
@@ -764,8 +1022,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       bashBackgroundProvider,
       ...taskToolProviders,
       webProvider,
+      ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       spawnToolProvider,
+      ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
+      ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
+      ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
     loopDetection: false,
@@ -819,6 +1081,19 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       boardRef.current = newBoard;
 
       // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      //
+      // Known limitation: goal middleware state and skill surfaces are NOT reset
+      // on session:new / agent:clear. Goal state (completed items, reminder
+      // backoff, drift) persists across TUI session resets. Skill descriptor
+      // listing and system prompt skill snapshot are static for the process
+      // lifetime. Both require a full TUI restart to refresh.
+      //
+      // Manual lifecycle hook cycling (onSessionEnd/onSessionStart) is unsafe
+      // here because the aborted run's engine finally block also calls
+      // onSessionEnd on the same sessionId, creating a race that can delete
+      // freshly-initialized goal state. Rebuilding the runtime on reset would
+      // fix both, but requires createKoi to support hot-swapping — tracked as
+      // a known limitation.
       await trajectoryStore.prune(Date.now() + 86_400_000);
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
@@ -831,6 +1106,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // (task_stop can change board state without killing the OS process).
       const hadTasks = liveSubprocessCount > 0;
       bgController.abort();
+      mcpSetup?.dispose();
+      pluginMcpSetup?.dispose();
       return hadTasks;
     },
   };

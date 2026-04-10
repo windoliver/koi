@@ -17,8 +17,11 @@ import type {
 } from "@koi/core";
 import { buildEnvAllowSet, expandEnvVars, expandEnvVarsInRecord } from "./env.js";
 import { matchesHookFilter } from "./filter.js";
+import { checkReservedHeaders, validateHeaders } from "./header-sanitize.js";
 import type { HookExecutor } from "./hook-executor.js";
 import { resolveTimeout, validateHookUrl } from "./hook-validation.js";
+import type { DnsResolverFn } from "./ssrf.js";
+import { defaultHookDnsResolver, pinResolvedIp, resolveAndValidateHookUrl } from "./ssrf.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,6 +29,50 @@ import { resolveTimeout, validateHookUrl } from "./hook-validation.js";
 
 /** Grace period (ms) between SIGTERM and SIGKILL for stubborn child processes. */
 const SIGKILL_GRACE_MS = 2_000;
+
+/** Maximum hook response body size (64 KB) to prevent OOM from malicious endpoints. */
+const MAX_HOOK_RESPONSE_BYTES = 65_536;
+
+/** Result of bounded body read — includes truncation flag. */
+interface BoundedBodyResult {
+  readonly text: string;
+  readonly truncated: boolean;
+}
+
+/**
+ * Read a response body with a byte limit using streaming to prevent OOM.
+ * Cancels the stream once the limit is reached rather than buffering the entire body.
+ * Returns a truncated flag so callers can fail closed on oversized responses.
+ */
+async function readBoundedBody(response: Response, maxBytes: number): Promise<BoundedBodyResult> {
+  const reader = response.body?.getReader();
+  if (reader === undefined) return { text: "", truncated: false };
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done || value === undefined) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        chunks.push(value.subarray(0, value.byteLength - (totalBytes - maxBytes)));
+        truncated = true;
+        break;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  const merged = new Uint8Array(Math.min(totalBytes, maxBytes));
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { text: new TextDecoder().decode(merged), truncated };
+}
 
 // ---------------------------------------------------------------------------
 // Hook decision parsing
@@ -210,6 +257,7 @@ async function executeHttpHook(
   event: HookEvent,
   signal: AbortSignal,
   envPolicy?: HookEnvPolicy | undefined,
+  dnsResolver?: DnsResolverFn | undefined,
 ): Promise<HookExecutionResult> {
   const start = performance.now();
   try {
@@ -227,6 +275,26 @@ async function executeHttpHook(
         failClosed: hook.failClosed,
       };
     }
+
+    // DNS-level SSRF validation — resolve hostname, validate all IPs
+    const ssrfResult = await resolveAndValidateHookUrl(
+      hook.url,
+      dnsResolver ?? defaultHookDnsResolver,
+    );
+    if (ssrfResult.blocked) {
+      const durationMs = performance.now() - start;
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `SSRF blocked: ${ssrfResult.reason}`,
+        durationMs,
+        failClosed: hook.failClosed,
+      };
+    }
+
+    // IP pinning for HTTP — rewrite URL to resolved IP + Host header.
+    // HTTPS skips pinning (Bun TLS SNI unverified with IP URLs).
+    const pinned = pinResolvedIp(hook.url, ssrfResult.ip);
 
     // Build effective env-var allowlist from per-hook + policy
     const allowedVars = buildEnvAllowSet(hook.allowedEnvVars, envPolicy);
@@ -250,10 +318,41 @@ async function executeHttpHook(
         failClosed: hook.failClosed,
       };
     }
+    const userHeaders = expandedHeaders?.value ?? {};
+
+    // Reject reserved headers (Host, Content-Length, etc.)
+    const reservedErr = checkReservedHeaders(userHeaders);
+    if (reservedErr !== undefined) {
+      const durationMs = performance.now() - start;
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `reserved header: ${reservedErr}`,
+        durationMs,
+        failClosed: hook.failClosed,
+      };
+    }
+
+    // Reject headers with control characters (CRLF/NUL injection)
+    const headerErr = validateHeaders(userHeaders);
+    if (headerErr !== undefined) {
+      const durationMs = performance.now() - start;
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `header injection: ${headerErr}`,
+        durationMs,
+        failClosed: hook.failClosed,
+      };
+    }
+
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      ...(expandedHeaders?.value ?? {}),
+      ...userHeaders,
     };
+
+    // Serialize body once — used for both HMAC signing and fetch
+    const body = JSON.stringify(event);
 
     // HMAC-SHA256 signing if secret is provided
     if (hook.secret !== undefined) {
@@ -275,7 +374,6 @@ async function executeHttpHook(
           failClosed: hook.failClosed,
         };
       }
-      const body = JSON.stringify(event);
       const key = await crypto.subtle.importKey(
         "raw",
         new TextEncoder().encode(resolvedSecret.value),
@@ -287,13 +385,18 @@ async function executeHttpHook(
       headers["X-Hook-Signature"] = `sha256=${Buffer.from(sig).toString("hex")}`;
     }
 
+    // Use pinned IP for HTTP to close DNS-rebinding TOCTOU gap.
+    // HTTPS falls back to original URL (no pinning — see ssrf.ts).
+    const fetchUrl = pinned !== undefined ? pinned.url : hook.url;
+    const fetchHeaders = pinned !== undefined ? { ...headers, Host: pinned.hostHeader } : headers;
+
     // Block redirects to prevent SSRF — a 30x redirect could
     // send the event payload to an arbitrary HTTP endpoint, bypassing the
     // HTTPS/localhost validation enforced at schema level.
-    const response = await fetch(hook.url, {
+    const response = await fetch(fetchUrl, {
       method: hook.method ?? "POST",
-      headers,
-      body: JSON.stringify(event),
+      headers: fetchHeaders,
+      body,
       signal,
       redirect: "error",
     });
@@ -310,8 +413,27 @@ async function executeHttpHook(
       };
     }
 
-    const body = await response.text();
-    const decision = parseHookDecision(body);
+    // Read response with byte limit to prevent OOM from malicious endpoints.
+    // Stream chunks and abort after MAX_HOOK_RESPONSE_BYTES.
+    const { text: responseText, truncated } = await readBoundedBody(
+      response,
+      MAX_HOOK_RESPONSE_BYTES,
+    );
+
+    // Fail on truncated responses — an oversized body cannot be reliably
+    // parsed, and silently truncating would turn an intended "block" decision
+    // into a no-op "continue" (fail-open).
+    if (truncated) {
+      return {
+        ok: false,
+        hookName: hook.name,
+        error: `response body exceeded ${MAX_HOOK_RESPONSE_BYTES} bytes (truncated)`,
+        durationMs,
+        failClosed: hook.failClosed,
+      };
+    }
+
+    const decision = parseHookDecision(responseText);
     return { ok: true, hookName: hook.name, durationMs, decision };
   } catch (e: unknown) {
     const durationMs = performance.now() - start;
@@ -352,6 +474,8 @@ function executeSingleHook(
   sessionSignal: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
   agentExecutor?: HookExecutor | undefined,
+  promptExecutor?: HookExecutor | undefined,
+  dnsResolver?: DnsResolverFn | undefined,
 ): Promise<HookExecutionResult> {
   const timeoutMs = resolveTimeout(hook);
   const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
@@ -364,7 +488,7 @@ function executeSingleHook(
     case "command":
       return executeCommandHook(hook, event, composedSignal);
     case "http":
-      return executeHttpHook(hook, event, composedSignal, envPolicy);
+      return executeHttpHook(hook, event, composedSignal, envPolicy, dnsResolver);
     case "agent": {
       if (agentExecutor === undefined) {
         return Promise.resolve({
@@ -377,16 +501,16 @@ function executeSingleHook(
       return agentExecutor.execute(hook, event, composedSignal);
     }
     case "prompt": {
-      // Prompt hooks are executed by the @koi/hook-prompt package, not by this
-      // generic executor. If one reaches here, it means no prompt executor was
-      // wired. Return a fail-closed error so the hook is not silently skipped.
-      return Promise.resolve({
-        ok: false as const,
-        hookName: hook.name,
-        error: "Prompt hooks require a dedicated executor — wire @koi/hook-prompt",
-        durationMs: 0,
-        failClosed: hook.failClosed,
-      });
+      if (promptExecutor === undefined) {
+        return Promise.resolve({
+          ok: false as const,
+          hookName: hook.name,
+          error: "Prompt hooks require promptCallFn — provide it via CreateHookMiddlewareOptions",
+          durationMs: 0,
+          failClosed: hook.failClosed,
+        });
+      }
+      return promptExecutor.execute(hook, event, composedSignal);
     }
     default: {
       const _exhaustive: never = hook;
@@ -419,6 +543,8 @@ export async function executeHooks(
   sessionSignal?: AbortSignal | undefined,
   envPolicy?: HookEnvPolicy | undefined,
   agentExecutor?: HookExecutor | undefined,
+  promptExecutor?: HookExecutor | undefined,
+  dnsResolver?: DnsResolverFn | undefined,
 ): Promise<readonly HookExecutionResult[]> {
   const matching = hooks.filter((h) => matchesHookFilter(h.filter, event));
   if (matching.length === 0) {
@@ -433,7 +559,15 @@ export async function executeHooks(
     if (parallelBatch.length === 0) return;
     const settled = await Promise.allSettled(
       parallelBatch.map((entry) =>
-        executeSingleHook(entry.hook, event, sessionSignal, envPolicy, agentExecutor),
+        executeSingleHook(
+          entry.hook,
+          event,
+          sessionSignal,
+          envPolicy,
+          agentExecutor,
+          promptExecutor,
+          dnsResolver,
+        ),
       ),
     );
     for (let i = 0; i < settled.length; i++) {
@@ -461,7 +595,15 @@ export async function executeHooks(
     if (hook.serial === true) {
       // Flush any pending parallel batch before running serial hook
       await flushParallel();
-      results[i] = await executeSingleHook(hook, event, sessionSignal, envPolicy, agentExecutor);
+      results[i] = await executeSingleHook(
+        hook,
+        event,
+        sessionSignal,
+        envPolicy,
+        agentExecutor,
+        promptExecutor,
+        dnsResolver,
+      );
     } else {
       parallelBatch.push({ hook, index: i });
     }

@@ -74,6 +74,36 @@ function isReady(task: Task, items: ReadonlyMap<TaskItemId, Task>): boolean {
   });
 }
 
+/**
+ * Strip `metadata.delegatedTo` if present. Used by every transition that
+ * enters or exits `in_progress` to enforce the invariant that
+ * `delegatedTo` is a **pending-only marker**.
+ *
+ * Background: `task_delegate` (in `@koi/task-tools`) records a coordinator's
+ * intent to assign a pending task to a child by writing
+ * `metadata.delegatedTo`. Once the task is claimed (assign), the marker
+ * is stale history — the claim path IS the "delegation is done" signal.
+ * If we leave `delegatedTo` set on in_progress tasks, any later transition
+ * back to pending (retryable fail, unassign) would surface the stale
+ * marker and `task_delegate` would reject the task as already-delegated.
+ *
+ * Clearing at entry (`assign`) AND at exit (`unassign`, retryable `fail`)
+ * gives belt-and-suspenders coverage: live in_progress tasks never carry
+ * the marker, and any legacy state from pre-fix snapshots is normalized
+ * on the first transition.
+ *
+ * Returns `undefined` if stripping empties the metadata object, matching
+ * the Task interface's `metadata?` optional.
+ */
+function stripDelegatedTo(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  if (metadata === undefined || !("delegatedTo" in metadata)) return metadata;
+  const { delegatedTo: _discard, ...rest } = metadata as Record<string, unknown>;
+  void _discard;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
 function inputToTask(input: TaskInput, now: number): Task {
   return {
     id: input.id,
@@ -236,7 +266,41 @@ function createBoardFromState(
 ): TaskBoard {
   const maxRetries = config.maxRetries ?? DEFAULT_TASK_BOARD_CONFIG.maxRetries ?? 3;
   const now = (): number => Date.now();
-  const reverseAdj = buildReverseAdjacency(items);
+
+  // Lazy reverse adjacency — only built on demand for fail()/kill()/dependentsOf().
+  // Most mutations (assign, complete, update, etc.) never touch it, so most boards
+  // skip the O(V+E) build entirely. Each board snapshot is immutable, so the cache
+  // is safe for the board's lifetime — no invalidation logic required.
+  // let justified: lazy initialization, populated at most once per board snapshot.
+  let _reverseAdj: ReadonlyMap<TaskItemId, readonly TaskItemId[]> | undefined;
+  const getReverseAdj = (): ReadonlyMap<TaskItemId, readonly TaskItemId[]> => {
+    if (_reverseAdj === undefined) _reverseAdj = buildReverseAdjacency(items);
+    return _reverseAdj;
+  };
+
+  // Per-snapshot cache for blockedBy() lookups.
+  // Sentinel: a missing key means "not yet computed"; null means "no blocker".
+  // Boards are immutable, so this cache stays valid for the snapshot's lifetime.
+  // Hot path: TUI poll → task_list → toTaskSummary → board.blockedBy() per pending task.
+  const blockedByCache = new Map<TaskItemId, TaskItemId | null>();
+  const computeBlockedBy = (taskId: TaskItemId): TaskItemId | undefined => {
+    const cached = blockedByCache.get(taskId);
+    if (cached !== undefined) return cached === null ? undefined : cached;
+    const task = items.get(taskId);
+    if (task === undefined || task.status !== "pending") {
+      blockedByCache.set(taskId, null);
+      return undefined;
+    }
+    for (const dep of task.dependencies) {
+      const depTask = items.get(dep);
+      if (depTask !== undefined && depTask.status !== "completed") {
+        blockedByCache.set(taskId, dep);
+        return dep;
+      }
+    }
+    blockedByCache.set(taskId, null);
+    return undefined;
+  };
 
   function transitionTask(
     taskId: TaskItemId,
@@ -255,13 +319,27 @@ function createBoardFromState(
         ),
       };
     }
+    const ts = now();
+    // Strip metadata.delegatedTo at the entry to in_progress. The claim IS
+    // the "delegation is done" signal, so the marker becomes stale history
+    // and would otherwise re-surface if the task later returns to pending
+    // (via retryable fail, unassign, or orphan recovery). See the docblock
+    // on stripDelegatedTo() for the full invariant contract.
+    const nextMetadata = to === "in_progress" ? stripDelegatedTo(task.metadata) : task.metadata;
     const updated: Task = {
       ...task,
       status: to,
       version: task.version + 1,
-      updatedAt: now(),
+      updatedAt: ts,
+      metadata: nextMetadata,
       // Clear activeForm on terminal transitions — stale spinner text must not persist.
       ...(isTerminalTaskStatus(to) ? { activeForm: undefined } : {}),
+      // Set startedAt on every pending → in_progress transition (initial assign AND
+      // retry-after-failure). The pre-image status is `pending` here because
+      // isValidTransition guards entry: only pending → in_progress is valid for `to`.
+      // Patches like activeForm go through update(), not transitionTask(), so they
+      // never bump startedAt. This is what makes durationMs accurate on completion.
+      ...(to === "in_progress" ? { startedAt: ts } : {}),
       ...(patch ?? {}),
     };
     const newItems = new Map(items);
@@ -450,12 +528,18 @@ function createBoardFromState(
       // Directly build the updated task bypassing transitionTask — in_progress → pending
       // is not in VALID_TASK_TRANSITIONS (which exists to prevent accidental resets by
       // generic callers). unassign() is the intentional, guarded exception.
+      //
+      // Strip metadata.delegatedTo on the way out. The invariant is that
+      // delegatedTo is a pending-only marker: once a task was claimed
+      // (assign) it should never carry the marker again. See
+      // stripDelegatedTo() docblock for the full rationale.
       const updated: Task = {
         ...task,
         status: "pending",
         assignedTo: undefined,
         version: task.version + 1,
         updatedAt: now(),
+        metadata: stripDelegatedTo(task.metadata),
       };
       const newItems = new Map(items);
       newItems.set(taskId, updated);
@@ -499,7 +583,11 @@ function createBoardFromState(
       const canRetry = error.retryable === true && task.retries < maxRetries;
 
       if (canRetry) {
-        // Retry: back to pending with incremented retry count
+        // Retry: back to pending with incremented retry count.
+        // Strip metadata.delegatedTo — this is an in_progress → pending
+        // transition that bypasses transitionTask, so we apply the
+        // pending-only-marker invariant directly here. See the
+        // stripDelegatedTo() docblock for the full rationale.
         const updated: Task = {
           ...task,
           status: "pending",
@@ -508,6 +596,7 @@ function createBoardFromState(
           assignedTo: undefined,
           error,
           updatedAt: now(),
+          metadata: stripDelegatedTo(task.metadata),
         };
         const newItems = new Map(items);
         newItems.set(taskId, updated);
@@ -525,7 +614,7 @@ function createBoardFromState(
         taskId,
         result.value.items,
         unreachableIds,
-        reverseAdj,
+        getReverseAdj(),
       );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
@@ -551,7 +640,7 @@ function createBoardFromState(
         taskId,
         result.value.items,
         unreachableIds,
-        reverseAdj,
+        getReverseAdj(),
       );
       const newUnreachable = new Set(unreachableIds);
       for (const id of newlyUnreachable) {
@@ -640,7 +729,7 @@ function createBoardFromState(
     },
 
     dependentsOf(taskId: TaskItemId): readonly Task[] {
-      const depIds = reverseAdj.get(taskId) ?? [];
+      const depIds = getReverseAdj().get(taskId) ?? [];
       const result: Task[] = [];
       for (const id of depIds) {
         const task = items.get(id);
@@ -648,6 +737,8 @@ function createBoardFromState(
       }
       return result;
     },
+
+    blockedBy: computeBlockedBy,
 
     all(): readonly Task[] {
       return [...items.values()];
@@ -678,6 +769,19 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
         typeof rawVersion === "number" && Number.isFinite(rawVersion) && rawVersion >= 0
           ? Math.floor(rawVersion)
           : 0;
+      // Backfill startedAt for snapshots that pre-date the field. Only `in_progress`
+      // tasks need a value — pending/terminal tasks legitimately have undefined.
+      // The legacy approximation uses updatedAt because it's the closest existing
+      // timestamp; the bound is correct (startedAt ≤ updatedAt always).
+      const backfilledStartedAt =
+        item.startedAt ?? (item.status === "in_progress" ? (item.updatedAt ?? 0) : undefined);
+      // Normalize legacy in_progress tasks that still carry metadata.delegatedTo
+      // from before the "pending-only marker" invariant was enforced. This
+      // one-shot cleanup at load-time prevents a stale delegation from
+      // re-surfacing through a retryable fail() or unassign() later. Pending
+      // tasks' delegation markers are untouched — they're legitimate.
+      const normalizedMetadata =
+        item.status === "in_progress" ? stripDelegatedTo(item.metadata) : item.metadata;
       const task: Task = {
         ...item,
         subject: item.subject ?? "",
@@ -685,6 +789,8 @@ export function createTaskBoard(config?: TaskBoardConfig, initial?: TaskBoardSna
         version: safeVersion,
         createdAt: item.createdAt ?? 0,
         updatedAt: item.updatedAt ?? 0,
+        metadata: normalizedMetadata,
+        ...(backfilledStartedAt !== undefined ? { startedAt: backfilledStartedAt } : {}),
       };
       items.set(task.id, task);
     }

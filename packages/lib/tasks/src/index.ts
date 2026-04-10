@@ -15,16 +15,38 @@
 // Persistence
 export { createFileTaskBoardStore, type FileTaskBoardStoreConfig } from "./file-store.js";
 export { matchesFilter } from "./filter.js";
-export { createManagedTaskBoard, type ManagedTaskBoard, type ManagedTaskBoardConfig } from "./managed-board.js";
+// Lifecycles
+export { registerDefaultLifecycles } from "./lifecycles/defaults.js";
+export { createLocalShellLifecycle, type LocalShellConfig } from "./lifecycles/local-shell.js";
+export {
+  createUnsupportedLifecycle,
+  isUnsupportedLifecycle,
+  UNSUPPORTED_LIFECYCLE_MARKER,
+  UNSUPPORTED_LIFECYCLE_MARKER_KEY,
+} from "./lifecycles/unsupported.js";
+export {
+  createManagedTaskBoard,
+  type ManagedTaskBoard,
+  type ManagedTaskBoardConfig,
+} from "./managed-board.js";
 export { createMemoryTaskBoardStore } from "./memory-store.js";
-
 // Output streaming
-export { createOutputStream, type OutputChunk, type OutputStreamConfig, type TaskOutputStream } from "./output-stream.js";
-
+export {
+  createOutputStream,
+  type OutputChunk,
+  type OutputStreamConfig,
+  type TaskOutputStream,
+} from "./output-stream.js";
 // Runtime task kinds
 export {
   type DreamTask,
   type InProcessTeammateTask,
+  isDreamTask,
+  isInProcessTeammateTask,
+  isLocalAgentTask,
+  isLocalShellTask,
+  isRemoteAgentTask,
+  isRuntimeTask,
   type LocalAgentTask,
   type LocalShellTask,
   type PlanApprovalSnapshot,
@@ -32,19 +54,13 @@ export {
   type RuntimeTask,
   type RuntimeTaskBase,
   type TeammateIdentity,
-  isDreamTask,
-  isInProcessTeammateTask,
-  isLocalAgentTask,
-  isLocalShellTask,
-  isRemoteAgentTask,
-  isRuntimeTask,
 } from "./task-kinds.js";
-
 // Task registry
-export { type TaskKindLifecycle, type TaskRegistry, createTaskRegistry } from "./task-registry.js";
-
+export { createTaskRegistry, type TaskKindLifecycle, type TaskRegistry } from "./task-registry.js";
 // Task runner
-export { type OutputDelta, type TaskRunner, type TaskRunnerConfig, createTaskRunner } from "./task-runner.js";
-
-// Lifecycles
-export { type LocalShellConfig, createLocalShellLifecycle } from "./lifecycles/local-shell.js";
+export {
+  createTaskRunner,
+  type OutputDelta,
+  type TaskRunner,
+  type TaskRunnerConfig,
+} from "./task-runner.js";

@@ -238,6 +238,10 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 | `@koi/tasks` (future: reconciliation) | #1429 — transition guards and DAG validation will consume the store |
 | `@koi/core` `TaskStore` | **Separate domain** — scheduler task persistence (`ScheduledTask`), not task board |
 
+## Code Quality
+
+Lint configured with `biome check --vcs-enabled=false src/` to avoid biome VCS resolution issues in git worktrees. All non-null assertions in source replaced with proper guards; test files use `biome-ignore` where the assertion is guarded by setup.
+
 ## v1 Reference
 
 - `archive/v1/packages/sched/scheduler/src/sqlite-store.ts` — SQLite-backed scheduler
@@ -247,3 +251,126 @@ downstream consumers (TUI, trajectory) receive the full board state at startup.
 - `archive/v1/packages/fs/store-fs/src/fs-store.ts` — File-based brick store with atomic
   writes and hash sharding. We reused the atomic-write pattern but dropped hash sharding
   (unnecessary at task-board scale).
+
+## Task Kind Validation & Lifecycle Stubs (#1242)
+
+### L0 Runtime Guard
+
+`isValidTaskKindName(value: string): value is TaskKindName` — runtime narrowing guard
+in `@koi/core`. Validates arbitrary strings (e.g., from `task.metadata.kind`) against
+the closed `TaskKindName` union. `VALID_TASK_KIND_NAMES: ReadonlySet<string>` is the
+single source of truth — L2 packages import it instead of maintaining local copies.
+
+### Unsupported Lifecycle Stubs
+
+`createUnsupportedLifecycle(kind)` creates a `TaskKindLifecycle` whose `start()` rejects
+with `Task kind "${kind}" is not yet implemented`. Use for kinds that are defined in the
+type system but not yet runnable (e.g., `dream`, `local_agent`).
+
+### Default Registration
+
+`registerDefaultLifecycles(registry)` registers all 5 `TaskKindName` values:
+
+| Kind | Lifecycle |
+|------|-----------|
+| `local_shell` | Real — `createLocalShellLifecycle()` |
+| `local_agent` | Stub — rejects on start |
+| `remote_agent` | Stub — rejects on start |
+| `in_process_teammate` | Stub — rejects on start |
+| `dream` | Stub — rejects on start |
+
+### Boundary Validation in TaskRunner
+
+`TaskRunner.start()` validates the `kind` parameter before registry lookup:
+
+- `VALIDATION` error — string is not a valid `TaskKindName` (boundary issue, e.g., typo)
+- `NOT_FOUND` error — valid kind but no lifecycle registered (configuration issue)
+
+This two-level check gives callers actionable diagnostics.
+
+For unsupported kinds (registered stub lifecycles), `TaskRunner.start()` atomically
+kills the task via `board.killIfPending()` with rejection metadata (`rejectedKind`,
+`rejectedReason`). The kill is guarded by `expectedKind` — if the task has
+`metadata.kind` and it doesn't match, a `CONFLICT` error is returned instead of killing.
+
+### Known Design Considerations
+
+**Runtime kind authority**: `TaskRunner.start(taskId, kind)` trusts the explicit `kind`
+parameter as the runtime lifecycle selector. `task.metadata.kind` is optional/advisory
+and used for mismatch protection when present. A follow-up issue should formalize whether
+`metadata.kind` becomes mandatory for tasks that use the runner, or whether a dedicated
+`runtimeKind` field should be added to the `Task` type.
+
+**Killed vs failed for unsupported kinds**: Unsupported tasks are marked `killed` (the
+only valid transition from `pending`). The rejection reason is stored in `metadata.rejectedReason`.
+Downstream consumers should check this field for killed tasks to distinguish unsupported-kind
+rejections from manual cancellations.
+
+## Review hardening (#1557 review — PR #1659)
+
+Multiple safety, performance, and test-infrastructure improvements landed as a review
+punch list. Each item is a narrow fix to the already-shipped package rather than a
+feature addition.
+
+### Path-traversal defense (file-store)
+
+`createFileTaskBoardStore` now calls `assertSafeTaskId` at every I/O boundary
+(`get`/`put`/`delete`). Task IDs must match `^task_\d+$`; anything else throws at the
+boundary. Defense in depth against `TaskItemId` being a branded-but-unvalidated string.
+
+### Single-writer PID lock
+
+A `.lock` file containing `{pid, ctime}` is written to `baseDir` on construction and
+released on dispose. Second store instances against the same directory fail fast with
+a clear error; dead-PID and malformed locks are reclaimed automatically. Use `lock: false`
+to disable for tests that deliberately overlap stores. Documented crash-recovery
+boundaries are in the file-store source header.
+
+### Bounded I/O concurrency
+
+`ensureCache` now processes task files in batches of 32 instead of an unbounded
+`Promise.all`. Boards with thousands of tasks can't exhaust file descriptors on first
+access.
+
+### Output stream deque eviction
+
+`createOutputStream` uses a head-pointer/deque pattern for eviction instead of
+`chunks.slice(1)`. Eviction is now O(1) amortized; worst-case workloads with oversized
+writes drop from O(N²) to O(N).
+
+### TaskRunner selfWriteIds skip-set
+
+The runner's internal board mutations are tagged with a `selfWriteIds` set; the store's
+watch reconciler skips events for IDs in that set. Prevents double-stop on self-writes
+and protects future code paths that forget the delete-before-board.X ordering.
+
+### Start-path fallback chain
+
+The `TaskRunner.start()` catch now mirrors `handleNaturalExit`'s three-tier fallback
+(try `failOwnedTask`, fall back to `kill()`, then swallow). A cascading store failure
+during lifecycle start leaves the task in a terminal state instead of stuck `in_progress`.
+
+### Event-buffering invariant tests
+
+`managed-board.test.ts` gained 6 tests pinning the "observer notifications fire only
+after persistence succeeds" invariant, backed by a reusable `createFlakyStore` helper
+(in `src/test-helpers.ts`) that injects controllable put() failures.
+
+### Race-condition test coverage
+
+`task-runner.test.ts` was rewritten to use a real in-memory `ManagedTaskBoard` instead
+of fully mocked internals. 6 new race tests cover: fast-exit drain, post-stop natural
+exit, cascading-failure fallback, `handleNaturalExit` complete-returns-ok-false fallback,
+outer-catch fallback, and the selfWriteIds skip-set.
+
+### Local-shell branch coverage
+
+`local-shell.test.ts` gained 6 tests for previously-uncovered paths: timeout abort,
+`onExit` exit-code propagation, env vars reaching the subprocess, multibyte UTF-8
+output across chunk boundaries, stop-verify via `proc.exited` timing, and natural-exit
+`onExit` firing.
+
+### Test count delta
+
+- Before: 73 `@koi/tasks` tests
+- After: **159** tests (+86)

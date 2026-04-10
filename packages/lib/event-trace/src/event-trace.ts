@@ -70,6 +70,7 @@ const PERSISTED_TOOL_METADATA_KEYS: readonly string[] = [
   "hookName", // which hook blocked the call
   "reason", // denial explanation from guards
   "committedButRedacted", // output redacted after tool side effects committed
+  "decisionCorrelationId", // outcome linkage (#1465) — opt-in, set by decision-bearing middleware
 ] as const;
 
 /**
@@ -87,6 +88,20 @@ function pruneProvenance(
     : { system: obj.system };
 }
 
+/** Max length for a persisted decision correlation ID (prevents payload smuggling). */
+const MAX_CORRELATION_ID_LENGTH = 256;
+
+/**
+ * Validate decisionCorrelationId to a bounded non-empty string (#1465).
+ * Rejects non-strings, empty strings, and oversized payloads to prevent
+ * metadata smuggling through the allowlisted key.
+ */
+function pruneDecisionCorrelationId(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  if (raw.trim().length === 0 || raw.length > MAX_CORRELATION_ID_LENGTH) return undefined;
+  return raw;
+}
+
 /** Pick only allowlisted own-property keys from metadata, returning undefined when empty. */
 function pickAllowedMetadata(
   metadata: Record<string, unknown> | undefined,
@@ -102,6 +117,10 @@ function pickAllowedMetadata(
         filtered[key] = pruned;
         hasKeys = true;
       }
+    } else if (key === "decisionCorrelationId") {
+      // Never sourced from response metadata — only from request metadata
+      // in the step-building code. This prevents tools from forging
+      // correlation IDs into long-lived trajectory data (#1465).
     } else {
       filtered[key] = metadata[key];
       hasKeys = true;
@@ -574,6 +593,13 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
       const state = getState(ctx.session.sessionId as string);
       if (state === undefined) return next(request);
 
+      // Snapshot request-side correlation ID before downstream code runs (#1465).
+      // This prevents lower layers from mutating/erasing the caller-assigned ID.
+      const snapshotRequestMeta =
+        request.metadata !== undefined ? (request.metadata as Record<string, unknown>) : undefined;
+      const snapshotRawCorrelationId = snapshotRequestMeta?.decisionCorrelationId;
+      const snapshotCorrelationId = pruneDecisionCorrelationId(snapshotRawCorrelationId);
+
       const startTime = clock();
       let response: ToolResponse | undefined;
       let caughtError: unknown;
@@ -620,7 +646,26 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
 
           // Persist only allowlisted response metadata (#1499 — trust-boundary fix).
           // Transient metadata (traceId, cacheHit, etc.) is filtered out.
-          const stepMeta = pickAllowedMetadata(responseMeta);
+          const responseStepMeta = pickAllowedMetadata(responseMeta);
+
+          // Use pre-snapshot correlation ID — captured before next(request) to
+          // prevent downstream mutation. Request-side is authoritative (#1465).
+          const requestCorrelationId = snapshotCorrelationId;
+          // Surface pruned/invalid IDs as a diagnostic marker so operators can
+          // detect lost linkage (#1465). Only fires when the raw value exists
+          // but fails validation (not when no ID was set at all).
+          const correlationIdPruned =
+            snapshotRawCorrelationId !== undefined && requestCorrelationId === undefined;
+          const correlationMeta =
+            requestCorrelationId !== undefined
+              ? { decisionCorrelationId: requestCorrelationId }
+              : correlationIdPruned
+                ? { decisionCorrelationIdPruned: true }
+                : {};
+          const hasCorrelationMeta = Object.keys(correlationMeta).length > 0;
+          const stepMeta = hasCorrelationMeta
+            ? ({ ...(responseStepMeta ?? {}), ...correlationMeta } as JsonObject)
+            : responseStepMeta;
 
           // Merge retry metadata (if any) on top of filtered response metadata
           const finalToolMetadata =

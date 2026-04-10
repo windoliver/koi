@@ -1,21 +1,21 @@
 {
   "name": "plan-mode",
   "model": "google/gemini-2.0-flash-001",
-  "recordedAt": 1775534473274,
+  "recordedAt": 1775698504733,
   "chunks": [
     {
       "kind": "tool_call_start",
       "toolName": "EnterPlanMode",
-      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF"
+      "callId": "tool_EnterPlanMode_SoVfwAgJeXFLxDNGkDLJ"
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+      "callId": "tool_EnterPlanMode_SoVfwAgJeXFLxDNGkDLJ",
       "delta": ""
     },
     {
       "kind": "tool_call_delta",
-      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+      "callId": "tool_EnterPlanMode_SoVfwAgJeXFLxDNGkDLJ",
       "delta": "{}"
     },
     {
@@ -25,7 +25,7 @@
     },
     {
       "kind": "tool_call_end",
-      "callId": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF"
+      "callId": "tool_EnterPlanMode_SoVfwAgJeXFLxDNGkDLJ"
     },
     {
       "kind": "done",
@@ -33,11 +33,11 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775534472-4T6sxKBkT5h22GkH8CC7",
+        "responseId": "gen-1775698504-56BD17waioc5ZGUpjOMK",
         "richContent": [
           {
             "kind": "tool_call",
-            "id": "tool_EnterPlanMode_uBdfJ4FbMPLxEasPSwtF",
+            "id": "tool_EnterPlanMode_SoVfwAgJeXFLxDNGkDLJ",
             "name": "EnterPlanMode",
             "arguments": {}
           }
@@ -45,6 +45,9 @@
         "usage": {
           "inputTokens": 528,
           "outputTokens": 3
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "66557cf72e27f87885557d059a9b33171a95998c0de549dc75c05ecaf67dd22d"
         }
       }
     }

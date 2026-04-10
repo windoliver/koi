@@ -336,6 +336,7 @@ agentRef.current = runtime.agent;
 - Accepts `Agent | (() => Agent)` — direct reference or lazy thunk
 - `describeCapabilities` returns a fragment listing active skill count and names
 - Passthrough (no copy) when no skills are attached
+- Empty-body skills (e.g., MCP-derived metadata-only entries) are filtered out of `collectSkillContent()` — they contribute to capability discovery but do not inject blank content into the system prompt
 
 ## ComponentProvider Bridge
 
@@ -350,6 +351,29 @@ const provider = createSkillProvider(runtime);
 ```
 
 Each loaded skill becomes a `SkillComponent` under `skillToken(name)`. Skipped skills (NOT_FOUND, VALIDATION, PERMISSION) are reported as `SkippedComponent` entries.
+
+## ATIF Trace Integration
+
+When wrapped by `wrapMiddlewareWithTrace` (L3 runtime), the skill-injector
+emits structured decision metadata via `ctx.reportDecision` only when skills
+are actually injected into the model request (passthrough is silent).
+
+Captured fields:
+```typescript
+{
+  injected: boolean;        // Always true when reported
+  skillCount: number;
+  skills: Array<{ name: string; contentLength: number }>;
+  systemPrompt: string;     // Preview of the final injected systemPrompt (≤800 chars)
+}
+```
+
+The decision appears in the ATIF trajectory as `metadata.decisions[]` on the
+`middleware:skill-injector` span. Consumers (e.g., `/trajectory` in the TUI)
+can see exactly which skills were injected and a preview of the resulting
+system prompt. The passthrough guard uses reference equality
+(`injected !== request`) on the `ModelRequest` object, which avoids a second
+`sortedSkills()` call per hook invocation.
 
 ## Dependencies
 

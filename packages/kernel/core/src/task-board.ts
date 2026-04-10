@@ -133,6 +133,20 @@ export interface Task {
   readonly metadata?: Readonly<Record<string, unknown>> | undefined;
   readonly createdAt: number;
   readonly updatedAt: number;
+  /**
+   * Wall-clock timestamp when the task most recently entered `in_progress`.
+   *
+   * Set on every `pending → in_progress` transition (initial assignment AND
+   * retry-after-failure). Not bumped by `update()` patches such as `activeForm`
+   * — those bump `updatedAt` only. Use this (rather than `updatedAt`) to compute
+   * accurate `durationMs` on completion.
+   *
+   * `undefined` for tasks that were created but never assigned, and for tasks
+   * loaded from snapshots that pre-date this field (the board's snapshot
+   * loader backfills it from `updatedAt` only when the persisted status is
+   * `in_progress`, so the legacy approximation stays close to wall time).
+   */
+  readonly startedAt?: number | undefined;
 }
 
 /**
@@ -284,6 +298,15 @@ export interface TaskBoard {
   readonly killed: () => readonly Task[];
   readonly unreachable: () => readonly Task[];
   readonly dependentsOf: (taskId: TaskItemId) => readonly Task[];
+  /**
+   * Returns the first dependency of `taskId` that is not yet `completed`,
+   * or `undefined` if the task is ready / not pending / not found.
+   *
+   * Implementations may cache results per board snapshot — boards are
+   * immutable, so the answer never changes for a given (snapshot, taskId)
+   * pair. This makes repeated polling (e.g. TUI `task_list`) cheap.
+   */
+  readonly blockedBy: (taskId: TaskItemId) => TaskItemId | undefined;
   readonly all: () => readonly Task[];
   readonly size: () => number;
 }
@@ -421,6 +444,24 @@ export interface ManagedTaskBoard extends AsyncDisposable {
   /** Kill a task — validates via board, persists to store. */
   readonly kill: (taskId: TaskItemId) => Promise<Result<TaskBoard, KoiError>>;
   /**
+   * Atomically verify `taskId` is still `pending`, optionally verify
+   * `expectedKind` matches `task.metadata.kind`, apply `metadata` patch,
+   * and kill the task — all under one lock.
+   *
+   * Use for unsupported-kind rejection: avoids TOCTOU between snapshot
+   * read and kill, refuses to cancel in_progress tasks, and persists
+   * the rejection reason atomically.
+   *
+   * Returns CONFLICT if the task is not pending or kind doesn't match.
+   */
+  readonly killIfPending: (
+    taskId: TaskItemId,
+    options?: {
+      readonly expectedKind?: string | undefined;
+      readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+    },
+  ) => Promise<Result<TaskBoard, KoiError>>;
+  /**
    * Atomically verify `taskId` is assigned to `agentId` and kill it.
    * Use instead of `kill()` to prevent cross-agent cancellation races.
    */
@@ -459,12 +500,67 @@ export type TaskItemPatch = TaskPatch;
 // ---------------------------------------------------------------------------
 
 /**
+ * Canonical list of task kind names — the SINGLE source of truth.
+ * `TaskKindName` is derived from this tuple, so adding a kind here
+ * automatically updates both the type and the runtime validation.
+ *
+ * Exception: pure readonly data constant derived from L0 types, permitted in L0.
+ */
+const _TASK_KIND_NAMES = [
+  "local_shell",
+  "local_agent",
+  "remote_agent",
+  "in_process_teammate",
+  "dream",
+] as const;
+
+/**
+ * Canonical frozen list of task kind names — the SINGLE source of truth.
+ * `TaskKindName` is derived from this tuple, so adding a kind here
+ * automatically updates both the type and the runtime validation.
+ * Frozen: push/splice/assignment all throw in strict mode.
+ *
+ * Exception: pure readonly data constant derived from L0 types, permitted in L0.
+ */
+export const TASK_KIND_NAMES: typeof _TASK_KIND_NAMES = Object.freeze(_TASK_KIND_NAMES);
+
+/**
  * Runtime task kind discriminator. Stored in `task.metadata.kind` to
  * identify which lifecycle implementation manages a given task.
+ *
+ * Derived from `TASK_KIND_NAMES` — adding a new kind to the tuple
+ * automatically widens this union.
  */
-export type TaskKindName =
-  | "local_shell"
-  | "local_agent"
-  | "remote_agent"
-  | "in_process_teammate"
-  | "dream";
+export type TaskKindName = (typeof TASK_KIND_NAMES)[number];
+
+// ---------------------------------------------------------------------------
+// Task kind name — runtime validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Private lookup set for O(1) membership checks. Module-private so no
+ * consumer can mutate it. Built from TASK_KIND_NAMES (single source of truth).
+ */
+const _kindSet: ReadonlySet<string> = new Set<string>(TASK_KIND_NAMES);
+
+/**
+ * Runtime set of all valid TaskKindName values — backward-compatible
+ * `ReadonlySet<string>` API. Exposed as a new Set copy so mutations to the
+ * export cannot affect the private _kindSet used by isValidTaskKindName().
+ *
+ * Exception: pure readonly data constant derived from L0 types, permitted in L0.
+ */
+export const VALID_TASK_KIND_NAMES: ReadonlySet<string> = new Set<string>(TASK_KIND_NAMES);
+
+/**
+ * Runtime guard for TaskKindName — narrows an arbitrary string to the
+ * closed union type. Use at system boundaries where `task.metadata.kind`
+ * (an untyped string) needs validation before being treated as a TaskKindName.
+ * Uses the private _kindSet — mutations to the exported VALID_TASK_KIND_NAMES
+ * cannot affect this guard.
+ *
+ * Exception: pure function operating only on L0 types, permitted in L0.
+ */
+export function isValidTaskKindName(value: string): value is TaskKindName {
+  return _kindSet.has(value);
+}

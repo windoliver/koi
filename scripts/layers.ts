@@ -27,6 +27,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/file-resolution",
   "@koi/git-utils",
   "@koi/hash",
+  "@koi/hook-prompt",
   "@koi/redaction",
   "@koi/session-repair",
   "@koi/shutdown",
@@ -44,6 +45,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",
   "@koi/skill-tool",
