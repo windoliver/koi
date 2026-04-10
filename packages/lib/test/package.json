@@ -11,6 +11,7 @@
     }
   },
   "dependencies": {
+    "@koi/channel-base": "workspace:*",
     "@koi/core": "workspace:*"
   },
   "scripts": {

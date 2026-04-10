@@ -1,12 +1,18 @@
 /**
  * Mock ChannelAdapter that captures outbound messages instead of sending
  * them to real I/O, and allows tests to simulate inbound messages.
+ *
+ * Mirrors the production channel-base adapter for lifecycle gating and
+ * capability-aware content rendering so tests reflect what the real
+ * transport would accept.
  */
 
+import { renderBlocks } from "@koi/channel-base";
 import type {
   ChannelAdapter,
   ChannelCapabilities,
   ChannelStatus,
+  ContentBlock,
   InboundMessage,
   MessageHandler,
   OutboundMessage,
@@ -27,6 +33,15 @@ export interface MockChannelConfig {
    * `handlerErrors` manually.
    */
   readonly failFastOnHandlerError?: boolean;
+  /**
+   * Default: `false`. When `false`, the mock enforces production
+   * lifecycle gating: `send()` rejects while disconnected, `sendStatus()`
+   * is a no-op while disconnected, and `receive()` drops inbound
+   * messages while disconnected. Set to `true` to bypass all lifecycle
+   * gating — useful only for tests that deliberately exercise the
+   * disconnected state with explicit assertions.
+   */
+  readonly bypassLifecycleChecks?: boolean;
 }
 
 export interface HandlerFailure {
@@ -36,7 +51,19 @@ export interface HandlerFailure {
 
 export interface MockChannelResult {
   readonly adapter: ChannelAdapter;
+  /**
+   * Outbound messages exactly as the caller passed them to `send()`,
+   * with no capability-based rewrite. This is the default assertion
+   * surface so tests see what the application actually emitted.
+   */
   readonly sent: readonly OutboundMessage[];
+  /**
+   * Outbound messages after `renderBlocks(...)` has downgraded any
+   * unsupported blocks against the configured capabilities — the same
+   * bytes a real transport would see. Use this when the test cares
+   * about wire-level fidelity rather than application intent.
+   */
+  readonly sentRendered: readonly OutboundMessage[];
   readonly statuses: readonly ChannelStatus[];
   /** Simulate an inbound message. Throws if no handler is registered. */
   readonly receive: (message: InboundMessage) => Promise<void>;
@@ -67,6 +94,7 @@ interface HandlerEntry {
 
 export function createMockChannel(config?: MockChannelConfig): MockChannelResult {
   const sent: OutboundMessage[] = [];
+  const sentRendered: OutboundMessage[] = [];
   const statuses: ChannelStatus[] = [];
   const handlerErrors: HandlerFailure[] = [];
   // Mirror the production channel-base adapter: per-registration entries
@@ -76,13 +104,26 @@ export function createMockChannel(config?: MockChannelConfig): MockChannelResult
   let nextId = 0;
   let handlers: readonly HandlerEntry[] = [];
   let isConnected = false;
+  // Distinguish "never connected" (setup mistake — should be loud) from
+  // "explicitly disconnected" (teardown race — should match production's
+  // silent drop). Flipped to true on the first connect() call and never
+  // reset, so repeated connect/disconnect cycles keep the silent-drop
+  // semantics for later receives.
+  let everConnected = false;
+  const bypassLifecycle = config?.bypassLifecycleChecks === true;
+  const capabilities: ChannelCapabilities = {
+    ...DEFAULT_CAPABILITIES,
+    ...config?.capabilities,
+  };
+  const channelName = config?.name ?? "mock-channel";
 
   const adapter: ChannelAdapter = {
-    name: config?.name ?? "mock-channel",
-    capabilities: { ...DEFAULT_CAPABILITIES, ...config?.capabilities },
+    name: channelName,
+    capabilities,
 
     async connect(): Promise<void> {
       isConnected = true;
+      everConnected = true;
     },
 
     async disconnect(): Promise<void> {
@@ -90,7 +131,17 @@ export function createMockChannel(config?: MockChannelConfig): MockChannelResult
     },
 
     async send(message: OutboundMessage): Promise<void> {
+      if (!bypassLifecycle && !isConnected) {
+        throw new Error(`Channel "${channelName}" is not connected`);
+      }
+      // Default assertion surface: what the caller passed, untouched.
       sent.push(message);
+      // Side-channel: the post-downgrade form a real transport would see.
+      const rendered: OutboundMessage = {
+        ...message,
+        content: renderBlocks(message.content, capabilities) as readonly ContentBlock[],
+      };
+      sentRendered.push(rendered);
     },
 
     onMessage(h: MessageHandler): () => void {
@@ -106,6 +157,8 @@ export function createMockChannel(config?: MockChannelConfig): MockChannelResult
     },
 
     async sendStatus(status: ChannelStatus): Promise<void> {
+      // Production `sendStatus()` is a no-op while disconnected.
+      if (!bypassLifecycle && !isConnected) return;
       statuses.push(status);
     },
   };
@@ -113,9 +166,26 @@ export function createMockChannel(config?: MockChannelConfig): MockChannelResult
   return {
     adapter,
     sent,
+    sentRendered,
     statuses,
     handlerErrors,
     receive: async (message: InboundMessage): Promise<void> => {
+      // Setup mistake: receive() called before the test ever connected
+      // the channel. Fail loudly — a real transport could not deliver
+      // anything pre-connect anyway, and silently returning would mask
+      // a missing `await adapter.connect()` in test setup.
+      if (!bypassLifecycle && !everConnected) {
+        throw new Error(
+          `createMockChannel: receive() called before adapter.connect() — missing setup step`,
+        );
+      }
+      // Teardown race: receive() called after an explicit disconnect.
+      // Mirror the production adapter's silent drop so tests can model
+      // in-flight messages arriving after `disconnect()` without
+      // fabricating errors that cannot happen on a real transport.
+      if (!bypassLifecycle && !isConnected) {
+        return;
+      }
       if (handlers.length === 0) {
         throw new Error(
           "createMockChannel: receive() called before onMessage() registered a handler",
@@ -140,7 +210,10 @@ export function createMockChannel(config?: MockChannelConfig): MockChannelResult
       // Default matches the production adapter: `receive()` resolves
       // after full dispatch even when handlers fail; failures are only
       // observable via `handlerErrors`. Opt into fail-fast surfacing
-      // with `failFastOnHandlerError: true`.
+      // with `failFastOnHandlerError: true`. The fail-fast throw is
+      // independent of connection epoch — a concurrent disconnect must
+      // NOT silently downgrade an opted-in rejection to a side-channel
+      // entry, otherwise the mode is unsound.
       if (rejections.length > 0 && config?.failFastOnHandlerError === true) {
         throw new AggregateError(
           rejections,

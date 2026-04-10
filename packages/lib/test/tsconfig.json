@@ -8,6 +8,9 @@
   "references": [
     {
       "path": "../../kernel/core"
+    },
+    {
+      "path": "../channel-base"
     }
   ]
 }

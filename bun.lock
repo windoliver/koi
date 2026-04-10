@@ -355,6 +355,7 @@
       "name": "@koi/test",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/channel-base": "workspace:*",
         "@koi/core": "workspace:*",
       },
     },
