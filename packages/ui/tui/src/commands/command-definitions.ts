@@ -87,6 +87,13 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "Summarise and compress message history",
     category: "agent",
   },
+  {
+    id: "agent:rewind",
+    label: "Rewind",
+    description: "Roll back the previous turn (file edits + conversation)",
+    category: "agent",
+    destructive: true,
+  },
 
   // ---- Session ----
   {

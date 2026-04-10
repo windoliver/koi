@@ -29,7 +29,7 @@
 
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
   InboundMessage,
@@ -80,6 +80,7 @@ import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createSpawnTools } from "@koi/spawn-tools";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -263,6 +264,16 @@ export interface TuiRuntimeConfig {
 export interface TuiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
+  /**
+   * Checkpoint handle for session-level rollback (#1625). Always populated
+   * in the TUI — captures end-of-turn snapshots and exposes rewind() so the
+   * `/rewind` slash command can roll back the active session.
+   *
+   * Snapshots live in an in-memory SQLite chain (per-process, lost on exit);
+   * blobs live in a flat tmp dir under `~/.koi/file-history`. The conversation
+   * log is shared with the session transcript so /rewind truncates both halves.
+   */
+  readonly checkpoint: Checkpoint;
   /**
    * Mutable conversation transcript array — owned by the caller.
    * Splice to reset: `transcript.splice(0)` on agent:clear or session:new.
@@ -896,6 +907,30 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       : []),
   ];
 
+  // --- Checkpoint (#1625): always wired in the TUI ---
+  // Captures end-of-turn snapshots so /rewind can roll back the active session.
+  // - Snapshot chain lives in an in-memory SQLite chain (per-process; no disk
+  //   persistence yet — durable storage is a follow-up that needs a
+  //   workspace-relative path resolution policy).
+  // - Blob CAS lives under ~/.koi/file-history (shared across sessions; the
+  //   mark-and-sweep GC inside snapshot-store-sqlite handles orphan cleanup
+  //   on prune).
+  // - Conversation log truncation: shares the same SessionTranscript
+  //   instance with the session-transcript middleware so /rewind truncates
+  //   both halves.
+  // - Drift detection: disabled. The TUI may run in any cwd, including
+  //   non-git workspaces; running git status on every turn is unnecessary
+  //   overhead and can fail noisily.
+  const checkpointHandle = createCheckpoint({
+    store: createSnapshotStoreSqlite({ path: ":memory:" }),
+    config: {
+      blobDir: join(homedir(), ".koi", "file-history"),
+      driftDetector: null,
+      ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
+    },
+  });
+  const checkpointMw = checkpointHandle.middleware;
+
   // --- Wrap middleware with trace for full ATIF instrumentation ---
   // Same pattern as golden-query recording: each middleware hook invocation
   // (wrapModelCall, wrapToolCall, wrapModelStream) is recorded as an ATIF step,
@@ -910,6 +945,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     extractionMw,
     semanticRetryMw,
     ...(goalMw !== undefined ? [goalMw] : []),
+    checkpointMw,
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
@@ -954,6 +990,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   return {
     runtime,
+    checkpoint: checkpointHandle,
     transcript,
     sandboxActive: osSandboxResult.ok,
     getTrajectorySteps: async () => {
