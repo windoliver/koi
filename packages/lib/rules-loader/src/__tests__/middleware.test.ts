@@ -225,4 +225,28 @@ describe("createRulesMiddleware", () => {
       return makeModelResponse("ok");
     });
   });
+
+  test("picks up newly created rules files on onBeforeTurn", async () => {
+    // Start with no rules files
+    const mw = createRulesMiddleware({ cwd: tempDir });
+    await mw.onSessionStart?.(makeSessionCtx());
+
+    const ctx = makeTurnCtx();
+    // Verify no rules injected initially
+    await callWrapModel(mw, ctx, makeModelRequest("prompt"), async (req) => {
+      expect(req.systemPrompt).toBe("prompt");
+      return makeModelResponse("ok");
+    });
+
+    // Create a new rules file after session started
+    writeFileSync(join(tempDir, "CLAUDE.md"), "newly added rules");
+
+    // onBeforeTurn should detect the new file
+    await mw.onBeforeTurn?.(ctx);
+
+    await callWrapModel(mw, ctx, makeModelRequest("prompt"), async (req) => {
+      expect(req.systemPrompt).toContain("newly added rules");
+      return makeModelResponse("ok");
+    });
+  });
 });

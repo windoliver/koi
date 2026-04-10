@@ -72,10 +72,12 @@ describe("mergeRulesets", () => {
       depth: 0,
     });
 
-    const result = mergeRulesets([root], 10);
+    // Budget enough for wrapper + some content, but not all 1000 chars
+    const result = mergeRulesets([root], 100);
 
     expect(result.truncated).toBe(true);
     expect(result.files).toEqual(["/repo/CLAUDE.md"]);
+    expect(result.estimatedTokens).toBeLessThanOrEqual(100);
     // Content should be shorter than original
     expect(result.content.length).toBeLessThan(1000);
   });
@@ -95,5 +97,36 @@ describe("mergeRulesets", () => {
     const file = makeFile({ content: "some rules content here", path: "/repo/CLAUDE.md" });
     const result = mergeRulesets([file], 8000);
     expect(result.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  test("truncated root file respects token budget (long path regression)", () => {
+    // Long path increases overhead — naive char-slice could exceed budget
+    const longPath = `/repo/${"deeply/nested/".repeat(10)}CLAUDE.md`;
+    const root = makeFile({
+      content: "x".repeat(2000),
+      path: longPath,
+      depth: 0,
+    });
+
+    // Budget large enough for wrapper overhead but not full content
+    const budget = 200;
+    const result = mergeRulesets([root], budget);
+
+    expect(result.truncated).toBe(true);
+    expect(result.estimatedTokens).toBeLessThanOrEqual(budget);
+    expect(result.estimatedTokens).toBeGreaterThan(0);
+  });
+
+  test("returns empty when budget cannot fit even wrapper overhead", () => {
+    const longPath = `/repo/${"deeply/nested/".repeat(20)}CLAUDE.md`;
+    const root = makeFile({ content: "x".repeat(100), path: longPath, depth: 0 });
+
+    // Impossibly small budget
+    const result = mergeRulesets([root], 5);
+
+    expect(result.truncated).toBe(true);
+    expect(result.content).toBe("");
+    expect(result.files).toEqual([]);
+    expect(result.estimatedTokens).toBe(0);
   });
 });

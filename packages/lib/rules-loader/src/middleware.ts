@@ -125,7 +125,22 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return;
 
-      if (await hasFilesChanged(state.loadedFiles)) {
+      // Re-discover to detect newly created/deleted rules files,
+      // then check mtime on previously loaded files.
+      const gitRoot = await findGitRoot(resolved.cwd);
+      const discovered = await discoverRulesFiles(
+        resolved.cwd,
+        gitRoot,
+        resolved.filenames,
+        resolved.searchDirs,
+      );
+
+      const discoveredPaths = new Set(discovered.map((d) => d.path));
+      const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
+      const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
+      const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
+
+      if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
         const refreshed = await loadRules();
         sessions.set(ctx.session.sessionId, refreshed);
       }

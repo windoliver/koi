@@ -50,19 +50,41 @@ export function mergeRulesets(files: readonly LoadedFile[], maxTokens: number): 
     }
   }
 
-  // If nothing fits (even root exceeds budget), truncate the root file
+  // If nothing fits (even root exceeds budget), truncate the root file content
+  // until the final assembled payload is guaranteed <= maxTokens.
   const rootFile = files[0];
   if (included.length === 0 && rootFile !== undefined) {
-    const block = formatFileBlock(rootFile);
-    // Truncate content to fit within budget (rough char estimate)
-    const availableTokens = maxTokens - WRAPPER_OVERHEAD;
-    const availableChars = Math.max(0, availableTokens * 4); // ~4 chars per token
-    const truncatedBlock = block.slice(0, availableChars);
+    const sourceMarker = `<!-- source: ${rootFile.path} (depth: ${String(rootFile.depth)}) -->\n`;
+    const wrapperTemplate = `<project-rules>\n${sourceMarker}`;
+    const wrapperSuffix = "\n</project-rules>";
+
+    // Binary search for the largest content slice where the full assembled
+    // payload fits the budget (avoids rounding drift from separate estimates).
+    let lo = 0;
+    let hi = rootFile.content.length;
+    while (lo < hi) {
+      const mid = lo + Math.ceil((hi - lo) / 2);
+      const candidate = `${wrapperTemplate}${rootFile.content.slice(0, mid)}${wrapperSuffix}`;
+      if (estimateTokens(candidate) <= maxTokens) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+
+    const content = `${wrapperTemplate}${rootFile.content.slice(0, lo)}${wrapperSuffix}`;
+    const finalTokens = estimateTokens(content);
+
+    // If even empty content exceeds budget (wrapper overhead alone is too large),
+    // return empty to honor the contract.
+    if (lo === 0 && finalTokens > maxTokens) {
+      return { content: "", files: [], estimatedTokens: 0, truncated: true };
+    }
 
     return {
-      content: `<project-rules>\n${truncatedBlock}\n</project-rules>`,
+      content,
       files: [rootFile.path],
-      estimatedTokens: estimateTokens(`<project-rules>\n${truncatedBlock}\n</project-rules>`),
+      estimatedTokens: finalTokens,
       truncated: true,
     };
   }

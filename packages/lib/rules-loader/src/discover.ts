@@ -47,8 +47,11 @@ function collectDirectories(cwd: string, stopAt: string | undefined): readonly s
 }
 
 /**
- * Walk from `cwd` up to `gitRoot` (or filesystem root), collecting recognized
- * rules filenames at each directory level.
+ * Walk from `cwd` up to `gitRoot`, collecting recognized rules filenames
+ * at each directory level.
+ *
+ * When no git root is found, only scans `cwd` itself — prevents ancestor
+ * contamination from unrelated directories above the project boundary.
  *
  * Returns files ordered root-first (broadest scope first, depth 0).
  */
@@ -58,7 +61,8 @@ export async function discoverRulesFiles(
   filenames: readonly string[],
   searchDirs: readonly string[],
 ): Promise<readonly DiscoveredFile[]> {
-  const dirs = collectDirectories(cwd, gitRoot);
+  // No git root → only scan cwd to prevent cross-project injection
+  const dirs = gitRoot !== undefined ? collectDirectories(cwd, gitRoot) : [resolve(cwd)];
   // dirs is cwd-first; we want root-first, so reverse
   const rootFirst = [...dirs].reverse();
 

@@ -125,17 +125,25 @@ describe("discoverRulesFiles", () => {
     expect(at(result, 0).path).toBe(join(gitRoot, "CLAUDE.md"));
   });
 
-  test("handles no git root (walks to filesystem boundary)", async () => {
-    writeFileSync(join(tempDir, "CLAUDE.md"), "rules");
+  test("no git root scans cwd only (prevents ancestor contamination)", async () => {
+    // Create parent with CLAUDE.md
+    const parent = tempDir;
+    writeFileSync(join(parent, "CLAUDE.md"), "parent rules");
 
+    // Create child with its own CLAUDE.md
+    const child = join(parent, "project");
+    mkdirSync(child);
+    writeFileSync(join(child, "CLAUDE.md"), "child rules");
+
+    // Without git root, only cwd is scanned — parent file must not leak
     const result = await discoverRulesFiles(
-      tempDir,
+      child,
       undefined,
       DEFAULT_FILENAMES,
       DEFAULT_SEARCH_DIRS,
     );
-    const tempFiles = result.filter((f) => f.path.startsWith(tempDir));
-    expect(tempFiles.length).toBeGreaterThanOrEqual(1);
+    expect(result).toHaveLength(1);
+    expect(at(result, 0).path).toBe(join(child, "CLAUDE.md"));
   });
 
   test("uses custom filenames", async () => {
