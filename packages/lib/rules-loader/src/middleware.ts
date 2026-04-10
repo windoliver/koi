@@ -32,6 +32,10 @@ import { mergeRulesets } from "./merge.js";
 // ---------------------------------------------------------------------------
 
 interface RulesSessionState {
+  /** Pinned working directory for this session (set at start, never changes). */
+  readonly cwd: string;
+  /** Pinned git root for this session. */
+  readonly gitRoot: string | undefined;
   readonly ruleset: MergedRuleset;
   readonly loadedFiles: readonly LoadedFile[];
 }
@@ -80,14 +84,15 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
   const resolved = result.value;
   const sessions = new Map<SessionId, RulesSessionState>();
 
-  /** Perform full discovery → load → merge cycle using current cwd. */
-  async function loadRules(): Promise<RulesSessionState> {
-    const cwd = resolved.getCwd();
-    const gitRoot = await findGitRoot(cwd);
+  /** Perform full discovery → load → merge cycle within a pinned scope. */
+  async function loadRulesInScope(
+    cwd: string,
+    gitRoot: string | undefined,
+  ): Promise<RulesSessionState> {
     const discovered = await discoverRulesFiles(cwd, gitRoot, resolved.scanPaths);
     const loadedFiles = await loadAllRulesFiles(discovered);
     const ruleset = mergeRulesets(loadedFiles, resolved.maxTokens);
-    return { ruleset, loadedFiles };
+    return { cwd, gitRoot, ruleset, loadedFiles };
   }
 
   return {
@@ -106,9 +111,13 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
 
     async onSessionStart(ctx) {
       if (!resolved.enabled) return;
+      // Pin cwd and gitRoot for this session's lifetime — refreshes always
+      // use the same scope to prevent cross-repo rule injection.
+      const cwd = resolved.getCwd();
+      const gitRoot = await findGitRoot(cwd);
       // Fail closed: if rules cannot be loaded, the session must not start
       // without trusted policy. Errors propagate to the engine.
-      const state = await loadRules();
+      const state = await loadRulesInScope(cwd, gitRoot);
       sessions.set(ctx.sessionId, state);
 
       if (state.ruleset.files.length > 0 && state.ruleset.truncated) {
@@ -123,25 +132,18 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return;
 
-      try {
-        const cwd = resolved.getCwd();
-        const gitRoot = await findGitRoot(cwd);
-        const discovered = await discoverRulesFiles(cwd, gitRoot, resolved.scanPaths);
+      // Use pinned scope from session start — never reads ambient cwd
+      const discovered = await discoverRulesFiles(state.cwd, state.gitRoot, resolved.scanPaths);
 
-        const discoveredPaths = new Set(discovered.map((d) => d.path));
-        const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
-        const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
-        const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
+      const discoveredPaths = new Set(discovered.map((d) => d.path));
+      const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
+      const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
+      const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
 
-        if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
-          const refreshed = await loadRules();
-          sessions.set(ctx.session.sessionId, refreshed);
-        }
-      } catch (e: unknown) {
-        console.warn(
-          "[rules-loader] Failed to refresh rules, keeping cached version:",
-          e instanceof Error ? e.message : e,
-        );
+      // Fail closed: propagate errors so the engine can handle policy failures.
+      if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
+        const refreshed = await loadRulesInScope(state.cwd, state.gitRoot);
+        sessions.set(ctx.session.sessionId, refreshed);
       }
     },
 
