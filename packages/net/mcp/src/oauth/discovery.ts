@@ -72,8 +72,8 @@ async function fetchResourceMetadata(serverUrl: string): Promise<AuthServerMetad
     const asUrl = body.authorization_servers?.[0];
     if (asUrl === undefined) return undefined;
 
-    // Fetch the AS metadata
-    return fetchMetadata(`${asUrl.replace(/\/$/, "")}/.well-known/oauth-authorization-server`);
+    // Fetch the AS metadata using RFC 8414 path insertion semantics
+    return fetchAuthServerMetadata(asUrl);
   } catch {
     return undefined;
   }

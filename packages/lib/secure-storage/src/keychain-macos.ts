@@ -40,18 +40,23 @@ export function createMacOsKeychainStorage(lockDir?: string): SecureStorage {
   const set = async (key: string, value: string): Promise<void> => {
     // Delete first to avoid "already exists" error, then add
     await runSecurity(["delete-generic-password", "-a", key, "-s", SERVICE_NAME]);
-    const exitCode = await runSecurity([
-      "add-generic-password",
-      "-a",
-      key,
-      "-s",
-      SERVICE_NAME,
-      "-w",
-      value,
-      "-U", // Update if exists (race condition safety)
-    ]);
-    if (exitCode !== 0) {
-      throw new Error(`Failed to store credential in macOS Keychain (exit ${exitCode})`);
+    // Pass the secret via stdin using `security -i` to avoid exposing it
+    // in process arguments (visible via `ps`). The `-i` flag reads commands
+    // from stdin in interactive mode.
+    const command = `add-generic-password -a "${key}" -s "${SERVICE_NAME}" -w "${value.replace(/"/g, '\\"')}" -U\n`;
+    try {
+      const proc = Bun.spawn(["security", "-i"], {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: new TextEncoder().encode(command),
+      });
+      const exitCode = await proc.exited;
+      if (exitCode !== 0) {
+        throw new Error(`Failed to store credential in macOS Keychain (exit ${exitCode})`);
+      }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes("Failed to store")) throw e;
+      throw new Error("Failed to store credential in macOS Keychain");
     }
   };
 

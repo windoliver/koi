@@ -19,24 +19,22 @@ export function createOAuthAwareMcpConnection(server: McpServerConfig): McpConne
   const resolved = resolveServerConfig(server);
 
   if (server.kind === "http" && server.oauth !== undefined) {
-    try {
-      const storage = createSecureStorage();
-      const runtime = createCliOAuthRuntime();
-      const provider = createOAuthAuthProvider({
-        serverName: server.name,
-        serverUrl: server.url,
-        oauthConfig: server.oauth,
-        runtime,
-        storage,
-      });
+    // Fail closed: if secure storage is unavailable, surface the error
+    // rather than silently connecting without credentials (which would
+    // cause opaque 401s instead of a clear platform error).
+    const storage = createSecureStorage();
+    const runtime = createCliOAuthRuntime();
+    const provider = createOAuthAuthProvider({
+      serverName: server.name,
+      serverUrl: server.url,
+      oauthConfig: server.oauth,
+      runtime,
+      storage,
+    });
 
-      return createMcpConnection(resolved, provider, {
-        onUnauthorized: () => provider.handleUnauthorized(),
-      });
-    } catch {
-      // Secure storage unavailable — fall back to unauthenticated connection
-      return createMcpConnection(resolved);
-    }
+    return createMcpConnection(resolved, provider, {
+      onUnauthorized: () => provider.handleUnauthorized(),
+    });
   }
 
   return createMcpConnection(resolved);
