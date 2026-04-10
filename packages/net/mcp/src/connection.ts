@@ -366,6 +366,14 @@ export function createMcpConnection(
       return { ok: true, value: tools };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
+      // 401/403 mid-session → auth-needed (not generic error)
+      if (koiError.code === "PERMISSION" && stateMachine.canTransitionTo("auth-needed")) {
+        stateMachine.transition({
+          kind: "auth-needed",
+          challenge: { type: "oauth" },
+        });
+        return { ok: false, error: koiError };
+      }
       if (stateMachine.canTransitionTo("error")) {
         stateMachine.transition({
           kind: "error",
@@ -424,6 +432,14 @@ export function createMcpConnection(
       return { ok: true, value: content };
     } catch (error: unknown) {
       const koiError = mapMcpError(error, { serverName: config.name });
+      // 401/403 mid-session → auth-needed (not generic error)
+      if (koiError.code === "PERMISSION" && stateMachine.canTransitionTo("auth-needed")) {
+        stateMachine.transition({
+          kind: "auth-needed",
+          challenge: { type: "oauth" },
+        });
+        return { ok: false, error: koiError };
+      }
       if (stateMachine.canTransitionTo("error")) {
         stateMachine.transition({
           kind: "error",

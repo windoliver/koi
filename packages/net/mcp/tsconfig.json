@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../lib/errors" },
+    { "path": "../../lib/secure-storage" },
     { "path": "../../lib/validation" }
   ]
 }
