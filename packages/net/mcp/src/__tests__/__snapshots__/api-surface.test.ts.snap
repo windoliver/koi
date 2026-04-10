@@ -268,6 +268,8 @@ interface ConnectionDeps {
     }) => SdkClientLike;
     readonly createTransport: CreateTransportFn;
     readonly random: () => number;
+    /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
+    readonly onUnauthorized?: () => void | Promise<void>;
 }
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
 
@@ -418,15 +420,20 @@ interface McpOAuthConfig {
  * @koi/mcp calls these methods when user interaction is needed.
  * The CLI implements them with browser launch + local HTTP callback server.
  */
+/** Result from the OAuth callback containing code and state for validation. */
+interface OAuthCallbackResult {
+    readonly code: string;
+    readonly state: string | undefined;
+}
 interface OAuthRuntime {
     /**
      * Open the authorization URL in a browser and wait for the redirect callback.
-     * Returns the authorization code from the callback.
+     * Returns the authorization code and state parameter from the callback.
      *
      * @param authorizationUrl - Full OAuth authorization URL with PKCE challenge
      * @param redirectUri - The callback URI the auth server will redirect to
      */
-    readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<string>;
+    readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<OAuthCallbackResult>;
     /**
      * Notify the user that re-authentication is needed (e.g., after 401 mid-session).
      * The host decides how to present this (TUI prompt, CLI message, etc.).

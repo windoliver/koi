@@ -291,6 +291,12 @@ export function createMcpConnection(
       return { ok: false, error: notConnectedError(config.name) };
     }
 
+    // auth-needed → try connecting directly (no reconnect backoff).
+    // The auth-needed state only allows "connecting" or "closed" transitions.
+    if (stateMachine.current.kind === "auth-needed") {
+      return connect();
+    }
+
     // Share reconnection promise to prevent thundering herd
     if (reconnecting !== undefined) {
       return reconnecting;

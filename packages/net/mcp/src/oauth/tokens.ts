@@ -92,20 +92,23 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
         return undefined;
       }
 
-      const refreshed = await refreshAccessToken(
+      const refreshResult = await refreshAccessToken(
         tokens.refreshToken,
         metadata.tokenEndpoint,
         clientId,
       );
-      if (refreshed === undefined) {
-        // Refresh failed — clear tokens (likely invalid_grant)
-        await storage.delete(storageKey);
+      if (!refreshResult.ok) {
+        if (refreshResult.terminal) {
+          // Terminal failure (invalid_grant, revoked) — clear tokens
+          await storage.delete(storageKey);
+        }
+        // Transient failures preserve tokens for retry on next call
         return undefined;
       }
 
       // Store refreshed tokens
-      await storage.set(storageKey, JSON.stringify(refreshed));
-      return refreshed.accessToken;
+      await storage.set(storageKey, JSON.stringify(refreshResult.tokens));
+      return refreshResult.tokens.accessToken;
     });
   };
 
@@ -130,11 +133,16 @@ function isExpired(tokens: OAuthTokens): boolean {
   return Date.now() >= tokens.expiresAt - EXPIRY_BUFFER_MS;
 }
 
+/** Terminal: token is invalid, must re-auth. Transient: temporary failure, keep tokens. */
+type RefreshResult =
+  | { readonly ok: true; readonly tokens: OAuthTokens }
+  | { readonly ok: false; readonly terminal: boolean };
+
 async function refreshAccessToken(
   refreshToken: string,
   tokenEndpoint: string,
   clientId?: string,
-): Promise<OAuthTokens | undefined> {
+): Promise<RefreshResult> {
   try {
     const body = new URLSearchParams({
       grant_type: "refresh_token",
@@ -151,7 +159,11 @@ async function refreshAccessToken(
       signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
     });
 
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      // 400/401 = terminal (invalid_grant, revoked token). 5xx = transient.
+      const terminal = response.status < 500;
+      return { ok: false, terminal };
+    }
 
     const data = (await response.json()) as {
       readonly access_token?: string;
@@ -161,17 +173,23 @@ async function refreshAccessToken(
       readonly scope?: string;
     };
 
-    if (typeof data.access_token !== "string") return undefined;
+    if (typeof data.access_token !== "string") {
+      return { ok: false, terminal: true };
+    }
 
     return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token ?? refreshToken,
-      expiresAt:
-        typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined,
-      tokenType: data.token_type,
-      scope: data.scope,
+      ok: true,
+      tokens: {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token ?? refreshToken,
+        expiresAt:
+          typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined,
+        tokenType: data.token_type,
+        scope: data.scope,
+      },
     };
   } catch {
-    return undefined;
+    // Network error, timeout — transient, preserve tokens
+    return { ok: false, terminal: false };
   }
 }

@@ -58,7 +58,9 @@ export async function discoverAuthServer(
 
 async function fetchResourceMetadata(serverUrl: string): Promise<AuthServerMetadata | undefined> {
   const url = new URL(serverUrl);
-  const wellKnown = new URL("/.well-known/oauth-protected-resource", url);
+  // Path-aware: /.well-known/oauth-protected-resource/{path}
+  const pathSuffix = url.pathname === "/" ? "" : url.pathname;
+  const wellKnown = new URL(`/.well-known/oauth-protected-resource${pathSuffix}`, url);
 
   try {
     const response = await fetchWithTimeout(wellKnown.toString());
