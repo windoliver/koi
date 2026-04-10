@@ -130,7 +130,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         <box flexDirection="row" marginTop={1} gap={2}>
           <text fg={COLORS.success}>{"[y] Allow once"}</text>
           <text fg={COLORS.danger}>{"[n] Deny"}</text>
-          <text fg={COLORS.blueAccent}>{`[a] Always (session)`}</text>
+          <text fg={COLORS.blueAccent}>{`[a] Always allow ${props.prompt.toolId} this session`}</text>
           <Show when={permanentAvailable()}>
             <text fg={COLORS.amber}>{`[!] Always (permanent)`}</text>
           </Show>
