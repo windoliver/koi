@@ -1165,6 +1165,40 @@ describe("audit-log ATIF trajectory (golden file)", () => {
   });
 });
 
+// audit-log entries sidecar: the actual AuditEntry records written during the session
+// ---------------------------------------------------------------------------
+
+describe("audit-log entries sidecar (golden file)", () => {
+  test("captures session_start, model_call, session_end entries", async () => {
+    const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
+      readonly entries: readonly {
+        readonly kind: string;
+        readonly schema_version: number;
+        readonly agentId: string;
+        readonly sessionId: string;
+        readonly turnIndex: number;
+        readonly durationMs: number;
+      }[];
+    };
+    const kinds = sidecar.entries.map((e) => e.kind);
+    expect(kinds).toContain("session_start");
+    expect(kinds).toContain("model_call");
+    expect(kinds).toContain("session_end");
+  });
+
+  test("all entries have schema_version=1 and required fields", async () => {
+    const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
+      readonly entries: readonly Record<string, unknown>[];
+    };
+    for (const entry of sidecar.entries) {
+      expect(entry.schema_version).toBe(1);
+      expect(typeof entry.agentId).toBe("string");
+      expect(typeof entry.sessionId).toBe("string");
+      expect(typeof entry.durationMs).toBe("number");
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // denial-escalation trajectory: repeated execution-time denials trigger auto-deny
 // ---------------------------------------------------------------------------
