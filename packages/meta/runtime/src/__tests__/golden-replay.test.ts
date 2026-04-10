@@ -5835,14 +5835,14 @@ describe("bash-ast-too-complex ATIF trajectory (golden file)", () => {
     await initializeBashAst();
     // The tool input from the recorded trajectory. This is a static test of
     // the walker against the exact string the LLM produced at record time.
-    const r = analyzeBashCommand('KOI_GREETING=hello echo "$KOI_GREETING"');
+    const r = analyzeBashCommand('export KOI_GREETING=hello; echo "$KOI_GREETING"');
     expect(r.kind).toBe("too-complex");
   });
 
   test("transitional classifier allows the too-complex command via regex fallback", async () => {
     const { classifyBashCommand, initializeBashAst } = await import("@koi/bash-ast");
     await initializeBashAst();
-    const r = classifyBashCommand('KOI_GREETING=hello echo "$KOI_GREETING"');
+    const r = classifyBashCommand('export KOI_GREETING=hello; echo "$KOI_GREETING"');
     // regex classifier finds no TTP match → allow. This is the transitional
     // compatibility behaviour; `classifyBashCommandWithElicit` replaces it
     // with an interactive user prompt when an elicit callback is wired.

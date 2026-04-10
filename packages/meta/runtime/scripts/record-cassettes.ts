@@ -2635,11 +2635,18 @@ const queries: readonly QueryConfig[] = [
   },
 
   // bash-ast-too-complex: @koi/bash-ast — proves the SYNC too-complex
-  //   fallback path (no elicit wired). `KOI_GREETING=hello echo "$KOI_GREETING"`
-  //   contains a `simple_expansion` inside a double-quoted string, which the
-  //   AST walker rejects as too-complex. Without an elicit callback wired,
-  //   the sync classifier falls through to the regex TTP classifier, which
-  //   finds no TTP match and allows the command.
+  //   fallback path (no elicit wired). The command
+  //   `export KOI_GREETING=hello; echo "$KOI_GREETING"` contains a
+  //   `simple_expansion` inside a double-quoted string AND a standalone
+  //   `variable_assignment`-style declaration, which the AST walker
+  //   rejects as too-complex. Without an elicit callback wired, the sync
+  //   classifier falls through to the regex TTP classifier, which finds
+  //   no TTP match and allows the command. The subprocess then runs
+  //   cleanly and prints "hello" — `export` puts the variable in the
+  //   shell environment BEFORE the parameter expansion happens, which
+  //   satisfies `set -u` (unlike a bare `KOI_GREETING=hello echo "$..."`
+  //   inline prefix, where the expansion fires before the prefix takes
+  //   effect on the builtin `echo`).
   //
   //   Covers the non-interactive code path used by `koi start`, standalone
   //   tool tests, and any caller without a prompt surface.
@@ -2648,7 +2655,7 @@ const queries: readonly QueryConfig[] = [
   {
     name: "bash-ast-too-complex",
     prompt:
-      'Use the Bash tool to run the command `KOI_GREETING=hello echo "$KOI_GREETING"` and tell me the exact word that was printed.',
+      'Use the Bash tool to run this exact command and report the output: `export KOI_GREETING=hello; echo "$KOI_GREETING"`',
     permissionMode: "bypass",
     permissionRules: BYPASS_RULES,
     permissionDescription: "bypass (allow all)",
