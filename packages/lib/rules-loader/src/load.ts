@@ -34,24 +34,26 @@ export async function loadRulesFile(file: DiscoveredFile): Promise<Result<Loaded
   } catch (e: unknown) {
     const code =
       e !== null && typeof e === "object" && "code" in e ? (e as { code: string }).code : undefined;
-    const koiCode = code === "ENOENT" ? "NOT_FOUND" : "EXTERNAL";
-    const message =
-      code === "ENOENT"
-        ? `Rules file not found: ${file.path}`
-        : `Failed to read rules file: ${file.path} (${code ?? "unknown error"})`;
-    const error: KoiError = {
-      code: koiCode,
-      message,
-      retryable: false,
-      context: { path: file.path },
-    };
-    return { ok: false, error };
+    // Only ENOENT is expected (file disappeared between discovery and load).
+    // All other errors (EACCES, I/O failures) are propagated so callers
+    // can decide whether to fail-closed or keep the last known-good state.
+    if (code === "ENOENT") {
+      const error: KoiError = {
+        code: "NOT_FOUND",
+        message: `Rules file not found: ${file.path}`,
+        retryable: false,
+        context: { path: file.path },
+      };
+      return { ok: false, error };
+    }
+    throw e;
   }
 }
 
 /**
- * Load all discovered rules files. Skips files that fail to load (logs warning).
- * Returns successfully loaded files in the same order as input.
+ * Load all discovered rules files. Skips NOT_FOUND errors (file disappeared
+ * between discovery and load). Other errors (EACCES, I/O) are propagated
+ * to prevent silently dropping trusted rules.
  */
 export async function loadAllRulesFiles(
   files: readonly DiscoveredFile[],
@@ -63,6 +65,7 @@ export async function loadAllRulesFiles(
     if (result.ok) {
       loaded.push(result.value);
     } else {
+      // NOT_FOUND is expected (race between discovery and load)
       console.warn(`[rules-loader] Skipping ${file.path}: ${result.error.message}`);
     }
   }

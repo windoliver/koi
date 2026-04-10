@@ -15,29 +15,27 @@ function isEnoent(e: unknown): boolean {
 }
 
 /**
- * Check whether a file exists and, if it is a symlink, verify its resolved
- * target stays within the allowed boundary. Returns the real path if valid,
- * or `undefined` if the file is missing, not a regular file, or a symlink
- * that escapes the boundary.
+ * Validate a candidate rules file path. Resolves the canonical path via
+ * `realpath()` to catch symlinks at any level (file or parent directory),
+ * then verifies the resolved target is a regular file within the allowed
+ * boundary.
  */
 async function validateCandidate(
   path: string,
   boundary: string | undefined,
 ): Promise<string | undefined> {
   try {
-    const ls = await lstat(path);
-    if (!ls.isFile() && !ls.isSymbolicLink()) return undefined;
+    // Resolve the canonical path to catch symlinks anywhere in the chain
+    const resolved = await realpath(path);
 
-    if (ls.isSymbolicLink()) {
-      const resolved = await realpath(path);
-      // Symlink must resolve within the boundary (git root or cwd)
-      if (boundary !== undefined && !resolved.startsWith(`${boundary}/`) && resolved !== boundary) {
-        return undefined;
-      }
-      // Verify the resolved target is a regular file
-      const targetStat = await lstat(resolved);
-      if (!targetStat.isFile()) return undefined;
+    // Verify the resolved target is within the repo boundary
+    if (boundary !== undefined && resolved !== boundary && !resolved.startsWith(`${boundary}/`)) {
+      return undefined;
     }
+
+    // Verify the resolved target is a regular file
+    const st = await lstat(resolved);
+    if (!st.isFile()) return undefined;
 
     return path;
   } catch (e: unknown) {
@@ -84,8 +82,14 @@ export async function discoverRulesFiles(
   const dirs = gitRoot !== undefined ? collectDirectories(cwd, gitRoot) : [resolve(cwd)];
   // dirs is cwd-first; we want root-first, so reverse
   const rootFirst = [...dirs].reverse();
-  // Boundary for symlink validation: git root or cwd
-  const boundary = gitRoot !== undefined ? resolve(gitRoot) : resolve(cwd);
+  // Resolve the canonical boundary path (handles macOS /var → /private/var etc.)
+  const rawBoundary = gitRoot !== undefined ? resolve(gitRoot) : resolve(cwd);
+  let boundary: string;
+  try {
+    boundary = await realpath(rawBoundary);
+  } catch {
+    boundary = rawBoundary;
+  }
 
   const discovered: DiscoveredFile[] = [];
 
