@@ -15,7 +15,9 @@ function createMockStorage(): SecureStorage & { readonly data: Map<string, strin
       data.set(key, value);
     }),
     delete: mock(async (key: string) => data.delete(key)),
-    withLock: mock(async <T>(_key: string, fn: () => Promise<T>) => fn()),
+    withLock: mock(async (_key: string, fn: () => Promise<unknown>) =>
+      fn(),
+    ) as SecureStorage["withLock"],
   };
 }
 

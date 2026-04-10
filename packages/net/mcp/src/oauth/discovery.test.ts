@@ -15,7 +15,7 @@ describe("discoverAuthServer", () => {
   test("returns undefined when no metadata found", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(null, { status: 404 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const result = await discoverAuthServer("https://mcp.example.com");
     expect(result).toBeUndefined();
@@ -34,7 +34,7 @@ describe("discoverAuthServer", () => {
         return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const result = await discoverAuthServer("https://mcp.example.com", {
       authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
@@ -73,7 +73,7 @@ describe("discoverAuthServer", () => {
         return Promise.resolve(new Response(JSON.stringify(asMeta), { status: 200 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const result = await discoverAuthServer("https://mcp.example.com");
     expect(result).toBeDefined();
@@ -88,7 +88,7 @@ describe("discoverAuthServer", () => {
 
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify(incompleteMeta), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const result = await discoverAuthServer("https://mcp.example.com", {
       authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
@@ -106,7 +106,7 @@ describe("discoverAuthServer", () => {
 
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const result = await discoverAuthServer("https://mcp.example.com", {
       authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",

@@ -15,7 +15,9 @@ function createMockStorage(): SecureStorage {
       data.set(key, value);
     }),
     delete: mock(async (key: string) => data.delete(key)),
-    withLock: mock(async <T>(_key: string, fn: () => Promise<T>) => fn()),
+    withLock: mock(async (_key: string, fn: () => Promise<unknown>) =>
+      fn(),
+    ) as SecureStorage["withLock"],
   };
 }
 
@@ -49,7 +51,7 @@ describe("createOAuthAuthProvider", () => {
     // Mock discovery to return no metadata (no OAuth server)
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(null, { status: 404 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const result = await provider.token();
     expect(result).toBeUndefined();
@@ -65,7 +67,7 @@ describe("createOAuthAuthProvider", () => {
 
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(null, { status: 404 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
       serverName: "test",
@@ -90,7 +92,7 @@ describe("createOAuthAuthProvider", () => {
 
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(null, { status: 404 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
       serverName: "test",
@@ -116,7 +118,7 @@ describe("createOAuthAuthProvider", () => {
   test("startAuthFlow returns false when no metadata discoverable", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(null, { status: 404 })),
-    ) as typeof fetch;
+    ) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
       serverName: "test",
@@ -156,7 +158,7 @@ describe("createOAuthAuthProvider", () => {
         return Promise.resolve(new Response(JSON.stringify(tokenResponse), { status: 200 }));
       }
       return Promise.resolve(new Response(null, { status: 404 }));
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
       serverName: "test",
