@@ -78,8 +78,7 @@ function collectDirectories(cwd: string, stopAt: string | undefined): readonly s
 export async function discoverRulesFiles(
   cwd: string,
   gitRoot: string | undefined,
-  filenames: readonly string[],
-  searchDirs: readonly string[],
+  scanPaths: readonly string[],
 ): Promise<readonly DiscoveredFile[]> {
   // No git root → only scan cwd to prevent cross-project injection
   const dirs = gitRoot !== undefined ? collectDirectories(cwd, gitRoot) : [resolve(cwd)];
@@ -93,13 +92,11 @@ export async function discoverRulesFiles(
   for (let depth = 0; depth < rootFirst.length; depth++) {
     const dir = rootFirst[depth];
     if (dir === undefined) continue;
-    for (const searchDir of searchDirs) {
-      for (const filename of filenames) {
-        const candidate = searchDir === "." ? join(dir, filename) : join(dir, searchDir, filename);
-        const valid = await validateCandidate(candidate, boundary);
-        if (valid !== undefined) {
-          discovered.push({ path: candidate, depth });
-        }
+    for (const scanPath of scanPaths) {
+      const candidate = join(dir, scanPath);
+      const valid = await validateCandidate(candidate, boundary);
+      if (valid !== undefined) {
+        discovered.push({ path: candidate, depth });
       }
     }
   }

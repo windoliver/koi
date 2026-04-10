@@ -5,7 +5,7 @@
  * estimate. Returns Result — file-not-found is an expected failure.
  */
 
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type { KoiError, Result } from "@koi/core";
 import { estimateTokens } from "@koi/token-estimator";
 
@@ -17,8 +17,7 @@ import type { DiscoveredFile, LoadedFile } from "./config.js";
  */
 export async function loadRulesFile(file: DiscoveredFile): Promise<Result<LoadedFile, KoiError>> {
   try {
-    const bunFile = Bun.file(file.path);
-    const content = await bunFile.text();
+    const content = await readFile(file.path, "utf-8");
     const fileStat = await stat(file.path);
     const tokens = estimateTokens(content);
 
@@ -33,16 +32,20 @@ export async function loadRulesFile(file: DiscoveredFile): Promise<Result<Loaded
       },
     };
   } catch (e: unknown) {
-    if (e !== null && typeof e === "object" && "code" in e && e.code === "ENOENT") {
-      const error: KoiError = {
-        code: "NOT_FOUND",
-        message: `Rules file not found: ${file.path}`,
-        retryable: false,
-        context: { path: file.path },
-      };
-      return { ok: false, error };
-    }
-    throw e;
+    const code =
+      e !== null && typeof e === "object" && "code" in e ? (e as { code: string }).code : undefined;
+    const koiCode = code === "ENOENT" ? "NOT_FOUND" : "EXTERNAL";
+    const message =
+      code === "ENOENT"
+        ? `Rules file not found: ${file.path}`
+        : `Failed to read rules file: ${file.path} (${code ?? "unknown error"})`;
+    const error: KoiError = {
+      code: koiCode,
+      message,
+      retryable: false,
+      context: { path: file.path },
+    };
+    return { ok: false, error };
   }
 }
 

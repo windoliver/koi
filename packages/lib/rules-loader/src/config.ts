@@ -8,11 +8,18 @@ import type { KoiError, Result } from "@koi/core";
 // Public configuration
 // ---------------------------------------------------------------------------
 
+/**
+ * An explicit scan entry: relative path to check at each directory level.
+ * Example: "CLAUDE.md" checks `<dir>/CLAUDE.md`, ".koi/context.md" checks `<dir>/.koi/context.md`.
+ */
+export type ScanPath = string;
+
 export interface RulesLoaderConfig {
-  /** Recognized rules filenames to scan for. Default: ["CLAUDE.md", "AGENTS.md", "context.md"] */
-  readonly filenames?: readonly string[] | undefined;
-  /** Subdirectories to check at each level. Default: [".", ".koi"] */
-  readonly searchDirs?: readonly string[] | undefined;
+  /**
+   * Explicit relative paths to scan at each directory level.
+   * Default: ["CLAUDE.md", "AGENTS.md", ".koi/CLAUDE.md", ".koi/AGENTS.md", ".koi/context.md"]
+   */
+  readonly scanPaths?: readonly ScanPath[] | undefined;
   /** Maximum token budget for merged rules content. Default: 8000 */
   readonly maxTokens?: number | undefined;
   /**
@@ -26,8 +33,7 @@ export interface RulesLoaderConfig {
 }
 
 export interface ResolvedConfig {
-  readonly filenames: readonly string[];
-  readonly searchDirs: readonly string[];
+  readonly scanPaths: readonly ScanPath[];
   readonly maxTokens: number;
   readonly getCwd: () => string;
   readonly enabled: boolean;
@@ -37,8 +43,21 @@ export interface ResolvedConfig {
 // Defaults
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_FILENAMES: readonly string[] = ["CLAUDE.md", "AGENTS.md", "context.md"];
-export const DEFAULT_SEARCH_DIRS: readonly string[] = [".", ".koi"];
+/**
+ * Default scan paths. Each entry is a relative path checked at every
+ * directory level from cwd up to git root.
+ *
+ * `context.md` is only checked inside `.koi/` — bare `context.md` in
+ * a project root is not trusted to prevent accidental injection of
+ * arbitrary project docs.
+ */
+export const DEFAULT_SCAN_PATHS: readonly ScanPath[] = [
+  "CLAUDE.md",
+  "AGENTS.md",
+  ".koi/CLAUDE.md",
+  ".koi/AGENTS.md",
+  ".koi/context.md",
+];
 export const DEFAULT_MAX_TOKENS = 8000;
 
 // ---------------------------------------------------------------------------
@@ -84,8 +103,7 @@ export function resolveConfig(config?: RulesLoaderConfig): ResolvedConfig {
         : () => cwdOption;
 
   return {
-    filenames: config?.filenames ?? DEFAULT_FILENAMES,
-    searchDirs: config?.searchDirs ?? DEFAULT_SEARCH_DIRS,
+    scanPaths: config?.scanPaths ?? DEFAULT_SCAN_PATHS,
     maxTokens: config?.maxTokens ?? DEFAULT_MAX_TOKENS,
     getCwd,
     enabled: config?.enabled ?? true,
@@ -102,10 +120,10 @@ export function validateRulesLoaderConfig(config?: RulesLoaderConfig): Result<Re
     return { ok: false, error };
   }
 
-  if (config?.filenames !== undefined && config.filenames.length === 0) {
+  if (config?.scanPaths !== undefined && config.scanPaths.length === 0) {
     const error: KoiError = {
       code: "VALIDATION",
-      message: "filenames must not be empty",
+      message: "scanPaths must not be empty",
       retryable: false,
     };
     return { ok: false, error };

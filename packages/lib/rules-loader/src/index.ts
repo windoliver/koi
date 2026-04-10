@@ -6,15 +6,15 @@
  */
 
 export {
-  DEFAULT_FILENAMES,
   DEFAULT_MAX_TOKENS,
-  DEFAULT_SEARCH_DIRS,
+  DEFAULT_SCAN_PATHS,
   type DiscoveredFile,
   type LoadedFile,
   type MergedRuleset,
   type ResolvedConfig,
   type RulesLoaderConfig,
   resolveConfig,
+  type ScanPath,
   validateRulesLoaderConfig,
 } from "./config.js";
 

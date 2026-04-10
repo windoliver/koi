@@ -84,12 +84,7 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
   async function loadRules(): Promise<RulesSessionState> {
     const cwd = resolved.getCwd();
     const gitRoot = await findGitRoot(cwd);
-    const discovered = await discoverRulesFiles(
-      cwd,
-      gitRoot,
-      resolved.filenames,
-      resolved.searchDirs,
-    );
+    const discovered = await discoverRulesFiles(cwd, gitRoot, resolved.scanPaths);
     const loadedFiles = await loadAllRulesFiles(discovered);
     const ruleset = mergeRulesets(loadedFiles, resolved.maxTokens);
     return { ruleset, loadedFiles };
@@ -111,7 +106,16 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
 
     async onSessionStart(ctx) {
       if (!resolved.enabled) return;
-      const state = await loadRules();
+      let state: RulesSessionState;
+      try {
+        state = await loadRules();
+      } catch (e: unknown) {
+        console.warn(
+          "[rules-loader] Failed to load rules at session start, continuing without rules:",
+          e instanceof Error ? e.message : e,
+        );
+        return;
+      }
       sessions.set(ctx.sessionId, state);
 
       if (state.ruleset.files.length > 0 && state.ruleset.truncated) {
@@ -126,25 +130,25 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return;
 
-      // Re-discover using current cwd to detect newly created/deleted files
-      // and to pick up deeper rules when the session navigates into subdirs.
-      const cwd = resolved.getCwd();
-      const gitRoot = await findGitRoot(cwd);
-      const discovered = await discoverRulesFiles(
-        cwd,
-        gitRoot,
-        resolved.filenames,
-        resolved.searchDirs,
-      );
+      try {
+        const cwd = resolved.getCwd();
+        const gitRoot = await findGitRoot(cwd);
+        const discovered = await discoverRulesFiles(cwd, gitRoot, resolved.scanPaths);
 
-      const discoveredPaths = new Set(discovered.map((d) => d.path));
-      const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
-      const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
-      const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
+        const discoveredPaths = new Set(discovered.map((d) => d.path));
+        const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
+        const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
+        const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
 
-      if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
-        const refreshed = await loadRules();
-        sessions.set(ctx.session.sessionId, refreshed);
+        if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
+          const refreshed = await loadRules();
+          sessions.set(ctx.session.sessionId, refreshed);
+        }
+      } catch (e: unknown) {
+        console.warn(
+          "[rules-loader] Failed to refresh rules, keeping cached version:",
+          e instanceof Error ? e.message : e,
+        );
       }
     },
 

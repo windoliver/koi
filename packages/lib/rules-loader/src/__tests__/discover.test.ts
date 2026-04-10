@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_FILENAMES, DEFAULT_SEARCH_DIRS } from "../config.js";
+import { DEFAULT_SCAN_PATHS } from "../config.js";
 import { discoverRulesFiles } from "../discover.js";
 
 /** Narrow array element — throws if undefined (length was already asserted). */
@@ -25,24 +25,14 @@ describe("discoverRulesFiles", () => {
   });
 
   test("returns empty array when no rules files exist", async () => {
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toEqual([]);
   });
 
   test("discovers single file at root", async () => {
     writeFileSync(join(tempDir, "CLAUDE.md"), "# Rules");
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(tempDir, "CLAUDE.md"));
     expect(at(result, 0).depth).toBe(0);
@@ -54,7 +44,7 @@ describe("discoverRulesFiles", () => {
     mkdirSync(child);
     writeFileSync(join(child, "CLAUDE.md"), "child rules");
 
-    const result = await discoverRulesFiles(child, tempDir, DEFAULT_FILENAMES, DEFAULT_SEARCH_DIRS);
+    const result = await discoverRulesFiles(child, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(2);
     expect(at(result, 0).path).toBe(join(tempDir, "CLAUDE.md"));
     expect(at(result, 0).depth).toBe(0);
@@ -67,12 +57,7 @@ describe("discoverRulesFiles", () => {
     mkdirSync(koiDir);
     writeFileSync(join(koiDir, "CLAUDE.md"), "koi rules");
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(koiDir, "CLAUDE.md"));
   });
@@ -83,12 +68,7 @@ describe("discoverRulesFiles", () => {
     mkdirSync(koiDir);
     writeFileSync(join(koiDir, "CLAUDE.md"), "koi");
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(2);
     expect(at(result, 0).path).toBe(join(tempDir, "CLAUDE.md"));
     expect(at(result, 1).path).toBe(join(koiDir, "CLAUDE.md"));
@@ -98,12 +78,7 @@ describe("discoverRulesFiles", () => {
     writeFileSync(join(tempDir, "CLAUDE.md"), "claude");
     writeFileSync(join(tempDir, "AGENTS.md"), "agents");
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(2);
     expect(at(result, 0).path).toBe(join(tempDir, "CLAUDE.md"));
     expect(at(result, 1).path).toBe(join(tempDir, "AGENTS.md"));
@@ -120,7 +95,7 @@ describe("discoverRulesFiles", () => {
     const cwd = join(gitRoot, "src");
     mkdirSync(cwd);
 
-    const result = await discoverRulesFiles(cwd, gitRoot, DEFAULT_FILENAMES, DEFAULT_SEARCH_DIRS);
+    const result = await discoverRulesFiles(cwd, gitRoot, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(gitRoot, "CLAUDE.md"));
   });
@@ -136,12 +111,7 @@ describe("discoverRulesFiles", () => {
     writeFileSync(join(child, "CLAUDE.md"), "child rules");
 
     // Without git root, only cwd is scanned — parent file must not leak
-    const result = await discoverRulesFiles(
-      child,
-      undefined,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(child, undefined, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(child, "CLAUDE.md"));
   });
@@ -150,7 +120,7 @@ describe("discoverRulesFiles", () => {
     writeFileSync(join(tempDir, "RULES.md"), "custom rules");
     writeFileSync(join(tempDir, "CLAUDE.md"), "should not find");
 
-    const result = await discoverRulesFiles(tempDir, tempDir, ["RULES.md"], ["."]);
+    const result = await discoverRulesFiles(tempDir, tempDir, ["RULES.md"]);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(tempDir, "RULES.md"));
   });
@@ -164,12 +134,7 @@ describe("discoverRulesFiles", () => {
     // Symlink CLAUDE.md → outside/secret.md
     symlinkSync(join(outside, "secret.md"), join(tempDir, "CLAUDE.md"));
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     // Symlink escaping the boundary should be rejected
     expect(result.filter((f) => f.path.includes("CLAUDE.md"))).toHaveLength(0);
 
@@ -181,12 +146,7 @@ describe("discoverRulesFiles", () => {
     mkdirSync(koiDir);
     writeFileSync(join(koiDir, "context.md"), "project context");
 
-    const result = await discoverRulesFiles(
-      tempDir,
-      tempDir,
-      DEFAULT_FILENAMES,
-      DEFAULT_SEARCH_DIRS,
-    );
+    const result = await discoverRulesFiles(tempDir, tempDir, DEFAULT_SCAN_PATHS);
     expect(result).toHaveLength(1);
     expect(at(result, 0).path).toBe(join(koiDir, "context.md"));
   });
