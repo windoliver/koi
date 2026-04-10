@@ -76,9 +76,12 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   }
 
   // --- McpAuthProvider.token() ---
-  const token = async (): Promise<string | undefined> => {
-    const tm = await getTokenManager();
-    return tm.getAccessToken();
+  // McpAuthProvider.token returns `string | Promise<string> | undefined`.
+  // Our async flow returns Promise<string | undefined>, which isn't directly
+  // assignable. We use an explicit type annotation and cast the inner result —
+  // at runtime, `await undefined` is fine and the transport handles it correctly.
+  const token: McpAuthProvider["token"] = () => {
+    return getTokenManager().then((tm) => tm.getAccessToken() as Promise<string>);
   };
 
   // --- Interactive auth flow ---
