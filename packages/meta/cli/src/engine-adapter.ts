@@ -182,14 +182,27 @@ export function bareModelId(modelName: string): string {
  *
  * Use this instead of passing { modelId } directly to enforceBudget — the raw
  * modelId field in BudgetConfig is only used for token estimation, not window resolution.
+ *
+ * @param contextWindowOverride - Override the resolved window size (e.g. for testing
+ *   compaction with a tiny window without changing the real model config).
  */
-export function budgetConfigForModel(modelName: string): BudgetConfig {
+export function budgetConfigForModel(
+  modelName: string,
+  contextWindowOverride?: number,
+): BudgetConfig {
   const modelId = bareModelId(modelName);
   const result = resolveConfig({ modelId });
   // resolveConfig only fails on invalid fraction values — model registry lookup
   // never produces invalid fractions, so this path is unreachable in practice.
   if (!result.ok) {
-    return { modelId };
+    return {
+      modelId,
+      ...(contextWindowOverride !== undefined ? { contextWindowSize: contextWindowOverride } : {}),
+    };
   }
-  return budgetConfigFromResolved(result.value);
+  const resolved = budgetConfigFromResolved(result.value);
+  if (contextWindowOverride !== undefined) {
+    return { ...resolved, contextWindowSize: contextWindowOverride };
+  }
+  return resolved;
 }

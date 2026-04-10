@@ -875,7 +875,14 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
-    budgetConfig: budgetConfigForModel(modelName),
+    budgetConfig: budgetConfigForModel(
+      modelName,
+      // KOI_COMPACTION_WINDOW: override context window size for testing compaction
+      // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
+      process.env.KOI_COMPACTION_WINDOW !== undefined
+        ? Number(process.env.KOI_COMPACTION_WINDOW)
+        : undefined,
+    ),
   });
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
