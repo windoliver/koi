@@ -74,6 +74,7 @@ import {
 } from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { createRulesMiddleware } from "@koi/rules-loader";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
@@ -859,6 +860,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
+  // --- @koi/rules-loader: discover and inject hierarchical project rules ---
+  // Walks from cwd to git root, merges CLAUDE.md / AGENTS.md / .koi/context.md
+  // into the system prompt on every model call. Uses process.cwd() by default
+  // so rules follow the workspace root.
+  const rulesMw = createRulesMiddleware({ cwd });
+
   // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
   // Wraps the in-memory memory backend as a MemoryComponent for the extraction
   // middleware. Extracted learnings are stored as standard MemoryRecord entries.
@@ -910,6 +917,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     eventTraceMw,
     hookMw,
     hookObserverMw,
+    rulesMw,
     permMw,
     exfiltrationGuardMw,
     extractionMw,

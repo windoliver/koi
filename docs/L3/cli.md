@@ -285,6 +285,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
+| `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
