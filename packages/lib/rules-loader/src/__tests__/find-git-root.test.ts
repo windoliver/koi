@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,8 +9,10 @@ describe("findGitRoot", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = join(tmpdir(), `koi-rules-test-${Date.now()}-${String(Math.random()).slice(2, 8)}`);
-    mkdirSync(tempDir, { recursive: true });
+    const raw = join(tmpdir(), `koi-rules-test-${Date.now()}-${String(Math.random()).slice(2, 8)}`);
+    mkdirSync(raw, { recursive: true });
+    // Canonicalize to match what findGitRoot returns (e.g. macOS /var → /private/var)
+    tempDir = realpathSync(raw);
   });
 
   afterEach(() => {
@@ -33,24 +35,23 @@ describe("findGitRoot", () => {
   });
 
   test("returns undefined when no .git found", async () => {
-    // tempDir has no .git — walk will hit filesystem root
-    // Use a deeply nested dir that won't hit any real .git
     const isolated = join(tempDir, "no-git", "deep");
     mkdirSync(isolated, { recursive: true });
 
-    // This test may find the actual repo's .git on the way up,
-    // so we test the function's behavior with a mock approach instead
-    // by checking that it at least returns a string (found some .git above)
-    // or undefined if truly no git root
     const result = await findGitRoot(isolated);
-    // If result is not tempDir, it found a parent .git — that's fine
     expect(result === undefined || typeof result === "string").toBe(true);
   });
 
   test("handles .git file (worktree)", async () => {
-    // Git worktrees use a .git file instead of a directory
     writeFileSync(join(tempDir, ".git"), "gitdir: /some/other/path");
     const result = await findGitRoot(tempDir);
     expect(result).toBe(tempDir);
+  });
+
+  test("ignores plain .git file without gitdir prefix", async () => {
+    writeFileSync(join(tempDir, ".git"), "not a valid git marker");
+    const result = await findGitRoot(tempDir);
+    // Should not treat this as a git root
+    expect(result !== tempDir).toBe(true);
   });
 });

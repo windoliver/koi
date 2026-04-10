@@ -111,12 +111,10 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
 
     async onSessionStart(ctx) {
       if (!resolved.enabled) return;
-      // Pin cwd and gitRoot for this session's lifetime — refreshes always
-      // use the same scope to prevent cross-repo rule injection.
+      // Pin the repo boundary (gitRoot) for the session lifetime.
+      // cwd is re-evaluated each turn but must stay within this boundary.
       const cwd = resolved.getCwd();
       const gitRoot = await findGitRoot(cwd);
-      // Fail closed: if rules cannot be loaded, the session must not start
-      // without trusted policy. Errors propagate to the engine.
       const state = await loadRulesInScope(cwd, gitRoot);
       sessions.set(ctx.sessionId, state);
 
@@ -132,17 +130,26 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return;
 
-      // Use pinned scope from session start — never reads ambient cwd
-      const discovered = await discoverRulesFiles(state.cwd, state.gitRoot, resolved.scanPaths);
+      // Re-evaluate cwd each turn to pick up child rules when the session
+      // navigates into subdirectories, but clamp to the pinned repo boundary.
+      let cwd = resolved.getCwd();
+      if (state.gitRoot !== undefined) {
+        const { relative: rel } = await import("node:path");
+        const r = rel(state.gitRoot, cwd);
+        if (r.startsWith("..") || r.startsWith("/") || /^[A-Za-z]:/.test(r)) {
+          cwd = state.cwd; // outside repo boundary — fall back to pinned cwd
+        }
+      }
+
+      const discovered = await discoverRulesFiles(cwd, state.gitRoot, resolved.scanPaths);
 
       const discoveredPaths = new Set(discovered.map((d) => d.path));
       const cachedPaths = new Set(state.loadedFiles.map((f) => f.path));
       const filesAdded = discovered.some((d) => !cachedPaths.has(d.path));
       const filesRemoved = state.loadedFiles.some((f) => !discoveredPaths.has(f.path));
 
-      // Fail closed: propagate errors so the engine can handle policy failures.
       if (filesAdded || filesRemoved || (await hasFilesChanged(state.loadedFiles))) {
-        const refreshed = await loadRulesInScope(state.cwd, state.gitRoot);
+        const refreshed = await loadRulesInScope(cwd, state.gitRoot);
         sessions.set(ctx.session.sessionId, refreshed);
       }
     },

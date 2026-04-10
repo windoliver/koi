@@ -6,7 +6,7 @@
  * Inlined to avoid depending on @koi/mm/memory-fs (not L0u).
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -30,7 +30,13 @@ async function isValidGitMarker(gitPath: string): Promise<boolean> {
  * Return the first directory containing a valid `.git`, or `undefined`.
  */
 export async function findGitRoot(from: string): Promise<string | undefined> {
-  let dir = resolve(from);
+  // Canonicalize the starting directory to handle symlinked workspaces
+  let dir: string;
+  try {
+    dir = await realpath(resolve(from));
+  } catch {
+    dir = resolve(from); // fallback if realpath fails
+  }
   for (;;) {
     try {
       if (await isValidGitMarker(join(dir, ".git"))) {
