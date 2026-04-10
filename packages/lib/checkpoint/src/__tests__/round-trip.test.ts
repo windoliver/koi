@@ -290,6 +290,56 @@ describe("round-trip rewind", () => {
     expect(readFileSync(pathA, "utf8")).toBe("a-v3");
   });
 
+  test("/rewind 1 undoes the last USER prompt, even when the prompt produced multiple engine turns", async () => {
+    // Simulate the TUI flow exactly: a user prompt that invokes a tool
+    // produces TWO engine turns — one with the fileOps (the tool call),
+    // and one with empty fileOps (the post-tool summary). Both belong to
+    // the same user prompt and should be undone by a single `/rewind 1`.
+
+    // User prompt 1 / engine turn 0: tool call that writes a file.
+    await fsWrite(rig, makeTurn(0), pathA, "a-v1");
+    await endTurn(rig, makeTurn(0));
+    // User prompt 1 / engine turn 1: post-tool summary, no file ops.
+    // This simulates the engine's second model call after the tool result
+    // gets fed back. The checkpoint middleware should detect this as a
+    // continuation (non-empty → empty) and NOT increment the user turn.
+    await endTurn(rig, makeTurn(1));
+
+    expect(readFileSync(pathA, "utf8")).toBe("a-v1");
+
+    // `/rewind 1` should undo the ENTIRE first user prompt (both engine
+    // turns), landing at the bootstrap state (file gone). This is the key
+    // user-facing fix: without the user-turn heuristic, `/rewind 1` would
+    // only undo the empty engine turn 1 and leave the file in place.
+    const result = await rig.checkpoint.rewind(SESSION_ID, 1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(() => readFileSync(pathA, "utf8")).toThrow();
+  });
+
+  test("user-turn coalescing only merges 'non-empty → empty' pairs, not consecutive text turns", async () => {
+    // Three text-only prompts (no file ops) should each count as a
+    // separate user turn, because the continuation heuristic requires the
+    // PREVIOUS capture to have non-empty fileOps.
+    await endTurn(rig, makeTurn(0)); // userTurn 1
+    await endTurn(rig, makeTurn(1)); // userTurn 2
+    await endTurn(rig, makeTurn(2)); // userTurn 3
+
+    // Now a file write — this starts userTurn 4.
+    await fsWrite(rig, makeTurn(3), pathA, "v1");
+    await endTurn(rig, makeTurn(3));
+
+    expect(readFileSync(pathA, "utf8")).toBe("v1");
+
+    // `/rewind 1` undoes userTurn 4 (the file write) and lands at the end
+    // of userTurn 3 (after the third empty text prompt).
+    const result = await rig.checkpoint.rewind(SESSION_ID, 1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.turnsRewound).toBe(1);
+    expect(() => readFileSync(pathA, "utf8")).toThrow();
+  });
+
   test("rewinding twice converges (re-running an already-applied restore is safe)", async () => {
     await fsWrite(rig, makeTurn(0), pathA, "a-v1");
     await endTurn(rig, makeTurn(0));

@@ -161,10 +161,14 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
   }
 
   // ---- Step 4: write the rewind marker as a new chain head ----
+  // The marker inherits the target's userTurnIndex so the chain's
+  // user-turn counter stays consistent after rewind: the next captured
+  // turn resumes counting from here, not from where the head was before.
   const markerPayload: CheckpointPayload =
     targetNode.data.transcriptEntryCount !== undefined
       ? {
           turnIndex: targetNode.data.turnIndex,
+          userTurnIndex: targetNode.data.userTurnIndex,
           sessionId: targetNode.data.sessionId,
           fileOps: [],
           driftWarnings: [],
@@ -173,6 +177,7 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
         }
       : {
           turnIndex: targetNode.data.turnIndex,
+          userTurnIndex: targetNode.data.userTurnIndex,
           sessionId: targetNode.data.sessionId,
           fileOps: [],
           driftWarnings: [],
@@ -222,15 +227,11 @@ async function locateTarget(
   currentHead: SnapshotNode<CheckpointPayload>,
   target: RestoreTarget,
 ): Promise<Result<LocateResult, KoiError>> {
-  // Walk ancestors from the current head. We always need at least the head
-  // + N steps (or up to the target node), so request maxDepth large enough.
-  // Omit `maxDepth` entirely for the by-node case rather than passing
-  // undefined — the L0 type uses exactOptionalPropertyTypes.
-  const ancestorsResult = await store.ancestors(
-    target.kind === "by-count"
-      ? { startNodeId: currentHead.nodeId, maxDepth: target.n + 1 }
-      : { startNodeId: currentHead.nodeId },
-  );
+  // Walk the full ancestor chain. For by-count we can't cap depth to `n`
+  // anymore because `n` now counts USER turns, not engine turns — a user
+  // turn may span multiple ancestors, so the walk depth isn't predictable
+  // from n alone. We walk everything and filter by userTurnIndex.
+  const ancestorsResult = await store.ancestors({ startNodeId: currentHead.nodeId });
   if (!ancestorsResult.ok) {
     return { ok: false, error: ancestorsResult.error };
   }
@@ -249,20 +250,54 @@ async function locateTarget(
         value: { targetNode: currentHead, snapshotsToUndo: [], turnsRewound: 0 },
       };
     }
-    if (target.n >= ancestors.length) {
+
+    // N counts USER turns, not engine turns. From the head's userTurnIndex,
+    // find the snapshot whose userTurnIndex equals (headUserTurn - n). A
+    // user prompt with tool calls produces multiple engine turns sharing
+    // the same userTurnIndex, so `/rewind 1` here undoes the entire
+    // prompt — both the tool-call turn and the post-tool summary turn —
+    // which is the user-facing semantic.
+    const headUserTurn = currentHead.data.userTurnIndex;
+    const targetUserTurn = headUserTurn - target.n;
+
+    if (targetUserTurn < 0) {
+      // Past the bootstrap (which has userTurnIndex 0) — that's more
+      // prompts than exist in the chain.
       return {
         ok: false,
         error: validation(
-          `Cannot rewind ${target.n} turns: chain has only ${ancestors.length - 1} ancestors above the head`,
+          `Cannot rewind ${target.n} user turn(s): chain has only ${headUserTurn} user prompt(s) above the bootstrap`,
         ),
       };
     }
-    const targetNode = ancestors[target.n];
+
+    // Walk from head (ancestors[0]) toward the root, finding the FIRST
+    // ancestor whose userTurnIndex is <= targetUserTurn. That ancestor is
+    // the newest snapshot belonging to the target user turn — land there.
+    let targetIdx = -1;
+    for (let i = 0; i < ancestors.length; i++) {
+      const ui = ancestors[i]?.data.userTurnIndex ?? 0;
+      if (ui <= targetUserTurn) {
+        targetIdx = i;
+        break;
+      }
+    }
+    if (targetIdx < 0) {
+      // No snapshot with a low-enough userTurnIndex — either the chain is
+      // corrupt or userTurnIndex values are inconsistent. Treat as validation.
+      return {
+        ok: false,
+        error: validation(
+          `Cannot rewind ${target.n} user turn(s): no ancestor with userTurnIndex <= ${targetUserTurn}`,
+        ),
+      };
+    }
+
+    const targetNode = ancestors[targetIdx];
     if (targetNode === undefined) {
-      // Defensive: should be unreachable given the bounds check above.
       return { ok: false, error: internal("ancestor walk returned undefined entry") };
     }
-    const snapshotsToUndo = ancestors.slice(0, target.n);
+    const snapshotsToUndo = ancestors.slice(0, targetIdx);
     return {
       ok: true,
       value: { targetNode, snapshotsToUndo, turnsRewound: target.n },

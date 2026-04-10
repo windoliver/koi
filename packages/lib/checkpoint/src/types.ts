@@ -31,6 +31,21 @@ import type {
 export interface CheckpointPayload {
   /** Monotonic turn index within the session, copied from `TurnContext.turnIndex`. */
   readonly turnIndex: number;
+  /**
+   * Monotonic index that groups consecutive engine turns into a single
+   * "user turn" (one user prompt). A user prompt that invokes tools
+   * produces multiple engine turns — the model call that issues the tool
+   * call, then the post-tool-summary model call. Both engine turns share
+   * the same `userTurnIndex` so `/rewind 1` undoes the entire prompt
+   * (including the empty post-tool summary), not just the last engine turn.
+   *
+   * Heuristic: if the previous capture had non-empty `fileOps` and this
+   * capture has empty `fileOps`, treat it as a continuation (same
+   * `userTurnIndex`). Otherwise increment. The bootstrap snapshot (the
+   * initial empty capture on session start) has `userTurnIndex: 0`; real
+   * user prompts start at 1.
+   */
+  readonly userTurnIndex: number;
   /** Session this checkpoint belongs to. */
   readonly sessionId: string;
   /** File operations captured during this turn (tracked tools only). */

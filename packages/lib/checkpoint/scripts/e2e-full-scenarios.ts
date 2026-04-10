@@ -145,6 +145,32 @@ console.log("\n[Scenario 1] Single-turn /rewind");
 }
 
 // ---------------------------------------------------------------------------
+// Scenario 1b: user-turn semantic — tool-call prompt with post-tool summary
+// ---------------------------------------------------------------------------
+console.log("\n[Scenario 1b] /rewind 1 undoes a tool-call prompt + post-tool summary");
+{
+  const rig = makeRig();
+  const sid = makeSessionId("sc1b");
+  const realPath = join(rig.cwd, "a.txt");
+
+  // User prompt, engine turn 0: the tool call with fileOps.
+  await fsWrite(rig, ctx(sid, 0), "a.txt", "v1");
+  await endTurn(rig.checkpoint, ctx(sid, 0));
+  // Same user prompt, engine turn 1: post-tool summary, no fileOps.
+  // This simulates the engine's second model call after the tool result.
+  await endTurn(rig.checkpoint, ctx(sid, 1));
+
+  check("file created", existsSync(realPath));
+
+  // `/rewind 1` should undo the ENTIRE user prompt — both engine turns —
+  // not just the empty post-tool summary turn.
+  const r = await rig.checkpoint.rewind(sid, 1);
+  check("rewind 1 ok", r.ok, r.ok ? undefined : r.error.message);
+  check("file deleted (user-turn coalescing)", !existsSync(realPath));
+  rig.cleanup();
+}
+
+// ---------------------------------------------------------------------------
 // Scenario 2: multi-turn /rewind N
 // ---------------------------------------------------------------------------
 console.log("\n[Scenario 2] Multi-turn /rewind 3");

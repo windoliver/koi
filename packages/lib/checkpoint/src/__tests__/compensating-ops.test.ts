@@ -74,6 +74,7 @@ function snapshot(fileOps: readonly FileOpRecord[]): SnapshotNode<CheckpointPayl
     metadata: {},
     data: {
       turnIndex: 0,
+      userTurnIndex: 1,
       sessionId: "s1",
       fileOps,
       driftWarnings: [],

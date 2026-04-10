@@ -66,6 +66,19 @@ interface SessionState {
   readonly turnBuffers: Map<string, FileOpRecord[]>;
   /** Monotonic event index within the session — for FileOpRecord ordering. */
   eventIndex: number;
+  /**
+   * User-turn counter. 0 = the bootstrap snapshot. Each real user prompt
+   * increments this, and all engine turns within a prompt share the same
+   * value (see onAfterTurn's continuation heuristic).
+   */
+  userTurnCounter: number;
+  /**
+   * Whether the most recent captured snapshot had non-empty fileOps.
+   * Used by the onAfterTurn continuation heuristic — if true AND the
+   * current capture is empty, this is a post-tool-summary engine turn
+   * and should share the prior's userTurnIndex.
+   */
+  lastCaptureHadOps: boolean;
 }
 
 export interface CreateCheckpointInput {
@@ -115,9 +128,12 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // `rewind 1` would land ON the root (keeping its file ops applied)
       // rather than undoing them. The protocol's snapshotsToUndo excludes
       // the target snapshot — so we need a target that has no ops.
+      //
+      // The bootstrap has `userTurnIndex: 0`; real user prompts start at 1.
       if (parent === undefined) {
         const bootstrapPayload: CheckpointPayload = {
           turnIndex: -1,
+          userTurnIndex: 0,
           sessionId: sessionId as unknown as string,
           fileOps: [],
           driftWarnings: [],
@@ -132,11 +148,24 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         }
       }
 
+      // Restore userTurnCounter from the existing head if resuming a chain.
+      // Otherwise start at 0 (bootstrap). On continuation-detection, we
+      // need to know whether the last capture had ops — we conservatively
+      // assume it did NOT when resuming (the resumed head's ops may or may
+      // not be known without fetching; treat as false so the next capture
+      // always starts a new user turn).
+      let userTurnCounter = 0;
+      if (headResult.ok && headResult.value !== undefined) {
+        userTurnCounter = headResult.value.data.userTurnIndex ?? 0;
+      }
+
       state = {
         chainId: cid,
         parentNodeId: parent,
         turnBuffers: new Map(),
         eventIndex: 0,
+        userTurnCounter,
+        lastCaptureHadOps: false,
       };
       sessions.set(sessionId, state);
     }
@@ -223,6 +252,28 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
     state.turnBuffers.delete(turnKey);
 
+    // User-turn boundary detection. A single user prompt that invokes tools
+    // typically produces two engine turns:
+    //   engine turn N   — model call → tool call(s) → fileOps populated
+    //   engine turn N+1 — post-tool summary model call → fileOps empty
+    // Both share the same user prompt, so `/rewind 1` should undo both.
+    //
+    // Heuristic: if the previous capture had non-empty fileOps AND this
+    // capture is empty, treat it as a continuation of the same user turn.
+    // Otherwise increment the counter. This correctly groups tool-call
+    // flows while still treating consecutive text-only turns as separate.
+    const isContinuation = state.lastCaptureHadOps && fileOps.length === 0;
+    if (!isContinuation) {
+      state.userTurnCounter += 1;
+    }
+    const userTurnIndex = state.userTurnCounter;
+    // Update the "previous capture had ops" marker for the NEXT call.
+    // We set it based on the CURRENT fileOps so the next onAfterTurn can
+    // reference it. Setting it after the put would be the same behavior
+    // (the put is synchronous from our perspective) — putting it here is
+    // just clearer.
+    state.lastCaptureHadOps = fileOps.length > 0;
+
     // If a transcript is wired in, capture the post-turn entry count so the
     // restore protocol can truncate back to this point on rewind. The session
     // middleware appends entries during wrapToolCall/wrapModelStream which
@@ -245,6 +296,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       transcriptEntryCount !== undefined
         ? {
             turnIndex: ctx.turnIndex,
+            userTurnIndex,
             sessionId: ctx.session.sessionId as unknown as string,
             fileOps,
             driftWarnings: [],
@@ -253,6 +305,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
           }
         : {
             turnIndex: ctx.turnIndex,
+            userTurnIndex,
             sessionId: ctx.session.sessionId as unknown as string,
             fileOps,
             driftWarnings: [],
