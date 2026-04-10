@@ -53,7 +53,7 @@ import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
-import { createHookMiddleware, loadHooks } from "@koi/hooks";
+import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver } from "@koi/mcp";
 import {
   createMcpComponentProvider,
@@ -485,28 +485,33 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // that delegates to the TUI's model adapter for single-shot verification.
   const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
   // let: justified — set after async load
-  let loadedHooks: readonly import("@koi/core").HookConfig[] = [];
+  let loadedHooks: readonly import("@koi/hooks").RegisteredHook[] = [];
   try {
     const raw: unknown = await Bun.file(hooksConfigPath).json();
-    const hookResult = loadHooks(raw);
+    const hookResult = loadRegisteredHooks(raw, "user");
     if (hookResult.ok) {
-      const agentHooks = hookResult.value.filter((h) => h.kind === "agent");
+      const agentHooks = hookResult.value.filter((rh) => rh.hook.kind === "agent");
       if (agentHooks.length > 0) {
         console.warn(
           `[koi tui] ${agentHooks.length} agent hook(s) skipped (not supported in TUI): ` +
-            agentHooks.map((h) => h.name).join(", "),
+            agentHooks.map((rh) => rh.hook.name).join(", "),
         );
       }
-      loadedHooks = hookResult.value.filter((h) => h.kind !== "agent");
+      loadedHooks = hookResult.value.filter((rh) => rh.hook.kind !== "agent");
     }
   } catch {
     // Absent or unreadable — silently skip (no hooks configured)
   }
 
-  // Merge plugin hooks with user hooks (plugin hooks run first, user hooks override)
-  const allHooks: readonly import("@koi/core").HookConfig[] = [
-    ...pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+  // Merge plugin hooks (session tier) with user hooks (user tier).
+  // Plugin hooks run first within their tier; user hooks in the next tier phase.
+  const pluginRegistered = createRegisteredHooks(
+    pluginComponents.hooks.filter((h) => h.kind !== "agent"),
+    "session",
+  );
+  const allHooks: readonly import("@koi/hooks").RegisteredHook[] = [
     ...loadedHooks,
+    ...pluginRegistered,
   ];
 
   // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
@@ -532,7 +537,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   };
 
-  const hasPromptHooks = allHooks.some((h) => h.kind === "prompt");
+  const hasPromptHooks = allHooks.some((rh) => rh.hook.kind === "prompt");
   const hookMw = createHookMiddleware({
     hooks: allHooks,
     promptCallFn: hasPromptHooks ? promptCallFn : undefined,
