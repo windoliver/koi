@@ -51,7 +51,7 @@ const VALID_TRANSITIONS: Readonly<
 > = {
   idle: ["connecting", "closed"],
   connecting: ["connected", "error", "auth-needed", "closed"],
-  connected: ["reconnecting", "error", "closed"],
+  connected: ["reconnecting", "error", "auth-needed", "closed"],
   reconnecting: ["connected", "error", "auth-needed", "closed"],
   "auth-needed": ["connecting", "closed"],
   error: ["connecting", "reconnecting", "closed"],

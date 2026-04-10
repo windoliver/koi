@@ -14,6 +14,8 @@ export type { InitFlags } from "./init.js";
 export { isInitFlags, parseInitFlags } from "./init.js";
 export type { LogsFlags } from "./logs.js";
 export { isLogsFlags, parseLogsFlags } from "./logs.js";
+export type { McpFlags, McpSubcommand } from "./mcp.js";
+export { isMcpFlags, parseMcpFlags } from "./mcp.js";
 export type { PluginFlags, PluginSubcommand } from "./plugin.js";
 export { isPluginFlags, parsePluginFlags } from "./plugin.js";
 export type { ServeFlags } from "./serve.js";
@@ -43,6 +45,8 @@ import type { InitFlags } from "./init.js";
 import { parseInitFlags } from "./init.js";
 import type { LogsFlags } from "./logs.js";
 import { parseLogsFlags } from "./logs.js";
+import type { McpFlags } from "./mcp.js";
+import { parseMcpFlags } from "./mcp.js";
 import type { PluginFlags } from "./plugin.js";
 import { parsePluginFlags } from "./plugin.js";
 import type { ServeFlags } from "./serve.js";
@@ -71,6 +75,7 @@ export type CliFlags =
   | DoctorFlags
   | StopFlags
   | DeployFlags
+  | McpFlags
   | PluginFlags
   | BaseFlags;
 
@@ -89,6 +94,7 @@ export type KnownCommand =
   | "doctor"
   | "stop"
   | "deploy"
+  | "mcp"
   | "plugin";
 
 const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
@@ -102,6 +108,7 @@ const KNOWN_COMMANDS: ReadonlyArray<KnownCommand> = [
   "doctor",
   "stop",
   "deploy",
+  "mcp",
   "plugin",
 ];
 
@@ -128,6 +135,7 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
   doctor: parseDoctorFlags,
   stop: parseStopFlags,
   deploy: parseDeployFlags,
+  mcp: parseMcpFlags,
   plugin: parsePluginFlags,
 };
 

@@ -3,6 +3,7 @@
 exports[`@koi/mcp API surface . type declarations are stable 1`] = `
 "import { Result, KoiError, JsonObject, Resolver, ToolDescriptor, Tool, ComponentProvider } from '@koi/core';
 import { z } from 'zod';
+import { SecureStorage } from '@koi/secure-storage';
 
 /**
  * MCP authentication provider interface.
@@ -78,11 +79,17 @@ interface StdioServerConfig {
     readonly args?: readonly string[] | undefined;
     readonly env?: Readonly<Record<string, string>> | undefined;
 }
+interface McpOAuthExternalConfig {
+    readonly clientId?: string | undefined;
+    readonly callbackPort?: number | undefined;
+    readonly authServerMetadataUrl?: string | undefined;
+}
 interface HttpServerConfig {
     readonly kind: "http";
     readonly name: string;
     readonly url: string;
     readonly headers?: Readonly<Record<string, string>> | undefined;
+    readonly oauth?: McpOAuthExternalConfig | undefined;
 }
 interface SseServerConfig {
     readonly kind: "sse";
@@ -261,6 +268,8 @@ interface ConnectionDeps {
     }) => SdkClientLike;
     readonly createTransport: CreateTransportFn;
     readonly random: () => number;
+    /** Called when a mid-session 401/403 triggers auth-needed. Use to clear stale tokens. */
+    readonly onUnauthorized?: () => void | Promise<void>;
 }
 declare function createMcpConnection(config: ResolvedMcpServerConfig, authProvider?: McpAuthProvider, deps?: Partial<ConnectionDeps>): McpConnection;
 
@@ -393,6 +402,160 @@ declare function loadMcpJsonFile(filePath: string): Promise<Result<{
 declare function loadMcpJsonString(json: string): Result<NormalizeResult, KoiError>;
 
 /**
+ * OAuth types for MCP authentication.
+ *
+ * OAuthRuntime is the injection point: @koi/mcp defines it,
+ * CLI (or other hosts) implement it. This keeps browser launch,
+ * callback server, and user interaction out of the transport library.
+ */
+/** OAuth configuration from the external MCP server config. */
+interface McpOAuthConfig {
+    readonly clientId?: string | undefined;
+    readonly callbackPort?: number | undefined;
+    readonly authServerMetadataUrl?: string | undefined;
+}
+/**
+ * Interactive OAuth runtime — injected by the host application.
+ *
+ * @koi/mcp calls these methods when user interaction is needed.
+ * The CLI implements them with browser launch + local HTTP callback server.
+ */
+/** Result from the OAuth callback containing code and state for validation. */
+interface OAuthCallbackResult {
+    readonly code: string;
+    readonly state: string | undefined;
+}
+interface OAuthRuntime {
+    /**
+     * Open the authorization URL in a browser and wait for the redirect callback.
+     * Returns the authorization code and state parameter from the callback.
+     *
+     * @param authorizationUrl - Full OAuth authorization URL with PKCE challenge
+     * @param redirectUri - The callback URI the auth server will redirect to
+     */
+    readonly authorize: (authorizationUrl: string, redirectUri: string) => Promise<OAuthCallbackResult>;
+    /**
+     * Notify the user that re-authentication is needed (e.g., after 401 mid-session).
+     * The host decides how to present this (TUI prompt, CLI message, etc.).
+     */
+    readonly onReauthNeeded: (serverName: string) => Promise<void>;
+}
+/** Persisted OAuth token set. */
+interface OAuthTokens {
+    readonly accessToken: string;
+    readonly refreshToken?: string | undefined;
+    readonly expiresAt?: number | undefined;
+    readonly tokenType?: string | undefined;
+    readonly scope?: string | undefined;
+}
+/** Authorization server metadata (subset of RFC 8414). */
+interface AuthServerMetadata {
+    readonly issuer: string;
+    readonly authorizationEndpoint: string;
+    readonly tokenEndpoint: string;
+    readonly registrationEndpoint?: string | undefined;
+    readonly codeChallengeMethodsSupported?: readonly string[] | undefined;
+}
+
+/**
+ * OAuth authorization server metadata discovery.
+ *
+ * Implements RFC 9728 (Protected Resource Metadata) → RFC 8414
+ * (Authorization Server Metadata) discovery chain. Falls back to
+ * configured metadata URL if provided.
+ */
+
+/**
+ * Discovers the OAuth authorization server for an MCP server.
+ *
+ * Discovery order:
+ * 1. If \`config.authServerMetadataUrl\` is set, fetch directly (must be HTTPS)
+ * 2. RFC 9728: probe \`/.well-known/oauth-protected-resource\` on the MCP server
+ * 3. RFC 8414: probe \`/.well-known/oauth-authorization-server\` on the MCP server
+ *
+ * Returns undefined if no OAuth metadata is found (server doesn't require OAuth).
+ */
+declare function discoverAuthServer(serverUrl: string, config?: McpOAuthConfig): Promise<AuthServerMetadata | undefined>;
+
+/**
+ * PKCE (Proof Key for Code Exchange) utilities for OAuth 2.0.
+ *
+ * Generates code verifier and S256 code challenge per RFC 7636.
+ */
+interface PkceChallenge {
+    readonly verifier: string;
+    readonly challenge: string;
+    readonly method: "S256";
+}
+/**
+ * Generates a PKCE code verifier and S256 challenge.
+ *
+ * - Verifier: 43-byte random value, base64url-encoded (per RFC 7636 §4.1)
+ * - Challenge: SHA-256 hash of verifier, base64url-encoded (per RFC 7636 §4.2)
+ */
+declare function createPkceChallenge(): PkceChallenge;
+
+/**
+ * OAuth auth provider — implements McpAuthProvider with full OAuth 2.0 lifecycle.
+ *
+ * Delegates interactive steps (browser, callback) to the injected OAuthRuntime.
+ * Manages token lifecycle: discovery → authorize → exchange → refresh → re-auth.
+ */
+
+interface OAuthProviderOptions {
+    readonly serverName: string;
+    readonly serverUrl: string;
+    readonly oauthConfig: McpOAuthConfig;
+    readonly runtime: OAuthRuntime;
+    readonly storage: SecureStorage;
+}
+interface OAuthAuthProvider extends McpAuthProvider {
+    /** Run the full interactive OAuth authorization flow. */
+    readonly startAuthFlow: () => Promise<boolean>;
+    /** Clear stored tokens and trigger re-auth notification. */
+    readonly handleUnauthorized: () => Promise<void>;
+}
+/**
+ * Creates an OAuth-backed McpAuthProvider.
+ *
+ * The provider's \`token()\` method returns the current access token,
+ * refreshing automatically if expired. Returns \`undefined\` when no
+ * tokens are stored (triggers auth-needed state in the connection).
+ */
+declare function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAuthProvider;
+
+/**
+ * Token manager — handles OAuth token persistence and refresh.
+ *
+ * Uses SecureStorage for persistence with file-locking for concurrent
+ * access safety. Tokens are stored as JSON keyed by server identity.
+ */
+
+interface TokenManager {
+    /** Get the current access token, refreshing if expired. */
+    readonly getAccessToken: () => Promise<string | undefined>;
+    /** Store a new token set. */
+    readonly storeTokens: (tokens: OAuthTokens) => Promise<void>;
+    /** Clear all stored tokens for this server. */
+    readonly clearTokens: () => Promise<boolean>;
+    /** Check if tokens exist (without refreshing). */
+    readonly hasTokens: () => Promise<boolean>;
+}
+interface TokenManagerOptions {
+    readonly serverName: string;
+    readonly serverUrl: string;
+    readonly storage: SecureStorage;
+    readonly metadata?: AuthServerMetadata | undefined;
+    readonly clientId?: string | undefined;
+}
+declare function createTokenManager(options: TokenManagerOptions): TokenManager;
+/**
+ * Compute a stable storage key from server name + URL.
+ * Format: \`mcp-oauth|{name}|{sha256(url)[:16]}\`
+ */
+declare function computeServerKey(serverName: string, serverUrl: string): string;
+
+/**
  * Schema normalization — ensures MCP tool schemas are valid JSON Schema.
  *
  * MCP tool schemas in the wild are messy: bare objects without \`type: "object"\`,
@@ -458,6 +621,6 @@ declare function mapMcpToolInfoToDescriptor(toolInfo: McpToolInfo, serverName: s
  */
 declare function mapMcpToolToKoi(toolInfo: McpToolInfo, connection: McpConnection, serverName: string): Tool;
 
-export { type AuthChallenge, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createTransport, createTransportStateMachine, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
+export { type AuthChallenge, type AuthServerMetadata, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
 "
 `;
