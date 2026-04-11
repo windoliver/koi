@@ -453,10 +453,10 @@ describe("round-trip rewind", () => {
     expect(result.incompleteSnapshotsSkipped).toEqual([incompleteNodeId]);
   });
 
-  test("drift warnings are persisted back into the captured snapshot via updatePayload", async () => {
+  test("drift warnings land in the initial snapshot payload (sync detection)", async () => {
     // Replace the rig's checkpoint with one that uses a drift detector
-    // returning a fixed list. The detector runs in a deferred microtask, so
-    // we drain the event loop with setImmediate before reading the snapshot.
+    // returning a fixed list. Detection is synchronous now — warnings are
+    // part of the initial put, no deferred update, no microtask polling.
     rig.cleanup();
     const blobDir = join(tmpdir(), `koi-cp-rt-blobs-${crypto.randomUUID()}`);
     mkdirSync(blobDir, { recursive: true });
@@ -488,13 +488,7 @@ describe("round-trip rewind", () => {
     if (onAfter === undefined) throw new Error("no onAfterTurn");
     await onAfter(localCtx);
 
-    // Drain the microtask queue a few times so the deferred detector and
-    // its `.then(updatePayload)` chain have a chance to run.
-    for (let i = 0; i < 4; i++) {
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
-
-    // Read the snapshot back — drift warnings must now be persisted.
+    // Sync detection: warnings are in the initial payload — no polling.
     const head = await checkpoint.currentHead(SESSION_ID);
     if (head === undefined) throw new Error("no head");
     const lookup = store.get(head);
@@ -508,6 +502,44 @@ describe("round-trip rewind", () => {
     rmSync(workDir, { recursive: true, force: true });
 
     // Re-create the shared rig so afterEach can cleanup normally.
+    rig = makeRig();
+    pathA = join(rig.workDir, "a.txt");
+    pathB = join(rig.workDir, "b.txt");
+    pathC = join(rig.workDir, "c.txt");
+  });
+
+  test("drift detector that throws yields empty warnings without crashing the capture", async () => {
+    rig.cleanup();
+    const blobDir = join(tmpdir(), `koi-cp-rt-blobs-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const workDir = mkdtempSync(join(tmpdir(), "koi-cp-rt-work-"));
+    const store = createSnapshotStoreSqlite<CheckpointPayload>({ path: ":memory:" });
+    const driftDetector: DriftDetector = {
+      detect: async () => {
+        throw new Error("detector exploded");
+      },
+    };
+    const checkpoint = createCheckpoint({
+      store,
+      config: { blobDir, driftDetector },
+    });
+
+    const localCtx = makeTurn(0);
+    const onAfter = checkpoint.middleware.onAfterTurn;
+    if (onAfter === undefined) throw new Error("no onAfterTurn");
+    // This must not throw — drift detection is best-effort.
+    await onAfter(localCtx);
+
+    const head = await checkpoint.currentHead(SESSION_ID);
+    if (head === undefined) throw new Error("no head");
+    const lookup = store.get(head);
+    expect(lookup.ok).toBe(true);
+    if (!lookup.ok) return;
+    expect(lookup.value.data.driftWarnings).toEqual([]);
+
+    store.close();
+    rmSync(blobDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
     rig = makeRig();
     pathA = join(rig.workDir, "a.txt");
     pathB = join(rig.workDir, "b.txt");

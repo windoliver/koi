@@ -213,8 +213,28 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // this, virtualized backends like @koi/fs-local (which maps
       // "/workspace/foo" → "<cwd>/workspace/foo") would silently cause the
       // middleware to read from a non-existent path and capture nothing.
-      // Default is identity — unit tests and unsandboxed setups unchanged.
-      const path = config.resolvePath !== undefined ? config.resolvePath(rawPath) : rawPath;
+      //
+      // Security: when the resolver returns `undefined`, the input path
+      // resolves OUTSIDE the backend's workspace root (traversal, unmatched
+      // absolute path, etc.). We MUST NOT hash or store that file — the
+      // backend's own safePath() will reject the op later, but the
+      // checkpoint middleware runs first and would leak the file into the
+      // blob store. Skip capture entirely and forward to the tool; the
+      // backend will return a PERMISSION error which surfaces to the
+      // caller without any side effects on the checkpoint chain.
+      //
+      // Default (resolvePath omitted) is identity — unit tests and
+      // unsandboxed setups unchanged.
+      let path: string;
+      if (config.resolvePath !== undefined) {
+        const resolved = config.resolvePath(rawPath);
+        if (resolved === undefined) {
+          return await next(request);
+        }
+        path = resolved;
+      } else {
+        path = rawPath;
+      }
 
       const state = await getOrCreateSession(sid);
       const turnKey = String(ctx.turnId);
@@ -298,6 +318,27 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       }
     }
 
+    // Drift detection runs synchronously so warnings land in the INITIAL
+    // snapshot payload. An earlier two-phase approach (put first, persist
+    // drift via a deferred updatePayload) was reverted after codex review
+    // found two problems:
+    //   1. Timing race: the deferred detector could resolve after the next
+    //      turn started, attributing later-turn drift to the wrong snapshot.
+    //   2. Fork safety: `store.updatePayload` mutates rows shared across
+    //      forks — rewriting history for any branch that already referenced
+    //      the node. SnapshotNode is supposed to be immutable.
+    // Sync detection costs `git status` latency on the critical path
+    // (bounded by the detector's own 1.5s timeout and a "return [] on any
+    // failure" contract). Accurate but slightly slower; correct invariant.
+    let driftWarnings: readonly string[] = [];
+    if (driftDetector !== null) {
+      try {
+        driftWarnings = await driftDetector.detect();
+      } catch {
+        // Never throw from drift detection — treat any error as "no drift".
+      }
+    }
+
     const payload: CheckpointPayload =
       transcriptEntryCount !== undefined
         ? {
@@ -305,7 +346,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
             userTurnIndex,
             sessionId: ctx.session.sessionId as unknown as string,
             fileOps,
-            driftWarnings: [],
+            driftWarnings,
             transcriptEntryCount,
             capturedAt: Date.now(),
           }
@@ -314,7 +355,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
             userTurnIndex,
             sessionId: ctx.session.sessionId as unknown as string,
             fileOps,
-            driftWarnings: [],
+            driftWarnings,
             capturedAt: Date.now(),
           };
 
@@ -335,24 +376,11 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         [SNAPSHOT_STATUS_KEY]: incomplete,
         koi_capture_error: putResult.error.message,
       });
-      // Soft-fail path: run drift detection for critical-path budget, but
-      // don't bother persisting results — the incomplete marker is advisory.
-      runDeferred(driftDetector);
       return;
     }
 
     if (putResult.value !== undefined) {
       state.parentNodeId = putResult.value.nodeId;
-      // Success path: persist drift warnings back into this node when the
-      // deferred detector resolves.
-      runDeferred(driftDetector, {
-        store,
-        nodeId: putResult.value.nodeId,
-        basePayload: payload,
-      });
-    } else {
-      // Store skipped the put (skipIfUnchanged matched); no node to update.
-      runDeferred(driftDetector);
     }
   };
 
@@ -462,54 +490,4 @@ function extractCallId(request: ToolRequest): ToolCallId {
     return fromMetadata as ToolCallId;
   }
   return `synth-${crypto.randomUUID()}` as ToolCallId;
-}
-
-/**
- * Run the deferred capture work — drift detection. Best-effort: errors are
- * swallowed, since drift is advisory and must not abort the agent loop.
- *
- * When `nodeRef` is provided (success path), the resulting drift warnings
- * are persisted back into the just-written snapshot via `store.updatePayload`
- * so `runRestore` can surface them on a later rewind. When `nodeRef` is
- * undefined (soft-fail path), detection still runs to exercise the critical
- * budget but nothing is persisted — the incomplete snapshot has no useful
- * place to hold the warnings.
- *
- * This is the "two-phase capture" pattern from design review issue 14A:
- * the synchronous `store.put` commits the payload on the critical path;
- * this deferred task fills in fields that weren't available yet (drift
- * warnings here; in the future, async hashes, git refs, etc.).
- */
-function runDeferred(
-  detector: DriftDetector | null,
-  nodeRef?: {
-    readonly store: SnapshotChainStore<CheckpointPayload>;
-    readonly nodeId: NodeId;
-    readonly basePayload: CheckpointPayload;
-  },
-): void {
-  if (detector === null) return;
-  // queueMicrotask defers without awaiting — the engine moves on immediately.
-  queueMicrotask(() => {
-    void detector
-      .detect()
-      .then(async (warnings) => {
-        if (warnings.length === 0 || nodeRef === undefined) return;
-        // Persist drift warnings back into the snapshot. nodeId is stable,
-        // contentHash is recomputed from the new payload. Any downstream
-        // consumer reading the snapshot via `store.get(nodeId)` sees the
-        // warnings next time around (including runRestore's ancestor walk).
-        try {
-          await nodeRef.store.updatePayload(nodeRef.nodeId, {
-            ...nodeRef.basePayload,
-            driftWarnings: warnings,
-          });
-        } catch {
-          // Best-effort: drift persistence must not throw into the engine.
-        }
-      })
-      .catch(() => {
-        // Best-effort: never throw from drift detection.
-      });
-  });
 }

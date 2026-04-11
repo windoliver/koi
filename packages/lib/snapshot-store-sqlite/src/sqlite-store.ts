@@ -159,14 +159,6 @@ export function createSnapshotStoreSqlite<T>(
   const deleteNodeStmt = db.prepare("DELETE FROM snapshot_nodes WHERE node_id = ?");
   const deleteHeadStmt = db.prepare("DELETE FROM chain_heads WHERE chain_id = ?");
 
-  // Used by `updatePayload` — rewrites data + content_hash on an existing
-  // node without touching its ID, parents, chain membership, or metadata.
-  // Supports the two-phase capture pattern: initial synchronous put on the
-  // critical path + deferred update for drift/async-hash results.
-  const updateNodePayloadStmt = db.prepare(
-    "UPDATE snapshot_nodes SET data = $data, content_hash = $content_hash WHERE node_id = $node_id",
-  );
-
   // -- In-memory caches -----------------------------------------------------
 
   // chain head pointer cache: chainId → nodeId. Initialized from chain_heads
@@ -527,40 +519,9 @@ export function createSnapshotStoreSqlite<T>(
     db.close();
   };
 
-  // -----------------------------------------------------------------------
-  // updatePayload — two-phase capture support
-  // -----------------------------------------------------------------------
-
-  const updatePayload = (nid: NodeId, data: T): Result<void, KoiError> => {
-    try {
-      ensureOpen();
-      // Verify the node exists first so we return NOT_FOUND rather than a
-      // silent no-op update. SQLite UPDATE ... WHERE would simply match zero
-      // rows and succeed, which would mask bugs where a stale nodeId leaks
-      // from a closure.
-      const existing = selectNodeStmt.get(nid);
-      if (existing === null) {
-        return {
-          ok: false,
-          error: notFound(nid, `Cannot updatePayload: node ${nid} does not exist`),
-        };
-      }
-      const newHash = computeContentHash(data);
-      updateNodePayloadStmt.run({
-        $node_id: nid,
-        $data: JSON.stringify(data),
-        $content_hash: newHash,
-      });
-      return { ok: true, value: undefined };
-    } catch (e: unknown) {
-      return sqlError(e, "updatePayload");
-    }
-  };
-
   return {
     put,
     get: getNode,
-    updatePayload,
     head,
     list,
     ancestors,
