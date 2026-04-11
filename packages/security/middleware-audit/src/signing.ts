@@ -18,17 +18,33 @@ export interface SigningHandle {
   readonly stamp: (entry: AuditEntry) => AuditEntry;
   /** DER-encoded SPKI public key (for verifiers). */
   readonly publicKeyDer: Buffer;
+  /**
+   * Signal that one or more entries will be dropped (queue overflow).
+   * The next stamp() call will use GENESIS_HASH for prev_hash so verifiers
+   * see an explicit chain restart — making the gap visible rather than hidden.
+   */
+  readonly markGap: () => void;
 }
 
-function buildStamper(privateKey: KeyObject): (entry: AuditEntry) => AuditEntry {
+function buildStamper(privateKey: KeyObject): {
+  stamp: (entry: AuditEntry) => AuditEntry;
+  markGap: () => void;
+} {
   // let justified: mutable chain state — updated after each stamped entry
   let lastEntryJson: string | null = null;
+  // let justified: set by markGap() when an entry will be dropped due to overflow
+  let gapped = false;
 
-  return function stamp(entry: AuditEntry): AuditEntry {
+  function stamp(entry: AuditEntry): AuditEntry {
+    // On a gap, reset to GENESIS_HASH so the chain restart is visible to verifiers.
+    // Entries before the gap had B.prev_hash = hash(dropped-A), which will fail
+    // chain verification and also signal data loss.
     const prevHash =
-      lastEntryJson === null
+      lastEntryJson === null || gapped
         ? GENESIS_HASH
         : createHash("sha256").update(lastEntryJson).digest("hex");
+
+    gapped = false;
 
     const entryWithChain: AuditEntry = { ...entry, prev_hash: prevHash };
 
@@ -41,6 +57,13 @@ function buildStamper(privateKey: KeyObject): (entry: AuditEntry) => AuditEntry 
     lastEntryJson = JSON.stringify(signedEntry);
 
     return signedEntry;
+  }
+
+  return {
+    stamp,
+    markGap: () => {
+      gapped = true;
+    },
   };
 }
 
@@ -49,7 +72,8 @@ function buildStamper(privateKey: KeyObject): (entry: AuditEntry) => AuditEntry 
  */
 export function createSigningHandle(privateKey: KeyObject, publicKey: KeyObject): SigningHandle {
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }) as Buffer;
-  return { stamp: buildStamper(privateKey), publicKeyDer };
+  const { stamp, markGap } = buildStamper(privateKey);
+  return { stamp, markGap, publicKeyDer };
 }
 
 /**
@@ -59,7 +83,8 @@ export function createSigningHandle(privateKey: KeyObject, publicKey: KeyObject)
 export function createEphemeralSigningHandle(): SigningHandle {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }) as Buffer;
-  return { stamp: buildStamper(privateKey), publicKeyDer };
+  const { stamp, markGap } = buildStamper(privateKey);
+  return { stamp, markGap, publicKeyDer };
 }
 
 /**

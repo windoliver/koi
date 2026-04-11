@@ -49,11 +49,41 @@ function truncate(text: string, maxLength: number): string {
   return `${text.slice(0, maxLength)}...[truncated]`;
 }
 
+/**
+ * Normalize Error instances so JSON.stringify captures non-enumerable fields.
+ * Prefers toJSON() for rich structured errors (e.g. KoiRuntimeError), then
+ * collects enumerable own properties (code, context, retryable, cause, etc.)
+ * in addition to the standard non-enumerable message/name/stack.
+ */
+function serializeError(value: unknown): unknown {
+  if (!(value instanceof Error)) return value;
+  const err = value as Error & Record<string, unknown>;
+  // Prefer structured toJSON() if available (e.g. KoiRuntimeError)
+  // Wrapped in try/catch — a hostile or buggy toJSON() must not replace the real failure
+  if (typeof err.toJSON === "function") {
+    try {
+      return (err as unknown as { toJSON: () => unknown }).toJSON();
+    } catch {
+      // Fall through to safe snapshot
+    }
+  }
+  // Collect enumerable own properties (code, context, retryable, cause…)
+  const own: Record<string, unknown> = {};
+  for (const key of Object.keys(err)) {
+    own[key] = err[key];
+  }
+  return { name: err.name, message: err.message, stack: err.stack, ...own };
+}
+
 export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddleware {
   const maxEntrySize = config.maxEntrySize ?? DEFAULT_MAX_ENTRY_SIZE;
   const maxQueueDepth = config.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
 
   const redactor = createRedactor(config.redaction);
+
+  // Resolve signing handle before queue so onOverflow can call markGap()
+  const signingHandle: SigningHandle | undefined =
+    config.signing === true ? createEphemeralSigningHandle() : undefined;
 
   const queue = createBoundedQueue({
     sink: config.sink,
@@ -61,10 +91,6 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
     ...(config.onOverflow !== undefined ? { onOverflow: config.onOverflow } : {}),
     ...(config.onError !== undefined ? { onError: config.onError } : {}),
   });
-
-  // Resolve signing handle
-  const signingHandle: SigningHandle | undefined =
-    config.signing === true ? createEphemeralSigningHandle() : undefined;
 
   function redactPayload(value: unknown): unknown {
     if (value === undefined) return undefined;
@@ -78,7 +104,15 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
 
   function buildAndEnqueue(base: Omit<AuditEntry, "schema_version">): void {
     const entry: AuditEntry = { schema_version: SCHEMA_VERSION, ...base };
-    const stamped = signingHandle ? signingHandle.stamp(entry) : entry;
+    // Pre-stamp before enqueue. When the queue is full, the NEXT entry (C) gets
+    // GENESIS_HASH as prev_hash — a visible chain-restart signal. The surviving
+    // head (B, which points to the dropped A) will fail verification, making the
+    // data loss detectable. This is preferable to drain-time signing which would
+    // silently rebuild a clean chain, hiding the overflow from verifiers.
+    if (signingHandle !== undefined && queue.isFull()) {
+      signingHandle.markGap();
+    }
+    const stamped = signingHandle !== undefined ? signingHandle.stamp(entry) : entry;
     queue.enqueue(stamped);
   }
 
@@ -144,7 +178,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           kind: "model_call",
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: response !== undefined ? redactPayload(response) : undefined,
-          error: error !== undefined ? redactPayload(error) : undefined,
+          error: error !== undefined ? redactPayload(serializeError(error)) : undefined,
           durationMs: Date.now() - startTime,
         });
       }
@@ -178,7 +212,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           kind: "model_call",
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: lastResponse !== undefined ? redactPayload(lastResponse) : undefined,
-          error: error !== undefined ? redactPayload(error) : undefined,
+          error: error !== undefined ? redactPayload(serializeError(error)) : undefined,
           durationMs: Date.now() - startTime,
         });
       }
@@ -208,7 +242,7 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
           kind: "tool_call",
           request: config.redactRequestBodies ? "[redacted]" : redactPayload(request),
           response: response !== undefined ? redactPayload(response) : undefined,
-          error: error !== undefined ? redactPayload(error) : undefined,
+          error: error !== undefined ? redactPayload(serializeError(error)) : undefined,
           durationMs: Date.now() - startTime,
         });
       }

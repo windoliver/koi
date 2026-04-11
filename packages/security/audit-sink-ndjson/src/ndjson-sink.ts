@@ -50,11 +50,22 @@ export function createNdjsonAuditSink(config: NdjsonAuditSinkConfig): AuditSink 
       await writer.flush();
       try {
         const content = await readFile(config.filePath, "utf-8");
-        return content
-          .trim()
-          .split("\n")
-          .filter((line) => line.length > 0)
-          .map((line) => JSON.parse(line) as AuditEntry);
+        const entries: AuditEntry[] = [];
+        const lines = content.split("\n").filter((l) => l.trim().length > 0);
+        let lineNum = 0;
+        for (const line of lines) {
+          lineNum++;
+          try {
+            entries.push(JSON.parse(line.trim()) as AuditEntry);
+          } catch {
+            // Any parse failure is surfaced as an error — silently dropping records
+            // would hide corruption or tampering from compliance consumers.
+            throw new Error(
+              `Audit log corrupted: line ${lineNum} failed to parse in ${config.filePath}`,
+            );
+          }
+        }
+        return entries;
       } catch (e: unknown) {
         if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "ENOENT") {
           return [];

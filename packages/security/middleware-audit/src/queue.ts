@@ -11,6 +11,11 @@ import { swallowError } from "@koi/errors";
 export interface BoundedQueueConfig {
   readonly sink: AuditSink;
   readonly maxQueueDepth: number;
+  /**
+   * Called immediately before sink.log() — transforms the entry (e.g. hash-chain signing).
+   * Runs at drain time so only entries that survive eviction enter the chain.
+   */
+  readonly stampEntry?: (entry: AuditEntry) => AuditEntry;
   readonly onOverflow?: (entry: AuditEntry, droppedCount: number) => void;
   readonly onError?: (error: unknown, entry: AuditEntry) => void;
 }
@@ -19,10 +24,12 @@ export interface BoundedQueue {
   readonly enqueue: (entry: AuditEntry) => void;
   readonly flush: () => Promise<void>;
   readonly droppedCount: () => number;
+  /** True when the next enqueue will evict the oldest entry. */
+  readonly isFull: () => boolean;
 }
 
 export function createBoundedQueue(config: BoundedQueueConfig): BoundedQueue {
-  const { sink, maxQueueDepth, onOverflow, onError } = config;
+  const { sink, maxQueueDepth, stampEntry, onOverflow, onError } = config;
 
   // Mutable internal state — never exposed
   const queue: AuditEntry[] = [];
@@ -45,7 +52,10 @@ export function createBoundedQueue(config: BoundedQueueConfig): BoundedQueue {
     while (queue.length > 0) {
       const entry = queue.shift();
       if (entry !== undefined) {
-        await sink.log(entry).catch((err: unknown) => handleSinkError(err, entry));
+        // Apply stampEntry at drain time — only entries that survived eviction enter the chain
+        const toLog = stampEntry !== undefined ? stampEntry(entry) : entry;
+        // Pass toLog (the stamped version) to onError so recovery hooks see the signed fields
+        await sink.log(toLog).catch((err: unknown) => handleSinkError(err, toLog));
       }
     }
     draining = false;
@@ -80,7 +90,10 @@ export function createBoundedQueue(config: BoundedQueueConfig): BoundedQueue {
     while (queue.length > 0) {
       const entry = queue.shift();
       if (entry !== undefined) {
-        await sink.log(entry).catch((err: unknown) => handleSinkError(err, entry));
+        // Apply stampEntry at drain time, consistent with runDrainLoop
+        const toLog = stampEntry !== undefined ? stampEntry(entry) : entry;
+        // Pass toLog (the stamped version) to onError so recovery hooks see the signed fields
+        await sink.log(toLog).catch((err: unknown) => handleSinkError(err, toLog));
       }
     }
     await sink.flush?.();
@@ -90,5 +103,6 @@ export function createBoundedQueue(config: BoundedQueueConfig): BoundedQueue {
     enqueue,
     flush,
     droppedCount: () => dropped,
+    isFull: () => queue.length >= maxQueueDepth,
   };
 }
