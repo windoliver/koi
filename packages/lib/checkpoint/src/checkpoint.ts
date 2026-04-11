@@ -335,15 +335,25 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         [SNAPSHOT_STATUS_KEY]: incomplete,
         koi_capture_error: putResult.error.message,
       });
+      // Soft-fail path: run drift detection for critical-path budget, but
+      // don't bother persisting results — the incomplete marker is advisory.
       runDeferred(driftDetector);
       return;
     }
 
     if (putResult.value !== undefined) {
       state.parentNodeId = putResult.value.nodeId;
+      // Success path: persist drift warnings back into this node when the
+      // deferred detector resolves.
+      runDeferred(driftDetector, {
+        store,
+        nodeId: putResult.value.nodeId,
+        basePayload: payload,
+      });
+    } else {
+      // Store skipped the put (skipIfUnchanged matched); no node to update.
+      runDeferred(driftDetector);
     }
-
-    runDeferred(driftDetector);
   };
 
   // -----------------------------------------------------------------------
@@ -458,19 +468,45 @@ function extractCallId(request: ToolRequest): ToolCallId {
  * Run the deferred capture work — drift detection. Best-effort: errors are
  * swallowed, since drift is advisory and must not abort the agent loop.
  *
- * Drift warnings are computed but not yet routed back into a snapshot. The
- * sink (rewind UI displaying them on rewind) is the next integration step.
+ * When `nodeRef` is provided (success path), the resulting drift warnings
+ * are persisted back into the just-written snapshot via `store.updatePayload`
+ * so `runRestore` can surface them on a later rewind. When `nodeRef` is
+ * undefined (soft-fail path), detection still runs to exercise the critical
+ * budget but nothing is persisted — the incomplete snapshot has no useful
+ * place to hold the warnings.
+ *
+ * This is the "two-phase capture" pattern from design review issue 14A:
+ * the synchronous `store.put` commits the payload on the critical path;
+ * this deferred task fills in fields that weren't available yet (drift
+ * warnings here; in the future, async hashes, git refs, etc.).
  */
-function runDeferred(detector: DriftDetector | null): void {
+function runDeferred(
+  detector: DriftDetector | null,
+  nodeRef?: {
+    readonly store: SnapshotChainStore<CheckpointPayload>;
+    readonly nodeId: NodeId;
+    readonly basePayload: CheckpointPayload;
+  },
+): void {
   if (detector === null) return;
   // queueMicrotask defers without awaiting — the engine moves on immediately.
-  // This is the "two-phase capture" pattern from design review issue 14A.
   queueMicrotask(() => {
     void detector
       .detect()
-      .then(() => {
-        // Detection runs to exercise the critical-path budget. Persisting
-        // the results is part of the runtime wiring PR.
+      .then(async (warnings) => {
+        if (warnings.length === 0 || nodeRef === undefined) return;
+        // Persist drift warnings back into the snapshot. nodeId is stable,
+        // contentHash is recomputed from the new payload. Any downstream
+        // consumer reading the snapshot via `store.get(nodeId)` sees the
+        // warnings next time around (including runRestore's ancestor walk).
+        try {
+          await nodeRef.store.updatePayload(nodeRef.nodeId, {
+            ...nodeRef.basePayload,
+            driftWarnings: warnings,
+          });
+        } catch {
+          // Best-effort: drift persistence must not throw into the engine.
+        }
       })
       .catch(() => {
         // Best-effort: never throw from drift detection.

@@ -135,6 +135,21 @@ interface SnapshotChainStore<T> {
     readonly put: (chainId: ChainId, data: T, parentIds: readonly NodeId[], metadata?: Readonly<Record<string, unknown>>, options?: PutOptions) => Result<SnapshotNode<T> | undefined, KoiError> | Promise<Result<SnapshotNode<T> | undefined, KoiError>>;
     /** Retrieve a single node by ID. */
     readonly get: (nodeId: NodeId) => Result<SnapshotNode<T>, KoiError> | Promise<Result<SnapshotNode<T>, KoiError>>;
+    /**
+     * Replace the payload of an existing node without changing its ID or
+     * parent pointers. Used by the "two-phase capture" pattern: the initial
+     * \`put\` writes a snapshot synchronously on the critical path; a deferred
+     * background task (drift detection, async hashing, etc.) then calls
+     * \`updatePayload\` to fill in fields that weren't available at put time.
+     *
+     * The node's \`contentHash\` is recomputed from the new data, but \`nodeId\`,
+     * \`parentIds\`, \`chainId\`, \`createdAt\`, and \`metadata\` all remain stable.
+     * Concurrent readers observing the same nodeId will see either the old
+     * or the new data atomically — never a torn view.
+     *
+     * Returns a \`NOT_FOUND\` error if the nodeId does not exist.
+     */
+    readonly updatePayload: (nodeId: NodeId, data: T) => Result<void, KoiError> | Promise<Result<void, KoiError>>;
     /** Get the current head (most recent node) of a chain. Undefined if chain is empty. */
     readonly head: (chainId: ChainId) => Result<SnapshotNode<T> | undefined, KoiError> | Promise<Result<SnapshotNode<T> | undefined, KoiError>>;
     /** List all nodes in a chain, newest first. */

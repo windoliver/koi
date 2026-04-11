@@ -281,4 +281,68 @@ describe("SnapshotChainStore [sqlite] — contract", () => {
       expect(result.error.code).toBe("INTERNAL");
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // updatePayload — two-phase capture support
+  // ---------------------------------------------------------------------------
+
+  test("updatePayload rewrites data without changing nodeId or parents", () => {
+    store = createSnapshotStoreSqlite<string>({ path: makeTempPath() });
+    const put = store.put(c1, "initial", []);
+    expect(put.ok).toBe(true);
+    if (!put.ok || put.value === undefined) return;
+    const original = put.value;
+
+    const upd = store.updatePayload(original.nodeId, "updated");
+    expect(upd.ok).toBe(true);
+
+    const reread = store.get(original.nodeId);
+    expect(reread.ok).toBe(true);
+    if (!reread.ok) return;
+    expect(reread.value.nodeId).toBe(original.nodeId);
+    expect(reread.value.parentIds).toEqual(original.parentIds);
+    expect(reread.value.chainId).toBe(original.chainId);
+    expect(reread.value.createdAt).toBe(original.createdAt);
+    expect(reread.value.data).toBe("updated");
+    // Content hash is recomputed from new data — must differ from the original.
+    expect(reread.value.contentHash).not.toBe(original.contentHash);
+  });
+
+  test("updatePayload preserves metadata", () => {
+    store = createSnapshotStoreSqlite<string>({ path: makeTempPath() });
+    const put = store.put(c1, "initial", [], { "koi:snapshot_status": "complete" });
+    expect(put.ok).toBe(true);
+    if (!put.ok || put.value === undefined) return;
+
+    const upd = store.updatePayload(put.value.nodeId, "updated");
+    expect(upd.ok).toBe(true);
+
+    const reread = store.get(put.value.nodeId);
+    expect(reread.ok).toBe(true);
+    if (!reread.ok) return;
+    expect(reread.value.metadata["koi:snapshot_status"]).toBe("complete");
+  });
+
+  test("updatePayload returns NOT_FOUND for a missing node", () => {
+    store = createSnapshotStoreSqlite<string>({ path: makeTempPath() });
+    const result = store.updatePayload("node-does-not-exist" as never, "x");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("head() reflects the updated payload after updatePayload", () => {
+    store = createSnapshotStoreSqlite<string>({ path: makeTempPath() });
+    const put = store.put(c1, "initial", []);
+    expect(put.ok).toBe(true);
+    if (!put.ok || put.value === undefined) return;
+
+    store.updatePayload(put.value.nodeId, "updated-via-update");
+
+    const h = store.head(c1);
+    expect(h.ok).toBe(true);
+    if (!h.ok || h.value === undefined) return;
+    expect(h.value.nodeId).toBe(put.value.nodeId);
+    expect(h.value.data).toBe("updated-via-update");
+  });
 });
