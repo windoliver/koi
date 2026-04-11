@@ -8,6 +8,10 @@ tsup.config.bundled_*.mjs
 .env.*
 !.env.example
 test-results.json
+# Written by scripts/measure-startup.ts on every run; baseline is the committed file, report is ephemeral.
+bench/startup-report.json
+# Trusted copy of measure-startup.ts extracted from origin/main in CI. Do not commit.
+scripts/.trusted-measure-startup.ts
 .jscpd-report/
 .DS_Store
 workstream.md

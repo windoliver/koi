@@ -4,12 +4,670 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # The startup-latency gate reads github.event.pull_request.labels
+    # to decide whether to allow migration-mode baseline fallback.
+    # Default pull_request activity types do NOT include labeled /
+    # unlabeled, so applying the baseline-migration label would not
+    # re-trigger the workflow and the documented migration flow
+    # would deadlock. Subscribing here fixes it.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
+    inputs:
+      update_baseline:
+        description: "Refresh startup latency baseline (writes bench/startup-baseline.json)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  startup-latency:
+    # Name is intentionally phase-tagged: the initial rollout runs
+    # in --warn-only mode (see docs/contributing/perf-budgets.md
+    # 'Two-phase rollout — initial landing is warn-only'). A
+    # follow-up PR on main will both remove --warn-only from the
+    # gate invocations below AND drop the 'warn-only' suffix from
+    # this name, making the enforcement transition visible in the
+    # check list rather than hidden inside the workflow file.
+    # Until that follow-up lands, this job MUST NOT be added to
+    # branch-protection required status checks — a green warn-only
+    # run is telemetry, not enforcement.
+    name: Startup latency (warn-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    # Restrict token scope even though this job reads PR-controlled
+    # build code. The only API call the job makes is `gh pr list` to
+    # check for the baseline-migration label, which only needs read
+    # access. Minimizing permissions limits blast radius if PR code
+    # compromises the job.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need enough history so we can resolve:
+          #   - PR: the merge-base with the PR target branch (immutable)
+          #   - push to main: github.event.before (immutable)
+          # `fetch-depth: 0` is the simplest way to guarantee both.
+          fetch-depth: 0
+          # Do NOT persist the checkout token in .git/config. This
+          # job runs PR-controlled code in bun install / bun run
+          # build; leaving the token in local git config gives that
+          # code a live authenticated channel to read from (and,
+          # depending on permissions, write to) the repository. We
+          # only need the token for `gh pr list` in the refresh-
+          # auth step, and that step uses env.GH_TOKEN explicitly.
+          persist-credentials: false
+
+      # ── TRUST ESTABLISHMENT — must run BEFORE any PR-controlled code ──
+      #
+      # The next few steps capture trusted artifacts from origin/main
+      # (pinned SHA + measurement script + absolute tool paths) into
+      # paths outside the workspace or into step outputs. They MUST
+      # run before `bun install` and `bun run build`, because those
+      # commands execute PR-authored scripts (postinstall, tsup
+      # config) that could otherwise:
+      #   - mutate .git state (rewrite refs, change remote.url)
+      #   - append to $GITHUB_PATH/$GITHUB_ENV, tainting the PATH
+      #     of subsequent steps
+      #   - symlink or shadow trusted binaries
+      #
+      # We defend with a three-layer approach:
+      #   1. Pin immutable SHAs (MAIN_SHA, PR_HEAD_SHA) via
+      #      git rev-parse before any PR code runs.
+      #   2. Capture absolute paths to trusted system tools (git,
+      #      gh, jq, cp) that are pre-installed at well-known
+      #      locations on ubuntu-latest. These paths cannot be
+      #      relocated by GITHUB_PATH tampering.
+      #   3. For bun specifically, which is installed by
+      #      oven-sh/setup-bun: run setup-bun directly (NOT via
+      #      the ./.github/actions/setup composite, which also
+      #      runs `bun install` and its PR postinstall) and
+      #      capture `which bun` immediately. Only THEN run bun
+      #      install / bun run build.
+      #   4. Every trusted step that runs after bun install
+      #      overrides `env: PATH:` to a locked minimal PATH so
+      #      GITHUB_PATH appends from PR code are shadowed. Bun
+      #      is invoked via the captured absolute path.
+
+      - name: Pin trusted main + PR head SHAs (before any PR code runs)
+        id: pin-main
+        env:
+          # Locked PATH — PR code has not run yet at this point, but
+          # keep the habit consistent.
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          # Refresh origin/main AND the PR head ref (if we're on a
+          # pull_request event) to their true remote tips, then pin
+          # both SHAs into outputs. Subsequent steps use the SHAs,
+          # not the refs, so PR-controlled code in postinstall/tsup
+          # hooks cannot later rewrite refs/remotes/origin/main or
+          # refs/remotes/origin/pr-<N> (or remote.origin.url) to
+          # redirect git operations to attacker-chosen commits.
+          git fetch --no-tags origin main
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          echo "pinned MAIN_SHA = $MAIN_SHA"
+          echo "sha=$MAIN_SHA" >> "$GITHUB_OUTPUT"
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            PR_NUM="${{ github.event.pull_request.number }}"
+            git fetch --no-tags origin "+refs/pull/${PR_NUM}/head:refs/remotes/origin/pr-${PR_NUM}"
+            PR_HEAD_SHA="$(git rev-parse "refs/remotes/origin/pr-${PR_NUM}")"
+            echo "pinned PR_HEAD_SHA = $PR_HEAD_SHA"
+            echo "pr_head_sha=$PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Capture trusted measurement script (before any PR code runs)
+        id: capture-script
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          MAIN_SHA="${{ steps.pin-main.outputs.sha }}"
+          # Write into $RUNNER_TEMP so PR build code cannot touch it.
+          # We'll copy it back into the workspace later.
+          SAFE_PATH="$RUNNER_TEMP/trusted-measure-startup.ts"
+          STDERR_FILE="$(mktemp)"
+          if git show "${MAIN_SHA}:scripts/measure-startup.ts" > "$SAFE_PATH" 2>"$STDERR_FILE"; then
+            # Read-only for the runner user — matches the trusted
+            # bun binary treatment above. A background process
+            # would have to chmod +w before tampering.
+            /bin/chmod 0400 "$SAFE_PATH"
+            SHA="$(/usr/bin/sha256sum "$SAFE_PATH" | /usr/bin/cut -d' ' -f1)"
+            {
+              echo "path=$SAFE_PATH"
+              echo "sha256=$SHA"
+              echo "status=exists"
+            } >> "$GITHUB_OUTPUT"
+            echo "Captured trusted script from $MAIN_SHA to $SAFE_PATH"
+            echo "sha256: $SHA"
+            rm -f "$STDERR_FILE"
+          else
+            STDERR_CONTENT="$(cat "$STDERR_FILE")"
+            rm -f "$STDERR_FILE"
+            if echo "$STDERR_CONTENT" | grep -qiE "does not exist|exists on disk, but not in"; then
+              # Bootstrap: main has no measure-startup.ts yet.
+              {
+                echo "path="
+                echo "sha256="
+                echo "status=bootstrap"
+              } >> "$GITHUB_OUTPUT"
+              echo "::warning::main has no measure-startup.ts; bootstrap will use working-tree script"
+            else
+              echo "::error::unexpected git error capturing trusted script:"
+              echo "$STDERR_CONTENT"
+              echo "::error::refusing to continue — failing closed."
+              exit 1
+            fi
+          fi
+
+      # Inline setup (NOT the ./.github/actions/setup composite)
+      # because we need to capture the trusted bun path BETWEEN
+      # setup-bun installing bun and any PR postinstall running.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+      - name: Capture trusted bun binary (before bun install runs PR code)
+        id: capture-bun
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${{ runner.tool_cache }}/bun
+        run: |
+          set -euo pipefail
+          # Locate the freshly installed bun and COPY the binary
+          # bits to an untamperable location under $RUNNER_TEMP.
+          # $RUNNER_TEMP is created per-job and not touched by
+          # bun install / bun run build (or anything else a PR
+          # can control), so the copy captures the binary at a
+          # trusted point in time. Later steps invoke this copy
+          # by absolute path so PR code can't overwrite the
+          # original under $HOME/.bun/bin/bun.
+          SRC_PATH="$(command -v bun || true)"
+          if [[ -z "$SRC_PATH" ]]; then
+            SRC_PATH="$HOME/.bun/bin/bun"
+          fi
+          if [[ ! -x "$SRC_PATH" ]]; then
+            echo "::error::could not locate trusted bun binary"
+            exit 1
+          fi
+          TRUSTED_BUN="$RUNNER_TEMP/trusted-bun"
+          /bin/cp "$SRC_PATH" "$TRUSTED_BUN"
+          # Set the trusted binary to read-execute-only (r-x) for
+          # the runner user. A daemonized PR process would need to
+          # chmod +w first (visible in any audit), then rewrite
+          # the binary, before later steps exec it. This matches
+          # the pattern in Claude Code's utils/nativeInstaller/
+          # download.ts where chmod happens immediately after a
+          # verified write. Not a full defense against root-level
+          # tampering but a meaningful speed bump against
+          # background-process attacks.
+          /bin/chmod 0500 "$TRUSTED_BUN"
+          # Record a sha256 of the captured binary for defense in
+          # depth — anyone reading CI logs can confirm the later
+          # invocations ran the same bits we captured here.
+          SHA="$(/usr/bin/sha256sum "$TRUSTED_BUN" | /usr/bin/cut -d' ' -f1)"
+          {
+            echo "path=$TRUSTED_BUN"
+            echo "sha256=$SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "Captured trusted bun at: $TRUSTED_BUN"
+          echo "sha256: $SHA"
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: ${{ runner.os }}-bun-
+      - name: Turborepo cache
+        uses: rharkor/caching-for-turbo@v2.3.11
+      - name: Install dependencies
+        run: ${{ steps.capture-bun.outputs.path }} install --frozen-lockfile
+      - name: Build CLI and upstream deps
+        # Turbo caches mean this is fast after the first run.
+        run: ${{ steps.capture-bun.outputs.path }} run build
+      - name: Select trusted measurement script path
+        # The script itself is already at a trusted $RUNNER_TEMP
+        # location from capture-script. With --repo-root threaded
+        # through the script, it no longer needs to live inside the
+        # workspace for path resolution, so we execute it directly
+        # from $RUNNER_TEMP. That removes the TOCTOU gap where a
+        # background process could rewrite a workspace-copied
+        # script between the restore step and the gate invocation.
+        #
+        # In bootstrap mode (main has no trusted script yet), we
+        # fall back to the working-tree script. That is a one-time
+        # trust event documented in perf-budgets.md.
+        id: trusted-script
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          STATUS="${{ steps.capture-script.outputs.status }}"
+          if [[ "$STATUS" == "exists" ]]; then
+            SRC="${{ steps.capture-script.outputs.path }}"
+            echo "path=$SRC" >> "$GITHUB_OUTPUT"
+            echo "Using trusted script directly from \$RUNNER_TEMP: $SRC"
+          else
+            echo "path=scripts/measure-startup.ts" >> "$GITHUB_OUTPUT"
+            echo "::warning::bootstrap — using working-tree script"
+          fi
+      - name: Resolve trusted baseline ref
+        # Choose an immutable ref for baseline comparison. The script
+        # handles schema/env incompatibility via label-gated migration
+        # mode, so this step only needs to pick the ref; classification
+        # is deferred to the script.
+        #
+        #   pull_request  -> git merge-base <PR head SHA> origin/main
+        #                    NOTE: on pull_request events
+        #                    actions/checkout checks out a synthetic
+        #                    refs/pull/*/merge commit whose merge-base
+        #                    with origin/main is essentially origin/main
+        #                    itself — unsafe. We bypass HEAD and pass
+        #                    the explicit PR head SHA instead so the
+        #                    merge-base reflects the PR's actual branch
+        #                    tip against main. For an un-rebased PR
+        #                    this is equivalent to the PR's base SHA
+        #                    (stable). For a rebased PR this moves
+        #                    forward to the new common ancestor.
+        #   push to main  -> github.event.before
+        #                    The actual pre-push ref; survives
+        #                    multi-commit pushes, unlike HEAD^.
+        #   other pushes  -> origin/main tip
+        #                    Feature branches — no special protection
+        #                    needed since regressions get caught at
+        #                    PR time anyway.
+        #
+        # Failures in git fetch / merge-base FAIL THE JOB rather than
+        # silently falling back to a weaker comparator. A transient
+        # infrastructure error must not be allowed to weaken the gate.
+        id: baseline-src
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.update_baseline != true }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          # Use the pinned MAIN_SHA captured pre-install. Do NOT
+          # dereference origin/main again — PR code may have
+          # rewritten refs/remotes/origin/main during setup/build.
+          MAIN_SHA="${{ steps.pin-main.outputs.sha }}"
+          EVENT="${{ github.event_name }}"
+          if [[ "$EVENT" == "pull_request" ]]; then
+            # Use the PR_HEAD_SHA pinned pre-install. Do NOT fetch
+            # again here — PR code has already run and could have
+            # tampered with remote.origin.url or refs/remotes/origin/*.
+            PR_HEAD="${{ steps.pin-main.outputs.pr_head_sha }}"
+            if [[ -z "$PR_HEAD" ]]; then
+              echo "::error::pr_head_sha output is empty — pin-main step did not run or failed"
+              exit 1
+            fi
+            REF="$(git merge-base "$PR_HEAD" "$MAIN_SHA")"
+            echo "PR head SHA   : $PR_HEAD"
+            echo "MAIN_SHA      : $MAIN_SHA"
+            echo "Merge-base ref: $REF"
+          elif [[ "$EVENT" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            REF="${{ github.event.before }}"
+            if [[ "$REF" =~ ^0+$ ]]; then
+              REF=""
+            fi
+          else
+            REF="$MAIN_SHA"
+          fi
+          if [[ -n "$REF" ]]; then
+            echo "Using baseline ref: $REF"
+          else
+            echo "No trusted ref — script will fall back to working-tree baseline"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+      - name: Check for baseline-refresh authorization (workflow_dispatch only)
+        # workflow_dispatch is maintainer-triggered, so it is already
+        # a human gate. But the refresh path was previously running
+        # the PR's own measure-startup.ts unconditionally, which
+        # meant a poisoned script could emit a baseline artifact
+        # that later lands on main. Route the refresh through
+        # trusted-script too; a maintainer who legitimately needs
+        # the PR's script can trigger the dispatch with a
+        # baseline-migration label on a PR, which flows through the
+        # migration-label step below.
+        id: dispatch-allow-pr-script
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_baseline == true }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Authorize PR-authored script only when the triggering
+          # commit (github.sha) exactly matches an open PR's head
+          # SHA AND that PR has the baseline-migration label AND
+          # the PR's head repo is this repository. Branch name
+          # alone is insufficient: another PR could share the name,
+          # or the branch could have drifted since a labeled PR
+          # was reviewed. Head SHA + head repo owner bind the
+          # authorization to a single reviewable PR.
+          TRIGGER_SHA="${{ github.sha }}"
+          THIS_REPO="${{ github.repository }}"
+          # Query all open PRs with our branch name, then filter
+          # by head SHA and labels. Fail closed on any gh / jq
+          # error: defaulting to allow=false is safer.
+          JSON="$(/usr/bin/gh pr list --state open --head "${{ github.ref_name }}" --json number,headRefOid,headRepositoryOwner,labels 2>/dev/null || echo "[]")"
+          MATCH="$(echo "$JSON" | /usr/bin/jq -r --arg sha "$TRIGGER_SHA" --arg owner "${THIS_REPO%%/*}" '
+            [.[] | select(
+              .headRefOid == $sha
+              and .headRepositoryOwner.login == $owner
+              and ((.labels // []) | any(.name == "baseline-migration"))
+            )] | length
+          ' 2>/dev/null || echo "0")"
+          if [[ "$MATCH" -gt "0" ]]; then
+            echo "authorized: open PR with matching head SHA + baseline-migration label + matching owner"
+            echo "allow=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no matching authorized PR — defaulting to trusted script"
+            echo "allow=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check for migration authorization
+        # Migration mode (--allow-migration) is authorized in two
+        # situations:
+        #
+        # 1. PR has the baseline-migration label — explicit triage
+        #    decision to accept an incompatible ref baseline.
+        #
+        # 2. push to main after a migration PR has just merged —
+        #    the pushed range modifies bench/startup-baseline.json,
+        #    which is evidence that a legitimate baseline change has
+        #    just landed. Without this, the post-merge push run on
+        #    main would hit the same schema/env mismatch as the PR
+        #    and fail after the PR was already approved+merged.
+        #
+        # Bootstrap / non-main pushes do not set it — they either
+        # have no baseline to compare against or are feature branches
+        # subject to normal rules.
+        id: migration-label
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.update_baseline != true }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          EVENT="${{ github.event_name }}"
+          ALLOW="false"
+          if [[ "$EVENT" == "pull_request" ]]; then
+            LABELS='${{ toJSON(github.event.pull_request.labels.*.name) }}'
+            if echo "$LABELS" | grep -q '"baseline-migration"'; then
+              echo "pull_request: baseline-migration label present — migration mode authorized"
+              ALLOW="true"
+            fi
+          elif [[ "$EVENT" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            BEFORE="${{ github.event.before }}"
+            if [[ -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]]; then
+              if ! git diff --quiet "$BEFORE" HEAD -- bench/startup-baseline.json 2>/dev/null; then
+                echo "push to main: bench/startup-baseline.json changed in pushed range — migration mode authorized"
+                ALLOW="true"
+              fi
+            fi
+          fi
+          echo "allow=$ALLOW" >> "$GITHUB_OUTPUT"
+      - name: Guard measurement surface (require label to modify harness)
+        # A regression PR could modify the gate's measurement surface
+        # to weaken what gets measured, then merge with a green check
+        # because the measurer itself was weakened. Require the
+        # baseline-migration label for any PR that touches these files.
+        #
+        # The diff is computed against the **fetched PR head SHA**
+        # (refs/remotes/origin/pr-<N>), NOT HEAD. On pull_request runs
+        # HEAD is the synthetic refs/pull/*/merge commit, so a diff
+        # against HEAD would include upstream changes from main that
+        # appeared after the PR's merge-base — making unrelated PRs
+        # falsely trip this guard whenever main touched a guarded file.
+        # The PR head SHA is exactly the PR's authored changes.
+        if: ${{ github.event_name == 'pull_request' && steps.migration-label.outputs.allow != 'true' && steps.baseline-src.outputs.ref != '' }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          REF="${{ steps.baseline-src.outputs.ref }}"
+          # Use the pre-install pinned PR head SHA, not refs/remotes/*
+          # which PR code could have rewritten during bun install / build.
+          PR_HEAD="${{ steps.pin-main.outputs.pr_head_sha }}"
+          if [[ -z "$PR_HEAD" ]]; then
+            echo "::error::pr_head_sha missing — pin-main step did not run"
+            exit 1
+          fi
+          # Bootstrap exemption: if the trusted ref does not yet have
+          # scripts/measure-startup.ts, this is the initial rollout PR
+          # that introduces the gate itself. The guard is meaningless
+          # in that case — there is no pre-existing measurement surface
+          # to protect, and every guarded file is necessarily being
+          # added for the first time. Skip the guard and let the rollout
+          # land. Once the initial PR merges, future PRs will have a
+          # non-bootstrap trusted ref and the guard will fire normally.
+          if ! git cat-file -e "${REF}:scripts/measure-startup.ts" 2>/dev/null; then
+            echo "::notice::bootstrap rollout — trusted ref has no measure-startup.ts yet, skipping guard"
+            exit 0
+          fi
+          GUARDED_FILES=(
+            # The measurement driver itself. Even though CI runs
+            # main's copy via trusted-script, a PR that merges with
+            # an unreviewed change to the driver will install that
+            # change on main, and all subsequent PRs will be
+            # measured by it. Gate the merge itself with the label.
+            "scripts/measure-startup.ts"
+            "scripts/measure-startup.test.ts"
+            # Source files that define what the gate measures.
+            "packages/meta/cli/src/bin.ts"
+            "packages/meta/cli/src/bench-entry.ts"
+            "packages/meta/cli/src/benchmark.test.ts"
+            "packages/meta/cli/src/dispatch.ts"
+            "packages/meta/cli/src/registry.ts"
+            "packages/meta/cli/src/types.ts"
+            # The `start` command module — its top-level imports
+            # (@koi/channel-cli, @koi/core, @koi/engine, @koi/harness)
+            # are the heavy chain bench-entry.ts loads. A PR that
+            # makes start.ts conditionally lazy-load those for the
+            # benchmark path (or prunes them for measurement) would
+            # skew the gate without touching any previously guarded
+            # file. This is friction-heavy — every `koi start`
+            # feature PR now needs the baseline-migration label —
+            # but the friction is well-targeted because these are
+            # the exact PRs that can regress startup.
+            "packages/meta/cli/src/commands/start.ts"
+            # args.ts is the parser shim that re-exports args/index.ts.
+            "packages/meta/cli/src/args.ts"
+            # Build configuration that determines whether bench-entry.js
+            # uses the same bundling pipeline as bin.js. A PR that
+            # special-cased bench-entry in tsup config (different
+            # chunks, different treeshake, different minification)
+            # could skew timings without touching the source files.
+            "packages/meta/cli/tsup.config.ts"
+            # package.json "files" field controls what is and is not
+            # published; a PR could ship dist/bench-entry.js by
+            # removing the exclusion, or change the bin field itself.
+            "packages/meta/cli/package.json"
+            # The workflow file itself — a PR could otherwise
+            # disable the gate, force --allow-migration, or edit the
+            # trusted-script extraction step. This is unfortunately
+            # very coarse (any CI change requires the label), but
+            # it is the best we can do without anchoring the gate
+            # in a reusable workflow on main. Reusable workflows
+            # would be a future follow-up.
+            ".github/workflows/ci.yml"
+            # The composite action that sets up bun — a PR could
+            # swap the pinned bun version without updating the
+            # baseline, bypassing the env-mismatch check via the
+            # same .github/actions escape hatch.
+            ".github/actions/setup/action.yml"
+            # Root build orchestration. `bun run build` at the
+            # repo root runs `turbo run build` per package.json.
+            # A PR could alter either file to emit doctored dist
+            # artifacts for CI without touching any CLI-package
+            # file.
+            "package.json"
+            "turbo.json"
+          )
+          for f in "${GUARDED_FILES[@]}"; do
+            if ! git diff --quiet "$REF" "$PR_HEAD" -- "$f" 2>/dev/null; then
+              echo "::error::PR modifies $f — this is the startup-latency gate's measurement surface."
+              echo "::error::To modify it, apply the \`baseline-migration\` label and refresh the baseline."
+              echo "::error::See docs/contributing/perf-budgets.md."
+              exit 1
+            fi
+          done
+          # Guard the entire args/ directory. The parser fans out
+          # into args/index.ts -> args/shared.ts, args/start.ts,
+          # args/tui.ts, etc. Every one of these files executes on
+          # the measured dispatch path. Rather than hand-maintain a
+          # list (easy to drift as new args modules are added), we
+          # guard the whole directory with a single git diff check.
+          ARGS_CHANGED="$(git diff --name-only "$REF" "$PR_HEAD" -- "packages/meta/cli/src/args/" 2>/dev/null || true)"
+          if [[ -n "$ARGS_CHANGED" ]]; then
+            echo "::error::PR modifies files under packages/meta/cli/src/args/:"
+            while IFS= read -r changed_arg; do
+              echo "::error::  $changed_arg"
+            done <<< "$ARGS_CHANGED"
+            echo "::error::These files execute on the measured dispatch path. To modify them,"
+            echo "::error::apply the \`baseline-migration\` label and refresh the baseline."
+            exit 1
+          fi
+          echo "measurement surface files unchanged — proceeding"
+      - name: Verify trusted artifacts are unchanged since capture
+        # Both the trusted bun binary and the trusted script live
+        # in $RUNNER_TEMP (untouched by bun install / bun run build).
+        # Daemonized processes spawned by PR code could still
+        # theoretically overwrite them, so we re-hash immediately
+        # before the gate invocation and fail closed on mismatch.
+        # TOCTOU between verification and the exec() that follows
+        # remains a microsecond-scale risk; a separate isolated job
+        # would close it completely and is tracked as a follow-up.
+        #
+        # Runs on ALL paths including workflow_dispatch refresh —
+        # especially on refresh, because the artifact produced
+        # there becomes the long-lived comparator for every future
+        # PR. Poisoning the refresh is worse than poisoning a
+        # single gate run.
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          EXPECTED_BUN_SHA="${{ steps.capture-bun.outputs.sha256 }}"
+          ACTUAL_BUN_SHA="$(/usr/bin/sha256sum "${{ steps.capture-bun.outputs.path }}" | /usr/bin/cut -d' ' -f1)"
+          if [[ "$ACTUAL_BUN_SHA" != "$EXPECTED_BUN_SHA" ]]; then
+            echo "::error::Trusted bun binary sha256 mismatch!"
+            echo "::error::  expected: $EXPECTED_BUN_SHA"
+            echo "::error::  actual  : $ACTUAL_BUN_SHA"
+            echo "::error::A background process may have overwritten the binary. Failing closed."
+            exit 1
+          fi
+          echo "trusted bun sha256 verified: $ACTUAL_BUN_SHA"
+          EXPECTED_SCRIPT_SHA="${{ steps.capture-script.outputs.sha256 }}"
+          if [[ -n "$EXPECTED_SCRIPT_SHA" ]]; then
+            ACTUAL_SCRIPT_SHA="$(/usr/bin/sha256sum "${{ steps.capture-script.outputs.path }}" | /usr/bin/cut -d' ' -f1)"
+            if [[ "$ACTUAL_SCRIPT_SHA" != "$EXPECTED_SCRIPT_SHA" ]]; then
+              echo "::error::Trusted measurement script sha256 mismatch!"
+              echo "::error::  expected: $EXPECTED_SCRIPT_SHA"
+              echo "::error::  actual  : $ACTUAL_SCRIPT_SHA"
+              exit 1
+            fi
+            echo "trusted script sha256 verified: $ACTUAL_SCRIPT_SHA"
+          else
+            echo "trusted script is in bootstrap mode (no sha to verify)"
+          fi
+      - name: Measure startup (gate, with trusted ref)
+        # Runs the TRUSTED measurement script (from origin/main) or,
+        # in bootstrap / label-authorized migration, the PR's copy.
+        # See steps.trusted-script above.
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.update_baseline != true) && steps.baseline-src.outputs.ref != '' }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          EXTRA=""
+          # Label-authorized migration mode ALSO means the PR author
+          # can supply their own measurement script (reviewer has
+          # explicitly opted in to trust PR changes to the gate).
+          SCRIPT="${{ steps.trusted-script.outputs.path }}"
+          if [[ "${{ steps.migration-label.outputs.allow }}" == "true" ]]; then
+            EXTRA="--allow-migration"
+            SCRIPT="scripts/measure-startup.ts"
+            echo "baseline-migration label: using PR's script at $SCRIPT"
+          fi
+          # shellcheck disable=SC2086
+          # On push-to-main, re-use the migration-label step's
+          # detection of 'the pushed range modifies the baseline
+          # file' to tell the script this is a bootstrap-completion
+          # push — the first merge that lands the baseline will
+          # otherwise be classified as stale-branch and hard-fail.
+          BOOTSTRAP_FLAG=""
+          if [[ "${{ github.event_name }}" == "push" \
+             && "${{ github.ref }}" == "refs/heads/main" \
+             && "${{ steps.migration-label.outputs.allow }}" == "true" ]]; then
+            BOOTSTRAP_FLAG="--bootstrap-completion"
+          fi
+          # Two-phase rollout: the initial landing PR runs the
+          # gate in --warn-only mode so a green check is not
+          # treated as enforcement of a PR-authored measurer.
+          # A follow-up PR on main removes --warn-only here (a
+          # single, easily-auditable workflow diff) to enable
+          # blocking enforcement. Pattern borrowed from Claude
+          # Code's trustedDevice.ts staged rollout.
+          "${{ steps.capture-bun.outputs.path }}" "$SCRIPT" \
+            --baseline-ref "${{ steps.baseline-src.outputs.ref }}" \
+            --main-sha "${{ steps.pin-main.outputs.sha }}" \
+            --bun-path "${{ steps.capture-bun.outputs.path }}" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --report-output "$RUNNER_TEMP/startup-report.json" \
+            --scrub-env --warn-only $EXTRA $BOOTSTRAP_FLAG
+      - name: Measure startup (gate, bootstrap working-tree)
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.update_baseline != true) && steps.baseline-src.outputs.ref == '' }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          # Same --warn-only two-phase rollout as the gate path.
+          "${{ steps.capture-bun.outputs.path }}" "${{ steps.trusted-script.outputs.path }}" \
+            --main-sha "${{ steps.pin-main.outputs.sha }}" \
+            --bun-path "${{ steps.capture-bun.outputs.path }}" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --report-output "$RUNNER_TEMP/startup-report.json" \
+            --scrub-env --warn-only
+      - name: Measure startup (refresh baseline)
+        # Refresh uses the trusted script (from origin/main) unless
+        # the branch has an open PR with the baseline-migration
+        # label, in which case the PR's script is allowed. This
+        # matches the gate-step trust model: script changes need
+        # an explicit human checkpoint.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_baseline == true }}
+        env:
+          PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euo pipefail
+          SCRIPT="${{ steps.trusted-script.outputs.path }}"
+          if [[ "${{ steps.dispatch-allow-pr-script.outputs.allow }}" == "true" ]]; then
+            SCRIPT="scripts/measure-startup.ts"
+            echo "using PR's script for refresh: $SCRIPT"
+          fi
+          "${{ steps.capture-bun.outputs.path }}" "$SCRIPT" \
+            --update-baseline \
+            --bun-path "${{ steps.capture-bun.outputs.path }}" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --baseline-output "$RUNNER_TEMP/startup-baseline.json" \
+            --report-output "$RUNNER_TEMP/startup-report.json" \
+            --scrub-env
+      - name: Upload report
+        # The script writes to $RUNNER_TEMP (outside the PR-writable
+        # workspace), so PR-spawned background processes cannot
+        # rewrite the artifact between generation and upload.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-latency-report
+          path: ${{ runner.temp }}/startup-report.json
+          if-no-files-found: ignore
+      - name: Upload refreshed baseline
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.update_baseline == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-latency-baseline
+          path: ${{ runner.temp }}/startup-baseline.json
+
   ci:
     name: Build, Lint, Typecheck & Test
     runs-on: ubuntu-latest
