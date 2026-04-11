@@ -22,6 +22,8 @@ import type {
   TurnId,
 } from "@koi/core";
 import { runId, sessionId } from "@koi/core";
+import type { DecisionLedgerReader } from "@koi/decision-ledger";
+import { createDecisionLedger } from "@koi/decision-ledger";
 import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
 import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 
@@ -329,6 +331,26 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         })
       : undefined;
 
+  // Decision-ledger factory — present only when the runtime has a
+  // trajectoryStore to anchor the join. The returned reader wires
+  // the live trajectoryStore plus the runtime's configured reportStore
+  // (if any). Incident tooling can pass overrides to inject ad-hoc
+  // audit or report sinks without rebuilding the runtime.
+  const decisionLedgerFactory =
+    trajectoryStore !== undefined
+      ? (
+          overrides?: Parameters<NonNullable<RuntimeHandle["createDecisionLedger"]>>[0],
+        ): DecisionLedgerReader => {
+          const auditSink = overrides?.auditSink;
+          const reportStore = overrides?.reportStore ?? config.reportStore;
+          return createDecisionLedger({
+            trajectoryStore,
+            ...(auditSink !== undefined ? { auditSink } : {}),
+            ...(reportStore !== undefined ? { reportStore } : {}),
+          });
+        }
+      : undefined;
+
   return {
     adapter,
     channel,
@@ -341,6 +363,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     agentConflicts,
     filesystemBackend,
     filesystemProvider,
+    createDecisionLedger: decisionLedgerFactory,
     dispose: async () => {
       // Unsubscribe approval sink to prevent leak on long-lived permission handles
       unsubApprovalSink?.();
