@@ -49,6 +49,7 @@ import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
+import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
 import { createTuiRuntime } from "./tui-runtime.js";
 
@@ -194,12 +195,33 @@ export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
   batcher: EventBatcher<EngineEvent>,
+  signal?: AbortSignal,
 ): Promise<void> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
+  // Track partial usage yielded as `custom` events so an aborted stream
+  // (which throws instead of emitting a real terminal `done`) can still
+  // fold the tokens it had already accrued into its synthetic done.
+  //
+  // Usage snapshots are ABSOLUTE, not deltas: the model adapter's
+  // stream-parser assigns `acc.inputTokens = chunk.usage.prompt_tokens`
+  // and yields that total on every usage event. Always overwrite with
+  // the latest snapshot rather than summing — accumulation would
+  // double-count tokens when multiple usage updates arrive.
+  let partialInputTokens = 0;
+  let partialOutputTokens = 0;
   try {
     // `let` justified: tracks last yield time for frame-rate-limited yielding
     let lastYieldAt = Date.now();
     for await (const event of stream) {
+      if (event.kind === "custom" && event.type === "usage") {
+        const usage = event.data as { inputTokens?: number; outputTokens?: number };
+        if (typeof usage.inputTokens === "number") {
+          partialInputTokens = usage.inputTokens;
+        }
+        if (typeof usage.outputTokens === "number") {
+          partialOutputTokens = usage.outputTokens;
+        }
+      }
       batcher.enqueue(event);
       // Yield to the event loop at most once per frame (~16ms) during any
       // consumer-visible streaming event so OpenTUI can paint progressively.
@@ -227,6 +249,41 @@ export async function drainEngineStream(
     batcher.flushSync();
   } catch (e: unknown) {
     batcher.flushSync();
+    // User-initiated aborts must surface as a clean interrupted turn, not
+    // a generic engine error. Narrow the translation to: (1) the caller
+    // passed a signal, (2) that signal is actually aborted at the time of
+    // catch, AND (3) the error looks like an AbortError. This avoids
+    // swallowing timeout-driven or internal aborts that throw AbortError
+    // without a user-initiated cancel. See issue #1653.
+    if (
+      signal?.aborted &&
+      e instanceof Error &&
+      (e.name === "AbortError" || (e as { code?: unknown }).code === "ABORT_ERR")
+    ) {
+      // Synthesize a terminal `done` event so the reducer finalizes the
+      // streaming assistant message, clears running tool state, and
+      // returns agentStatus to idle. Without this, a cancelled turn
+      // leaves the UI stuck in a "processing" state. Carry forward any
+      // partial usage accumulated from `custom` usage events so cost
+      // accounting isn't lost on the fallback path.
+      const syntheticDone: EngineEvent = {
+        kind: "done",
+        output: {
+          stopReason: "interrupted",
+          content: [],
+          metrics: {
+            totalTokens: partialInputTokens + partialOutputTokens,
+            inputTokens: partialInputTokens,
+            outputTokens: partialOutputTokens,
+            turns: 0,
+            durationMs: 0,
+          },
+        },
+      };
+      batcher.enqueue(syntheticDone);
+      batcher.flushSync();
+      return;
+    }
     store.dispatch({
       kind: "add_error",
       code: "ENGINE_ERROR",
@@ -398,9 +455,98 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 4. Helpers
   // ---------------------------------------------------------------------------
 
-  const onInterrupt = (): void => {
+  // The raw abort action used by the SIGINT state machine's graceful path.
+  // Aborts the active model stream and closes pending approval prompts.
+  // Does NOT tear down the TUI — the user stays in the session.
+  //
+  // Background subprocesses (bash_background) are intentionally NOT killed
+  // here: the session-wide `bgController` is shared across turns, and
+  // `runtimeHandle.shutdownBackgroundTasks()` also disposes MCP
+  // resolvers/providers that are built once and never rebuilt. Cancelling
+  // the current response must not kill unrelated background work from
+  // earlier turns or permanently break MCP tools for the rest of the
+  // session. Users who want to reset everything can use `/clear` or quit.
+  const abortActiveStream = (): void => {
     permissionBridge.dispose();
     activeController?.abort();
+  };
+
+  // TUI interrupt protocol (see docs/L2/interrupt.md, issue #1653):
+  //  - First tap → abortActiveStream(); user stays in the TUI and the engine
+  //    emits its terminal `done` with `stopReason: "interrupted"` through the
+  //    normal flush path.
+  //  - Second tap within 2s → graceful shutdown(130) (standard SIGINT exit).
+  //  - No failsafe: the graceful path here is a synchronous
+  //    `controller.abort()`, so there is nothing to time out. Shutdown on the
+  //    second tap has its own SIGKILL escalation for background tasks.
+  //
+  // Both the process-level SIGINT and the in-app Ctrl+C (via TUI keyboard
+  // layer) route through this single handler so the force-exit escape hatch
+  // is available in raw-mode sessions, not just when SIGINT reaches the
+  // process directly.
+  // No auto-failsafe on the TUI handler. A previous iteration installed a
+  // 10s failsafeMs to handle non-cooperative in-flight tools (e.g. MCP
+  // calls that ignore the abort signal), but that silently upgrades a
+  // single "cancel this turn" tap into full session loss after 10s —
+  // interrupted turns aren't committed to the transcript, so the user
+  // loses context they never asked to discard. The double-tap force path
+  // is already the explicit escape hatch for hung tools; requiring the
+  // user to press Ctrl+C a second time if their cancel didn't take is
+  // better UX than surprise session termination.
+  //
+  // Defense-in-depth: the TUI has two interrupt ingress paths — the
+  // keyboard layer's Ctrl+C callback AND the process-level SIGINT
+  // handler — both routing through this single state machine. Most
+  // terminal configurations deliver through only one (raw mode captures
+  // Ctrl+C as stdin bytes, non-raw delivers SIGINT via process group),
+  // but edge cases can fire both. A 150ms coalesce window is well below
+  // the 300-500ms human intentional double-tap reflex but well above any
+  // plausible dual-path delivery delay, so it defends the first tap
+  // without blocking a legitimate force double-tap.
+  const TUI_COALESCE_WINDOW_MS = 150;
+  const sigintHandler = createSigintHandler({
+    onGraceful: () => {
+      // Idle sessions (no active stream) have nothing to cancel, so the
+      // first Ctrl+C quits the TUI — matching the standard single-SIGINT
+      // termination convention. When a stream IS active, abort it and let
+      // the user stay in the TUI; a second Ctrl+C within 2s forces exit.
+      if (activeController === null) {
+        void shutdown(130);
+        return;
+      }
+      abortActiveStream();
+    },
+    onForce: () => {
+      // Force path: abort the active foreground stream FIRST so no
+      // further model/tool work can execute during the exit window,
+      // then kick background-task SIGTERM so subprocesses start dying.
+      // Without the foreground abort, side-effecting tools could keep
+      // running for the full 3.5s SIGKILL-escalation wait below.
+      abortActiveStream();
+      const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
+      if (liveTasks) {
+        // Wait long enough for the runtime's SIGKILL escalation window
+        // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
+        // fire before this process — and its in-process escalation
+        // timer — dies. Exiting earlier orphans subprocesses that
+        // ignore SIGTERM, exactly the failure mode "force" is supposed
+        // to handle.
+        setTimeout(() => process.exit(130), 3500);
+        return;
+      }
+      process.exit(130);
+    },
+    write: (msg: string) => {
+      process.stderr.write(msg);
+    },
+    doubleTapWindowMs: 2000,
+    coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
+    setTimer: createUnrefTimer,
+  });
+  // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
+  // prop) and the `agent:interrupt` command both route through here.
+  const onInterrupt = (): void => {
+    sigintHandler.handleSignal();
   };
 
   /**
@@ -441,19 +587,50 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   };
 
   // Idempotent shutdown — called by both system:quit and signal handlers.
+  // Every invocation arms a hard-exit failsafe so the user is never stranded
+  // if `appHandle.stop()`, background-task drain, or `runtime.dispose()`
+  // wedges. The failsafe is unref'd, so natural cleanup completion before
+  // the timer fires still lets the process exit cleanly via `process.exit`.
+  const SHUTDOWN_HARD_EXIT_MS = 8000;
   // let: justified — set once on first shutdown call
   let shutdownStarted = false;
-  const shutdown = async (): Promise<void> => {
+  const shutdown = async (exitCode = 0): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    // Abort the active foreground run FIRST so no further model/tool
+    // work can execute during teardown. Without this, long-running or
+    // non-cooperative tools can keep mutating local/remote state during
+    // the cooperative shutdown window (up to 8s) or the SIGKILL
+    // escalation wait (3.5s) — after the user or supervisor has already
+    // requested termination. Matches the invariant also enforced on the
+    // force path in onForce.
+    abortActiveStream();
+    // Kick background-task teardown synchronously so stubborn
+    // subprocesses start receiving SIGTERM before anything else that could
+    // wedge (appHandle.stop, runtime.dispose). This guarantees the
+    // invariant — "subprocesses always get SIGTERM before the process
+    // exits" — even if the cooperative shutdown path wedges and the
+    // hard-exit timer fires. The return flag tells us whether to pay the
+    // SIGKILL escalation wait below (idle/no-task exits stay immediate).
+    const hadLiveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
+    // Hard-exit failsafe. If any cooperative step hangs, this terminates
+    // the process. It runs AFTER the background-task SIGTERM has already
+    // been issued above, so orphaned subprocesses get cleaned up by their
+    // own SIGKILL escalation (launched by the runtime) rather than outliving
+    // the TUI.
+    const hardExit = setTimeout(() => {
+      process.exit(exitCode);
+    }, SHUTDOWN_HARD_EXIT_MS);
+    if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+      (hardExit as { unref: () => void }).unref();
+    }
     try {
       await appHandle?.stop();
       batcher.dispose();
       if (runtimeHandle !== null) {
-        const hadLiveTasks = runtimeHandle.shutdownBackgroundTasks();
-        // Wait for SIGTERM→SIGKILL escalation window so stubborn subprocesses
-        // are killed before we exit. Without this, children that ignore SIGTERM
-        // outlive the TUI as orphans. SIGKILL_ESCALATION_MS = 3000.
+        // Only pay the SIGTERM→SIGKILL escalation wait when we actually
+        // had live subprocesses to drain. Idle exits stay immediate.
+        // SIGKILL_ESCALATION_MS = 3000 in the runtime.
         if (hadLiveTasks) {
           await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
         }
@@ -461,7 +638,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       approvalStore?.close();
     } finally {
-      process.exit(0);
+      process.exit(exitCode);
     }
   };
 
@@ -695,7 +872,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               text,
               signal: controller.signal,
             });
-        await drainEngineStream(stream, store, batcher);
+        await drainEngineStream(stream, store, batcher, controller.signal);
 
         // Refresh trajectory data after each turn so /trajectory view is current.
         // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
@@ -711,8 +888,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
           });
       } finally {
-        if (activeController === controller) {
+        // Guard against cross-run races: only clear activeController and
+        // reset the SIGINT handler if THIS run is still the active one.
+        // If resetConversation() or a new submit replaced the controller
+        // mid-drain, this finally is stale and must not disarm the
+        // SIGINT state that now belongs to the newer run.
+        const isStillActive = activeController === controller;
+        if (isStillActive) {
           activeController = null;
+        }
+        // The active run has settled. Reset the double-tap window so a
+        // later Ctrl+C is treated as a fresh first tap rather than a
+        // late-arriving second tap of a cancellation that already
+        // completed. Only safe when this run is still the active one —
+        // a stale finally from a reset-and-replaced run must not
+        // disarm SIGINT state that now belongs to a newer turn.
+        if (isStillActive) {
+          sigintHandler.complete();
         }
       }
     },
@@ -738,23 +930,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // 6. Signal handling and start
   // ---------------------------------------------------------------------------
 
-  process.once("SIGINT", () => {
-    void shutdown();
-  });
-  process.once("SIGTERM", () => {
-    void shutdown();
-  });
+  const onProcessSigint = (): void => {
+    sigintHandler.handleSignal();
+  };
+  // SIGTERM is a separate termination cause (supervisor/OOM/operator kill)
+  // and must not share SIGINT's exit code. 143 = 128 + 15 (SIGTERM), per
+  // POSIX convention, so supervisors and incident tooling can distinguish
+  // external termination from Ctrl+C.
+  const onProcessSigterm = (): void => {
+    void shutdown(143);
+  };
+  process.on("SIGINT", onProcessSigint);
+  process.once("SIGTERM", onProcessSigterm);
 
-  await result.value.start();
+  try {
+    await result.value.start();
 
-  // Load saved sessions in the background after the TUI is rendering.
-  // Fire-and-forget: failures are silently swallowed (non-critical feature).
-  void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
-    store.dispatch({ kind: "set_session_list", sessions });
-  });
-  // Block until stop() completes (SIGINT/SIGTERM/quit command all call stop()
-  // and then process.exit — done() resolves right before that exit).
-  await result.value.done();
+    // Load saved sessions in the background after the TUI is rendering.
+    // Fire-and-forget: failures are silently swallowed (non-critical feature).
+    void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+      store.dispatch({ kind: "set_session_list", sessions });
+    });
+    // Block until stop() completes. `shutdown()` / quit command exit the
+    // process directly, so the cleanup in `finally` only runs when `done()`
+    // resolves because the renderer was destroyed externally (e.g. in tests
+    // or embedded callers) — which is precisely the path that would leak
+    // signal handlers and armed double-tap timers without explicit cleanup.
+    await result.value.done();
+  } finally {
+    sigintHandler.dispose();
+    process.removeListener("SIGINT", onProcessSigint);
+    process.removeListener("SIGTERM", onProcessSigterm);
+  }
 }
 
 // ---------------------------------------------------------------------------

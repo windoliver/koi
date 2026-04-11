@@ -85,10 +85,8 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
-    // The child inherits the same process group as the parent, so terminal
-    // signals (Ctrl+C → SIGINT) are already delivered to both processes by
-    // the kernel. No explicit forwarding needed — it would cause double
-    // delivery and bypass the child's graceful stop() shutdown path.
+    const { installTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
+    installTuiReexecSignalHandlers(proc);
     process.exit(await proc.exited);
     break;
   }
