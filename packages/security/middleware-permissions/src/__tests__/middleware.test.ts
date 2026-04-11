@@ -408,7 +408,7 @@ describe("createPermissionsMiddleware", () => {
       await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("multiply"), noopToolHandler);
 
       expect(entries).toHaveLength(1);
-      expect(entries[0]?.kind).toBe("tool_call");
+      expect(entries[0]?.kind).toBe("permission_decision");
       expect((entries[0]?.metadata as Record<string, unknown>).permissionCheck).toBe(true);
       expect((entries[0]?.metadata as Record<string, unknown>).effect).toBe("allow");
     });

@@ -510,6 +510,8 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -533,6 +535,7 @@
         "@koi/memory-fs": "workspace:*",
         "@koi/memory-team-sync": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
@@ -662,6 +665,31 @@
       "version": "0.1.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/security/audit-sink-ndjson": {
+      "name": "@koi/audit-sink-ndjson",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/audit-sink-sqlite": {
+      "name": "@koi/audit-sink-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/middleware-audit": {
+      "name": "@koi/middleware-audit",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/redaction": "workspace:*",
       },
     },
     "packages/security/middleware-exfiltration-guard": {
@@ -975,6 +1003,10 @@
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
+    "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
+
+    "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
+
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
@@ -1040,6 +1072,8 @@
     "@koi/memory-team-sync": ["@koi/memory-team-sync@workspace:packages/mm/memory-team-sync"],
 
     "@koi/memory-tools": ["@koi/memory-tools@workspace:packages/mm/memory-tools"],
+
+    "@koi/middleware-audit": ["@koi/middleware-audit@workspace:packages/security/middleware-audit"],
 
     "@koi/middleware-exfiltration-guard": ["@koi/middleware-exfiltration-guard@workspace:packages/security/middleware-exfiltration-guard"],
 

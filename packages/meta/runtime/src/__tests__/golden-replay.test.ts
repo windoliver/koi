@@ -1133,6 +1133,73 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// audit-log trajectory: @koi/middleware-audit + @koi/audit-sink-sqlite exercised
+// ---------------------------------------------------------------------------
+
+describe("audit-log ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with audit middleware span", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/audit-log.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly steps: readonly { readonly extra?: Record<string, unknown> }[];
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    // MW:audit span must be present in the trajectory
+    const auditSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "audit",
+    );
+    expect(auditSpans.length).toBeGreaterThan(0);
+  });
+
+  test("MW:audit span reports success outcome", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/audit-log.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: Record<string, unknown>;
+        readonly outcome?: string;
+      }[];
+    };
+    const auditSpan = doc.steps.find(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "audit",
+    );
+    if (auditSpan === undefined) throw new Error("audit span not found");
+    expect(auditSpan.outcome).toBe("success");
+  });
+});
+
+// audit-log entries sidecar: the actual AuditEntry records written during the session
+// ---------------------------------------------------------------------------
+
+describe("audit-log entries sidecar (golden file)", () => {
+  test("captures session_start, model_call, session_end entries", async () => {
+    const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
+      readonly entries: readonly {
+        readonly kind: string;
+        readonly schema_version: number;
+        readonly agentId: string;
+        readonly sessionId: string;
+        readonly turnIndex: number;
+        readonly durationMs: number;
+      }[];
+    };
+    const kinds = sidecar.entries.map((e) => e.kind);
+    expect(kinds).toContain("session_start");
+    expect(kinds).toContain("model_call");
+    expect(kinds).toContain("session_end");
+  });
+
+  test("all entries have schema_version=1 and required fields", async () => {
+    const sidecar = (await Bun.file(`${FIXTURES}/audit-log.entries.json`).json()) as {
+      readonly entries: readonly Record<string, unknown>[];
+    };
+    for (const entry of sidecar.entries) {
+      expect(entry.schema_version).toBe(1);
+      expect(typeof entry.agentId).toBe("string");
+      expect(typeof entry.sessionId).toBe("string");
+      expect(typeof entry.durationMs).toBe("number");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // denial-escalation trajectory: repeated execution-time denials trigger auto-deny
 // ---------------------------------------------------------------------------
 
@@ -1577,6 +1644,7 @@ describe("Golden: @koi/decision-ledger", () => {
     const audits: readonly Audit[] = [
       // Intentionally out of timestamp order — fetchAudit should sort the lane.
       {
+        schema_version: 1,
         timestamp: 400,
         sessionId: "s-golden",
         agentId: "agent-a",
@@ -1585,6 +1653,7 @@ describe("Golden: @koi/decision-ledger", () => {
         durationMs: 2,
       },
       {
+        schema_version: 1,
         timestamp: 200,
         sessionId: "s-golden",
         agentId: "agent-a",
@@ -1622,6 +1691,7 @@ describe("Golden: @koi/decision-ledger", () => {
 
     const audits: readonly Audit[] = [
       {
+        schema_version: 1,
         timestamp: 100,
         sessionId: "s-target",
         agentId: "agent-a",
@@ -1631,6 +1701,7 @@ describe("Golden: @koi/decision-ledger", () => {
       },
       // Cross-session leak from a buggy sink — must be filtered out.
       {
+        schema_version: 1,
         timestamp: 150,
         sessionId: "other-session",
         agentId: "agent-a",
@@ -1690,6 +1761,7 @@ describe("Golden: @koi/decision-ledger", () => {
         // Inject an ad-hoc audit sink via the override path.
         const audits: readonly Audit[] = [
           {
+            schema_version: 1,
             timestamp: 100,
             sessionId: "session-xyz",
             agentId: "agent-a",

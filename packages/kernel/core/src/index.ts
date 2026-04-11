@@ -725,6 +725,7 @@ export type {
   ApprovalHandler,
   ApprovalRequest,
   CapabilityFragment,
+  ConfigChange,
   KoiMiddleware,
   MiddlewareBundle,
   MiddlewarePhase,

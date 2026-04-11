@@ -449,6 +449,157 @@ eval("malicious");
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/middleware-audit (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createAuditMiddleware } from "@koi/middleware-audit";
+
+describe("Golden: @koi/middleware-audit", () => {
+  test("middleware name is 'audit' with phase 'observe' and priority 300", async () => {
+    const mw = createAuditMiddleware({
+      sink: {
+        log: async (): Promise<void> => {},
+      },
+    });
+    expect(mw.name).toBe("audit");
+    expect(mw.phase).toBe("observe");
+    expect(mw.priority).toBe(300);
+  });
+
+  test("entries are flushed after onSessionEnd", async () => {
+    const entries: unknown[] = [];
+    const mw = createAuditMiddleware({
+      sink: {
+        log: async (entry): Promise<void> => {
+          entries.push(entry);
+        },
+      },
+    });
+    await mw.onSessionStart?.({
+      agentId: "test-agent",
+      sessionId: "test-session" as never,
+      runId: "test-run" as never,
+      metadata: {},
+    });
+    await mw.onSessionEnd?.({
+      agentId: "test-agent",
+      sessionId: "test-session" as never,
+      runId: "test-run" as never,
+      metadata: {},
+    });
+    // onSessionEnd flushes — both session_start and session_end must be logged
+    expect(entries.length).toBeGreaterThanOrEqual(2);
+    const kinds = (entries as { readonly kind?: string }[]).map((e) => e.kind);
+    expect(kinds).toContain("session_start");
+    expect(kinds).toContain("session_end");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/audit-sink-sqlite (2 queries)
+// ---------------------------------------------------------------------------
+
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+
+describe("Golden: @koi/audit-sink-sqlite", () => {
+  test("in-memory sink accepts entries and returns them after flush", async () => {
+    const sink = createSqliteAuditSink({ dbPath: ":memory:" });
+    await sink.log({
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "golden-session",
+      agentId: "golden-agent",
+      turnIndex: 0,
+      kind: "model_call",
+      durationMs: 5,
+    });
+    await sink.flush();
+    const entries = sink.getEntries();
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.kind).toBe("model_call");
+    sink.close();
+  });
+
+  test("query() filters by sessionId with WAL mode active", async () => {
+    const sink = createSqliteAuditSink({ dbPath: ":memory:" });
+    await sink.log({
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "session-A",
+      agentId: "agent",
+      turnIndex: 0,
+      kind: "session_start",
+      durationMs: 0,
+    });
+    await sink.log({
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "session-B",
+      agentId: "agent",
+      turnIndex: 0,
+      kind: "session_start",
+      durationMs: 0,
+    });
+    await sink.flush();
+    const results = await sink.query?.("session-A");
+    expect(results).toHaveLength(1);
+    expect(results?.[0]?.sessionId).toBe("session-A");
+    sink.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/audit-sink-ndjson (2 queries)
+// ---------------------------------------------------------------------------
+
+import { mkdtemp as mkdtempNdjson, rm as rmNdjson } from "node:fs/promises";
+import { join as joinNdjson } from "node:path";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+
+describe("Golden: @koi/audit-sink-ndjson", () => {
+  test("writes entries as NDJSON lines and reads them back", async () => {
+    const tmpDir = await mkdtempNdjson("/tmp/koi-golden-ndjson-");
+    const filePath = joinNdjson(tmpDir, "audit.ndjson");
+    const sink = createNdjsonAuditSink({ filePath });
+    await sink.log({
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "ndjson-session",
+      agentId: "ndjson-agent",
+      turnIndex: 0,
+      kind: "model_call",
+      durationMs: 3,
+    });
+    await sink.flush();
+    const entries = await sink.getEntries();
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.sessionId).toBe("ndjson-session");
+    await sink.close();
+    await rmNdjson(tmpDir, { recursive: true, force: true });
+  });
+
+  test("schema_version is preserved in round-trip serialization", async () => {
+    const tmpDir = await mkdtempNdjson("/tmp/koi-golden-ndjson-sv-");
+    const filePath = joinNdjson(tmpDir, "audit.ndjson");
+    const sink = createNdjsonAuditSink({ filePath });
+    await sink.log({
+      schema_version: 1,
+      timestamp: Date.now(),
+      sessionId: "sv-session",
+      agentId: "sv-agent",
+      turnIndex: -1,
+      kind: "session_start",
+      durationMs: 0,
+    });
+    await sink.flush();
+    const entries = await sink.getEntries();
+    expect(entries[0]?.schema_version).toBe(1);
+    await sink.close();
+    await rmNdjson(tmpDir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/context-manager (#1623)
 // ---------------------------------------------------------------------------
 
