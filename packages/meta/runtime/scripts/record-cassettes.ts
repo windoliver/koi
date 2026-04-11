@@ -3430,7 +3430,10 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 2,
   },
 
-  // model-router: exercises @koi/model-router middleware — routing decision visible in trajectory
+  // model-router: exercises @koi/model-router middleware — routing decision visible in trajectory.
+  // extraMiddleware here mirrors the RuntimeConfig.modelRouterMiddleware opt-in path wired in
+  // create-runtime.ts. The recording script uses its own assembler (not createRuntime), so
+  // extraMiddleware is the equivalent injection point for cassette recording purposes.
   {
     name: "model-router",
     prompt: "What is 2+2? Answer with just the number.",

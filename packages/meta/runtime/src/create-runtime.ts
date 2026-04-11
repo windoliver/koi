@@ -128,13 +128,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         "or pass exfiltrationGuard: false to disable.",
     );
   }
-  const middleware: readonly KoiMiddleware[] =
+  const afterExfiltration: readonly KoiMiddleware[] =
     exfiltrationRequested && canInstallExfiltrationGuard
       ? [
           ...baseMiddleware,
           createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
         ]
       : baseMiddleware;
+
+  // Append model-router as the innermost model-call interceptor (after exfiltration
+  // guard and semantic-retry) so each retry attempt independently benefits from
+  // provider failover. Skip when already provided in config.middleware by name.
+  const hasModelRouter = new Set(afterExfiltration.map((mw) => mw.name)).has("model-router");
+  const middleware: readonly KoiMiddleware[] =
+    config.modelRouterMiddleware !== undefined && !hasModelRouter
+      ? [...afterExfiltration, config.modelRouterMiddleware]
+      : afterExfiltration;
+
   const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
   // Filesystem: strict host opt-in only.
   // config.filesystem === false is a kill switch; undefined means no filesystem.
