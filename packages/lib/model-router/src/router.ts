@@ -250,8 +250,18 @@ export function createModelRouter(
         try {
           const stream = adapter.stream(modelRequest);
           for await (const chunk of stream) {
+            // Error chunks from the adapter (e.g., HTTP 4xx/5xx yielded rather
+            // than thrown) are treated as target failures when no content has been
+            // yielded yet — fall through to the next provider. Once content has
+            // streamed, propagate error chunks as-is to avoid partial-stream splice.
+            if (chunk.kind === "error" && !chunksYielded) {
+              cb?.recordFailure();
+              lastErrorAtByTarget[target.id] = clock();
+              failuresByTarget[target.id] = (failuresByTarget[target.id] ?? 0) + 1;
+              break; // try next target
+            }
             if (!chunksYielded) {
-              // Emit decision on first chunk — we now know which target is serving
+              // Emit decision on first content chunk — we now know which target is serving
               onDecision?.({
                 selectedTargetId: target.id,
                 attemptedTargetIds: [...attempted],
@@ -261,9 +271,12 @@ export function createModelRouter(
             chunksYielded = true;
             yield chunk;
           }
-          cb?.recordSuccess();
-          latencyTrackers.get(target.id)?.record(clock() - startMs);
-          return;
+          if (chunksYielded) {
+            cb?.recordSuccess();
+            latencyTrackers.get(target.id)?.record(clock() - startMs);
+            return;
+          }
+          // Loop fell through without content (error chunk path) — try next target
         } catch (error: unknown) {
           cb?.recordFailure();
           lastErrorAtByTarget[target.id] = clock();

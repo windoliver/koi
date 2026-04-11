@@ -436,6 +436,70 @@ describe("createModelRouter — routeStream() edge cases", () => {
     router.dispose();
   });
 
+  // Gap 4: adapter yields error chunk (not throws) before content → falls over to secondary
+  test("adapter yields error chunk before content → falls over to secondary", async () => {
+    const errorChunk: ModelChunk = {
+      kind: "error",
+      message: "HTTP 404: model not found",
+      retryable: false,
+    };
+    const adapters = new Map([
+      ["a", makeAdapter("a", { streamWith: [errorChunk] })],
+      ["b", makeAdapter("b", { streamWith: [{ kind: "text_delta", delta: "from-b" }] })],
+    ]);
+    const router = makeRouter(
+      [
+        { provider: "a", model: "m1" },
+        { provider: "b", model: "m2" },
+      ],
+      adapters,
+    );
+
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of router.routeStream(makeRequest())) {
+      chunks.push(chunk);
+    }
+
+    // Error chunk should NOT be forwarded — it triggered fallback
+    expect(chunks.some((c) => c.kind === "error")).toBe(false);
+    // Fallback text should be present
+    expect(chunks.some((c) => c.kind === "text_delta" && c.delta === "from-b")).toBe(true);
+    router.dispose();
+  });
+
+  // Gap 5: adapter yields error chunk after content → error chunk propagated (no splice)
+  test("adapter yields error chunk after content → error chunk propagated, no fallback", async () => {
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          streamWith: [
+            { kind: "text_delta", delta: "partial" },
+            { kind: "error", message: "mid-stream error", retryable: false },
+          ],
+        }),
+      ],
+      ["b", makeAdapter("b", { streamWith: [{ kind: "text_delta", delta: "from-b" }] })],
+    ]);
+    const router = makeRouter(
+      [
+        { provider: "a", model: "m1" },
+        { provider: "b", model: "m2" },
+      ],
+      adapters,
+    );
+
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of router.routeStream(makeRequest())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.some((c) => c.kind === "text_delta" && c.delta === "partial")).toBe(true);
+    expect(chunks.some((c) => c.kind === "error")).toBe(true);
+    expect(chunks.some((c) => c.kind === "text_delta" && c.delta === "from-b")).toBe(false);
+    router.dispose();
+  });
+
   test("primary stream succeeds → yields all chunks", async () => {
     const chunks: ModelChunk[] = [
       { kind: "text_delta", delta: "hello" },
