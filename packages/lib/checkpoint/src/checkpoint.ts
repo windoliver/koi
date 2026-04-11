@@ -131,12 +131,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       //
       // The bootstrap has `userTurnIndex: 0`; real user prompts start at 1.
       if (parent === undefined) {
+        // Bootstrap represents the pre-any-prompt state. `transcriptEntryCount`
+        // must be 0 so rewind-to-bootstrap truncates the JSONL to zero entries
+        // (unlinking the file) — otherwise the display would still show
+        // conversation that semantically shouldn't exist.
         const bootstrapPayload: CheckpointPayload = {
           turnIndex: -1,
           userTurnIndex: 0,
           sessionId: sessionId as unknown as string,
           fileOps: [],
           driftWarnings: [],
+          transcriptEntryCount: 0,
           capturedAt: Date.now(),
         };
         const bootstrapResult = await store.put(cid, bootstrapPayload, [], {
@@ -275,10 +280,11 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     state.lastCaptureHadOps = fileOps.length > 0;
 
     // If a transcript is wired in, capture the post-turn entry count so the
-    // restore protocol can truncate back to this point on rewind. The session
-    // middleware appends entries during wrapToolCall/wrapModelStream which
-    // run BEFORE onAfterTurn, so the count we read here is the count at the
-    // boundary between this turn and the next.
+    // restore protocol can truncate back to this point on rewind. This relies
+    // on @koi/query-engine's `consumeModelStream` awaiting its iterator
+    // cleanup before yielding `turn_end` — without that await, the
+    // session-transcript middleware's `wrapModelStream` finally-block writes
+    // race the engine's `onAfterTurn` dispatch and this read returns zero.
     let transcriptEntryCount: number | undefined;
     if (config.transcript !== undefined) {
       try {
