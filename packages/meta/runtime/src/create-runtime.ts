@@ -44,6 +44,7 @@ import {
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createHttpTransport, type NexusTransport } from "@koi/fs-nexus";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware-otel";
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
 import {
@@ -245,6 +246,14 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         }
       : rawAdapter;
 
+  // Resolve OTel config: `true` uses all defaults, object passes config through, falsy disables.
+  const otelConfig: OtelMiddlewareConfig | undefined =
+    config.otel === true
+      ? {}
+      : config.otel !== undefined && config.otel !== false
+        ? config.otel
+        : undefined;
+
   // Compose middleware around adapter terminals, then apply timeout
   const composedAdapter = composeMiddlewareIntoAdapter(
     adapterWithFsTools,
@@ -262,6 +271,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
     config.onTrajectoryFlushError,
     activeFlushes,
     activeStreamFinalizations,
+    otelConfig,
   );
   const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
 
@@ -796,6 +806,7 @@ function composeMiddlewareIntoAdapter(
   onFlushError?: (error: unknown) => void,
   flushTracker?: Set<Promise<void>>,
   streamFinalizationTracker?: Set<Promise<void>>,
+  otelConfig?: OtelMiddlewareConfig,
 ): EngineAdapter {
   if (adapter.terminals === undefined) {
     // Fail closed: if intercept-phase middleware is configured, refusing to silently
@@ -845,6 +856,10 @@ function composeMiddlewareIntoAdapter(
       // Per-stream event-trace: writes to the SAME store + docId as harness steps.
       // This unifies model/tool I/O (from event-trace) with middleware spans (from harness)
       // in one trajectory document.
+      // Per-stream OTel handle — created once per stream so session span
+      // lifetime (onSessionStart → onSessionEnd) maps 1:1 to the stream.
+      const otelHandle = otelConfig !== undefined ? createOtelMiddleware(otelConfig) : undefined;
+
       const eventTraceHandle =
         store !== undefined
           ? createEventTraceMiddleware({
@@ -853,6 +868,7 @@ function composeMiddlewareIntoAdapter(
               agentName: agentName ?? "runtime",
               clock,
               ...(retrySignalReader !== undefined ? { signalReader: retrySignalReader } : {}),
+              ...(otelHandle !== undefined ? { onStep: otelHandle.onStep } : {}),
             })
           : undefined;
 
@@ -864,8 +880,11 @@ function composeMiddlewareIntoAdapter(
         approvalDispatch.set(sid, eventTraceHandle.emitExternalStep);
       }
 
-      const perStreamMiddleware =
-        eventTraceHandle !== undefined ? [...middleware, eventTraceHandle.middleware] : middleware;
+      const perStreamMiddleware = [
+        ...middleware,
+        ...(eventTraceHandle !== undefined ? [eventTraceHandle.middleware] : []),
+        ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
+      ];
 
       // Wrap middleware with I/O capture when debug + store are both enabled
       const ioCaptures: MiddlewareIOCapture[] = [];
