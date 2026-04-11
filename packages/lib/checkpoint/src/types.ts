@@ -179,6 +179,17 @@ export type RewindResult =
        * rewind was a no-op (rewind 0).
        */
       readonly driftWarnings: readonly string[];
+      /**
+       * Node IDs of incomplete snapshots (`koi:snapshot_status === "incomplete"`)
+       * encountered between the old head and the target. These represent turns
+       * whose capture soft-failed — their file ops are NOT in the chain so
+       * rewind cannot undo them. The restore walks past them but surfaces
+       * their IDs here so the caller can warn the user that those turns'
+       * file state may be inconsistent with the rewind target.
+       *
+       * Empty when every snapshot in the rewind range has status `"complete"`.
+       */
+      readonly incompleteSnapshotsSkipped: readonly NodeId[];
     }
   | { readonly ok: false; readonly error: KoiError };
 

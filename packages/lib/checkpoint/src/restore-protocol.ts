@@ -36,9 +36,21 @@ import type {
   SnapshotChainStore,
   SnapshotNode,
 } from "@koi/core";
-import { internal, notFound, validation } from "@koi/core";
+import { internal, notFound, SNAPSHOT_STATUS_KEY, validation } from "@koi/core";
 import { applyCompensatingOps, computeCompensatingOps } from "./compensating-ops.js";
 import type { CheckpointPayload, RewindResult } from "./types.js";
+
+/**
+ * Return true when the snapshot's metadata marks it as a soft-failed capture.
+ * Absent or `"complete"` status means the snapshot is fully restorable;
+ * `"incomplete"` means the capture was partial (the store.put retry path wrote
+ * a marker with empty fileOps) and the restore protocol should treat it
+ * specially: the target must not land ON an incomplete snapshot, and any
+ * incompletes crossed during the walk must be surfaced as warnings.
+ */
+function isIncompleteSnapshot(snap: SnapshotNode<CheckpointPayload>): boolean {
+  return snap.metadata[SNAPSHOT_STATUS_KEY] === "incomplete";
+}
 
 /**
  * Inputs to a restore operation. Either `n` (number of turns to rewind)
@@ -95,7 +107,8 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
   if (!targetResult.ok) {
     return { ok: false, error: targetResult.error };
   }
-  const { targetNode, snapshotsToUndo, turnsRewound } = targetResult.value;
+  const { targetNode, snapshotsToUndo, turnsRewound, incompleteSnapshotsSkipped } =
+    targetResult.value;
 
   // Rewinding zero turns is a no-op success — the head doesn't change.
   if (turnsRewound === 0) {
@@ -106,6 +119,7 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
       opsApplied: 0,
       turnsRewound: 0,
       driftWarnings: [],
+      incompleteSnapshotsSkipped,
     };
   }
 
@@ -210,6 +224,7 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     opsApplied,
     turnsRewound,
     driftWarnings: targetNode.data.driftWarnings,
+    incompleteSnapshotsSkipped,
   };
 }
 
@@ -220,6 +235,13 @@ interface LocateResult {
   readonly snapshotsToUndo: readonly SnapshotNode<CheckpointPayload>[];
   /** Number of turns rewound past — `snapshotsToUndo.length`. */
   readonly turnsRewound: number;
+  /**
+   * Node IDs of snapshots in the rewind range whose metadata marks them
+   * `"incomplete"`. These turns had a soft-failed capture — their file ops
+   * are not recorded in the chain, so the restore cannot undo any changes
+   * they made. Surfaced as warnings on the RewindResult.
+   */
+  readonly incompleteSnapshotsSkipped: readonly NodeId[];
 }
 
 async function locateTarget(
@@ -245,9 +267,15 @@ async function locateTarget(
     }
     if (target.n === 0) {
       // Zero-rewind: target IS current head, nothing to undo.
+      // Incomplete head is fine here — we aren't undoing anything.
       return {
         ok: true,
-        value: { targetNode: currentHead, snapshotsToUndo: [], turnsRewound: 0 },
+        value: {
+          targetNode: currentHead,
+          snapshotsToUndo: [],
+          turnsRewound: 0,
+          incompleteSnapshotsSkipped: [],
+        },
       };
     }
 
@@ -272,23 +300,46 @@ async function locateTarget(
     }
 
     // Walk from head (ancestors[0]) toward the root, finding the FIRST
-    // ancestor whose userTurnIndex is <= targetUserTurn. That ancestor is
-    // the newest snapshot belonging to the target user turn — land there.
+    // *complete* ancestor whose userTurnIndex is <= targetUserTurn. Skip
+    // incomplete snapshots — they are soft-failed captures that cannot
+    // serve as a rewind landing point (their fileOps are empty so we'd
+    // restore to a bogus state). Record each incomplete we cross so the
+    // caller can warn the user that those turns' file state may be
+    // inconsistent with the rewind target.
     let targetIdx = -1;
+    const incompletesOnWalk: NodeId[] = [];
     for (let i = 0; i < ancestors.length; i++) {
-      const ui = ancestors[i]?.data.userTurnIndex ?? 0;
+      const ancestor = ancestors[i];
+      if (ancestor === undefined) continue;
+      const ui = ancestor.data.userTurnIndex;
       if (ui <= targetUserTurn) {
+        if (isIncompleteSnapshot(ancestor)) {
+          // Landing site is incomplete — walk further back to find a
+          // complete ancestor with the same-or-lower userTurnIndex.
+          incompletesOnWalk.push(ancestor.nodeId);
+          continue;
+        }
         targetIdx = i;
         break;
       }
+      if (isIncompleteSnapshot(ancestor)) {
+        // In the "to undo" range — record for warning.
+        incompletesOnWalk.push(ancestor.nodeId);
+      }
     }
     if (targetIdx < 0) {
-      // No snapshot with a low-enough userTurnIndex — either the chain is
-      // corrupt or userTurnIndex values are inconsistent. Treat as validation.
+      // No complete snapshot with a low-enough userTurnIndex — either the
+      // chain is corrupt, every candidate is soft-failed, or userTurnIndex
+      // values are inconsistent. Fail loud so the user knows the rewind is
+      // unsafe rather than silently landing on the wrong state.
       return {
         ok: false,
         error: validation(
-          `Cannot rewind ${target.n} user turn(s): no ancestor with userTurnIndex <= ${targetUserTurn}`,
+          `Cannot rewind ${target.n} user turn(s): no complete ancestor with userTurnIndex <= ${targetUserTurn}${
+            incompletesOnWalk.length > 0
+              ? ` (${incompletesOnWalk.length} candidate(s) were marked incomplete from a soft-failed capture)`
+              : ""
+          }`,
         ),
       };
     }
@@ -300,7 +351,12 @@ async function locateTarget(
     const snapshotsToUndo = ancestors.slice(0, targetIdx);
     return {
       ok: true,
-      value: { targetNode, snapshotsToUndo, turnsRewound: target.n },
+      value: {
+        targetNode,
+        snapshotsToUndo,
+        turnsRewound: target.n,
+        incompleteSnapshotsSkipped: incompletesOnWalk,
+      },
     };
   }
 
@@ -319,12 +375,29 @@ async function locateTarget(
   if (targetNode === undefined) {
     return { ok: false, error: internal("ancestor walk returned undefined at found index") };
   }
+  // Explicit node targets MUST NOT land on an incomplete snapshot. The
+  // caller asked for this exact node; restoring to it would leave the
+  // filesystem in an undefined state relative to the target's recorded
+  // fileOps (which are empty). Fail loud.
+  if (isIncompleteSnapshot(targetNode)) {
+    return {
+      ok: false,
+      error: validation(
+        `Cannot rewind to node ${target.targetNodeId}: snapshot is marked incomplete (soft-failed capture)`,
+      ),
+    };
+  }
+  const snapshotsToUndo = ancestors.slice(0, idx);
+  const incompletesOnWalk = snapshotsToUndo
+    .filter((n) => isIncompleteSnapshot(n))
+    .map((n) => n.nodeId);
   return {
     ok: true,
     value: {
       targetNode,
-      snapshotsToUndo: ancestors.slice(0, idx),
+      snapshotsToUndo,
       turnsRewound: idx,
+      incompleteSnapshotsSkipped: incompletesOnWalk,
     },
   };
 }

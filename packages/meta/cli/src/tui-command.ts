@@ -924,6 +924,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 message: `${head}\n${body}`,
               });
             }
+            // Surface incomplete-snapshot warnings — turns whose capture
+            // soft-failed are walked past on rewind because their file ops
+            // are not recorded. The file state from those turns may still
+            // be on disk and differ from the restored target.
+            if (result.incompleteSnapshotsSkipped.length > 0) {
+              const n = result.incompleteSnapshotsSkipped.length;
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_INCOMPLETE",
+                message:
+                  `Rewound past ${n} turn${n === 1 ? "" : "s"} with a soft-failed capture. ` +
+                  "File changes made during those turns are not recorded and may remain on disk — " +
+                  "verify the workspace state manually if anything looks off.",
+              });
+            }
           })();
           break;
         case "system:quit":

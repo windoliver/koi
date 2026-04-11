@@ -353,4 +353,218 @@ describe("round-trip rewind", () => {
     if (!r1.ok) return;
     expect(r1.turnsRewound).toBe(0);
   });
+
+  // ---------------------------------------------------------------------------
+  // Incomplete-snapshot handling (soft-fail contract)
+  //
+  // When a capture fails mid-turn, the checkpoint middleware writes a marker
+  // snapshot with `metadata[koi:snapshot_status]="incomplete"` and empty
+  // fileOps. runRestore MUST NOT land on such a node (its fileOps don't
+  // reflect what actually happened on disk) and MUST surface its nodeId as
+  // a warning when crossed during a walk. Verified via direct store writes
+  // so we don't need to inject a failure into the middleware itself.
+  // ---------------------------------------------------------------------------
+
+  test("rewindTo an incomplete snapshot fails loud with a validation error", async () => {
+    await fsWrite(rig, makeTurn(0), pathA, "a-v1");
+    await endTurn(rig, makeTurn(0));
+
+    // Seed an incomplete snapshot as a new head. Parent is the current head
+    // so the ancestor walk will see it first.
+    const headBefore = await rig.checkpoint.currentHead(SESSION_ID);
+    if (headBefore === undefined) throw new Error("no head after turn 0");
+    const chainId = SESSION_ID as unknown as import("@koi/core").ChainId;
+    const incompletePut = await rig.store.put(
+      chainId,
+      {
+        turnIndex: 1,
+        userTurnIndex: 2,
+        sessionId: SESSION_ID as unknown as string,
+        fileOps: [],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      },
+      [headBefore],
+      { "koi:snapshot_status": "incomplete" },
+    );
+    expect(incompletePut.ok).toBe(true);
+    if (!incompletePut.ok || incompletePut.value === undefined) return;
+    const incompleteNodeId = incompletePut.value.nodeId;
+
+    const result = await rig.checkpoint.rewindTo(SESSION_ID, incompleteNodeId);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+    expect(result.error.message).toContain("incomplete");
+  });
+
+  test("rewind walks past an incomplete snapshot and surfaces its nodeId", async () => {
+    // Turn 0 (complete): pathA = a-v1
+    await fsWrite(rig, makeTurn(0), pathA, "a-v1");
+    await endTurn(rig, makeTurn(0));
+    const goodNode = await rig.checkpoint.currentHead(SESSION_ID);
+    if (goodNode === undefined) throw new Error("no head after turn 0");
+
+    // Seed an INCOMPLETE snapshot at userTurn 2 with empty fileOps, as the
+    // checkpoint middleware would write on soft-fail. Parent is the good
+    // node so it sits above it on the walk.
+    const chainId = SESSION_ID as unknown as import("@koi/core").ChainId;
+    const incompletePut = await rig.store.put(
+      chainId,
+      {
+        turnIndex: 1,
+        userTurnIndex: 2,
+        sessionId: SESSION_ID as unknown as string,
+        fileOps: [],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      },
+      [goodNode],
+      { "koi:snapshot_status": "incomplete" },
+    );
+    expect(incompletePut.ok).toBe(true);
+    if (!incompletePut.ok || incompletePut.value === undefined) return;
+    const incompleteNodeId = incompletePut.value.nodeId;
+
+    // Seed a COMPLETE turn above the incomplete. This is what the user
+    // sees as the current head.
+    const completePut = await rig.store.put(
+      chainId,
+      {
+        turnIndex: 2,
+        userTurnIndex: 3,
+        sessionId: SESSION_ID as unknown as string,
+        fileOps: [],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      },
+      [incompleteNodeId],
+      { "koi:snapshot_status": "complete" },
+    );
+    expect(completePut.ok).toBe(true);
+
+    // Rewind 2: walks past the complete head (userTurn=3), the incomplete
+    // (userTurn=2) — should skip it — and lands on the complete turn 0
+    // (userTurn=1). The incomplete's nodeId is surfaced in the result.
+    const result = await rig.checkpoint.rewind(SESSION_ID, 2);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.targetNodeId).toBe(goodNode);
+    expect(result.incompleteSnapshotsSkipped).toEqual([incompleteNodeId]);
+  });
+
+  test("drift warnings are persisted back into the captured snapshot via updatePayload", async () => {
+    // Replace the rig's checkpoint with one that uses a drift detector
+    // returning a fixed list. The detector runs in a deferred microtask, so
+    // we drain the event loop with setImmediate before reading the snapshot.
+    rig.cleanup();
+    const blobDir = join(tmpdir(), `koi-cp-rt-blobs-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const workDir = mkdtempSync(join(tmpdir(), "koi-cp-rt-work-"));
+    const store = createSnapshotStoreSqlite<CheckpointPayload>({ path: ":memory:" });
+    const WARNINGS = [" M src/a.ts", "?? build/out.js"] as const;
+    const driftDetector: DriftDetector = { detect: async () => [...WARNINGS] };
+    const checkpoint = createCheckpoint({
+      store,
+      config: { blobDir, driftDetector },
+    });
+
+    // Capture a turn.
+    const localCtx = makeTurn(0);
+    const wrap = checkpoint.middleware.wrapToolCall;
+    if (wrap === undefined) throw new Error("no wrap");
+    await wrap(
+      localCtx,
+      {
+        toolId: "fs_write",
+        input: { path: join(workDir, "a.txt"), content: "a-v1" } as JsonObject,
+      },
+      async (): Promise<ToolResponse> => {
+        writeFileSync(join(workDir, "a.txt"), "a-v1");
+        return PASSTHROUGH;
+      },
+    );
+    const onAfter = checkpoint.middleware.onAfterTurn;
+    if (onAfter === undefined) throw new Error("no onAfterTurn");
+    await onAfter(localCtx);
+
+    // Drain the microtask queue a few times so the deferred detector and
+    // its `.then(updatePayload)` chain have a chance to run.
+    for (let i = 0; i < 4; i++) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    // Read the snapshot back — drift warnings must now be persisted.
+    const head = await checkpoint.currentHead(SESSION_ID);
+    if (head === undefined) throw new Error("no head");
+    const lookup = store.get(head);
+    expect(lookup.ok).toBe(true);
+    if (!lookup.ok) return;
+    expect(lookup.value.data.driftWarnings).toEqual([...WARNINGS]);
+
+    // Cleanup the replacement rig.
+    store.close();
+    rmSync(blobDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+
+    // Re-create the shared rig so afterEach can cleanup normally.
+    rig = makeRig();
+    pathA = join(rig.workDir, "a.txt");
+    pathB = join(rig.workDir, "b.txt");
+    pathC = join(rig.workDir, "c.txt");
+  });
+
+  test("rewind by-count lands on the nearest COMPLETE ancestor (skips incomplete landing sites)", async () => {
+    // Turn 0 (complete): pathA = a-v1
+    await fsWrite(rig, makeTurn(0), pathA, "a-v1");
+    await endTurn(rig, makeTurn(0));
+    const goodNode = await rig.checkpoint.currentHead(SESSION_ID);
+    if (goodNode === undefined) throw new Error("no head after turn 0");
+
+    // Seed an INCOMPLETE snapshot at userTurn 2 (the target of /rewind 1
+    // from a userTurn=3 head).
+    const chainId = SESSION_ID as unknown as import("@koi/core").ChainId;
+    const incompletePut = await rig.store.put(
+      chainId,
+      {
+        turnIndex: 1,
+        userTurnIndex: 2,
+        sessionId: SESSION_ID as unknown as string,
+        fileOps: [],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      },
+      [goodNode],
+      { "koi:snapshot_status": "incomplete" },
+    );
+    expect(incompletePut.ok).toBe(true);
+    if (!incompletePut.ok || incompletePut.value === undefined) return;
+    const incompleteNodeId = incompletePut.value.nodeId;
+
+    // Seed a COMPLETE turn at userTurn 3 on top so /rewind 1 would naively
+    // try to land on the incomplete at userTurn 2.
+    const completePut = await rig.store.put(
+      chainId,
+      {
+        turnIndex: 2,
+        userTurnIndex: 3,
+        sessionId: SESSION_ID as unknown as string,
+        fileOps: [],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      },
+      [incompleteNodeId],
+      { "koi:snapshot_status": "complete" },
+    );
+    expect(completePut.ok).toBe(true);
+
+    // /rewind 1: target userTurn = 3 - 1 = 2. The only snapshot at
+    // userTurn=2 is incomplete. Walk must skip past it and land on the
+    // complete ancestor at userTurn=1 (turn 0).
+    const result = await rig.checkpoint.rewind(SESSION_ID, 1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.targetNodeId).toBe(goodNode);
+    expect(result.incompleteSnapshotsSkipped).toContain(incompleteNodeId);
+  });
 });
