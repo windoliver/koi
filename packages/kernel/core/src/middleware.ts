@@ -54,6 +54,15 @@ export interface TurnContext {
   readonly stopGateReason?: string;
   /** Name of the middleware that blocked completion via stop gate. */
   readonly stopGateBlockedBy?: string;
+  /**
+   * Optional callback for permissions middleware to dispatch a decision to all
+   * observe-phase middleware (e.g. audit). Injected by L1 when building TurnContext.
+   * Call this after each permission decision so that `onPermissionDecision` hooks fire.
+   */
+  readonly dispatchPermissionDecision?: (
+    query: PermissionQuery,
+    decision: PermissionDecision,
+  ) => void | Promise<void>;
 }
 
 export interface ModelRequest {

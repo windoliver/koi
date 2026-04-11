@@ -975,6 +975,8 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditFilterDecision(ctx, tool.name, decision, auditSink);
       }
+      // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
+      void ctx.dispatchPermissionDecision?.(queries[i]!, decision);
       if (decision.effect === "deny") {
         sessionTracker.record({
           toolId: tool.name,
@@ -1108,6 +1110,7 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
       }
+      void ctx.dispatchPermissionDecision?.(query, decision);
 
       // Report the permission decision for trace recording
       ctx.reportDecision?.({

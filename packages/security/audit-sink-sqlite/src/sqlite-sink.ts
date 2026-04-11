@@ -48,6 +48,8 @@ function validateRow(row: unknown): AuditLogRow {
   if (!isNullableString(r.signature))
     throw new Error("audit_log: signature must be string or null");
   if (!isNullableString(r.metadata)) throw new Error("audit_log: metadata must be string or null");
+  if (!isNullableString(r.canonical_json))
+    throw new Error("audit_log: canonical_json must be string or null");
 
   return r as unknown as AuditLogRow;
 }
@@ -59,6 +61,12 @@ function parseNullableJson(value: string | null): unknown {
 
 function mapRow(raw: unknown): AuditEntry {
   const row = validateRow(raw);
+  // When canonical_json is present, use it directly: it preserves the exact property
+  // order used when the entry was signed/hash-chained, so verification round-trips correctly.
+  if (row.canonical_json !== null) {
+    return JSON.parse(row.canonical_json) as AuditEntry;
+  }
+  // Fallback for rows written before canonical_json was added (schema migration path).
   return {
     schema_version: row.schema_version,
     timestamp: row.timestamp,
@@ -120,6 +128,7 @@ export function createSqliteAuditSink(config: SqliteAuditSinkConfig): AuditSink 
           $prevHash: entry.prev_hash ?? null,
           $signature: entry.signature ?? null,
           $metadata: serializeField(entry.metadata),
+          $canonicalJson: JSON.stringify(entry),
         });
       }
     });

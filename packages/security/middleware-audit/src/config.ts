@@ -24,10 +24,12 @@ export interface AuditMiddlewareConfig {
   /**
    * Enable tamper-evident signing.
    * - true: generate an ephemeral Ed25519 keypair at startup
-   * - { privateKey: CryptoKey }: use the provided key
    * - false/undefined: no signing or hash chain
+   *
+   * Note: object-form { privateKey } is not yet implemented.
+   * Pass `signing: true` for an ephemeral keypair or omit for no signing.
    */
-  readonly signing?: boolean | { readonly privateKey: CryptoKey };
+  readonly signing?: boolean;
 }
 
 function fail(message: string): Result<never, KoiError> {
@@ -73,13 +75,9 @@ export function validateAuditConfig(config: unknown): Result<AuditMiddlewareConf
   }
 
   if (c.signing !== undefined && typeof c.signing !== "boolean") {
-    if (typeof c.signing !== "object" || c.signing === null) {
-      return fail("config.signing must be a boolean or { privateKey: CryptoKey }");
-    }
-    const signing = c.signing as Record<string, unknown>;
-    if (signing.privateKey === undefined) {
-      return fail("config.signing.privateKey is required when signing is an object");
-    }
+    return fail(
+      "config.signing must be a boolean — object-form { privateKey } is not yet implemented. Use signing: true for ephemeral keypair or omit for no signing.",
+    );
   }
 
   return { ok: true, value: config as AuditMiddlewareConfig };

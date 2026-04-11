@@ -24,7 +24,8 @@ const CREATE_TABLE = `
     duration_ms    INTEGER NOT NULL,
     prev_hash      TEXT,
     signature      TEXT,
-    metadata       TEXT
+    metadata       TEXT,
+    canonical_json TEXT
   )
 `;
 
@@ -52,11 +53,11 @@ export function createInsertStmt(db: Database): Statement {
     INSERT INTO audit_log (
       schema_version, timestamp, session_id, agent_id, turn_index,
       kind, request, response, error, duration_ms,
-      prev_hash, signature, metadata
+      prev_hash, signature, metadata, canonical_json
     ) VALUES (
       $schemaVersion, $timestamp, $sessionId, $agentId, $turnIndex,
       $kind, $request, $response, $error, $durationMs,
-      $prevHash, $signature, $metadata
+      $prevHash, $signature, $metadata, $canonicalJson
     )
   `);
 }
@@ -77,6 +78,11 @@ export interface AuditLogRow {
   readonly prev_hash: string | null;
   readonly signature: string | null;
   readonly metadata: string | null;
+  /** Canonical JSON snapshot of the full AuditEntry at insert time.
+   *  Null for rows written before this column was added (schema migration).
+   *  When present, round-trips preserve exact property order for hash-chain
+   *  and Ed25519 signature verification. */
+  readonly canonical_json: string | null;
 }
 
 /** Read all audit entries ordered by id. */

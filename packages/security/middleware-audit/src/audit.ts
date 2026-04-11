@@ -63,14 +63,8 @@ export function createAuditMiddleware(config: AuditMiddlewareConfig): AuditMiddl
   });
 
   // Resolve signing handle
-  let signingHandle: SigningHandle | undefined;
-  if (config.signing === true) {
-    signingHandle = createEphemeralSigningHandle();
-  } else if (config.signing !== false && config.signing !== undefined) {
-    // { privateKey: CryptoKey } provided — for now use ephemeral until CryptoKey → KeyObject
-    // conversion is threaded in. The public key returned is for the ephemeral key.
-    signingHandle = createEphemeralSigningHandle();
-  }
+  const signingHandle: SigningHandle | undefined =
+    config.signing === true ? createEphemeralSigningHandle() : undefined;
 
   function redactPayload(value: unknown): unknown {
     if (value === undefined) return undefined;
