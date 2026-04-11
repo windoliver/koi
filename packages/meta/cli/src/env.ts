@@ -13,6 +13,13 @@ export interface ApiConfig {
   /** Base URL for the model provider. Undefined = use adapter's built-in default (OpenRouter). */
   readonly baseUrl: string | undefined;
   readonly model: string;
+  /**
+   * Ordered fallback models. When non-empty, a model-router is installed with
+   * `model` as the primary target and these as the fallback chain.
+   * Set via KOI_FALLBACK_MODEL (comma-separated for multiple).
+   * All targets share the same apiKey and baseUrl.
+   */
+  readonly fallbackModels: readonly string[];
 }
 
 /**
@@ -49,6 +56,15 @@ export function resolveApiConfig(
   const rawModel = env.KOI_MODEL;
   const model = rawModel !== undefined && rawModel.trim().length > 0 ? rawModel : DEFAULT_MODEL;
 
+  const rawFallback = env.KOI_FALLBACK_MODEL;
+  const fallbackModels: readonly string[] =
+    rawFallback !== undefined && rawFallback.trim().length > 0
+      ? rawFallback
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+
   // Explicit base URL override takes precedence over provider default.
   const explicitBaseUrl = env.OPENAI_BASE_URL ?? env.OPENROUTER_BASE_URL;
   const validExplicit =
@@ -59,5 +75,5 @@ export function resolveApiConfig(
   const providerDefault = hasOpenRouter ? undefined : OPENAI_DEFAULT_BASE_URL;
   const baseUrl = validExplicit ?? providerDefault;
 
-  return { ok: true, value: { apiKey, baseUrl, model } };
+  return { ok: true, value: { apiKey, baseUrl, model, fallbackModels } };
 }

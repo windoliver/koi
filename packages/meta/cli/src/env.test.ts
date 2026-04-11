@@ -90,6 +90,50 @@ describe("resolveApiConfig", () => {
     }
   });
 
+  test("KOI_FALLBACK_MODEL unset → empty fallbackModels", () => {
+    const result = resolveApiConfig({ OPENROUTER_API_KEY: "sk-or-test" });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.fallbackModels).toEqual([]);
+    }
+  });
+
+  test("KOI_FALLBACK_MODEL single → one fallback", () => {
+    const result = resolveApiConfig({
+      OPENROUTER_API_KEY: "sk-or-test",
+      KOI_FALLBACK_MODEL: "google/gemini-2.0-flash-001",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.fallbackModels).toEqual(["google/gemini-2.0-flash-001"]);
+    }
+  });
+
+  test("KOI_FALLBACK_MODEL comma-separated → ordered fallback list", () => {
+    const result = resolveApiConfig({
+      OPENROUTER_API_KEY: "sk-or-test",
+      KOI_FALLBACK_MODEL: "google/gemini-2.0-flash-001 , meta/llama-3-70b",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.fallbackModels).toEqual([
+        "google/gemini-2.0-flash-001",
+        "meta/llama-3-70b",
+      ]);
+    }
+  });
+
+  test("KOI_FALLBACK_MODEL whitespace-only → empty fallbackModels", () => {
+    const result = resolveApiConfig({
+      OPENROUTER_API_KEY: "sk-or-test",
+      KOI_FALLBACK_MODEL: "   ",
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.fallbackModels).toEqual([]);
+    }
+  });
+
   test("OPENAI_BASE_URL takes precedence over OPENROUTER_BASE_URL", () => {
     const result = resolveApiConfig({
       OPENROUTER_API_KEY: "sk-or-test",
