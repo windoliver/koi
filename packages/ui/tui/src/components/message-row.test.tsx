@@ -14,6 +14,7 @@
 import { testRender } from "@opentui/solid";
 import { describe, expect, test } from "bun:test";
 import { createInitialState } from "../state/initial.js";
+import { toolResult } from "../state/test-helpers.js";
 import { createStore } from "../state/store.js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { StoreContext } from "../store-context.js";
@@ -21,13 +22,18 @@ import { MessageRow } from "./message-row.js";
 
 const RENDER_OPTS = { width: 80, height: 24 };
 
+/** Create a callId and pre-populate expandedToolCallIds so tool result body is visible. */
+const EXPANDED_CALL_ID = "call-1";
+
 async function renderMessage(
   message: TuiMessage,
   opts = RENDER_OPTS,
 ): Promise<string> {
-  // Provide StoreContext so ToolCallBlock can read toolsExpanded via useTuiStore.
-  // Use expanded=true so tool result content is visible in tests.
-  const store = createStore({ ...createInitialState(), toolsExpanded: true });
+  // Provide StoreContext with expandedToolCallIds so ToolCallBlock renders result body.
+  const store = createStore({
+    ...createInitialState(),
+    expandedToolCallIds: new Set([EXPANDED_CALL_ID]),
+  });
   const { captureCharFrame, renderOnce, renderer } = await testRender(
     () => (
       <StoreContext.Provider value={store}>
@@ -136,11 +142,11 @@ describe("MessageRow — assistant tool_call", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "Bash",
           status: "complete",
           args: '{"command":"ls"}',
-          result: "file1.ts\nfile2.ts",
+          result: toolResult("file1.ts\nfile2.ts"),
         },
       ],
       streaming: false,
@@ -152,19 +158,18 @@ describe("MessageRow — assistant tool_call", () => {
     expect(frame).toContain("file1.ts");
   });
 
-  test("renders pre-serialized error sentinel from reducer", async () => {
-    // The reducer's capResult() converts non-serializable values to "[unserializable]".
-    // The component receives `result` as a string — this tests the sentinel display.
+  test("renders [unserializable] sentinel from reducer", async () => {
+    // capToolResult stores "[unserializable]" for non-serializable values.
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "bad_tool",
           status: "complete",
-          result: "[unserializable]",
+          result: toolResult("[unserializable]"),
         },
       ],
       streaming: false,
@@ -174,20 +179,18 @@ describe("MessageRow — assistant tool_call", () => {
     expect(frame).toContain("[unserializable]");
   });
 
-  test("renders pre-capped tool result from reducer", async () => {
-    // Results are capped at reducer level (capResult). This test verifies
-    // that a bounded result renders without crashing.
-    const cappedResult = "x".repeat(50_000);
+  test("renders large tool result (truncated ToolResultData) without crashing", async () => {
+    // Results exceeding MAX_TOOL_RESULT_BYTES are stored with truncated: true.
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-0",
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "big_tool",
           status: "complete",
-          result: cappedResult,
+          result: { value: "x".repeat(10_000), byteSize: 2_000_000, truncated: true },
         },
       ],
       streaming: false,
@@ -259,11 +262,11 @@ describe("MessageRow — multi-block", () => {
       { kind: "text", text: "Here is my response." },
       {
         kind: "tool_call",
-        callId: "call-1",
+        callId: EXPANDED_CALL_ID,
         toolName: "Grep",
         status: "complete",
         args: '{"pattern":"foo"}',
-        result: "found in bar.ts",
+        result: toolResult("found in bar.ts"),
       },
     ];
     const msg: TuiMessage = {
@@ -326,11 +329,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "my_custom_tool",
           status: "complete",
           args: '{"input":"hello","count":3}',
-          result: "done",
+          result: toolResult("done"),
         },
       ],
       streaming: false,
@@ -347,11 +350,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "golden-mcp__weather",
           status: "complete",
           args: '{"location":"SF"}',
-          result: "sunny, 72°F",
+          result: toolResult("sunny, 72°F"),
         },
       ],
       streaming: false,
@@ -368,11 +371,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "Glob",
           status: "complete",
           args: '{"pattern":"src/**/*.ts"}',
-          result: "src/index.ts\nsrc/app.ts",
+          result: toolResult("src/index.ts\nsrc/app.ts"),
         },
       ],
       streaming: false,
@@ -389,11 +392,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "fs_edit",
           status: "complete",
           args: '{"file_path":"src/app.ts","old_string":"x","new_string":"y"}',
-          result: "1 hunk applied",
+          result: toolResult("1 hunk applied"),
         },
       ],
       streaming: false,
@@ -410,11 +413,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "Bash",
           status: "complete",
           args: '{"command":"echo hi"}',
-          result: JSON.stringify({ stdout: "hi", stderr: "", exitCode: 0, durationMs: 5 }),
+          result: toolResult({ stdout: "hi", stderr: "", exitCode: 0, durationMs: 5 }),
         },
       ],
       streaming: false,
@@ -432,11 +435,11 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       blocks: [
         {
           kind: "tool_call",
-          callId: "call-1",
+          callId: EXPANDED_CALL_ID,
           toolName: "web_fetch",
           status: "complete",
           args: '{"url":"https://example.com"}',
-          result: JSON.stringify({
+          result: toolResult({
             status: 200,
             statusText: "OK",
             contentType: "text/html",

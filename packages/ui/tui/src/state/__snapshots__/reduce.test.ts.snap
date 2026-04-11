@@ -2,8 +2,12 @@
 
 exports[`createInitialState initial state shape 1`] = `
 {
+  "activeSpawns": Map {},
   "activeView": "conversation",
+  "agentDepth": 0,
   "agentStatus": "idle",
+  "atQuery": null,
+  "atResults": [],
   "connectionStatus": "disconnected",
   "cumulativeMetrics": {
     "costUsd": null,
@@ -26,13 +30,18 @@ exports[`createInitialState initial state shape 1`] = `
     "totalTokens": 0,
     "turns": 0,
   },
+  "expandedBodyToolCallIds":   Set {},
+  "expandedToolCallIds":   Set {},
   "layoutTier": "normal",
+  "maxContextTokens": null,
   "messages": [],
   "modal": null,
   "planTasks": null,
+  "retryState": null,
   "runningToolCount": 0,
   "sessionInfo": null,
   "sessions": [],
+  "siblingInfo": null,
   "slashQuery": null,
   "toolsExpanded": false,
   "trajectorySteps": [],

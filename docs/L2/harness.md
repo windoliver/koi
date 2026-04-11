@@ -37,6 +37,7 @@ interface HarnessRuntime {
 | `thinking_delta` | null (silent) | rendered with `[thinking] ` prefix |
 | `tool_call_start` | null | rendered as `[tool: name]` |
 | `tool_call_end` | null | rendered with result summary |
+| `tool_result` | null (silent) | null (silent) |
 | `done` | trailing newline | trailing newline |
 | `plan_update` | null | rendered as `[plan] N tasks` |
 | `task_progress` | null | rendered as `[task] id: status` |
@@ -44,6 +45,8 @@ interface HarnessRuntime {
 | all others | null | null |
 
 `permission_attempt` events (emitted when middleware-permissions intercepts a tool call for approval) are always silent in the harness — the permission flow is handled by the runtime, not surfaced to the user as raw output.
+
+`tool_result` events (emitted by the turn runner after a tool finishes executing — see `@koi/query-engine`) are always silent in the harness CLI renderer. They carry the raw tool execution output for the TUI to display in tool blocks; the harness CLI renderer relies on `tool_call_end` for verbose output, so duplicating the result here would double-print every tool call. The TUI bridge (which consumes the same engine event stream) handles `tool_result` separately to update its `tool_call` blocks.
 
 ## REPL Loop
 

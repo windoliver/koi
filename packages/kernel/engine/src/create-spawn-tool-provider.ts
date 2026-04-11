@@ -62,6 +62,30 @@ export interface SpawnToolProviderConfig {
    * hard-fail on_demand manifests via the VALIDATION error in createAgentSpawnFn.
    */
   readonly reportStore?: import("@koi/core").ReportStore | undefined;
+  /**
+   * When true, unknown agent names create ad-hoc agents from the description.
+   * When false (default), unknown names fail closed. See CreateAgentSpawnFnOptions.
+   */
+  readonly allowDynamicAgents?: boolean | undefined;
+  /**
+   * Side-channel observer for spawn lifecycle events. Called synchronously by the
+   * spawn tool executor at key transitions (start, end, error). Hosts (e.g. the
+   * TUI bridge) can dispatch these into their state store so inline spawn_call
+   * blocks and /agents view reflect real-time spawn progress.
+   *
+   * The events match the EngineEvent spawn variants (spawn_requested,
+   * agent_status_changed) so they can be fed through the same reducer path used
+   * for engine-emitted events.
+   */
+  readonly onSpawnEvent?:
+    | ((event: {
+        readonly kind: "spawn_requested" | "agent_status_changed";
+        readonly agentId: string;
+        readonly agentName: string;
+        readonly description: string;
+        readonly status?: "running" | "complete" | "failed";
+      }) => void)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,67 +93,75 @@ export interface SpawnToolProviderConfig {
 // ---------------------------------------------------------------------------
 
 /**
- * The JSON Schema for the Spawn tool's input. Pre-computed outside attach() so
- * it is not re-allocated on every agent assembly. The schema is immutable and
- * identical regardless of which agent is being assembled.
+ * Build the JSON Schema for the Spawn tool's input.
+ *
+ * The `agentName` description is conditional on `allowDynamicAgents`: when the
+ * runtime has opted into dynamic agent creation, the model is told it can use
+ * any descriptive name; otherwise the fail-closed wording requires a registered
+ * definition. This avoids nudging the model toward guaranteed NOT_FOUND errors
+ * in fail-closed runtimes.
  *
  * Keep this in sync with createSpawnExecutor()'s arg parsing logic below.
  * If you add a field here, add the corresponding parse/validate in the executor.
  */
-const SPAWN_TOOL_INPUT_SCHEMA: JsonObject = {
-  type: "object",
-  properties: {
-    agentName: {
-      type: "string",
-      description:
-        'Name of the agent to spawn (e.g. "researcher", "coder", "reviewer"). Must match a known agent definition.',
+function buildSpawnToolSchema(allowDynamic: boolean): JsonObject {
+  const agentNameDescription = allowDynamic
+    ? 'Name for the spawned agent. Use a built-in name ("researcher", "coder", "reviewer") for pre-defined behavior, or any descriptive name for a dynamic agent created from the description.'
+    : 'Name of the agent to spawn (e.g. "researcher", "coder", "reviewer"). Must match a known agent definition.';
+  return {
+    type: "object",
+    properties: {
+      agentName: {
+        type: "string",
+        description: agentNameDescription,
+      },
+      description: {
+        type: "string",
+        description: "The task for the spawned agent to perform.",
+      },
+      systemPrompt: {
+        type: "string",
+        description: "Optional additional system instructions for the spawned agent.",
+      },
+      maxTurns: {
+        type: "number",
+        description: "Maximum conversation turns before stopping.",
+      },
+      maxTokens: {
+        type: "number",
+        description: "Maximum tokens per model call.",
+      },
+      nonInteractive: {
+        type: "boolean",
+        description: "If true, the agent cannot prompt the user for input.",
+      },
+      toolDenylist: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Tool names to exclude from the spawned agent. Mutually exclusive with toolAllowlist.",
+      },
+      toolAllowlist: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
+      },
+      fork: {
+        type: "boolean",
+        description:
+          "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
+          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+      },
+      timeoutMs: {
+        type: "number",
+        description:
+          "Wall-clock deadline in milliseconds. Agent is stopped when elapsed. Default: 300000 (5 minutes).",
+      },
     },
-    description: {
-      type: "string",
-      description: "The task for the spawned agent to perform.",
-    },
-    systemPrompt: {
-      type: "string",
-      description: "Optional additional system instructions for the spawned agent.",
-    },
-    maxTurns: {
-      type: "number",
-      description: "Maximum conversation turns before stopping.",
-    },
-    maxTokens: {
-      type: "number",
-      description: "Maximum tokens per model call.",
-    },
-    nonInteractive: {
-      type: "boolean",
-      description: "If true, the agent cannot prompt the user for input.",
-    },
-    toolDenylist: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "Tool names to exclude from the spawned agent. Mutually exclusive with toolAllowlist.",
-    },
-    toolAllowlist: {
-      type: "array",
-      items: { type: "string" },
-      description:
-        "Exclusive list of tool names the spawned agent may use (start-from-zero). Mutually exclusive with toolDenylist.",
-    },
-    fork: {
-      type: "boolean",
-      description:
-        "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
-        "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
-    },
-    timeoutMs: {
-      type: "number",
-      description:
-        "Wall-clock deadline in milliseconds. Agent is stopped when elapsed. Default: 300000 (5 minutes).",
-    },
-  },
-  required: ["agentName", "description"],
-};
+    required: ["agentName", "description"],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Spawn executor — extracted for independent testability (Issue 2)
@@ -140,10 +172,11 @@ const SPAWN_TOOL_INPUT_SCHEMA: JsonObject = {
  *
  * Extracted from the ComponentProvider's attach() closure so it can be unit-tested
  * without instantiating a full ComponentProvider. The schema is owned by
- * SPAWN_TOOL_INPUT_SCHEMA above — keep both in sync when adding fields.
+ * buildSpawnToolSchema above — keep both in sync when adding fields.
  */
 export function createSpawnExecutor(
   spawnFn: import("@koi/core").SpawnFn,
+  onSpawnEvent?: SpawnToolProviderConfig["onSpawnEvent"],
 ): (args: JsonObject, options?: ToolExecuteOptions) => Promise<unknown> {
   return async (args: JsonObject, options?: ToolExecuteOptions): Promise<unknown> => {
     // timeoutMs: 0 = disable (run until caller signal fires), >0 = wall-clock deadline
@@ -161,36 +194,81 @@ export function createSpawnExecutor(
     // budget rather than starting a fresh full-duration timer after setup.
     const absoluteDeadlineMs = timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
 
-    const result = await spawnFn({
-      agentName: String(args.agentName ?? ""),
-      description: String(args.description ?? ""),
-      signal,
-      timeoutMs,
-      ...(absoluteDeadlineMs !== undefined ? { absoluteDeadlineMs } : {}),
-      ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
-      ...(args.maxTurns !== undefined
-        ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
-        : {}),
-      ...(args.maxTokens !== undefined
-        ? { maxTokens: parsePositiveInt(args.maxTokens, "maxTokens") }
-        : {}),
-      ...(args.nonInteractive !== undefined
-        ? { nonInteractive: Boolean(args.nonInteractive) }
-        : {}),
-      ...(Array.isArray(args.toolDenylist) ? { toolDenylist: args.toolDenylist as string[] } : {}),
-      ...(Array.isArray(args.toolAllowlist)
-        ? { toolAllowlist: args.toolAllowlist as string[] }
-        : {}),
-      ...(args.fork === true ? { fork: true as const } : {}),
+    const agentName = String(args.agentName ?? "");
+    const description = String(args.description ?? "");
+
+    // Emit spawn_requested event BEFORE the child runs — the host can use this
+    // to render an inline spawn_call block and populate /agents view state.
+    // Use a synthetic agentId since the real one is allocated inside spawnFn.
+    const spawnAgentId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    onSpawnEvent?.({
+      kind: "spawn_requested",
+      agentId: spawnAgentId,
+      agentName,
+      description,
+      status: "running",
     });
 
-    if (!result.ok) {
-      // Propagate as a KoiRuntimeError so the engine's tool-failure path
-      // (retries, interruption handling, observability) sees a real failure
-      // rather than a success payload with embedded error fields.
-      throw new KoiRuntimeError(result.error);
+    try {
+      const result = await spawnFn({
+        agentName,
+        description,
+        signal,
+        timeoutMs,
+        ...(absoluteDeadlineMs !== undefined ? { absoluteDeadlineMs } : {}),
+        ...(args.systemPrompt !== undefined ? { systemPrompt: String(args.systemPrompt) } : {}),
+        ...(args.maxTurns !== undefined
+          ? { maxTurns: parsePositiveInt(args.maxTurns, "maxTurns") }
+          : {}),
+        ...(args.maxTokens !== undefined
+          ? { maxTokens: parsePositiveInt(args.maxTokens, "maxTokens") }
+          : {}),
+        ...(args.nonInteractive !== undefined
+          ? { nonInteractive: Boolean(args.nonInteractive) }
+          : {}),
+        ...(Array.isArray(args.toolDenylist)
+          ? { toolDenylist: args.toolDenylist as string[] }
+          : {}),
+        ...(Array.isArray(args.toolAllowlist)
+          ? { toolAllowlist: args.toolAllowlist as string[] }
+          : {}),
+        ...(args.fork === true ? { fork: true as const } : {}),
+      });
+
+      if (!result.ok) {
+        onSpawnEvent?.({
+          kind: "agent_status_changed",
+          agentId: spawnAgentId,
+          agentName,
+          description,
+          status: "failed",
+        });
+        // Propagate as a KoiRuntimeError so the engine's tool-failure path
+        // (retries, interruption handling, observability) sees a real failure
+        // rather than a success payload with embedded error fields.
+        throw new KoiRuntimeError(result.error);
+      }
+      onSpawnEvent?.({
+        kind: "agent_status_changed",
+        agentId: spawnAgentId,
+        agentName,
+        description,
+        status: "complete",
+      });
+      return { output: result.output };
+    } catch (e: unknown) {
+      // Unexpected error (not a SpawnResult.error) — also emit failed status
+      if (!(e instanceof KoiRuntimeError)) {
+        onSpawnEvent?.({
+          kind: "agent_status_changed",
+          agentId: spawnAgentId,
+          agentName,
+          description,
+          status: "failed",
+        });
+      }
+      throw e;
     }
-    return { output: result.output };
   };
 }
 
@@ -228,6 +306,7 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
         ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+        ...(config.allowDynamicAgents === true ? { allowDynamicAgents: true } : {}),
         spawnProviderFactory: () => createSpawnToolProvider(config),
       });
 
@@ -236,11 +315,11 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
           name: "Spawn",
           description:
             "Delegate a task to a specialized sub-agent. The sub-agent runs to completion and returns its output. Use this to parallelize work or leverage domain-specific agents.",
-          inputSchema: SPAWN_TOOL_INPUT_SCHEMA,
+          inputSchema: buildSpawnToolSchema(config.allowDynamicAgents === true),
         },
         origin: "primordial",
         policy: DEFAULT_UNSANDBOXED_POLICY,
-        execute: createSpawnExecutor(spawnFn),
+        execute: createSpawnExecutor(spawnFn, config.onSpawnEvent),
       };
 
       return new Map([["tool:Spawn", tool]]);

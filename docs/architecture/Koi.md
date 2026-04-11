@@ -226,8 +226,8 @@ Infrastructure backends      L3      Pluggable (Nexus, SQLite, custom)
 
 Engine *adapters* (Claude, Pi, Loop, custom) are swappable L2 packages. The engine *runtime* (guards, governance) is not — it IS the kernel runtime.
 
-**L0-utility packages** (23 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
-`@koi/bash-ast`, `@koi/bash-security`, `@koi/channel-base`, `@koi/config`, `@koi/context-manager`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/hook-prompt`, `@koi/redaction`, `@koi/rules-loader`, `@koi/secure-storage`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/task-board`, `@koi/token-estimator`, `@koi/tools-core`, `@koi/validation`.
+**L0-utility packages** (25 total — canonical list lives in `scripts/layers.ts` → `L0U_PACKAGES`):
+`@koi/bash-ast`, `@koi/bash-security`, `@koi/channel-base`, `@koi/config`, `@koi/context-manager`, `@koi/edit-match`, `@koi/errors`, `@koi/event-delivery`, `@koi/execution-context`, `@koi/file-resolution`, `@koi/git-utils`, `@koi/hash`, `@koi/hook-prompt`, `@koi/model-registry`, `@koi/redaction`, `@koi/rules-loader`, `@koi/secure-storage`, `@koi/session-repair`, `@koi/shutdown`, `@koi/skill-scanner`, `@koi/task-board`, `@koi/test`, `@koi/token-estimator`, `@koi/tools-core`, `@koi/validation`.
 These contain pure utility functions with zero business logic. They depend on `@koi/core` + peer
 L0u packages only, and are importable by both L1 and L2 packages. They do NOT define core
 contracts — they provide shared implementations of common operations (error creation, schema

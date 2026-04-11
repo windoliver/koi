@@ -16,17 +16,19 @@
 import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Show, Switch, Match, createEffect, createMemo, useContext } from "solid-js";
+import { Show, Switch, Match, createEffect, createMemo, on, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
 import type { SlashCommand } from "./commands/slash-detection.js";
+import { AgentsView } from "./components/AgentsView.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
 import { HelpView } from "./components/HelpView.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
+import { SessionRename } from "./components/SessionRename.js";
 import { SessionsView } from "./components/SessionsView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -52,6 +54,7 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:sessions": "sessions",
   "nav:doctor": "doctor",
   "nav:help": "help",
+  "nav:agents": "agents",
   "nav:trajectory": "trajectory",
 };
 
@@ -85,6 +88,21 @@ export interface TuiRootProps {
   /** Called when the user responds to a permission prompt (y/n/a). */
   readonly onPermissionRespond: (requestId: string, decision: ApprovalDecision) => void;
   /**
+   * Called when a turn completes (agentStatus transitions processing → idle).
+   * Bridge can use this for BEL notification, desktop notification, etc. (#16).
+   */
+  readonly onTurnComplete?: (() => void) | undefined;
+  /**
+   * Called when the user forks the current session (#13).
+   * Bridge handles creating the new session from the fork.
+   */
+  readonly onFork?: (() => void) | undefined;
+  /**
+   * Called when the user pastes an image from clipboard via Ctrl+V (#11).
+   * Bridge collects these and includes them as image ContentBlocks on next submit.
+   */
+  readonly onImageAttach?: ((image: { readonly url: string; readonly mime: string }) => void) | undefined;
+  /**
    * Optional syntax highlighting style. Required alongside treeSitterClient
    * for full markdown rendering in TextBlock; also enables <code> syntax
    * highlighting in tool call blocks (works without treeSitterClient).
@@ -113,6 +131,16 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   // Zero re-renders during streaming text_delta events.
   const activeView = useTuiStore((s) => s.activeView);
   const modal = useTuiStore((s) => s.modal);
+  const agentStatus = useTuiStore((s) => s.agentStatus);
+
+  // #16: notify bridge when a turn completes (processing → idle transition)
+  createEffect(
+    on(agentStatus, (status, prevStatus) => {
+      if (prevStatus === "processing" && status === "idle") {
+        props.onTurnComplete?.();
+      }
+    }),
+  );
 
   // DEV ONLY: keyboard focus invariant.
   // Exactly one "zone" must have focused=true at all times:
@@ -151,12 +179,33 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     return null;
   });
 
+  // #15: message timeline navigation state (local, not in TuiState)
+  // `let` justified: mutable index for Ctrl+Up/Down user-turn cycling
+  let turnNavIndex = -1;
+
   // ── Global keyboard handler ───────────────────────────────────────────────
   // Reads state at event-time via store.getState() — no stale-closure risk.
   useKeyboard((event: KeyEvent): void => {
-    // Ctrl+E: toggle tool result expansion (Decision 15A)
+    // Ctrl+E: toggle tool result expansion — expand all or collapse all (Decision 8A)
     if (event.ctrl && event.name === "e") {
-      store.dispatch({ kind: "toggle_tools_expanded" });
+      store.dispatch({ kind: "toggle_all_tools_expanded" });
+      return;
+    }
+
+    // #15: Ctrl+Up/Down — cycle through user turns in the conversation
+    // Tracks which user turn is "active" (local only; programmatic scroll added
+    // once OpenTUI exposes a scrollTo API on <scrollbox>).
+    if (event.ctrl && (event.name === "up" || event.name === "down")) {
+      const state = store.getState();
+      if (state.activeView !== "conversation" || state.modal !== null) return;
+      const userTurnCount = state.messages.filter((m) => m.kind === "user").length;
+      if (userTurnCount === 0) return;
+      if (event.name === "up") {
+        turnNavIndex = turnNavIndex < 0 ? userTurnCount - 1 : Math.max(0, turnNavIndex - 1);
+      } else {
+        turnNavIndex = turnNavIndex < 0 ? 0 : Math.min(userTurnCount - 1, turnNavIndex + 1);
+      }
+      // TODO: scroll MessageList to turnNavIndex once OpenTUI exposes scrollTo API
       return;
     }
 
@@ -217,12 +266,28 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
       return;
     }
+    // session:rename opens the rename modal inline (#14).
+    if (cmd.id === "session:rename") {
+      store.dispatch({ kind: "set_modal", modal: { kind: "session-rename" } });
+      return;
+    }
+    // session:fork notifies the bridge to create a fork (#13).
+    if (cmd.id === "session:fork") {
+      props.onFork?.();
+      return;
+    }
     props.onCommand(cmd.id);
   };
 
   const handleSessionSelect = (session: SessionSummary): void => {
     store.dispatch({ kind: "set_modal", modal: null });
     props.onSessionSelect(session.id);
+  };
+
+  // #14: session rename handler
+  const handleRename = (newName: string): void => {
+    store.dispatch({ kind: "set_modal", modal: null });
+    props.onCommand(`session:rename:${newName}`);
   };
 
   const handleSlashDetected = (query: string | null): void => {
@@ -250,6 +315,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             onSubmit={props.onSubmit}
             onSlashDetected={handleSlashDetected}
             onSlashSelect={handleSlashSelect}
+            onImageAttach={props.onImageAttach}
             focused={!hasModal()}
             syntaxStyle={props.syntaxStyle}
             treeSitterClient={props.treeSitterClient}
@@ -263,6 +329,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         </Match>
         <Match when={activeView() === "help"}>
           <HelpView />
+        </Match>
+        <Match when={activeView() === "agents"}>
+          <AgentsView />
         </Match>
         <Match when={activeView() === "trajectory"}>
           <TrajectoryView />
@@ -293,6 +362,14 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       <Show when={modal()?.kind === "session-picker"}>
         <SessionPicker
           onSelect={handleSessionSelect}
+          onClose={dismissModal}
+          focused={true}
+        />
+      </Show>
+      {/* #14: session rename modal */}
+      <Show when={modal()?.kind === "session-rename"}>
+        <SessionRename
+          onRename={handleRename}
           onClose={dismissModal}
           focused={true}
         />

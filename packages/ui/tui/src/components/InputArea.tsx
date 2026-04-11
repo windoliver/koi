@@ -13,9 +13,22 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { createEffect, on } from "solid-js";
+import { createEffect, createSignal, on, Show } from "solid-js";
 import { detectSlashPrefix } from "../commands/slash-detection.js";
+import type { ClipboardImage } from "../utils/clipboard.js";
+import { readClipboardImage } from "../utils/clipboard.js";
+import { COLORS } from "../theme.js";
 import { processInputKey } from "./input-keys.js";
+
+/** Detect @-mention prefix — returns partial path or null. */
+function detectAtPrefix(text: string): string | null {
+  const lastAt = text.lastIndexOf("@");
+  if (lastAt < 0) return null;
+  if (lastAt > 0 && text[lastAt - 1] !== " " && text[lastAt - 1] !== "\n") return null;
+  const partial = text.slice(lastAt + 1);
+  if (partial.includes(" ") || partial.includes("\n")) return null;
+  return partial;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -37,6 +50,16 @@ export interface InputAreaProps {
    * Receives the current textarea text so the draft can be saved/restored.
    */
   readonly onHistoryNav?: ((direction: "up" | "down", currentText: string) => string | null) | undefined;
+  /**
+   * Called when @-mention prefix is detected (#10).
+   * Receives the partial path after "@", or null to dismiss the overlay.
+   */
+  readonly onAtDetected?: ((query: string | null) => void) | undefined;
+  /**
+   * Called when an image is pasted from the clipboard via Ctrl+V (#11).
+   * Receives the image as a data URI.
+   */
+  readonly onImageAttach?: ((image: ClipboardImage) => void) | undefined;
   /** Whether input is disabled (e.g., modal active, disconnected). */
   readonly disabled?: boolean;
   /** Whether this area has keyboard focus. */
@@ -55,6 +78,8 @@ export interface InputAreaProps {
 
 export function InputArea(props: InputAreaProps): JSX.Element {
   let textareaRef: TextareaRenderable | null = null;
+  // #11: track attached images (component-local, not in TuiState)
+  const [attachedImages, setAttachedImages] = createSignal<readonly ClipboardImage[]>([]);
 
   // `let` justified: mutable mirror of props.disabled for useKeyboard callback.
   // useKeyboard registers its callback once via onMount (OpenTUI pattern).
@@ -82,6 +107,17 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   useKeyboard((key: KeyEvent) => {
     if (!props.focused || disabledRef) return;
 
+    // #11: Ctrl+V — check clipboard for image before normal paste
+    if (key.ctrl && key.name === "v") {
+      readClipboardImage().then((image) => {
+        if (image) {
+          setAttachedImages((prev) => [...prev, image]);
+          props.onImageAttach?.(image);
+        }
+      });
+      // Don't prevent default — let terminal paste text too if present
+    }
+
     const currentText = textareaRef?.plainText ?? "";
     const result = processInputKey(key, currentText);
 
@@ -96,12 +132,16 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         }
         textareaRef?.setText("");
         props.onSlashDetected(null);
+        props.onAtDetected?.(null);
+        setAttachedImages([]);
         break;
       }
       case "clear-line":
         key.preventDefault();
         textareaRef?.setText("");
         props.onSlashDetected(null);
+        props.onAtDetected?.(null);
+        setAttachedImages([]);
         break;
       case "insert-newline":
         // Let textarea handle the actual newline insertion
@@ -115,6 +155,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         queueMicrotask(() => {
           const text = textareaRef?.plainText ?? "";
           props.onSlashDetected(detectSlashPrefix(text));
+          props.onAtDetected?.(detectAtPrefix(text));
         });
         break;
       }
@@ -123,6 +164,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         queueMicrotask(() => {
           const text = textareaRef?.plainText ?? "";
           props.onSlashDetected(detectSlashPrefix(text));
+          props.onAtDetected?.(detectAtPrefix(text));
         });
         break;
       }
@@ -160,6 +202,14 @@ export function InputArea(props: InputAreaProps): JSX.Element {
 
   return (
     <box flexDirection="column">
+      {/* #11: image attachment indicator */}
+      <Show when={attachedImages().length > 0}>
+        <box flexDirection="row" paddingLeft={1} gap={1}>
+          <text fg={COLORS.cyan}>
+            {`[${attachedImages().length} image${attachedImages().length > 1 ? "s" : ""} attached]`}
+          </text>
+        </box>
+      </Show>
       <textarea
         ref={(el: TextareaRenderable | null) => {
           textareaRef = el;

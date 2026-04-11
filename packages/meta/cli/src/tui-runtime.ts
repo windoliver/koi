@@ -29,7 +29,7 @@
 
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-
+import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   ApprovalHandler,
   InboundMessage,
@@ -40,7 +40,6 @@ import type {
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
-  SpawnFn,
 } from "@koi/core";
 import {
   createSingleToolProvider,
@@ -49,7 +48,12 @@ import {
   memoryRecordId,
 } from "@koi/core";
 import type { KoiRuntime } from "@koi/engine";
-import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
+import {
+  createInMemorySpawnLedger,
+  createKoi,
+  createSpawnToolProvider,
+  createSystemPromptMiddleware,
+} from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
@@ -69,6 +73,7 @@ import {
 } from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
+import { runTurn } from "@koi/query-engine";
 import { createRulesMiddleware } from "@koi/rules-loader";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
@@ -76,7 +81,8 @@ import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import { createSpawnTools } from "@koi/spawn-tools";
+// NOTE: createSpawnTools (legacy stub-based spawn) is replaced by
+// createSpawnToolProvider from @koi/engine for real agent spawning (#1583).
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import {
@@ -93,7 +99,7 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
-import { createTranscriptAdapter } from "./engine-adapter.js";
+import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 
@@ -224,6 +230,20 @@ export interface TuiRuntimeConfig {
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Observer for spawn lifecycle events emitted by the Spawn tool executor.
+   * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
+   * EngineEvents into the store so /agents and inline spawn_call blocks update.
+   */
+  readonly onSpawnEvent?:
+    | ((event: {
+        readonly kind: "spawn_requested" | "agent_status_changed";
+        readonly agentId: string;
+        readonly agentName: string;
+        readonly description: string;
+        readonly status?: "running" | "complete" | "failed";
+      }) => void)
+    | undefined;
   /** Working directory for file tools (Glob, fs_read, Bash). Defaults to process.cwd(). */
   readonly cwd?: string | undefined;
   /**
@@ -803,31 +823,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
   const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
 
-  // --- @koi/spawn-tools: agent_spawn (error stub — spawning not supported in TUI) ---
-  // Returns a hard error so the model knows spawning failed and can fall back.
-  // Full spawning requires agent-runtime + harness wiring.
-  const stubSpawnFn: SpawnFn = async (request) => ({
-    ok: false,
-    error: {
-      code: "EXTERNAL",
-      message: `agent_spawn is not available in koi tui. Cannot delegate to "${request.agentName}". Complete the task directly instead of spawning.`,
-      retryable: false,
-    },
-  });
-  const spawnToolsAll = createSpawnTools({
-    spawnFn: stubSpawnFn,
-    board: taskBoard,
-    agentId: tuiAgentId,
-    signal: bgController.signal,
-  });
-  const spawnToolProviders = spawnToolsAll.map((tool) =>
-    createSingleToolProvider({
-      name: `spawn-${tool.descriptor.name}`,
-      toolName: tool.descriptor.name,
-      createTool: () => tool,
-    }),
-  );
-
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
   // Three-tier discovery: bundled → user (~/.claude/skills) → project (.claude/skills).
   // Project skills shadow user skills which shadow bundled skills.
@@ -847,8 +842,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ? await createSkillTool({
           resolver: skillsRuntime,
           signal: skillAbortController.signal,
-          // No spawnFn — fork-mode skills are filtered out of discovery since the TUI
-          // cannot execute them (stubSpawnFn always returns EXTERNAL error).
+          // No spawnFn — fork-mode skills via the legacy SpawnFn path are not supported.
+          // Real spawning happens via createSpawnToolProvider below (#1583).
         })
       : undefined;
   const skillProvider = skillToolResult?.ok
@@ -875,6 +870,14 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
+    budgetConfig: budgetConfigForModel(
+      modelName,
+      // KOI_COMPACTION_WINDOW: override context window size for testing compaction
+      // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
+      process.env.KOI_COMPACTION_WINDOW !== undefined
+        ? Number(process.env.KOI_COMPACTION_WINDOW)
+        : undefined,
+    ),
   });
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
@@ -915,13 +918,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   });
 
-  // --- Optional middleware: system prompt + session transcript (C3-A) ---
-  // These are provided by the caller (tui-command.ts) so the runtime factory
-  // doesn't need to know about session storage paths or prompt content.
+  // --- System prompt middleware (C3-A) ---
+  // Built before spawnToolProvider so children can inherit it. The system
+  // prompt tells the model about tools and behavioral guidelines; without it
+  // children fall back to raw completion without tool-usage guidance.
+  // NOTE: Session transcript middleware is NOT inherited — it holds a mutable
+  // transcript array that must be isolated per-runtime. Children should never
+  // write into the parent's transcript.
+  const systemPromptMw =
+    config.systemPrompt !== undefined ? createSystemPromptMiddleware(config.systemPrompt) : null;
   const optionalMiddleware = [
-    ...(config.systemPrompt !== undefined
-      ? [createSystemPromptMiddleware(config.systemPrompt)]
-      : []),
+    ...(systemPromptMw !== null ? [systemPromptMw] : []),
     ...(config.session !== undefined
       ? [
           createSessionTranscriptMiddleware({
@@ -931,6 +938,88 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         ]
       : []),
   ];
+
+  // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
+  // Uses createAgentResolver (built-in + project/user definitions) + createSpawnToolProvider.
+  // The child adapter creates a fresh context per stream() call (no shared transcript)
+  // so siblings cannot see each other's history. Security middleware (permissions,
+  // exfiltration guard, hooks) is inherited so children have the same policy as the parent.
+  const { resolver: spawnResolver, warnings: spawnWarnings } = createAgentResolver({
+    projectDir: config.cwd ?? process.cwd(),
+    userDir: homedir(),
+  });
+  // Surface agent load warnings so users know about broken .koi/agents/ definitions.
+  for (const w of spawnWarnings) {
+    console.warn(`[koi/tui] agent load warning: ${w.filePath}: ${w.error.message}`);
+  }
+  const childAdapter: import("@koi/core").EngineAdapter = {
+    engineId: "koi-tui-child",
+    capabilities: { text: true, images: false, files: false, audio: false },
+    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
+    stream(input) {
+      const handlers = input.callHandlers;
+      if (handlers === undefined) {
+        return (async function* () {
+          yield {
+            kind: "done" as const,
+            output: {
+              content: [],
+              stopReason: "error" as const,
+              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+              metadata: { error: "No callHandlers on child agent input" },
+            },
+          };
+        })();
+      }
+      const text = input.kind === "text" ? input.text : "";
+      const messages = [
+        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
+      ];
+      return runTurn({
+        callHandlers: handlers,
+        messages,
+        signal: input.signal,
+        maxTurns: DEFAULT_MAX_TURNS,
+      });
+    },
+  };
+  const spawnToolProvider = createSpawnToolProvider({
+    resolver: spawnResolver,
+    spawnLedger: createInMemorySpawnLedger(5),
+    adapter: childAdapter,
+    manifestTemplate: {
+      name: "spawned-agent",
+      version: "0.0.0",
+      description: "Spawned sub-agent",
+      model: { name: config.modelName },
+      // Restrictive ceiling for dynamic (ad-hoc) agents: read-only tools only.
+      // Built-in agents (researcher, coder, etc.) override this via their own
+      // definition.manifest.selfCeiling which takes precedence in the merge.
+      // Dynamic agents (unknown names via allowDynamicAgents) inherit this ceiling
+      // so they can't escalate to Bash/fs_write/fs_edit/web_fetch without an
+      // authored definition explicitly granting those tools.
+      selfCeiling: {
+        tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
+      },
+    },
+    // Inherit security middleware (permissions, secret-scanning, hooks) + the
+    // system prompt so children have the same envelope as the parent. Session
+    // transcript middleware is intentionally excluded — it holds a mutable
+    // transcript array that must stay isolated per-runtime.
+    inheritedMiddleware: [
+      permMw,
+      exfiltrationGuardMw,
+      hookMw,
+      ...(systemPromptMw !== null ? [systemPromptMw] : []),
+    ],
+    // Enable dynamic agent creation: unknown names create ad-hoc agents from
+    // the description (Claude Code behavior). Built-in and project/user-defined
+    // agents still resolve normally with their authored prompts and ceilings.
+    allowDynamicAgents: true,
+    // Side-channel spawn event observer — bridge dispatches these into the
+    // TUI store so /agents and inline spawn_call blocks reflect real state.
+    ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
+  });
 
   // --- Wrap middleware with trace for full ATIF instrumentation ---
   // Same pattern as golden-query recording: each middleware hook invocation
@@ -980,7 +1069,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       webProvider,
       ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
-      ...spawnToolProviders,
+      spawnToolProvider,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
       ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
       ...(skillProvider !== undefined ? [skillProvider] : []),

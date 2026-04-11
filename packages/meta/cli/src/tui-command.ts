@@ -24,7 +24,7 @@
  *   Bash, bash_background  — shell execution via @koi/tools-bash
  *   fs_read/write/edit     — filesystem via @koi/fs-local
  *   task_*                 — background task management via @koi/task-tools
- *   agent_spawn — intentionally NOT registered until workers route through createKoi (#1582)
+ *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
 import { readdir } from "node:fs/promises";
@@ -342,6 +342,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    // Bridge spawn lifecycle events into the TUI store so /agents view and
+    // inline spawn_call blocks reflect real spawn state. Each spawn call
+    // produces one spawn_requested + one agent_status_changed event.
+    onSpawnEvent: (event): void => {
+      if (event.kind === "spawn_requested") {
+        store.dispatch({
+          kind: "engine_event",
+          event: {
+            kind: "spawn_requested",
+            childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+            request: {
+              agentName: event.agentName,
+              description: event.description,
+              signal: new AbortController().signal,
+            },
+          },
+        });
+      } else {
+        // agent_status_changed: use the dedicated set_spawn_terminal action so the
+        // outcome (complete vs failed) is preserved. The engine's ProcessState only
+        // has a single "terminated" value — routing through that path would collapse
+        // failures into successes.
+        const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
+        store.dispatch({
+          kind: "set_spawn_terminal",
+          agentId: event.agentId,
+          outcome,
+        });
+      }
+    },
   }).then((handle) => {
     runtimeHandle = handle;
     return handle;
@@ -433,6 +463,85 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
   // 6. Create TUI app
   // ---------------------------------------------------------------------------
+
+  // #11: pending image attachments collected from InputArea paste events.
+  // Flushed into the next onSubmit() as image ContentBlocks alongside the text.
+  // let: mutable — grows on onImageAttach, cleared on submit
+  let pendingImages: Array<{ readonly url: string; readonly mime: string }> = [];
+
+  // #16: turn-complete notification — BEL (0x07) when terminal is not focused.
+  // OpenTUI doesn't expose focus state; we emit BEL unconditionally. Most
+  // terminals only signal (visual/audible bell) when the window isn't focused.
+  const handleTurnComplete = (): void => {
+    if (process.stdout.isTTY) {
+      process.stdout.write("\x07");
+    }
+  };
+
+  // #13: session fork — snapshot the current conversation to a NEW session file.
+  // The user's current session continues uninterrupted; the fork creates a
+  // resumable checkpoint at the current turn that can be resumed via the session
+  // picker. No context is lost — the active session stays on its own track.
+  const handleFork = (): void => {
+    void (async (): Promise<void> => {
+      if (runtimeHandle === null) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_NOT_READY",
+          message: "Cannot fork: runtime not yet initialized.",
+        });
+        return;
+      }
+
+      // Snapshot the current transcript as TranscriptEntry list. The runtime's
+      // `transcript` array holds InboundMessage[] (the live context window);
+      // we load the durable entries from the JSONL file for a complete copy.
+      //
+      // IMPORTANT: load from runtime.sessionId, NOT tuiSessionId. The session
+      // middleware uses ctx.session.sessionId (= runtime's internal factory
+      // sessionId) to route transcript writes. tuiSessionId is a separate
+      // identifier that no file is keyed by.
+      const activeSessionId = sessionId(runtimeHandle.runtime.sessionId);
+      const loadResult = await jsonlTranscript.load(activeSessionId);
+      if (!loadResult.ok) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_LOAD_ERROR",
+          message: `Cannot fork: failed to read current session — ${loadResult.error.message}`,
+        });
+        return;
+      }
+
+      const forkedSessionId = sessionId(crypto.randomUUID());
+      const appendResult = await jsonlTranscript.append(forkedSessionId, loadResult.value.entries);
+      if (!appendResult.ok) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_WRITE_ERROR",
+          message: `Cannot fork: failed to write forked session — ${appendResult.error.message}`,
+        });
+        return;
+      }
+
+      // Refresh session list so the new forked session shows up in the picker.
+      void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+        store.dispatch({ kind: "set_session_list", sessions });
+      });
+
+      // Notify the user that the fork was created. They can resume it via
+      // the session picker (Ctrl+P → Sessions → pick the new one).
+      store.dispatch({
+        kind: "add_user_message",
+        id: `fork-notice-${Date.now()}`,
+        blocks: [
+          {
+            kind: "text",
+            text: `[Forked session ${forkedSessionId.slice(0, 8)}… — resume via Sessions view]`,
+          },
+        ],
+      });
+    })();
+  };
 
   const result = createTuiApp({
     store,
@@ -542,10 +651,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Prevents hitting stale task board or trajectory state.
       await resetBarrier;
 
+      // #11: include any pending clipboard images as image ContentBlocks
+      // alongside the text. Bridge clears pendingImages after dispatch so the
+      // next submit starts with an empty list.
+      const imageBlocks = pendingImages.map((img) => ({
+        kind: "image" as const,
+        url: img.url,
+      }));
+      pendingImages = [];
       store.dispatch({
         kind: "add_user_message",
         id: `user-${Date.now()}`,
-        blocks: [{ kind: "text", text }],
+        blocks: [{ kind: "text", text }, ...imageBlocks],
       });
 
       const controller = new AbortController();
@@ -580,6 +697,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
     onInterrupt,
+    // #13: session fork — called from command palette "Fork session"
+    onFork: handleFork,
+    // #11: image paste — InputArea collects images and calls this per paste
+    onImageAttach: (image) => {
+      pendingImages.push(image);
+    },
+    // #16: turn-complete notification
+    onTurnComplete: handleTurnComplete,
   });
 
   if (!result.ok) {

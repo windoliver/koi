@@ -8,6 +8,7 @@ import type { Accessor, JSX } from "solid-js";
 import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { ErrorBlock } from "./error-block.js";
+import { SpawnBlock } from "./SpawnBlock.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
 import { TextBlock } from "./text-block.js";
 import { ThinkingBlock } from "./thinking-block.js";
@@ -16,6 +17,7 @@ import { ToolCallBlock } from "./tool-call-block.js";
 type TextBlock_ = TuiAssistantBlock & { readonly kind: "text" };
 type ThinkingBlock_ = TuiAssistantBlock & { readonly kind: "thinking" };
 type ToolCallBlock_ = TuiAssistantBlock & { readonly kind: "tool_call" };
+type SpawnCallBlock_ = TuiAssistantBlock & { readonly kind: "spawn_call" };
 type ErrorBlock_ = TuiAssistantBlock & { readonly kind: "error" };
 
 interface MessageRowProps {
@@ -54,6 +56,11 @@ function AssistantBlock(props: {
             spinnerFrame={props.spinnerFrame}
             syntaxStyle={props.syntaxStyle}
           />
+        )}
+      </Match>
+      <Match when={props.block.kind === "spawn_call" ? (props.block as SpawnCallBlock_) : undefined}>
+        {(b: Accessor<SpawnCallBlock_>) => (
+          <SpawnBlock block={b()} spinnerFrame={props.spinnerFrame} />
         )}
       </Match>
       <Match when={props.block.kind === "error" ? (props.block as ErrorBlock_) : undefined}>

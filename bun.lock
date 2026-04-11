@@ -40,6 +40,9 @@
         "@koi/hash": "workspace:*",
         "@koi/session-repair": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/test": "workspace:*",
+      },
     },
     "packages/kernel/engine-compose": {
       "name": "@koi/engine-compose",
@@ -117,6 +120,7 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/model-registry": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
     },
@@ -247,6 +251,10 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/model-registry": {
+      "name": "@koi/model-registry",
+      "version": "0.0.0",
+    },
     "packages/lib/plugins": {
       "name": "@koi/plugins",
       "version": "0.0.0",
@@ -348,6 +356,14 @@
         "@koi/validation": "workspace:*",
       },
     },
+    "packages/lib/test": {
+      "name": "@koi/test",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/channel-base": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/tool-browser": {
       "name": "@koi/tool-browser",
       "version": "0.0.0",
@@ -411,7 +427,9 @@
         "koi": "./dist/bin.js",
       },
       "dependencies": {
+        "@koi/agent-runtime": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
@@ -441,6 +459,7 @@
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
         "@koi/tool-notebook": "workspace:*",
         "@koi/tools-bash": "workspace:*",
         "@koi/tools-builtin": "workspace:*",
@@ -479,6 +498,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -1046,6 +1066,8 @@
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
+    "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
+
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 
     "@koi/plugins": ["@koi/plugins@workspace:packages/lib/plugins"],
@@ -1081,6 +1103,8 @@
     "@koi/task-tools": ["@koi/task-tools@workspace:packages/lib/task-tools"],
 
     "@koi/tasks": ["@koi/tasks@workspace:packages/lib/tasks"],
+
+    "@koi/test": ["@koi/test@workspace:packages/lib/test"],
 
     "@koi/token-estimator": ["@koi/token-estimator@workspace:packages/mm/token-estimator"],
 

@@ -5,35 +5,10 @@
  * Returns Result<ResolvedConfig, string[]> — errors are strings, not thrown.
  */
 
-import type { InboundMessage, TokenEstimator } from "@koi/core";
+import { FALLBACK_ESTIMATOR } from "./fallback-estimator.js";
+import { resolveThresholds } from "./resolve-thresholds.js";
 import type { CompactionManagerConfig, ResolvedConfig } from "./types.js";
 import { COMPACTION_DEFAULTS } from "./types.js";
-
-/**
- * Fallback estimator used when no tokenEstimator is provided in config.
- * Matches the 4-chars-per-token heuristic from @koi/token-estimator.
- * Inlined to avoid runtime dependency — callers should inject the
- * real HEURISTIC_ESTIMATOR from @koi/token-estimator for production use.
- */
-const FALLBACK_ESTIMATOR: TokenEstimator = {
-  estimateText(text: string): number {
-    return Math.ceil(text.length / 4);
-  },
-  estimateMessages(messages: readonly InboundMessage[]): number {
-    let total = 0; // let: accumulator
-    for (const msg of messages) {
-      total += 4; // per-message overhead
-      for (const block of msg.content) {
-        if (block.kind === "text") {
-          total += Math.ceil(block.text.length / 4);
-        } else {
-          total += 100; // non-text block overhead
-        }
-      }
-    }
-    return total;
-  },
-};
 
 /** Validation result: either a resolved config or a list of error messages. */
 export type ConfigResult =
@@ -68,6 +43,16 @@ function validateNonNegative(name: string, value: number, errors: string[]): voi
 }
 
 /**
+ * Validate a non-negative integer.
+ */
+function validateNonNegativeInteger(name: string, value: number, errors: string[]): void {
+  validateNonNegative(name, value, errors);
+  if (!Number.isInteger(value)) {
+    errors.push(`${name} must be a non-negative integer, got ${value}`);
+  }
+}
+
+/**
  * Resolve a partial config into a fully-resolved config with all defaults applied.
  * Validates all constraints and returns errors if any field is invalid.
  *
@@ -87,17 +72,19 @@ function validateNonNegative(name: string, value: number, errors: string[]): voi
  * - replacement.previewChars > 0
  */
 export function resolveConfig(partial?: CompactionManagerConfig): ConfigResult {
+  const resolvedPolicy = resolveThresholds(partial);
   const resolved: ResolvedConfig = {
-    contextWindowSize: partial?.contextWindowSize ?? COMPACTION_DEFAULTS.contextWindowSize,
+    contextWindowSize: resolvedPolicy.contextWindow,
     preserveRecent: partial?.preserveRecent ?? COMPACTION_DEFAULTS.preserveRecent,
+    prunePreserveLastK: resolvedPolicy.prunePreserveLastK,
     tokenEstimator: partial?.tokenEstimator ?? FALLBACK_ESTIMATOR,
     micro: {
-      triggerFraction: partial?.micro?.triggerFraction ?? COMPACTION_DEFAULTS.micro.triggerFraction,
+      triggerFraction: resolvedPolicy.softTriggerFraction,
       targetFraction: partial?.micro?.targetFraction ?? COMPACTION_DEFAULTS.micro.targetFraction,
       strategy: partial?.micro?.strategy ?? COMPACTION_DEFAULTS.micro.strategy,
     },
     full: {
-      triggerFraction: partial?.full?.triggerFraction ?? COMPACTION_DEFAULTS.full.triggerFraction,
+      triggerFraction: resolvedPolicy.hardTriggerFraction,
       maxSummaryTokens:
         partial?.full?.maxSummaryTokens ?? COMPACTION_DEFAULTS.full.maxSummaryTokens,
     },
@@ -115,7 +102,8 @@ export function resolveConfig(partial?: CompactionManagerConfig): ConfigResult {
     },
   };
 
-  const errors = validateResolvedConfig(resolved);
+  const errors = [...validateResolvedConfig(resolved)];
+  validateNonNegativeInteger("prunePreserveLastK", resolvedPolicy.prunePreserveLastK, errors);
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -132,6 +120,7 @@ export function validateResolvedConfig(config: ResolvedConfig): readonly string[
   // Top-level
   validatePositive("contextWindowSize", config.contextWindowSize, errors);
   validateNonNegative("preserveRecent", config.preserveRecent, errors);
+  validateNonNegativeInteger("prunePreserveLastK", config.prunePreserveLastK, errors);
 
   // Micro
   validateFraction("micro.triggerFraction", config.micro.triggerFraction, errors);

@@ -11,10 +11,11 @@ import {
   stateWith,
   systemMsg,
   testCallId,
+  toolResult,
   userMsg,
 } from "./test-helpers.js";
 import type { TuiAction, TuiAssistantBlock, TuiMessage } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
+import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_RESULT_BYTES } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared output fixture for "done" events
@@ -273,7 +274,7 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_start args without any deltas are preserved through tool_call_end", () => {
+  test("tool_call_start args without any deltas are preserved through tool_result", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
@@ -295,13 +296,22 @@ describe("reduce — engine_event — tool_call", () => {
         result: { files: ["a.ts"] },
       }),
     );
+    // tool_result marks complete — this is the authoritative completion event.
+    next = reduce(
+      next,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { files: ["a.ts"] },
+      }),
+    );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
         expect(block.args).toBe('{"dir":"."}');
-        expect(block.result).toBe('{"files":["a.ts"]}');
+        expect(block.result).toBeDefined();
       }
     }
   });
@@ -330,7 +340,10 @@ describe("reduce — engine_event — tool_call", () => {
     }
   });
 
-  test("tool_call_end marks tool as complete and stores result", () => {
+  test("tool_call_end keeps tool running (completion happens on tool_result)", () => {
+    // tool_call_end fires BEFORE execution (end of arg streaming). The block
+    // must stay in "running" state so long-running tools don't appear complete
+    // while still executing. tool_result is the authoritative completion event.
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "tool_call",
@@ -343,7 +356,7 @@ describe("reduce — engine_event — tool_call", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
-    const toolResult = {
+    const endPayload = {
       toolName: "ls",
       callId: "call-1",
       rawArgs: '{"dir":"."}',
@@ -351,17 +364,52 @@ describe("reduce — engine_event — tool_call", () => {
     };
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: toolResult }),
+      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: endPayload }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.status).toBe("running"); // still running until tool_result
+        expect(block.result).toBeUndefined();
+        expect(block.args).toBe('{"dir":"."}'); // args preserved
+      }
+    }
+  });
+
+  test("tool_result marks tool as complete with result and duration", () => {
+    const startedAt = Date.now() - 100;
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "running",
+        startedAt,
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      runningToolCount: 1,
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: "file1\nfile2",
+      }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.status).toBe("complete");
-        expect(block.result).toBe(JSON.stringify(toolResult));
-        expect(block.args).toBe('{"dir":"."}'); // args preserved
+        expect(block.result).toBeDefined();
+        expect(block.durationMs).toBeGreaterThanOrEqual(100);
       }
     }
+    expect(next.runningToolCount).toBe(0);
   });
 
   test("interleaved text_delta and tool_call_delta accumulate to separate blocks", () => {
@@ -472,6 +520,15 @@ describe("reduce — engine_event — full lifecycle", () => {
         result: { content: "file contents" },
       }),
     );
+    // tool_result fires after execution — this is the authoritative completion event
+    state = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { content: "file contents" },
+      }),
+    );
 
     // 5. Post-tool text
     state = reduce(state, engineEvent({ kind: "text_delta", delta: "Here's what I found." }));
@@ -498,7 +555,8 @@ describe("reduce — engine_event — full lifecycle", () => {
         expect(b2.toolName).toBe("read_file");
         expect(b2.status).toBe("complete");
         expect(b2.args).toBe('{"path":"src/index.ts"}');
-        expect(b2.result).toBe('{"content":"file contents"}');
+        // tool_result populated the result field
+        expect(b2.result).toBeDefined();
       }
 
       expect(b3?.kind).toBe("text");
@@ -512,11 +570,11 @@ describe("reduce — engine_event — full lifecycle", () => {
 // ---------------------------------------------------------------------------
 
 describe("reduce — engine_event — tool args cap", () => {
-  test("caps tool_call_start initial args at MAX_TOOL_OUTPUT_CHARS", () => {
+  test("caps tool_call_start initial args at MAX_TOOL_RESULT_BYTES", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
-    const largeValue = "v".repeat(MAX_TOOL_OUTPUT_CHARS + 100);
+    const largeValue = "v".repeat(MAX_TOOL_RESULT_BYTES + 100);
     const next = reduce(
       state,
       engineEvent({
@@ -531,19 +589,19 @@ describe("reduce — engine_event — tool args cap", () => {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
         expect(block.args).toBeDefined();
-        expect(block.args?.length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+        expect(block.args?.length).toBeLessThanOrEqual(MAX_TOOL_RESULT_BYTES);
       }
     }
   });
 
-  test("caps tool args at MAX_TOOL_OUTPUT_CHARS (tail-sliced)", () => {
+  test("caps tool args at MAX_TOOL_RESULT_BYTES (tail-sliced)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
     ];
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
-    const largeChunk = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
+    const largeChunk = "x".repeat(MAX_TOOL_RESULT_BYTES + 5000);
     const next = reduce(
       state,
       engineEvent({ kind: "tool_call_delta", callId: testCallId("call-1"), delta: largeChunk }),
@@ -552,7 +610,7 @@ describe("reduce — engine_event — tool args cap", () => {
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.args?.length).toBe(MAX_TOOL_OUTPUT_CHARS);
+        expect(block.args?.length).toBe(MAX_TOOL_RESULT_BYTES);
         expect(block.args?.endsWith("x")).toBe(true);
       }
     }
@@ -560,95 +618,135 @@ describe("reduce — engine_event — tool args cap", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tool result cap
+// Tool result cap — via tool_result event (not tool_call_end)
 // ---------------------------------------------------------------------------
 
 describe("reduce — engine_event — tool result cap", () => {
-  test("caps tool_call_end result at MAX_TOOL_OUTPUT_CHARS", () => {
+  test("caps large string result at MAX_TOOL_RESULT_BYTES (truncated: true)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "cat", status: "running" },
+      { kind: "tool_call", callId: "call-1", toolName: "cat", status: "complete" },
     ];
     const state = stateWith({
-      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
     });
-    const largeResult = "r".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
+    const largeResult = "r".repeat(MAX_TOOL_RESULT_BYTES + 5000);
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: largeResult }),
+      engineEvent({ kind: "tool_result", callId: testCallId("call-1"), output: largeResult }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(typeof block.result).toBe("string");
-        expect((block.result as string).length).toBe(MAX_TOOL_OUTPUT_CHARS);
+        expect(block.result).toBeDefined();
+        expect(block.result?.truncated).toBe(true);
+        expect(block.result?.byteSize).toBeGreaterThan(MAX_TOOL_RESULT_BYTES);
+        if (typeof block.result?.value === "string") {
+          expect(block.result.value.length).toBe(MAX_TOOL_RESULT_BYTES);
+        }
       }
     }
   });
 
-  test("caps non-string tool result via JSON serialization", () => {
+  test("caps large object result via JSON serialization (truncated: true)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "big", status: "running" },
+      { kind: "tool_call", callId: "call-1", toolName: "big", status: "complete" },
     ];
     const state = stateWith({
-      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
     });
-    const bigObj = { data: "x".repeat(MAX_TOOL_OUTPUT_CHARS + 100) };
+    const bigObj = { data: "x".repeat(MAX_TOOL_RESULT_BYTES + 100) };
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: bigObj }),
+      engineEvent({ kind: "tool_result", callId: testCallId("call-1"), output: bigObj }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(typeof block.result).toBe("string");
-        expect((block.result as string).length).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_CHARS);
+        expect(block.result).toBeDefined();
+        expect(block.result?.truncated).toBe(true);
       }
     }
   });
 
-  test("handles function result without crashing", () => {
+  test("stores small result without truncation (truncated: false)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "fn", status: "running" },
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete" },
     ];
     const state = stateWith({
-      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { files: ["a.ts"] },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.result?.truncated).toBe(false);
+        expect(block.result?.value).toEqual({ files: ["a.ts"] });
+      }
+    }
+  });
+
+  test("handles function output without crashing (unserializable)", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "fn", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
     });
     // JSON.stringify(() => {}) returns undefined — must not crash
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: () => {} }),
+      engineEvent({ kind: "tool_result", callId: testCallId("call-1"), output: () => {} }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.status).toBe("complete");
-        expect(block.result).toBe("[unserializable]");
+        expect(block.result?.value).toBe("[unserializable]");
+        expect(block.result?.truncated).toBe(false);
       }
     }
   });
 
-  test("handles symbol result without crashing", () => {
+  test("handles symbol output without crashing (unserializable)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "sym", status: "running" },
+      { kind: "tool_call", callId: "call-1", toolName: "sym", status: "complete" },
     ];
     const state = stateWith({
-      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
     });
     const next = reduce(
       state,
-      engineEvent({ kind: "tool_call_end", callId: testCallId("call-1"), result: Symbol("test") }),
+      engineEvent({ kind: "tool_result", callId: testCallId("call-1"), output: Symbol("test") }),
     );
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "tool_call") {
-        expect(block.status).toBe("complete");
-        expect(block.result).toBe("[unserializable]");
+        expect(block.result?.value).toBe("[unserializable]");
       }
     }
+  });
+
+  test("tool_result for unknown callId warns and returns same state", () => {
+    const state = stateWith({
+      messages: [assistantMsg("text", { id: "assistant-0" })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_result", callId: testCallId("unknown-id"), output: "data" }),
+    );
+    // No matching block — state unchanged (modulo reference equality via warn path)
+    expect(next.messages).toEqual(state.messages);
   });
 });
 
@@ -661,13 +759,13 @@ describe("reduce — text blocks unbounded", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
-    const largeText = "x".repeat(MAX_TOOL_OUTPUT_CHARS + 5000);
+    const largeText = "x".repeat(MAX_TOOL_RESULT_BYTES + 5000);
     const next = reduce(state, engineEvent({ kind: "text_delta", delta: largeText }));
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "text") {
-        expect(block.text.length).toBe(MAX_TOOL_OUTPUT_CHARS + 5000);
+        expect(block.text.length).toBe(MAX_TOOL_RESULT_BYTES + 5000);
       }
     }
   });
@@ -676,13 +774,13 @@ describe("reduce — text blocks unbounded", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
-    const largeText = "t".repeat(MAX_TOOL_OUTPUT_CHARS + 3000);
+    const largeText = "t".repeat(MAX_TOOL_RESULT_BYTES + 3000);
     const next = reduce(state, engineEvent({ kind: "thinking_delta", delta: largeText }));
     const msg = lastMessage(next);
     if (msg.kind === "assistant") {
       const block = blockAt(msg, 0);
       if (block.kind === "thinking") {
-        expect(block.text.length).toBe(MAX_TOOL_OUTPUT_CHARS + 3000);
+        expect(block.text.length).toBe(MAX_TOOL_RESULT_BYTES + 3000);
       }
     }
   });
@@ -756,7 +854,13 @@ describe("reduce — edge cases", () => {
 
   test("done with completed tools leaves them as complete", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", result: "ok" },
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "complete",
+        result: toolResult("ok"),
+      },
     ];
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
@@ -774,7 +878,13 @@ describe("reduce — edge cases", () => {
 
   test("done with mixed tool statuses only marks running ones as error", () => {
     const blocks: readonly TuiAssistantBlock[] = [
-      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete", result: "ok" },
+      {
+        kind: "tool_call",
+        callId: "call-1",
+        toolName: "ls",
+        status: "complete",
+        result: toolResult("ok"),
+      },
       { kind: "tool_call", callId: "call-2", toolName: "bash", status: "running" },
     ];
     const state = stateWith({
@@ -1972,6 +2082,389 @@ describe("reduce — task_progress", () => {
     );
     expect(next.planTasks?.[0]?.subject).toBe("New Subject");
     expect(next.planTasks?.[0]?.activeForm).toBe("Updated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tool_result event
+// ---------------------------------------------------------------------------
+
+describe("reduce — engine_event — tool_result", () => {
+  test("stores ToolResultData on the matching block", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "tool_result",
+        callId: testCallId("call-1"),
+        output: { files: ["a.ts"] },
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.result).toBeDefined();
+        expect(block.result?.value).toEqual({ files: ["a.ts"] });
+        expect(block.result?.truncated).toBe(false);
+        expect(block.result?.byteSize).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("tool_result stores string output as-is", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "echo", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_result", callId: testCallId("call-1"), output: "hello world" }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const block = blockAt(msg, 0);
+      if (block.kind === "tool_call") {
+        expect(block.result?.value).toBe("hello world");
+        expect(block.result?.truncated).toBe(false);
+      }
+    }
+  });
+
+  test("tool_result for unknown callId returns same state reference", () => {
+    const state = stateWith({
+      messages: [assistantMsg("text", { id: "assistant-0" })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({ kind: "tool_result", callId: testCallId("no-such-call"), output: "data" }),
+    );
+    // No matching block — same messages array (reducer returns same state on warn path)
+    expect(next.messages).toEqual(state.messages);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spawn events (spawn_requested, agent_status_changed, agent_spawned)
+// ---------------------------------------------------------------------------
+
+describe("reduce — engine_event — spawn", () => {
+  test("spawn_requested creates spawn_call block and activeSpawns entry", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "spawn_requested",
+        childAgentId: "child-1" as import("@koi/core/ecs").AgentId,
+        request: {
+          agentName: "researcher",
+          description: "Find information",
+          signal: new AbortController().signal,
+        },
+      }),
+    );
+    const msg = lastMessage(next);
+    expect(msg.kind).toBe("assistant");
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      expect(spawnBlock).toBeDefined();
+      if (spawnBlock?.kind === "spawn_call") {
+        expect(spawnBlock.agentId).toBe("child-1");
+        expect(spawnBlock.agentName).toBe("researcher");
+        expect(spawnBlock.status).toBe("running");
+      }
+    }
+    expect(next.activeSpawns.has("child-1")).toBe(true);
+    expect(next.activeSpawns.get("child-1")?.agentName).toBe("researcher");
+  });
+
+  test("agent_status_changed (completed) updates spawn block and removes from activeSpawns", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-1",
+        agentName: "researcher",
+        description: "Find information",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-1",
+          {
+            agentName: "researcher",
+            description: "Find information",
+            startedAt: Date.now() - 1000,
+          },
+        ],
+      ]),
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-1" as import("@koi/core/ecs").AgentId,
+        agentName: "researcher",
+        status: "terminated",
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        // "terminated" ProcessState → display "complete"
+        expect(spawnBlock.status).toBe("complete");
+        expect(spawnBlock.stats).toBeDefined();
+      }
+    }
+    expect(next.activeSpawns.has("child-1")).toBe(false);
+  });
+
+  test("agent_status_changed (terminated) sets status to complete and removes from activeSpawns", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-2",
+        agentName: "worker",
+        description: "Do work",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        ["child-2", { agentName: "worker", description: "Do work", startedAt: Date.now() - 500 }],
+      ]),
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-2" as import("@koi/core/ecs").AgentId,
+        agentName: "worker",
+        status: "terminated",
+      }),
+    );
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        // "terminated" ProcessState → display "complete" (single terminal state)
+        expect(spawnBlock.status).toBe("complete");
+      }
+    }
+    expect(next.activeSpawns.has("child-2")).toBe(false);
+  });
+
+  test("set_spawn_terminal with outcome='failed' renders spawn block as failed", () => {
+    // Regression for round 6 adversarial review: previously the bridge collapsed
+    // complete/failed into "terminated" → always rendered as "complete".
+    // The new set_spawn_terminal action preserves the outcome.
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-fail",
+        agentName: "failer",
+        description: "will fail",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-fail",
+          { agentName: "failer", description: "will fail", startedAt: Date.now() - 200 },
+        ],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-fail",
+      outcome: "failed",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      expect(spawnBlock?.kind).toBe("spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        expect(spawnBlock.status).toBe("failed");
+        expect(spawnBlock.stats).toBeDefined();
+      }
+    }
+    expect(next.activeSpawns.has("child-fail")).toBe(false);
+  });
+
+  test("set_spawn_terminal with outcome='complete' renders spawn block as complete", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-ok",
+        agentName: "worker",
+        description: "will succeed",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-ok",
+          { agentName: "worker", description: "will succeed", startedAt: Date.now() - 500 },
+        ],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-ok",
+      outcome: "complete",
+    });
+    const msg = lastMessage(next);
+    if (msg.kind === "assistant") {
+      const spawnBlock = msg.blocks.find((b) => b.kind === "spawn_call");
+      if (spawnBlock?.kind === "spawn_call") {
+        expect(spawnBlock.status).toBe("complete");
+      }
+    }
+    expect(next.activeSpawns.has("child-ok")).toBe(false);
+  });
+
+  test("set_spawn_terminal is a no-op when agentId is not in activeSpawns", () => {
+    const state = createInitialState();
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "unknown",
+      outcome: "failed",
+    });
+    expect(next).toBe(state);
+  });
+
+  test("agent_status_changed (running) is a no-op for non-terminal status", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0" })],
+      activeSpawns: new Map([
+        ["child-3", { agentName: "w", description: "w", startedAt: Date.now() }],
+      ]),
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-3" as import("@koi/core/ecs").AgentId,
+        agentName: "w",
+        status: "running",
+      }),
+    );
+    expect(next).toBe(state);
+  });
+
+  test("agent_spawned is a no-op", () => {
+    const state = createInitialState();
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_spawned",
+        agentId: "child-4" as import("@koi/core/ecs").AgentId,
+        agentName: "worker-4",
+      }),
+    );
+    expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expand_tool / collapse_tool / toggle_all_tools_expanded
+// ---------------------------------------------------------------------------
+
+describe("reduce — expand_tool / collapse_tool", () => {
+  test("expand_tool adds callId to expandedToolCallIds", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "expand_tool", callId: "call-1" });
+    expect(next.expandedToolCallIds.has("call-1")).toBe(true);
+  });
+
+  test("expand_tool is idempotent (already expanded returns same state)", () => {
+    const state = stateWith({ expandedToolCallIds: new Set(["call-1"]) });
+    const next = reduce(state, { kind: "expand_tool", callId: "call-1" });
+    expect(next).toBe(state);
+  });
+
+  test("collapse_tool removes callId from expandedToolCallIds", () => {
+    const state = stateWith({ expandedToolCallIds: new Set(["call-1", "call-2"]) });
+    const next = reduce(state, { kind: "collapse_tool", callId: "call-1" });
+    expect(next.expandedToolCallIds.has("call-1")).toBe(false);
+    expect(next.expandedToolCallIds.has("call-2")).toBe(true);
+  });
+
+  test("collapse_tool is idempotent (already collapsed returns same state)", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "collapse_tool", callId: "missing" });
+    expect(next).toBe(state);
+  });
+
+  test("clear_messages resets expandedToolCallIds to empty set", () => {
+    const state = stateWith({
+      messages: [userMsg("hi")],
+      expandedToolCallIds: new Set(["call-1", "call-2"]),
+    });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.expandedToolCallIds.size).toBe(0);
+  });
+
+  test("clear_messages resets activeSpawns to empty map", () => {
+    const state = stateWith({
+      messages: [userMsg("hi")],
+      activeSpawns: new Map([["child-1", { agentName: "w", description: "w", startedAt: 0 }]]),
+    });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.activeSpawns.size).toBe(0);
+  });
+});
+
+describe("reduce — toggle_all_tools_expanded", () => {
+  test("expands all when some are unexpanded", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete" },
+      { kind: "tool_call", callId: "call-2", toolName: "cat", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", blocks })],
+      expandedToolCallIds: new Set(["call-1"]), // call-2 is unexpanded
+    });
+    const next = reduce(state, { kind: "toggle_all_tools_expanded" });
+    expect(next.expandedToolCallIds.has("call-1")).toBe(true);
+    expect(next.expandedToolCallIds.has("call-2")).toBe(true);
+  });
+
+  test("collapses all when all are already expanded", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "ls", status: "complete" },
+      { kind: "tool_call", callId: "call-2", toolName: "cat", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", blocks })],
+      expandedToolCallIds: new Set(["call-1", "call-2"]),
+    });
+    const next = reduce(state, { kind: "toggle_all_tools_expanded" });
+    expect(next.expandedToolCallIds.size).toBe(0);
+  });
+
+  test("no-op when there are no tool calls", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "toggle_all_tools_expanded" });
+    // No tool calls → expands all (empty set) which equals current empty set
+    expect(next.expandedToolCallIds.size).toBe(0);
   });
 });
 

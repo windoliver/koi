@@ -14,9 +14,9 @@
 
 import type { SyntaxStyle } from "@opentui/core";
 import type { Accessor, JSX } from "solid-js";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, For, Match, Show, Switch, useContext } from "solid-js";
 import type { TuiAssistantBlock } from "../state/types.js";
-import { useTuiStore } from "../store-context.js";
+import { StoreContext, useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
 import { computeEditDiff } from "../utils/compute-edit-diff.js";
 import {
@@ -27,6 +27,27 @@ import {
 } from "../tool-display.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
 
+/** Line-count limits per tool category (#7). */
+const BODY_LINE_LIMITS: Record<string, number> = {
+  default: 3,
+  bash: 10,
+  shell: 10,
+  run: 10,
+};
+
+function getBodyLineLimit(toolName: string): number {
+  const lower = toolName.toLowerCase();
+  for (const [key, limit] of Object.entries(BODY_LINE_LIMITS)) {
+    if (key !== "default" && lower.includes(key)) return limit;
+  }
+  return BODY_LINE_LIMITS["default"] ?? 3;
+}
+
+/** Format duration as human-readable string (e.g. "1.2s", "350ms"). */
+function formatDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
 type ToolCallData = TuiAssistantBlock & { readonly kind: "tool_call" };
 
 interface ToolCallBlockProps {
@@ -35,20 +56,42 @@ interface ToolCallBlockProps {
   readonly syntaxStyle?: SyntaxStyle | undefined;
 }
 
+/**
+ * Status indicator — uses SolidJS Switch/Match for reactive status transitions.
+ * Plain `switch(props.status)` runs once on mount; Switch/Match re-evaluates
+ * so long-running tools progress from "running" → "complete" correctly.
+ */
 function StatusIndicator(props: {
   readonly status: ToolCallData["status"];
   readonly spinnerFrame: Accessor<number>;
+  readonly startedAt?: number | undefined;
+  readonly durationMs?: number | undefined;
 }): JSX.Element {
-  switch (props.status) {
-    case "running": {
-      const frames = DEFAULT_SPINNER.frames;
-      return <text fg={COLORS.cyan}>{frames[props.spinnerFrame() % frames.length] ?? " "}</text>;
-    }
-    case "complete":
-      return <text fg={COLORS.success}>✓</text>;
-    case "error":
-      return <text fg={COLORS.danger}>✗</text>;
-  }
+  const frames = DEFAULT_SPINNER.frames;
+  // #8: elapsed time derived from spinnerFrame tick
+  const elapsed = (): string => {
+    if (props.startedAt === undefined) return "";
+    props.spinnerFrame(); // subscribe to tick
+    const ms = Date.now() - props.startedAt;
+    return ` ${formatDuration(ms)}`;
+  };
+
+  return (
+    <Switch>
+      <Match when={props.status === "running"}>
+        <text fg={COLORS.cyan}>
+          {frames[props.spinnerFrame() % frames.length] ?? " "}
+          {elapsed()}
+        </text>
+      </Match>
+      <Match when={props.status === "complete"}>
+        <text fg={COLORS.success}>✓</text>
+      </Match>
+      <Match when={props.status === "error"}>
+        <text fg={COLORS.danger}>✗</text>
+      </Match>
+    </Switch>
+  );
 }
 
 /**
@@ -72,12 +115,12 @@ function useToolDisplay(block: ToolCallData): Accessor<ToolDisplay | null> {
   });
 }
 
-/** Parse result string into chips + body. Only runs on completion. */
+/** Extract structured result display from ToolResultData. Only runs on completion. */
 function useResultDisplay(block: ToolCallData): Accessor<ResultDisplay | null> {
   return createMemo((): ResultDisplay | null => {
     if (block.status !== "complete") return null;
     const result = block.result;
-    if (result === undefined || result === "") return null;
+    if (result === undefined) return null;
     return getResultDisplay(result);
   });
 }
@@ -173,22 +216,43 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   const editDiff = useEditDiff(props.block);
   const parsedArgs = useParsedArgs(props.block);
 
-  // Accordion: local expanded state, global toggle overrides (Decision 15A)
-  const [localExpanded, setLocalExpanded] = createSignal(false);
-  const globalExpanded = useTuiStore((s) => s.toolsExpanded);
-  const isExpanded = createMemo(() => localExpanded() || globalExpanded());
+  // Per-block expand state driven by expandedToolCallIds in the store (Decision 8A).
+  // Ctrl+E dispatches toggle_all_tools_expanded; click dispatches expand/collapse_tool.
+  const storeCtx = useContext(StoreContext);
+  const isExpanded = useTuiStore((s) => s.expandedToolCallIds.has(props.block.callId));
+  // #7: per-block full-body expand (show more / truncated view)
+  const isBodyExpanded = useTuiStore((s) => s.expandedBodyToolCallIds.has(props.block.callId));
 
   /** Merge arg chips and result chips for the chips row. */
   const allChips = createMemo((): readonly string[] => {
     const argChips = display()?.chips ?? [];
     const resChips = resultDisplay()?.chips ?? [];
-    if (resChips.length === 0) return argChips;
-    if (argChips.length === 0) return resChips;
-    return [...argChips, ...resChips];
+    // #9: If no durationMs chip from result, use block.durationMs
+    const hasDurationChip = resChips.some((c: string) => c.endsWith("ms") || c.endsWith("s"));
+    const durationChips =
+      !hasDurationChip && props.block.durationMs !== undefined
+        ? [formatDuration(props.block.durationMs)]
+        : [];
+    if (resChips.length === 0 && durationChips.length === 0) return argChips;
+    if (argChips.length === 0) return [...resChips, ...durationChips];
+    return [...argChips, ...resChips, ...durationChips];
   });
 
   const isComplete = () => props.block.status !== "running";
   const hasBody = () => resultDisplay()?.body !== undefined && resultDisplay()?.body !== "";
+
+  // #7: truncated body view (N lines max, with "show more" affordance)
+  const truncatedBody = createMemo((): { text: string; remaining: number } | null => {
+    const body = resultDisplay()?.body;
+    if (!body) return null;
+    const lines = body.split("\n");
+    const limit = getBodyLineLimit(props.block.toolName);
+    if (lines.length <= limit || isBodyExpanded()) return null;
+    return {
+      text: lines.slice(0, limit).join("\n"),
+      remaining: lines.length - limit,
+    };
+  });
 
   return (
     <box flexDirection="column" paddingLeft={1}>
@@ -196,9 +260,22 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
       <box
         flexDirection="row"
         gap={1}
-        onMouseDown={() => { if (isComplete()) setLocalExpanded((e: boolean) => !e); }}
+        onMouseDown={() => {
+          if (isComplete()) {
+            if (isExpanded()) {
+              storeCtx?.dispatch({ kind: "collapse_tool", callId: props.block.callId });
+            } else {
+              storeCtx?.dispatch({ kind: "expand_tool", callId: props.block.callId });
+            }
+          }
+        }}
       >
-        <StatusIndicator status={props.block.status} spinnerFrame={props.spinnerFrame} />
+        <StatusIndicator
+          status={props.block.status}
+          spinnerFrame={props.spinnerFrame}
+          startedAt={props.block.startedAt}
+          durationMs={props.block.durationMs}
+        />
         <Show
           when={display()}
           fallback={
@@ -217,7 +294,7 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
         </Show>
       </box>
 
-      {/* Chips row — always visible when present */}
+      {/* Chips row — always visible when present (#9 duration chip included) */}
       <Show when={allChips().length > 0}>
         <box flexDirection="row" gap={1} paddingLeft={2}>
           <For each={allChips()}>
@@ -242,11 +319,30 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
           )}
         </Show>
 
-        {/* Standard result body (non-diff) */}
+        {/* Standard result body (non-diff) — with #7 N-line truncation */}
         <Show when={editDiff() === null && resultDisplay()?.body}>
-          {(body: Accessor<string>) => (
-            <box paddingLeft={2}>
-              <HighlightedText content={body()} syntaxStyle={props.syntaxStyle} />
+          {(_body: Accessor<string>) => (
+            <box flexDirection="column" paddingLeft={2}>
+              <Show
+                when={truncatedBody()}
+                fallback={
+                  <HighlightedText content={resultDisplay()?.body ?? ""} syntaxStyle={props.syntaxStyle} />
+                }
+              >
+                {(t: Accessor<{ text: string; remaining: number }>) => (
+                  <box flexDirection="column">
+                    <HighlightedText content={t().text} syntaxStyle={props.syntaxStyle} />
+                    <text
+                      fg={COLORS.textMuted}
+                      onMouseDown={() => {
+                        storeCtx?.dispatch({ kind: "expand_tool_body", callId: props.block.callId });
+                      }}
+                    >
+                      {`… ${t().remaining} more lines (click to expand)`}
+                    </text>
+                  </box>
+                )}
+              </Show>
             </box>
           )}
         </Show>
