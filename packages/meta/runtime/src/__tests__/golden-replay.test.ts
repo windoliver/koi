@@ -1644,6 +1644,7 @@ describe("Golden: @koi/decision-ledger", () => {
     const audits: readonly Audit[] = [
       // Intentionally out of timestamp order — fetchAudit should sort the lane.
       {
+        schema_version: 1,
         timestamp: 400,
         sessionId: "s-golden",
         agentId: "agent-a",
@@ -1652,6 +1653,7 @@ describe("Golden: @koi/decision-ledger", () => {
         durationMs: 2,
       },
       {
+        schema_version: 1,
         timestamp: 200,
         sessionId: "s-golden",
         agentId: "agent-a",
@@ -1689,6 +1691,7 @@ describe("Golden: @koi/decision-ledger", () => {
 
     const audits: readonly Audit[] = [
       {
+        schema_version: 1,
         timestamp: 100,
         sessionId: "s-target",
         agentId: "agent-a",
@@ -1698,6 +1701,7 @@ describe("Golden: @koi/decision-ledger", () => {
       },
       // Cross-session leak from a buggy sink — must be filtered out.
       {
+        schema_version: 1,
         timestamp: 150,
         sessionId: "other-session",
         agentId: "agent-a",
@@ -1757,6 +1761,7 @@ describe("Golden: @koi/decision-ledger", () => {
         // Inject an ad-hoc audit sink via the override path.
         const audits: readonly Audit[] = [
           {
+            schema_version: 1,
             timestamp: 100,
             sessionId: "session-xyz",
             agentId: "agent-a",
