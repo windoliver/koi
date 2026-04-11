@@ -276,12 +276,62 @@ interface CreateConfigManagerOptions {
     readonly loaderOptions?: LoadConfigOptions | undefined;
     /** Debounce interval for file watching in ms. Defaults to 300. */
     readonly watchDebounceMs?: number | undefined;
+    /**
+     * Invoked when a registered \`ConfigConsumer\` throws or rejects during a
+     * \`changed\` event. The store has already been committed by the time this
+     * fires — the consumer's failure has NOT been rolled back. This callback
+     * exists so operators can observe split-brain states (store committed
+     * but a subsystem failed to rebind).
+     *
+     * The default behavior is silent: failures are caught so they cannot
+     * crash the process, but nothing is logged. Provide this callback to
+     * surface them.
+     */
+    readonly onConsumerError?: ((err: unknown) => void) | undefined;
+    /**
+     * Invoked when the file watcher observes an infrastructure error (NFS
+     * disconnect, permission loss, failed rearm after rename, etc.).
+     * Separate from the main \`events\` bus so watcher-health signals do not
+     * conflate with actual config load/validation failures, and so the
+     * \`attempted → rejected\` event lifecycle stays clean. (Codex MEDIUM
+     * round 6-of-session-2.)
+     *
+     * The watcher keeps retrying; this callback may fire repeatedly until
+     * the underlying issue clears.
+     */
+    readonly onWatcherError?: ((err: unknown) => void) | undefined;
 }
 /** High-level config manager: store + reload + watch + events. */
 interface ConfigManager {
     /** The reactive config store. */
     readonly store: WritableConfigStore<KoiConfig>;
-    /** Re-reads the config file, validates, and updates the store. */
+    /**
+     * Performs the initial file load. Does NOT enforce the restart-required
+     * classification gate — this is a one-shot bootstrap, not a hot reload.
+     * Retriable on failure. Idempotent on success.
+     *
+     * After a successful \`initialize()\`, all subsequent \`reload()\` calls
+     * enforce classification.
+     *
+     * Emits \`applied\` plus (if the diff from defaults is non-empty) \`changed\`,
+     * so any consumer registered before \`initialize()\` observes the initial
+     * bind via the standard pub/sub channel.
+     */
+    readonly initialize: () => Promise<Result<KoiConfig, KoiError>>;
+    /**
+     * Re-reads the config file, validates, and updates the store.
+     *
+     * Enforces the restart-required classification gate on any reload that
+     * runs after initialization has succeeded: a reload that touches a
+     * restart-required field is rejected as a whole and the old config is
+     * retained.
+     *
+     * **Legacy bootstrap:** calling \`reload()\` on a fresh manager (before
+     * \`initialize()\`) auto-promotes to \`initialize()\` as a one-shot bootstrap.
+     * New code should prefer the explicit \`initialize()\` method, but the
+     * auto-promotion preserves backward compatibility with the v1 startup
+     * sequence \`createConfigManager(...) -> await mgr.reload()\`.
+     */
     readonly reload: () => Promise<Result<KoiConfig, KoiError>>;
     /** Starts watching the config file for changes. Returns unsubscribe. */
     readonly watch: () => ConfigUnsubscribe;
@@ -375,18 +425,27 @@ declare function selectConfig<T, S>(store: ConfigStore<T>, selector: (config: T)
 /**
  * Debounced file watcher for config hot-reload.
  *
- * Handles two failure modes that \`fs.watch()\` does NOT handle cleanly on its
- * own (Codex HIGH #4):
+ * Handles three failure modes that \`fs.watch()\` does NOT handle cleanly on
+ * its own:
  *
  * 1. Genuine watcher errors (NFS disconnect, permission loss): the \`error\`
- *    event is propagated and the watcher is closed.
+ *    event is surfaced via \`onError\`. The watcher keeps retrying — it does
+ *    NOT permanently close on a transient error, since hot reload going
+ *    silently dead is worse than a noisy error log.
  *
  * 2. Rename-on-save: atomic editors (vim, VS Code) save via
  *    \`write temp -> rename(temp, target)\`. fs.watch emits \`rename\` on the
  *    target path and then silently keeps pointing at the now-dead inode.
  *    No further \`change\` events ever arrive. We re-arm the watcher on
  *    \`rename\` events by closing the current FSWatcher and re-opening it on
- *    the same path (with a short retry if the new file isn't visible yet).
+ *    the same path.
+ *
+ * 3. Slow rename-on-save: the new file may be absent for more than 350 ms
+ *    (e.g. filesystem under load, large atomic write). The watcher retries
+ *    re-arming with exponential backoff and never gives up until the
+ *    caller explicitly disposes. Every failed rearm attempt calls \`onError\`
+ *    so operators see a live signal, but the watcher remains alive and
+ *    will recover when the file reappears. (Codex MEDIUM round 1.)
  */
 
 /** Options for \`watchConfigFile()\`. */
@@ -398,8 +457,12 @@ interface WatchConfigOptions {
     /** Debounce interval in milliseconds. Defaults to 300. */
     readonly debounceMs?: number | undefined;
     /**
-     * Called when the watcher hits an unrecoverable error (NFS disconnect,
-     * permission loss). Optional — default is silent.
+     * Called when the watcher observes an error (NFS disconnect, permission
+     * loss, failed rearm after a rename). Optional — default is silent.
+     *
+     * Important: the watcher does NOT close itself on error. It keeps
+     * retrying indefinitely. \`onError\` may be called many times for the same
+     * underlying issue.
      */
     readonly onError?: ((err: unknown) => void) | undefined;
 }
@@ -408,7 +471,8 @@ interface WatchConfigOptions {
  *
  * Returns an unsubscribe function that stops watching.
  * Multiple rapid writes are coalesced by the debounce interval.
- * Rename-on-save events re-arm the watcher automatically.
+ * Rename-on-save events re-arm the watcher automatically, with
+ * exponential-backoff retries if the new file is not immediately visible.
  */
 declare function watchConfigFile(options: WatchConfigOptions): ConfigUnsubscribe;
 

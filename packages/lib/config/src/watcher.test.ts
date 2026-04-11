@@ -109,6 +109,58 @@ describe("watchConfigFile", () => {
     expect(callCount).toBeGreaterThanOrEqual(2);
   });
 
+  test("watchConfigFile on a missing file does not throw and recovers when the file appears", async () => {
+    const missing = join(tempDir, "not-yet.yaml");
+    let callCount = 0;
+    let errorSeen = 0;
+    cleanup = watchConfigFile({
+      filePath: missing,
+      onChange: () => {
+        callCount++;
+      },
+      onError: () => {
+        errorSeen++;
+      },
+      debounceMs: 20,
+    });
+    // Expect no synchronous throw from watchConfigFile itself.
+    // The missing file should have been observed via onError during the
+    // rearm cycle (after the first 3 fast retries). Create it now.
+    await new Promise((r) => setTimeout(r, 500));
+    writeFileSync(missing, "logLevel: info\n");
+    await new Promise((r) => setTimeout(r, 500));
+    // Rearm should succeed and fire onChange at least once.
+    expect(callCount).toBeGreaterThan(0);
+    expect(errorSeen).toBeGreaterThan(0);
+  });
+
+  test("slow rename-on-save: replacement appearing after debounceMs still triggers a reload", async () => {
+    // Reproduces the Codex round-5 HIGH finding: if the atomic save's new file
+    // takes longer than debounceMs to appear, the first debounced onChange()
+    // loads nothing (or the old snapshot), and earlier versions of the
+    // watcher never re-triggered a reload once rearm succeeded. The fix is
+    // for rearm() to schedule another onChange() on successful re-open.
+    let callCount = 0;
+    cleanup = watchConfigFile({
+      filePath: configPath,
+      onChange: () => {
+        callCount++;
+      },
+      debounceMs: 20,
+    });
+    // Simulate the rename: unlink the file, wait LONGER than debounceMs so
+    // the first debounced onChange fires against a missing target, then
+    // recreate the file. The rearm cycle must schedule another onChange.
+    unlinkSync(configPath);
+    await new Promise((r) => setTimeout(r, 80));
+    const before = callCount;
+    writeFileSync(configPath, "logLevel: debug\n");
+    // Wait for rearm backoff (50ms) + debounce (20ms) + slack.
+    await new Promise((r) => setTimeout(r, 400));
+    // The post-recreate reload must have fired at least once.
+    expect(callCount).toBeGreaterThan(before);
+  });
+
   test("rearm gives up and calls onError when file disappears permanently", async () => {
     let errorSeen = false;
     cleanup = watchConfigFile({
