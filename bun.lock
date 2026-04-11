@@ -473,6 +473,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
+        "@koi/model-router": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
