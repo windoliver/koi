@@ -106,7 +106,10 @@ export interface OtelHandle {
    * CONTRACT: This function is CPU-only and non-throwing (errors are swallowed).
    * Do NOT make it async or perform I/O — it fires in the hot step-recording path.
    */
-  readonly onStep: (sessionId: string, step: RichTrajectoryStep) => void;
+  readonly onStep: (
+    sessionId: string,
+    step: RichTrajectoryStep,
+  ) => Record<string, string> | undefined;
 
   /**
    * Wire into the agent middleware chain.
@@ -170,7 +173,7 @@ export function createOtelMiddleware(config?: OtelMiddlewareConfig): OtelHandle 
   // onStep — receives every RichTrajectoryStep from event-trace (Issue 1A)
   // ---------------------------------------------------------------------------
 
-  function onStep(sessionId: string, step: RichTrajectoryStep): Record<string, string> | void {
+  function onStep(sessionId: string, step: RichTrajectoryStep): Record<string, string> | undefined {
     // Skip internal bookkeeping steps
     if (isInternalStep(step)) return;
 

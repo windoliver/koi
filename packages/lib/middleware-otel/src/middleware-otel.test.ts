@@ -549,10 +549,14 @@ describe("with OTel provider registered", () => {
 
       expect(result).toBeDefined();
       if (result === undefined) throw new Error("result should be defined");
-      expect(typeof result["otel.traceId"]).toBe("string");
-      expect(typeof result["otel.spanId"]).toBe("string");
-      expect(result["otel.traceId"].length).toBe(32); // W3C traceId = 128-bit hex
-      expect(result["otel.spanId"].length).toBe(16); // W3C spanId = 64-bit hex
+      const traceId = result["otel.traceId"];
+      const spanId = result["otel.spanId"];
+      if (traceId === undefined) throw new Error("traceId should be defined");
+      if (spanId === undefined) throw new Error("spanId should be defined");
+      expect(typeof traceId).toBe("string");
+      expect(typeof spanId).toBe("string");
+      expect(traceId.length).toBe(32); // W3C traceId = 128-bit hex
+      expect(spanId.length).toBe(16); // W3C spanId = 64-bit hex
     });
 
     test("onStep returns otel.traceId and otel.spanId for tool_call", async () => {
