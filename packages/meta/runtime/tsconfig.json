@@ -54,6 +54,9 @@
     { "path": "../../lib/skill-tool" },
     { "path": "../../lib/skills-runtime" },
     { "path": "../../lib/model-router" },
+    { "path": "../../security/middleware-audit" },
+    { "path": "../../security/audit-sink-sqlite" },
+    { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../lib/validation" }
   ]
 }

@@ -8,6 +8,7 @@
 
 import type {
   CapabilityFragment,
+  ConfigChange,
   KoiMiddleware,
   MiddlewarePhase,
   ModelChunk,
@@ -15,6 +16,8 @@ import type {
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  PermissionDecision,
+  PermissionQuery,
   SessionContext,
   StopGateResult,
   ToolHandler,
@@ -505,6 +508,45 @@ export async function runStopGate(
     }
   }
   return { kind: "continue" };
+}
+
+// ---------------------------------------------------------------------------
+// Permission decision and config change hook dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatch a permission decision to all middleware implementing `onPermissionDecision`.
+ * Called by the permissions middleware via `ctx.dispatchPermissionDecision`.
+ * Fire-and-forget from the caller's perspective — errors are swallowed here.
+ */
+export async function runPermissionDecisionHooks(
+  middleware: readonly KoiMiddleware[],
+  ctx: TurnContext,
+  query: PermissionQuery,
+  decision: PermissionDecision,
+): Promise<void> {
+  for (const mw of middleware) {
+    if (mw.onPermissionDecision !== undefined) {
+      await mw.onPermissionDecision(ctx, query, decision);
+    }
+  }
+}
+
+/**
+ * Dispatch a config change to all middleware implementing `onConfigChange`.
+ * Called by config-mutating code via the session context's dispatch callback.
+ * Fire-and-forget from the caller's perspective — errors are swallowed here.
+ */
+export async function runConfigChangeHooks(
+  middleware: readonly KoiMiddleware[],
+  ctx: SessionContext,
+  change: ConfigChange,
+): Promise<void> {
+  for (const mw of middleware) {
+    if (mw.onConfigChange !== undefined) {
+      await mw.onConfigChange(ctx, change);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

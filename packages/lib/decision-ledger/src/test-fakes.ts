@@ -87,6 +87,7 @@ let auditCounter = 0;
 export function makeAuditEntry(overrides: Partial<AuditEntry> = {}): AuditEntry {
   auditCounter += 1;
   return {
+    schema_version: 1,
     timestamp: 1_700_000_000_000 + auditCounter,
     sessionId: "default-session",
     agentId: "agent-a",

@@ -21,6 +21,8 @@ export {
   injectCapabilities,
   recomposeChains,
   resolveActiveMiddleware,
+  runConfigChangeHooks,
+  runPermissionDecisionHooks,
   runSessionHooks,
   runStopGate,
   runTurnHooks,

@@ -9,6 +9,8 @@ import type {
   ApprovalHandler,
   ChannelStatus,
   InboundMessage,
+  PermissionDecision,
+  PermissionQuery,
   ProcessId,
   SessionContext,
   TurnContext,
@@ -54,6 +56,10 @@ export function createTurnContext(opts: {
   readonly stopBlocked?: true;
   readonly stopGateReason?: string;
   readonly stopGateBlockedBy?: string;
+  readonly dispatchPermissionDecision?: (
+    query: PermissionQuery,
+    decision: PermissionDecision,
+  ) => void | Promise<void>;
 }): TurnContext {
   return {
     session: opts.session,
@@ -67,5 +73,8 @@ export function createTurnContext(opts: {
     ...(opts.stopBlocked === true ? { stopBlocked: true } : {}),
     ...(opts.stopGateReason !== undefined ? { stopGateReason: opts.stopGateReason } : {}),
     ...(opts.stopGateBlockedBy !== undefined ? { stopGateBlockedBy: opts.stopGateBlockedBy } : {}),
+    ...(opts.dispatchPermissionDecision !== undefined
+      ? { dispatchPermissionDecision: opts.dispatchPermissionDecision }
+      : {}),
   };
 }

@@ -1,0 +1,81 @@
+{
+  "name": "audit-log",
+  "capturedAt": 1775864165320,
+  "entries": [
+    {
+      "schema_version": 1,
+      "timestamp": 1775864164790,
+      "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
+      "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",
+      "turnIndex": -1,
+      "kind": "session_start",
+      "durationMs": 0,
+      "metadata": {}
+    },
+    {
+      "schema_version": 1,
+      "timestamp": 1775864164794,
+      "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
+      "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",
+      "turnIndex": 0,
+      "kind": "model_call",
+      "request": {
+        "messages": [
+          {
+            "senderId": "system:goal",
+            "timestamp": 1775864164794,
+            "content": [
+              {
+                "kind": "text",
+                "text": "## Active Goals\n\n- [ ] What is 2+2? Answer with just the number."
+              }
+            ]
+          },
+          {
+            "senderId": "user",
+            "timestamp": 1775864164790,
+            "content": [
+              {
+                "kind": "text",
+                "text": "What is 2+2? Answer with just the number."
+              }
+            ]
+          }
+        ],
+        "model": "google/gemini-2.0-flash-001",
+        "tools": [],
+        "systemPrompt": "[Active Capabilities]\n- **exfiltration-guard**: Scanning tool I/O and model output for secret exfiltration (action: block)\n- **permissions**: bypass (allow all)\n- **goals**: 0/1 objectives completed\n- **semantic-retry**: Semantic retry: 3/3 retries remaining, failure analysis + prompt rewrite\n- **tracing**: Recording trajectory (0 pending retries)\n- **audit**: Compliance audit logging active\n- **Hook Observer**: Records hook execution as ATIF trajectory steps"
+      },
+      "response": {
+        "content": "4\n",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "stop",
+        "responseId": "gen-1775864164-6AX4rZO98p3VPhOvSdk8",
+        "richContent": [
+          {
+            "kind": "text",
+            "text": "4\n"
+          }
+        ],
+        "usage": {
+          "inputTokens": 143,
+          "outputTokens": 2
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "8f200d356a92171c35d1b6ef94ccdd4f770e14e0e5024c6f945d363d5600ba30"
+        }
+      },
+      "durationMs": 394
+    },
+    {
+      "schema_version": 1,
+      "timestamp": 1775864165203,
+      "sessionId": "agent:a7554b72-c51e-4e41-9787-50d44f962d88:cd271562-5d42-4477-87ec-7724958ffe57",
+      "agentId": "a7554b72-c51e-4e41-9787-50d44f962d88",
+      "turnIndex": -1,
+      "kind": "session_end",
+      "durationMs": 0,
+      "metadata": {}
+    }
+  ]
+}

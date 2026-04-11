@@ -864,3 +864,27 @@ New `metadata.permissionEvent` field on audit entries:
 - `"remembered"` — persistent or session grant matched (fast-path replay)
 
 See `docs/L2/security-permissions.md` for the end-to-end flow and TUI integration details.
+
+---
+
+## `onPermissionDecision` Hook Dispatch (#1627)
+
+`wrapToolCall` now fires the L0 `KoiMiddleware.onPermissionDecision` hook for every `ask`-path outcome by passing a `dispatchApprovalOutcome` callback into `handleAskDecision`.
+
+**Key property: fires BEFORE `next(request)`** — the permission record is written before tool execution starts. This means:
+- A tool that throws after approval still has a `permission_decision` record
+- The audit trail is accurate regardless of downstream failures
+- Observers (e.g., `@koi/middleware-audit`) receive the decision synchronously on the same tick
+
+The callback pattern avoids L2→L2 imports — `wrapToolCall` passes a closure that calls `ctx.dispatchPermissionDecision?.(query, decision)`, which the L1 engine routes to all registered middleware hooks without this package knowing about `@koi/middleware-audit`:
+
+```typescript
+// wrapToolCall (simplified)
+if (decision.effect === "ask") {
+  return handleAskDecision(ctx, request, next, decision, (d) => {
+    void ctx.dispatchPermissionDecision?.(query, d);
+  });
+}
+```
+
+**Coverage:** persistent always-allow, session always-allow, cache hit, coalesced inflight allow, fresh approval (allow/modify/always-allow), and all deny paths.
