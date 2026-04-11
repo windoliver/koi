@@ -181,10 +181,11 @@ tmux capture-pane -t "$KOI_SESSION" -pS -3000 > "$CAPTURE_FILE"
 
 ### 2.4 Finding the session transcript
 
-Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<encoded-sessionId>.jsonl`. Two runtime details matter:
+Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<encoded-sessionId>.jsonl`. Three runtime details matter:
 
-1. **Engine session id format**: `createKoi()` generates ids as `agent:<pid>:<uuid>` (`packages/kernel/engine/src/koi.ts:199`). The `tuiSessionId` the CLI prints (if any) is NOT the same as the id `createSessionTranscriptMiddleware` routes writes by — the middleware routes by the *live engine session id* (`packages/lib/session/src/middleware/session-transcript.ts`).
-2. **Filename encoding**: `createJsonlTranscript()` writes to `{baseDir}/${encodeURIComponent(sid)}.jsonl` (`packages/lib/session/src/transcript/jsonl-store.ts:164-168`). So the id `agent:1234:abc-def` lands on disk as `agent%3A1234%3Aabc-def.jsonl`. Do not try to build the filename by hand.
+1. **Engine session id format**: `createKoi()` unconditionally mints a fresh `factorySessionId` as `agent:<pid>:<uuid>` on every call (`packages/kernel/engine/src/koi.ts:199`), regardless of anything the caller passes in. `createKoi` has no option to inject a session id. The id the CLI or TUI prints (if any) is NOT what the transcript middleware routes writes by — the middleware routes by `ctx.session.sessionId` = `factorySessionId` (`packages/lib/session/src/middleware/session-transcript.ts:78-80`). The `config.sessionId` field passed to `createSessionTranscriptMiddleware` is used only as an entry-ID prefix, never for routing.
+2. **Resume does NOT reuse the original file**: because `factorySessionId` is fresh on every `createKoi()`, a `koi start --resume <id>` run reads `<id>.jsonl` into memory (via `resumeForSession` in `packages/lib/session/src/resume.ts`) but writes new turns to a NEW file named after the fresh `factorySessionId`. The original file stays untouched. Scenarios A2 and A2b encode this split-file expectation explicitly — do not assert "same file grew" when verifying resume.
+3. **Filename encoding**: `createJsonlTranscript()` writes to `{baseDir}/${encodeURIComponent(sid)}.jsonl` (`packages/lib/session/src/transcript/jsonl-store.ts:161-169`). So the id `agent:1234:abc-def` lands on disk as `agent%3A1234%3Aabc-def.jsonl`. Do not try to build the filename by hand.
 
 Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
 
@@ -263,32 +264,42 @@ Each scenario is self-contained: prerequisites, exact user query, expected turn,
 **Watch**: duplicated tokens in TUI; missing final newline; ANSI color bleeding; cursor artifacts on reflow
 
 #### A2. Session resume via `koi start --resume <id>` (shipped CLI path)
-**Tags**: session, cli start command, `resumeForSession`, transcript append-on-resume
-**Note**: `koi start --resume <id>` is implemented — `packages/meta/cli/commands/start.ts` calls `resumeForSession()` and repopulates the transcript before continuing. This is the primary shipped resume path and must be covered by the bash.
+**Tags**: session, cli start command, `resumeForSession`, resume split-file semantics
+**Note**: `koi start --resume <id>` is implemented — `packages/meta/cli/src/commands/start.ts` calls `resumeForSession()` which loads the prior JSONL into the in-memory `transcript` array. **Resume writes go to a NEW file, not the original.** `createKoi()` unconditionally mints a fresh `factorySessionId = agent:<pid>:<uuid>` on every call (`packages/kernel/engine/src/koi.ts:199`), and `createSessionTranscriptMiddleware` routes writes by `ctx.session.sessionId` — which is always the new `factorySessionId`, never the resumed id. The original file stays byte-for-byte unchanged; a second `.jsonl` is created for the post-resume turns. Prior context survives only via the in-memory message array that the model sees on the first turn. See §2.4 for the id/routing details.
 **Prereqs**: complete A1 first. Derive the raw session id from the JSONL filename per §2.4 (URL-decoded).
-**Action**: kill the TUI tmux session, then re-run without relaunching the TUI:
+**Action**: kill the TUI tmux session, snapshot the original file's hash, then run `start --resume`:
 ```bash
-SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl | head -1)
-SESSION_ID=$(basename "$SESSION_FILE" .jsonl | python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')
+ORIGINAL_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl | head -1)
+ORIGINAL_HASH=$(shasum -a 256 "$ORIGINAL_FILE" | awk '{print $1}')
+ORIGINAL_LINES=$(wc -l < "$ORIGINAL_FILE")
+SESSION_ID=$(basename "$ORIGINAL_FILE" .jsonl | python3 -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.stdin.read().strip()))')
 HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" start --resume "$SESSION_ID" --prompt "What did we just talk about?"
 ```
-**Expected**: the prompt runs against the resumed session; answer references the previous turn's content (Bun / TypeScript); the SAME JSONL file gains new entries appended after the original turns
+**Expected**: the prompt runs with the prior conversation preloaded into the model context; the assistant's answer references Bun / TypeScript from A1 (proving in-memory history load worked); a **new** `.jsonl` file appears in `$KOI_HOME/.koi/sessions/`; the **original** file is untouched.
 **Verify**:
-- `$SESSION_FILE` still points at the same file; `wc -l "$SESSION_FILE"` has grown
-- `jq -c 'select(.role=="user")' "$SESSION_FILE" | wc -l` has increased by exactly 1 (the resume prompt)
-- The assistant's response mentions the prior Bun / TypeScript context
-**Pass**: resumed context is coherent; no duplicated system prompt; the original JSONL file is appended, not rewritten, and not replaced
-**Watch**: start failing with `NOT_READY` (if it does, the stub was re-introduced — file a regression); lost history on resume; duplicated system prompt; transcript rewritten from scratch; new session file created with a different id instead of appending
+- Original file unchanged: `[ "$(shasum -a 256 "$ORIGINAL_FILE" | awk '{print $1}')" = "$ORIGINAL_HASH" ]` and `[ "$(wc -l < "$ORIGINAL_FILE")" = "$ORIGINAL_LINES" ]`
+- A new session file exists and is distinct from the original:
+  ```bash
+  NEW_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl | head -1)
+  [ "$NEW_FILE" != "$ORIGINAL_FILE" ] || { echo "FAIL: no new session file"; exit 1; }
+  ```
+- New file contains exactly 1 user entry (the resume prompt): `jq -c 'select(.role=="user")' "$NEW_FILE" | wc -l` == 1
+- New file contains at least 1 assistant entry: `jq -c 'select(.role=="assistant")' "$NEW_FILE" | wc -l` >= 1
+- The assistant's response text mentions Bun / TypeScript (confirms in-memory history was loaded): `jq -r 'select(.role=="assistant") | .content' "$NEW_FILE" | grep -Eiq 'bun|typescript'`
+**Pass**: resumed context is coherent (model answers as if it has A1 history); original file is byte-identical; new file contains only the resumed turn.
+**Watch**: `start` failing with `NOT_READY` (stub re-introduced — file a regression); assistant unable to recall Bun / TypeScript (in-memory history load broken in `resumeForSession` or the transcript wiring); original file modified (would mean someone wired routing back through `config.sessionId` and broke the data-isolation guard at `session-transcript.ts:78-80`); `--resume` accepting an invalid id without error.
+**Design note**: the split-file semantics mean `koi start --resume <id>` is really "start a new session with prior context preloaded" rather than "continue the same session". Whether that's the intended design is tracked in the `createKoi` session-id injection discussion (see #1696 for the rationale).
 
 #### A2b. Session resume via TUI session selector (UI path)
-**Tags**: tui session selector, `resumeForSession`
-**Prereqs**: complete A1 first
+**Tags**: tui session selector, `resumeForSession`, resume split-file semantics
+**Note**: same split-file behavior as A2 — `tui-command.ts:778` calls `resumeForSession()` the same way, and `createKoi()` mints a fresh `factorySessionId` for every TUI session regardless of which session the user picked in the selector. The selector controls what history is **read into memory**, not which file new writes go to.
+**Prereqs**: complete A1 first. Snapshot `ORIGINAL_FILE` / `ORIGINAL_HASH` / `ORIGINAL_LINES` per A2 before kicking off this scenario.
 **Action**: kill the TUI, relaunch with `HOME=$KOI_HOME bun run ... tui`, and use the in-TUI session selector UI to pick the earlier session
 **User query** (after resume): `What did we just talk about?`
-**Expected**: agent references Bun / TypeScript from A1
-**Verify**: same JSONL file as A1 grew (matching A2's verify steps above)
-**Pass**: TUI selector loads the right session; append semantics match A2
-**Watch**: selector not showing the session; picking the wrong one; creating a new session instead of resuming
+**Expected**: agent references Bun / TypeScript from A1; a new `.jsonl` file appears; the original file is untouched.
+**Verify**: same shape as A2 — original hash/line count unchanged, `NEW_FILE != ORIGINAL_FILE`, new file has exactly 1 user entry and ≥1 assistant entry, assistant text mentions Bun / TypeScript.
+**Pass**: TUI selector loads the right session into memory; split-file semantics match A2.
+**Watch**: selector not showing the session; picking the wrong one; history load silently failing (agent answers without Bun / TypeScript references even though original file exists); original file modified.
 
 ---
 
