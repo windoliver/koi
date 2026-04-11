@@ -1,7 +1,12 @@
 import { defineConfig } from "tsup";
 
 export default defineConfig({
-  entry: ["src/bin.ts", "src/index.ts"],
+  // bench-entry.ts is a non-shipped benchmark harness for the
+  // startup-latency gate (#1637). Built alongside bin.ts so it uses
+  // the SAME bundling pipeline and the SAME dist chunks the shipped
+  // CLI uses. package.json `files` excludes dist/bench-entry* from
+  // npm publication so users never receive it.
+  entry: ["src/bin.ts", "src/index.ts", "src/bench-entry.ts"],
   format: ["esm"],
   dts: {
     compilerOptions: {

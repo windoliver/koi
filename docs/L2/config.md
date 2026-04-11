@@ -77,32 +77,107 @@ Every Koi agent needs runtime configuration: limits, telemetry, loop detection, 
 
 ### Hot-Reload Lifecycle
 
+A successful reload follows a fixed, serialized pipeline. Reloads are single-flight: rapid `fs.watch` events are coalesced into at most one trailing reload, so store updates never interleave.
+
 ```
-  ┌──────────────┐     fs.watch()      ┌──────────────┐
-  │  koi.yaml    │────────────────────▶│  Watcher      │
-  │  (on disk)   │  file changed event │  (debounced)  │
-  └──────────────┘                     └──────┬───────┘
-                                              │
-                                       ┌──────▼───────┐
-                                       │   reload()    │
-                                       │  load → parse │
-                                       │  validate     │
-                                       │  merge        │
-                                       └──────┬───────┘
-                                              │
-                                       ┌──────▼───────┐
-                                       │ store.set()   │
-                                       │ Object.freeze │
-                                       └──────┬───────┘
-                                              │
-                            ┌─────────────────┼─────────────────┐
-                            ▼                 ▼                 ▼
-                   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-                   │ Subscriber A │  │ Subscriber B │  │ Subscriber C │
-                   │ limits       │  │ telemetry    │  │ features     │
-                   │ CHANGED ✓    │  │ same → skip  │  │ same → skip  │
-                   └──────────────┘  └──────────────┘  └──────────────┘
+  fs.watch event (or explicit reload() call)
+        │
+        ▼
+  single-flight gate
+        │
+        ▼
+  events.notify({ kind: "attempted" })
+        │
+        ▼
+  loadConfig → deepMerge → validateKoiConfig
+        │
+        ├── load error ─▶ events.notify({ kind: "rejected", reason: "load" })
+        │
+        ├── validation error ─▶ events.notify({ kind: "rejected", reason: "validation" })
+        │
+        ▼
+  diffConfig(store.get(), validated) → changedPaths[]
+        │
+        ├── empty diff ─▶ events.notify({ kind: "applied", changedPaths: [] })
+        │                 (no "changed" event — nothing to re-bind)
+        │
+        ▼
+  classifyChangedPaths → { hot, restart }
+        │
+        ├── any restart ─▶ events.notify({ kind: "rejected", reason: "restart-required" })
+        │                  (all-or-nothing — hot fields are NOT applied either)
+        │
+        ▼
+  store.set(next)                      ← triggers low-level store.subscribe listeners
+  events.notify({ kind: "applied" })   ← telemetry sinks
+  events.notify({ kind: "changed" })   ← ConfigConsumer.onConfigChange via registerConsumer
 ```
+
+**Bootstrap exception:** the very first successful reload after `createConfigManager()` is treated as the initial bind. All fields are applied regardless of classification, since no process state has yet bound to the defaults. The restart-required gate only enforces on reloads *after* that first bind.
+
+### Field Classification
+
+Config sections are declared `hot` (safe to hot-apply) or `restart` (requires a restart) in `FIELD_CLASSIFICATION`. Unclassified sections default to `restart` — **fail closed**. An exhaustiveness test ensures every top-level section of `DEFAULT_KOI_CONFIG` is either in the table or explicitly in `UNCLASSIFIED_SECTIONS`.
+
+| Section | Class | Rationale |
+|---|---|---|
+| `logLevel` | hot | Only affects future log emissions |
+| `loopDetection` | hot | Runtime heuristic recomputed per turn |
+| `modelRouter` | hot | Next model call picks up new routing |
+| `features` | hot | Feature flags checked lazily |
+| `telemetry` | restart | Would need to tear down and re-establish OTLP exporter |
+| `limits` | restart | Mid-flight concurrency / budget changes are unsafe |
+| `spawn`, `forge` | unclassified | Defaults to `restart`; opted out pending deliberate classification |
+
+Adding a new top-level section without classifying it will fail CI (`classification.test.ts` exhaustiveness check). This is intentional: a field that hasn't been deliberately reviewed gets the conservative treatment.
+
+### ConfigConsumer contract
+
+Feature packages that want to re-bind on config changes implement `ConfigConsumer` and register via `ConfigManager.registerConsumer()`:
+
+```ts
+const unsubscribe = mgr.registerConsumer({
+  onConfigChange: ({ prev, next, changedPaths }) => {
+    if (changedPaths.some((p) => p.startsWith("modelRouter"))) {
+      rebindModelTargets(next.modelRouter.targets);
+    }
+  },
+});
+```
+
+**Contract semantics — read this before using it:**
+
+- **Fire-and-forget.** Consumers cannot veto a hot-apply. If `onConfigChange` throws or rejects, the error is swallowed by the underlying `ChangeNotifier` and other consumers still run.
+- **Post-apply only.** Consumers run *after* `store.set()` has committed the new value. They observe the change, they don't gate it.
+- **One authoritative channel.** Feature-level code MUST pick between `registerConsumer` (carries `changedPaths`, fires on successful reloads only) and `store.subscribe` (raw, synchronous, inside `store.set`). The latter is documented as low-level and intended for kernel-internal bootstrapping only. Using both on the same consumer will produce duplicate and out-of-order signals.
+- **No rejection path.** If a consumer genuinely cannot apply a change (e.g. a model adapter that needs to drain an in-flight stream), the current recommendation is to classify that section as `restart` and require a process restart. A `ConfigValidator` interface with an awaited pre-apply phase can be added in a follow-up PR if a real use case emerges.
+
+### Event Bus
+
+All lifecycle events flow through `ConfigManager.events`, a typed `ChangeNotifier<ConfigReloadEvent>` where `ConfigReloadEvent` is a discriminated union:
+
+| `kind` | Fires when | Payload |
+|---|---|---|
+| `attempted` | Every reload call (before load) | `filePath` |
+| `applied` | Successful reload (hot fields committed OR empty diff) | `filePath`, `prev`, `next`, `changedPaths` |
+| `rejected` | Load error, validation error, or restart-required gate | `filePath`, `reason`, `error`, optional `restartRequiredPaths` |
+| `changed` | Successful reload with non-empty diff, after `applied` | `filePath`, `prev`, `next`, `changedPaths` |
+
+Telemetry sinks subscribe to `attempted` / `applied` / `rejected`. Feature consumers use `registerConsumer` (which internally filters to `kind === "changed"`).
+
+### Rename-on-save handling
+
+Atomic-save editors (vim, VS Code) replace the target inode via `write tmp → rename tmp over target`. On macOS this causes `fs.watch` to silently continue pointing at the dead inode, which means no further `change` events ever arrive. The watcher detects `eventType === "rename"`, schedules a reload, closes the stale watcher, and re-arms onto the new file with retry backoff (50/100/200 ms). If the file is permanently gone after all retries, `onError` is called and the watcher closes.
+
+### Known Limitations
+
+- **`$include`d files ARE auto-watched once successfully loaded.** `ConfigManager.watch()` arms a watcher for every file in the resolved include graph (root + transitively resolved `$include` entries). Edits to any of those files trigger a reload, and the watcher set is rebuilt after every successful reload so edits to newly-added or newly-removed includes are picked up. Rejected reloads that change the graph also cover the union of old + candidate files so a fix to a rejected existing file still recovers without re-touching the root.
+
+- **Newly-referenced *missing* `$include` files do NOT self-recover.** If you edit the root config to add `$include: ["new.yaml"]` and `new.yaml` does not exist, the reload attempt fires a `rejected` event with `NOT_FOUND` as expected — but the missing path is NOT added to the watched file set (doing so would either require one perpetual retry loop per missing path or a directory-level watcher; both are out of scope). To recover, create the missing file AND re-touch the root config (or any other already-watched file in the include graph). The `rejected` event's error context includes the missing path so operators can see exactly what's needed. This narrower contract is locked in by a regression test; revisit if a bounded directory-watch mechanism is added later.
+
+- **All-or-nothing reloads.** If a single edit touches both a hot and a restart-required field, the entire reload is rejected and the old config is retained (including the hot field). Split edits if you need the hot change to land immediately.
+
+- **No consumer-side veto.** `ConfigConsumer.onConfigChange` is best-effort. See the contract section above.
 
 ### Config Composition via `$include`
 
@@ -366,7 +441,17 @@ features:       {}
 
 | Function | Returns | Purpose |
 |----------|---------|---------|
-| `createConfigManager(options)` | `ConfigManager` | One-call setup: store + reload + watch |
+| `createConfigManager(options)` | `ConfigManager` | One-call setup: store + reload + watch + event bus |
+
+### Hot-reload primitives
+
+| Function / value | Returns / type | Purpose |
+|---|---|---|
+| `diffConfig(prev, next)` | `readonly ChangedPath[]` | Structural diff between two config snapshots; dot-paths |
+| `classifyChangedPaths(paths)` | `{ hot, restart }` | Split paths by `FIELD_CLASSIFICATION` (fail-closed) |
+| `FIELD_CLASSIFICATION` | `Readonly<Record<string, ReloadClass>>` | Dot-path prefix → `"hot"` \| `"restart"` |
+| `UNCLASSIFIED_SECTIONS` | `readonly string[]` | Allowlist of sections deliberately left unclassified |
+| `createConfigEventBus()` | `ChangeNotifier<ConfigReloadEvent>` | Typed event bus factory |
 
 ### Bridge
 
@@ -397,10 +482,17 @@ features:       {}
 | `WritableConfigStore<T>` | ConfigStore with `set()` |
 | `LoadConfigOptions` | Env + include options for loading |
 | `ProcessIncludesOptions` | Max depth + env for `$include` |
-| `ConfigManager` | High-level manager: store + reload + watch |
+| `ConfigManager` | High-level manager: store + reload + watch + events + registerConsumer |
 | `CreateConfigManagerOptions` | Factory options for ConfigManager |
-| `WatchConfigOptions` | File watcher configuration |
+| `WatchConfigOptions` | File watcher configuration (now with optional `onError`) |
 | `ResolvedKoiOptions` | Engine-compatible output from KoiConfig |
+| `ChangedPath` | Dot-path string returned by `diffConfig` |
+| `ReloadClass` | `"hot"` \| `"restart"` |
+| `ClassifiedPaths` | `{ hot: readonly string[]; restart: readonly string[] }` |
+| `ConfigChange` | `{ prev, next, changedPaths }` — payload for `ConfigConsumer` |
+| `ConfigConsumer` | Single-method consumer contract (`onConfigChange`) |
+| `ConfigReloadEvent` | Discriminated union: `attempted` \| `applied` \| `rejected` \| `changed` |
+| `ConfigRejectReason` | `"load"` \| `"validation"` \| `"restart-required"` |
 
 ---
 

@@ -6,6 +6,7 @@ import type {
 import type {
   AgentResolver,
   ApprovalHandler,
+  AuditSink,
   ChannelAdapter,
   ChannelCapabilities,
   ComponentProvider,
@@ -21,6 +22,7 @@ import type {
   ToolDescriptor,
   TrajectoryDocumentStore,
 } from "@koi/core";
+import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 
@@ -345,6 +347,29 @@ export interface RuntimeHandle {
    * Only populated when filesystem is explicitly configured.
    */
   readonly filesystemProvider: ComponentProvider | undefined;
+
+  /**
+   * Factory for a per-session decision ledger reader over the runtime's
+   * configured sinks. Undefined when `trajectoryStore` is not configured,
+   * since trajectory is the required input for the ledger.
+   *
+   * The ledger joins the runtime's `trajectoryStore`, the optional
+   * `auditSink` passed to this factory, and the runtime's `reportStore`
+   * (or an override passed to this factory). See `@koi/decision-ledger`
+   * and `docs/L2/decision-ledger.md` for the full contract.
+   *
+   * Phase 2(a) ships with trajectory-only surfacing in practice because
+   * no default `AuditSink` or `ReportStore` implementation exists yet
+   * — both are tracked as follow-up work. Incident tooling that has its
+   * own audit/report stores can inject them via `overrides` without
+   * rebuilding the runtime.
+   */
+  readonly createDecisionLedger:
+    | ((overrides?: {
+        readonly auditSink?: AuditSink | undefined;
+        readonly reportStore?: ReportStore | undefined;
+      }) => DecisionLedgerReader)
+    | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

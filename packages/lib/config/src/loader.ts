@@ -5,7 +5,7 @@
 import { dirname, extname, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ProcessIncludesOptions } from "./include.js";
-import { processIncludes } from "./include.js";
+import { processIncludes, processIncludesWithFiles } from "./include.js";
 
 /** Options for `loadConfig()` and `loadConfigFromString()`. */
 export interface LoadConfigOptions {
@@ -156,4 +156,94 @@ export async function loadConfig(
   };
 
   return processIncludes(parseResult.value, dirname(absolutePath), includeOptions);
+}
+
+/**
+ * Result shape for `loadConfigWithFiles`: `files` is ALWAYS populated
+ * with every file that was **successfully opened**, regardless of
+ * whether the overall call succeeded. The root file is always
+ * included, followed by every transitively-resolved `$include` path
+ * that was successfully read before any failure.
+ *
+ * **KNOWN LIMITATION**: missing include paths are NOT in `files`. A
+ * reload rejected because of a newly-referenced missing `$include`
+ * file does not track that path, so creating the file alone will not
+ * trigger a recovery reload — the user must re-touch the root config.
+ * See `docs/L2/config.md` for the full documented limitation.
+ */
+export type LoadConfigWithFilesResult =
+  | {
+      readonly ok: true;
+      readonly value: Record<string, unknown>;
+      readonly files: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly error: KoiError;
+      readonly files: readonly string[];
+    };
+
+/**
+ * Like `loadConfig`, but also returns the absolute paths of every file
+ * that was actually opened (root + transitively included files). Used
+ * by `ConfigManager.watch()` to arm watchers on every file in the
+ * include graph so edits to included files also trigger a reload.
+ *
+ * On failure, `files` contains the partial graph (root + any includes
+ * that were successfully read before a subsequent missing/invalid
+ * one). Missing include paths are NOT in the partial graph — see the
+ * KNOWN LIMITATION block on `LoadConfigWithFilesResult`.
+ */
+export async function loadConfigWithFiles(
+  filePath: string,
+  options?: LoadConfigOptions,
+): Promise<LoadConfigWithFilesResult> {
+  const absolutePath = resolve(filePath);
+
+  let content: string;
+  try {
+    content = await Bun.file(absolutePath).text();
+  } catch (cause: unknown) {
+    // Even a missing root file: return the root path in `files` so the
+    // caller can arm a watcher on it and recover when it appears.
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Config file not found: ${absolutePath}`,
+        retryable: false,
+        context: { filePath: absolutePath },
+        cause,
+      },
+      files: [absolutePath],
+    };
+  }
+
+  const parseResult = loadConfigFromString(content, absolutePath, options);
+  if (!parseResult.ok) {
+    return { ok: false, error: parseResult.error, files: [absolutePath] };
+  }
+
+  const includeOptions: ProcessIncludesOptions = {
+    env: options?.env,
+    maxDepth: options?.maxIncludeDepth,
+  };
+
+  const result = await processIncludesWithFiles(
+    parseResult.value,
+    dirname(absolutePath),
+    includeOptions,
+  );
+  if (!result.ok) {
+    return {
+      ok: false,
+      error: result.error,
+      files: [absolutePath, ...result.files],
+    };
+  }
+  return {
+    ok: true,
+    value: result.value,
+    files: [absolutePath, ...result.files],
+  };
 }

@@ -124,6 +124,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/decision-ledger": {
+      "name": "@koi/decision-ledger",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/edit-match": {
       "name": "@koi/edit-match",
       "version": "0.0.0",
@@ -216,6 +223,15 @@
         "@koi/redaction": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
+      },
+    },
+    "packages/lib/loop": {
+      "name": "@koi/loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
       },
     },
     "packages/lib/lsp": {
@@ -437,6 +453,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
@@ -500,6 +517,7 @@
         "@koi/channel-cli": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/engine-compose": "workspace:*",
@@ -509,6 +527,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/mcp-server": "workspace:*",
@@ -1002,6 +1021,8 @@
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
+    "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
+
     "@koi/dream": ["@koi/dream@workspace:packages/mm/dream"],
 
     "@koi/edit-match": ["@koi/edit-match@workspace:packages/lib/edit-match"],
@@ -1035,6 +1056,8 @@
     "@koi/hook-prompt": ["@koi/hook-prompt@workspace:packages/exec/hook-prompt"],
 
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
+
+    "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 
     "@koi/lsp": ["@koi/lsp@workspace:packages/lib/lsp"],
 

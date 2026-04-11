@@ -7,6 +7,7 @@
   "include": ["src/**/*"],
   "references": [
     { "path": "../../kernel/core" },
+    { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/agent-runtime" },
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
@@ -17,6 +18,7 @@
     { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
+    { "path": "../../lib/loop" },
     { "path": "../../lib/query-engine" },
     { "path": "../../lib/spawn-tools" },
     { "path": "../../lib/task-tools" },

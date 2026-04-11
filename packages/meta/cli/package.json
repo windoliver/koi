@@ -7,7 +7,11 @@
     "koi": "./dist/bin.js"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "!dist/bench-entry.js",
+    "!dist/bench-entry.d.ts",
+    "!dist/bench-entry.d.ts.map",
+    "!dist/bench-entry.js.map"
   ],
   "exports": {
     ".": {
@@ -43,6 +47,7 @@
     "@koi/harness": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
+    "@koi/loop": "workspace:*",
     "@koi/lsp": "workspace:*",
     "@koi/memory-tools": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",

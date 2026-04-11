@@ -3433,6 +3433,27 @@ const queries: readonly QueryConfig[] = [
       },
     ];
   })(),
+
+  // --- @koi/loop convergence primitive (#1624) -------------------------------
+  // Records a single agent turn for the loop primitive's replay golden.
+  // Phase A intentionally uses a plain text prompt (no tool wiring) so
+  // the cassette stays simple and the replay test validates the loop's
+  // runtime integration, not tool execution. Real tool-driven loop
+  // coverage (agent uses Bash to create a marker file, file gate checks
+  // it, fail→retry→pass) is a follow-up when the loop package adds
+  // first-class support for side-effect isolation between iterations.
+  // Keeping this prompt in sync with the recordCassette call below so
+  // the query config and the raw cassette cover the same scenario.
+  {
+    name: "loop-until-pass",
+    prompt: "Respond with the single word: DONE",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all) for golden recording",
+    hooks: [],
+    providers: [],
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================
@@ -4099,6 +4120,28 @@ const mcpServerQuery = queries.find((q) => q.name === "mcp-server-send");
 if (mcpServerQuery !== undefined) {
   (mcpServerQuery as { providers: ComponentProvider[] }).providers = [mcpServerComponentProvider];
 }
+
+// --- @koi/loop convergence primitive (#1624) -------------------------------
+// Record a cassette the loop-replay golden test can consume. This captures
+// the raw model stream for a simple "create a marker file then respond
+// DONE" prompt; the golden replay test wires a Bash tool + runUntilPass
+// around it and asserts the loop drives the runtime correctly.
+await recordCassette("loop-until-pass", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Respond with the single word: DONE",
+          },
+        ],
+      },
+    ],
+  }),
+);
 
 // Full-stack ATIF trajectories
 for (const q of queries) {
