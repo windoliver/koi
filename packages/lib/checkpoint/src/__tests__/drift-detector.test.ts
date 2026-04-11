@@ -65,4 +65,37 @@ describe("createGitStatusDriftDetector", () => {
     const result = await detector.detect();
     expect(result).toEqual([]);
   });
+
+  // Regression: codex round 3, P2 on commit 6eb8604a. The original
+  // implementation awaited `proc.exited` with no timeout despite the
+  // docstring claim, so a hanging git-status would block onAfterTurn
+  // indefinitely. Now Promise.race + proc.kill enforces a hard cap.
+  test("hanging command is killed at the configured timeout (returns [])", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "koi-drift-timeout-"));
+    // Use `sleep 10` as a synthetic hang — it would complete way past any
+    // plausible detector timeout. With the timeout enforcement fix, the
+    // detector must return [] within ~100ms, not ~10s.
+    const detector = createGitStatusDriftDetector(dir, {
+      command: ["sh", "-c", "sleep 10"],
+      timeoutMs: 100,
+    });
+    const start = Date.now();
+    const result = await detector.detect();
+    const elapsed = Date.now() - start;
+    expect(result).toEqual([]);
+    // Generous upper bound for CI — the timeout is 100ms, detector should
+    // return well under 1s even on a loaded runner.
+    expect(elapsed).toBeLessThan(1000);
+  });
+
+  test("command that completes fast does NOT trigger the timeout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "koi-drift-fast-"));
+    // `true` exits immediately with code 0, empty stdout.
+    const detector = createGitStatusDriftDetector(dir, {
+      command: ["true"],
+      timeoutMs: 5000,
+    });
+    const result = await detector.detect();
+    expect(result).toEqual([]);
+  });
 });

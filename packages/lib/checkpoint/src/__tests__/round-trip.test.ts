@@ -508,6 +508,109 @@ describe("round-trip rewind", () => {
     pathC = join(rig.workDir, "c.txt");
   });
 
+  // Regression: codex round 3, P1 on commit 6eb8604a. `wrapToolCall` marked
+  // the session idle BEFORE `onAfterTurn` ran, so a rewind requested during
+  // the (now synchronous) drift detection in onAfterTurn ran against the
+  // OLD head — the current turn's snapshot didn't exist yet. Then
+  // onAfterTurn resumed and appended the turn's snapshot AFTER the rewind
+  // marker, corrupting the chain. The fix: onAfterTurn brackets its work
+  // with tracker.enterTool/exitTool so RewindSerializer.waitForIdle blocks
+  // rewinds until the post-turn work completes.
+  test("rewind requested mid-onAfterTurn waits for the turn's snapshot to land", async () => {
+    rig.cleanup();
+    const blobDir = join(tmpdir(), `koi-cp-rt-blobs-${crypto.randomUUID()}`);
+    mkdirSync(blobDir, { recursive: true });
+    const workDir = mkdtempSync(join(tmpdir(), "koi-cp-rt-work-"));
+    const store = createSnapshotStoreSqlite<CheckpointPayload>({ path: ":memory:" });
+
+    // Detector that takes noticeable time to resolve. Long enough that a
+    // concurrent rewind will enter its waitForIdle path while detect() is
+    // still pending, so we actually exercise the serializer queue.
+    // Detector returns immediately for turn 0, then blocks on a gate for
+    // turn 1. That lets the test set up a clean initial chain and then
+    // exercise the race on turn 1 specifically.
+    let callCount = 0;
+    let releaseDetector: (() => void) | undefined;
+    const detectorGate = new Promise<void>((resolve) => {
+      releaseDetector = resolve;
+    });
+    let detectStartedTurn1 = false;
+    const driftDetector: DriftDetector = {
+      detect: async () => {
+        callCount++;
+        if (callCount === 1) return []; // turn 0 — pass through
+        detectStartedTurn1 = true;
+        await detectorGate;
+        return [];
+      },
+    };
+    const checkpoint = createCheckpoint({ store, config: { blobDir, driftDetector } });
+
+    const targetPath = join(workDir, "a.txt");
+
+    // Turn 0: write v1.
+    const wrap = checkpoint.middleware.wrapToolCall;
+    const onAfter = checkpoint.middleware.onAfterTurn;
+    if (wrap === undefined || onAfter === undefined) throw new Error("hooks missing");
+
+    await wrap(
+      makeTurn(0),
+      {
+        toolId: "fs_write",
+        input: { path: targetPath, content: "v1" } as JsonObject,
+      },
+      async (): Promise<ToolResponse> => {
+        writeFileSync(targetPath, "v1");
+        return PASSTHROUGH;
+      },
+    );
+    await onAfter(makeTurn(0));
+
+    // Turn 1: overwrite with v2. wrapToolCall completes; immediately kick
+    // off onAfterTurn (without awaiting) so drift detection is in-flight.
+    // THEN request a rewind(1) concurrently. Before the fix, the rewind
+    // would race the pending onAfterTurn and see only turn 0 as head.
+    await wrap(
+      makeTurn(1),
+      {
+        toolId: "fs_write",
+        input: { path: targetPath, content: "v2" } as JsonObject,
+      },
+      async (): Promise<ToolResponse> => {
+        writeFileSync(targetPath, "v2");
+        return PASSTHROUGH;
+      },
+    );
+    const onAfterPromise = onAfter(makeTurn(1)); // DO NOT await — leave in-flight
+    for (let i = 0; i < 5; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(detectStartedTurn1).toBe(true);
+
+    const rewindPromise = checkpoint.rewind(SESSION_ID, 1);
+
+    if (releaseDetector === undefined) throw new Error("no gate");
+    releaseDetector();
+
+    const [, realRewindResult] = await Promise.all([onAfterPromise, rewindPromise]);
+
+    // Rewind must have waited for turn 1's capture to land. After the
+    // rewind, the file is back at v1 (turn 0's state) — NOT deleted
+    // (which would happen if the rewind had landed at the bootstrap).
+    expect(realRewindResult.ok).toBe(true);
+    if (!realRewindResult.ok) return;
+    expect(realRewindResult.turnsRewound).toBe(1);
+    expect(readFileSync(targetPath, "utf8")).toBe("v1");
+
+    store.close();
+    rmSync(blobDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+    rig = makeRig();
+    pathA = join(rig.workDir, "a.txt");
+    pathB = join(rig.workDir, "b.txt");
+    pathC = join(rig.workDir, "c.txt");
+  });
+
   test("drift detector that throws yields empty warnings without crashing the capture", async () => {
     rig.cleanup();
     const blobDir = join(tmpdir(), `koi-cp-rt-blobs-${crypto.randomUUID()}`);

@@ -272,6 +272,28 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
   // -----------------------------------------------------------------------
 
   const onAfterTurn = async (ctx: TurnContext): Promise<void> => {
+    const sid = ctx.session.sessionId;
+    // Mark the session busy for the entire post-turn window. wrapToolCall
+    // brackets the tool call itself but returns before onAfterTurn runs,
+    // so without this the session is "idle" for anything between the last
+    // tool call completing and this hook finishing. A rewind requested in
+    // that window (e.g. user hits /rewind the moment the last tool call
+    // returns, before the sync drift detector finishes) would run against
+    // the PREVIOUS head — the just-finished turn's snapshot wouldn't exist
+    // yet. Then this hook resumes and writes the turn's snapshot AFTER the
+    // rewind marker, corrupting the chain (v1 -> v2, rewind(1) can land
+    // at bootstrap instead of v1). Bracketing onAfterTurn as busy keeps
+    // rewinds queued behind it via RewindSerializer.waitForIdle().
+    // See codex round 3, P1 on commit 6eb8604a.
+    tracker.enterTool(sid);
+    try {
+      return await runOnAfterTurn(ctx);
+    } finally {
+      tracker.exitTool(sid);
+    }
+  };
+
+  const runOnAfterTurn = async (ctx: TurnContext): Promise<void> => {
     const state = await getOrCreateSession(ctx.session.sessionId);
     const turnKey = String(ctx.turnId);
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
