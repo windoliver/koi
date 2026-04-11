@@ -1,6 +1,6 @@
 {
   "name": "@koi/snapshot-store-sqlite",
-  "description": "L2 storage adapter implementing SnapshotChainStore<T> over SQLite with recursive-CTE ancestor walks and mark-and-sweep blob GC",
+  "description": "L2 storage adapter: SnapshotChainStore<T> over SQLite with recursive-CTE walks and mark-sweep GC",
   "version": "0.0.0",
   "private": true,
   "type": "module",

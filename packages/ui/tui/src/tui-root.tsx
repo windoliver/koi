@@ -290,7 +290,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   // #14: session rename handler
   const handleRename = (newName: string): void => {
     store.dispatch({ kind: "set_modal", modal: null });
-    props.onCommand(`session:rename:${newName}`);
+    props.onCommand("session:rename", newName);
   };
 
   const handleSlashDetected = (query: string | null): void => {
