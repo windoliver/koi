@@ -15,7 +15,11 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import type { CliRenderer } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { createPermissionBridge } from "./bridge/permission-bridge.js";
-import { createTuiApp } from "./create-app.js";
+import {
+  createPermissionRespondWithParserReset,
+  createTuiApp,
+  readStdinParserReset,
+} from "./create-app.js";
 import { createInitialState } from "./state/initial.js";
 import { createStore } from "./state/store.js";
 
@@ -288,7 +292,87 @@ describe("createTuiApp — StoreContext wired after start()", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. renderer.destroy() disposes the Solid reactive root
+// 6. stdinParser.reset() on permission-prompt dismissal (issue #1689)
+// ---------------------------------------------------------------------------
+
+describe("createPermissionRespondWithParserReset (#1689)", () => {
+  test("calls bridge.respond then stdinParser.reset in order", () => {
+    const resetMock = mock(() => {});
+    const respondMock = mock((_id: string, _d: ApprovalDecisionShape) => {});
+    const wrapped = createPermissionRespondWithParserReset({
+      bridge: { respond: respondMock },
+      renderer: { stdinParser: { reset: resetMock } },
+    });
+
+    wrapped("req-1", { kind: "allow" });
+
+    expect(respondMock).toHaveBeenCalledTimes(1);
+    expect(respondMock).toHaveBeenCalledWith("req-1", { kind: "allow" });
+    expect(resetMock).toHaveBeenCalledTimes(1);
+    // Ordering invariant: respond dispatches the reducer action (clears the
+    // modal) before reset fires, so focus has already returned to the input.
+    const respondOrder = respondMock.mock.invocationCallOrder[0];
+    const resetOrder = resetMock.mock.invocationCallOrder[0];
+    expect(respondOrder).toBeDefined();
+    expect(resetOrder).toBeDefined();
+    if (respondOrder !== undefined && resetOrder !== undefined) {
+      expect(respondOrder).toBeLessThan(resetOrder);
+    }
+  });
+
+  test("covers every ApprovalDecision variant", () => {
+    const resetMock = mock(() => {});
+    const respondMock = mock((_id: string, _d: ApprovalDecisionShape) => {});
+    const wrapped = createPermissionRespondWithParserReset({
+      bridge: { respond: respondMock },
+      renderer: { stdinParser: { reset: resetMock } },
+    });
+
+    const decisions: readonly ApprovalDecisionShape[] = [
+      { kind: "allow" },
+      { kind: "always-allow", scope: "session" },
+      { kind: "deny", reason: "user-dismissed" },
+      { kind: "modify", updatedInput: { path: "override.txt" } },
+    ];
+    for (const d of decisions) wrapped("req-x", d);
+
+    expect(respondMock).toHaveBeenCalledTimes(decisions.length);
+    expect(resetMock).toHaveBeenCalledTimes(decisions.length);
+  });
+
+  test("no-throw when stdinParser is null (parser not yet installed)", () => {
+    const respondMock = mock((_id: string, _d: ApprovalDecisionShape) => {});
+    const wrapped = createPermissionRespondWithParserReset({
+      bridge: { respond: respondMock },
+      renderer: { stdinParser: null },
+    });
+
+    expect(() => wrapped("req-1", { kind: "allow" })).not.toThrow();
+    expect(respondMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("readStdinParserReset (#1689)", () => {
+  test("returns a reset-bound helper when the renderer exposes stdinParser.reset", async () => {
+    const renderer = await makeTestRenderer();
+    const handle = readStdinParserReset(renderer);
+    expect(handle).not.toBeNull();
+    if (handle === null) return;
+    expect(typeof handle.reset).toBe("function");
+    // Invoking the helper must not throw — exercises the Reflect.get + call path.
+    expect(() => handle.reset()).not.toThrow();
+  });
+});
+
+// Narrow structural alias so the tests don't depend on @koi/core types.
+type ApprovalDecisionShape =
+  | { readonly kind: "allow" }
+  | { readonly kind: "always-allow"; readonly scope: "session" | "always" }
+  | { readonly kind: "modify"; readonly updatedInput: Record<string, unknown> }
+  | { readonly kind: "deny"; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// 7. renderer.destroy() disposes the Solid reactive root
 // ---------------------------------------------------------------------------
 
 describe("createTuiApp — renderer.destroy() disposes Solid root", () => {

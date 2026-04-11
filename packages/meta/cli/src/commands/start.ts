@@ -56,6 +56,7 @@ import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
 import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { loadPluginComponents } from "../plugin-activation.js";
+import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
 const DEFAULT_MAX_TURNS = 10;
@@ -482,9 +483,38 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   const channel = createCliChannel({ theme: "default" });
 
   const controller = new AbortController();
-  process.once("SIGINT", () => {
-    controller.abort();
+  // `stay-armed` policy (the default): once the user presses Ctrl+C, the
+  // harness uses a single session-wide `AbortSignal` that stays aborted
+  // forever. The interactive loop breaks out of `runInteractive()` and the
+  // session ends — there is no "fresh turn" to re-arm for. Staying armed
+  // means any subsequent Ctrl+C during post-cancel teardown forces exit,
+  // which is the escape hatch we want.
+  //
+  // `failsafeMs: 30_000` is a generous budget covering normal post-abort
+  // teardown (channel disconnect, runtime dispose, transcript flush) while
+  // still catching a genuinely non-cooperative tool or stream consumer
+  // that ignores the abort signal indefinitely. Without a failsafe, a
+  // non-cooperative run leaves the session hung and the user needs to
+  // double-tap to escape; with 30s, even a lazy tool gets plenty of time
+  // to settle before we hard-exit.
+  const sigintHandler = createSigintHandler({
+    onGraceful: () => {
+      controller.abort();
+    },
+    onForce: () => {
+      process.exit(130);
+    },
+    write: (msg: string) => {
+      process.stderr.write(msg);
+    },
+    doubleTapWindowMs: 2000,
+    failsafeMs: 30_000,
+    setTimer: createUnrefTimer,
   });
+  const onSigint = (): void => {
+    sigintHandler.handleSignal();
+  };
+  process.on("SIGINT", onSigint);
 
   const harness = createCliHarness({
     runtime,
@@ -499,75 +529,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // 7. Execute
   // ---------------------------------------------------------------------------
 
-  switch (flags.mode.kind) {
-    case "interactive": {
-      try {
-        await harness.runInteractive();
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`koi: ${msg}\n`);
-        return ExitCode.FAILURE;
-      }
-      break;
-    }
-    case "prompt": {
-      // Convergence loop mode (#1624): repeat runtime.run() until the verifier
-      // passes or a budget is exhausted. Bypasses the harness entirely — the
-      // harness contract says runSinglePrompt is safe to call once, and loop
-      // mode needs N iterations through a live runtime.
-      if (flags.untilPass.length > 0) {
-        // Runtime warning printed on every loop-mode entry so the user is
-        // reminded of the trust-boundary implications even after they've
-        // passed --allow-side-effects (which is only checked at parse time).
-        // Goes to stderr so it doesn't pollute stdout-captured output.
-        process.stderr.write(
-          [
-            "koi: loop mode enabled — non-idempotent tools will run on every retry,",
-            "     and the verifier subprocess executes outside the CLI permission model.",
-            `     max-iter=${flags.maxIter}, verifier-timeout=${flags.verifierTimeoutMs}ms`,
-            "",
-          ].join("\n"),
-        );
-
-        // Preserve any pre-existing transcript (e.g. from --resume) as the
-        // baseline. Each iteration truncates back to this baseline, so the
-        // model sees:
-        //   [resumed history... + this iteration's rebuilt prompt]
-        // and never:
-        //   [resumed history... + iter1 turn + iter2 turn + ...]
-        // which would pollute retries with stale assistant replies. The
-        // rebuilt prompt from @koi/loop already carries the latest failure
-        // forward into the next attempt (#1624 review finding).
-        const transcriptBaseline = transcript.length;
+  try {
+    switch (flags.mode.kind) {
+      case "interactive": {
         try {
-          const loopResult = await runConvergenceLoop({
-            runtime,
-            prompt: flags.mode.text,
-            untilPassArgv: flags.untilPass,
-            maxIterations: flags.maxIter,
-            verifierTimeoutMs: flags.verifierTimeoutMs,
-            workingDir: process.cwd(),
-            verbose: flags.verbose,
-            signal: controller.signal,
-            verifierInheritEnv: flags.verifierInheritEnv,
-            resetTranscript: () => {
-              transcript.length = transcriptBaseline;
-              // Bump the generation so any orphaned iteration stream
-              // that finally produces its done event in the background
-              // cannot push stale turns onto the next iteration's
-              // transcript view (#1624 round-12 review fix).
-              incrementTranscriptGeneration();
-            },
-          });
-          if (loopResult.status !== "converged") {
-            process.stderr.write(
-              `koi: loop ended in '${loopResult.status}' state after ${loopResult.iterations} iteration(s): ${loopResult.terminalReason}\n`,
-            );
-            return ExitCode.FAILURE;
-          }
-          process.stdout.write(
-            `\nkoi: loop converged after ${loopResult.iterations} iteration(s)\n`,
-          );
+          await harness.runInteractive();
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           process.stderr.write(`koi: ${msg}\n`);
@@ -577,29 +543,100 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }
         break;
       }
+      case "prompt": {
+        // Convergence loop mode (#1624): repeat runtime.run() until the verifier
+        // passes or a budget is exhausted. Bypasses the harness entirely — the
+        // harness contract says runSinglePrompt is safe to call once, and loop
+        // mode needs N iterations through a live runtime.
+        if (flags.untilPass.length > 0) {
+          // Runtime warning printed on every loop-mode entry so the user is
+          // reminded of the trust-boundary implications even after they've
+          // passed --allow-side-effects (which is only checked at parse time).
+          // Goes to stderr so it doesn't pollute stdout-captured output.
+          process.stderr.write(
+            [
+              "koi: loop mode enabled — non-idempotent tools will run on every retry,",
+              "     and the verifier subprocess executes outside the CLI permission model.",
+              `     max-iter=${flags.maxIter}, verifier-timeout=${flags.verifierTimeoutMs}ms`,
+              "",
+            ].join("\n"),
+          );
 
-      let result: Awaited<ReturnType<typeof harness.runSinglePrompt>>;
-      try {
-        result = await harness.runSinglePrompt(flags.mode.text);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`koi: ${msg}\n`);
-        return ExitCode.FAILURE;
+          // Preserve any pre-existing transcript (e.g. from --resume) as the
+          // baseline. Each iteration truncates back to this baseline, so the
+          // model sees:
+          //   [resumed history... + this iteration's rebuilt prompt]
+          // and never:
+          //   [resumed history... + iter1 turn + iter2 turn + ...]
+          // which would pollute retries with stale assistant replies. The
+          // rebuilt prompt from @koi/loop already carries the latest failure
+          // forward into the next attempt (#1624 review finding).
+          const transcriptBaseline = transcript.length;
+          try {
+            const loopResult = await runConvergenceLoop({
+              runtime,
+              prompt: flags.mode.text,
+              untilPassArgv: flags.untilPass,
+              maxIterations: flags.maxIter,
+              verifierTimeoutMs: flags.verifierTimeoutMs,
+              workingDir: process.cwd(),
+              verbose: flags.verbose,
+              signal: controller.signal,
+              verifierInheritEnv: flags.verifierInheritEnv,
+              resetTranscript: () => {
+                transcript.length = transcriptBaseline;
+                // Bump the generation so any orphaned iteration stream
+                // that finally produces its done event in the background
+                // cannot push stale turns onto the next iteration's
+                // transcript view (#1624 round-12 review fix).
+                incrementTranscriptGeneration();
+              },
+            });
+            if (loopResult.status !== "converged") {
+              process.stderr.write(
+                `koi: loop ended in '${loopResult.status}' state after ${loopResult.iterations} iteration(s): ${loopResult.terminalReason}\n`,
+              );
+              return ExitCode.FAILURE;
+            }
+            process.stdout.write(
+              `\nkoi: loop converged after ${loopResult.iterations} iteration(s)\n`,
+            );
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`koi: ${msg}\n`);
+            return ExitCode.FAILURE;
+          } finally {
+            await runtime.dispose?.();
+          }
+          break;
+        }
+
+        let result: Awaited<ReturnType<typeof harness.runSinglePrompt>>;
+        try {
+          result = await harness.runSinglePrompt(flags.mode.text);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`koi: ${msg}\n`);
+          return ExitCode.FAILURE;
+        }
+        if (result.stopReason !== "completed") {
+          return ExitCode.FAILURE;
+        }
+        break;
       }
-      if (result.stopReason !== "completed") {
-        return ExitCode.FAILURE;
-      }
-      break;
     }
-  }
 
-  // Non-zero exit for user-cancelled sessions so scripts/automation can
-  // distinguish cancellation (SIGINT) from successful completion.
-  if (controller.signal.aborted) {
-    return ExitCode.FAILURE;
-  }
+    // Non-zero exit for user-cancelled sessions so scripts/automation can
+    // distinguish cancellation (SIGINT) from successful completion.
+    if (controller.signal.aborted) {
+      return ExitCode.FAILURE;
+    }
 
-  return ExitCode.OK;
+    return ExitCode.OK;
+  } finally {
+    sigintHandler.dispose();
+    process.removeListener("SIGINT", onSigint);
+  }
 }
 
 // ---------------------------------------------------------------------------

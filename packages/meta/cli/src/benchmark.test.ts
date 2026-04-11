@@ -167,6 +167,11 @@ describe("startup-latency probe (#1637) — production-purity contract", () => {
       "slice", // process.argv.slice(1)
       "stdin", // Bun.spawn stdio options
       "KOI_TUI_BROWSER_SOLID", // env marker preventing re-exec loop
+      // Signal handling helper (see tui-reexec-signals.ts, issue #1653).
+      // Lazily imported — not on any measured startup path; the
+      // command-dispatch benchmark scenario short-circuits before
+      // tui-reexec is ever taken.
+      "installTuiReexecSignalHandlers",
     ]);
 
     // Extract identifiers from the post-fast-path region. Simple
