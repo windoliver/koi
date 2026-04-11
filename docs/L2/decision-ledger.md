@@ -329,3 +329,7 @@ A replay-driven golden query would require extending the recorder to wire an `Au
 3. Replay lifecycle hooks so the ledger can graduate to a replay-driven golden query.
 4. Phase 2 part (b) — cross-session decision index (blocked on `@koi/search-nexus` port).
 5. Phase 3 — graph capability (Nexus RecordStore adapter + context graph materialization).
+
+## `AuditEntry.schema_version` (compatibility note, #1627)
+
+`@koi/core`'s `AuditEntry` interface gained a required `schema_version: number` field in #1627. The `makeAuditEntry()` test fake in `src/test-fakes.ts` was updated to include `schema_version: 1` in its default shape so all downstream tests remain type-correct under `exactOptionalPropertyTypes`.
