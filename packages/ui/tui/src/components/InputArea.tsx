@@ -124,10 +124,18 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     switch (result.kind) {
       case "submit": {
         key.preventDefault();
-        // Synchronous slash-prefix guard: block submit if the text is a slash command
-        // prefix (e.g. "/" or "/cmd"). This works even when "/" and Enter arrive in the
-        // same input batch — before the microtask-deferred store update can set disabledRef.
-        if (result.text.trim() !== "" && detectSlashPrefix(result.text) === null) {
+        // When the text is a slash command prefix, the SlashOverlay owns
+        // this Enter keystroke — its own useKeyboard handler calls
+        // handleSlashSelect which dispatches the command and then clears
+        // the textarea via the clearTrigger effect. If we clear + dismiss
+        // here too, we tear the overlay down before its handler fires
+        // and the dispatch is lost. Exit early and let the overlay handle
+        // everything (preventDefault has already blocked the textarea's
+        // own Enter handling).
+        if (result.text.trim() !== "" && detectSlashPrefix(result.text) !== null) {
+          break;
+        }
+        if (result.text.trim() !== "") {
           props.onSubmit(result.text);
         }
         textareaRef?.setText("");
