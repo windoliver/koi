@@ -32,6 +32,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
@@ -46,6 +47,7 @@ import {
 } from "@koi/tui";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
+import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
 import { createTuiRuntime } from "./tui-runtime.js";
@@ -328,6 +330,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const systemPrompt =
     skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
 
+  // Loop mode (--until-pass): each user turn becomes a runUntilPass
+  // invocation that iterates the agent against the verifier until
+  // convergence or budget exhaustion. Disables session transcript
+  // persistence because intermediate loop iterations are not
+  // resumable — matches koi start --until-pass semantics.
+  const isLoopMode = flags.untilPass.length > 0;
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
@@ -338,7 +347,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     approvalHandler: permissionBridge.handler,
     cwd: process.cwd(),
     systemPrompt,
-    session: { transcript: jsonlTranscript, sessionId: tuiSessionId },
+    // In loop mode, session persistence is intentionally omitted so
+    // failed iterations don't pollute the resumable JSONL transcript.
+    // Loop mode is a self-correcting execution, not a conversation.
+    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: tuiSessionId } }),
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
@@ -670,11 +682,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       try {
         // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
         // middleware composition, tool dispatch, and transcript management.
-        const stream = handle.runtime.run({
-          kind: "text",
-          text,
-          signal: controller.signal,
-        });
+        //
+        // Loop mode: each user turn becomes a runUntilPass invocation that
+        // iterates the agent against --until-pass until convergence. The
+        // multiplexing stream below surfaces all iterations' EngineEvents
+        // into drainEngineStream so the TUI renders each iteration's model
+        // output naturally.
+        const stream = isLoopMode
+          ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
+          : handle.runtime.run({
+              kind: "text",
+              text,
+              signal: controller.signal,
+            });
         await drainEngineStream(stream, store, batcher);
 
         // Refresh trajectory data after each turn so /trajectory view is current.
@@ -735,4 +755,146 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Block until stop() completes (SIGINT/SIGTERM/quit command all call stop()
   // and then process.exit — done() resolves right before that exit).
   await result.value.done();
+}
+
+// ---------------------------------------------------------------------------
+// Loop-mode turn execution (#1624)
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a single user turn through @koi/loop's runUntilPass. Each iteration
+ * calls the underlying KoiRuntime via a tee-runtime that forwards
+ * EngineEvents into a shared queue. The generator returned by this
+ * function yields events from that queue in order, so drainEngineStream
+ * sees a continuous stream of all iterations' events — the TUI renders
+ * each retry naturally.
+ *
+ * Loop lifecycle events (iteration.start, verifier.complete, terminal)
+ * are surfaced as synthetic text_delta events prefixed with "[loop]" so
+ * the user can see iteration progress and the final terminal state
+ * without needing a new TUI surface. The synthetic messages are
+ * formatted as plain text and treated as part of the assistant turn.
+ */
+async function* runTuiLoopTurn(
+  runtime: TuiRuntimeHandle["runtime"],
+  text: string,
+  signal: AbortSignal,
+  flags: TuiFlags,
+  store: TuiStore,
+): AsyncIterable<EngineEvent> {
+  void store; // reserved for future inline status dispatches
+  if (flags.untilPass.length === 0) {
+    throw new Error("runTuiLoopTurn: untilPass must be non-empty");
+  }
+  const argv: readonly [string, ...string[]] = [
+    flags.untilPass[0] as string,
+    ...flags.untilPass.slice(1),
+  ];
+
+  // Verifier subprocess: minimal env by default, opt-in to inherit
+  // parent env (minus Koi provider keys) via --verifier-inherit-env.
+  const verifier = createArgvGate(argv, {
+    cwd: process.cwd(),
+    timeoutMs: flags.verifierTimeoutMs,
+    ...(flags.verifierInheritEnv ? { env: scrubSensitiveEnv(process.env) } : {}),
+  });
+
+  // Event queue: tee-runtime pushes, generator pops. loopDone signals
+  // when runUntilPass has settled so the generator exits cleanly.
+  const queue: EngineEvent[] = [];
+  // let: mutable resolver reassigned each wait cycle
+  let waiter: (() => void) | null = null;
+  // let: mutable flag set when the loop terminates
+  let loopDone = false;
+
+  const enqueue = (event: EngineEvent): void => {
+    queue.push(event);
+    if (waiter !== null) {
+      const resolve = waiter;
+      waiter = null;
+      resolve();
+    }
+  };
+
+  const teeRuntime: LoopRuntime = {
+    async *run(input) {
+      for await (const event of runtime.run({
+        kind: input.kind,
+        text: input.text,
+        signal: input.signal,
+      })) {
+        enqueue(event);
+        yield event;
+      }
+    },
+  };
+
+  // Fire the loop in the background. finally() signals completion so
+  // the generator's drain loop below exits.
+  const loopPromise = runUntilPass({
+    runtime: teeRuntime,
+    verifier,
+    initialPrompt: text,
+    workingDir: process.cwd(),
+    maxIterations: flags.maxIter,
+    verifierTimeoutMs: flags.verifierTimeoutMs,
+    // Same CLI semantics: the library breaker is unreachable so
+    // --max-iter is the binding iteration budget.
+    maxConsecutiveFailures: Number.MAX_SAFE_INTEGER,
+    signal,
+    onEvent: (event) => {
+      // Surface iteration boundaries as plain text_delta events so the
+      // user sees "--- loop iteration N / M ---" banners inline with
+      // the model output in the TUI. Using text_delta keeps the
+      // existing TUI renderer working without new event surface.
+      if (event.kind === "loop.iteration.start") {
+        enqueue({
+          kind: "text_delta",
+          delta: `\n--- loop iteration ${event.iteration} / ${flags.maxIter} ---\n`,
+        });
+      } else if (event.kind === "loop.verifier.complete") {
+        const line = event.result.ok
+          ? `✔ verifier passed (${argv[0]})\n`
+          : `✘ verifier failed: ${event.result.reason}\n`;
+        enqueue({ kind: "text_delta", delta: line });
+      } else if (event.kind === "loop.terminal") {
+        const result = event.result;
+        const summary =
+          result.status === "converged"
+            ? `\nkoi: loop converged after ${result.iterations} iteration(s)\n`
+            : `\nkoi: loop ended (${result.status}) after ${result.iterations} iteration(s) — ${result.terminalReason}\n`;
+        enqueue({ kind: "text_delta", delta: summary });
+      }
+    },
+  }).finally(() => {
+    loopDone = true;
+    if (waiter !== null) {
+      const resolve = waiter;
+      waiter = null;
+      resolve();
+    }
+  });
+
+  // Drain the queue to the generator's consumer. When loopDone is set
+  // AND the queue is empty, exit cleanly.
+  try {
+    while (!loopDone || queue.length > 0) {
+      const event = queue.shift();
+      if (event !== undefined) {
+        yield event;
+        continue;
+      }
+      if (loopDone) break;
+      await new Promise<void>((resolve) => {
+        waiter = resolve;
+      });
+    }
+  } finally {
+    // Always await the loop promise so any rejection is observed.
+    // Swallow errors here — the loop's own error handling has
+    // already recorded them via onEvent/iterationRecords.
+    await loopPromise.catch(() => {
+      // intentional
+    });
+  }
 }

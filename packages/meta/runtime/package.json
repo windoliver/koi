@@ -23,6 +23,7 @@
     "@koi/fs-nexus": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
+    "@koi/loop": "workspace:*",
     "@koi/mcp": "workspace:*",
     "@koi/mcp-server": "workspace:*",
     "@koi/memory": "workspace:*",
