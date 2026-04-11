@@ -42,6 +42,7 @@
     { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-report" },
     { "path": "../../security/middleware-exfiltration-guard" },
+    { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../security/middleware-permissions" },
     { "path": "../../lib/bash-ast" },

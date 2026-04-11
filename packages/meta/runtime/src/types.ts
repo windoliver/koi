@@ -25,6 +25,7 @@ import type {
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
+import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -243,6 +244,52 @@ export interface RuntimeConfig {
    * Pass `false` to disable (e.g., for testing or trusted environments).
    */
   readonly credentialPathGuard?: false | undefined;
+
+  /**
+   * OpenTelemetry GenAI semantic convention span emission. Default: disabled.
+   *
+   * When provided, wires `@koi/middleware-otel` per-stream so every model call
+   * and tool call emits an OTel span with GenAI attributes (gen_ai.operation.name,
+   * gen_ai.provider.name, gen_ai.usage.input_tokens, etc.).
+   *
+   * Requires an OTel tracer provider registered globally (or per tracerName).
+   * Only `@opentelemetry/api` is bundled — the SDK (exporter, processor) must be
+   * wired by the host application before calling createRuntime.
+   *
+   * @example
+   *   // Host wires SDK once:
+   *   const provider = new BasicTracerProvider({ spanProcessors: [new OTLPTraceExporter()] });
+   *   trace.setGlobalTracerProvider(provider);
+   *
+   *   // Then enable in runtime config:
+   *   createRuntime({ otel: true })               // default tracer name
+   *   createRuntime({ otel: { tracerName: "my-app" } })
+   *   createRuntime({ otel: { captureContent: true } })  // opt-in prompt capture
+   */
+  /**
+   * OpenTelemetry GenAI semantic convention span emission. Default: disabled.
+   *
+   * When provided, wires `@koi/middleware-otel` per-stream so every model call
+   * and tool call emits an OTel span with GenAI attributes (gen_ai.operation.name,
+   * gen_ai.provider.name, gen_ai.usage.input_tokens, etc.).
+   *
+   * Requires an OTel tracer provider registered globally before calling createRuntime.
+   * Only `@opentelemetry/api` is bundled — the SDK (exporter, processor) must be
+   * wired by the host application.
+   *
+   * - `true`: enable with all defaults
+   * - `OtelMiddlewareConfig`: enable with custom tracer name / content capture
+   * - `false` / `undefined`: disabled (default)
+   *
+   * @example
+   *   // Host wires SDK once:
+   *   const provider = new BasicTracerProvider({ spanProcessors: [new OTLPTraceExporter()] });
+   *   trace.setGlobalTracerProvider(provider);
+   *
+   *   createRuntime({ otel: true })
+   *   createRuntime({ otel: { tracerName: "my-app", captureContent: true } })
+   */
+  readonly otel?: OtelMiddlewareConfig | true | false | undefined;
 
   /**
    * Base clock for trajectory timestamps. Each stream creates its own
