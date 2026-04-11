@@ -218,6 +218,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/loop": {
+      "name": "@koi/loop",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/validation": "workspace:*",
+      },
+    },
     "packages/lib/lsp": {
       "name": "@koi/lsp",
       "version": "0.0.0",
@@ -437,6 +446,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
@@ -507,6 +517,7 @@
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
+        "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/mcp-server": "workspace:*",
@@ -1003,6 +1014,8 @@
     "@koi/hook-prompt": ["@koi/hook-prompt@workspace:packages/exec/hook-prompt"],
 
     "@koi/hooks": ["@koi/hooks@workspace:packages/lib/hooks"],
+
+    "@koi/loop": ["@koi/loop@workspace:packages/lib/loop"],
 
     "@koi/lsp": ["@koi/lsp@workspace:packages/lib/lsp"],
 

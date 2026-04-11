@@ -50,6 +50,7 @@ export const L1_PACKAGES: ReadonlySet<string> = new Set([
 ]);
 
 export const L2_PACKAGES: ReadonlySet<string> = new Set([
+  "@koi/loop",
   "@koi/mcp",
   "@koi/plugins",
   "@koi/sandbox-os",

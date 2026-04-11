@@ -17,6 +17,7 @@
     { "path": "../../lib/fs-nexus" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
+    { "path": "../../lib/loop" },
     { "path": "../../lib/query-engine" },
     { "path": "../../lib/spawn-tools" },
     { "path": "../../lib/task-tools" },
