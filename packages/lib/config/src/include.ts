@@ -44,7 +44,62 @@ export async function processIncludes(
     options?.maxDepth ?? DEFAULT_MAX_DEPTH,
     0,
     new Set(),
+    undefined,
   );
+}
+
+/**
+ * Result shape for `processIncludesWithFiles`: `files` is ALWAYS
+ * populated with the set of paths that were **successfully opened**
+ * (the partial include graph), regardless of whether the call succeeded.
+ *
+ * **KNOWN LIMITATION**: missing include paths are NOT included. A
+ * rejected reload caused by a brand-new missing `$include` file does
+ * not track that path, so creating the file alone will not trigger a
+ * recovery reload — the user must re-touch the root config (or any
+ * other already-watched file) to retrigger loading. This is a
+ * deliberate scope choice to avoid the complexity of directory-level
+ * watching or bounded existence probes. See `docs/L2/config.md` for
+ * the full documented limitation.
+ */
+export type ProcessIncludesWithFilesResult =
+  | {
+      readonly ok: true;
+      readonly value: Record<string, unknown>;
+      readonly files: readonly string[];
+    }
+  | {
+      readonly ok: false;
+      readonly error: KoiError;
+      readonly files: readonly string[];
+    };
+
+/**
+ * Like `processIncludes`, but also returns the set of absolute file paths
+ * that were actually read during `$include` resolution. The files list is
+ * populated even on failure (it contains every file that was opened
+ * before the error). Used by `ConfigManager.watch()` to arm watchers on
+ * every file in the include graph, not just the root.
+ */
+export async function processIncludesWithFiles(
+  parsed: Readonly<Record<string, unknown>>,
+  parentDir: string,
+  options?: ProcessIncludesOptions,
+): Promise<ProcessIncludesWithFilesResult> {
+  const files = new Set<string>();
+  const result = await processIncludesRecursive(
+    parsed,
+    parentDir,
+    options?.env,
+    options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+    0,
+    new Set(),
+    files,
+  );
+  if (!result.ok) {
+    return { ok: false, error: result.error, files: [...files] };
+  }
+  return { ok: true, value: result.value, files: [...files] };
 }
 
 async function processIncludesRecursive(
@@ -54,6 +109,7 @@ async function processIncludesRecursive(
   maxDepth: number,
   currentDepth: number,
   ancestors: ReadonlySet<string>,
+  loadedFiles: Set<string> | undefined,
 ): Promise<Result<Record<string, unknown>, KoiError>> {
   const includeValue = parsed.$include;
   if (includeValue === undefined) {
@@ -132,6 +188,17 @@ async function processIncludesRecursive(
       };
     }
 
+    // Track the include path AFTER a successful read, not before.
+    // Missing include files are NOT added to `loadedFiles` — see the
+    // KNOWN LIMITATION block on `ProcessIncludesWithFilesResult`. In
+    // short: tracking missing paths would require either arming a
+    // watcher per missing path (unbounded retry loops) or directory-
+    // level watching (significant new complexity). The deliberate
+    // choice is to omit missing paths and require the user to
+    // re-touch the root file for recovery in the "newly-referenced
+    // missing include" case.
+    loadedFiles?.add(includePath);
+
     const parseResult = loadConfigFromString(content, includePath, { env });
     if (!parseResult.ok) {
       return parseResult;
@@ -148,6 +215,7 @@ async function processIncludesRecursive(
       maxDepth,
       currentDepth + 1,
       nextAncestors,
+      loadedFiles,
     );
 
     if (!resolved.ok) {

@@ -171,8 +171,12 @@ Atomic-save editors (vim, VS Code) replace the target inode via `write tmp → r
 
 ### Known Limitations
 
-- **`$include`d files are not auto-watched.** Only the main config file is watched. Changes to included files will not trigger a reload. This is a known v1 scar carried forward; a follow-up PR may extend watching to the full include graph.
+- **`$include`d files ARE auto-watched once successfully loaded.** `ConfigManager.watch()` arms a watcher for every file in the resolved include graph (root + transitively resolved `$include` entries). Edits to any of those files trigger a reload, and the watcher set is rebuilt after every successful reload so edits to newly-added or newly-removed includes are picked up. Rejected reloads that change the graph also cover the union of old + candidate files so a fix to a rejected existing file still recovers without re-touching the root.
+
+- **Newly-referenced *missing* `$include` files do NOT self-recover.** If you edit the root config to add `$include: ["new.yaml"]` and `new.yaml` does not exist, the reload attempt fires a `rejected` event with `NOT_FOUND` as expected — but the missing path is NOT added to the watched file set (doing so would either require one perpetual retry loop per missing path or a directory-level watcher; both are out of scope). To recover, create the missing file AND re-touch the root config (or any other already-watched file in the include graph). The `rejected` event's error context includes the missing path so operators can see exactly what's needed. This narrower contract is locked in by a regression test; revisit if a bounded directory-watch mechanism is added later.
+
 - **All-or-nothing reloads.** If a single edit touches both a hot and a restart-required field, the entire reload is rejected and the old config is retained (including the hot field). Split edits if you need the hot change to land immediately.
+
 - **No consumer-side veto.** `ConfigConsumer.onConfigChange` is best-effort. See the contract section above.
 
 ### Config Composition via `$include`

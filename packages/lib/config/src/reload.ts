@@ -27,12 +27,29 @@ import { diffConfig } from "./diff.js";
 import type { ConfigReloadEvent } from "./events.js";
 import { createConfigEventBus } from "./events.js";
 import type { LoadConfigOptions } from "./loader.js";
-import { loadConfig } from "./loader.js";
+import { loadConfigWithFiles } from "./loader.js";
 import { deepMerge } from "./merge.js";
 import { validateKoiConfig } from "./schema.js";
 import type { WritableConfigStore } from "./store.js";
 import { createConfigStore } from "./store.js";
 import { watchConfigFile } from "./watcher.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function sameFileSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setA = new Set(a);
+  for (const file of b) {
+    if (!setA.has(file)) return false;
+  }
+  return true;
+}
+
+function dedupeFiles(files: readonly string[]): readonly string[] {
+  return [...new Set(files)];
+}
 
 // ---------------------------------------------------------------------------
 // Default config
@@ -154,7 +171,37 @@ export interface ConfigManager {
 export function createConfigManager(options: CreateConfigManagerOptions): ConfigManager {
   const store = createConfigStore<KoiConfig>(DEFAULT_KOI_CONFIG);
   const events = createConfigEventBus();
-  let watcherCleanup: ConfigUnsubscribe | undefined;
+  /**
+   * Active watch session. `null` when the manager is not watching. The
+   * session holds a MUTABLE cleanup list that `syncWatchers` updates in
+   * place when the include graph changes, so the unsubscribe returned
+   * from `watch()` always closes the currently-active watcher set — not
+   * just the initial one. (Codex HIGH round 4-of-session-3.)
+   */
+  type WatchSession = {
+    cleanups: ConfigUnsubscribe[];
+    files: readonly string[];
+  };
+  let watchSession: WatchSession | null = null;
+  /**
+   * The set of files the most recent successful load actually read.
+   * Starts empty and is committed only after a successful reload /
+   * initialize, so a rejected reload cannot move the watcher set onto
+   * an uncommitted include graph.
+   */
+  let loadedFiles: readonly string[] = [];
+  /**
+   * During a rejected reload that changed the `$include` graph, holds
+   * the union of (committed graph + rejected candidate graph) so edits
+   * to a newly-referenced **existing** file can still trigger a
+   * recovery reload. Cleared on the next successful reload.
+   *
+   * **KNOWN LIMITATION**: missing include paths are NOT in this set —
+   * only files that were successfully opened during the rejected
+   * reload attempt. Recovering from a newly-referenced MISSING include
+   * requires re-touching the root config. See `docs/L2/config.md`.
+   */
+  let pendingRejectedFiles: readonly string[] | null = null;
 
   /**
    * Single-flight machinery. Operations are appended to a serialized
@@ -189,14 +236,44 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
   // (Codex HIGH round 8.)
   let initializeAttempted = false;
 
-  const loadAndValidate = async (): Promise<Result<KoiConfig, KoiError>> => {
-    const loadResult = await loadConfig(options.filePath, options.loaderOptions);
-    if (!loadResult.ok) return loadResult;
+  /**
+   * Result of a load+validate attempt. `files` is ALWAYS present — on
+   * success it's the committable include graph, on failure it's the
+   * partial graph (whatever was **successfully opened** before the
+   * error). The caller uses the partial graph to set
+   * `pendingRejectedFiles` so watchers can cover newly-referenced
+   * **existing** files even when validation failed. Missing include
+   * paths are not in the partial graph; see the KNOWN LIMITATION in
+   * `docs/L2/config.md`.
+   */
+  type LoadValidateResult =
+    | {
+        readonly ok: true;
+        readonly value: { readonly config: KoiConfig; readonly files: readonly string[] };
+      }
+    | {
+        readonly ok: false;
+        readonly error: KoiError;
+        readonly files: readonly string[];
+      };
+
+  const loadAndValidate = async (): Promise<LoadValidateResult> => {
+    const loadResult = await loadConfigWithFiles(options.filePath, options.loaderOptions);
+    if (!loadResult.ok) {
+      return { ok: false, error: loadResult.error, files: loadResult.files };
+    }
     const merged = deepMerge(
       DEFAULT_KOI_CONFIG as unknown as Record<string, unknown>,
       loadResult.value,
     );
-    return validateKoiConfig(merged);
+    const validated = validateKoiConfig(merged);
+    if (!validated.ok) {
+      return { ok: false, error: validated.error, files: loadResult.files };
+    }
+    return {
+      ok: true,
+      value: { config: validated.value, files: loadResult.files },
+    };
   };
 
   /**
@@ -221,15 +298,27 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
       const reason: "load" | "validation" =
         validated.error.code === "VALIDATION" ? "validation" : "load";
       events.notify({ kind: "rejected", filePath, reason, error: validated.error });
-      return validated;
+      // Always recompute `pendingRejectedFiles` from the LATEST candidate
+      // (not the accumulated history). If the candidate graph now matches
+      // the committed graph, clear it — a previous rejection's stale
+      // files must not be kept watched. Otherwise replace with the
+      // current candidate. (Codex MEDIUM round 7-of-session-3.)
+      pendingRejectedFiles = sameFileSet(validated.files, loadedFiles) ? null : validated.files;
+      return { ok: false, error: validated.error };
     }
 
     const prev = store.get();
-    const next = validated.value;
+    const next = validated.value.config;
+    const candidateFiles = validated.value.files;
     const changedPaths = diffConfig(prev, next);
 
     // Empty-diff short-circuit: spurious watcher event, nothing to do.
+    // The include graph may still have changed (e.g. an included file
+    // was replaced with another that produces identical merged values),
+    // so commit the candidate graph. No store update needed.
     if (changedPaths.length === 0) {
+      loadedFiles = candidateFiles;
+      pendingRejectedFiles = null;
       events.notify({
         kind: "applied",
         filePath,
@@ -258,11 +347,20 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
         error,
         restartRequiredPaths: restart,
       });
+      // Intentionally do NOT update loadedFiles — the store still holds
+      // the old config, so the active include graph is still the old one.
+      // Always recompute `pendingRejectedFiles` from the latest candidate
+      // (clearing it when the candidate equals the committed graph) so
+      // stale rejected paths from a previous rejection are not kept
+      // around. (Codex MEDIUM round 7-of-session-3.)
+      pendingRejectedFiles = sameFileSet(candidateFiles, loadedFiles) ? null : candidateFiles;
       return { ok: false, error };
     }
 
-    // All changed paths are hot-applicable. Commit and notify.
+    // All changed paths are hot-applicable. Commit store and include graph together.
     store.set(next);
+    loadedFiles = candidateFiles;
+    pendingRejectedFiles = null;
     events.notify({
       kind: "applied",
       filePath,
@@ -315,14 +413,35 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
       const reason: "load" | "validation" =
         validated.error.code === "VALIDATION" ? "validation" : "load";
       events.notify({ kind: "rejected", filePath, reason, error: validated.error });
-      return validated;
+      // Stash the partial include graph (whatever was successfully
+      // opened before the error) so a later watch() can arm watchers
+      // on files referenced by the rejected config. Missing include
+      // files are NOT in this list (see include.ts) — the user
+      // recovers by fixing the root file, which the root-file watcher
+      // picks up. Always recompute from latest candidate; do not
+      // preserve previous pending state. (Codex HIGH round 6/MEDIUM
+      // round 7 of session 3.)
+      pendingRejectedFiles = validated.files.length > 0 ? validated.files : null;
+      return { ok: false, error: validated.error };
     }
 
     const prev = store.get();
-    const next = validated.value;
+    const next = validated.value.config;
     const changedPaths = diffConfig(prev, next);
     store.set(next);
+    // Commit the include graph together with the store. Until this point
+    // `loadedFiles` still holds the previous graph (empty on first init)
+    // so a failed initialize cannot move watchers onto an uncommitted
+    // candidate set.
+    loadedFiles = validated.value.files;
+    pendingRejectedFiles = null;
     initialized = true;
+
+    // If watch() was called BEFORE initialize() (legacy startup ordering),
+    // it could only arm a single-file watcher on the root. Now that the
+    // include graph is known, upgrade the watcher set so edits to
+    // `$include`d files also fire. (Codex HIGH round 2-of-session-3.)
+    syncWatchers();
 
     events.notify({
       kind: "applied",
@@ -385,7 +504,15 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
         const finalKind = batch.kind;
         if (pending === batch) pending = null;
         const run = finalKind === "initialize" ? doInitialize : doReload;
-        return run();
+        const result = await run();
+        // Sync the watcher graph after EVERY batch — success or failure,
+        // manual or watcher-triggered. This keeps `watch()` + direct
+        // `reload()` callers from leaving stale watchers when the
+        // include graph changes. `syncWatchers` is a no-op when the
+        // file set hasn't actually changed. (Codex HIGH round 8-of-
+        // session-3.)
+        syncWatchers();
+        return result;
       });
     pending = batch;
     tail = batch.promise;
@@ -416,32 +543,39 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
   };
   const reload = (): Promise<Result<KoiConfig, KoiError>> => enqueue("reload");
 
-  const watch = (): ConfigUnsubscribe => {
-    watcherCleanup?.();
-    watcherCleanup = watchConfigFile({
-      filePath: options.filePath,
-      onChange: async () => {
-        if (!initialized) {
-          // Two sub-cases for uninitialized state:
-          //   (a) The caller has not yet attempted initialize() — stay
-          //       passive. Silent bootstrap via the watcher would bypass the
-          //       caller's explicit startup sequencing. (Codex HIGH round 7.)
-          //   (b) The caller has tried initialize() and it failed — retry on
-          //       every file event so fixing the file can recover the
-          //       manager without an external retry. (Codex HIGH round 8.)
-          if (initializeAttempted) {
-            await initialize();
-          }
-          return;
-        }
-        await reload();
+  /**
+   * Shared onChange handler used by every file watcher. Triggers a reload
+   * (or retry init) — `syncWatchers()` is called automatically by the
+   * batch completion in `enqueue()`, so this path doesn't need to sync
+   * explicitly.
+   */
+  const onFileEvent = async (): Promise<void> => {
+    if (!initialized) {
+      // Two sub-cases for uninitialized state:
+      //   (a) The caller has not yet attempted initialize() — stay
+      //       passive. Silent bootstrap via the watcher would bypass the
+      //       caller's explicit startup sequencing.
+      //   (b) The caller has tried initialize() and it failed — retry on
+      //       every file event so fixing the file can recover the
+      //       manager without an external retry.
+      if (initializeAttempted) {
+        await initialize();
+      }
+      return;
+    }
+    await reload();
+  };
+
+  const armWatcherForFile = (filePath: string): ConfigUnsubscribe => {
+    return watchConfigFile({
+      filePath,
+      onChange: () => {
+        void onFileEvent();
       },
       debounceMs: options.watchDebounceMs,
       // Surface watcher errors through the optional `onWatcherError`
       // callback, NOT the events bus. This keeps the `attempted → rejected`
-      // event lifecycle clean and prevents telemetry from misclassifying
-      // dead-watcher / permission / NFS failures as config load failures.
-      // (Codex MEDIUM round 6-of-session-2.)
+      // event lifecycle clean.
       onError: (err: unknown) => {
         try {
           options.onWatcherError?.(err);
@@ -450,12 +584,112 @@ export function createConfigManager(options: CreateConfigManagerOptions): Config
         }
       },
     });
-    return watcherCleanup;
+  };
+
+  /**
+   * Rebuilds the active watcher session to cover `files`. Called with
+   * either `loadedFiles` (normal path, after a successful reload) or the
+   * union of committed + rejected candidate files (after a rejected
+   * reload that changed the include graph, to recover when the user
+   * fixes the rejected file).
+   *
+   * Mutates `watchSession.cleanups` in place so the unsubscribe returned
+   * from `watch()` always closes the currently-active set, not just the
+   * initial one. (Codex HIGH round 4-of-session-3.)
+   */
+  const syncWatchersToFiles = (files: readonly string[]): void => {
+    if (watchSession === null) {
+      // Not currently watching — nothing to sync.
+      return;
+    }
+    if (sameFileSet(watchSession.files, files)) {
+      return;
+    }
+    // Tear down old watchers and install new ones in place. The session
+    // object itself stays the same, so the `watch()`-returned unsubscribe
+    // continues to close whichever watchers are currently active.
+    for (const cleanup of watchSession.cleanups) {
+      cleanup();
+    }
+    watchSession.cleanups = files.map(armWatcherForFile);
+    watchSession.files = files;
+  };
+
+  /**
+   * Normal-path watcher sync: use `loadedFiles`. If a rejected reload is
+   * pending recovery (pendingRejectedFiles is set), use the union so the
+   * user can still fix the rejected file and trigger another reload.
+   */
+  const syncWatchers = (): void => {
+    if (pendingRejectedFiles !== null) {
+      syncWatchersToFiles(dedupeFiles([...loadedFiles, ...pendingRejectedFiles]));
+    } else {
+      syncWatchersToFiles(loadedFiles);
+    }
+  };
+
+  const watch = (): ConfigUnsubscribe => {
+    // Tear down any pre-existing session first.
+    if (watchSession !== null) {
+      for (const cleanup of watchSession.cleanups) {
+        cleanup();
+      }
+      watchSession = null;
+    }
+    // Compute the initial file set:
+    //   1. If initialize() succeeded, use the committed include graph.
+    //      Union with pendingRejectedFiles if a rejected reload is
+    //      awaiting recovery on an already-existing file.
+    //   2. If initialize() was attempted and failed, `loadedFiles` is
+    //      still empty but `pendingRejectedFiles` holds whatever was
+    //      successfully opened before the failure. Use that as the
+    //      watch set.
+    //   3. Otherwise fall back to the root file so watcher events can
+    //      trigger a first-time bootstrap via onFileEvent.
+    // KNOWN LIMITATION: missing newly-referenced include files are NOT
+    // in any of these sets; recovery for that case requires re-touching
+    // the root config. See docs/L2/config.md.
+    let filesToWatch: readonly string[];
+    if (loadedFiles.length > 0) {
+      filesToWatch =
+        pendingRejectedFiles !== null
+          ? dedupeFiles([...loadedFiles, ...pendingRejectedFiles])
+          : loadedFiles;
+    } else if (pendingRejectedFiles !== null && pendingRejectedFiles.length > 0) {
+      filesToWatch = pendingRejectedFiles;
+    } else {
+      filesToWatch = [options.filePath];
+    }
+    const session: WatchSession = {
+      cleanups: filesToWatch.map(armWatcherForFile),
+      files: filesToWatch,
+    };
+    watchSession = session;
+    // Returned unsubscribe closes THIS session's currently-active watcher
+    // set (read dynamically from the session, so it picks up any
+    // re-arms that happened via syncWatchers). It only clears the
+    // manager's `watchSession` pointer if this session is still the
+    // active one — protecting against a later watch() call stealing
+    // state via an old unsubscribe handle.
+    return () => {
+      for (const cleanup of session.cleanups) {
+        cleanup();
+      }
+      session.cleanups = [];
+      if (watchSession === session) {
+        watchSession = null;
+      }
+    };
   };
 
   const dispose = (): void => {
-    watcherCleanup?.();
-    watcherCleanup = undefined;
+    if (watchSession !== null) {
+      for (const cleanup of watchSession.cleanups) {
+        cleanup();
+      }
+      watchSession.cleanups = [];
+      watchSession = null;
+    }
   };
 
   /**
