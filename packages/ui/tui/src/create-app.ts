@@ -15,6 +15,7 @@
  */
 
 import type { Result } from "@koi/core/errors";
+import type { ApprovalDecision } from "@koi/core/middleware";
 // `createCliRenderer` uses a native Zig FFI library — lazy-import it inside
 // start() so tests with an injected renderer never load the native binary.
 import type { CliRenderer, SyntaxStyle, TreeSitterClient } from "@opentui/core";
@@ -102,6 +103,72 @@ export interface CreateTuiAppConfig {
    * <markdown> with full prose/heading/code-fence support. See #1542.
    */
   readonly treeSitterClient?: TreeSitterClient | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// #1689 — stdin parser reset wrapper
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal structural view of the objects the permission-respond wrapper
+ * depends on — keeps the helper testable without pulling in
+ * `@opentui/core` or `PermissionBridge` types.
+ */
+interface ParserResetDeps {
+  readonly bridge: {
+    readonly respond: (requestId: string, decision: ApprovalDecision) => void;
+  };
+  readonly renderer: {
+    readonly stdinParser: { readonly reset: () => void } | null;
+  };
+}
+
+/**
+ * Read `stdinParser.reset` off a `CliRenderer` without touching the private
+ * field directly. @opentui/core declares `stdinParser` private on the class,
+ * but we need to reach the recovery hook without forking the dep. The field
+ * is assigned once in the renderer's constructor and never reassigned, so
+ * snapshotting a bound `reset` at mount time is safe.
+ *
+ * Returns `null` when the parser or its `reset` method is not present —
+ * covers test renderers, unusual configs, and any future upstream rename.
+ */
+export function readStdinParserReset(renderer: CliRenderer): { readonly reset: () => void } | null {
+  const parser: unknown = Reflect.get(renderer, "stdinParser");
+  if (parser === null || parser === undefined || typeof parser !== "object") {
+    return null;
+  }
+  const reset: unknown = Reflect.get(parser, "reset");
+  if (typeof reset !== "function") {
+    return null;
+  }
+  return {
+    reset: (): void => {
+      reset.call(parser);
+    },
+  };
+}
+
+/**
+ * Build a `respond`-shaped callback that dispatches the permission response
+ * through the bridge, then resets `renderer.stdinParser` to recover from
+ * `@opentui/core@0.1.96`'s post-permission key-drop bug (#1689).
+ *
+ * `reset()` is the only parser operation that clears `paste`, `pending`,
+ * `pendingSinceMs`, and the state machine in one step — the parser latch
+ * that swallows Enter/Backspace/Esc/Tab cannot be unstuck any other way.
+ *
+ * Ordering matters: bridge.respond dispatches `permission_response` which
+ * clears the modal synchronously; the reset runs after, so the parser is
+ * unstuck exactly when focus returns to the input area.
+ */
+export function createPermissionRespondWithParserReset(
+  deps: ParserResetDeps,
+): (requestId: string, decision: ApprovalDecision) => void {
+  return (requestId, decision): void => {
+    deps.bridge.respond(requestId, decision);
+    deps.renderer.stdinParser?.reset();
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +338,18 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           return originalOnce(event, listener);
         };
 
+        // #1689: wrap permissionBridge.respond so that every permission
+        // decision (y/n/a or Esc-dismiss) triggers a stdin parser reset
+        // immediately after the bridge dispatches `permission_response`.
+        // See `createPermissionRespondWithParserReset` above for root-cause
+        // and ordering notes. Wrapping `respond` is the single chokepoint
+        // that covers both the keypress and Esc-dismiss paths in `TuiRoot`
+        // without touching any of the view code.
+        const wrappedPermissionRespond = createPermissionRespondWithParserReset({
+          bridge: permissionBridge,
+          renderer: { stdinParser: readStdinParserReset(activeRenderer) },
+        });
+
         // If render throws, roll back all committed state so the handle is retryable.
         try {
           await render(
@@ -288,7 +367,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     onFork,
                     onImageAttach,
                     onTurnComplete,
-                    onPermissionRespond: permissionBridge.respond,
+                    onPermissionRespond: wrappedPermissionRespond,
                     syntaxStyle,
                     treeSitterClient,
                   });
