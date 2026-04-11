@@ -1,6 +1,6 @@
 # @koi/decision-ledger
 
-> Read-only per-session projection that joins trajectory steps and audit entries into a single time-ordered timeline, with the run report attached as a sidecar summary.
+> Read-only per-session projection that exposes trajectory steps and audit entries as separate ordered lanes, with the run report attached as a sidecar summary. Deliberately does NOT merge the lanes into a single timeline — see the ordering discussion below.
 
 ## Why it exists
 
@@ -22,6 +22,7 @@ It is Phase 2 part (a) of issue [#1469](https://github.com/windoliver/koi/issues
 - ❌ **Not a streaming surface.** Single-shot query returning the full timeline.
 - ❌ **Not an extension point.** This is a diagnostic projection, not one of Koi's 10 core vocabulary concepts.
 - ❌ **Not a denial bridge.** Permissions middleware already audits every decision. This package reads audit; it does not duplicate-log.
+- ❌ **Not a merged causal timeline.** Without a shared causal key across trajectory and audit, any wall-clock merge would be misleading — an approval audit entry could render on the wrong side of the step it governed. The lanes stay separate by design.
 
 ## Layer position
 
@@ -47,35 +48,73 @@ import type { RichTrajectoryStep, TrajectoryDocumentStore } from "@koi/core/rich
 import type { AuditEntry, AuditSink, KoiError, Result } from "@koi/core";
 import type { ReportStore, RunReport } from "@koi/core/run-report";
 
-export type DecisionLedgerEntry =
-  | {
-      readonly kind: "trajectory-step";
-      readonly timestamp: number;  // ms since epoch, hoisted from RichTrajectoryStep
-      readonly stepIndex: number;  // secondary sort tiebreaker
-      readonly source: RichTrajectoryStep;
-    }
-  | {
-      readonly kind: "audit";
-      readonly timestamp: number;  // ms since epoch, hoisted from AuditEntry
-      readonly turnIndex: number;
-      readonly source: AuditEntry;
-    };
-
 export type SourceStatus =
-  | { readonly state: "present" }
-  | { readonly state: "missing" }                        // sink returned empty/undefined
+  | { readonly state: "present" }  // clean — no leakage
+  | {
+      /**
+       * Lane has usable data AND the sink returned records for other
+       * sessions. Forces explicit handling via dedicated discriminant
+       * — a naive `state === "present"` switch will NOT match.
+       */
+      readonly state: "present-with-leakage";
+      readonly integrityFilteredCount: number;
+    }
+  | { readonly state: "missing" }  // sink legitimately returned zero records
+  | {
+      /**
+       * Dedicated state: the sink returned records but every one belonged
+       * to a different session. Do NOT alias to `missing`.
+       */
+      readonly state: "integrity-violation";
+      readonly integrityFilteredCount: number;
+    }
   | { readonly state: "unqueryable" }                    // sink absent or lacks .query
   | { readonly state: "error"; readonly error: KoiError };
 
+export interface IntegrityLeakCounts {
+  /** Records the audit sink returned for other sessions (dropped on partial-leak fetches). */
+  readonly audit: number;
+  /** Records the report store returned for other sessions (dropped on partial-leak fetches). */
+  readonly report: number;
+  // Trajectory is deliberately absent — see TrajectoryTrustModel below.
+}
+
+/**
+ * Trajectory lane trust is store-authoritative, NOT field-verified.
+ * RichTrajectoryStep has no sessionId field so the ledger cannot
+ * re-validate trajectory records against the requested session.
+ */
+export type TrajectoryTrustModel = "store-authoritative";
+
 export interface DecisionLedger {
   readonly sessionId: string;
-  readonly entries: readonly DecisionLedgerEntry[];      // sorted by timestamp ascending, stable within source
-  readonly runReport?: RunReport | undefined;            // latest RunReport for the session, if any
+  /** Trajectory steps in `stepIndex` order (ledger re-sorts if the store returns shuffled records). */
+  readonly trajectorySteps: readonly RichTrajectoryStep[];
+  /** Audit entries for this session, sorted ascending by timestamp. */
+  readonly auditEntries: readonly AuditEntry[];
+  /** Latest run report for this session, when a ReportStore is configured. */
+  readonly runReport?: RunReport | undefined;
   readonly sources: {
     readonly trajectory: SourceStatus;
     readonly audit: SourceStatus;
     readonly report: SourceStatus;
   };
+  /**
+   * Top-level integrity discriminator for sinks the ledger CAN re-validate.
+   * Non-zero on any sink → trust-boundary failure. Must be checked
+   * independently of `sources.*.state`.
+   */
+  readonly integrityLeakCounts: IntegrityLeakCounts;
+  /** Always `"store-authoritative"` — see caveat below. */
+  readonly trajectoryTrustModel: TrajectoryTrustModel;
+  /**
+   * Literal-`false` flat signal. A caller writing
+   * `if (ledger.allLanesFieldVerified) trust()` always takes the else
+   * branch, because trajectory cannot be field-verified. Exists so
+   * flat shortcut checks on `integrityLeakCounts === {0,0}` cannot be
+   * mistaken for "ledger is fully trustworthy."
+   */
+  readonly allLanesFieldVerified: false;
 }
 
 export interface DecisionLedgerReader {
@@ -93,13 +132,34 @@ export function createDecisionLedger(config: DecisionLedgerConfig): DecisionLedg
 
 ## Usage
 
+### From a `RuntimeHandle` (recommended)
+
+`@koi/runtime` exposes a `createDecisionLedger` factory on the handle when the runtime has a `trajectoryStore`. This is the easy path — the runtime wires its own `trajectoryStore` and `reportStore` (if configured), and callers can optionally inject an ad-hoc `auditSink` via the override.
+
+```typescript
+import { createRuntime } from "@koi/runtime";
+
+const runtime = createRuntime({ adapter, channel, trajectoryDir: "./traj" });
+if (runtime.createDecisionLedger) {
+  const ledger = runtime.createDecisionLedger({
+    // optional override — inject an ad-hoc audit sink for incident tooling
+    auditSink: myAuditSink,
+  });
+  const result = await ledger.getLedger("session-abc-123");
+}
+```
+
+The handle field is `undefined` when the runtime has no `trajectoryStore` (i.e., no `trajectoryDir` / `trajectoryNexus` configured), since trajectory is the required input for the ledger.
+
+### Direct construction (for tests or custom assemblies)
+
 ```typescript
 import { createDecisionLedger } from "@koi/decision-ledger";
 
 const ledger = createDecisionLedger({
-  trajectoryStore: runtime.trajectoryStore,
-  auditSink: runtime.auditSink,           // optional
-  reportStore: runtime.reportStore,       // optional
+  trajectoryStore,                        // required
+  auditSink,                              // optional
+  reportStore,                            // optional
 });
 
 const result = await ledger.getLedger("session-abc-123");
@@ -108,27 +168,31 @@ if (!result.ok) {
   return;
 }
 
-const { entries, runReport, sources } = result.value;
-console.log(`${entries.length} events, trajectory ${sources.trajectory.state}, audit ${sources.audit.state}`);
+const { trajectorySteps, auditEntries, runReport, sources } = result.value;
+console.log(
+  `trajectory:${sources.trajectory.state} audit:${sources.audit.state} report:${sources.report.state}`,
+);
 
-for (const entry of entries) {
-  if (entry.kind === "trajectory-step") {
-    console.log(`[${entry.timestamp}] trajectory ${entry.source.kind}: ${entry.source.identifier}`);
-  } else {
-    console.log(`[${entry.timestamp}] audit ${entry.source.kind} turn=${entry.turnIndex}`);
-  }
+for (const step of trajectorySteps) {
+  console.log(`[traj ${step.stepIndex}] ${step.kind} ${step.identifier}`);
+}
+for (const entry of auditEntries) {
+  console.log(`[audit ${entry.timestamp}] ${entry.kind} turn=${entry.turnIndex}`);
 }
 ```
 
 ## Ordering guarantees
 
-Entries are sorted by wall-clock `timestamp` (ms since epoch) **ascending**. Within a single source, records retain their input order (the sort is stable — ES2019 guarantees this for `Array.prototype.sort`). Ties across sources place trajectory entries before audit entries.
+Each lane is ordered in its own source-native way:
 
-### Wall-clock caveat (important)
+- `trajectorySteps`: sorted ascending by `stepIndex`. `TrajectoryDocumentStore.getDocument()` does not guarantee sorted output (compaction, replay, or backend-specific enumeration can shuffle records), so the ledger re-sorts before exposing the lane.
+- `auditEntries`: sorted by `timestamp` ascending after session-integrity filtering. Stable ES2019 sort — ties preserve input order.
 
-The ledger orders by wall-clock only, **not causal ordering**. When trajectory and audit record the same logical event (e.g., a tool call), they emit at slightly different clocks — the two entries may appear in either order depending on which sink's `timestamp` was taken first. If you need causal ordering, look at `decisionCorrelationId` in `RichTrajectoryStep.metadata` when populated by the event-trace adapter.
+### Why no merged timeline
 
-Stated plainly: this ledger is for "show me everything that happened on this session in roughly the right order," not "prove the causal graph of these events."
+Without a shared causal key across trajectory and audit (such as a correlation id present on both), a wall-clock merge would be misleading: an approval audit entry recorded a few milliseconds before the tool step that it governed (or a few milliseconds after) would render on the wrong side of the decision. For a diagnostic surface used in incident review and permission debugging, that is a material correctness problem on exactly the edge cases the ledger is meant to explain.
+
+The lanes stay separate. If a caller needs a combined display, they merge explicitly with full awareness of the caveat — and if the event-trace adapter populates `decisionCorrelationId` on the trajectory step metadata, that is the right key to join on, not wall-clock.
 
 ## Sink status model
 
@@ -136,20 +200,103 @@ Each of the three sinks reports its fetch outcome independently:
 
 | State | Meaning |
 |-------|---------|
-| `present` | Sink returned at least one record (or, for report, at least one `RunReport`). |
-| `missing` | Sink was queryable and returned zero records — session never recorded. |
+| `present` | Clean fetch — lane has usable data, no leakage. Only emitted for audit and report lanes. |
+| `present-with-leakage` | Lane has usable data AND the sink returned records for other sessions (dropped by the integrity filter). **Distinct state** so a naive `state === "present"` switch drops records instead of rendering leaky data. Carries `integrityFilteredCount` and the top-level `integrityLeakCounts.<sink>` is non-zero. |
+| `present-unverified` | **Trajectory lane only.** Lane has records but the ledger cannot field-verify them against the requested session. Distinct from `present` so callers cannot mistake store-authoritative output for verified data. See the Trajectory trust model section below. |
+| `missing` | Sink was queryable and returned zero records — the session was never recorded. |
+| `integrity-violation` | Sink returned records but every one belonged to a different session. Lane has no usable data. Carries `integrityFilteredCount`. |
 | `unqueryable` | Sink was not configured, or (for audit) the configured sink has no `.query()` method. |
 | `error` | Sink threw during the fetch. `error` field carries the normalized `KoiError`. **Other sinks' results are preserved.** |
 
 A per-sink failure never fails the whole call. The ledger reports `{ok: true}` with `sources.<sink>.state === "error"`; catastrophic failure (invalid input, internal bug) returns `{ok: false}`.
 
+### Session-integrity filtering
+
+For audit and run-report sinks, the ledger re-validates that every returned record's own `sessionId` matches the requested session. Any mismatched records are dropped before the lane is exposed, a warning is logged, and the count is surfaced structurally. There are two distinct states depending on whether anything matched:
+
+- **Partial leak** (mix of correct and wrong-session records): `sources.<sink>.state === "present-with-leakage"` with `integrityFilteredCount` on the status. Lane is usable but a naive `state === "present"` switch will miss it — forcing explicit handling. The same count is mirrored on `DecisionLedger.integrityLeakCounts.<sink>` for callers that prefer a top-level discriminator.
+- **All records dropped** (sink returned only other-session data): `sources.<sink>.state === "integrity-violation"` with `integrityFilteredCount`. Lane has no usable data.
+
+This protects against buggy sink implementations, stale secondary indices, and over-broad backend reads leaking another session's decision data through the diagnostic surface — for audit and report.
+
+### Trajectory trust model caveat (important)
+
+**Trajectory is NOT included in `integrityLeakCounts`.** `RichTrajectoryStep` has no `sessionId` field, so the ledger cannot structurally re-validate trajectory records against the requested session. The `TrajectoryDocumentStore`'s keying by `docId` IS the session identity — trust is store-authoritative.
+
+A buggy, stale, or over-broad `TrajectoryDocumentStore` implementation that returns records for the wrong `docId` **would be an undetected cross-session leak on the trajectory lane**. There is no field-level signal the ledger can raise. The `DecisionLedger.trajectoryTrustModel` field (always `"store-authoritative"`) is present specifically so callers cannot mistake the absence of trajectory from `integrityLeakCounts` for a "verified clean" result.
+
+Callers who need stronger trajectory-lane guarantees must use a `TrajectoryDocumentStore` implementation whose keying is cryptographically scoped to the caller's session identity, or add their own out-of-band reconciliation. This is a schema limitation, not a ledger bug — it is called out explicitly in the type surface and docs so incident tooling can decide whether the store in use is trustworthy.
+
+Callers should detect integrity violations programmatically — `console.warn` alone is not a reliable signal for incident tooling. Three distinct cases to watch for:
+
+- **`state === "integrity-violation"`** — strictly worse than `missing`: the sink returned data, all of it for the wrong session. Backend trust-boundary failure. Alert immediately.
+- **`state === "present-with-leakage"`** — partial leak: the sink returned a mix of correct and wrong-session records. Lane is usable but the sink is misbehaving. Forces explicit caller handling via the dedicated discriminant.
+- **`integrityLeakCounts.audit > 0` or `integrityLeakCounts.report > 0`** — redundant top-level signal for callers that prefer a flat discriminator over an exhaustive state switch.
+
+### Which states carry usable records?
+
+Different lanes use different subsets of `SourceStatus`. Callers writing generic "has data" checks must cover **all** usable-data states for the lane(s) they consume:
+
+| Lane | States that carry usable records |
+|------|----------------------------------|
+| `auditEntries` | `present`, `present-with-leakage` |
+| `runReport` | `present`, `present-with-leakage` |
+| `trajectorySteps` | `present-unverified` *(only state that carries trajectory data — trajectory is never `present`)* |
+
+A naive `state === "present"` check will **intentionally** not match `present-with-leakage` (fail-safe on leaky sinks) or `present-unverified` (fail-safe on unverifiable lanes). If you want to render all usable data regardless of integrity caveats, use an exhaustive switch (see example below) and alert on the non-clean branches.
+
+Example (exhaustive switches per lane):
+
+```typescript
+const { sources, integrityLeakCounts } = result.value;
+
+// Audit / report lanes share the same usable-data subset.
+switch (sources.audit.state) {
+  case "present":
+    render(result.value.auditEntries);
+    break;
+  case "present-with-leakage":
+    render(result.value.auditEntries);
+    alert.partialIntegrityLeak({ sink: "audit", dropped: sources.audit.integrityFilteredCount });
+    break;
+  case "integrity-violation":
+    alert.integrityViolation({ sink: "audit", dropped: sources.audit.integrityFilteredCount });
+    break;
+  case "missing":
+  case "unqueryable":
+  case "error":
+    // explicit handling — see sources.audit.error on the error branch
+    break;
+}
+
+// Trajectory has its own usable-data state: never `present`, always
+// `present-unverified` when records exist.
+switch (sources.trajectory.state) {
+  case "present-unverified":
+    render(result.value.trajectorySteps);
+    // Trust is store-authoritative — document or alert per your threat model.
+    break;
+  case "missing":
+  case "error":
+    break;
+  // `present`, `present-with-leakage`, `integrity-violation`, `unqueryable`
+  // are unreachable for trajectory by construction.
+  default:
+    break;
+}
+```
+
 ## Edge cases
 
-- **Empty session** (trajectory returned empty) → `entries: []`, `sources.trajectory.state === "missing"`. Not an error.
+- **Empty session** (trajectory returned empty) → `trajectorySteps: []`, `sources.trajectory.state === "missing"`. Not an error.
 - **Audit sink present, no `.query`** → `sources.audit.state === "unqueryable"`. Ledger surfaces trajectory only.
-- **Audit sink throws** → `sources.audit.state === "error"`, trajectory still present.
-- **Multiple run reports for same session** → the one with the largest `duration.completedAt` wins.
-- **50k+ combined entries** → logged warning; no pagination. File a follow-up if this becomes common.
+- **Audit sink throws** → `sources.audit.state === "error"`, trajectory lane still present.
+- **Audit sink returns a mix of correct and wrong-session records** → wrong ones dropped with a warning; lane exposes only matching records; `sources.audit.state === "present-with-leakage"`; `integrityLeakCounts.audit` mirrors the dropped count. A naive `state === "present"` switch drops the records (fail-safe).
+- **Audit sink returns only other-session records** → `sources.audit.state === "integrity-violation"` with `integrityFilteredCount`. Do NOT alias to `missing`.
+- **Multiple run reports for same session** → among the records whose `sessionId` matches, the one with the largest `duration.completedAt` wins.
+- **Run report with mismatched sessionId (partial)** → dropped; counted in `integrityLeakCounts.report`.
+- **Run report with only mismatched sessionIds** → `sources.report.state === "integrity-violation"`.
+- **Oversized raw response** → combined raw sink response sizes above 50k trigger a soft-ceiling warning even if the filtered lanes are small (catches pathological partial-leak payloads).
 - **Empty `sessionId`** → `{ok: false, error: { code: "VALIDATION", ... }}`.
 
 ## Configuration requirements

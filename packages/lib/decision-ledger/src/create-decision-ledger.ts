@@ -2,15 +2,23 @@
  * createDecisionLedger — factory that returns a DecisionLedgerReader.
  *
  * See docs/L2/decision-ledger.md for the full contract. This file wires the
- * pure fetch/normalize/join helpers into the public interface.
+ * pure fetch helpers into the public interface. Trajectory and audit are
+ * exposed as separate lanes, each in source-native order, rather than merged
+ * on wall-clock timestamp — see the ordering discussion in the doc.
  */
 
 import type { KoiError, Result } from "@koi/core";
 import { internalError, validationError } from "./errors.js";
 import { fetchAudit, fetchReport, fetchTrajectory } from "./fetch-sources.js";
-import { mergeTimeline } from "./join.js";
-import { wrapAuditEntry, wrapTrajectoryStep } from "./normalize.js";
 import type { DecisionLedger, DecisionLedgerConfig, DecisionLedgerReader } from "./types.js";
+
+/**
+ * Soft ceiling for combined ledger size. Above this we log a warning but
+ * still return the full lanes — pagination is explicitly out of scope for
+ * Phase 2(a). Used as an observability signal for incident triage so
+ * oversized responses don't silently cause UI slowdowns or memory pressure.
+ */
+export const LEDGER_SOFT_CEILING = 50_000;
 
 export function createDecisionLedger(config: DecisionLedgerConfig): DecisionLedgerReader {
   return {
@@ -33,19 +41,33 @@ async function getLedgerImpl(
       fetchReport(config.reportStore, sessionId),
     ]);
 
-    const trajectoryEntries = trajectory.records.map(wrapTrajectoryStep);
-    const auditEntries = audit.records.map(wrapAuditEntry);
-    const entries = mergeTimeline(trajectoryEntries, auditEntries);
+    // Ceiling is checked against RAW sink response sizes (before integrity
+    // filtering), not the final lane sizes. A buggy sink returning 100k
+    // wrong-session records with only a handful matching still costs memory
+    // and time to load and filter; the warning must fire on that path.
+    const rawCombinedSize = trajectory.rawCount + audit.rawCount + report.rawCount;
+    if (rawCombinedSize > LEDGER_SOFT_CEILING) {
+      console.warn(
+        `[decision-ledger] session "${sessionId}" raw sink response size ${rawCombinedSize} exceeds soft ceiling ${LEDGER_SOFT_CEILING}; callers should consider filtering — pagination is out of scope for Phase 2(a)`,
+      );
+    }
 
     const ledger: DecisionLedger = {
       sessionId,
-      entries,
+      trajectorySteps: trajectory.records,
+      auditEntries: audit.records,
       runReport: report.latest,
       sources: {
         trajectory: trajectory.status,
         audit: audit.status,
         report: report.status,
       },
+      integrityLeakCounts: {
+        audit: audit.integrityFilteredCount,
+        report: report.integrityFilteredCount,
+      },
+      trajectoryTrustModel: "store-authoritative",
+      allLanesFieldVerified: false,
     };
     return { ok: true, value: ledger };
   } catch (cause) {

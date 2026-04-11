@@ -102,7 +102,12 @@ export function resetFakeCounters(): void {
   auditCounter = 0;
 }
 
-export function makeRunReport(overrides: Partial<RunReport> = {}): RunReport {
+export interface MakeRunReportOverrides extends Partial<RunReport> {
+  /** Convenience: passes a plain string, branded inside the helper. */
+  readonly sessionIdOverride?: string;
+}
+
+export function makeRunReport(overrides: MakeRunReportOverrides = {}): RunReport {
   const baseDuration = {
     startedAt: 1_700_000_000_000,
     completedAt: 1_700_000_001_000,
@@ -111,9 +116,10 @@ export function makeRunReport(overrides: Partial<RunReport> = {}): RunReport {
     totalActions: 0,
     truncated: false,
   } as const;
+  const { sessionIdOverride, ...rest } = overrides;
   return {
     agentId: agentId("agent-a"),
-    sessionId: sessionId("default-session"),
+    sessionId: sessionId(sessionIdOverride ?? "default-session"),
     runId: runId("run-1"),
     summary: "",
     duration: baseDuration,
@@ -122,6 +128,6 @@ export function makeRunReport(overrides: Partial<RunReport> = {}): RunReport {
     issues: [],
     cost: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     recommendations: [],
-    ...overrides,
+    ...rest,
   };
 }

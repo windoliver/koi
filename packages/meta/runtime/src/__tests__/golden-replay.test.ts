@@ -1549,7 +1549,7 @@ describe("Golden: @koi/middleware-permissions", () => {
 // ---------------------------------------------------------------------------
 
 describe("Golden: @koi/decision-ledger", () => {
-  test("interleaves trajectory + audit entries by timestamp with stable source order on ties", async () => {
+  test("returns trajectory + audit as separate lanes with audit sorted by timestamp", async () => {
     const { createDecisionLedger } = await import("@koi/decision-ledger");
     type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
     type Audit = import("@koi/core").AuditEntry;
@@ -1575,19 +1575,20 @@ describe("Golden: @koi/decision-ledger", () => {
       },
     ];
     const audits: readonly Audit[] = [
+      // Intentionally out of timestamp order — fetchAudit should sort the lane.
+      {
+        timestamp: 400,
+        sessionId: "s-golden",
+        agentId: "agent-a",
+        turnIndex: 2,
+        kind: "tool_call",
+        durationMs: 2,
+      },
       {
         timestamp: 200,
         sessionId: "s-golden",
         agentId: "agent-a",
         turnIndex: 1,
-        kind: "tool_call",
-        durationMs: 2,
-      },
-      {
-        timestamp: 300,
-        sessionId: "s-golden",
-        agentId: "agent-a",
-        turnIndex: 2,
         kind: "tool_call",
         durationMs: 2,
       },
@@ -1605,35 +1606,120 @@ describe("Golden: @koi/decision-ledger", () => {
     if (!result.ok) {
       return;
     }
-    expect(result.value.entries.map((e) => `${e.kind}@${e.timestamp}`)).toEqual([
-      "trajectory-step@100",
-      "audit@200",
-      // timestamp 300 tie — trajectory wins per concatenation order + stable sort
-      "trajectory-step@300",
-      "audit@300",
-    ]);
-    expect(result.value.sources.trajectory.state).toBe("present");
+    expect(result.value.trajectorySteps.map((s) => s.stepIndex)).toEqual([1, 2]);
+    expect(result.value.auditEntries.map((a) => a.timestamp)).toEqual([200, 400]);
+    // Trajectory lane is always `present-unverified` when records exist —
+    // schema cannot field-verify cross-session ownership.
+    expect(result.value.sources.trajectory.state).toBe("present-unverified");
     expect(result.value.sources.audit.state).toBe("present");
     expect(result.value.sources.report.state).toBe("unqueryable");
   });
 
-  test("degrades gracefully when audit and report sinks are absent", async () => {
+  test("drops audit records with mismatched sessionId and degrades sinks gracefully when absent", async () => {
     const { createDecisionLedger } = await import("@koi/decision-ledger");
     type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
-    const trajectoryStore = {
-      getDocument: async (): Promise<readonly Step[]> => [],
+    type Audit = import("@koi/core").AuditEntry;
+
+    const audits: readonly Audit[] = [
+      {
+        timestamp: 100,
+        sessionId: "s-target",
+        agentId: "agent-a",
+        turnIndex: 1,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+      // Cross-session leak from a buggy sink — must be filtered out.
+      {
+        timestamp: 150,
+        sessionId: "other-session",
+        agentId: "agent-a",
+        turnIndex: 99,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+    ];
+
+    const trajectoryStore = { getDocument: async (): Promise<readonly Step[]> => [] };
+    const auditSink = {
+      log: async (): Promise<void> => {},
+      query: async (): Promise<readonly Audit[]> => audits,
     };
-    const ledger = createDecisionLedger({ trajectoryStore });
-    const result = await ledger.getLedger("s-empty");
+
+    const ledger = createDecisionLedger({ trajectoryStore, auditSink });
+    const result = await ledger.getLedger("s-target");
     expect(result.ok).toBe(true);
     if (!result.ok) {
       return;
     }
-    expect(result.value.entries).toEqual([]);
+    expect(result.value.trajectorySteps).toEqual([]);
+    expect(result.value.auditEntries.length).toBe(1);
+    expect(result.value.auditEntries[0]?.sessionId).toBe("s-target");
     expect(result.value.sources.trajectory.state).toBe("missing");
-    expect(result.value.sources.audit.state).toBe("unqueryable");
+    // Partial leak (1 of 2 records dropped) → dedicated state variant so
+    // callers switching only on `state === "present"` cannot miss it.
+    expect(result.value.sources.audit.state).toBe("present-with-leakage");
     expect(result.value.sources.report.state).toBe("unqueryable");
     expect(result.value.runReport).toBeUndefined();
+    expect(result.value.integrityLeakCounts.audit).toBe(1);
+  });
+
+  test("runtime.createDecisionLedger factory wires the live trajectoryStore automatically and accepts audit override", async () => {
+    // This test exercises the end-to-end runtime wiring: a caller with a
+    // RuntimeHandle can get a DecisionLedgerReader without importing
+    // @koi/decision-ledger or plumbing the trajectoryStore themselves.
+    const { createRuntime } = await import("../create-runtime.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    type Audit = import("@koi/core").AuditEntry;
+
+    const tmp = mkdtempSync(join(tmpdir(), "decision-ledger-runtime-"));
+    try {
+      const runtime = createRuntime({
+        adapter: "stub",
+        channel: "stub",
+        trajectoryDir: tmp,
+      });
+      try {
+        // The factory must be present when trajectoryStore is configured.
+        expect(typeof runtime.createDecisionLedger).toBe("function");
+        if (!runtime.createDecisionLedger) {
+          throw new Error("createDecisionLedger not exposed");
+        }
+        // Inject an ad-hoc audit sink via the override path.
+        const audits: readonly Audit[] = [
+          {
+            timestamp: 100,
+            sessionId: "session-xyz",
+            agentId: "agent-a",
+            turnIndex: 1,
+            kind: "tool_call",
+            durationMs: 2,
+          },
+        ];
+        const auditSink = {
+          log: async (): Promise<void> => {},
+          query: async (): Promise<readonly Audit[]> => audits,
+        };
+        const ledger = runtime.createDecisionLedger({ auditSink });
+        const result = await ledger.getLedger("session-xyz");
+        expect(result.ok).toBe(true);
+        if (!result.ok) {
+          return;
+        }
+        // Trajectory lane wired from the runtime's own store (empty since
+        // nothing ran yet), audit lane wired from the caller-supplied sink.
+        expect(result.value.sources.trajectory.state).toBe("missing");
+        expect(result.value.sources.audit.state).toBe("present");
+        expect(result.value.auditEntries.length).toBe(1);
+        expect(result.value.auditEntries[0]?.sessionId).toBe("session-xyz");
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
