@@ -1689,10 +1689,21 @@ const spawnToolProvider = createSpawnToolProvider({
 });
 
 // ---------------------------------------------------------------------------
-// @koi/model-router — wraps modelAdapter as single ProviderAdapter target
+// @koi/model-router — two-target config: failing primary → real secondary
+// Primary always throws so the trajectory shows fallback_occurred:true.
 // ---------------------------------------------------------------------------
 
-const modelRouterAdapter: ProviderAdapter = {
+const modelRouterPrimary: ProviderAdapter = {
+  id: "primary-down",
+  async complete(): Promise<import("@koi/core").ModelResponse> {
+    throw new Error("primary unavailable (intentional for fallback recording)");
+  },
+  stream(): AsyncGenerator<import("@koi/core").ModelChunk> {
+    throw new Error("primary unavailable (intentional for fallback recording)");
+  },
+};
+
+const modelRouterSecondary: ProviderAdapter = {
   id: "openrouter",
   complete: (req) => modelAdapter.complete(req),
   stream: (req) => modelAdapter.stream(req),
@@ -1700,7 +1711,10 @@ const modelRouterAdapter: ProviderAdapter = {
 
 const modelRouterConfigResult = validateRouterConfig({
   strategy: "fallback",
-  targets: [{ provider: "openrouter", model: MODEL, adapterConfig: {} }],
+  targets: [
+    { provider: "primary-down", model: "fast-primary", adapterConfig: {} },
+    { provider: "openrouter", model: MODEL, adapterConfig: {} },
+  ],
   retry: { maxRetries: 0 },
 });
 if (!modelRouterConfigResult.ok) {
@@ -1709,7 +1723,10 @@ if (!modelRouterConfigResult.ok) {
 }
 const modelRouter = createModelRouter(
   modelRouterConfigResult.value,
-  new Map([["openrouter", modelRouterAdapter]]),
+  new Map([
+    ["primary-down", modelRouterPrimary],
+    ["openrouter", modelRouterSecondary],
+  ]),
 );
 const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
 

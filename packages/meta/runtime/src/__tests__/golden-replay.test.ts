@@ -8904,7 +8904,7 @@ describe("Golden: @koi/model-router", () => {
     expect(typeof decision?.["router.latency_ms"]).toBe("number");
   });
 
-  test("MW:model-router no fallback on successful primary target", async () => {
+  test("MW:model-router fallback visible in trajectory: primary fails → secondary selected", async () => {
     const doc = (await Bun.file(`${FIXTURES}/model-router.trajectory.json`).json()) as {
       readonly steps: readonly {
         readonly extra?: {
@@ -8920,13 +8920,13 @@ describe("Golden: @koi/model-router", () => {
     );
 
     const decision = routerSpans[0]?.extra?.decisions?.[0];
-    // Recording uses single-target config — no fallback should occur
-    expect(decision?.["router.fallback_occurred"]).toBe(false);
-    // Selected and attempted should be the same single target
-    const selected = decision?.["router.target.selected"] as string;
+    // Recording uses two-target config: failing primary + real secondary
+    expect(decision?.["router.fallback_occurred"]).toBe(true);
     const attempted = decision?.["router.target.attempted"] as string[];
-    expect(attempted).toHaveLength(1);
-    expect(attempted[0]).toBe(selected);
+    expect(attempted).toHaveLength(2);
+    expect(attempted[0]).toBe("primary-down:fast-primary");
+    // Selected is the secondary (backup) that actually served the request
+    expect(decision?.["router.target.selected"]).toBe(attempted[1]);
   });
 });
 

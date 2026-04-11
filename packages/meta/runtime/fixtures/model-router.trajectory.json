@@ -8,7 +8,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:42.748Z",
+      "timestamp": "2026-04-11T21:11:14.977Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -26,7 +26,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:42.749Z",
+      "timestamp": "2026-04-11T21:11:14.978Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -43,9 +43,9 @@
     {
       "step_id": 2,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.502Z",
+      "timestamp": "2026-04-11T21:11:15.670Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 739.9225000000001,
+      "duration_ms": 680.015584,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -62,9 +62,9 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.503Z",
+      "timestamp": "2026-04-11T21:11:15.671Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 738.591375,
+      "duration_ms": 678.3825410000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -73,7 +73,7 @@
         "phase": "intercept",
         "priority": 100,
         "nextCalled": true,
-        "_original_timestamp": 1775870443501,
+        "_original_timestamp": 1775941875669,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -82,9 +82,9 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.504Z",
+      "timestamp": "2026-04-11T21:11:15.672Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 737.825875,
+      "duration_ms": 677.412041,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -93,7 +93,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1775870443499,
+        "_original_timestamp": 1775941875667,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -102,9 +102,9 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.505Z",
+      "timestamp": "2026-04-11T21:11:15.673Z",
       "model_name": "middleware:goal",
-      "duration_ms": 737.7028329999998,
+      "duration_ms": 677.2386670000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -128,7 +128,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] What is 2+2? Answer with just the number."
           }
         ],
-        "_original_timestamp": 1775870443498,
+        "_original_timestamp": 1775941875666,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -137,9 +137,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.506Z",
+      "timestamp": "2026-04-11T21:11:15.674Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 737.4101660000001,
+      "duration_ms": 676.9211670000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -148,7 +148,7 @@
         "phase": "resolve",
         "priority": 400,
         "nextCalled": true,
-        "_original_timestamp": 1775870443497,
+        "_original_timestamp": 1775941875665,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -157,9 +157,9 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.507Z",
+      "timestamp": "2026-04-11T21:11:15.675Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 737.16975,
+      "duration_ms": 676.5942090000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -168,7 +168,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1775870443496,
+        "_original_timestamp": 1775941875664,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -177,9 +177,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-11T01:20:43.508Z",
+      "timestamp": "2026-04-11T21:11:15.676Z",
       "model_name": "middleware:model-router",
-      "duration_ms": 736.9000000000001,
+      "duration_ms": 676.211667,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -191,12 +191,15 @@
         "decisions": [
           {
             "router.target.selected": "openrouter:google/gemini-2.0-flash-001",
-            "router.target.attempted": ["openrouter:google/gemini-2.0-flash-001"],
-            "router.fallback_occurred": false,
-            "router.latency_ms": 727
+            "router.target.attempted": [
+              "primary-down:fast-primary",
+              "openrouter:google/gemini-2.0-flash-001"
+            ],
+            "router.fallback_occurred": true,
+            "router.latency_ms": 627
           }
         ],
-        "_original_timestamp": 1775870443495,
+        "_original_timestamp": 1775941875663,
         "__koi": {
           "identifier": "middleware:model-router"
         }
