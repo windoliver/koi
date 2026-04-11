@@ -841,7 +841,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // composite "agent:{agentId}:{instanceId}" ID — tuiSessionId
             // is a TUI-local UUID that never matches a captured chain.
             const engineSessionId = sessionId(runtimeHandle.runtime.sessionId);
+            const rewindStart = performance.now();
             const result = await runtimeHandle.checkpoint.rewind(engineSessionId, n);
+            const rewindDurationMs = performance.now() - rewindStart;
             if (!result.ok) {
               store.dispatch({
                 kind: "add_error",
@@ -851,12 +853,63 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               return;
             }
 
-            // After a successful rewind the conversation transcript and any
-            // tracked file edits from the previous turn are gone. Clear the
-            // in-memory transcript array and TUI message log so the displayed
-            // state matches what /rewind actually restored.
-            runtimeHandle.transcript.splice(0);
-            store.dispatch({ kind: "clear_messages" });
+            // After a successful rewind the restore protocol has already
+            // truncated the JSONL transcript to the target turn's entry
+            // count. Mirror the session-resume flow: call resetConversation
+            // so the engine's internal state (task board, trajectory, abort
+            // controller, batcher) is rebuilt, then await resetBarrier so
+            // the async reset is complete before we push the retained
+            // entries back in. Without the reset, the next user submit
+            // runs against a stale engine state and produces no output.
+            resetConversation();
+            await resetBarrier;
+            const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
+            if (resumeResult.ok) {
+              for (const msg of resumeResult.value.messages) {
+                runtimeHandle.transcript.push(msg);
+              }
+              store.dispatch({
+                kind: "load_history",
+                messages: resumeResult.value.messages,
+              });
+            }
+
+            // Record the rewind operation as a synthetic ATIF step so
+            // /trajectory can show it. Rewind runs outside the engine's
+            // turn loop (doesn't go through runTurn), so the trace wrapper
+            // never sees it — we emit one manually. Append AFTER
+            // resetConversation so it lands in the freshly-pruned store.
+            const rewindStep: RichTrajectoryStep = {
+              stepIndex: 0,
+              timestamp: Date.now(),
+              source: "system",
+              kind: "tool_call",
+              identifier: "checkpoint:rewind",
+              outcome: "success",
+              durationMs: rewindDurationMs,
+              request: {
+                data: { n, sessionId: String(engineSessionId) },
+              },
+              response: {
+                data: {
+                  turnsRewound: result.turnsRewound,
+                  opsApplied: result.opsApplied,
+                  targetNodeId: String(result.targetNodeId),
+                  newHeadNodeId: String(result.newHeadNodeId),
+                  driftWarnings: result.driftWarnings,
+                },
+              },
+              metadata: { type: "checkpoint_rewind" },
+            };
+            await runtimeHandle.appendTrajectoryStep(rewindStep);
+            // Refresh the trajectory view so the step shows up in the
+            // UI without waiting for the next turn to refresh it.
+            void runtimeHandle.getTrajectorySteps().then((steps) => {
+              store.dispatch({
+                kind: "set_trajectory_data",
+                steps: mapTrajectorySteps(steps),
+              });
+            });
 
             // Surface drift warnings — paths the rewind could not restore
             // because they were modified outside the tracked tool pipeline

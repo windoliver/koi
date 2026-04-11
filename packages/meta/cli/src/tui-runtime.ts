@@ -337,6 +337,13 @@ export interface TuiRuntimeHandle {
    */
   readonly getTrajectorySteps: () => Promise<readonly RichTrajectoryStep[]>;
   /**
+   * Append a pre-built trajectory step to the session's ATIF document. Used
+   * by non-engine code paths that still deserve to appear in /trajectory —
+   * notably `/rewind`, which runs `checkpoint.rewind()` directly without
+   * going through `runTurn`, so the trace wrapper never sees it.
+   */
+  readonly appendTrajectoryStep: (step: RichTrajectoryStep) => Promise<void>;
+  /**
    * Reset stateful tool state for a new session (agent:clear / session:new).
    *
    * @param signal — the active run's AbortSignal. Must already be aborted
@@ -1291,6 +1298,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
       // Full trajectory is preserved in the store; only the view is capped.
       return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
+    },
+    appendTrajectoryStep: async (step: RichTrajectoryStep): Promise<void> => {
+      await trajectoryStore.append(TUI_DOC_ID, [step]);
     },
     resetSessionState: async (signal: AbortSignal) => {
       // C4-A: Fail fast if caller forgot to abort the active run first.
