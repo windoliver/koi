@@ -12,7 +12,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import type {
   Agent,
   EngineAdapter,
@@ -1534,6 +1534,192 @@ describe("Golden: @koi/middleware-permissions", () => {
   test("auto-approval handler is a callable factory", async () => {
     const { createAutoApprovalHandler } = await import("@koi/middleware-permissions");
     expect(typeof createAutoApprovalHandler).toBe("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/decision-ledger (2 queries)
+//
+// Standalone — no cassette replay. Exercises the factory with fake sinks
+// per the constraint documented in docs/L2/decision-ledger.md: today's
+// runtime recorder does not wire an AuditSink or ReportStore, and denial
+// tracker / run-report state is only finalized on onSessionEnd, so a
+// replay-driven ledger assertion is not yet achievable. See follow-up
+// #1469 Phase 2(a) notes for the lifecycle extension work.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/decision-ledger", () => {
+  test("returns trajectory + audit as separate lanes with audit sorted by timestamp", async () => {
+    const { createDecisionLedger } = await import("@koi/decision-ledger");
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+    type Audit = import("@koi/core").AuditEntry;
+
+    const steps: readonly Step[] = [
+      {
+        stepIndex: 1,
+        timestamp: 100,
+        source: "agent",
+        kind: "model_call",
+        identifier: "m-1",
+        outcome: "success",
+        durationMs: 5,
+      },
+      {
+        stepIndex: 2,
+        timestamp: 300,
+        source: "tool",
+        kind: "tool_call",
+        identifier: "t-1",
+        outcome: "success",
+        durationMs: 5,
+      },
+    ];
+    const audits: readonly Audit[] = [
+      // Intentionally out of timestamp order — fetchAudit should sort the lane.
+      {
+        timestamp: 400,
+        sessionId: "s-golden",
+        agentId: "agent-a",
+        turnIndex: 2,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+      {
+        timestamp: 200,
+        sessionId: "s-golden",
+        agentId: "agent-a",
+        turnIndex: 1,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+    ];
+
+    const trajectoryStore = { getDocument: async (): Promise<readonly Step[]> => steps };
+    const auditSink = {
+      log: async (): Promise<void> => {},
+      query: async (): Promise<readonly Audit[]> => audits,
+    };
+
+    const ledger = createDecisionLedger({ trajectoryStore, auditSink });
+    const result = await ledger.getLedger("s-golden");
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.trajectorySteps.map((s) => s.stepIndex)).toEqual([1, 2]);
+    expect(result.value.auditEntries.map((a) => a.timestamp)).toEqual([200, 400]);
+    // Trajectory lane is always `present-unverified` when records exist —
+    // schema cannot field-verify cross-session ownership.
+    expect(result.value.sources.trajectory.state).toBe("present-unverified");
+    expect(result.value.sources.audit.state).toBe("present");
+    expect(result.value.sources.report.state).toBe("unqueryable");
+  });
+
+  test("drops audit records with mismatched sessionId and degrades sinks gracefully when absent", async () => {
+    const { createDecisionLedger } = await import("@koi/decision-ledger");
+    type Step = import("@koi/core/rich-trajectory").RichTrajectoryStep;
+    type Audit = import("@koi/core").AuditEntry;
+
+    const audits: readonly Audit[] = [
+      {
+        timestamp: 100,
+        sessionId: "s-target",
+        agentId: "agent-a",
+        turnIndex: 1,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+      // Cross-session leak from a buggy sink — must be filtered out.
+      {
+        timestamp: 150,
+        sessionId: "other-session",
+        agentId: "agent-a",
+        turnIndex: 99,
+        kind: "tool_call",
+        durationMs: 2,
+      },
+    ];
+
+    const trajectoryStore = { getDocument: async (): Promise<readonly Step[]> => [] };
+    const auditSink = {
+      log: async (): Promise<void> => {},
+      query: async (): Promise<readonly Audit[]> => audits,
+    };
+
+    const ledger = createDecisionLedger({ trajectoryStore, auditSink });
+    const result = await ledger.getLedger("s-target");
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    expect(result.value.trajectorySteps).toEqual([]);
+    expect(result.value.auditEntries.length).toBe(1);
+    expect(result.value.auditEntries[0]?.sessionId).toBe("s-target");
+    expect(result.value.sources.trajectory.state).toBe("missing");
+    // Partial leak (1 of 2 records dropped) → dedicated state variant so
+    // callers switching only on `state === "present"` cannot miss it.
+    expect(result.value.sources.audit.state).toBe("present-with-leakage");
+    expect(result.value.sources.report.state).toBe("unqueryable");
+    expect(result.value.runReport).toBeUndefined();
+    expect(result.value.integrityLeakCounts.audit).toBe(1);
+  });
+
+  test("runtime.createDecisionLedger factory wires the live trajectoryStore automatically and accepts audit override", async () => {
+    // This test exercises the end-to-end runtime wiring: a caller with a
+    // RuntimeHandle can get a DecisionLedgerReader without importing
+    // @koi/decision-ledger or plumbing the trajectoryStore themselves.
+    const { createRuntime } = await import("../create-runtime.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    type Audit = import("@koi/core").AuditEntry;
+
+    const tmp = mkdtempSync(join(tmpdir(), "decision-ledger-runtime-"));
+    try {
+      const runtime = createRuntime({
+        adapter: "stub",
+        channel: "stub",
+        trajectoryDir: tmp,
+      });
+      try {
+        // The factory must be present when trajectoryStore is configured.
+        expect(typeof runtime.createDecisionLedger).toBe("function");
+        if (!runtime.createDecisionLedger) {
+          throw new Error("createDecisionLedger not exposed");
+        }
+        // Inject an ad-hoc audit sink via the override path.
+        const audits: readonly Audit[] = [
+          {
+            timestamp: 100,
+            sessionId: "session-xyz",
+            agentId: "agent-a",
+            turnIndex: 1,
+            kind: "tool_call",
+            durationMs: 2,
+          },
+        ];
+        const auditSink = {
+          log: async (): Promise<void> => {},
+          query: async (): Promise<readonly Audit[]> => audits,
+        };
+        const ledger = runtime.createDecisionLedger({ auditSink });
+        const result = await ledger.getLedger("session-xyz");
+        expect(result.ok).toBe(true);
+        if (!result.ok) {
+          return;
+        }
+        // Trajectory lane wired from the runtime's own store (empty since
+        // nothing ran yet), audit lane wired from the caller-supplied sink.
+        expect(result.value.sources.trajectory.state).toBe("missing");
+        expect(result.value.sources.audit.state).toBe("present");
+        expect(result.value.auditEntries.length).toBe(1);
+        expect(result.value.auditEntries[0]?.sessionId).toBe("session-xyz");
+      } finally {
+        await runtime.dispose();
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
@@ -8742,4 +8928,695 @@ describe("Golden: @koi/model-router", () => {
     expect(attempted).toHaveLength(1);
     expect(attempted[0]).toBe(selected);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/loop (#1624)
+//
+// Standalone golden queries that exercise the runUntilPass() convergence
+// primitive with a fake runtime. These are CI-safe (no LLM, no network).
+// The real-LLM recording lives in scripts/record-cassettes.ts and is run
+// manually when the loop package surface changes.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/loop — runUntilPass convergence primitive", () => {
+  test("loop-converges-immediately — verifier passes on iteration 1", async () => {
+    const { runUntilPass } = await import("@koi/loop");
+
+    let runtimeCalls = 0;
+    let verifierCalls = 0;
+
+    const result = await runUntilPass({
+      runtime: {
+        async *run() {
+          runtimeCalls += 1;
+          // Minimal compliant stream: just a done event
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: {
+                totalTokens: 42,
+                inputTokens: 30,
+                outputTokens: 12,
+                turns: 1,
+                durationMs: 5,
+              },
+            },
+          };
+        },
+      },
+      verifier: {
+        check: async () => {
+          verifierCalls += 1;
+          return { ok: true };
+        },
+      },
+      initialPrompt: "noop",
+      workingDir: "/tmp",
+      maxIterations: 10,
+    });
+
+    // Contract assertions
+    expect(result.status).toBe("converged");
+    expect(result.iterations).toBe(1);
+    expect(runtimeCalls).toBe(1);
+    expect(verifierCalls).toBe(1);
+    expect(result.iterationRecords).toHaveLength(1);
+    expect(result.iterationRecords[0]?.verifierResult.ok).toBe(true);
+    // Unmetered default — we never set maxBudgetTokens
+    expect(result.tokensConsumed).toBe("unmetered");
+  });
+
+  test("loop-exhausts — verifier never passes, hits maxIterations", async () => {
+    const { runUntilPass } = await import("@koi/loop");
+
+    let runtimeCalls = 0;
+
+    const result = await runUntilPass({
+      runtime: {
+        async *run() {
+          runtimeCalls += 1;
+          yield {
+            kind: "done",
+            output: {
+              content: [],
+              stopReason: "completed",
+              metrics: {
+                totalTokens: 10,
+                inputTokens: 8,
+                outputTokens: 2,
+                turns: 1,
+                durationMs: 1,
+              },
+            },
+          };
+        },
+      },
+      verifier: {
+        check: async () => ({
+          ok: false,
+          reason: "exit_nonzero",
+          details: "still broken",
+        }),
+      },
+      initialPrompt: "try something that can never converge",
+      workingDir: "/tmp",
+      maxIterations: 4,
+      // Raise the circuit breaker above maxIterations so exhaustion fires first.
+      maxConsecutiveFailures: 100,
+    });
+
+    // Loop must exhaust cleanly, not trip the circuit breaker.
+    expect(result.status).toBe("exhausted");
+    expect(result.iterations).toBe(4);
+    expect(runtimeCalls).toBe(4);
+    expect(result.terminalReason).toContain("maxIterations");
+    // All 4 records must carry typed failure reasons
+    for (const record of result.iterationRecords) {
+      expect(record.verifierResult.ok).toBe(false);
+      if (!record.verifierResult.ok) {
+        expect(record.verifierResult.reason).toBe("exit_nonzero");
+      }
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Full-loop replay: cassette → createKoi with all L2 middleware → runUntilPass
+  //
+  // This is the structural-compatibility golden: it proves that a real
+  // KoiRuntime (built by createKoi with the cassette-replay adapter, the
+  // event-trace middleware, the hook middleware, and the permissions
+  // middleware) satisfies the @koi/loop LoopRuntime interface and can be
+  // driven through runUntilPass end-to-end.
+  //
+  // The verifier passes on the first check, so one cassette playthrough is
+  // enough. Any regression in signal forwarding, done-event propagation, or
+  // middleware event passthrough will break this.
+  // ---------------------------------------------------------------------------
+  test("full-loop: createKoi runtime + simple-text cassette → runUntilPass converges", async () => {
+    const { runUntilPass } = await import("@koi/loop");
+
+    const cassette = await loadCassette(`${FIXTURES}/simple-text.cassette.json`);
+    const trajDir = `/tmp/koi-loop-replay-${Date.now()}`;
+    const docId = "replay-loop-until-pass";
+
+    // ATIF store for full-middleware wiring (matches existing full-loop goldens)
+    const store = createAtifDocumentStore(
+      { agentName: "replay-loop" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    // @koi/event-trace
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-loop",
+      clock,
+    });
+
+    // @koi/hooks (no-op hook, just to prove the middleware stack runs)
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({
+      store,
+      docId,
+      clock,
+    });
+    const hookMw = createHookMiddleware({ hooks: [], onExecuted });
+
+    // @koi/middleware-permissions (bypass everything)
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "loop-golden (bypass)",
+    });
+
+    // Cassette adapter — replays the simple-text chunks
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    // Build a real KoiRuntime with ALL L2 middleware wired. This is the
+    // `createKoi` path CLAUDE.md §Golden Query rule requires.
+    const runtime = await createKoi({
+      manifest: { name: "replay-loop", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [],
+      loopDetection: false,
+    });
+
+    // Now wrap it with runUntilPass. The loop package only cares that
+    // runtime.run({kind, text, signal}) yields an EngineEvent AsyncIterable
+    // terminating in a `done` event — which a real KoiRuntime provides.
+    let verifierCalls = 0;
+    const loopResult = await runUntilPass({
+      runtime,
+      verifier: {
+        check: async () => {
+          verifierCalls += 1;
+          return { ok: true };
+        },
+      },
+      initialPrompt: "What is 2+2? Answer with just the number.",
+      workingDir: "/tmp",
+      maxIterations: 3,
+    });
+
+    await runtime.dispose();
+    // Give the fs-backed ATIF delegate time to flush — matches the 300ms
+    // wait the tool-use full-loop golden uses above.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Loop contract
+    expect(loopResult.status).toBe("converged");
+    expect(loopResult.iterations).toBe(1);
+    expect(verifierCalls).toBe(1);
+
+    // Proves the full L2 middleware stack ran during the loop's iteration:
+    // if event-trace didn't fire, there would be no steps in the ATIF store.
+    const steps = await store.getDocument(docId);
+    expect(steps.length).toBeGreaterThan(0);
+    // At least one model_call step means the cassette was actually consumed
+    // through createKoi during the loop's runtime.run call.
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(1);
+
+    // Cleanup AFTER reading
+    rmSync(trajDir, { recursive: true, force: true });
+  }, 15000);
+
+  // ---------------------------------------------------------------------------
+  // Retry-path golden: fail iter 1, pass iter 2, prove the loop correctly
+  // drives runtime.run() twice through createKoi + full middleware stack.
+  //
+  // This complements the happy-path golden above: that one only proves
+  // one-iteration convergence. A regression in how runUntilPass re-enters
+  // the runtime on retry (e.g., a missing fetch-next-iteration, a stale
+  // context, a broken rebuildPrompt handoff) would slip past a pure
+  // iter-1-converges test. This test fails on iteration 1 and only passes
+  // on iteration 2, so a broken retry path makes it exhaust instead of
+  // converging.
+  // ---------------------------------------------------------------------------
+  test("full-loop retry path: fail iter 1 → pass iter 2 through createKoi", async () => {
+    const { runUntilPass } = await import("@koi/loop");
+
+    const cassette = await loadCassette(`${FIXTURES}/simple-text.cassette.json`);
+    const trajDir = `/tmp/koi-loop-retry-${Date.now()}`;
+    const docId = "replay-loop-retry";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-loop-retry" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-loop-retry",
+      clock,
+    });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({
+      store,
+      docId,
+      clock,
+    });
+    const hookMw = createHookMiddleware({ hooks: [], onExecuted });
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "loop-retry-golden (bypass)",
+    });
+    // createCassetteAdapter internally tracks callCount and serves the
+    // real cassette on call 1, then a simple text on subsequent calls —
+    // exactly what we need for a 2-iteration retry path.
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "replay-loop-retry", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [],
+      loopDetection: false,
+    });
+
+    // Stateful verifier: fails on iteration 1 with a concrete reason,
+    // passes on iteration 2. If runUntilPass drops the retry or resets
+    // verifier state wrong, the loop either converges too early (wrong
+    // iteration count) or never reaches iteration 2 at all.
+    let verifierCalls = 0;
+    const verifier = {
+      check: async (): Promise<
+        | { readonly ok: true }
+        | { readonly ok: false; readonly reason: "exit_nonzero"; readonly details: string }
+      > => {
+        verifierCalls += 1;
+        if (verifierCalls === 1) {
+          return {
+            ok: false,
+            reason: "exit_nonzero",
+            details: "first attempt did not produce the marker",
+          };
+        }
+        return { ok: true };
+      },
+    };
+
+    const loopResult = await runUntilPass({
+      runtime,
+      verifier,
+      initialPrompt: "What is 2+2? Answer with just the number.",
+      workingDir: "/tmp",
+      maxIterations: 3,
+      maxConsecutiveFailures: 100, // don't let the breaker fire first
+    });
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Contract: converged after exactly 2 iterations. The verifier was
+    // called twice and the underlying runtime.run() was driven twice
+    // through createKoi + full middleware stack.
+    expect(loopResult.status).toBe("converged");
+    expect(loopResult.iterations).toBe(2);
+    expect(verifierCalls).toBe(2);
+
+    // ATIF store should carry steps from BOTH iterations.
+    const steps = await store.getDocument(docId);
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+
+    rmSync(trajDir, { recursive: true, force: true });
+  }, 15000);
+
+  // ---------------------------------------------------------------------------
+  // Dedicated loop-until-pass cassette replay. Activates when the cassette
+  // has been recorded (via scripts/record-cassettes.ts with a real LLM
+  // key). Skips gracefully when the fixture is absent so CI doesn't block
+  // on a missing recording — the two tests above still validate the loop's
+  // wire-up through createKoi, and this one adds a "replay the fixture
+  // the recording script is supposed to produce" layer on top.
+  // ---------------------------------------------------------------------------
+  const loopCassettePath = `${FIXTURES}/loop-until-pass.cassette.json`;
+  const loopCassetteExists = existsSync(loopCassettePath);
+  test.skipIf(!loopCassetteExists)(
+    "dedicated loop-until-pass cassette: replays through createKoi + runUntilPass",
+    async () => {
+      const { runUntilPass } = await import("@koi/loop");
+      const cassette = await loadCassette(loopCassettePath);
+      const trajDir = `/tmp/koi-loop-dedicated-${Date.now()}`;
+      const docId = "replay-loop-dedicated";
+
+      const store = createAtifDocumentStore(
+        { agentName: "replay-loop-dedicated" },
+        createFsAtifDelegate(trajDir),
+      );
+      const clock = createMonotonicClock();
+      const { middleware: eventTrace } = createEventTraceMiddleware({
+        store,
+        docId,
+        agentName: "replay-loop-dedicated",
+        clock,
+      });
+      const { onExecuted, middleware: hookObserverMw } = createHookObserver({
+        store,
+        docId,
+        clock,
+      });
+      const hookMw = createHookMiddleware({ hooks: [], onExecuted });
+      const permBackend = createPermissionBackend({
+        mode: "bypass",
+        rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+      });
+      const permHandle = createPermissionsMiddleware({
+        backend: permBackend,
+        description: "loop-dedicated-golden (bypass)",
+      });
+      const adapter = createCassetteAdapter(cassette.chunks);
+
+      const runtime = await createKoi({
+        manifest: {
+          name: "replay-loop-dedicated",
+          version: "0.1.0",
+          model: { name: MODEL },
+        },
+        adapter,
+        middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
+          wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+        ),
+        providers: [],
+        loopDetection: false,
+      });
+
+      // Stateful verifier: fails on iteration 1, passes on iteration 2.
+      // A skipIf golden that always passed on the first check would never
+      // prove the retry path even when it ran — it would just re-verify
+      // one-shot happy-path behavior already covered by the other tests.
+      // This verifier forces the replay to exercise the fail→retry→pass
+      // cycle, so a regression in how runUntilPass re-enters the runtime
+      // through createKoi on retry would surface even in the skipIf test.
+      let verifierCalls = 0;
+      const statefulVerifier = {
+        check: async (): Promise<
+          | { readonly ok: true }
+          | { readonly ok: false; readonly reason: "exit_nonzero"; readonly details: string }
+        > => {
+          verifierCalls += 1;
+          if (verifierCalls === 1) {
+            return {
+              ok: false,
+              reason: "exit_nonzero",
+              details: "first attempt not yet satisfied — retry expected",
+            };
+          }
+          return { ok: true };
+        },
+      };
+
+      const loopResult = await runUntilPass({
+        runtime,
+        verifier: statefulVerifier,
+        initialPrompt: "Respond with the single word: DONE",
+        workingDir: "/tmp",
+        maxIterations: 3,
+        maxConsecutiveFailures: 100, // don't let the breaker fire first
+      });
+
+      await runtime.dispose();
+      await new Promise((r) => setTimeout(r, 300));
+
+      // Contract: cassette drove two full agent turns through createKoi
+      // before converging.
+      expect(loopResult.status).toBe("converged");
+      expect(loopResult.iterations).toBe(2);
+      expect(verifierCalls).toBe(2);
+      const steps = await store.getDocument(docId);
+      const modelSteps = steps.filter(
+        (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+      );
+      expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+      rmSync(trajDir, { recursive: true, force: true });
+    },
+    15000,
+  );
+
+  // ---------------------------------------------------------------------------
+  // Full-loop retry path WITH scripted agent behavior change across iterations.
+  //
+  // This is the port of v1's marker-runner pattern
+  // (archive/v1/packages/sched/verified-loop/src/__tests__/verified-loop-integration.test.ts)
+  // adapted to Phase A's createKoi + runUntilPass surface. Addresses the
+  // persistent reviewer concern that the other loop goldens prove the loop
+  // MECHANICALLY calls runtime.run() multiple times but never prove the
+  // AGENT's model output actually changes in response to verifier feedback.
+  //
+  // Shape:
+  //   - Custom scripted adapter returns DIFFERENT model chunks on each call:
+  //       call 0 → text "attempt=1 status=broken"
+  //       call 1 → text "attempt=2 status=fixed"
+  //     (simulates the model responding differently after seeing the
+  //     rebuildPrompt's failure-feedback.)
+  //   - Custom verifier fails when last-seen output doesn't contain "fixed".
+  //     It captures the model output via a tee-runtime that intercepts
+  //     text_delta events between the runtime and the loop.
+  //   - Loop runs: iter 1 sees "broken" → verifier fails → rebuildPrompt
+  //     includes the failure → iter 2 runs new prompt → scripted adapter's
+  //     second script returns "fixed" → verifier passes → converged.
+  //
+  // This exercises the fail→rebuild→retry→pass path end-to-end through
+  // createKoi and the L2 middleware stack with concrete per-iteration
+  // behavior change, rather than the earlier tests' constant-response
+  // pattern.
+  // ---------------------------------------------------------------------------
+  test("full-loop: scripted agent CHANGES behavior across iterations (v1 marker-runner port)", async () => {
+    const { runUntilPass } = await import("@koi/loop");
+
+    const trajDir = `/tmp/koi-loop-scripted-${Date.now()}`;
+    const docId = "replay-loop-scripted";
+
+    const store = createAtifDocumentStore(
+      { agentName: "replay-loop-scripted" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "replay-loop-scripted",
+      clock,
+    });
+    const { onExecuted, middleware: hookObserverMw } = createHookObserver({
+      store,
+      docId,
+      clock,
+    });
+    const hookMw = createHookMiddleware({ hooks: [], onExecuted });
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "loop-scripted-golden (bypass)",
+    });
+
+    // Scripted adapter: different response per call.
+    // Script 0: agent reports "broken" state.
+    // Script 1: agent reports "fixed" state.
+    // Any further calls return a terminal fallback (should not be reached).
+    const scripts: readonly (readonly ModelChunk[])[] = [
+      [
+        { kind: "text_delta" as const, delta: "attempt=1 status=broken" },
+        {
+          kind: "done" as const,
+          response: {
+            content: "attempt=1 status=broken",
+            model: MODEL,
+            usage: { inputTokens: 20, outputTokens: 4 },
+          },
+        },
+      ],
+      [
+        { kind: "text_delta" as const, delta: "attempt=2 status=fixed" },
+        {
+          kind: "done" as const,
+          response: {
+            content: "attempt=2 status=fixed",
+            model: MODEL,
+            usage: { inputTokens: 30, outputTokens: 4 },
+          },
+        },
+      ],
+    ];
+    let callIndex = 0;
+    const scriptedAdapter: EngineAdapter = {
+      engineId: "scripted-retry",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async (): Promise<ModelResponse> => ({
+          content: "fallback",
+          model: MODEL,
+        }),
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const script = scripts[Math.min(callIndex, scripts.length - 1)];
+          callIndex += 1;
+          return toAsyncIterable(script ?? []);
+        },
+        toolCall: async (): Promise<ToolResponse> => ({ output: undefined }),
+      },
+      stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        const h = input.callHandlers;
+        if (h === undefined) {
+          return (async function* () {
+            yield {
+              kind: "done" as const,
+              output: {
+                content: [],
+                stopReason: "error" as const,
+                metrics: {
+                  totalTokens: 0,
+                  inputTokens: 0,
+                  outputTokens: 0,
+                  turns: 0,
+                  durationMs: 0,
+                },
+              },
+            };
+          })();
+        }
+        const text = input.kind === "text" ? input.text : "";
+        const messages: InboundMessage[] = [
+          { senderId: "user", timestamp: Date.now(), content: [{ kind: "text", text }] },
+        ];
+        return runTurn({ callHandlers: h, messages, signal: input.signal, maxTurns: 2 });
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: {
+        name: "replay-loop-scripted",
+        version: "0.1.0",
+        model: { name: MODEL },
+      },
+      adapter: scriptedAdapter,
+      middleware: [eventTrace, hookMw, hookObserverMw, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [],
+      loopDetection: false,
+    });
+
+    // Tee-runtime: intercepts text_delta events on their way to the loop
+    // so the verifier can inspect the agent's output. This is the ONLY
+    // way to drive a verifier off the agent's actual per-iteration
+    // content without plumbing extra hooks through the loop surface.
+    let lastObservedText = "";
+    const teeRuntime: {
+      readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
+    } = {
+      async *run(input) {
+        let iterationText = "";
+        for await (const event of runtime.run(input)) {
+          if (event.kind === "text_delta" && event.delta.length > 0) {
+            iterationText += event.delta;
+          }
+          yield event;
+        }
+        lastObservedText = iterationText;
+      },
+    };
+
+    // Verifier fails when it doesn't see "fixed" in the most recent
+    // iteration's observed text. Passes when "fixed" appears.
+    let verifierCalls = 0;
+    const scriptedVerifier = {
+      check: async (): Promise<
+        | { readonly ok: true }
+        | { readonly ok: false; readonly reason: "exit_nonzero"; readonly details: string }
+      > => {
+        verifierCalls += 1;
+        if (lastObservedText.includes("fixed")) {
+          return { ok: true };
+        }
+        return {
+          ok: false,
+          reason: "exit_nonzero",
+          details: `iteration ${verifierCalls}: observed "${lastObservedText}", expected "fixed"`,
+        };
+      },
+    };
+
+    // Capture the prompts passed to runtime.run so we can assert
+    // rebuildPrompt actually fed the iter-1 failure into iter-2's input.
+    const observedPrompts: string[] = [];
+    const capturingRuntime: {
+      readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
+    } = {
+      run: (input) => {
+        if (input.kind === "text") observedPrompts.push(input.text);
+        return teeRuntime.run(input);
+      },
+    };
+
+    const loopResult = await runUntilPass({
+      runtime: capturingRuntime,
+      verifier: scriptedVerifier,
+      initialPrompt: "Report your current attempt status",
+      workingDir: "/tmp",
+      maxIterations: 3,
+      maxConsecutiveFailures: 100,
+    });
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Convergence on iteration 2 — scripted adapter's second response
+    // contained "fixed" which satisfied the verifier.
+    expect(loopResult.status).toBe("converged");
+    expect(loopResult.iterations).toBe(2);
+    expect(verifierCalls).toBe(2);
+    expect(callIndex).toBe(2); // scripted adapter was called exactly twice
+
+    // The AGENT actually changed behavior — iteration 1's observed text
+    // differed from iteration 2's. Iteration 1's record's verifier result
+    // must carry the "broken" failure; iteration 2's must be ok.
+    const [rec1, rec2] = loopResult.iterationRecords;
+    if (rec1 === undefined || rec2 === undefined) throw new Error("missing records");
+    expect(rec1.verifierResult.ok).toBe(false);
+    expect(rec2.verifierResult.ok).toBe(true);
+    if (rec1.verifierResult.ok) throw new Error("unreachable");
+    expect(rec1.verifierResult.details).toContain("broken");
+
+    // rebuildPrompt wiring: iteration 2's prompt must contain iteration 1's
+    // failure feedback. This is the other half of the retry contract —
+    // without rebuildPrompt, the agent would see the same prompt twice and
+    // have no reason to change behavior.
+    expect(observedPrompts.length).toBe(2);
+    expect(observedPrompts[0]).toBe("Report your current attempt status");
+    expect(observedPrompts[1]).toContain("Report your current attempt status");
+    expect(observedPrompts[1]).toContain("broken");
+
+    // Both iterations went through createKoi + the full L2 middleware
+    // stack — ATIF store carries model_call steps from both.
+    const steps = await store.getDocument(docId);
+    const modelSteps = steps.filter(
+      (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
+    );
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+
+    rmSync(trajDir, { recursive: true, force: true });
+  }, 15000);
 });

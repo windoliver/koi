@@ -47,6 +47,7 @@
     "@koi/harness": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
+    "@koi/loop": "workspace:*",
     "@koi/lsp": "workspace:*",
     "@koi/memory-tools": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",

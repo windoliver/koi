@@ -152,6 +152,12 @@ function makeFlags(
     logFormat: overrides.logFormat ?? "text",
     noTui: overrides.noTui ?? false,
     contextWindow: overrides.contextWindow ?? 100,
+    untilPass: [],
+    maxIter: 10,
+    verifierTimeoutMs: 120_000,
+    workingDir: undefined,
+    allowSideEffects: false,
+    verifierInheritEnv: false,
   };
 }
 
