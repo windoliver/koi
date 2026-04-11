@@ -482,6 +482,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
+        "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
