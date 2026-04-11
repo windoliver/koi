@@ -534,4 +534,52 @@ describe("with OTel provider registered", () => {
       expect(sessARoot.spanContext().traceId).not.toBe(sessBRoot.spanContext().traceId);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // ATIF stamping — onStep returns OTel coordinates for event-trace to merge
+  // -------------------------------------------------------------------------
+
+  describe("ATIF trace stamping", () => {
+    test("onStep returns otel.traceId and otel.spanId for model_call", async () => {
+      const otel = createOtelMiddleware();
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      const result = otel.onStep(SESSION_ID, makeModelStep());
+
+      expect(result).toBeDefined();
+      if (result === undefined) throw new Error("result should be defined");
+      expect(typeof result["otel.traceId"]).toBe("string");
+      expect(typeof result["otel.spanId"]).toBe("string");
+      expect(result["otel.traceId"].length).toBe(32); // W3C traceId = 128-bit hex
+      expect(result["otel.spanId"].length).toBe(16); // W3C spanId = 64-bit hex
+    });
+
+    test("onStep returns otel.traceId and otel.spanId for tool_call", async () => {
+      const otel = createOtelMiddleware();
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      const result = otel.onStep(SESSION_ID, makeToolStep());
+
+      expect(result).toBeDefined();
+      if (result === undefined) throw new Error("result should be defined");
+      expect(typeof result["otel.traceId"]).toBe("string");
+      expect(typeof result["otel.spanId"]).toBe("string");
+    });
+
+    test("onStep returns undefined for provenance steps (skipped)", () => {
+      const otel = createOtelMiddleware();
+      const result = otel.onStep(SESSION_ID, {
+        stepIndex: 0,
+        timestamp: 1_000,
+        source: "system",
+        kind: "tool_call",
+        identifier: "provenance:turn_summary",
+        outcome: "success",
+        durationMs: 0,
+      });
+      expect(result).toBeUndefined();
+    });
+  });
 });

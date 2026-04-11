@@ -170,9 +170,12 @@ export function createOtelMiddleware(config?: OtelMiddlewareConfig): OtelHandle 
   // onStep — receives every RichTrajectoryStep from event-trace (Issue 1A)
   // ---------------------------------------------------------------------------
 
-  function onStep(sessionId: string, step: RichTrajectoryStep): void {
+  function onStep(sessionId: string, step: RichTrajectoryStep): Record<string, string> | void {
     // Skip internal bookkeeping steps
     if (isInternalStep(step)) return;
+
+    // Populated inside safeSpanOp, returned to event-trace for ATIF stamping
+    let otelMeta: Record<string, string> | undefined;
 
     safeSpanOp(() => {
       const state = sessions.get(sessionId);
@@ -230,6 +233,13 @@ export function createOtelMiddleware(config?: OtelMiddlewareConfig): OtelHandle 
             ...attrs,
           });
         }
+
+        // Stamp OTel coordinates into ATIF metadata so both systems share the
+        // same trace identity. event-trace merges this return value before write.
+        otelMeta = {
+          "otel.traceId": span.spanContext().traceId,
+          "otel.spanId": span.spanContext().spanId,
+        };
       } else if (step.kind === "tool_call") {
         const spanName = buildToolSpanName(step);
         const attrs = buildToolSpanAttrs(step, sessionId);
@@ -248,8 +258,16 @@ export function createOtelMiddleware(config?: OtelMiddlewareConfig): OtelHandle 
         }
 
         span.end(endTime);
+
+        // Stamp OTel coordinates into ATIF metadata
+        otelMeta = {
+          "otel.traceId": span.spanContext().traceId,
+          "otel.spanId": span.spanContext().spanId,
+        };
       }
     });
+
+    return otelMeta;
   }
 
   // ---------------------------------------------------------------------------

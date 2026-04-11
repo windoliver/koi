@@ -154,11 +154,15 @@ export interface EventTraceConfig {
    * Called synchronously after each step is built, before the fire-and-forget
    * store write. Use this to observe steps in real-time (e.g. OTel span emission).
    *
+   * Return a JsonObject to stamp additional fields into step.metadata before
+   * the store write — e.g. OTel traceId/spanId so ATIF and OTel share the same
+   * trace identity. Returned keys are shallow-merged into step.metadata.
+   *
    * CONTRACT: Must be CPU-only and non-throwing. Any error thrown here is silently
    * swallowed to preserve the observer-never-throws invariant.
    * Do NOT perform I/O or return a Promise — this fires in the hot recording path.
    */
-  readonly onStep?: (sessionId: string, step: RichTrajectoryStep) => void;
+  readonly onStep?: (sessionId: string, step: RichTrajectoryStep) => JsonObject | void;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,16 +235,22 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
    * synchronously before the async store write (real-time observation).
    */
   function recordStep(state: SessionState, step: RichTrajectoryStep, sessionId?: string): void {
-    // Synchronous observer — fires before the async write (e.g. OTel span emission)
+    // Synchronous observer — fires before the async write (e.g. OTel span emission).
+    // If the observer returns a JsonObject, shallow-merge into step.metadata so
+    // ATIF and the observer (e.g. OTel) share the same trace identity on disk.
+    let finalStep = step;
     if (onStep !== undefined && sessionId !== undefined) {
       try {
-        onStep(sessionId, step);
+        const extra = onStep(sessionId, step);
+        if (extra !== undefined) {
+          finalStep = { ...step, metadata: { ...step.metadata, ...extra } };
+        }
       } catch {
         // Observer-never-throws: silently swallow to preserve request path integrity
       }
     }
     // Fire-and-forget — runs concurrently, never blocks the caller
-    const p = writeStep(state, step);
+    const p = writeStep(state, finalStep);
     pendingWrites.add(p);
     void p.finally(() => pendingWrites.delete(p));
   }
