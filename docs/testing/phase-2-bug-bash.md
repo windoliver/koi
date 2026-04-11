@@ -84,21 +84,9 @@ tmux capture-pane -t "$NEXUS_SESSION" -p | tail -20
 curl -s "http://localhost:${NEXUS_PORT}/admin/api/health"
 ```
 
-### 1.5 Launch Koi TUI
+### 1.5 Test fixture project
 
-Koi's full-screen console lives under the `tui` subcommand. (Confirm with `bun run packages/meta/cli/src/bin.ts --help`: the top-level commands are `init`, `start`, `serve`, `tui`, `sessions`, `logs`, `status`, `doctor`, `stop`, `deploy`, `plugin`.)
-
-The TUI is launched with `HOME=$KOI_HOME` so transcripts, memory, hook config, and OAuth tokens live under the isolated per-tester root.
-
-```bash
-tmux new-session -d -s "$KOI_SESSION" "HOME='$KOI_HOME' bun run packages/meta/cli/src/bin.ts tui"
-sleep 2
-tmux capture-pane -t "$KOI_SESSION" -p | tail -30
-```
-
-### 1.6 Test fixture project
-
-Every scenario runs against a per-tester fixture project created in §1.3 as `$FIXTURE`. Create it fresh at the start of the bug bash:
+Every scenario runs against a per-tester fixture project created in §1.3 as `$FIXTURE`. Create it **before** launching the TUI (§1.6) so the TUI's initial cwd is the fixture, not the repo root:
 
 ```bash
 # $FIXTURE was exported in §1.3 and is already namespaced per tester.
@@ -126,6 +114,18 @@ test("multiply", () => expect(multiply(2, 3)).toBe(6));
 EOF
 git add -A && git commit -q -m "init"
 cd - >/dev/null
+```
+
+### 1.6 Launch Koi TUI
+
+Koi's full-screen console lives under the `tui` subcommand. (Confirm with `bun run packages/meta/cli/src/bin.ts --help`: the top-level commands are `init`, `start`, `serve`, `tui`, `sessions`, `logs`, `status`, `doctor`, `stop`, `deploy`, `plugin`.)
+
+The TUI is launched with `cd '$FIXTURE' &&` so the initial cwd is the per-tester fixture (not the repo root — that would make every scenario's reads/globs resolve against the wrong tree), and with `HOME=$KOI_HOME` so transcripts, memory, hook config, and OAuth tokens live under the isolated per-tester root. This matches the §1.7 reset-path launch exactly.
+
+```bash
+tmux new-session -d -s "$KOI_SESSION" "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+sleep 2
+tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
 
 ### 1.7 Reset between scenarios
@@ -188,7 +188,7 @@ Session transcripts are flat JSONL files stored at `$KOI_HOME/.koi/sessions/<enc
 
 Each line is a `TranscriptEntry` with shape `{ id, role, content, timestamp }`, where `role` is one of `user`, `assistant`, `tool_call`, `tool_result`, `system`, `compaction`.
 
-Because `$KOI_HOME` is fully isolated per tester (§1.3 + §1.5 launch with `HOME=$KOI_HOME`), the newest file in *your own* sessions directory is unambiguous — there is no cross-tester race inside an isolated HOME. Always reset between scenarios (§1.7) so "newest" means "this scenario".
+Because `$KOI_HOME` is fully isolated per tester (§1.3 + §1.6 launch with `HOME=$KOI_HOME`), the newest file in *your own* sessions directory is unambiguous — there is no cross-tester race inside an isolated HOME. Always reset between scenarios (§1.7) so "newest" means "this scenario".
 
 ```bash
 # Reset (§1.7) before each scenario, then after the scenario finishes:
@@ -573,7 +573,7 @@ bun test --filter=@koi/tools-builtin    # covers plan-mode tool factory + read-o
 
 ### Group I — Skills
 
-> **User skill root is `~/.claude/skills`**, not `~/.koi/skills` (per `tui-runtime.ts:802` and `packages/lib/skills-runtime/src/discover.ts`). Because the TUI is launched with `HOME=$KOI_HOME` (§1.5), the in-process `~` resolves to `$KOI_HOME` — so fixture writes MUST go under `$KOI_HOME/.claude/skills/` from the tester shell, never under the real `~/.claude/skills` of the user. Using a literal `~` in a tester shell command writes to the real user home and will either leak into other sessions or fail silently.
+> **User skill root is `~/.claude/skills`**, not `~/.koi/skills` (per `tui-runtime.ts:802` and `packages/lib/skills-runtime/src/discover.ts`). Because the TUI is launched with `HOME=$KOI_HOME` (§1.6), the in-process `~` resolves to `$KOI_HOME` — so fixture writes MUST go under `$KOI_HOME/.claude/skills/` from the tester shell, never under the real `~/.claude/skills` of the user. Using a literal `~` in a tester shell command writes to the real user home and will either leak into other sessions or fail silently.
 
 #### I1. Skill discovery from disk
 **Tags**: skills-runtime loader, skill-tool, user skill root
@@ -779,7 +779,7 @@ bun test --filter=@koi/file-resolution
 **Tags**: bridge auth notifications, `auth_required`, `auth_complete`, fs-nexus/auth-notifications
 **Setup**: gdrive mount with NO existing token — **use the per-tester isolated config root**, never the shared user config.
 ```bash
-# The TUI was launched with HOME=$KOI_HOME (§1.5), so nexus-fs will look for
+# The TUI was launched with HOME=$KOI_HOME (§1.6), so nexus-fs will look for
 # tokens at $KOI_HOME/.config/nexus-fs/tokens.db (isolated per tester).
 rm -f "$KOI_HOME/.config/nexus-fs/tokens.db"
 mkdir -p "$KOI_HOME/.config/nexus-fs"
@@ -1195,7 +1195,7 @@ Each tester uses their own worktree copy (via `git worktree add`) to avoid files
 # DO NOT use `ls -t ~/.koi/sessions/*.jsonl | head -1` — that resolves to the REAL
 # user HOME (not the isolated $KOI_HOME) and races against other testers.
 # Using `ls -t` inside $KOI_HOME is safe because each tester has a private HOME
-# per §1.5 (HOME=$KOI_HOME).
+# per §1.6 (HOME=$KOI_HOME).
 
 # Newest transcript in this tester's isolated sessions dir (post §1.7 reset)
 SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl 2>/dev/null | head -1)
