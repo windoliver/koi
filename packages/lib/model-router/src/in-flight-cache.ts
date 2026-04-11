@@ -40,6 +40,10 @@ async function computeRequestHash(request: ModelRequest): Promise<string> {
     temperature: request.temperature,
     maxTokens: request.maxTokens,
     systemPrompt: request.systemPrompt,
+    // Include tools and metadata: different tool allowlists or metadata produce
+    // different model responses and must NOT share an in-flight result.
+    tools: request.tools ?? [],
+    metadata: request.metadata ?? {},
   };
   const json = JSON.stringify(key);
 

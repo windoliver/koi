@@ -233,7 +233,9 @@ export function createModelRouter(
 
         const targetConfig = targetConfigById.get(target.id);
         if (targetConfig === undefined) continue;
-        if (!targetSupportsRequest(targetConfig, request)) continue;
+        // Note: capability check already applied by getCompatibleTargets(). No
+        // second check here — that would diverge from route() and silently
+        // fail-close when fail-open was intended (zero compatible targets).
 
         const adapter = adapters.get(targetConfig.provider);
         if (adapter === undefined) continue;
@@ -241,24 +243,33 @@ export function createModelRouter(
         attempted.push(target.id);
         const modelRequest: ModelRequest = { ...request, model: targetConfig.model };
 
-        // Track whether any chunks have been yielded.
+        // Track whether any content chunks have been yielded.
         // If the stream fails mid-response, do NOT fall through to the next provider —
         // that would splice two partial responses, corrupting the caller's stream.
         let chunksYielded = false;
+        // Track whether the final outcome was a failure (for post-content error chunks).
+        let streamFailed = false;
         const startMs = clock();
 
+        // let: mutable — set to the caught throw so it can be re-thrown after bookkeeping
+        let caughtError: unknown;
+        const stream = adapter.stream(modelRequest);
         try {
-          const stream = adapter.stream(modelRequest);
           for await (const chunk of stream) {
             // Error chunks from the adapter (e.g., HTTP 4xx/5xx yielded rather
             // than thrown) are treated as target failures when no content has been
             // yielded yet — fall through to the next provider. Once content has
-            // streamed, propagate error chunks as-is to avoid partial-stream splice.
+            // streamed, propagate error chunks as-is (never splice providers).
             if (chunk.kind === "error" && !chunksYielded) {
-              cb?.recordFailure();
-              lastErrorAtByTarget[target.id] = clock();
-              failuresByTarget[target.id] = (failuresByTarget[target.id] ?? 0) + 1;
-              break; // try next target
+              streamFailed = true;
+              break; // try next target (finally still runs for bookkeeping)
+            }
+            if (chunk.kind === "error") {
+              // Post-content error: propagate to caller but record as failure
+              // so the circuit breaker can open on repeated mid-stream errors.
+              streamFailed = true;
+              yield chunk;
+              return;
             }
             if (!chunksYielded) {
               // Emit decision on first content chunk — we now know which target is serving
@@ -271,23 +282,33 @@ export function createModelRouter(
             chunksYielded = true;
             yield chunk;
           }
-          if (chunksYielded) {
+        } catch (e: unknown) {
+          caughtError = e;
+        } finally {
+          // Bookkeeping always runs regardless of how the loop exits: normal
+          // exhaustion, break (pre-content error), throw, or generator
+          // cancellation via iterator.return() (e.g. caller abandons stream).
+          // This prevents HALF_OPEN probeInFlight from wedging permanently.
+          const durationMs = clock() - startMs;
+          if (streamFailed || !chunksYielded || caughtError !== undefined) {
+            cb?.recordFailure();
+            lastErrorAtByTarget[target.id] = clock();
+            failuresByTarget[target.id] = (failuresByTarget[target.id] ?? 0) + 1;
+          } else {
             cb?.recordSuccess();
-            latencyTrackers.get(target.id)?.record(clock() - startMs);
-            return;
+            latencyTrackers.get(target.id)?.record(durationMs);
           }
-          // Loop fell through without content (error chunk path) — try next target
-        } catch (error: unknown) {
-          cb?.recordFailure();
-          lastErrorAtByTarget[target.id] = clock();
-          failuresByTarget[target.id] = (failuresByTarget[target.id] ?? 0) + 1;
-
-          if (chunksYielded) {
-            // Mid-stream failure: propagate, never switch providers
-            throw error;
-          }
-          // Pre-first-chunk failure: try next target
         }
+        if (caughtError !== undefined) {
+          if (chunksYielded) {
+            // Mid-stream throw after content: propagate, never switch providers
+            throw caughtError;
+          }
+          // Pre-first-chunk throw: try next target
+        } else if (chunksYielded && !streamFailed) {
+          return;
+        }
+        // Loop fell through (pre-content error chunk) — try next target
       }
 
       // All targets exhausted — emit decision before error chunk

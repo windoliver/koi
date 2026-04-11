@@ -517,4 +517,180 @@ describe("createModelRouter — routeStream() edge cases", () => {
     expect(collected).toHaveLength(3);
     router.dispose();
   });
+
+  // P1-4: duplicate capability check removed — routeStream fail-open matches route()
+  test("zero compatible targets (all lack capability) → fail-open, tries all enabled targets", async () => {
+    // Both targets lack vision — getCompatibleTargets() falls back to all enabled
+    // routeStream must NOT re-apply capability check (that would block them all silently)
+    const tried: string[] = [];
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          streamWith: [{ kind: "text_delta", delta: "from-a" }],
+        }),
+      ],
+      [
+        "b",
+        makeAdapter("b", {
+          streamWith: [{ kind: "text_delta", delta: "from-b" }],
+        }),
+      ],
+    ]);
+
+    // Image request but both targets lack vision → fail-open: try all enabled
+    const imageRequest: ModelRequest = {
+      messages: [
+        {
+          senderId: "user",
+          content: [{ kind: "image", url: "https://example.com/img.png" }],
+          timestamp: 0,
+        },
+      ],
+      model: "placeholder",
+    };
+
+    const router = makeRouter(
+      [
+        { provider: "a", model: "m1", capabilities: { vision: false } },
+        { provider: "b", model: "m2", capabilities: { vision: false } },
+      ],
+      adapters,
+    );
+
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of router.routeStream(imageRequest)) {
+      chunks.push(chunk);
+      tried.push(chunk.kind === "text_delta" ? chunk.delta : "other");
+    }
+
+    // Should have gotten content from "a" (fail-open) rather than an error chunk
+    expect(chunks.some((c) => c.kind === "text_delta")).toBe(true);
+    expect(chunks.every((c) => c.kind !== "error")).toBe(true);
+    router.dispose();
+  });
+
+  // P1-3 (generator cancellation): finally block releases HALF_OPEN probeInFlight
+  test("caller abandons stream mid-flight → circuit breaker bookkeeping still runs", async () => {
+    // Simulate a slow stream — caller breaks early (iterator.return() fires)
+    // The finally block must still run, otherwise probeInFlight wedges
+    let finalizationRan = false;
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          // Stream produces many chunks — caller will stop after first
+          streamWith: [
+            { kind: "text_delta", delta: "chunk1" },
+            { kind: "text_delta", delta: "chunk2" },
+            { kind: "text_delta", delta: "chunk3" },
+          ],
+        }),
+      ],
+    ]);
+
+    const router = makeRouter([{ provider: "a", model: "m1" }], adapters);
+
+    // Consume only the first chunk, then break — triggers iterator.return()
+    for await (const chunk of router.routeStream(makeRequest())) {
+      if (chunk.kind === "text_delta") {
+        finalizationRan = true;
+        break;
+      }
+    }
+
+    expect(finalizationRan).toBe(true);
+    // After early exit, circuit breaker should be recordSuccess (content WAS yielded)
+    const health = router.getHealth();
+    expect(health.get("a:m1")?.state).toBe("CLOSED");
+    router.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-flight cache (P1-1: tools + metadata included in hash)
+// ---------------------------------------------------------------------------
+
+describe("createModelRouter — in-flight cache", () => {
+  test("requests with different tools are NOT deduplicated", async () => {
+    let callCount = 0;
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          completeWith: () => {
+            callCount++;
+            return makeResponse("a");
+          },
+        }),
+      ],
+    ]);
+    const router = makeRouter([{ provider: "a", model: "m1" }], adapters);
+
+    const base = makeRequest("hello");
+    const withTools: ModelRequest = {
+      ...base,
+      tools: [
+        { name: "my_tool", description: "t", inputSchema: { type: "object", properties: {} } },
+      ],
+    };
+    const withoutTools: ModelRequest = { ...base };
+
+    // Fire both concurrently — they differ by tools, must NOT share the same in-flight entry
+    await Promise.all([router.route(withTools), router.route(withoutTools)]);
+
+    expect(callCount).toBe(2);
+    router.dispose();
+  });
+
+  test("requests with different metadata are NOT deduplicated", async () => {
+    let callCount = 0;
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          completeWith: () => {
+            callCount++;
+            return makeResponse("a");
+          },
+        }),
+      ],
+    ]);
+    const router = makeRouter([{ provider: "a", model: "m1" }], adapters);
+
+    const base = makeRequest("hello");
+    const withMeta: ModelRequest = { ...base, metadata: { sessionId: "abc" } };
+    const withOtherMeta: ModelRequest = { ...base, metadata: { sessionId: "xyz" } };
+
+    await Promise.all([router.route(withMeta), router.route(withOtherMeta)]);
+
+    expect(callCount).toBe(2);
+    router.dispose();
+  });
+
+  test("identical concurrent requests ARE deduplicated", async () => {
+    let callCount = 0;
+    const adapters = new Map([
+      [
+        "a",
+        makeAdapter("a", {
+          completeWith: async () => {
+            callCount++;
+            // Small async gap so second request actually races
+            await new Promise((r) => setTimeout(r, 5));
+            return makeResponse("a");
+          },
+        }),
+      ],
+    ]);
+    const router = makeRouter([{ provider: "a", model: "m1" }], adapters);
+
+    const req = makeRequest("identical");
+    const [r1, r2] = await Promise.all([router.route(req), router.route(req)]);
+
+    expect(callCount).toBe(1);
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    router.dispose();
+  });
 });
