@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { runFileSystemBackendContractTests } from "@koi/fs-nexus/testing";
 import { createLocalFileSystem } from "./local-filesystem-backend.js";
 
@@ -291,5 +291,60 @@ describe("LocalFileSystemBackend (symlink containment)", () => {
     const read = await backend.read("a/b/c/deep.txt");
     expect(read.ok).toBe(true);
     if (read.ok) expect(read.value.content).toBe("nested");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePath — containment boundary for cross-cutting subsystems
+// ---------------------------------------------------------------------------
+
+describe("resolvePath", () => {
+  const testDir = mkdtempSync(join(tmpdir(), "fs-local-resolve-"));
+
+  test("returns absolute path for workspace-relative input", () => {
+    const backend = createLocalFileSystem(testDir);
+    const out = backend.resolvePath?.("src/foo.ts");
+    expect(out).toBeDefined();
+    expect(out).toEndWith(`${sep}src${sep}foo.ts`);
+  });
+
+  test("strips leading slash and resolves relative to workspace root", () => {
+    const backend = createLocalFileSystem(testDir);
+    const out = backend.resolvePath?.("/src/foo.ts");
+    expect(out).toBeDefined();
+    expect(out).toEndWith(`${sep}src${sep}foo.ts`);
+  });
+
+  test("passes through absolute path when it's already under the workspace", () => {
+    const backend = createLocalFileSystem(testDir);
+    const abs = `${realpathSync(testDir)}${sep}src${sep}foo.ts`;
+    const out = backend.resolvePath?.(abs);
+    expect(out).toBe(abs);
+  });
+
+  test("returns undefined for `../` traversal that escapes the workspace", () => {
+    const backend = createLocalFileSystem(testDir);
+    expect(backend.resolvePath?.("../secret.txt")).toBeUndefined();
+    expect(backend.resolvePath?.("../../etc/passwd")).toBeUndefined();
+    expect(backend.resolvePath?.("src/../../escape")).toBeUndefined();
+  });
+
+  test("treats leading `/path` as workspace-relative (not absolute host path)", () => {
+    // `/etc/passwd` does NOT escape — the leading slash is stripped and the
+    // path is resolved relative to the workspace root, yielding
+    // `<workspace>/etc/passwd`. This is a legitimate workspace-relative
+    // path (a file named `passwd` under `<workspace>/etc/`). It is NOT an
+    // access to the host `/etc/passwd`.
+    const backend = createLocalFileSystem(testDir);
+    const resolved = backend.resolvePath?.("/etc/passwd");
+    expect(resolved).toBeDefined();
+    expect(resolved).toStartWith(realpathSync(testDir));
+    expect(resolved).toEndWith(`${sep}etc${sep}passwd`);
+  });
+
+  test("returns the workspace root for empty path (container root)", () => {
+    const backend = createLocalFileSystem(testDir);
+    const out = backend.resolvePath?.("");
+    expect(out).toBe(realpathSync(testDir));
   });
 });

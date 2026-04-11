@@ -456,21 +456,25 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     },
 
     /**
-     * Pure lexical path resolution. Mirrors the input-normalization logic
-     * from `lexicalCheck()` above but without the containment check: this
-     * method is advertised to cross-cutting subsystems (e.g. @koi/checkpoint)
-     * that need to hash blobs against the same absolute path the backend
-     * writes to. The actual read/write/edit calls still run the full
-     * `safePath()` + `rejectEscapingSymlink()` gauntlet; this method MUST
-     * NOT be used as a security boundary.
+     * Lexical path resolution with containment check — mirrors
+     * `lexicalCheck()` above and includes the same "path escapes workspace"
+     * rejection. This method is advertised to cross-cutting subsystems (e.g.
+     * @koi/checkpoint) that need to hash blobs against the same absolute
+     * path the backend writes to, and those subsystems observe the path
+     * BEFORE the backend's own read/write/edit gauntlet runs, so this
+     * method MUST NOT trust inputs that would escape the workspace.
      *
-     * If the input is already an absolute path matching the workspace root
-     * or `root`, it is passed through verbatim. If it starts with "/" but
-     * doesn't match the workspace, the leading "/" is stripped and it's
-     * resolved relative to root ("/src/foo.ts" → "<root>/src/foo.ts").
-     * Anything else is treated as workspace-relative and resolved from root.
+     * Returns `undefined` when the input resolves outside the workspace
+     * root (via `../` segments, non-matching absolute paths, Windows drive
+     * letters, etc.). The caller MUST treat undefined as "skip this op."
+     *
+     * Still lexical: no I/O, no symlink resolution. An input that passes
+     * this check can still escape at call time via an in-workspace symlink
+     * whose target is outside the workspace. Symlink escape is only caught
+     * by `safePath()` + `rejectEscapingSymlink()` on the actual operation,
+     * not here. This method is necessary but not sufficient.
      */
-    resolvePath(path: string): string {
+    resolvePath(path: string): string | undefined {
       const stripped = path.startsWith(rootPrefix)
         ? path.slice(rootPrefix.length)
         : path.startsWith(`${root}/`)
@@ -478,7 +482,14 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           : path.startsWith("/")
             ? path.slice(1)
             : path;
-      return resolve(root, stripped);
+      const resolved = resolve(root, stripped);
+      // Containment check — reject anything that would escape the workspace.
+      // Matches the lexicalCheck() behavior above so the two code paths
+      // cannot diverge.
+      if (resolved !== root && !resolved.startsWith(rootPrefix)) {
+        return undefined;
+      }
+      return resolved;
     },
 
     dispose(): void {

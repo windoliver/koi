@@ -134,10 +134,17 @@ export interface CheckpointMiddlewareConfig {
    * The resolved path is also what gets stored in the `FileOpRecord`, so
    * the restore protocol can write back directly without re-resolving.
    *
+   * Returns `undefined` when the input path resolves OUTSIDE the backend's
+   * workspace root (traversal via `../`, non-matching absolute paths, etc.).
+   * The caller MUST treat undefined as "skip this op's capture" — hashing
+   * files outside the workspace would be an information leak, because the
+   * backend's own `safePath()` + `rejectEscapingSymlink()` checks run only
+   * at read/write time, AFTER the checkpoint middleware observes the path.
+   *
    * When omitted (the default), the path is used as-is — suitable for
    * unit tests and setups where the agent emits absolute filesystem paths.
    */
-  readonly resolvePath?: (virtualPath: string) => string;
+  readonly resolvePath?: (virtualPath: string) => string | undefined;
 }
 
 /**

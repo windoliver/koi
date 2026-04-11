@@ -394,4 +394,57 @@ describe("checkpoint middleware", () => {
 
     storeLocal.close();
   });
+
+  // Security regression: when the resolver returns `undefined` (the path
+  // escapes the workspace), the checkpoint middleware MUST NOT hash or
+  // store the file. Before this guard, a tool call with `../../etc/passwd`
+  // would leak the file into the blob store before fs-local rejected the
+  // write. See codex round-2 P1 finding on commit 94527959.
+  test("resolvePath returning undefined skips capture entirely (security)", async () => {
+    const session = makeSession();
+    const ctx = makeTurn(session);
+    const storeLocal = createSnapshotStoreSqlite<CheckpointPayload>({ path: ":memory:" });
+
+    // Resolver that rejects any path containing ".." — simulates fs-local's
+    // workspace-escape rejection.
+    const middleware = createCheckpointMiddleware({
+      store: storeLocal,
+      config: {
+        blobDir: rig.blobDir,
+        driftDetector: NULL_DRIFT,
+        resolvePath: (v) => (v.includes("..") ? undefined : v),
+      },
+    });
+
+    // Tool call with an escaping path. The tool handler "writes" somewhere
+    // unrelated (we don't care — the capture should not happen at all).
+    const wrap = expectFn(middleware.wrapToolCall);
+    const onAfter = expectFn(middleware.onAfterTurn);
+
+    let toolRan = false;
+    await wrap(
+      ctx,
+      makeRequest("fs_write", { path: "../../etc/secret", content: "x" }),
+      async () => {
+        // In reality fs-local would reject; here we just mark that next()
+        // ran, so we can confirm the middleware forwarded the request
+        // normally instead of pre-emptively short-circuiting.
+        toolRan = true;
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+    await onAfter(ctx);
+
+    // The tool handler MUST still have been invoked — checkpoint's skip
+    // decision only affects the capture path, not the request flow.
+    expect(toolRan).toBe(true);
+
+    // The captured snapshot should contain NO file ops — the escape-path
+    // capture was skipped.
+    const head = storeLocal.head(chainId(String(session.sessionId)));
+    if (!head.ok || head.value === undefined) throw new Error("no head");
+    expect(head.value.data.fileOps).toEqual([]);
+
+    storeLocal.close();
+  });
 });

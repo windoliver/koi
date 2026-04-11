@@ -122,7 +122,17 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // blobs keyed on the raw tool-input path `/src/foo.ts`, so the restore
   // protocol no-ops on any file the tool actually wrote.
   const filesystemBackendForResolve = resolveFilesystemInput(config.filesystem, config.cwd);
-  const filesystemResolvePath = filesystemBackendForResolve?.resolvePath;
+  // Wrap the backend's method in an arrow so `this` stays bound to the
+  // backend instance. Caller-provided class-backed backends may implement
+  // resolvePath as a regular method that reads `this` (e.g., to access
+  // the stored workspace root), and extracting it as a bare function
+  // would lose the receiver — capturePreImage/capturePostImage would
+  // then throw with `this is undefined` but only when checkpoint is
+  // enabled, making the bug silent in every other config.
+  const filesystemResolvePath: ((path: string) => string | undefined) | undefined =
+    filesystemBackendForResolve?.resolvePath !== undefined
+      ? (path: string) => filesystemBackendForResolve.resolvePath?.(path)
+      : undefined;
 
   // Checkpoint (#1625) — wires capture middleware + CAS blob store, exposes
   // a programmatic rewind handle on the runtime. Optional: only constructed
