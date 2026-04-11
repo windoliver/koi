@@ -593,11 +593,12 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "tool_call",
+      kind: "permission_decision",
       durationMs,
       metadata: {
         permissionCheck: true,
@@ -663,11 +664,12 @@ export function createPermissionsMiddleware(
       meta.scope = approval.scope;
     }
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "tool_call",
+      kind: "permission_decision",
       durationMs,
       metadata: meta as JsonObject,
     };
@@ -727,11 +729,12 @@ export function createPermissionsMiddleware(
     sink: AuditSink,
   ): void {
     const entry: AuditEntry = {
+      schema_version: 1,
       timestamp: clock(),
       sessionId: ctx.session.sessionId as string,
       agentId: ctx.session.agentId,
       turnIndex: ctx.turnIndex,
-      kind: "model_call",
+      kind: "permission_decision",
       durationMs: 0,
       metadata: {
         permissionCheck: true,
@@ -972,6 +975,8 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditFilterDecision(ctx, tool.name, decision, auditSink);
       }
+      // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
+      void ctx.dispatchPermissionDecision?.(queries[i]!, decision);
       if (decision.effect === "deny") {
         sessionTracker.record({
           toolId: tool.name,
@@ -1105,6 +1110,7 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
       }
+      void ctx.dispatchPermissionDecision?.(query, decision);
 
       // Report the permission decision for trace recording
       ctx.reportDecision?.({
@@ -1136,7 +1142,11 @@ export function createPermissionsMiddleware(
       }
 
       if (decision.effect === "ask") {
-        return handleAskDecision(ctx, request, next, decision);
+        // Pass a dispatch callback so each approval path fires the outcome
+        // BEFORE calling next(request) — ensures recording even if the tool throws.
+        return handleAskDecision(ctx, request, next, decision, (d) => {
+          void ctx.dispatchPermissionDecision?.(query, d);
+        });
       }
 
       // allow
@@ -1181,6 +1191,7 @@ export function createPermissionsMiddleware(
     request: ToolRequest,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
+    dispatchApprovalOutcome?: (d: PermissionDecision) => void,
   ): Promise<ToolResponse> {
     const approvalHandler: ApprovalHandler | undefined = ctx.requestApproval;
 
@@ -1233,6 +1244,8 @@ export function createPermissionsMiddleware(
               /* remembered */ true,
             );
           }
+          // Dispatch before next() so the permission outcome is recorded even if the tool throws
+          dispatchApprovalOutcome?.({ effect: "allow" });
           return next(request);
         }
       } catch {
@@ -1264,6 +1277,8 @@ export function createPermissionsMiddleware(
         request.input,
         alwaysAllowStartMs,
       );
+      // Dispatch before next() so the permission outcome is recorded even if the tool throws
+      dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     }
 
@@ -1286,6 +1301,8 @@ export function createPermissionsMiddleware(
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
         emitApprovalStep(ctx, request.toolId, { kind: "allow" }, request.input, clock());
+        // Dispatch before next() so the permission outcome is recorded even if the tool throws
+        dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
     }
@@ -1367,12 +1384,18 @@ export function createPermissionsMiddleware(
         }
 
         if (result === undefined || result.kind === "deny") {
+          dispatchApprovalOutcome?.({
+            effect: "deny",
+            reason: `Tool "${request.toolId}" denied (coalesced approval)`,
+          });
           throw new KoiRuntimeError({
             code: "PERMISSION",
             message: `Tool "${request.toolId}" denied (coalesced approval)`,
             retryable: false,
           });
         }
+        // Dispatch allow before next() so outcome is recorded even if the tool throws
+        dispatchApprovalOutcome?.({ effect: "allow" });
         if (result.kind === "modify") {
           return next({ ...request, input: result.updatedInput });
         }
@@ -1477,6 +1500,7 @@ export function createPermissionsMiddleware(
           approvalStartMs,
         );
         stepEmitted = true;
+        dispatchApprovalOutcome?.({ effect: "deny", reason: "malformed_response" });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Malformed approval response for "${request.toolId}" — failing closed`,
@@ -1509,6 +1533,7 @@ export function createPermissionsMiddleware(
           source: "approval",
         });
 
+        dispatchApprovalOutcome?.({ effect: "deny", reason: approvalResult.reason });
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: `Tool "${request.toolId}" denied by approval handler: ${approvalResult.reason}`,
@@ -1557,6 +1582,8 @@ export function createPermissionsMiddleware(
           source: "approval",
         });
 
+        // Dispatch before next() so the permission outcome is recorded even if the tool throws
+        dispatchApprovalOutcome?.({ effect: "allow" });
         return next(request);
       }
 
@@ -1564,6 +1591,8 @@ export function createPermissionsMiddleware(
       // Never cache modify results: the input rewrite is the safety mechanism,
       // and caching would replay the original unsafe input on subsequent calls
       if (approvalResult.kind === "modify") {
+        // Dispatch before next() so the permission outcome is recorded even if the tool throws
+        dispatchApprovalOutcome?.({ effect: "allow" });
         return next({ ...request, input: approvalResult.updatedInput });
       }
 
@@ -1585,7 +1614,8 @@ export function createPermissionsMiddleware(
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }
 
-      // "allow"
+      // "allow" — dispatch before next() so outcome is recorded even if the tool throws
+      dispatchApprovalOutcome?.({ effect: "allow" });
       return next(request);
     } catch (e: unknown) {
       // Emit a failure trajectory step for timeout/handler errors so they

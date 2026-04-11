@@ -15,6 +15,7 @@ import type {
 import type { KoiErrorCode } from "./errors.js";
 import type { InboundMessage } from "./message.js";
 import type { ModelContentBlock, ModelStopReason } from "./model-adapter.js";
+import type { PermissionDecision, PermissionQuery } from "./permission-backend.js";
 
 export interface SessionContext {
   readonly agentId: string;
@@ -53,6 +54,15 @@ export interface TurnContext {
   readonly stopGateReason?: string;
   /** Name of the middleware that blocked completion via stop gate. */
   readonly stopGateBlockedBy?: string;
+  /**
+   * Optional callback for permissions middleware to dispatch a decision to all
+   * observe-phase middleware (e.g. audit). Injected by L1 when building TurnContext.
+   * Call this after each permission decision so that `onPermissionDecision` hooks fire.
+   */
+  readonly dispatchPermissionDecision?: (
+    query: PermissionQuery,
+    decision: PermissionDecision,
+  ) => void | Promise<void>;
 }
 
 export interface ModelRequest {
@@ -141,6 +151,16 @@ export type ApprovalDecision =
   | { readonly kind: "deny"; readonly reason: string };
 
 export type ApprovalHandler = (request: ApprovalRequest) => Promise<ApprovalDecision>;
+
+/**
+ * A config key-value change, emitted by any package that mutates agent configuration.
+ * Used by the `onConfigChange` middleware hook for audit trail purposes.
+ */
+export interface ConfigChange {
+  readonly key: string;
+  readonly oldValue: unknown;
+  readonly newValue: unknown;
+}
 
 /**
  * A middleware's self-description for the LLM.
@@ -236,6 +256,22 @@ export interface KoiMiddleware {
     request: ToolRequest,
     next: ToolHandler,
   ) => Promise<ToolResponse>;
+  /**
+   * Called after a permission decision is made for a tool call.
+   * Implementors (e.g. audit middleware) use this to record decisions.
+   * Fire-and-forget — must not block the agent loop.
+   */
+  readonly onPermissionDecision?: (
+    ctx: TurnContext,
+    query: PermissionQuery,
+    decision: PermissionDecision,
+  ) => void | Promise<void>;
+  /**
+   * Called when agent configuration changes at runtime.
+   * Implementors (e.g. audit middleware) use this for config change audit trails.
+   * Fire-and-forget — must not block the agent loop.
+   */
+  readonly onConfigChange?: (ctx: SessionContext, change: ConfigChange) => void | Promise<void>;
   /** Self-description injected into model calls. Required. Return undefined to skip injection. */
   readonly describeCapabilities: (ctx: TurnContext) => CapabilityFragment | undefined;
 }

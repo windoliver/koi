@@ -1,0 +1,25 @@
+{
+  "name": "@koi/decision-ledger",
+  "description": "Per-session decision ledger projection — read-only join over trajectory + audit with run report as a sidecar summary",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  }
+}

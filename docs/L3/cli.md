@@ -234,7 +234,9 @@ koi serve --nexus-url http://...    # Connect to remote Nexus
 ```
 packages/meta/cli/src/
 ├── args.ts                  ← CLI argument parsing (subcommand-aware)
-├── bin.ts                   ← Entry point — dispatches tui before COMMAND_LOADERS registry
+├── bin.ts                   ← Entry point — raw-argv fast-path; delegates post-fast-path to dispatch.ts
+├── dispatch.ts              ← Shared runDispatch helper (imported by bin.ts and bench-entry.ts; #1637)
+├── bench-entry.ts           ← Non-shipped benchmark harness for startup-latency gate (#1637); excluded from npm via package.json files negation
 ├── tui-command.ts           ← `koi tui` handler: drainEngineStream + runTuiCommand
 ├── tui-runtime.ts           ← createTuiRuntime() — full L2 tool stack assembly for `koi tui`
 ├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending full #1459 wiring)
@@ -249,6 +251,14 @@ packages/meta/cli/src/
 └── __tests__/
     └── test-helpers.ts      ← Shared test utilities
 ```
+
+**Note on `bench-entry.ts` publication exclusion (#1637):** the file is built by tsup
+into `dist/bench-entry.js` alongside `dist/bin.js` so the startup-latency CI gate can
+exercise real bundled code (same chunks, same minification as the shipped bin), but
+`package.json`'s `files` field contains `!dist/bench-entry.js`, `!dist/bench-entry.d.ts`,
+`!dist/bench-entry.d.ts.map`, and `!dist/bench-entry.js.map` negations so users who
+`bun add @koi-agent/cli` never receive the benchmark entrypoint. This does not change
+the set of L2 dependencies integrated into the CLI.
 
 ### OS Sandbox Wiring (`tui-command.ts`)
 
@@ -362,6 +372,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
 | `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json` as `"user"` tier, plugin hooks as `"session"` tier (#1282). Hook policy tiers enable tier-phased dispatch (managed → user → session) and `HookPolicy` filtering. Wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279) |
 | `@koi/tui` | L2 | TUI shell: `createTuiApp`, `done()` keepalive (`tui` command only). Reducer handles `plan_update`/`task_progress` events, stores `planTasks` (#1555). `TrajectoryView` for ATIF execution trace viewing via `nav:trajectory`. Spinner frames/interval centralized in `src/components/spinners.ts` (`DEFAULT_SPINNER`); no CLI-facing change |
+| `@koi/loop` | L2 | Convergence loop primitive — `runUntilPass()` re-runs an agent turn against a verifier gate until it passes, iteration budget exhausts, or the caller aborts. Wired into both `koi start --until-pass <cmd>` and `koi tui --until-pass <cmd>`. Argv-only subprocess gates (`createArgvGate`, no shell strings), minimal default env allowlist with `--verifier-inherit-env` opt-in, strict `stopReason === "completed"` gate rejects truncated turns, 100 ms iterator cleanup fence promotes orphaned streams to `errored`. Five terminal states: `converged`/`exhausted`/`aborted`/`circuit_broken`/`errored`. Loop mode disables session persistence (transcript orphan fence) and requires `--allow-side-effects` and `--prompt` |
 
 > **`@koi/sandbox-os` Linux backend hardening (PR #1617, issue #1339):** No CLI wiring changes. Internal improvements to the integrated `@koi/sandbox-os` L2 package: AppArmor usability probe (real `bwrap --unshare-all` smoke-test replaces sysctl-only check), per-exec named systemd transient scopes (`--unit=koi-sb-<id>`) for cgroup teardown on abort, `denyRead` file vs. directory differentiation (`--bind /dev/null` for files like `~/.netrc`/`~/.npmrc`; `--tmpfs` for directories), and `/bin/bash` absolute path in the ulimit wrapper. Linux bwrap confinement behavior in `tui-command.ts` improves on Ubuntu 24.04+ and systems with systemd user sessions.
 
@@ -493,3 +504,7 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 > **TUI callback wiring (`onFork`, `onImageAttach`, `onTurnComplete`):** `CreateTuiAppConfig` extended with three new optional callbacks; `tui-command.ts` wires them: `onFork` snapshots the current session's transcript via `jsonlTranscript.load(runtime.sessionId)` and writes the entries to a fresh `crypto.randomUUID()` session file (the active session continues uninterrupted), `onImageAttach` collects `{ url, mime }` images into a `pendingImages` array that's drained into the next `add_user_message` as `image` ContentBlocks, `onTurnComplete` writes BEL (`\x07`) to stdout for terminal notification.
 >
 > **Output collectors read tool_result (#1583 round 6):** `createTextCollector` and `createVerdictCollector` in `@koi/engine` now read tool execution output from `tool_result.output` instead of `tool_call_end.result` (which carries `AccumulatedToolCall` arg metadata, NOT the actual output). Tool-only child agents that finish without text now return the real tool output to their parent.
+
+> **Permission decision hook dispatch (#1627):** `@koi/middleware-permissions` now fires the `onPermissionDecision` hook via a `dispatchApprovalOutcome` callback passed into `handleAskDecision`. The dispatch fires BEFORE `next(request)` on all approval paths (persistent always-allow, session allow, cache hit, fresh approval) and BEFORE the denial throw, decoupling the permission record from tool execution success/failure. The `dispatchApprovalOutcome` pattern threads the L0 `KoiMiddleware.onPermissionDecision` hook through the middleware chain for use by `@koi/middleware-audit` and other observers without creating L2→L2 dependencies.
+
+> **#1689 — TUI stdin parser reset after permission approval:** `@koi/tui`'s `createTuiApp` now wraps `permissionBridge.respond` so every tool-approval decision (y/n/a or Esc) flows `bridge.respond → stdinParser.reset()`. The wrap is a transport-layer concern and lives entirely inside `@koi/tui` — no CLI wiring changes in `tui-runtime.ts` or `tui-command.ts`. Visible to CLI users as: after a `fs_write`/permission-gated tool approval, Enter / Backspace / Esc / Tab on the next prompt are no longer silently dropped, and slash commands (`/rewind`, `/help`, etc.) submit cleanly. Root cause lives in `@opentui/core@0.1.96`'s stdin parser paste latch; see `docs/L2/tui.md` for the full trace. Upstream patch to `@opentui/core` is tracked separately.

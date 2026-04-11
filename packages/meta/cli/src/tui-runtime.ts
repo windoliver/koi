@@ -27,9 +27,11 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
+import { appendFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
   InboundMessage,
@@ -421,6 +423,129 @@ async function loadMcp(
 // Factory
 // ---------------------------------------------------------------------------
 
+interface ConfigHotReloadHandle {
+  readonly dispose: () => void;
+}
+
+/**
+ * Optional config hot-reload wiring for `@koi/config` (issue #1632).
+ *
+ * Guarded by the `KOI_CONFIG_PATH` env var — if unset, this is a no-op
+ * and nothing changes from the pre-existing TUI behavior. When set to a
+ * config file path, instantiates a `ConfigManager`, calls `initialize()`,
+ * starts `watch()`, and registers a consumer that logs every reload
+ * event to stderr.
+ *
+ * **This consumer is intentionally log-only.** The TUI does not currently
+ * hot-swap any config fields into a running `createKoi` session — that
+ * requires `createKoi` to support rebuilding the runtime on reset, which
+ * is tracked as a known limitation elsewhere in this file (see the
+ * `resetSessionState` comment). The wiring exists to:
+ *
+ *   1. Smoke-test `@koi/config`'s hot-reload primitives in a real
+ *      long-running process, not just in unit tests.
+ *   2. Serve as canonical example wiring for downstream consumers (tool
+ *      registries, permission evaluators, prompt manifests) that the
+ *      follow-up PRs to #1632 will eventually add.
+ *   3. Give operators visibility: if they set `KOI_CONFIG_PATH` and edit
+ *      the file, they'll see stderr log lines confirming the reload
+ *      pipeline fired.
+ *
+ * Watcher errors and consumer errors are logged through the dedicated
+ * `onWatcherError` / `onConsumerError` callbacks so they don't
+ * conflate with the regular reload lifecycle events.
+ */
+async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined> {
+  const configPath = process.env.KOI_CONFIG_PATH;
+  if (configPath === undefined || configPath === "") return undefined;
+
+  // Optional post-startup visibility: once OpenTUI takes over the terminal,
+  // `console.error`/`process.stderr.write` output is buffered and not
+  // visible to the user. If the operator wants to observe live reload
+  // events during an interactive session, they set KOI_CONFIG_LOG_PATH to
+  // a file path and this consumer appends every event there. Startup
+  // events (before the TUI renders) are always visible on stderr regardless.
+  const logPath = process.env.KOI_CONFIG_LOG_PATH;
+  const fileLog = (msg: string): void => {
+    if (logPath === undefined || logPath === "") return;
+    try {
+      appendFileSync(logPath, `${new Date().toISOString()} ${msg}\n`);
+    } catch {
+      /* swallow — never let a failing log sink break the pipeline */
+    }
+  };
+
+  const mgr = createConfigManager({
+    filePath: configPath,
+    onConsumerError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      fileLog(`consumer-failed: ${msg}`);
+      console.error(`[koi tui] config consumer failed: ${msg}`);
+    },
+    onWatcherError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      fileLog(`watcher-error: ${msg}`);
+      console.error(`[koi tui] config watcher error: ${msg}`);
+    },
+  });
+
+  mgr.events.subscribe((event) => {
+    // Telemetry fan-out: rejected reloads are always surfaced; applied
+    // events are logged to the file sink only when non-empty (spurious
+    // fs.watch fires with no real change are too noisy).
+    if (event.kind === "rejected") {
+      fileLog(`rejected reason=${event.reason} error=${event.error.message}`);
+      console.error(`[koi tui] config reload rejected (${event.reason}): ${event.error.message}`);
+    } else if (event.kind === "applied" && event.changedPaths.length > 0) {
+      fileLog(`applied paths=[${event.changedPaths.join(",")}]`);
+    }
+  });
+
+  mgr.registerConsumer({
+    onConfigChange: ({ changedPaths, prev, next }) => {
+      // Log-only consumer. The TUI runtime does not hot-swap config
+      // fields into the running session — `createKoi` does not support
+      // runtime re-assembly yet (tracked as a known limitation at
+      // `resetSessionState` below). For now we log the change so
+      // operators can verify the pipeline fires, and the primitive is
+      // ready to plug into real consumers in follow-up PRs.
+      fileLog(
+        `changed paths=[${changedPaths.join(",")}] logLevel=${prev.logLevel}→${next.logLevel}`,
+      );
+      console.error(
+        `[koi tui] config changed [${changedPaths.join(", ")}] ` +
+          `logLevel=${prev.logLevel}→${next.logLevel}`,
+      );
+    },
+  });
+
+  fileLog(`setup configPath=${configPath} pid=${process.pid}`);
+  const initResult = await mgr.initialize();
+  if (initResult.ok) {
+    fileLog("initialize ok");
+    console.error(`[koi tui] config hot-reload armed on ${configPath}`);
+  } else {
+    // Initialize failed (file missing, invalid, etc.). The manager's
+    // watcher is still armed — when the file is created or fixed, the
+    // next onFileEvent retries initialize() automatically. No need to
+    // fail TUI startup.
+    fileLog(`initialize failed: ${initResult.error.code} ${initResult.error.message}`);
+    console.error(
+      `[koi tui] config initialize failed (${initResult.error.code}): ${initResult.error.message}`,
+    );
+  }
+  const unsub = mgr.watch();
+  fileLog("watcher armed");
+
+  return {
+    dispose: () => {
+      fileLog("dispose");
+      unsub();
+      mgr.dispose();
+    },
+  };
+}
+
 /**
  * Assemble the full L2 tool stack for `koi tui` via createKoi.
  *
@@ -430,6 +555,9 @@ async function loadMcp(
  */
 export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+
+  // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
+  const configHotReload = await setupConfigHotReload();
 
   // --- MCP setup (optional, from .mcp.json) ---
   const mcpSetup = await loadMcp(cwd, skillsRuntime);
@@ -1185,6 +1313,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       bgController.abort();
       mcpSetup?.dispose();
       pluginMcpSetup?.dispose();
+      configHotReload?.dispose();
       return hadTasks;
     },
   };

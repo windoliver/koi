@@ -10,6 +10,7 @@
     { "path": "../../kernel/engine" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/harness" },
+    { "path": "../../lib/loop" },
     { "path": "../../mm/model-openai-compat" },
     { "path": "../../lib/plugins" },
     { "path": "../../lib/query-engine" },

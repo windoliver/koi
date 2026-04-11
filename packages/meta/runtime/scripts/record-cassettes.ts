@@ -31,6 +31,7 @@
 import { createAgentResolver } from "@koi/agent-runtime";
 import type {
   Agent,
+  AuditEntry,
   ComponentProvider,
   EngineAdapter,
   EngineEvent,
@@ -67,6 +68,7 @@ import { createMcpServer } from "@koi/mcp-server";
 import { recallMemories } from "@koi/memory";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
+import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
@@ -706,6 +708,12 @@ interface QueryConfig {
    * prepended before a synthetic user message containing `prompt`.
    */
   readonly initialMessages?: readonly import("@koi/core").InboundMessage[];
+  /**
+   * Optional callback invoked after the trajectory (and any other sidecars) are written.
+   * Use to write additional sidecar files that capture state from the run
+   * (e.g., audit entries captured by a custom sink during the session).
+   */
+  readonly afterRecord?: (fixtures: string, name: string) => Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1181,10 @@ async function recordTrajectory(config: QueryConfig): Promise<void> {
       `${FIXTURES}/${name}.hook-inputs.json`,
       JSON.stringify({ name, capturedAt: Date.now(), inputs: capturedHookInputs }, null, 2),
     );
+  }
+
+  if (config.afterRecord !== undefined) {
+    await config.afterRecord(FIXTURES, name);
   }
 
   // Print summary
@@ -3381,6 +3393,67 @@ const queries: readonly QueryConfig[] = [
     ],
     maxTurns: 2,
   },
+
+  // @koi/middleware-audit + @koi/audit-sink-sqlite
+  // Exercises the audit middleware end-to-end: session_start, model_call, session_end
+  // events are captured by a capturing sink and written to audit-log.entries.json.
+  // Trajectory proves the middleware fires without blocking the agent loop (fire-and-forget).
+  ...(() => {
+    // Capturing array shared between the sink closure and afterRecord callback.
+    const capturedAuditEntries: AuditEntry[] = [];
+    return [
+      {
+        name: "audit-log",
+        prompt: "What is 2+2? Answer with just the number.",
+        permissionMode: "bypass" as const,
+        permissionRules: BYPASS_RULES,
+        permissionDescription: "bypass (allow all)",
+        hooks: [],
+        providers: [],
+        extraMiddleware: [
+          createAuditMiddleware({
+            sink: {
+              log: async (entry: AuditEntry): Promise<void> => {
+                capturedAuditEntries.push(entry);
+              },
+              flush: async (): Promise<void> => {},
+            },
+          }),
+        ],
+        afterRecord: async (fixtures: string, qName: string): Promise<void> => {
+          await Bun.write(
+            `${fixtures}/${qName}.entries.json`,
+            JSON.stringify(
+              { name: qName, capturedAt: Date.now(), entries: capturedAuditEntries },
+              null,
+              2,
+            ),
+          );
+        },
+      },
+    ];
+  })(),
+
+  // --- @koi/loop convergence primitive (#1624) -------------------------------
+  // Records a single agent turn for the loop primitive's replay golden.
+  // Phase A intentionally uses a plain text prompt (no tool wiring) so
+  // the cassette stays simple and the replay test validates the loop's
+  // runtime integration, not tool execution. Real tool-driven loop
+  // coverage (agent uses Bash to create a marker file, file gate checks
+  // it, fail→retry→pass) is a follow-up when the loop package adds
+  // first-class support for side-effect isolation between iterations.
+  // Keeping this prompt in sync with the recordCassette call below so
+  // the query config and the raw cassette cover the same scenario.
+  {
+    name: "loop-until-pass",
+    prompt: "Respond with the single word: DONE",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all) for golden recording",
+    hooks: [],
+    providers: [],
+    maxTurns: 2,
+  },
 ];
 
 // =========================================================================
@@ -3389,6 +3462,17 @@ const queries: readonly QueryConfig[] = [
 
 // Cassettes (VCR replay for CI)
 await recordCassette("simple-text", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [{ kind: "text", text: "What is 2+2? Answer with just the number." }],
+      },
+    ],
+  }),
+);
+await recordCassette("audit-log", () =>
   modelAdapter.stream({
     messages: [
       {
@@ -4036,6 +4120,28 @@ const mcpServerQuery = queries.find((q) => q.name === "mcp-server-send");
 if (mcpServerQuery !== undefined) {
   (mcpServerQuery as { providers: ComponentProvider[] }).providers = [mcpServerComponentProvider];
 }
+
+// --- @koi/loop convergence primitive (#1624) -------------------------------
+// Record a cassette the loop-replay golden test can consume. This captures
+// the raw model stream for a simple "create a marker file then respond
+// DONE" prompt; the golden replay test wires a Bash tool + runUntilPass
+// around it and asserts the loop drives the runtime correctly.
+await recordCassette("loop-until-pass", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text: "Respond with the single word: DONE",
+          },
+        ],
+      },
+    ],
+  }),
+);
 
 // Full-stack ATIF trajectories
 for (const q of queries) {

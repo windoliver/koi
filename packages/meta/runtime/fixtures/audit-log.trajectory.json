@@ -1,0 +1,225 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "audit-log",
+  "agent": {
+    "name": "golden-audit-log",
+    "model_name": "google/gemini-2.0-flash-001"
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:04.786Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:04.787Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-10T23:36:04.794Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "What is 2+2? Answer with just the number.",
+      "observation": {
+        "results": [
+          {
+            "content": "4\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 143,
+        "completion_tokens": 2
+      },
+      "duration_ms": 392,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "8f200d356a92171c35d1b6ef94ccdd4f770e14e0e5024c6f945d363d5600ba30"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.195Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 397.02995899999996,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.196Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 395.7275420000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775864165194,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.197Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 395.01070800000025,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775864165193,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.198Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 394.90820799999983,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "What is 2+2? Answer with just the number.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] What is 2+2? Answer with just the number."
+          }
+        ],
+        "_original_timestamp": 1775864165191,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.199Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 394.6474159999998,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775864165190,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.200Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 394.4048750000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775864165189,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-10T23:36:05.201Z",
+      "model_name": "middleware:audit",
+      "duration_ms": 393.9812920000004,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "audit",
+        "hook": "wrapModelStream",
+        "phase": "observe",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775864165188,
+        "__koi": {
+          "identifier": "middleware:audit"
+        }
+      }
+    }
+  ]
+}

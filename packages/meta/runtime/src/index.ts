@@ -1,5 +1,24 @@
 // Core factory
 
+export type {
+  IterationRecord as LoopIterationRecord,
+  LoopEvent,
+  LoopRuntime,
+  LoopStatus,
+  RunUntilPassConfig,
+  RunUntilPassResult,
+  Verifier,
+  VerifierContext,
+  VerifierFailureReason,
+  VerifierResult,
+} from "@koi/loop";
+// Convergence loop (L2 @koi/loop)
+export {
+  createArgvGate,
+  createCompositeGate,
+  createFileGate,
+  runUntilPass,
+} from "@koi/loop";
 // Cassette (VCR replay)
 export { loadCassette } from "./cassette/load-cassette.js";
 export { createReplayAdapter } from "./cassette/replay-adapter.js";
