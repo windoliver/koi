@@ -585,6 +585,146 @@ describe("Golden: @koi/model-router", () => {
     router.dispose();
   });
 
+  test("middleware reports fallback_occurred:true via ctx.reportDecision when primary fails", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    // Capture decisions emitted via ctx.reportDecision — this is what lands in ATIF
+    const reported: Record<string, unknown>[] = [];
+    const ctx = {
+      reportDecision: (d: Record<string, unknown>) => {
+        reported.push(d);
+      },
+    } as unknown as import("@koi/core").TurnContext;
+
+    // wrapModelCall: middleware should route, fallback, then report decisions
+    if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    const response = await mw.wrapModelCall(ctx, makeRequest(), async () => {
+      throw new Error("should not reach next — router handles it");
+    });
+
+    expect(response.model).toBe("safe");
+
+    // ATIF observability: router.fallback_occurred must be true in reported decisions
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.["router.fallback_occurred"]).toBe(true);
+    expect(reported[0]?.["router.target.selected"]).toBe("backup:safe");
+    expect(reported[0]?.["router.target.attempted"]).toEqual(["primary:fast", "backup:safe"]);
+    expect(typeof reported[0]?.["router.latency_ms"]).toBe("number");
+
+    router.dispose();
+  });
+
+  test("middleware reports fallback_occurred:true via ctx.reportDecision on stream fallback", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-stream-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    const reported: Record<string, unknown>[] = [];
+    const ctx = {
+      reportDecision: (d: Record<string, unknown>) => {
+        reported.push(d);
+      },
+    } as unknown as import("@koi/core").TurnContext;
+
+    if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream not defined");
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of mw.wrapModelStream(ctx, makeRequest(), async function* () {
+      yield* [] as ModelChunk[];
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(
+      chunks.some(
+        (c) => c.kind === "text_delta" && (c as { delta: string }).delta === "from-backup",
+      ),
+    ).toBe(true);
+
+    // ATIF observability: fallback must be visible in stream decisions
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.["router.fallback_occurred"]).toBe(true);
+    expect(reported[0]?.["router.target.selected"]).toBe("backup:safe");
+    expect(reported[0]?.["router.target.attempted"]).toEqual(["primary:fast", "backup:safe"]);
+
+    router.dispose();
+  });
+
   test("middleware factory wires router into KoiMiddleware with correct priority", () => {
     const configResult = validateRouterConfig({
       strategy: "fallback",
