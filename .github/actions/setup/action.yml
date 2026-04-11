@@ -4,9 +4,14 @@ description: Install Bun, restore caches, and install dependencies. Requires che
 runs:
   using: composite
   steps:
+    # Bun version is pinned (not "latest") because the startup-latency gate
+    # (#1637) compares against a baseline recorded under a specific Bun
+    # version — patch releases can shift startup cost. Keep in sync with
+    # the `packageManager` field in root package.json. Update via a
+    # dedicated PR that also refreshes bench/startup-baseline.json.
     - uses: oven-sh/setup-bun@v2
       with:
-        bun-version: latest
+        bun-version: 1.3.9
 
     - name: Cache Bun dependencies
       uses: actions/cache@v4

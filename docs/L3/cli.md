@@ -234,7 +234,9 @@ koi serve --nexus-url http://...    # Connect to remote Nexus
 ```
 packages/meta/cli/src/
 ├── args.ts                  ← CLI argument parsing (subcommand-aware)
-├── bin.ts                   ← Entry point — dispatches tui before COMMAND_LOADERS registry
+├── bin.ts                   ← Entry point — raw-argv fast-path; delegates post-fast-path to dispatch.ts
+├── dispatch.ts              ← Shared runDispatch helper (imported by bin.ts and bench-entry.ts; #1637)
+├── bench-entry.ts           ← Non-shipped benchmark harness for startup-latency gate (#1637); excluded from npm via package.json files negation
 ├── tui-command.ts           ← `koi tui` handler: drainEngineStream + runTuiCommand
 ├── tui-runtime.ts           ← createTuiRuntime() — full L2 tool stack assembly for `koi tui`
 ├── engine-worker.ts         ← Bun worker thread entry point for engine adapter loop (TUI; gated by _IS_CONFIGURED pending full #1459 wiring)
@@ -249,6 +251,14 @@ packages/meta/cli/src/
 └── __tests__/
     └── test-helpers.ts      ← Shared test utilities
 ```
+
+**Note on `bench-entry.ts` publication exclusion (#1637):** the file is built by tsup
+into `dist/bench-entry.js` alongside `dist/bin.js` so the startup-latency CI gate can
+exercise real bundled code (same chunks, same minification as the shipped bin), but
+`package.json`'s `files` field contains `!dist/bench-entry.js`, `!dist/bench-entry.d.ts`,
+`!dist/bench-entry.d.ts.map`, and `!dist/bench-entry.js.map` negations so users who
+`bun add @koi-agent/cli` never receive the benchmark entrypoint. This does not change
+the set of L2 dependencies integrated into the CLI.
 
 ### OS Sandbox Wiring (`tui-command.ts`)
 
