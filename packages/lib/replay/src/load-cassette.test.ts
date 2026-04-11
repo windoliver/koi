@@ -200,8 +200,8 @@ describe("real fixture files", () => {
     const doneChunk = cassette.chunks.find((c) => c.kind === "done");
     expect(doneChunk).toBeDefined();
     if (doneChunk?.kind === "done") {
-      expect((doneChunk.response as Record<string, unknown>).responseId).toBeUndefined();
-      expect((doneChunk.response as Record<string, unknown>).metadata).toBeUndefined();
+      expect((doneChunk.response as unknown as Record<string, unknown>).responseId).toBeUndefined();
+      expect((doneChunk.response as unknown as Record<string, unknown>).metadata).toBeUndefined();
     }
   });
 

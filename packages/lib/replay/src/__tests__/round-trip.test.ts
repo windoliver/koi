@@ -120,8 +120,8 @@ describe("round-trip: serialize → loadCassette → replay", () => {
     const done = loaded.chunks[0];
     expect(done?.kind).toBe("done");
     if (done?.kind === "done") {
-      expect((done.response as Record<string, unknown>).responseId).toBeUndefined();
-      expect((done.response as Record<string, unknown>).metadata).toBeUndefined();
+      expect((done.response as unknown as Record<string, unknown>).responseId).toBeUndefined();
+      expect((done.response as unknown as Record<string, unknown>).metadata).toBeUndefined();
     }
   });
 });
