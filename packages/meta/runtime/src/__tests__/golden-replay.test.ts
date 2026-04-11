@@ -8679,3 +8679,67 @@ describe("Golden: @koi/memory-team-sync", () => {
     expect(secretResult.blocked?.reason).toBe("secret_detected");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/model-router
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/model-router", () => {
+  test("MW:model-router span present in trajectory with routing decisions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/model-router.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly decisions?: readonly Record<string, unknown>[];
+        };
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("model-router");
+
+    const routerSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "model-router",
+    );
+    expect(routerSpans.length).toBeGreaterThan(0);
+
+    const span = routerSpans[0];
+    expect(span?.extra?.decisions).toBeDefined();
+    expect(span?.extra?.decisions?.length).toBeGreaterThan(0);
+
+    const decision = span?.extra?.decisions?.[0];
+    expect(typeof decision?.["router.target.selected"]).toBe("string");
+    expect((decision?.["router.target.selected"] as string).length).toBeGreaterThan(0);
+    expect(Array.isArray(decision?.["router.target.attempted"])).toBe(true);
+    expect(typeof decision?.["router.fallback_occurred"]).toBe("boolean");
+    expect(typeof decision?.["router.latency_ms"]).toBe("number");
+  });
+
+  test("MW:model-router no fallback on successful primary target", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/model-router.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly decisions?: readonly Record<string, unknown>[];
+        };
+      }[];
+    };
+
+    const routerSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "model-router",
+    );
+
+    const decision = routerSpans[0]?.extra?.decisions?.[0];
+    // Recording uses single-target config — no fallback should occur
+    expect(decision?.["router.fallback_occurred"]).toBe(false);
+    // Selected and attempted should be the same single target
+    const selected = decision?.["router.target.selected"] as string;
+    const attempted = decision?.["router.target.attempted"] as string[];
+    expect(attempted).toHaveLength(1);
+    expect(attempted[0]).toBe(selected);
+  });
+});

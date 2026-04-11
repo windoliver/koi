@@ -21,9 +21,35 @@ import type { ProviderAdapter } from "./provider-adapter.js";
 import { executeForTarget, targetSupportsRequest } from "./route-core.js";
 import { createTargetOrderer } from "./target-ordering.js";
 
+/**
+ * Routing decision metadata emitted after every model call.
+ * Surfaced in ATIF trajectory via ctx.reportDecision → metadata.decisions.
+ */
+export interface RouteDecision {
+  /** Target ID (provider:model) that served the request. Empty string if all targets failed. */
+  readonly selectedTargetId: string;
+  /** All target IDs attempted in order (includes failures). */
+  readonly attemptedTargetIds: readonly string[];
+  /** True if any target failed before the successful one was reached. */
+  readonly fallbackOccurred: boolean;
+}
+
+/** Successful route result — response plus routing metadata. */
+export interface RouteSuccess {
+  readonly response: ModelResponse;
+  readonly decision: RouteDecision;
+}
+
 export interface ModelRouter {
-  readonly route: (request: ModelRequest) => Promise<Result<ModelResponse, KoiError>>;
-  readonly routeStream: (request: ModelRequest) => AsyncIterable<ModelChunk>;
+  readonly route: (request: ModelRequest) => Promise<Result<RouteSuccess, KoiError>>;
+  /**
+   * onDecision is called once per stream: on first chunk (success path) or after
+   * all targets exhausted (failure path). Always called before the error chunk.
+   */
+  readonly routeStream: (
+    request: ModelRequest,
+    onDecision?: (decision: RouteDecision) => void,
+  ) => AsyncIterable<ModelChunk>;
   readonly getHealth: () => ReadonlyMap<string, CircuitBreakerSnapshot>;
   readonly getMetrics: () => RouterMetrics;
   readonly dispose: () => void;
@@ -104,7 +130,7 @@ export function createModelRouter(
   let totalFailures = 0;
   let totalEstimatedCost = 0;
 
-  const inFlightCache = createInFlightCache<ModelResponse>();
+  const inFlightCache = createInFlightCache<RouteSuccess>();
 
   // Health probe (local providers only)
   const probe = config.healthProbe
@@ -141,8 +167,8 @@ export function createModelRouter(
     return compatible.length > 0 ? compatible : enabledFallbackTargets;
   }
 
-  function accumulateCost(targetId: string, response: ModelResponse): void {
-    const cfg = targetConfigById.get(targetId);
+  function accumulateCost(id: string, response: ModelResponse): void {
+    const cfg = targetConfigById.get(id);
     const usage = response.usage;
     if (cfg === undefined || usage === undefined) return;
     totalEstimatedCost +=
@@ -151,7 +177,7 @@ export function createModelRouter(
   }
 
   return {
-    async route(request: ModelRequest): Promise<Result<ModelResponse, KoiError>> {
+    async route(request: ModelRequest): Promise<Result<RouteSuccess, KoiError>> {
       totalRequests++;
 
       const result = await inFlightCache
@@ -164,11 +190,22 @@ export function createModelRouter(
             clock,
           );
           if (!fallbackResult.ok) throw fallbackResult.error;
-          return fallbackResult.value.value;
+
+          const { value: response, attempts } = fallbackResult.value;
+          const successAttempt = attempts.find((a) => a.success);
+          const attemptedTargetIds = attempts.map((a) => a.targetId);
+
+          const decision: RouteDecision = {
+            selectedTargetId: successAttempt?.targetId ?? "",
+            attemptedTargetIds,
+            fallbackOccurred: attempts.some((a) => !a.success),
+          };
+
+          return { response, decision } satisfies RouteSuccess;
         })
         .then(
-          (value): Result<ModelResponse, KoiError> => ({ ok: true, value }),
-          (error: unknown): Result<ModelResponse, KoiError> => ({
+          (value): Result<RouteSuccess, KoiError> => ({ ok: true, value }),
+          (error: unknown): Result<RouteSuccess, KoiError> => ({
             ok: false,
             error: error as KoiError,
           }),
@@ -179,19 +216,16 @@ export function createModelRouter(
         return result;
       }
 
-      // Record cost from the successful target (best-effort: use first target with requests)
-      const successTargetId = Object.keys(requestsByTarget).find(
-        (id) => (requestsByTarget[id] ?? 0) > 0,
-      );
-      if (successTargetId !== undefined) {
-        accumulateCost(successTargetId, result.value);
-      }
-
+      accumulateCost(result.value.decision.selectedTargetId, result.value.response);
       return result;
     },
 
-    async *routeStream(request: ModelRequest): AsyncIterable<ModelChunk> {
+    async *routeStream(
+      request: ModelRequest,
+      onDecision?: (decision: RouteDecision) => void,
+    ): AsyncIterable<ModelChunk> {
       const orderedTargets = orderTargets(getCompatibleTargets(request));
+      const attempted: string[] = [];
 
       for (const target of orderedTargets) {
         const cb = circuitBreakers.get(target.id);
@@ -204,6 +238,7 @@ export function createModelRouter(
         const adapter = adapters.get(targetConfig.provider);
         if (adapter === undefined) continue;
 
+        attempted.push(target.id);
         const modelRequest: ModelRequest = { ...request, model: targetConfig.model };
 
         // Track whether any chunks have been yielded.
@@ -215,6 +250,14 @@ export function createModelRouter(
         try {
           const stream = adapter.stream(modelRequest);
           for await (const chunk of stream) {
+            if (!chunksYielded) {
+              // Emit decision on first chunk — we now know which target is serving
+              onDecision?.({
+                selectedTargetId: target.id,
+                attemptedTargetIds: [...attempted],
+                fallbackOccurred: attempted.length > 1,
+              });
+            }
             chunksYielded = true;
             yield chunk;
           }
@@ -234,7 +277,13 @@ export function createModelRouter(
         }
       }
 
-      // All targets exhausted
+      // All targets exhausted — emit decision before error chunk
+      onDecision?.({
+        selectedTargetId: "",
+        attemptedTargetIds: [...attempted],
+        fallbackOccurred: attempted.length > 1,
+      });
+
       const errorChunk: ModelChunk = {
         kind: "error",
         message: "All streaming targets failed",

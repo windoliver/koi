@@ -569,7 +569,10 @@ describe("Golden: @koi/model-router", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.model).toBe("safe");
+    expect(result.value.response.model).toBe("safe");
+    expect(result.value.decision.fallbackOccurred).toBe(true);
+    expect(result.value.decision.selectedTargetId).toBe("backup:safe");
+    expect(result.value.decision.attemptedTargetIds).toEqual(["primary:fast", "backup:safe"]);
 
     const metrics = router.getMetrics();
     expect(metrics.totalRequests).toBe(1);

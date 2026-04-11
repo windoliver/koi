@@ -76,6 +76,12 @@ import {
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import type { ProviderAdapter } from "@koi/model-router";
+import {
+  createModelRouter,
+  createModelRouterMiddleware,
+  validateRouterConfig,
+} from "@koi/model-router";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import {
@@ -1681,6 +1687,31 @@ const spawnToolProvider = createSpawnToolProvider({
     model: { name: MODEL },
   },
 });
+
+// ---------------------------------------------------------------------------
+// @koi/model-router — wraps modelAdapter as single ProviderAdapter target
+// ---------------------------------------------------------------------------
+
+const modelRouterAdapter: ProviderAdapter = {
+  id: "openrouter",
+  complete: (req) => modelAdapter.complete(req),
+  stream: (req) => modelAdapter.stream(req),
+};
+
+const modelRouterConfigResult = validateRouterConfig({
+  strategy: "fallback",
+  targets: [{ provider: "openrouter", model: MODEL, adapterConfig: {} }],
+  retry: { maxRetries: 0 },
+});
+if (!modelRouterConfigResult.ok) {
+  console.error(`model-router config: ${modelRouterConfigResult.error.message}`);
+  process.exit(1);
+}
+const modelRouter = createModelRouter(
+  modelRouterConfigResult.value,
+  new Map([["openrouter", modelRouterAdapter]]),
+);
+const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
 
 const queries: readonly QueryConfig[] = [
   // 1. simple-text: text response, no tools
@@ -3380,6 +3411,18 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+  },
+
+  // model-router: exercises @koi/model-router middleware — routing decision visible in trajectory
+  {
+    name: "model-router",
+    prompt: "What is 2+2? Answer with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    extraMiddleware: [modelRouterMiddleware],
   },
 ];
 

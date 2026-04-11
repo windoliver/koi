@@ -99,7 +99,7 @@ describe("createModelRouter — route()", () => {
     const result = await router.route(makeRequest());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error();
-    expect(result.value.model).toBe("gpt-4o");
+    expect(result.value.response.model).toBe("gpt-4o");
     router.dispose();
   });
 
@@ -128,7 +128,9 @@ describe("createModelRouter — route()", () => {
     const result = await router.route(makeRequest());
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error();
-    expect(result.value.model).toBe("secondary-model");
+    expect(result.value.response.model).toBe("secondary-model");
+    expect(result.value.decision.fallbackOccurred).toBe(true);
+    expect(result.value.decision.attemptedTargetIds).toEqual(["primary:m1", "secondary:m2"]);
     expect(primaryCalls).toBe(1);
     router.dispose();
   });
