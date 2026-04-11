@@ -1138,7 +1138,12 @@ export type {
   UserSnapshot,
 } from "./user-model.js";
 // validation utilities — runtime type guards and validators
-export { isProcessState, validateNonEmpty, validateSessionIdSyntax } from "./validation-utils.js";
+export {
+  isModelChunk,
+  isProcessState,
+  validateNonEmpty,
+  validateSessionIdSyntax,
+} from "./validation-utils.js";
 // version index — version label → BrickId resolution contract
 export type {
   VersionIndexBackend,

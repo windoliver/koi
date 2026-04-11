@@ -38,6 +38,7 @@ import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
+import { loadCassette } from "@koi/replay";
 import {
   createSkillInjectorMiddleware,
   createSkillProvider,
@@ -45,7 +46,6 @@ import {
 } from "@koi/skills-runtime";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
-import { loadCassette } from "../cassette/load-cassette.js";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";

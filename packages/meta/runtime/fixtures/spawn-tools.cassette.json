@@ -148,7 +148,6 @@
         "content": "I'll execute these three steps in order. Let me start with step 1 right away!\n\n### Step 1: Creating the Task",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775630962-DKyj1Qthgug3h16WtFYV",
         "richContent": [
           {
             "kind": "text",
@@ -167,11 +166,9 @@
         "usage": {
           "inputTokens": 1342,
           "outputTokens": 110
-        },
-        "metadata": {
-          "promptPrefixFingerprint": "8cd9fc500fd8c7b0874fba3e826c4c859ba64677d07d7e89b8ec5693fedd855c"
         }
       }
     }
-  ]
+  ],
+  "schemaVersion": "cassette-v1"
 }
