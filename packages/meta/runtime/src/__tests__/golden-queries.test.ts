@@ -653,3 +653,46 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.hardTriggerFraction).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-otel (#1628)
+// ---------------------------------------------------------------------------
+
+import { createOtelMiddleware } from "@koi/middleware-otel";
+
+describe("Golden: @koi/middleware-otel", () => {
+  test("createOtelMiddleware returns valid handle with correct middleware shape", () => {
+    const handle = createOtelMiddleware();
+
+    // onStep is the synchronous observer callback
+    expect(typeof handle.onStep).toBe("function");
+
+    // middleware has correct identity for middleware chain composition
+    expect(handle.middleware.name).toBe("otel");
+    expect(handle.middleware.phase).toBe("observe");
+    expect(handle.middleware.priority).toBe(150);
+    expect(typeof handle.middleware.onSessionStart).toBe("function");
+    expect(typeof handle.middleware.onSessionEnd).toBe("function");
+  });
+
+  test("observer-never-throws: onStep swallows errors when no tracer provider is registered", () => {
+    const errors: unknown[] = [];
+    const handle = createOtelMiddleware({ onSpanError: (e) => errors.push(e) });
+
+    // Calling onStep with a valid model_call step must never throw — even with
+    // no global OTel tracer provider registered (safeSpanOp invariant).
+    expect(() => {
+      handle.onStep("sess-test", {
+        stepIndex: 0,
+        timestamp: Date.now(),
+        source: "agent" as const,
+        kind: "model_call" as const,
+        identifier: "claude-opus-4-6",
+        outcome: "success" as const,
+        durationMs: 200,
+        metrics: { promptTokens: 10, completionTokens: 20 },
+        metadata: { requestModel: "claude-opus-4-6", responseModel: "claude-opus-4-6" },
+      });
+    }).not.toThrow();
+  });
+});

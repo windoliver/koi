@@ -15,6 +15,7 @@
     { "path": "../../lib/plugins" },
     { "path": "../../lib/query-engine" },
     { "path": "../../mm/middleware-extraction" },
+    { "path": "../../lib/middleware-otel" },
     { "path": "../runtime" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/context-manager" },

@@ -67,6 +67,8 @@ import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createExtractionMiddleware } from "@koi/middleware-extraction";
 import { createGoalMiddleware } from "@koi/middleware-goal";
+import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
+import { createOtelMiddleware } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
@@ -282,6 +284,22 @@ export interface TuiRuntimeConfig {
    * When provided, durable approvals survive process restart.
    */
   readonly persistentApprovals?: ApprovalStore | undefined;
+  /**
+   * OpenTelemetry middleware config.
+   *
+   * - `true`  — enable with defaults (tracerName "@koi/middleware-otel", no content capture)
+   * - `false` / omitted — disabled
+   * - `OtelMiddlewareConfig` — fully customised (meter, tracerName, captureContent, onSpanError)
+   *
+   * Requires an OTel SDK to be initialised before `createTuiRuntime` is called.
+   * In the CLI, set `KOI_OTEL_ENABLED=true` to opt in.
+   *
+   * @example
+   *   otel: true
+   * @example
+   *   otel: { captureContent: true, meter: myMeter }
+   */
+  readonly otel?: OtelMiddlewareConfig | true | false | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -604,6 +622,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // Created before event-trace so it can be wired as signalReader.
   const retryBroker = createRetrySignalBroker();
 
+  // --- @koi/middleware-otel: optional OTel span emission ---
+  // Opt-in via config.otel (or KOI_OTEL_ENABLED env var in tui-command.ts).
+  // Requires an OTel SDK to be initialised before this factory is called.
+  const otelConfig: OtelMiddlewareConfig | undefined =
+    config.otel === true
+      ? {}
+      : config.otel !== undefined && config.otel !== false
+        ? config.otel
+        : undefined;
+  const otelHandle = otelConfig !== undefined ? createOtelMiddleware(otelConfig) : undefined;
+
   // --- @koi/event-trace: record model/tool I/O for /trajectory view ---
   const { middleware: eventTraceMw } = createEventTraceMiddleware({
     store: trajectoryStore,
@@ -611,6 +640,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     agentName: "koi-tui",
     agentVersion: "0.1.0",
     signalReader: retryBroker,
+    ...(otelHandle !== undefined ? { onStep: otelHandle.onStep } : {}),
   });
   const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
     signalWriter: retryBroker,
@@ -1164,6 +1194,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     extractionMw,
     semanticRetryMw,
     ...(goalMw !== undefined ? [goalMw] : []),
+    ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup

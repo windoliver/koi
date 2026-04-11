@@ -38,6 +38,7 @@
     "@koi/dream": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
+    "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/rules-loader": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
