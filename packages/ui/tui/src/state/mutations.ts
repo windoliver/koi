@@ -10,13 +10,17 @@ import type { EngineEvent } from "@koi/core/engine";
 import type {
   CumulativeMetrics,
   PlanTask,
+  SessionInfo,
   SessionSummary,
+  SpawnProgress,
+  SpawnStats,
+  ToolResultData,
   TuiAction,
   TuiAssistantBlock,
   TuiMessage,
   TuiState,
 } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
+import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Mutable type aliases (produce() strips readonly via proxy — these
@@ -33,26 +37,43 @@ type ToolCallBlock = TuiAssistantBlock & { readonly kind: "tool_call" };
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Cap a string to MAX_TOOL_OUTPUT_CHARS via tail-slice. */
+/** Cap a string to MAX_TOOL_RESULT_BYTES via tail-slice. */
 function capOutput(text: string): string {
-  return text.length > MAX_TOOL_OUTPUT_CHARS ? text.slice(-MAX_TOOL_OUTPUT_CHARS) : text;
+  return text.length > MAX_TOOL_RESULT_BYTES ? text.slice(-MAX_TOOL_RESULT_BYTES) : text;
 }
 
 /**
- * Bound an unknown tool result to a safe string for storage.
- * Serializes non-string values with a size-limited JSON.stringify,
- * catching circular/non-serializable inputs gracefully.
+ * Convert an unknown tool execution output into a ToolResultData for storage.
+ * Mirrors reduce.ts capToolResult — see that function for rationale.
  */
-function capResult(result: unknown): string {
-  if (result === undefined || result === null) return "";
-  if (typeof result === "string") return capOutput(result);
-  try {
-    const json = JSON.stringify(result);
-    if (json === undefined) return "[unserializable]";
-    return capOutput(json);
-  } catch {
-    return "[unserializable]";
+function capToolResult(output: unknown): ToolResultData {
+  if (output === undefined || output === null) {
+    return { value: "", byteSize: 0, truncated: false };
   }
+  if (typeof output === "string") {
+    if (output.length <= MAX_TOOL_RESULT_BYTES) {
+      return { value: output, byteSize: output.length, truncated: false };
+    }
+    return {
+      value: output.slice(-MAX_TOOL_RESULT_BYTES),
+      byteSize: output.length,
+      truncated: true,
+    };
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(output) ?? "[unserializable]";
+  } catch {
+    serialized = "[unserializable]";
+  }
+  if (serialized === "[unserializable]" || serialized === undefined) {
+    return { value: "[unserializable]", byteSize: 0, truncated: false };
+  }
+  const byteSize = serialized.length;
+  if (byteSize <= MAX_TOOL_RESULT_BYTES) {
+    return { value: output, byteSize, truncated: false };
+  }
+  return { value: serialized.slice(-MAX_TOOL_RESULT_BYTES), byteSize, truncated: true };
 }
 
 /** Find the index of the last assistant message. Returns -1 if none. */
@@ -73,6 +94,22 @@ function lastAssistant(state: Draft): AssistantMessage | undefined {
 /** Find a tool_call block index by callId within an assistant's blocks. */
 function findToolBlockIdx(blocks: readonly TuiAssistantBlock[], callId: string): number {
   return blocks.findIndex((b) => b.kind === "tool_call" && b.callId === callId);
+}
+
+/**
+ * Apply a partial patch to a tool_call block by callId in the last assistant
+ * message. Warns in dev-mode and no-ops if the callId is not found.
+ */
+function updateToolBlock(state: Draft, callId: string, patch: Partial<ToolCallBlock>): void {
+  const msg = lastAssistant(state);
+  if (!msg) return;
+  const blockIdx = findToolBlockIdx(msg.blocks, callId);
+  if (blockIdx < 0) {
+    console.warn(`[tui/mutate] no tool_call block found for callId="${callId}"`);
+    return;
+  }
+  const block = msg.blocks[blockIdx] as ToolCallBlock;
+  (msg.blocks as TuiAssistantBlock[])[blockIdx] = { ...block, ...patch };
 }
 
 /**
@@ -156,6 +193,38 @@ function appendDelta(state: Draft, delta: string, blockKind: "text" | "thinking"
   }
 }
 
+/**
+ * Deep-unwrap JSON-encoded error messages (#19).
+ * Mirrors reduce.ts unwrapErrorMessage — see that function for rationale.
+ */
+function unwrapErrorMessage(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith('"')) return raw;
+  try {
+    let decoded: unknown = JSON.parse(trimmed);
+    if (typeof decoded === "string") {
+      const firstDecode = decoded;
+      try {
+        decoded = JSON.parse(firstDecode);
+      } catch {
+        return firstDecode;
+      }
+    }
+    if (typeof decoded === "object" && decoded !== null && !Array.isArray(decoded)) {
+      const obj = decoded as Record<string, unknown>;
+      const msg = obj.message ?? obj.error;
+      if (typeof msg === "string") return msg;
+      if (typeof msg === "object" && msg !== null) {
+        const nested = (msg as Record<string, unknown>).message;
+        if (typeof nested === "string") return nested;
+      }
+    }
+  } catch {
+    /* not JSON */
+  }
+  return raw;
+}
+
 // ---------------------------------------------------------------------------
 // Engine event mutations
 // ---------------------------------------------------------------------------
@@ -224,6 +293,7 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
         callId,
         toolName: event.toolName,
         status: "running",
+        startedAt: Date.now(),
         ...(initialArgs !== undefined ? { args: initialArgs } : {}),
       };
 
@@ -249,21 +319,96 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
     }
 
     case "tool_call_end": {
-      const msg = lastAssistant(state);
-      if (!msg) break;
-      const callId = event.callId as string;
-      const blockIdx = findToolBlockIdx(msg.blocks, callId);
-      if (blockIdx < 0) break;
-
-      const block = msg.blocks[blockIdx] as ToolCallBlock & {
-        status: string;
-        result?: string;
-      };
-      block.status = "complete";
-      block.result = capResult(event.result);
-      (state as { runningToolCount: number }).runningToolCount--;
+      // tool_call_end fires BEFORE execution (end of argument streaming).
+      // Keep the block in "running" — status transitions to "complete" only
+      // when tool_result arrives. This prevents long-running tools from
+      // showing a misleading green check while still in flight.
       break;
     }
+
+    case "tool_result": {
+      // tool_result fires after execution — authoritative completion point.
+      // Mark complete, compute duration, store result, decrement running count.
+      const msg = lastAssistant(state);
+      const blockIdx = msg ? findToolBlockIdx(msg.blocks, event.callId as string) : -1;
+      const existingBlock =
+        blockIdx >= 0
+          ? (msg?.blocks[blockIdx] as ToolCallBlock & { startedAt?: number })
+          : undefined;
+      const durationMs =
+        existingBlock?.startedAt !== undefined ? Date.now() - existingBlock.startedAt : undefined;
+      updateToolBlock(state, event.callId as string, {
+        status: "complete" as const,
+        result: capToolResult(event.output),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+      });
+      (state as { runningToolCount: number }).runningToolCount = Math.max(
+        0,
+        state.runningToolCount - 1,
+      );
+      break;
+    }
+
+    // ----- Spawn visualization -----
+    case "spawn_requested": {
+      const agentId = event.childAgentId as string;
+      const msg = ensureAssistant(state);
+      const spawnBlock: TuiAssistantBlock = {
+        kind: "spawn_call",
+        agentId,
+        agentName: event.request.agentName,
+        description: event.request.description ?? event.request.agentName,
+        status: "running",
+      };
+      (msg.blocks as TuiAssistantBlock[]).push(spawnBlock);
+      const progress: SpawnProgress = {
+        agentName: event.request.agentName,
+        description: event.request.description ?? event.request.agentName,
+        startedAt: Date.now(),
+      };
+      const spawns = new Map(state.activeSpawns);
+      spawns.set(agentId, progress);
+      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      break;
+    }
+
+    case "agent_status_changed": {
+      const agentId = event.agentId as string;
+      const progress = state.activeSpawns.get(agentId);
+      if (!progress) break;
+
+      // "terminated" is the only terminal ProcessState
+      if (event.status !== "terminated") break;
+
+      const msg = lastAssistant(state);
+      if (!msg) break;
+
+      const blockIdx = msg.blocks.findIndex(
+        (b) => b.kind === "spawn_call" && b.agentId === agentId,
+      );
+      if (blockIdx < 0) break;
+
+      const durationMs = Date.now() - progress.startedAt;
+      const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
+
+      (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
+        kind: "spawn_call",
+        agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        status: "complete",
+        stats,
+      };
+
+      const spawns = new Map(state.activeSpawns);
+      spawns.delete(agentId);
+      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      break;
+    }
+
+    case "agent_spawned":
+      // spawn_call block already added on spawn_requested. No-op.
+      break;
 
     // ----- Plan/progress events -----
     case "plan_update": {
@@ -310,12 +455,14 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
       break;
     }
 
-    // ----- Events the TUI ignores -----
+    // ----- Events the TUI observes but has no rendering for -----
     case "custom":
     case "discovery:miss":
-    case "spawn_requested":
-    case "agent_spawned":
-    case "agent_status_changed":
+    case "permission_attempt":
+      break;
+
+    // Forward-compatibility catch-all
+    default:
       break;
   }
 }
@@ -374,7 +521,7 @@ export function mutate(state: Draft, action: TuiAction): void {
       const errorBlock: TuiAssistantBlock = {
         kind: "error",
         code: action.code,
-        message: action.message,
+        message: unwrapErrorMessage(action.message),
       };
       const active = lastAssistant(state);
       if (active?.streaming) {
@@ -403,6 +550,11 @@ export function mutate(state: Draft, action: TuiAction): void {
       (state as { agentStatus: string }).agentStatus = "idle";
       (state as { planTasks: null }).planTasks = null;
       (state as { runningToolCount: number }).runningToolCount = 0;
+      (state as unknown as { expandedToolCallIds: Set<string> }).expandedToolCallIds = new Set();
+      (state as unknown as { expandedBodyToolCallIds: Set<string> }).expandedBodyToolCallIds =
+        new Set();
+      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = new Map();
+      (state as { retryState: null }).retryState = null;
       break;
 
     case "permission_response": {
@@ -416,17 +568,51 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
-    case "set_session_info":
-      (state as { sessionInfo: typeof state.sessionInfo }).sessionInfo = {
+    case "set_session_info": {
+      (state as { sessionInfo: SessionInfo }).sessionInfo = {
         modelName: action.modelName,
         provider: action.provider,
         sessionName: action.sessionName,
       };
+      if (action.maxTokens !== undefined) {
+        (state as { maxContextTokens: number }).maxContextTokens = action.maxTokens;
+      }
       break;
+    }
 
     case "set_session_list": {
       const sorted = [...action.sessions].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
       (state as { sessions: readonly SessionSummary[] }).sessions = sorted.slice(0, MAX_SESSIONS);
+      break;
+    }
+
+    case "set_spawn_terminal": {
+      const progress = state.activeSpawns.get(action.agentId);
+      if (!progress) break;
+
+      const msg = lastAssistant(state);
+      if (!msg) break;
+
+      const blockIdx = msg.blocks.findIndex(
+        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+      );
+      if (blockIdx < 0) break;
+
+      const durationMs = Date.now() - progress.startedAt;
+      const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
+
+      (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
+        kind: "spawn_call",
+        agentId: action.agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        status: action.outcome,
+        stats,
+      };
+
+      const spawns = new Map(state.activeSpawns);
+      spawns.delete(action.agentId);
+      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
       break;
     }
 
@@ -436,8 +622,84 @@ export function mutate(state: Draft, action: TuiAction): void {
       }
       break;
 
-    case "toggle_tools_expanded":
-      (state as { toolsExpanded: boolean }).toolsExpanded = !state.toolsExpanded;
+    case "expand_tool": {
+      if (!state.expandedToolCallIds.has(action.callId)) {
+        const next = new Set(state.expandedToolCallIds);
+        next.add(action.callId);
+        (state as unknown as { expandedToolCallIds: Set<string> }).expandedToolCallIds = next;
+      }
+      break;
+    }
+
+    case "collapse_tool": {
+      if (state.expandedToolCallIds.has(action.callId)) {
+        const next = new Set(state.expandedToolCallIds);
+        next.delete(action.callId);
+        (state as unknown as { expandedToolCallIds: Set<string> }).expandedToolCallIds = next;
+      }
+      break;
+    }
+
+    case "toggle_all_tools_expanded": {
+      const allIds: string[] = [];
+      for (const msg of state.messages) {
+        if (msg.kind === "assistant") {
+          for (const block of msg.blocks) {
+            if (block.kind === "tool_call") allIds.push(block.callId);
+          }
+        }
+      }
+      const anyUnexpanded = allIds.some((id) => !state.expandedToolCallIds.has(id));
+      const next = anyUnexpanded ? new Set(allIds) : new Set<string>();
+      (state as unknown as { expandedToolCallIds: Set<string> }).expandedToolCallIds = next;
+      break;
+    }
+
+    case "expand_tool_body": {
+      if (!state.expandedBodyToolCallIds.has(action.callId)) {
+        const next = new Set(state.expandedBodyToolCallIds);
+        next.add(action.callId);
+        (state as unknown as { expandedBodyToolCallIds: Set<string> }).expandedBodyToolCallIds =
+          next;
+      }
+      break;
+    }
+
+    case "collapse_tool_body": {
+      if (state.expandedBodyToolCallIds.has(action.callId)) {
+        const next = new Set(state.expandedBodyToolCallIds);
+        next.delete(action.callId);
+        (state as unknown as { expandedBodyToolCallIds: Set<string> }).expandedBodyToolCallIds =
+          next;
+      }
+      break;
+    }
+
+    case "set_retry_state": {
+      if (action.countdown === null) {
+        (state as { retryState: null }).retryState = null;
+      } else {
+        (state as { retryState: { countdownSec: number; attempt: number } }).retryState = {
+          countdownSec: action.countdown,
+          attempt: action.attempt ?? state.retryState?.attempt ?? 1,
+        };
+      }
+      break;
+    }
+
+    case "set_agent_context":
+      (state as { agentDepth: number }).agentDepth = action.depth;
+      (state as { siblingInfo: typeof state.siblingInfo }).siblingInfo = action.siblingInfo ?? null;
+      break;
+
+    case "set_at_query":
+      if (action.query !== state.atQuery) {
+        (state as { atQuery: string | null }).atQuery = action.query;
+      }
+      break;
+
+    case "set_at_results":
+      (state as { atResults: readonly string[] }).atResults = action.results;
       break;
 
     case "load_history": {

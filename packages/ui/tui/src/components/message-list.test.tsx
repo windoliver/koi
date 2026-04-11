@@ -111,12 +111,20 @@ describe("MessageList — rendering", () => {
         event: {
           kind: "tool_call_end",
           callId: "call-1" as never,
-          result: "file contents here",
+          result: { files: ["a.ts"] },
+        },
+      },
+      {
+        kind: "engine_event",
+        event: {
+          kind: "tool_result",
+          callId: "call-1" as never,
+          output: "file contents here",
         },
       },
       { kind: "engine_event", event: { kind: "turn_end", turnIndex: 0 } },
-      // Expand tool results to make content visible (collapsed by default, Decision 15A)
-      { kind: "toggle_tools_expanded" },
+      // Expand this specific tool result to make content visible (collapsed by default, Decision 15A)
+      { kind: "expand_tool", callId: "call-1" },
     ]);
     const frame = await renderList(state);
     expect(frame).toContain("read_file");

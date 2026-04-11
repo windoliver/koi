@@ -24,7 +24,11 @@ export type {
   PlanTask,
   SessionInfo,
   SessionSummary,
+  SpawnProgress,
+  SpawnStats,
+  SpawnStatus,
   ToolCallStatus,
+  ToolResultData,
   TrajectoryMiddlewareSpan,
   TrajectoryStepSummary,
   TrajectoryTokenMetrics,
@@ -35,4 +39,4 @@ export type {
   TuiState,
   TuiView,
 } from "./types.js";
-export { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_OUTPUT_CHARS } from "./types.js";
+export { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";

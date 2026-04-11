@@ -64,6 +64,25 @@ export interface CreateTuiAppConfig {
   /** Called when the user triggers Ctrl+C interrupt. */
   readonly onInterrupt: () => void;
   /**
+   * Called when the user triggers session fork from the command palette (#13).
+   * The host typically clones the current session and starts a fresh conversation
+   * from the same context.
+   */
+  readonly onFork?: (() => void) | undefined;
+  /**
+   * Called when the user pastes an image from clipboard via Ctrl+V (#11).
+   * The host collects these images and attaches them as image ContentBlocks
+   * to the next add_user_message dispatched via onSubmit.
+   */
+  readonly onImageAttach?:
+    | ((image: { readonly url: string; readonly mime: string }) => void)
+    | undefined;
+  /**
+   * Called when a turn completes (agentStatus processing → idle) (#16).
+   * Host can emit BEL or a desktop notification when the terminal is not focused.
+   */
+  readonly onTurnComplete?: (() => void) | undefined;
+  /**
    * Optional renderer for testing (Decision 10A).
    * When provided, createTuiApp uses it directly instead of calling createCliRenderer().
    * The injected renderer is NOT destroyed on stop() — the caller owns its lifecycle.
@@ -112,6 +131,9 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     onSessionSelect,
     onSubmit,
     onInterrupt,
+    onFork,
+    onImageAttach,
+    onTurnComplete,
     renderer: injectedRenderer,
     screenMode,
     footerHeight,
@@ -263,6 +285,9 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     onSessionSelect,
                     onSubmit,
                     onInterrupt,
+                    onFork,
+                    onImageAttach,
+                    onTurnComplete,
                     onPermissionRespond: permissionBridge.respond,
                     syntaxStyle,
                     treeSitterClient,

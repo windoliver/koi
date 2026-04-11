@@ -13,6 +13,7 @@ import type {
   JsonObject,
   ModelRequest,
   StopGateResult,
+  ToolCallId,
 } from "@koi/core";
 import { DEFAULT_MAX_STOP_RETRIES } from "@koi/core";
 import { coerceToolArgs } from "./coerce-tool-args.js";
@@ -626,6 +627,9 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
           results.push(result);
           appendToolResult(transcript, result);
+          // Emit tool_result so the TUI receives the actual execution output
+          // (not the AccumulatedToolCall args that tool_call_end carries).
+          yield { kind: "tool_result", callId: tc.callId as ToolCallId, output: response.output };
 
           // Replicate the real result to skipped duplicates so the model
           // sees the actual output for every callId, not a placeholder.
@@ -639,6 +643,11 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
               };
               results.push(dupResult);
               appendToolResult(transcript, dupResult);
+              yield {
+                kind: "tool_result",
+                callId: dup.callId as ToolCallId,
+                output: response.output,
+              };
             }
           }
 

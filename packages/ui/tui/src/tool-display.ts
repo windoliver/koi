@@ -9,6 +9,8 @@
  * (e.g., `fs_edit` → "Create" when old_string is empty, "Edit" otherwise).
  */
 
+import type { ToolResultData } from "./state/types.js";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -24,6 +26,8 @@ export interface ResultDisplay {
   readonly chips: readonly string[];
   /** Main content body to render (stdout, file content, paths, etc.). */
   readonly body: string;
+  /** True when the stored value was truncated to fit MAX_TOOL_RESULT_BYTES. */
+  readonly truncated: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,34 +281,55 @@ function extractResultBody(obj: Readonly<Record<string, unknown>>): string {
 }
 
 /**
- * Extract structured result display from a tool result string.
+ * Extract structured result display from a ToolResultData.
  *
- * Results are stored as JSON-stringified strings by the reducer's capResult().
- * This function parses them back and extracts scalar metadata chips (exitCode,
- * status, bytesWritten, etc.) and a main content body (stdout, content, paths).
+ * Works directly with the structured value stored by the reducer — no
+ * re-parsing of JSON strings needed. Extracts scalar metadata chips
+ * (exitCode, status, bytesWritten, etc.) and a main content body
+ * (stdout, content, paths).
  *
- * Falls back to raw result string when parsing fails or result is not an object.
+ * Falls back to a raw string representation when the value is not a
+ * plain object (string results, arrays, primitives).
  */
-export function getResultDisplay(result: string): ResultDisplay {
-  if (result === "" || result === "[unserializable]") {
-    return { chips: [], body: result };
+export function getResultDisplay(result: ToolResultData): ResultDisplay {
+  const { value, truncated } = result;
+
+  if (value === "" || value === null || value === undefined) {
+    return { chips: [], body: "", truncated };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result);
-  } catch {
-    // Not JSON — plain string result (e.g., pre-formatted text)
-    return { chips: [], body: result };
+  if (value === "[unserializable]") {
+    return { chips: [], body: "[unserializable]", truncated };
   }
 
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { chips: [], body: result };
+  // Plain object — use structured extraction directly (no re-parse needed)
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const obj = value as Readonly<Record<string, unknown>>;
+    return {
+      chips: extractResultChips(obj),
+      body: extractResultBody(obj),
+      truncated,
+    };
   }
 
-  const obj = parsed as Readonly<Record<string, unknown>>;
-  return {
-    chips: extractResultChips(obj),
-    body: extractResultBody(obj),
-  };
+  // String value — may be pre-formatted text or JSON-stringified output
+  if (typeof value === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      // Plain string result (e.g., grep output, file content)
+      return { chips: [], body: value, truncated };
+    }
+
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      const obj = parsed as Readonly<Record<string, unknown>>;
+      return { chips: extractResultChips(obj), body: extractResultBody(obj), truncated };
+    }
+
+    return { chips: [], body: value, truncated };
+  }
+
+  // Primitive (number, boolean, etc.)
+  return { chips: [], body: String(value), truncated };
 }

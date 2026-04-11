@@ -78,6 +78,15 @@ export interface CreateAgentSpawnFnOptions {
    *   spawnProviderFactory: () => createSpawnToolProvider(config)
    */
   readonly spawnProviderFactory?: (() => ComponentProvider) | undefined;
+  /**
+   * When true, unknown agent names (NOT_FOUND from resolver) create ad-hoc
+   * agents using manifestTemplate + description as system prompt. When false
+   * (default), NOT_FOUND is a hard error — fail-closed semantics.
+   *
+   * Enable for Claude Code-style dynamic agent creation where the model
+   * invents agent names on the fly.
+   */
+  readonly allowDynamicAgents?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,7 +105,8 @@ export interface CreateAgentSpawnFnOptions {
  * 6. Wrap in AgentExecutionContext for identity isolation
  */
 export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn {
-  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware } = options;
+  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware, allowDynamicAgents } =
+    options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
     // Issue 16: fast-path for already-expired deadlines. If the caller set an absolute
@@ -132,35 +142,56 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest = request.manifest;
     } else {
       const resolveResult = await resolver.resolve(request.agentName);
-      if (!resolveResult.ok) {
+      if (
+        !resolveResult.ok &&
+        resolveResult.error.code === "NOT_FOUND" &&
+        allowDynamicAgents === true
+      ) {
+        // Dynamic agent creation (opt-in): when the name doesn't match any
+        // registered definition and allowDynamicAgents is explicitly enabled,
+        // create an ad-hoc agent from the manifestTemplate + description.
+        // Other resolver errors (PERMISSION, VALIDATION, etc.) and non-opt-in
+        // NOT_FOUND are preserved as hard failures (fail-closed).
+        manifest = {
+          ...manifestTemplate,
+          name: request.agentName,
+          description: request.description,
+        };
+        // Use description as system prompt if none explicitly provided
+        if (systemPrompt === undefined) {
+          systemPrompt = request.description;
+        }
+      } else if (!resolveResult.ok) {
+        // Non-NOT_FOUND resolver errors: fail closed (preserve existing behavior)
         return { ok: false, error: resolveResult.error };
-      }
-      const definition = resolveResult.value;
+      } else {
+        const definition = resolveResult.value;
 
-      // 2. Build manifest: template provides infrastructure defaults (channels, middleware stack),
-      //    definition.manifest overrides with agent-specific controls (permissions, delegation,
-      //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
-      //    dropped security and isolation fields defined on the resolved agent.
-      //
-      //    The `spawn` field is deep-merged so that template-level env/channel ceilings
-      //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
-      //    resolved definition specifies spawn.tools without its own spawn.env or channels.
-      const mergedSpawn =
-        manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
-          ? {
-              ...manifestTemplate?.spawn,
-              ...definition.manifest.spawn,
-            }
-          : undefined;
-      manifest = {
-        ...manifestTemplate,
-        ...definition.manifest,
-        ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
-      };
+        // 2. Build manifest: template provides infrastructure defaults (channels, middleware stack),
+        //    definition.manifest overrides with agent-specific controls (permissions, delegation,
+        //    sandbox, delivery, lifecycle, tools, etc.). Selective-copy was wrong: it silently
+        //    dropped security and isolation fields defined on the resolved agent.
+        //
+        //    The `spawn` field is deep-merged so that template-level env/channel ceilings
+        //    (e.g. spawn.env.exclude for credential isolation) are NOT dropped when the
+        //    resolved definition specifies spawn.tools without its own spawn.env or channels.
+        const mergedSpawn =
+          manifestTemplate?.spawn !== undefined || definition.manifest.spawn !== undefined
+            ? {
+                ...manifestTemplate?.spawn,
+                ...definition.manifest.spawn,
+              }
+            : undefined;
+        manifest = {
+          ...manifestTemplate,
+          ...definition.manifest,
+          ...(mergedSpawn !== undefined ? { spawn: mergedSpawn } : {}),
+        };
 
-      // 3. Use definition's systemPrompt if request didn't provide one
-      if (systemPrompt === undefined) {
-        systemPrompt = extractSystemPrompt(definition);
+        // 3. Use definition's systemPrompt if request didn't provide one
+        if (systemPrompt === undefined) {
+          systemPrompt = extractSystemPrompt(definition);
+        }
       }
     }
 

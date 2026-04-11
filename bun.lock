@@ -427,6 +427,7 @@
         "koi": "./dist/bin.js",
       },
       "dependencies": {
+        "@koi/agent-runtime": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",

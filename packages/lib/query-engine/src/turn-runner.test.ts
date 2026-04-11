@@ -149,6 +149,7 @@ describe("runTurn", () => {
       "tool_call_start",
       "tool_call_delta",
       "tool_call_end",
+      "tool_result",
       "turn_end",
       // Turn 1
       "turn_start",
@@ -163,7 +164,7 @@ describe("runTurn", () => {
 
     // Verify turn indices
     expect(events[0]).toMatchObject({ kind: "turn_start", turnIndex: 0 });
-    expect(events[5]).toMatchObject({ kind: "turn_start", turnIndex: 1 });
+    expect(events[6]).toMatchObject({ kind: "turn_start", turnIndex: 1 });
 
     // Verify done
     const done = events.find((e) => e.kind === "done");
