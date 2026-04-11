@@ -164,5 +164,23 @@ export interface FileSystemBackend {
     to: string,
   ) => Result<FileRenameResult, KoiError> | Promise<Result<FileRenameResult, KoiError>>;
 
+  /**
+   * Resolve a tool-input path to the absolute on-disk path the backend
+   * will actually read from or write to. Pure lexical resolution: no I/O,
+   * no symlink following, no permission checks.
+   *
+   * Exists so auxiliary subsystems (notably `@koi/checkpoint`, which hashes
+   * pre/post images of file ops) can hash blobs for the SAME path the
+   * backend wrote to. Without this, tool-input paths like `/src/foo.ts`
+   * end up hashed against their raw form while the backend writes to
+   * `<workspace-root>/src/foo.ts`, and the restore protocol silently no-ops.
+   *
+   * Implementations that virtualize paths (e.g., strip a workspace prefix,
+   * treat leading-slash as workspace-relative) MUST implement this method.
+   * Implementations that pass paths through unchanged MAY omit it; callers
+   * treat `undefined` as identity.
+   */
+  readonly resolvePath?: (path: string) => string;
+
   readonly dispose?: () => void | Promise<void>;
 }

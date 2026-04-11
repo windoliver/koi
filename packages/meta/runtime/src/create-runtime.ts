@@ -114,11 +114,23 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         })
       : undefined;
 
+  // Resolve the filesystem backend EARLY so the checkpoint block can
+  // borrow its path resolver. Without threading the backend's `resolvePath`
+  // into checkpoint, callers that enable both `config.checkpoint` and
+  // `config.filesystem: fs-local` silently get broken snapshots — the
+  // backend writes to `<workspace-root>/src/foo.ts` while checkpoint hashes
+  // blobs keyed on the raw tool-input path `/src/foo.ts`, so the restore
+  // protocol no-ops on any file the tool actually wrote.
+  const filesystemBackendForResolve = resolveFilesystemInput(config.filesystem, config.cwd);
+  const filesystemResolvePath = filesystemBackendForResolve?.resolvePath;
+
   // Checkpoint (#1625) — wires capture middleware + CAS blob store, exposes
   // a programmatic rewind handle on the runtime. Optional: only constructed
   // when config.checkpoint is provided. Shares the SessionTranscript with
   // session middleware so /rewind truncates the conversation log alongside
-  // the file-state restore.
+  // the file-state restore. Threads the filesystem backend's `resolvePath`
+  // so pre/post-image hashes are computed against the same on-disk paths
+  // the backend writes to.
   const checkpointHandle: Checkpoint | undefined =
     config.checkpoint !== undefined
       ? createCheckpoint({
@@ -134,6 +146,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
             // directly (this runtime config is the simple shared default).
             driftDetector: null,
             ...(sharedTranscript !== undefined ? { transcript: sharedTranscript } : {}),
+            ...(filesystemResolvePath !== undefined ? { resolvePath: filesystemResolvePath } : {}),
           },
         })
       : undefined;
@@ -192,7 +205,12 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
   // Accepts either a FileSystemConfig (resolved here) or a pre-created
   // FileSystemBackend (used when the caller needs async setup, e.g. local
   // bridge transport with auth notification wiring via resolveFileSystemAsync).
-  const filesystemBackend = resolveFilesystemInput(config.filesystem, config.cwd);
+  //
+  // Reuse `filesystemBackendForResolve` from earlier — the checkpoint block
+  // already needed the backend for its `resolvePath` method, so resolving
+  // twice would be wasteful and could construct two independent backend
+  // instances pointing at the same root.
+  const filesystemBackend = filesystemBackendForResolve;
   // Extract operations from FileSystemConfig when present; fall back to
   // config.filesystemOperations for pre-created backends (e.g. from resolveFileSystemAsync).
   // Without this, pre-created backends default to read-only, silently dropping write/edit tools.

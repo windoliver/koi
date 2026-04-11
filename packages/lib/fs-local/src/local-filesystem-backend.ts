@@ -455,6 +455,32 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       }
     },
 
+    /**
+     * Pure lexical path resolution. Mirrors the input-normalization logic
+     * from `lexicalCheck()` above but without the containment check: this
+     * method is advertised to cross-cutting subsystems (e.g. @koi/checkpoint)
+     * that need to hash blobs against the same absolute path the backend
+     * writes to. The actual read/write/edit calls still run the full
+     * `safePath()` + `rejectEscapingSymlink()` gauntlet; this method MUST
+     * NOT be used as a security boundary.
+     *
+     * If the input is already an absolute path matching the workspace root
+     * or `root`, it is passed through verbatim. If it starts with "/" but
+     * doesn't match the workspace, the leading "/" is stripped and it's
+     * resolved relative to root ("/src/foo.ts" → "<root>/src/foo.ts").
+     * Anything else is treated as workspace-relative and resolved from root.
+     */
+    resolvePath(path: string): string {
+      const stripped = path.startsWith(rootPrefix)
+        ? path.slice(rootPrefix.length)
+        : path.startsWith(`${root}/`)
+          ? path.slice(root.length + 1)
+          : path.startsWith("/")
+            ? path.slice(1)
+            : path;
+      return resolve(root, stripped);
+    },
+
     dispose(): void {
       // No-op — local filesystem needs no cleanup
     },
