@@ -35,6 +35,7 @@ import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
   InboundMessage,
+  KoiMiddleware,
   ManagedTaskBoard,
   MemoryRecord,
   MemoryRecordInput,
@@ -282,6 +283,13 @@ export interface TuiRuntimeConfig {
    * When provided, durable approvals survive process restart.
    */
   readonly persistentApprovals?: ApprovalStore | undefined;
+  /**
+   * Pre-constructed model-router middleware. When provided, routes all model
+   * calls through the failover chain before reaching the model adapter.
+   * Create via: createModelRouterMiddleware(createModelRouter(config, adapters))
+   * When omitted, calls go directly to the model adapter (no routing/fallback).
+   */
+  readonly modelRouterMiddleware?: KoiMiddleware | undefined;
 }
 
 export interface TuiRuntimeHandle {
@@ -1163,6 +1171,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     exfiltrationGuardMw,
     extractionMw,
     semanticRetryMw,
+    // Model-router (innermost model call interceptor): routes after retry logic
+    // so each retry attempt benefits from provider failover independently.
+    ...(config.modelRouterMiddleware !== undefined ? [config.modelRouterMiddleware] : []),
     ...(goalMw !== undefined ? [goalMw] : []),
     ...optionalMiddleware,
   ];
