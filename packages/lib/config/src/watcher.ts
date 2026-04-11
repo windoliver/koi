@@ -1,6 +1,20 @@
 /**
  * Debounced file watcher for config hot-reload.
  *
+ * **Platform note**: `fs.watch` has fundamentally different semantics on
+ * macOS (FSEvents) vs. Linux (inotify) for file-replacement operations.
+ * On macOS, renaming a file over the target fires a path-level `rename`
+ * event that the rearm path can detect and recover from. On Linux,
+ * inotify watches the INODE, not the path — when the inode is unlinked
+ * (which happens during atomic save via `write tmp → rename tmp over
+ * target`), the watcher goes silent without emitting further events.
+ * The rename-on-save rearm path is therefore a best-effort recovery
+ * that works reliably on macOS but is NOT portable to Linux. In-place
+ * `change` events (the common case for most editors that write directly
+ * to the file, including every path the Koi TUI exercises) work
+ * identically on both platforms. Tests that depend on rename-triggered
+ * rearm are skipped on non-macOS platforms.
+ *
  * Handles three failure modes that `fs.watch()` does NOT handle cleanly on
  * its own:
  *
@@ -9,19 +23,20 @@
  *    NOT permanently close on a transient error, since hot reload going
  *    silently dead is worse than a noisy error log.
  *
- * 2. Rename-on-save: atomic editors (vim, VS Code) save via
+ * 2. Rename-on-save (macOS only): atomic editors (vim, VS Code) save via
  *    `write temp -> rename(temp, target)`. fs.watch emits `rename` on the
  *    target path and then silently keeps pointing at the now-dead inode.
  *    No further `change` events ever arrive. We re-arm the watcher on
  *    `rename` events by closing the current FSWatcher and re-opening it on
- *    the same path.
+ *    the same path. Linux inotify does not fire the rename event reliably
+ *    for this pattern, so Linux users of atomic-save editors will need to
+ *    either fall back to a full restart or use an editor that writes in
+ *    place.
  *
- * 3. Slow rename-on-save: the new file may be absent for more than 350 ms
- *    (e.g. filesystem under load, large atomic write). The watcher retries
- *    re-arming with exponential backoff and never gives up until the
- *    caller explicitly disposes. Every failed rearm attempt calls `onError`
- *    so operators see a live signal, but the watcher remains alive and
- *    will recover when the file reappears. (Codex MEDIUM round 1.)
+ * 3. Slow rename-on-save (macOS only): the new file may be absent for
+ *    more than 350 ms (e.g. filesystem under load, large atomic write).
+ *    The watcher retries re-arming with exponential backoff and never
+ *    gives up until the caller explicitly disposes.
  */
 
 import type { FSWatcher } from "node:fs";
