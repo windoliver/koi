@@ -398,6 +398,8 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S8** | MCP | Q25-Q27 | 1 | .mcp.json with stdio + HTTP servers |
 | **S13** | Nexus GWS Connectors & OAuth | Q28-Q37 | 3+ (restart for token persistence) | Via `koi start --manifest` (not TUI); Python bridge; `pip install nexus-fs` |
 | **S14** | Memory Deep | Q84-Q99 | 1 (no reset until Q99) | Same TUI session for all queries; tests full memory tool surface |
+| **S15** | Loop Mode | Q100-Q101 | 1 per query | Via `koi start --until-pass`; fixture with failing test |
+| **S16** | Golden Query Replay | — | — | `bun test --filter=@koi/runtime`; 20+ golden queries; deterministic, no LLM |
 | **S9** | Skills & Plugins | Q38-Q42 | 2 (reset between skills and plugins) | skill dirs; plugin.json |
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
@@ -615,46 +617,54 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 
 ---
 
-## 6. Test-Suite-Only Packages
+## 6. Non-TUI Scenarios
 
-Packages not testable through TUI. Run these via `bun test`:
+Packages not wired into `koi tui` are tested via **golden query replay** (deterministic, no LLM) and **`koi start` CLI**. Each golden query runs the full `createKoi()` pipeline with recorded LLM cassettes — real middleware, real tools, real ATIF trajectories.
+
+### S15 — Loop Mode (via `koi start --until-pass`)
+
+| Q | Command | Pass Criteria |
+|---|---------|---------------|
+| Q100 | `koi start --prompt "Fix the failing test in test/math.test.ts" --until-pass "bun test" --max-iter 3` | Agent iterates: edit → verify → pass. Converges within max-iter |
+| Q101 | `koi start --prompt "Make this pass" --until-pass "false" --max-iter 2` | Hits max-iter; exits cleanly with non-zero code; no hang |
+
+### S16 — Golden Query Replay (via `bun test --filter=@koi/runtime`)
+
+Each row is a golden query exercising packages through the full agent pipeline. Run all:
+```bash
+bun test --filter=@koi/runtime
+```
+
+| Golden Query | Packages Exercised | Pass Criteria |
+|---|---|---|
+| audit-log | middleware-audit, audit-sink-sqlite, audit-sink-ndjson | Audit entries schema-valid; SHA-256 chain intact; MW spans present |
+| outcome-evaluator | outcome-evaluator, circuit-breaker | Grader called; rubric pass/fail; re-prompt on failure; circuit-break on repeats |
+| spawn-agent, spawn-coordinator, spawn-fork | agent-runtime, spawn-tools | Spawn lifecycle: define → load → spawn → inherit permissions → complete |
+| spawn-inheritance, spawn-allowlist, spawn-manifest-ceiling | agent-runtime, spawn-tools | Tool narrowing, permission inheritance, manifest ceiling enforcement |
+| model-router | model-router | Failover chain; circuit-breaker trips; health probe recovery |
+| goal-tracking, goal-callback | middleware-goal, middleware-report | Goal injection; drift detection; completion callback fires |
+| otel-spans | middleware-otel | OpenTelemetry spans emitted; semantic conventions correct |
+| memory-recall-pipeline | memory (core) | Salience scoring; exponential decay; token budget; format with trust boundary |
+| memory-fs | memory-fs | File persistence; Jaccard dedup; MEMORY.md index rebuild; concurrent writes |
+| dream-consolidation | dream | Cluster similar memories; LLM merge; type enforcement; cold pruning |
+| memory-team-sync | memory-team-sync | Type filtering (user always denied); secret scanning; fail-closed |
+| session-recovery, session-persist, session-resume | session, session-repair | JSONL persistence; crash recovery; append-on-resume; compaction boundary |
+| mcp-server | mcp-server | Expose Koi tools as MCP; discover/query/invalidate |
+| decision-ledger | decision-ledger | Trajectory + audit read-only projection |
+| tool-browser | tool-browser | Browser automation (headless) |
+| lsp | lsp | LSP client operations |
+| loop-convergence | loop | runUntilPass; verifier gate; max-iter bail |
+| skills-mcp-bridge | skills-runtime, mcp | Bridge MCP tools → skill registry |
+| middleware-extraction | middleware-extraction | Marker + heuristic extraction; secret filtering |
+| checkpoint + snapshot-store | checkpoint, snapshot-store-sqlite | Capture/rewind snapshots |
+
+### Packages with no golden query (unit tests only)
+
+These utility packages have no user-facing surface and are exercised indirectly by other packages:
 
 ```bash
-# Subagent spawning (stubbed in TUI)
-bun test --filter=@koi/agent-runtime
-bun test --filter=@koi/spawn-tools
-
-# Filesystem resolution (fs-nexus covered by S13; fs-local covered by S2/S6)
-bun test --filter=@koi/file-resolution
-
-# Audit (not wired in TUI)
-bun test --filter=@koi/middleware-audit
-bun test --filter=@koi/audit-sink-ndjson
-bun test --filter=@koi/audit-sink-sqlite
-
-# Optional middleware (require explicit config)
-bun test --filter=@koi/middleware-goal
-bun test --filter=@koi/middleware-otel
-bun test --filter=@koi/middleware-report
-bun test --filter=@koi/model-router
-
-# Memory (TUI uses in-memory; persistence via test suite)
-bun test --filter=@koi/memory-fs
-bun test --filter=@koi/dream
-bun test --filter=@koi/memory
-
-# Adapters & servers (separate processes)
-bun test --filter=@koi/model-openai-compat
-bun test --filter=@koi/mcp-server
-bun test --filter=@koi/decision-ledger
-
-# Tools not wired in TUI
-bun test --filter=@koi/tool-browser
-bun test --filter=@koi/lsp
-bun test --filter=@koi/loop
-
-# Golden query replay (deterministic, no LLM)
-bun test --filter=@koi/runtime
+bun test --filter=@koi/file-resolution    # path resolution utility
+bun test --filter=@koi/model-openai-compat # adapter tested via provider selection
 ```
 
 ---
@@ -669,20 +679,22 @@ bun test --filter=@koi/runtime
 | T4 | S10 (Tasks/Memory), S11 (TUI UI), S14 (Memory Deep) | `t4` |
 | T5 | S12 (Resilience), CLI-only (Q78-Q83) | `t5` |
 | T6 | S13 (Nexus GWS Connectors & OAuth) | `t6` |
-| T7 | Test-suite-only packages (§6) | `t7` |
+| T7 | S15 (Loop Mode), S16 (Golden Query Replay) | `t7` |
 
 ---
 
 ## 8. Exit Criteria
 
-1. All S1-S14 scenarios run at least once
-2. All Q1-Q99 queries executed with pass/fail recorded
+1. All S1-S16 scenarios run at least once
+2. All Q1-Q101 queries executed with pass/fail recorded
+3. All S16 golden queries pass (`bun test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
 5. TUI feature matrix (§5) shows every command/shortcut/view/modal exercised
 6. `bun test --filter=@koi/runtime` (golden replay) passes on candidate commit
 7. Written summary posted with:
-   - Queries run: N/99
+   - Queries run: N/101
+   - Golden replay: all green / N failures
    - Bugs filed by severity
    - Unexercised packages + justification
    - Go / no-go recommendation
