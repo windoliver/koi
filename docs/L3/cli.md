@@ -367,6 +367,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
+| `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools — in-memory backend for TUI sessions (no filesystem persistence) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
