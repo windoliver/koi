@@ -48,8 +48,11 @@ function buildStamper(privateKey: KeyObject): {
 
     const entryWithChain: AuditEntry = { ...entry, prev_hash: prevHash };
 
-    // Sign the full entry-with-chain (but without the signature field itself)
-    const payload = Buffer.from(JSON.stringify(entryWithChain));
+    // Sign the full entry-with-chain (but without the signature field itself).
+    // Use TextEncoder instead of Buffer.from so the result is Uint8Array<ArrayBuffer>
+    // (not Uint8Array<ArrayBufferLike>), which is what node:crypto's sign() accepts
+    // as ArrayBufferView in modern @types/node.
+    const payload = new TextEncoder().encode(JSON.stringify(entryWithChain));
     const sigBuffer = sign(null, payload, privateKey);
     const signature = sigBuffer.toString("base64url");
 
@@ -99,8 +102,13 @@ export function verifyEntrySignature(entry: AuditEntry, publicKeyDer: Buffer): b
     readonly signature: string;
   };
 
-  const payload = Buffer.from(JSON.stringify(entryWithoutSig));
-  const sigBuffer = Buffer.from(sig, "base64url");
+  // See note in buildStamper: TextEncoder keeps the Uint8Array<ArrayBuffer> brand
+  // that node:crypto's verify() requires under current @types/node. The signature
+  // bytes are copied into a fresh Uint8Array for the same reason — Buffer.from()
+  // returns Buffer (Uint8Array<ArrayBufferLike>), which no longer satisfies
+  // ArrayBufferView without a widening step.
+  const payload = new TextEncoder().encode(JSON.stringify(entryWithoutSig));
+  const sigBuffer = new Uint8Array(Buffer.from(sig, "base64url"));
 
   try {
     return verify(null, payload, { key: publicKeyDer, format: "der", type: "spki" }, sigBuffer);
