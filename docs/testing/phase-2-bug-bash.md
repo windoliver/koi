@@ -34,7 +34,31 @@ export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
 ```
 
-### 1.3 Fixture Project
+### 1.3 TUI Configuration
+
+The TUI (`koi tui`) is configured via **environment variables and CLI flags** — it does NOT read `koi.yaml` or manifest files. (`koi start` supports `--manifest` for Nexus filesystem; see S13.)
+
+```bash
+# Model selection (pick one provider)
+export OPENROUTER_API_KEY="<key>"   # OpenRouter (default)
+# OR: export OPENAI_API_KEY="<key>" # OpenAI direct
+
+# Optional overrides
+export KOI_MODEL="anthropic/claude-sonnet-4"  # Override default model
+export KOI_FALLBACK_MODEL="openai/gpt-4o"     # Enable model-router failover
+export KOI_OTEL_ENABLED=true                   # Enable OpenTelemetry spans (optional)
+```
+
+MCP servers configured via `.mcp.json` at project root or `$KOI_HOME/.claude/.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "echo": { "command": "node", "args": ["echo-server.js"] }
+  }
+}
+```
+
+### 1.4 Fixture Project (create before launching TUI)
 
 ```bash
 rm -rf "$FIXTURE" && mkdir -p "$FIXTURE" && cd "$FIXTURE"
@@ -58,7 +82,7 @@ git add -A && git commit -q -m "init"
 cd - >/dev/null
 ```
 
-### 1.4 Launch TUI
+### 1.5 Launch TUI
 
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
@@ -67,7 +91,7 @@ sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
 
-### 1.5 Reset Between Scenarios
+### 1.6 Reset Between Scenarios
 
 ```bash
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
@@ -79,7 +103,7 @@ tmux new-session -d -s "$KOI_SESSION" \
 sleep 2
 ```
 
-### 1.6 Transcript Verification
+### 1.7 Transcript Verification
 
 ```bash
 SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl 2>/dev/null | head -1)
@@ -183,27 +207,28 @@ EOF
 
 ### S13 — Nexus GWS Connectors & Inline OAuth
 
-> Nexus connectors (gdrive, gmail, calendar) are accessed via `@koi/fs-nexus` Python bridge — NOT via MCP.
-> The bridge spawns `nexus-fs` as a subprocess, communicates via stdin/stdout JSON-RPC, and handles inline OAuth
-> via `auth_required`/`auth_complete` notifications surfaced through the TUI channel.
+> Nexus connectors (gdrive, gmail, calendar) use `@koi/fs-nexus` with a **sideloaded Python bridge**
+> (no Docker). The bridge spawns `python3 bridge.py <mount_uri>` as a subprocess, communicates via
+> stdin/stdout JSON-RPC, and handles inline OAuth via `auth_required`/`auth_complete` notifications.
 >
-> **Requires**: Nexus Docker stack running; manifest with `filesystem.backend: "nexus"` + `transport: "local"`.
-> The TUI defaults to `@koi/fs-local` — Nexus must be explicitly configured via the manifest or env.
+> **Current status**: `koi tui` is hardcoded to `@koi/fs-local` (`tui-runtime.ts:787`).
+> `resolveFileSystemAsync()` exists in `@koi/runtime` but is NOT wired into `createTuiRuntime()`.
+> S13 scenarios run via **`koi start --manifest`** (which supports filesystem config) or via test suite.
 
 **Setup**:
 ```bash
-# Start Nexus Docker stack (per-tester port)
-export NEXUS_SESSION="${NAMESPACE}-nexus"
-export NEXUS_PORT=$((3100 + ${TESTER_ID#t}))
-tmux new-session -d -s "$NEXUS_SESSION" "docker run --rm -p ${NEXUS_PORT}:3100 <nexus-image>:<tag>"
-curl -s "http://localhost:${NEXUS_PORT}/admin/api/health"
+# Python bridge requirement: nexus-fs package must be installed
+pip install nexus-fs   # or: pip install -e packages/lib/fs-nexus/bridge/
 
 # Clear per-tester token store (isolated HOME from §1.2)
 rm -f "$KOI_HOME/.config/nexus-fs/tokens.db"
 mkdir -p "$KOI_HOME/.config/nexus-fs"
 
-# Configure manifest for Nexus filesystem backend
-cat > "$FIXTURE/koi.manifest.yaml" <<EOF
+# Create manifest with Nexus filesystem backend + Python bridge
+cat > "$FIXTURE/koi.manifest.yaml" <<'EOF'
+name: nexus-test
+model:
+  name: ${KOI_MODEL:-openai/gpt-4o}
 filesystem:
   backend: nexus
   options:
@@ -211,24 +236,29 @@ filesystem:
     mountUri:
       - "local://$FIXTURE"
       - "gdrive://my-drive"
+    pythonPath: python3
     authTimeoutMs: 300000
 EOF
 ```
 
-Launch TUI with manifest: `bun run .../bin.ts tui --manifest "$FIXTURE/koi.manifest.yaml"`
+Run via `koi start` (NOT `koi tui`):
+```bash
+HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
+  start --manifest "$FIXTURE/koi.manifest.yaml" --prompt "<query>"
+```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q28 | `List the mounts you have access to.` | fs_read (mount list) | Both `local://` and `gdrive://` mounts listed |
-| Q29 | `List the 5 most recent emails in my inbox.` (gmail mount) | fs_read + OAuth | OAuth flow: TUI shows auth URL → user authorizes in browser → `auth_complete` → emails listed |
+| Q29 | `List the 5 most recent emails in my inbox.` (gmail mount) | fs_read + OAuth | OAuth flow: auth URL shown → user authorizes in browser → `auth_complete` → emails listed |
 | Q30 | `What's on my calendar for today?` (calendar mount) | fs_read + OAuth | OAuth flow completes; events returned |
 | Q31 | `List my recent Google Drive files.` (gdrive mount) | fs_read + OAuth | OAuth flow completes; files listed |
-| Q32 | (kill TUI, relaunch) `List my emails.` | fs_read | No `auth_required` — cached token in `tokens.db` reused |
+| Q32 | (restart process) `List my recent emails.` | fs_read | No `auth_required` — cached token in `tokens.db` reused |
 | Q33 | `Read README.md from the local mount and list files on gdrive.` | fs_read ×2 | Both mounts operable in same turn |
 | Q34 | (gdrive auth fails/times out) `Read local file + list gdrive.` | fs_read | Auth failure on gdrive does NOT block local mount |
 | Q35 | (SSH/headless: remote OAuth mode) `List gdrive files.` | fs_read + OAuth | `auth_required` with `mode: "remote"` + `correlation_id`; user pastes redirect URL; `auth_complete` fires |
-| Q36 | (bridge crashes mid-session) `Read README.md.` | fs_read | Clean error or auto-recovery; no hang; no zombie Python processes |
-| Q37 | (malformed mount URI in manifest) start TUI | startup | Fails fast with clear error; no bridge process spawned |
+| Q36 | (kill Python bridge mid-session) `Read README.md.` | fs_read | Clean error or auto-recovery; no hang; no zombie Python processes |
+| Q37 | (malformed mount URI in manifest) start process | startup | Fails fast with clear error; no bridge process spawned |
 
 ### S9 — Skills & Plugins
 
@@ -323,7 +353,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S6** | Permissions & Hooks | Q19-Q22 | 1 | allow-list config; hooks.json; HTTP stub |
 | **S7** | Context Window | Q23-Q24 | 1 (20+ turns) | magic word in first turn |
 | **S8** | MCP | Q25-Q27 | 1 | .mcp.json with stdio + HTTP servers |
-| **S13** | Nexus GWS Connectors & OAuth | Q28-Q37 | 3+ (restart for token persistence) | Nexus Docker; manifest with `filesystem.backend: nexus` |
+| **S13** | Nexus GWS Connectors & OAuth | Q28-Q37 | 3+ (restart for token persistence) | Via `koi start --manifest` (not TUI); Python bridge; `pip install nexus-fs` |
 | **S9** | Skills & Plugins | Q38-Q42 | 2 (reset between skills and plugins) | skill dirs; plugin.json |
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
