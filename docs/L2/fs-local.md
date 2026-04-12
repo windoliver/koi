@@ -44,6 +44,12 @@ await backend.rename("old.ts", "new.ts");
 
 ---
 
+## Path Resolution
+
+`resolvePath(userPath)` resolves a user-supplied path against the workspace root and returns the absolute path as a `string` if it is contained within the sandbox, or `undefined` if the path escapes the workspace root (e.g., via `..` traversal or symlink escape). This is used by checkpoint middleware to validate that checkpoint-related paths stay within the workspace boundary before persisting state.
+
+---
+
 ## Layer & Dependencies
 
 - **Layer**: L2

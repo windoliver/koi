@@ -56,8 +56,12 @@ export interface CreateTuiAppConfig {
   readonly store: TuiStore;
   /** Permission bridge for tool approval prompts. */
   readonly permissionBridge: PermissionBridge;
-  /** Called when the user selects a command from the palette. */
-  readonly onCommand: (commandId: string) => void;
+  /**
+   * Called when the user selects a command from the palette or types a slash
+   * command in the input. `args` is the trimmed text after the command name
+   * (e.g., `/rewind 3` → `args = "3"`); empty string when no args were typed.
+   */
+  readonly onCommand: (commandId: string, args: string) => void;
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message. */

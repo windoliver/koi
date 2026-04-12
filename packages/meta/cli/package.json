@@ -38,6 +38,7 @@
   ],
   "dependencies": {
     "@koi/channel-cli": "workspace:*",
+    "@koi/checkpoint": "workspace:*",
     "@koi/context-manager": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/engine": "workspace:*",
@@ -67,6 +68,7 @@
     "@koi/session": "workspace:*",
     "@koi/skill-tool": "workspace:*",
     "@koi/skills-runtime": "workspace:*",
+    "@koi/snapshot-store-sqlite": "workspace:*",
     "@koi/spawn-tools": "workspace:*",
     "@koi/task-tools": "workspace:*",
     "@koi/tasks": "workspace:*",

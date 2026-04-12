@@ -793,13 +793,153 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const result = createTuiApp({
     store,
     permissionBridge,
-    onCommand: (commandId: string): void => {
+    onCommand: (commandId: string, args: string): void => {
       switch (commandId) {
         case "agent:interrupt":
           onInterrupt();
           break;
         case "agent:clear":
           resetConversation();
+          break;
+        case "agent:rewind":
+          // /rewind <n> rolls back N turns (file edits + conversation) via
+          // @koi/checkpoint. `args` comes from the slash dispatch chain
+          // (parseSlashCommand → handleSlashSelect → handleCommandSelect →
+          // onCommand). Defaults to 1 when no arg is given. Negative or
+          // non-integer args are surfaced as REWIND_INVALID_ARGS.
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+
+            // Parse the rewind count: empty string defaults to 1, otherwise
+            // require a positive integer. Reject anything else loudly so the
+            // user knows their `/rewind <garbage>` was malformed.
+            let n = 1;
+            const trimmed = args.trim();
+            if (trimmed.length > 0) {
+              const parsed = Number.parseInt(trimmed, 10);
+              if (!Number.isInteger(parsed) || parsed < 1 || String(parsed) !== trimmed) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "REWIND_INVALID_ARGS",
+                  message: `Usage: /rewind [n] — n must be a positive integer (got "${trimmed}").`,
+                });
+                return;
+              }
+              n = parsed;
+            }
+
+            // Use the ENGINE session ID (from @koi/engine's createKoi),
+            // not tuiSessionId. The checkpoint middleware captures chains
+            // keyed by ctx.session.sessionId which is the engine's
+            // composite "agent:{agentId}:{instanceId}" ID — tuiSessionId
+            // is a TUI-local UUID that never matches a captured chain.
+            const engineSessionId = sessionId(runtimeHandle.runtime.sessionId);
+            const rewindStart = performance.now();
+            const result = await runtimeHandle.checkpoint.rewind(engineSessionId, n);
+            const rewindDurationMs = performance.now() - rewindStart;
+            if (!result.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_FAILED",
+                message: `Rewind failed: ${result.error.message}`,
+              });
+              return;
+            }
+
+            // After a successful rewind the restore protocol has already
+            // truncated the JSONL transcript to the target turn's entry
+            // count. Mirror the session-resume flow: call resetConversation
+            // so the engine's internal state (task board, trajectory, abort
+            // controller, batcher) is rebuilt, then await resetBarrier so
+            // the async reset is complete before we push the retained
+            // entries back in. Without the reset, the next user submit
+            // runs against a stale engine state and produces no output.
+            resetConversation();
+            await resetBarrier;
+            const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
+            if (resumeResult.ok) {
+              for (const msg of resumeResult.value.messages) {
+                runtimeHandle.transcript.push(msg);
+              }
+              store.dispatch({
+                kind: "load_history",
+                messages: resumeResult.value.messages,
+              });
+            }
+
+            // Record the rewind operation as a synthetic ATIF step so
+            // /trajectory can show it. Rewind runs outside the engine's
+            // turn loop (doesn't go through runTurn), so the trace wrapper
+            // never sees it — we emit one manually. Append AFTER
+            // resetConversation so it lands in the freshly-pruned store.
+            const rewindStep: RichTrajectoryStep = {
+              stepIndex: 0,
+              timestamp: Date.now(),
+              source: "system",
+              kind: "tool_call",
+              identifier: "checkpoint:rewind",
+              outcome: "success",
+              durationMs: rewindDurationMs,
+              request: {
+                data: { n, sessionId: String(engineSessionId) },
+              },
+              response: {
+                data: {
+                  turnsRewound: result.turnsRewound,
+                  opsApplied: result.opsApplied,
+                  targetNodeId: String(result.targetNodeId),
+                  newHeadNodeId: String(result.newHeadNodeId),
+                  driftWarnings: result.driftWarnings,
+                },
+              },
+              metadata: { type: "checkpoint_rewind" },
+            };
+            await runtimeHandle.appendTrajectoryStep(rewindStep);
+            // Refresh the trajectory view so the step shows up in the
+            // UI without waiting for the next turn to refresh it.
+            void runtimeHandle.getTrajectorySteps().then((steps) => {
+              store.dispatch({
+                kind: "set_trajectory_data",
+                steps: mapTrajectorySteps(steps),
+              });
+            });
+
+            // Surface drift warnings — paths the rewind could not restore
+            // because they were modified outside the tracked tool pipeline
+            // (bash-mediated rm/mv/sed, build artifacts). The user needs to
+            // know these so they can manually reconcile.
+            if (result.driftWarnings.length > 0) {
+              const head = `Rewound ${result.turnsRewound} turn${result.turnsRewound === 1 ? "" : "s"}, but ${result.driftWarnings.length} change${result.driftWarnings.length === 1 ? "" : "s"} could not be restored:`;
+              const body = result.driftWarnings.map((w) => `  ${w}`).join("\n");
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_DRIFT",
+                message: `${head}\n${body}`,
+              });
+            }
+            // Surface incomplete-snapshot warnings — turns whose capture
+            // soft-failed are walked past on rewind because their file ops
+            // are not recorded. The file state from those turns may still
+            // be on disk and differ from the restored target.
+            if (result.incompleteSnapshotsSkipped.length > 0) {
+              const n = result.incompleteSnapshotsSkipped.length;
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_INCOMPLETE",
+                message:
+                  `Rewound past ${n} turn${n === 1 ? "" : "s"} with a soft-failed capture. ` +
+                  "File changes made during those turns are not recorded and may remain on disk — " +
+                  "verify the workspace state manually if anything looks off.",
+              });
+            }
+          })();
           break;
         case "system:quit":
           void shutdown();

@@ -45,8 +45,18 @@ export interface SlashOverlayProps {
 // ---------------------------------------------------------------------------
 
 export function SlashOverlay(props: SlashOverlayProps): JSX.Element {
+  // Strip everything from the first space onward before matching — the
+  // query may include command arguments (e.g. "rewind 1"), and
+  // matchCommands does prefix match on the command name only. Without
+  // this, typing "/rewind 1 <Enter>" fires the overlay's onSelect with
+  // zero matches and silently dispatches nothing.
+  const matchQuery = createMemo<string>(() => {
+    const q = props.query;
+    const spaceIdx = q.indexOf(" ");
+    return spaceIdx === -1 ? q : q.slice(0, spaceIdx);
+  });
   const matches = createMemo<readonly SlashMatch[]>(() =>
-    matchCommands(props.commands, props.query),
+    matchCommands(props.commands, matchQuery()),
   );
 
   const list = createScrollableList(matches, MAX_VISIBLE);

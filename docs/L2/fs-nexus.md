@@ -154,6 +154,12 @@ type BridgeNotification =
 
 ---
 
+## Local Transport Graceful Shutdown
+
+`close()` on the local bridge transport now performs graceful shutdown: it sends stdin EOF to the bridge subprocess and waits up to 2 seconds for the process to exit before sending SIGKILL. This prevents orphaned bridge processes during test teardown and normal shutdown. Test cleanup also removes any leaked CAS directories created by the bridge subprocess.
+
+---
+
 ## Path Safety
 
 All user-provided paths are normalized through `computeFullPath()` which:

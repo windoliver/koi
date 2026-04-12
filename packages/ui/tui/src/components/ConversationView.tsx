@@ -12,7 +12,7 @@ import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, on, Show, useContext } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
-import type { SlashCommand } from "../commands/slash-detection.js";
+import { parseSlashCommand, type SlashCommand } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
 import { StoreContext, useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
@@ -31,10 +31,8 @@ const MAX_HISTORY = 100;
 export interface ConversationViewProps {
   readonly onSubmit: (text: string) => void;
   readonly onSlashDetected: (query: string | null) => void;
-  readonly onSlashSelect?: ((command: SlashCommand) => void) | undefined;
-  /** Called with partial path when user types "@path" — host responds with set_at_results (#10). */
+  readonly onSlashSelect?: ((command: SlashCommand, args: string) => void) | undefined;
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
-  /** Called when user pastes an image from clipboard (#11). Bridge collects these for next submit. */
   readonly onImageAttach?: ((image: ClipboardImage) => void) | undefined;
   readonly focused: boolean;
   readonly syntaxStyle?: SyntaxStyle | undefined;
@@ -59,6 +57,17 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
+
+  // Checkpoint marker visibility: show the /rewind hint as soon as the user
+  // has submitted at least one message. Each user message corresponds to one
+  // captured snapshot at turn end, so this is a reliable "rewind is available"
+  // signal without coupling the TUI store to the runtime's checkpoint count.
+  //
+  // We intentionally omit a precise count. The TUI store creates multiple
+  // assistant messages per turn (streaming chunks + tool-call blocks) so
+  // filtering for "non-streaming assistant messages" overcounts. Showing a
+  // stable hint is more useful than a wrong number.
+  const hasCapturedTurn = useTuiStore((s) => s.messages.some((m) => m.kind === "user"));
 
   // Prompt history — session-scoped. Cleared when messages are reset
   // (agent:clear, session:new, session resume) to prevent leaking
@@ -111,9 +120,17 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   );
 
   const handleSlashSelect = (command: SlashCommand): void => {
+    // Parse args from the current slash query — what the user typed after
+    // the command name. The slashQuery state holds the text after `/` so
+    // we re-prepend it for parseSlashCommand. For example, if the user
+    // typed `/rewind 3`, slashQuery is `"rewind 3"` and parsed.args is `"3"`.
+    const query = slashQuery();
+    const parsed = query !== null ? parseSlashCommand(`/${query}`) : null;
+    const args = parsed?.args ?? "";
+
     props.onSlashDetected(null);
     setClearTrigger((n: number) => n + 1);
-    props.onSlashSelect?.(command);
+    props.onSlashSelect?.(command, args);
   };
 
   const handleSubmit = (text: string): void => {
@@ -173,6 +190,15 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   return (
     <box flexDirection="column" flexGrow={1}>
       <MessageList syntaxStyle={props.syntaxStyle} treeSitterClient={props.treeSitterClient} />
+      {/* Checkpoint marker: a single-line hint above the input. Only renders
+          once the user has submitted their first message so the empty
+          conversation stays clean. One line tall = one extra row of vertical
+          space when active. */}
+      <Show when={hasCapturedTurn()}>
+        <box paddingLeft={1}>
+          <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
+        </box>
+      </Show>
       <InputArea
         onSubmit={handleSubmit}
         onSlashDetected={props.onSlashDetected}

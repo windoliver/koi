@@ -105,6 +105,17 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/checkpoint": {
+      "name": "@koi/checkpoint",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/session": "workspace:*",
+        "@koi/snapshot-store-sqlite": "workspace:*",
+      },
+    },
     "packages/lib/config": {
       "name": "@koi/config",
       "version": "0.0.0",
@@ -364,6 +375,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/snapshot-store-sqlite": {
+      "name": "@koi/snapshot-store-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+      },
+    },
     "packages/lib/spawn-tools": {
       "name": "@koi/spawn-tools",
       "version": "0.0.0",
@@ -477,6 +496,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -507,6 +527,7 @@
         "@koi/session": "workspace:*",
         "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
+        "@koi/snapshot-store-sqlite": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -549,6 +570,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/channel-cli": "workspace:*",
+        "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
@@ -589,6 +611,7 @@
         "@koi/skill-scanner": "workspace:*",
         "@koi/skill-tool": "workspace:*",
         "@koi/skills-runtime": "workspace:*",
+        "@koi/snapshot-store-sqlite": "workspace:*",
         "@koi/spawn-tools": "workspace:*",
         "@koi/task-tools": "workspace:*",
         "@koi/tasks": "workspace:*",
@@ -1052,6 +1075,8 @@
 
     "@koi/channel-cli": ["@koi/channel-cli@workspace:packages/lib/channel-cli"],
 
+    "@koi/checkpoint": ["@koi/checkpoint@workspace:packages/lib/checkpoint"],
+
     "@koi/config": ["@koi/config@workspace:packages/lib/config"],
 
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
@@ -1161,6 +1186,8 @@
     "@koi/skill-tool": ["@koi/skill-tool@workspace:packages/lib/skill-tool"],
 
     "@koi/skills-runtime": ["@koi/skills-runtime@workspace:packages/lib/skills-runtime"],
+
+    "@koi/snapshot-store-sqlite": ["@koi/snapshot-store-sqlite@workspace:packages/lib/snapshot-store-sqlite"],
 
     "@koi/spawn-tools": ["@koi/spawn-tools@workspace:packages/lib/spawn-tools"],
 

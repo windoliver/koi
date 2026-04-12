@@ -1,0 +1,243 @@
+/**
+ * Public types for `@koi/checkpoint`.
+ *
+ * `CheckpointPayload` is the snapshot payload type stored in the underlying
+ * `SnapshotChainStore<CheckpointPayload>`. It is checkpoint-specific (not the
+ * L0 `AgentSnapshot`) because the checkpoint middleware does not have access
+ * to engine internals like `engineState`, `processState`, or `components` —
+ * those would have to come through `TurnContext`, which they currently don't.
+ *
+ * Keeping a smaller, focused payload also matches the spec: a checkpoint is
+ * "the file ops the agent performed during this turn + drift warnings + a
+ * pointer back to the conversation log offset for the conversation half of
+ * the rewind." That's all this type carries.
+ */
+
+import type {
+  FileOpRecord,
+  KoiError,
+  KoiMiddleware,
+  NodeId,
+  SessionId,
+  SessionTranscript,
+} from "@koi/core";
+
+/**
+ * The payload stored in the snapshot chain for each captured turn.
+ *
+ * One `CheckpointPayload` per turn boundary. Multiple `FileOpRecord` entries
+ * per payload — one per `wrapToolCall` invocation that touched a tracked file.
+ */
+export interface CheckpointPayload {
+  /** Monotonic turn index within the session, copied from `TurnContext.turnIndex`. */
+  readonly turnIndex: number;
+  /**
+   * Monotonic index that groups consecutive engine turns into a single
+   * "user turn" (one user prompt). A user prompt that invokes tools
+   * produces multiple engine turns — the model call that issues the tool
+   * call, then the post-tool-summary model call. Both engine turns share
+   * the same `userTurnIndex` so `/rewind 1` undoes the entire prompt
+   * (including the empty post-tool summary), not just the last engine turn.
+   *
+   * Heuristic: if the previous capture had non-empty `fileOps` and this
+   * capture has empty `fileOps`, treat it as a continuation (same
+   * `userTurnIndex`). Otherwise increment. The bootstrap snapshot (the
+   * initial empty capture on session start) has `userTurnIndex: 0`; real
+   * user prompts start at 1.
+   */
+  readonly userTurnIndex: number;
+  /** Session this checkpoint belongs to. */
+  readonly sessionId: string;
+  /** File operations captured during this turn (tracked tools only). */
+  readonly fileOps: readonly FileOpRecord[];
+  /**
+   * Drift warnings from `git status --porcelain` at end of turn — paths
+   * touched outside the tracked tool pipeline. Surfaced on rewind, never
+   * restored. Empty array means no drift detected (or drift detection
+   * disabled in config).
+   */
+  readonly driftWarnings: readonly string[];
+  /**
+   * Number of conversation transcript entries that existed at end of this
+   * turn. Captured only when a `SessionTranscript` is wired into the
+   * checkpoint config; absent otherwise. On rewind, the restore protocol
+   * passes this value to `SessionTranscript.truncate(sid, n)` so the
+   * conversation log shrinks back to the snapshot's turn boundary.
+   *
+   * Absent or undefined means "checkpoint has no opinion about the
+   * conversation log" — rewind will not touch the transcript.
+   */
+  readonly transcriptEntryCount?: number;
+  /** Unix ms when the checkpoint was created. */
+  readonly capturedAt: number;
+}
+
+/**
+ * Configuration for `createCheckpointMiddleware`.
+ */
+export interface CheckpointMiddlewareConfig {
+  /**
+   * Path to the content-addressed blob directory. The middleware writes
+   * pre-image and post-image file content here, keyed by SHA-256 hash.
+   * Layout: `<blobDir>/<first-2-hex>/<full-sha256-hex>`.
+   */
+  readonly blobDir: string;
+
+  /**
+   * Tool IDs to intercept for file operation capture. Defaults to
+   * `["fs_edit", "fs_write"]` — the v2 builtin file-modifying tools.
+   *
+   * Add other tool IDs (e.g., custom backends with different prefixes,
+   * or `fs_multi_edit` once it exists) as needed.
+   */
+  readonly trackedToolIds?: readonly string[];
+
+  /**
+   * Optional drift detector. If provided, the middleware calls it during
+   * the deferred phase of `onAfterTurn` to gather drift warnings.
+   *
+   * Defaulted by the factory to a `git status --porcelain` runner over
+   * `process.cwd()`. Pass `null` to disable drift detection entirely
+   * (useful for tests or environments without git).
+   */
+  readonly driftDetector?: DriftDetector | null;
+
+  /**
+   * Optional `SessionTranscript` from `@koi/core`. If provided, the
+   * checkpoint middleware records the post-turn entry count in each
+   * snapshot and the restore protocol calls `transcript.truncate()` on
+   * rewind so the conversation log shrinks back to the snapshot's turn
+   * boundary.
+   *
+   * The transcript is injected via the L0 interface — the checkpoint
+   * package never imports a concrete `@koi/session` implementation. The
+   * runtime composes them at L3 (`@koi/runtime`).
+   *
+   * Pass `undefined` to disable conversation truncation entirely (file
+   * state is still captured and restored). This is useful for tests that
+   * don't have a transcript and for sessions where the conversation half
+   * of rewind is handled elsewhere.
+   */
+  readonly transcript?: SessionTranscript;
+
+  /**
+   * Optional path resolver that maps a tool-input path string (the raw
+   * `path` field from a `fs_write` / `fs_edit` tool request) to the real
+   * filesystem path the middleware should read pre/post images from.
+   *
+   * This is required whenever the filesystem backend virtualizes paths —
+   * e.g., `@koi/fs-local` treats `/workspace/foo` as `<cwd>/workspace/foo`
+   * after stripping the leading `/`. Without the resolver, the checkpoint
+   * middleware would read from the literal virtual path (which doesn't
+   * exist on disk) and silently capture nothing.
+   *
+   * The resolved path is also what gets stored in the `FileOpRecord`, so
+   * the restore protocol can write back directly without re-resolving.
+   *
+   * Returns `undefined` when the input path resolves OUTSIDE the backend's
+   * workspace root (traversal via `../`, non-matching absolute paths, etc.).
+   * The caller MUST treat undefined as "skip this op's capture" — hashing
+   * files outside the workspace would be an information leak, because the
+   * backend's own `safePath()` + `rejectEscapingSymlink()` checks run only
+   * at read/write time, AFTER the checkpoint middleware observes the path.
+   *
+   * When omitted (the default), the path is used as-is — suitable for
+   * unit tests and setups where the agent emits absolute filesystem paths.
+   */
+  readonly resolvePath?: (virtualPath: string) => string | undefined;
+}
+
+/**
+ * Pluggable drift detector. Returns the list of drift warnings — typically
+ * one entry per file path that was modified outside the tracked tool
+ * pipeline (`M src/foo.ts`, `?? generated/output.json`, etc.).
+ *
+ * Implementations should be best-effort: any failure should return an empty
+ * array rather than throw, since drift detection is advisory only.
+ */
+export interface DriftDetector {
+  readonly detect: () => Promise<readonly string[]>;
+}
+
+/**
+ * Result of a programmatic rewind operation. Discriminated by `ok` to match
+ * the L0 `Result<T, E>` shape, but local to checkpoint so the success branch
+ * can carry rewind-specific metadata (target node, ops applied, etc.).
+ */
+export type RewindResult =
+  | {
+      readonly ok: true;
+      /** Node the chain head now points at (the new "rewind marker" snapshot). */
+      readonly newHeadNodeId: NodeId;
+      /** The target snapshot the rewind landed on. */
+      readonly targetNodeId: NodeId;
+      /** Number of file operations the restore applied to the filesystem. */
+      readonly opsApplied: number;
+      /** Number of snapshot turns rewound past (length of the path from old head to target). */
+      readonly turnsRewound: number;
+      /**
+       * Drift warnings copied from the target snapshot's payload — paths
+       * that were modified outside the tracked tool pipeline (bash-mediated
+       * `rm`, `mv`, `sed -i`, build artifacts) and are NOT restorable by
+       * rewind. The caller should surface these to the user so they
+       * understand what their checkpoint cannot undo.
+       *
+       * Empty when the target snapshot has no recorded drift, or when the
+       * rewind was a no-op (rewind 0).
+       */
+      readonly driftWarnings: readonly string[];
+      /**
+       * Node IDs of incomplete snapshots (`koi:snapshot_status === "incomplete"`)
+       * encountered between the old head and the target. These represent turns
+       * whose capture soft-failed — their file ops are NOT in the chain so
+       * rewind cannot undo them. The restore walks past them but surfaces
+       * their IDs here so the caller can warn the user that those turns'
+       * file state may be inconsistent with the rewind target.
+       *
+       * Empty when every snapshot in the rewind range has status `"complete"`.
+       */
+      readonly incompleteSnapshotsSkipped: readonly NodeId[];
+    }
+  | { readonly ok: false; readonly error: KoiError };
+
+/**
+ * The `Checkpoint` interface returned by `createCheckpoint`. Combines the
+ * `KoiMiddleware` (registered with `createKoi` like any other middleware)
+ * with the programmatic `rewind` API.
+ *
+ * Capture and rewind share state via closure inside the factory — do not
+ * try to instantiate the middleware separately from the rewind methods.
+ */
+export interface Checkpoint {
+  /**
+   * The middleware to register with `createKoi`. Hooks `wrapToolCall` to
+   * capture pre/post images of tracked tool calls and `onAfterTurn` to
+   * commit the per-turn snapshot to the chain.
+   */
+  readonly middleware: KoiMiddleware;
+  /**
+   * Rewind a session by `n` turns. Walks `n` snapshots back through the
+   * chain, computes compensating file ops, applies them, and writes a new
+   * "rewind marker" snapshot whose parent is the target.
+   *
+   * If a tool call is currently running for the session, the rewind is
+   * queued and fires when the engine returns to idle. Multiple concurrent
+   * rewind requests serialize per session.
+   *
+   * Returns `{ok: false}` if `n` exceeds the chain length, the chain is
+   * empty, or any restore step fails. The restore is idempotent — re-running
+   * a failed restore converges on the target state.
+   */
+  readonly rewind: (sessionId: SessionId, n: number) => Promise<RewindResult>;
+  /**
+   * Rewind a session to a specific snapshot node. Same semantics as
+   * `rewind(n)` but with an explicit target.
+   */
+  readonly rewindTo: (sessionId: SessionId, targetNodeId: NodeId) => Promise<RewindResult>;
+  /**
+   * Get the current head node ID for a session, or `undefined` if no
+   * snapshots have been captured yet. Useful for the rewind UI to display
+   * "you are at snapshot X of N."
+   */
+  readonly currentHead: (sessionId: SessionId) => Promise<NodeId | undefined>;
+}

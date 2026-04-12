@@ -163,6 +163,10 @@ numeric or boolean types (e.g., `{"count": "5"}` instead of `{"count": 5}`).
 
 - `{ kind: "custom", type: "args_coerced", data: { coerced: [{ toolName, callId }] } }` — emitted when coercion changes tool arguments.
 
+## Iterator Cleanup on Turn End
+
+`consumeModelStream` now awaits iterator cleanup (via `finally` / `return()`) before yielding the `turn_end` event. This fixes a race condition where the session-transcript middleware could observe `turn_end` and attempt to persist the transcript while the model stream iterator was still being torn down. The await ensures all stream resources are released before downstream consumers see the turn boundary.
+
 ## Not in scope
 
 - Agent lifecycle events (`spawn_requested`, `agent_spawned`, `agent_status_changed`) — those originate from engine internals, not the model stream.

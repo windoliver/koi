@@ -455,6 +455,43 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       }
     },
 
+    /**
+     * Lexical path resolution with containment check — mirrors
+     * `lexicalCheck()` above and includes the same "path escapes workspace"
+     * rejection. This method is advertised to cross-cutting subsystems (e.g.
+     * @koi/checkpoint) that need to hash blobs against the same absolute
+     * path the backend writes to, and those subsystems observe the path
+     * BEFORE the backend's own read/write/edit gauntlet runs, so this
+     * method MUST NOT trust inputs that would escape the workspace.
+     *
+     * Returns `undefined` when the input resolves outside the workspace
+     * root (via `../` segments, non-matching absolute paths, Windows drive
+     * letters, etc.). The caller MUST treat undefined as "skip this op."
+     *
+     * Still lexical: no I/O, no symlink resolution. An input that passes
+     * this check can still escape at call time via an in-workspace symlink
+     * whose target is outside the workspace. Symlink escape is only caught
+     * by `safePath()` + `rejectEscapingSymlink()` on the actual operation,
+     * not here. This method is necessary but not sufficient.
+     */
+    resolvePath(path: string): string | undefined {
+      const stripped = path.startsWith(rootPrefix)
+        ? path.slice(rootPrefix.length)
+        : path.startsWith(`${root}/`)
+          ? path.slice(root.length + 1)
+          : path.startsWith("/")
+            ? path.slice(1)
+            : path;
+      const resolved = resolve(root, stripped);
+      // Containment check — reject anything that would escape the workspace.
+      // Matches the lexicalCheck() behavior above so the two code paths
+      // cannot diverge.
+      if (resolved !== root && !resolved.startsWith(rootPrefix)) {
+        return undefined;
+      }
+      return resolved;
+    },
+
     dispose(): void {
       // No-op — local filesystem needs no cleanup
     },
