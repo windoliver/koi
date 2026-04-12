@@ -95,6 +95,12 @@ export interface EngineInputBase {
   readonly callHandlers?: ComposedCallHandlers;
   readonly signal?: AbortSignal | undefined;
   readonly correlationIds?: CorrelationIds | undefined;
+  /**
+   * Override DEFAULT_MAX_STOP_RETRIES for this run.
+   * Raise when using @koi/outcome-evaluator with maxIterations > 3.
+   * Must be >= the outcome-evaluator's maxIterations.
+   */
+  readonly maxStopRetries?: number | undefined;
 }
 
 export type EngineInput =
