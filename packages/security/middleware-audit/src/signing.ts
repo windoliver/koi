@@ -49,7 +49,7 @@ function buildStamper(privateKey: KeyObject): {
     const entryWithChain: AuditEntry = { ...entry, prev_hash: prevHash };
 
     // Sign the full entry-with-chain (but without the signature field itself)
-    const payload = Buffer.from(JSON.stringify(entryWithChain));
+    const payload = new TextEncoder().encode(JSON.stringify(entryWithChain));
     const sigBuffer = sign(null, payload, privateKey);
     const signature = sigBuffer.toString("base64url");
 
@@ -99,8 +99,8 @@ export function verifyEntrySignature(entry: AuditEntry, publicKeyDer: Buffer): b
     readonly signature: string;
   };
 
-  const payload = Buffer.from(JSON.stringify(entryWithoutSig));
-  const sigBuffer = Buffer.from(sig, "base64url");
+  const payload = new TextEncoder().encode(JSON.stringify(entryWithoutSig));
+  const sigBuffer = new Uint8Array(Buffer.from(sig, "base64url"));
 
   try {
     return verify(null, payload, { key: publicKeyDer, format: "der", type: "spki" }, sigBuffer);

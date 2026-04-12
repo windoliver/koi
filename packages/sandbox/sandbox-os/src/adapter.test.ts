@@ -421,7 +421,7 @@ describe.skipIf(SKIP_PGROUP_MACOS)("abort kills bash grandchildren (macOS seatbe
       stdout: "pipe",
       stderr: "ignore",
     });
-    const survivors = new TextDecoder().decode(probe.stdout).trim();
+    const survivors = new TextDecoder().decode(new Uint8Array(probe.stdout)).trim();
     expect(survivors).toBe("");
   });
 });
