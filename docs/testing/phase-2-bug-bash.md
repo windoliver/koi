@@ -437,12 +437,35 @@ EOF
 
 #### E3. Pre-tool-use command hook
 **Tags**: hooks (command executor), hooks lifecycle, hook-prompt
-**Setup**: hook config written to `$KOI_HOME/.koi/hooks.json` that runs `echo "pre-tool-use: $TOOL_NAME" >> "$HOOK_LOG"` before every tool call (`$HOOK_LOG` is the per-tester path from §1.3).
+
+**Schema**: `~/.koi/hooks.json` is a JSON **array** of `HookConfig` objects. The authoritative schema lives in `packages/kernel/core/src/hook.ts` (`CommandHookConfig`, `HookEvent`, `HOOK_EVENT_KINDS`) and is validated by `packages/lib/hooks/src/schema.ts` / loaded by `packages/lib/hooks/src/loader.ts`. Valid event kinds (for `filter.events`) come from `HOOK_EVENT_KINDS` — pre-tool-use is `tool.before`, post-tool-use is `tool.succeeded` / `tool.failed`. Command hooks receive the full `HookEvent` as a **JSON string on stdin** (see `executeCommandHook` in `packages/lib/hooks/src/executor.ts`); there is no `$TOOL_NAME` env var — read `toolName` out of the stdin JSON. Use `hook.env` in the config if you need to pass static env vars into the spawned process.
+
+**Setup**: write the following to `$KOI_HOME/.koi/hooks.json` (adjust `$HOOK_LOG` — the per-tester path from §1.3 — inline because hook config does not expand shell vars):
+
+```json
+[
+  {
+    "kind": "command",
+    "name": "pre-tool-log",
+    "filter": { "events": ["tool.before"] },
+    "cmd": [
+      "bash",
+      "-c",
+      "jq -r '\"pre-tool-use: \" + .toolName' >> \"$HOOK_LOG\""
+    ],
+    "env": { "HOOK_LOG": "/tmp/koi-hook-log-REPLACE_NAMESPACE.txt" },
+    "timeoutMs": 5000
+  }
+]
+```
+
+Replace `REPLACE_NAMESPACE` with your `$NAMESPACE` (hook config is static JSON — expand it yourself before writing the file, e.g. `envsubst < template.json > ~/.koi/hooks.json`). `jq` parses the `HookEvent` JSON delivered on stdin and extracts `.toolName`. Clear the log first: `: > "$HOOK_LOG"`.
+
 **User query**: `Read src/math.ts and then write a summary to $FIXTURE/summary.txt.`
 **Expected**: both tool calls fire; hook log captures both
-**Verify**: `cat "$HOOK_LOG"` shows at least 2 entries with tool names
+**Verify**: `cat "$HOOK_LOG"` shows at least 2 entries with tool names (one per `tool.before`)
 **Pass**: hook fires in correct order; agent loop not blocked by hook
-**Watch**: hook output leaking into agent context; hook failures crashing the turn; env var not set
+**Watch**: hook output leaking into agent context; hook failures crashing the turn; forgetting to substitute `REPLACE_NAMESPACE` (hooks.json is not shell-expanded); using a non-existent event kind like `pre-tool-use` instead of `tool.before` (loader emits a warning for unknown events); writing an object instead of an array at the top level (loader rejects); assuming a `$TOOL_NAME` env var exists (it does not — parse stdin)
 
 #### E4. HTTP hook receives event
 **Tags**: hooks HTTP executor, event serialization
