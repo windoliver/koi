@@ -8604,9 +8604,10 @@ describe("Golden: @koi/plugins", () => {
       const listResult = await listPlugins(config);
       expect(listResult.ok).toBe(true);
       if (listResult.ok) {
-        expect(listResult.value.length).toBe(1);
-        expect(listResult.value[0]?.meta.name).toBe("golden-plugin");
-        expect(listResult.value[0]?.enabled).toBe(true);
+        expect(listResult.value.entries.length).toBe(1);
+        expect(listResult.value.entries[0]?.meta.name).toBe("golden-plugin");
+        expect(listResult.value.entries[0]?.enabled).toBe(true);
+        expect(listResult.value.errors).toEqual([]);
       }
 
       // Remove
@@ -8617,7 +8618,7 @@ describe("Golden: @koi/plugins", () => {
       const listAfter = await listPlugins(config);
       expect(listAfter.ok).toBe(true);
       if (listAfter.ok) {
-        expect(listAfter.value.length).toBe(0);
+        expect(listAfter.value.entries.length).toBe(0);
       }
     } finally {
       await rm(tmpRoot, { recursive: true, force: true });
@@ -8664,7 +8665,7 @@ describe("Golden: @koi/plugins", () => {
       const list1 = await listPlugins(config);
       expect(list1.ok).toBe(true);
       if (list1.ok) {
-        const entry = list1.value.find((e) => e.meta.name === "toggle-plugin");
+        const entry = list1.value.entries.find((e) => e.meta.name === "toggle-plugin");
         expect(entry?.enabled).toBe(false);
       }
 
@@ -8676,7 +8677,7 @@ describe("Golden: @koi/plugins", () => {
       const list2 = await listPlugins(config);
       expect(list2.ok).toBe(true);
       if (list2.ok) {
-        const entry = list2.value.find((e) => e.meta.name === "toggle-plugin");
+        const entry = list2.value.entries.find((e) => e.meta.name === "toggle-plugin");
         expect(entry?.enabled).toBe(true);
       }
 

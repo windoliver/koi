@@ -322,7 +322,8 @@ describe("listPlugins", () => {
     const result = await listPlugins(config);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      const entries = result.value;
+      const { entries, errors } = result.value;
+      expect(errors).toEqual([]);
       const entryA = entries.find((e) => e.meta.name === "list-a");
       const entryB = entries.find((e) => e.meta.name === "list-b");
       expect(entryA?.enabled).toBe(true);
@@ -337,7 +338,52 @@ describe("listPlugins", () => {
     const result = await listPlugins(config);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value.length).toBe(0);
+      expect(result.value.entries.length).toBe(0);
+      expect(result.value.errors.length).toBe(0);
+    }
+  });
+
+  // Regression: previously `listPlugins` returned only the successful entries,
+  // so a manifest with an unknown field (e.g. the `mcp_servers` vs `mcpServers`
+  // typo) was silently dropped from the CLI `koi plugin list` output. The user
+  // had no way to see why their plugin wasn't loading. Surface the per-plugin
+  // discovery errors alongside entries so the CLI can report rejection reasons.
+  test("surfaces per-plugin discovery errors alongside successful entries", async () => {
+    // Good plugin — validates cleanly.
+    const goodSrc = join(sourceDir, "good-plugin");
+    await writePluginJson(goodSrc, "good-plugin");
+    const config = createConfig();
+    await installPlugin(config, goodSrc);
+
+    // Bad plugin — installed directly into userRoot with a manifest that
+    // trips the strict schema (unknown top-level field). installPlugin()
+    // would refuse it, so write the manifest by hand.
+    const badDir = join(userRoot, "bad-plugin");
+    await mkdir(badDir, { recursive: true });
+    await writeFile(
+      join(badDir, "plugin.json"),
+      JSON.stringify({
+        name: "bad-plugin",
+        version: "0.0.1",
+        description: "has a typo",
+        mcp_servers: "./.mcp.json", // typo: real field is mcpServers
+      }),
+      "utf-8",
+    );
+
+    const result = await listPlugins(config);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const { entries, errors } = result.value;
+      // Good plugin still loads.
+      expect(entries.map((e) => e.meta.name)).toContain("good-plugin");
+      expect(entries.map((e) => e.meta.name)).not.toContain("bad-plugin");
+      // Bad plugin surfaces as a discovery error, not silently dropped.
+      expect(errors.length).toBeGreaterThanOrEqual(1);
+      const badError = errors.find((e) => e.dirPath.endsWith("bad-plugin"));
+      expect(badError).toBeDefined();
+      expect(badError?.error.code).toBe("VALIDATION");
+      expect(badError?.error.message).toContain("mcp_servers");
     }
   });
 });

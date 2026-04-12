@@ -11,7 +11,7 @@ import type { PluginRegistry } from "./registry.js";
 import { createPluginRegistry } from "./registry.js";
 import { validatePluginManifest } from "./schema.js";
 import { readPluginState, writePluginState } from "./state.js";
-import type { LoadedPlugin, PluginMeta, PluginRegistryConfig } from "./types.js";
+import type { LoadedPlugin, PluginError, PluginMeta, PluginRegistryConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -25,6 +25,17 @@ export interface PluginLifecycleConfig {
 export interface PluginListEntry {
   readonly meta: PluginMeta;
   readonly enabled: boolean;
+}
+
+/**
+ * Result of `listPlugins`. Exposes both successfully-loaded plugins and the
+ * per-plugin discovery errors from the same scan so the CLI/TUI can surface
+ * rejected manifests (typos, schema violations, etc.) instead of silently
+ * dropping them on the floor.
+ */
+export interface PluginListResult {
+  readonly entries: readonly PluginListEntry[];
+  readonly errors: readonly PluginError[];
 }
 
 // ---------------------------------------------------------------------------
@@ -547,22 +558,31 @@ export async function updatePlugin(
 
 /**
  * Lists all discovered plugins with their enabled/disabled status.
+ *
+ * Returns both the successfully-loaded entries and any per-plugin discovery
+ * errors (invalid manifests, unknown schema fields, missing required fields,
+ * etc.) so callers can surface rejection reasons instead of silently dropping
+ * broken plugins from the list.
  */
 export async function listPlugins(
   config: PluginLifecycleConfig,
-): Promise<Result<readonly PluginListEntry[], KoiError>> {
+): Promise<Result<PluginListResult, KoiError>> {
   const stateResult = await readPluginState(config.userRoot);
   if (!stateResult.ok) return stateResult;
 
   config.registry.invalidate();
   const plugins = await config.registry.discover();
+  // `registry.errors()` reads the cache populated by the same `discover()`
+  // call above — the registry already exposes this side-channel to let
+  // downstream UIs report what got rejected. See registry.ts:discover.
+  const errors = config.registry.errors();
 
   const entries: readonly PluginListEntry[] = plugins.map((meta) => ({
     meta,
     enabled: !stateResult.value.has(meta.name),
   }));
 
-  return { ok: true, value: entries };
+  return { ok: true, value: { entries, errors } };
 }
 
 // ---------------------------------------------------------------------------

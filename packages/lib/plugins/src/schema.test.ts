@@ -119,4 +119,32 @@ describe("validatePluginManifest", () => {
       expect(result.error.code).toBe("VALIDATION");
     }
   });
+
+  // Strict mode: unknown fields must be rejected, not silently stripped.
+  // Before the `.strict()` tightening, a manifest like the one below would
+  // pass validation with `mcp_servers` silently dropped — the plugin would
+  // load but its MCP servers would never register, leaving the author to
+  // debug a ghost configuration. Reject at load time with a clear error.
+  test("unknown top-level field is rejected (catches typos like mcp_servers vs mcpServers)", () => {
+    const result = validatePluginManifest({
+      ...VALID_MANIFEST,
+      mcp_servers: "./.mcp.json", // typo: real field is mcpServers
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.message).toContain("Plugin manifest validation failed");
+    }
+  });
+
+  test("arbitrary unknown field (not a typo) is also rejected", () => {
+    const result = validatePluginManifest({
+      ...VALID_MANIFEST,
+      futureExtensionField: "whatever",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+    }
+  });
 });

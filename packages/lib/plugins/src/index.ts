@@ -3,7 +3,11 @@
  */
 
 export { assertContained } from "./containment.js";
-export type { PluginLifecycleConfig, PluginListEntry } from "./lifecycle.js";
+export type {
+  PluginLifecycleConfig,
+  PluginListEntry,
+  PluginListResult,
+} from "./lifecycle.js";
 export {
   createGatedRegistry,
   disablePlugin,

@@ -105,6 +105,8 @@ Branded type constructor for plugin identifiers.
 Required fields: `name` (kebab-case), `version` (semver), `description`.
 All other fields are optional. Path fields (`skills`, `hooks`, `mcpServers`) are opaque relative paths — interpretation is delegated to their respective subsystems.
 
+The schema is `.strict()` — unknown top-level fields are rejected rather than silently stripped. This catches typos like `mcp_servers` vs `mcpServers` at load time instead of letting a plugin ship with a silently-ignored field that produces a confusing "plugin loaded but its MCP servers / hooks never fire" downstream. If you need to add a new manifest field, extend the Zod schema in `packages/lib/plugins/src/schema.ts`; don't try to smuggle it through at runtime.
+
 ## Lifecycle Operations
 
 Plugin lifecycle is managed through `@koi/plugins` CRUD functions:
@@ -116,7 +118,7 @@ Plugin lifecycle is managed through `@koi/plugins` CRUD functions:
 | `enablePlugin(config, name)` | Remove from disabled set (idempotent, rejects non-existent names) |
 | `disablePlugin(config, name)` | Add to disabled set (idempotent, rejects non-existent names) |
 | `updatePlugin(config, name, sourcePath)` | Rollback-safe swap with backup directory + post-copy validation |
-| `listPlugins(config)` | Discover all plugins with enabled/disabled status overlay |
+| `listPlugins(config)` | Discover all plugins — returns `{ entries, errors }` so callers can surface rejected manifests alongside successful ones |
 | `createGatedRegistry(registryConfig, userRoot)` | Factory returning a `PluginRegistry` that gates discovery/load by disabled state |
 | `recoverOrphanedUpdates(userRoot)` | Restores `.backup` dirs from interrupted updates, cleans `.updating` staging |
 

@@ -3365,14 +3365,14 @@ const queries: readonly QueryConfig[] = [
                 const listResult = await listPlugins(config);
                 const listOk =
                   listResult.ok &&
-                  listResult.value.length === 1 &&
-                  listResult.value[0]?.meta.name === "lifecycle-plugin" &&
-                  listResult.value[0]?.enabled === true;
+                  listResult.value.entries.length === 1 &&
+                  listResult.value.entries[0]?.meta.name === "lifecycle-plugin" &&
+                  listResult.value.entries[0]?.enabled === true;
                 steps.push({
                   step: "list",
                   ok: listOk,
                   detail: listResult.ok
-                    ? `count=${String(listResult.value.length)}, enabled=${String(listResult.value[0]?.enabled)}`
+                    ? `count=${String(listResult.value.entries.length)}, enabled=${String(listResult.value.entries[0]?.enabled)}`
                     : listResult.error.message,
                 });
 
@@ -3388,13 +3388,13 @@ const queries: readonly QueryConfig[] = [
                 const listAfterDisable = await listPlugins(config);
                 const disableListOk =
                   listAfterDisable.ok &&
-                  listAfterDisable.value.length === 1 &&
-                  listAfterDisable.value[0]?.enabled === false;
+                  listAfterDisable.value.entries.length === 1 &&
+                  listAfterDisable.value.entries[0]?.enabled === false;
                 steps.push({
                   step: "list-after-disable",
                   ok: disableListOk,
                   detail: listAfterDisable.ok
-                    ? `enabled=${String(listAfterDisable.value[0]?.enabled)}`
+                    ? `enabled=${String(listAfterDisable.value.entries[0]?.enabled)}`
                     : listAfterDisable.error.message,
                 });
 
@@ -3416,12 +3416,12 @@ const queries: readonly QueryConfig[] = [
 
                 // Final list — verify empty
                 const finalList = await listPlugins(config);
-                const finalListOk = finalList.ok && finalList.value.length === 0;
+                const finalListOk = finalList.ok && finalList.value.entries.length === 0;
                 steps.push({
                   step: "list-after-remove",
                   ok: finalListOk,
                   detail: finalList.ok
-                    ? `count=${String(finalList.value.length)}`
+                    ? `count=${String(finalList.value.entries.length)}`
                     : finalList.error.message,
                 });
 

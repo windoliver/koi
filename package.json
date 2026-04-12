@@ -41,7 +41,7 @@
     "changeset": "bunx changeset",
     "changeset:version": "bunx changeset version && bun install",
     "changeset:publish": "bunx changeset publish",
-    "postinstall": "lefthook install"
+    "postinstall": "lefthook install --force"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",

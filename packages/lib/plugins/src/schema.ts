@@ -17,19 +17,25 @@ const KEBAB_CASE = /^[a-z][a-z0-9-]*$/;
 // Schema
 // ---------------------------------------------------------------------------
 
-const pluginManifestSchema = z.object({
-  name: z
-    .string()
-    .regex(KEBAB_CASE, "Plugin name must be kebab-case (lowercase letters, digits, hyphens)"),
-  version: z.string().min(1, "Version is required"),
-  description: z.string().min(1, "Description is required"),
-  author: z.string().optional(),
-  keywords: z.array(z.string()).readonly().optional(),
-  skills: z.array(z.string()).readonly().optional(),
-  hooks: z.string().optional(),
-  mcpServers: z.string().optional(),
-  middleware: z.array(z.string()).readonly().optional(),
-});
+// Strict mode: unknown fields are rejected rather than silently stripped.
+// Catches typos like `mcp_servers` vs `mcpServers` at load time so the user
+// sees a clear validation error instead of a silently-ignored field that
+// produces a confusing "plugin loaded but hook/mcp never fires" downstream.
+const pluginManifestSchema = z
+  .object({
+    name: z
+      .string()
+      .regex(KEBAB_CASE, "Plugin name must be kebab-case (lowercase letters, digits, hyphens)"),
+    version: z.string().min(1, "Version is required"),
+    description: z.string().min(1, "Description is required"),
+    author: z.string().optional(),
+    keywords: z.array(z.string()).readonly().optional(),
+    skills: z.array(z.string()).readonly().optional(),
+    hooks: z.string().optional(),
+    mcpServers: z.string().optional(),
+    middleware: z.array(z.string()).readonly().optional(),
+  })
+  .strict();
 
 // ---------------------------------------------------------------------------
 // Public API

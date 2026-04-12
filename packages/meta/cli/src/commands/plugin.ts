@@ -5,7 +5,7 @@
  */
 
 import { resolve } from "node:path";
-import type { PluginListEntry } from "@koi/plugins";
+import type { PluginError, PluginListEntry } from "@koi/plugins";
 import {
   createPluginRegistry,
   disablePlugin,
@@ -139,52 +139,81 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
         return ExitCode.FAILURE;
       }
 
+      const { entries, errors } = result.value;
+
       if (flags.json) {
-        const output: JsonOutput<
-          readonly {
+        const output: JsonOutput<{
+          readonly plugins: readonly {
             readonly name: string;
             readonly version: string;
             readonly source: string;
             readonly enabled: boolean;
-          }[]
-        > = {
+          }[];
+          readonly errors: readonly {
+            readonly dirPath: string;
+            readonly source: string;
+            readonly code: string;
+            readonly message: string;
+          }[];
+        }> = {
           ok: true,
-          data: result.value.map((e: PluginListEntry) => ({
-            name: e.meta.name,
-            version: e.meta.version,
-            source: e.meta.source,
-            enabled: e.enabled,
-          })),
+          data: {
+            plugins: entries.map((e: PluginListEntry) => ({
+              name: e.meta.name,
+              version: e.meta.version,
+              source: e.meta.source,
+              enabled: e.enabled,
+            })),
+            errors: errors.map((e: PluginError) => ({
+              dirPath: e.dirPath,
+              source: e.source,
+              code: e.error.code,
+              message: e.error.message,
+            })),
+          },
         };
         process.stdout.write(`${JSON.stringify(output)}\n`);
-        return ExitCode.OK;
+        // Non-zero exit when any plugin was rejected, so scripts can detect
+        // problems without parsing stdout. Humans still see the full report.
+        return errors.length > 0 ? ExitCode.FAILURE : ExitCode.OK;
       }
 
-      if (result.value.length === 0) {
+      if (entries.length === 0 && errors.length === 0) {
         process.stdout.write("No plugins installed.\n");
         return ExitCode.OK;
       }
 
-      const nameWidth = Math.max(
-        4,
-        ...result.value.map((e: PluginListEntry) => e.meta.name.length),
-      );
-      const verWidth = Math.max(
-        7,
-        ...result.value.map((e: PluginListEntry) => e.meta.version.length),
-      );
-      process.stdout.write(
-        `  ${"NAME".padEnd(nameWidth)}  ${"VERSION".padEnd(verWidth)}  ${"SOURCE".padEnd(7)}  STATUS\n`,
-      );
-      process.stdout.write(
-        `  ${"─".repeat(nameWidth)}  ${"─".repeat(verWidth)}  ${"─".repeat(7)}  ${"─".repeat(8)}\n`,
-      );
-      for (const entry of result.value) {
-        const status = entry.enabled ? "enabled" : "disabled";
+      if (entries.length > 0) {
+        const nameWidth = Math.max(4, ...entries.map((e: PluginListEntry) => e.meta.name.length));
+        const verWidth = Math.max(7, ...entries.map((e: PluginListEntry) => e.meta.version.length));
         process.stdout.write(
-          `  ${entry.meta.name.padEnd(nameWidth)}  ${entry.meta.version.padEnd(verWidth)}  ${entry.meta.source.padEnd(7)}  ${status}\n`,
+          `  ${"NAME".padEnd(nameWidth)}  ${"VERSION".padEnd(verWidth)}  ${"SOURCE".padEnd(7)}  STATUS\n`,
         );
+        process.stdout.write(
+          `  ${"─".repeat(nameWidth)}  ${"─".repeat(verWidth)}  ${"─".repeat(7)}  ${"─".repeat(8)}\n`,
+        );
+        for (const entry of entries) {
+          const status = entry.enabled ? "enabled" : "disabled";
+          process.stdout.write(
+            `  ${entry.meta.name.padEnd(nameWidth)}  ${entry.meta.version.padEnd(verWidth)}  ${entry.meta.source.padEnd(7)}  ${status}\n`,
+          );
+        }
       }
+
+      // Surface per-plugin discovery errors so rejected manifests (typos,
+      // schema violations, etc.) aren't invisible to the user.
+      if (errors.length > 0) {
+        process.stderr.write(
+          `\n${errors.length} plugin${errors.length === 1 ? "" : "s"} rejected:\n`,
+        );
+        for (const e of errors) {
+          process.stderr.write(
+            `  ✗ ${e.dirPath}\n    [${e.source}] ${e.error.code}: ${e.error.message}\n`,
+          );
+        }
+        return ExitCode.FAILURE;
+      }
+
       return ExitCode.OK;
     }
 
