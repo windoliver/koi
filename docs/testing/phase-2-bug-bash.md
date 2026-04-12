@@ -694,7 +694,7 @@ jq -r 'select(.role=="tool_call") | .content' "$SESSION_FILE" | grep -oE 'task_(
 
 #### L1. Plugin manifest loads
 **Tags**: plugins loader, manifest parsing
-**Setup**: the plugin loader reads `plugin.json` (NOT `plugin.yaml` — see `packages/lib/plugins/src/loader.ts`). Create a minimal JSON manifest in the per-tester HOME:
+**Setup**: the plugin loader reads `plugin.json` (NOT `plugin.yaml` — schema lives in `packages/lib/plugins/src/schema.ts`, read by `packages/lib/plugins/src/loader.ts`). Create a minimal JSON manifest in the per-tester HOME:
 ```bash
 mkdir -p "$KOI_HOME/.koi/plugins/hello-plugin"
 cat > "$KOI_HOME/.koi/plugins/hello-plugin/plugin.json" <<'EOF'
@@ -705,7 +705,10 @@ cat > "$KOI_HOME/.koi/plugins/hello-plugin/plugin.json" <<'EOF'
 }
 EOF
 ```
-(Add whatever other required fields the current plugin manifest schema enforces — check `packages/lib/plugins/src/loader.ts` for the minimum set.)
+<!-- Maintainers: if packages/lib/plugins/src/schema.ts changes, update the required/optional field lists below. -->
+The three fields above (`name`, `version`, `description`) are the **entire** required set per the Zod schema at `packages/lib/plugins/src/schema.ts:20-32`. The loader accepts this exact manifest without error — no other fields are required. Constraints: `name` must match `^[a-z][a-z0-9-]*$` (kebab-case, starts with lowercase letter); `version` and `description` must each be non-empty.
+
+Optional fields available for tests that want to exercise more surface area: `author` (string), `keywords` (string[]), `skills` (string[]), `hooks` (string path, e.g. `./hooks/hooks.json`), `mcpServers` (string path, e.g. `./.mcp.json`), `middleware` (string[]).
 **Action**: restart TUI with the isolated HOME (§1.7 reset).
 **Expected**: plugin discovered at startup (no ENOENT on the manifest) and enumerated by the loader
 **Verify**: `tmux capture-pane -t "$KOI_SESSION" -p | grep hello-plugin`
