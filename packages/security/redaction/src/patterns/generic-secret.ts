@@ -71,8 +71,15 @@ export function createGenericSecretDetector(): SecretPattern {
       let m: RegExpExecArray | null = GENERIC_PATTERN.exec(text);
       while (m !== null) {
         const capturedValue = m[1];
-        // Skip placeholder/dummy values
-        if (capturedValue !== undefined && !PLACEHOLDER_VALUES.has(capturedValue.toLowerCase())) {
+        // Skip placeholder/dummy values, including doc-style ellipsis
+        // placeholders like `sk-or-...`, `xxx...`, or trailing `...` —
+        // documentation snippets are never real secrets and produce noisy
+        // false positives in scanned README/CHANGELOG content.
+        if (
+          capturedValue !== undefined &&
+          !PLACEHOLDER_VALUES.has(capturedValue.toLowerCase()) &&
+          !capturedValue.includes("...")
+        ) {
           results.push({
             text: m[0],
             start: m.index,

@@ -402,6 +402,14 @@ describe("createGenericSecretDetector", () => {
     expect(detector.detect("password=xxxxxxxx")).toEqual([]);
   });
 
+  test("ignores doc-style ellipsis placeholders", () => {
+    // README quickstart placeholders — never real secrets, but the
+    // captured value is long enough to pass the {8,120} length gate.
+    expect(detector.detect("export OPENROUTER_API_KEY=sk-or-...")).toEqual([]);
+    expect(detector.detect('api_key="xxx...xxx"')).toEqual([]);
+    expect(detector.detect("token=abcdef...")).toEqual([]);
+  });
+
   test("ignores short values (< 8 chars)", () => {
     expect(detector.detect("password=short")).toEqual([]);
   });
