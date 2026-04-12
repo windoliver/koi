@@ -219,6 +219,11 @@ export async function drainEngineStream(
     // `let` justified: tracks last yield time for frame-rate-limited yielding
     let lastYieldAt = Date.now();
     for await (const event of stream) {
+      // #1742: if resetConversation() disposed our batcher mid-stream, stop
+      // feeding events into a dead sink — they would silently vanish and
+      // leave the UI with a half-rendered or missing reply. The drain exits
+      // cleanly; the caller's finally block handles connection-status reset.
+      if (batcher.isDisposed) return;
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -252,8 +257,12 @@ export async function drainEngineStream(
         }
       }
     }
-    batcher.flushSync();
+    if (!batcher.isDisposed) batcher.flushSync();
   } catch (e: unknown) {
+    // #1742: the batcher may have been disposed by resetConversation() while
+    // the stream was still producing. In that case the store has already been
+    // cleared/reset, so there is nothing to flush or signal — just return.
+    if (batcher.isDisposed) return;
     batcher.flushSync();
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
