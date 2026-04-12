@@ -68,6 +68,19 @@ export type ForgeTrigger =
       readonly kind: "novel_workflow";
       readonly workflowDescription: string;
       readonly toolSequence: readonly string[];
+    }
+  // Composition-level triggers (Phase 3 — detected by proactive intelligence layer)
+  | {
+      /**
+       * A required capability or composition pattern was observed to be missing.
+       * Routed as a SystemSignal.forge_demand to the CompositionPlanner.
+       * @see SystemSignal in system-signal.ts
+       */
+      readonly kind: "composition_gap";
+      /** The capability name or composition pattern that is missing. */
+      readonly requiredCapability: string;
+      /** Number of times this gap has been observed in the current session. */
+      readonly observedCount: number;
     };
 
 // ---------------------------------------------------------------------------
