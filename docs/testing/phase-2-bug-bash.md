@@ -24,6 +24,13 @@ jq --version         # to parse JSONL transcripts
 # One-time: install deps
 bun install --frozen-lockfile
 
+# One-time: build all workspace packages.
+# Required before §1.6 — the TUI imports `@koi/core` (and many other workspace
+# packages) via their `exports` maps, which point at `./dist/*.js`. Without a
+# build, `bun run packages/meta/cli/src/bin.ts tui` exits immediately with
+# `Cannot find module '@koi/core'`. Run this in every fresh worktree.
+bun run build
+
 # One-time: sanity
 bun run typecheck
 bun run lint
