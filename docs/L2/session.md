@@ -114,6 +114,10 @@ All ~12 SQLite queries are `db.prepare()`'d once at construction. Query plans ca
 ### Batch pending-frame query in `recover()`
 `recover()` loads all pending frames in one `SELECT * FROM pending_frames` query, then groups by `sessionId` in memory. Avoids N+1 pattern when recovering many sessions.
 
+## Transcript Truncation for Checkpoint Rewind
+
+`SessionTranscript.truncate(sessionId, keepCount)` removes all entries beyond `keepCount` from the transcript log. This is used by the checkpoint rewind flow to roll back conversation state to a prior checkpoint: after a rewind, the transcript is truncated to the checkpoint boundary so that subsequent `load()` returns only the entries up to the rewound point. The operation is atomic (write-temp + rename) and serialized via the per-session queue, consistent with `compact()`.
+
 ## Config
 
 ```typescript

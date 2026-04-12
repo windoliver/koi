@@ -5,6 +5,8 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent anomaly — statistical and behavioral anomaly signal types for agent monitor
+export type { AnomalyBase, AnomalyDetail, AnomalySignal } from "./agent-anomaly.js";
 // agent definition — declarative agent template for discovery and loading
 export type {
   AgentDefinition,
@@ -1022,11 +1024,12 @@ export type {
   EventCursor,
   FileOpKind,
   FileOpRecord,
+  SnapshotStatus,
   TraceEvent,
   TraceEventKind,
   TurnTrace,
 } from "./snapshot-time-travel.js";
-export { BACKTRACK_REASON_KEY } from "./snapshot-time-travel.js";
+export { BACKTRACK_REASON_KEY, SNAPSHOT_STATUS_KEY } from "./snapshot-time-travel.js";
 // spawn — unified spawn types for all agent-spawning patterns
 export type {
   SpawnFn,
@@ -1049,6 +1052,13 @@ export type {
   SupervisionStrategy,
 } from "./supervision.js";
 export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+// system signal — operational/system events for the proactive intelligence layer
+export type {
+  CompositionSchedulerEvent,
+  SystemSignal,
+  SystemSignalSource,
+  SystemSignalSourceOptions,
+} from "./system-signal.js";
 // task-board — types
 // NOTE: `TaskStatus` is the task-board lifecycle type (pending | in_progress | completed |
 // failed | killed). The scheduler's status type was renamed to `ScheduledTaskStatus` above.
@@ -1133,6 +1143,7 @@ export type {
   TranscriptLoadResult,
   TranscriptPage,
   TranscriptPageOptions,
+  TruncateResult,
 } from "./transcript.js";
 export { transcriptEntryId } from "./transcript.js";
 // tui adapter — optional rich terminal UI attachment contract (TuiAdapter | null)

@@ -411,36 +411,53 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
   }
 
   // ---------------------------------------------------------------------------
-  // close() — reject all pending, kill subprocess (Issue 16-A)
+  // close() — reject all pending, graceful bridge shutdown (Issue 16-A)
   // ---------------------------------------------------------------------------
+
+  /** Hard cap on how long we wait for the bridge to exit after stdin EOF. */
+  const GRACEFUL_SHUTDOWN_MS = 2000;
+
   function close(): void {
     if (closed) return;
     closed = true;
 
-    // Release the stream reader. If a read is currently in flight, releaseLock()
-    // may throw on some Web Streams implementations — wrap it so cleanup always
-    // continues. The reader loop will observe the closed flag or process death
-    // and exit regardless.
     try {
       lineReader.release();
     } catch {
       // Ignore — we're shutting down regardless.
     }
 
-    // Reject all parked requests immediately — callers get a clean error
-    // instead of hanging until their individual timers fire.
     for (const [, pending] of pendingRequests) {
       clearTimeout(pending.timer);
       pending.reject(new Error("Transport closed"));
     }
     pendingRequests.clear();
 
+    // Graceful shutdown: end stdin so the bridge's main loop sees EOF and
+    // proceeds to `await fs.close()` for CAS cleanup / unmount. A kill
+    // timer fires after GRACEFUL_SHUTDOWN_MS as a safety net — if the
+    // bridge exits on its own before the timer, the kill is cancelled.
     try {
       proc.stdin.end();
-      proc.kill();
     } catch {
-      // Process may already be dead
+      // stdin may already be closed or process dead — fall through to kill.
+      try {
+        proc.kill();
+      } catch {
+        // Already dead.
+      }
+      return;
     }
+
+    const killTimer = setTimeout(() => {
+      try {
+        proc.kill();
+      } catch {
+        // Already exited.
+      }
+    }, GRACEFUL_SHUTDOWN_MS);
+
+    void proc.exited.then(() => clearTimeout(killTimer)).catch(() => clearTimeout(killTimer));
   }
 
   // ---------------------------------------------------------------------------

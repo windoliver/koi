@@ -331,9 +331,20 @@ export async function* consumeModelStream(
       }
     }
   } finally {
-    // Best-effort iterator cleanup — must not hang or override the terminal event.
+    // Iterator cleanup — await with a safety timeout so downstream finally
+    // blocks (e.g., session-transcript writing its turn entries) complete
+    // before the surrounding code observes turn_end. Without awaiting, the
+    // transcript write races `onAfterTurn` hooks that read the transcript
+    // file. 200ms is generous for local fs writes but short enough that a
+    // misbehaving iterator cannot hang the turn indefinitely.
     try {
-      void iterator.return?.()?.catch(noop);
+      const ret = iterator.return?.();
+      if (ret !== undefined) {
+        await Promise.race([
+          ret.catch(noop),
+          new Promise<void>((resolve) => setTimeout(resolve, 200)),
+        ]);
+      }
     } catch {
       // Swallow synchronous cleanup errors
     }

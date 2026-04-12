@@ -1,0 +1,188 @@
+/**
+ * Compensating ops — pure functions that compute the file-system operations
+ * needed to undo a sequence of `FileOpRecord`s, plus the helper that applies
+ * those ops to disk.
+ *
+ * Inversion table:
+ *   create(post=A)         →  delete file
+ *   edit(pre=A, post=B)    →  restore file to A
+ *   delete(pre=A)          →  restore file to A
+ *
+ * The application order matters when the same path is touched by multiple
+ * ops. Compensating ops are applied in reverse `eventIndex` order — the
+ * newest op is undone first, the oldest last. Because `eventIndex` is
+ * monotonic across the entire session, this works across snapshots without
+ * any per-snapshot reasoning.
+ *
+ * The application step is **idempotent**: re-running the same set of ops
+ * after a partial failure converges on the target state. This is what makes
+ * the four-step restore protocol crash-safe without 2PC (#1625 issue 9A).
+ */
+
+import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import type { CompensatingOp, FileOpRecord, SnapshotNode } from "@koi/core";
+import { hasBlob, readBlob } from "./cas-store.js";
+import type { CheckpointPayload } from "./types.js";
+
+/**
+ * Convert a single `FileOpRecord` into the compensating op that undoes it.
+ *
+ * Pure function — does not touch the filesystem.
+ */
+export function toCompensating(op: FileOpRecord): CompensatingOp {
+  switch (op.kind) {
+    case "create":
+      return { kind: "delete", path: op.path };
+    case "edit":
+      return { kind: "restore", path: op.path, contentHash: op.preContentHash };
+    case "delete":
+      return { kind: "restore", path: op.path, contentHash: op.preContentHash };
+  }
+}
+
+/**
+ * Compute the full list of compensating ops needed to undo every file op
+ * across a sequence of snapshots, ordered from newest to oldest by event
+ * index. This is the order in which the ops should be applied to the
+ * filesystem.
+ *
+ * Input: the snapshots between the current head and the rewind target,
+ * in any order. Order is determined by the `eventIndex` on each FileOpRecord.
+ *
+ * Output: compensating ops in reverse event-index order — newest op
+ * undone first.
+ */
+export function computeCompensatingOps(
+  snapshotsToUndo: readonly SnapshotNode<CheckpointPayload>[],
+): readonly CompensatingOp[] {
+  const allOps: FileOpRecord[] = [];
+  for (const snapshot of snapshotsToUndo) {
+    for (const op of snapshot.data.fileOps) {
+      allOps.push(op);
+    }
+  }
+  // Sort newest-first by eventIndex. Stable sort isn't required because
+  // eventIndex is unique within a session.
+  allOps.sort((a, b) => b.eventIndex - a.eventIndex);
+  return allOps.map(toCompensating);
+}
+
+/**
+ * Result of applying a single compensating op. Used by the crash-injection
+ * harness to assert convergence after partial failures.
+ */
+export type ApplyResult =
+  | { readonly kind: "applied"; readonly path: string }
+  | { readonly kind: "skipped-already-current"; readonly path: string }
+  | { readonly kind: "skipped-missing-blob"; readonly path: string; readonly contentHash: string }
+  | { readonly kind: "error"; readonly path: string; readonly cause: unknown };
+
+/**
+ * Apply compensating ops to disk, in order. Idempotent: re-running converges
+ * on the target state.
+ *
+ * Each restore op:
+ *   1. If the target file already has content matching `contentHash`, skip.
+ *   2. Otherwise, read the blob from CAS and write it via tmp + atomic rename.
+ *
+ * Each delete op:
+ *   1. unlink the path. Missing file is fine — already deleted.
+ *
+ * Errors on individual ops are surfaced in the result list rather than
+ * thrown, so a partial failure can be inspected and re-tried. The caller
+ * decides whether to abort the restore based on the results.
+ */
+export async function applyCompensatingOps(
+  ops: readonly CompensatingOp[],
+  blobDir: string,
+): Promise<readonly ApplyResult[]> {
+  const results: ApplyResult[] = [];
+
+  for (const op of ops) {
+    if (op.kind === "delete") {
+      results.push(applyDelete(op.path));
+      continue;
+    }
+    // restore
+    results.push(await applyRestore(blobDir, op.path, op.contentHash));
+  }
+
+  return results;
+}
+
+function applyDelete(path: string): ApplyResult {
+  try {
+    unlinkSync(path);
+    return { kind: "applied", path };
+  } catch (cause: unknown) {
+    // ENOENT = file already gone, which is the desired post-state. Idempotent.
+    if (isNotFound(cause)) {
+      return { kind: "skipped-already-current", path };
+    }
+    return { kind: "error", path, cause };
+  }
+}
+
+async function applyRestore(
+  blobDir: string,
+  path: string,
+  contentHash: string,
+): Promise<ApplyResult> {
+  // Idempotent shortcut: if the file already matches the target content,
+  // skip the restore. Cheap check that avoids re-writing huge files on
+  // partial-restore retries.
+  try {
+    const file = Bun.file(path);
+    if (await file.exists()) {
+      const hasher = new Bun.CryptoHasher("sha256");
+      const reader = file.stream().getReader();
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          hasher.update(value);
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      if (hasher.digest("hex") === contentHash) {
+        return { kind: "skipped-already-current", path };
+      }
+    }
+  } catch {
+    // If the existence check or hash fails, fall through to the full
+    // restore path — it will surface a real error if there is one.
+  }
+
+  // Need to actually write the blob.
+  if (!hasBlob(blobDir, contentHash)) {
+    return { kind: "skipped-missing-blob", path, contentHash };
+  }
+
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await readBlob(blobDir, contentHash);
+  } catch (cause: unknown) {
+    return { kind: "error", path, cause };
+  }
+  if (bytes === undefined) {
+    return { kind: "skipped-missing-blob", path, contentHash };
+  }
+
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.tmp.${process.pid}.${crypto.randomUUID()}`;
+    writeFileSync(tmp, bytes);
+    renameSync(tmp, path);
+    return { kind: "applied", path };
+  } catch (cause: unknown) {
+    return { kind: "error", path, cause };
+  }
+}
+
+function isNotFound(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  return code === "ENOENT";
+}

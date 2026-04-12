@@ -8,10 +8,32 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createLocalTransport } from "./local-transport.js";
 import { createNexusFileSystem } from "./nexus-filesystem-backend.js";
 import type { BridgeNotification, NexusTransport } from "./types.js";
+
+/**
+ * Remove nexus-fs CAS directories that leak into CWD during local mount tests.
+ * nexus-fs creates `tmp<basename>/cas/` relative to the bridge's CWD when mounting
+ * a `local://` URI. Even with graceful shutdown, these may survive if the bridge
+ * doesn't clean them up in `fs.close()`. Call this after transport.close() returns.
+ */
+function cleanupNexusCasDirs(mountTmpDirs: readonly string[]): void {
+  for (const tmpDir of mountTmpDirs) {
+    const leaked = join(process.cwd(), `tmp${basename(tmpDir)}`);
+    try {
+      rmSync(leaked, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/** Brief delay so the bridge process can run `await fs.close()` after stdin EOF. */
+function waitForBridgeCleanup(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, 300));
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,14 +249,15 @@ describeIf("createLocalTransport (requires nexus-fs)", () => {
       mountUri: `local://${tmpDir}`,
       startupTimeoutMs: 15_000,
     });
-    // Use mount point reported by the bridge — nexus-fs path derivation is complex
     const firstMount = transport.mounts?.[0];
     expect(firstMount).toBeDefined();
     mountPoint = firstMount ?? "";
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     transport.close();
+    await waitForBridgeCleanup();
+    cleanupNexusCasDirs([tmpDir]);
     try {
       rmSync(tmpDir, { recursive: true, force: true });
     } catch {
@@ -525,8 +548,10 @@ describeIf("createLocalTransport multi-mount (requires nexus-fs)", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     transport.close();
+    await waitForBridgeCleanup();
+    cleanupNexusCasDirs([tmpDirA, tmpDirB]);
     try {
       rmSync(tmpDirA, { recursive: true, force: true });
       rmSync(tmpDirB, { recursive: true, force: true });

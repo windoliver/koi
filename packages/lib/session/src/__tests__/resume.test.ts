@@ -320,6 +320,7 @@ describe("resumeFromTranscript - case 8: validation", () => {
         value: { entries: [], total: 0, hasMore: false },
       }),
       compact: async () => ({ ok: true as const, value: { preserved: 0, extended: false } }),
+      truncate: async () => ({ ok: true as const, value: { kept: 0, dropped: 0 } }),
       remove: async () => ({ ok: true as const, value: undefined }),
       close: () => undefined,
     };
@@ -341,6 +342,7 @@ describe("resumeFromTranscript - case 8: validation", () => {
         value: { entries: [], total: 0, hasMore: false },
       }),
       compact: async () => ({ ok: true as const, value: { preserved: 0, extended: false } }),
+      truncate: async () => ({ ok: true as const, value: { kept: 0, dropped: 0 } }),
       remove: async () => ({ ok: true as const, value: undefined }),
       close: () => undefined,
     };

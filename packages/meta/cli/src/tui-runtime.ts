@@ -27,10 +27,12 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { appendFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
+import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
@@ -86,8 +88,7 @@ import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-// NOTE: createSpawnTools (legacy stub-based spawn) is replaced by
-// createSpawnToolProvider from @koi/engine for real agent spawning (#1583).
+import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
 import {
@@ -314,6 +315,16 @@ export interface TuiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
   /**
+   * Checkpoint handle for session-level rollback (#1625). Always populated
+   * in the TUI — captures end-of-turn snapshots and exposes rewind() so the
+   * `/rewind` slash command can roll back the active session.
+   *
+   * Snapshots live in an in-memory SQLite chain (per-process, lost on exit);
+   * blobs live in a flat tmp dir under `~/.koi/file-history`. The conversation
+   * log is shared with the session transcript so /rewind truncates both halves.
+   */
+  readonly checkpoint: Checkpoint;
+  /**
    * Mutable conversation transcript array — owned by the caller.
    * Splice to reset: `transcript.splice(0)` on agent:clear or session:new.
    */
@@ -325,6 +336,13 @@ export interface TuiRuntimeHandle {
    * Used by the /trajectory TUI command.
    */
   readonly getTrajectorySteps: () => Promise<readonly RichTrajectoryStep[]>;
+  /**
+   * Append a pre-built trajectory step to the session's ATIF document. Used
+   * by non-engine code paths that still deserve to appear in /trajectory —
+   * notably `/rewind`, which runs `checkpoint.rewind()` directly without
+   * going through `runTurn`, so the trace wrapper never sees it.
+   */
+  readonly appendTrajectoryStep: (step: RichTrajectoryStep) => Promise<void>;
   /**
    * Reset stateful tool state for a new session (agent:clear / session:new).
    *
@@ -1158,34 +1176,54 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       version: "0.0.0",
       description: "Spawned sub-agent",
       model: { name: config.modelName },
-      // Restrictive ceiling for dynamic (ad-hoc) agents: read-only tools only.
-      // Built-in agents (researcher, coder, etc.) override this via their own
-      // definition.manifest.selfCeiling which takes precedence in the merge.
-      // Dynamic agents (unknown names via allowDynamicAgents) inherit this ceiling
-      // so they can't escalate to Bash/fs_write/fs_edit/web_fetch without an
-      // authored definition explicitly granting those tools.
       selfCeiling: {
         tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
       },
     },
-    // Inherit security middleware (permissions, secret-scanning, hooks) + the
-    // system prompt so children have the same envelope as the parent. Session
-    // transcript middleware is intentionally excluded — it holds a mutable
-    // transcript array that must stay isolated per-runtime.
     inheritedMiddleware: [
       permMw,
       exfiltrationGuardMw,
       hookMw,
       ...(systemPromptMw !== null ? [systemPromptMw] : []),
     ],
-    // Enable dynamic agent creation: unknown names create ad-hoc agents from
-    // the description (Claude Code behavior). Built-in and project/user-defined
-    // agents still resolve normally with their authored prompts and ceilings.
     allowDynamicAgents: true,
-    // Side-channel spawn event observer — bridge dispatches these into the
-    // TUI store so /agents and inline spawn_call blocks reflect real state.
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   });
+
+  // --- Checkpoint (#1625): always wired in the TUI ---
+  // Captures end-of-turn snapshots so /rewind can roll back the active session.
+  const koiHomeDir = join(homedir(), ".koi");
+  const snapshotDir = join(koiHomeDir, "snapshots");
+  mkdirSync(snapshotDir, { recursive: true });
+  const workspaceHash = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
+  const snapshotPath = join(snapshotDir, `${workspaceHash}.sqlite`);
+  // Path resolver — mirrors @koi/fs-local's lexicalCheck normalization so
+  // the checkpoint middleware reads pre/post images from the REAL filesystem
+  // path, not the virtual path the model sees. Without this, tool-input paths
+  // like "/workspace/foo.txt" would be read literally, find nothing, and
+  // silently no-op capture (the bug surfaced in #1625's E2E TUI validation).
+  const resolveCheckpointPath = (virtualPath: string): string => {
+    // Strip workspace root prefix if the path already matches it (absolute
+    // paths under cwd pass through unchanged).
+    if (virtualPath === cwd || virtualPath.startsWith(`${cwd}/`)) {
+      return virtualPath;
+    }
+    // Strip leading "/" and resolve against cwd, matching fs-local's
+    // "treat as workspace-relative" rule.
+    const stripped = virtualPath.startsWith("/") ? virtualPath.slice(1) : virtualPath;
+    return join(cwd, stripped);
+  };
+
+  const checkpointHandle = createCheckpoint({
+    store: createSnapshotStoreSqlite({ path: snapshotPath }),
+    config: {
+      blobDir: join(koiHomeDir, "file-history"),
+      driftDetector: null,
+      resolvePath: resolveCheckpointPath,
+      ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
+    },
+  });
+  const checkpointMw = checkpointHandle.middleware;
 
   // --- Wrap middleware with trace for full ATIF instrumentation ---
   // Same pattern as golden-query recording: each middleware hook invocation
@@ -1206,6 +1244,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     ...(config.modelRouterMiddleware !== undefined ? [config.modelRouterMiddleware] : []),
     ...(goalMw !== undefined ? [goalMw] : []),
     ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
+    checkpointMw,
     ...optionalMiddleware,
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
@@ -1251,6 +1290,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
   return {
     runtime,
+    checkpoint: checkpointHandle,
     transcript,
     sandboxActive: osSandboxResult.ok,
     getTrajectorySteps: async () => {
@@ -1258,6 +1298,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
       // Full trajectory is preserved in the store; only the view is capped.
       return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
+    },
+    appendTrajectoryStep: async (step: RichTrajectoryStep): Promise<void> => {
+      await trajectoryStore.append(TUI_DOC_ID, [step]);
     },
     resetSessionState: async (signal: AbortSignal) => {
       // C4-A: Fail fast if caller forgot to abort the active run first.

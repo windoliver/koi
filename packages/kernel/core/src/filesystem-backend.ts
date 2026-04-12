@@ -164,5 +164,34 @@ export interface FileSystemBackend {
     to: string,
   ) => Result<FileRenameResult, KoiError> | Promise<Result<FileRenameResult, KoiError>>;
 
+  /**
+   * Resolve a tool-input path to the absolute on-disk path the backend
+   * will actually read from or write to. Pure lexical resolution: no I/O,
+   * no symlink following, no permission checks.
+   *
+   * Return type: `string | undefined`. Implementations MUST return
+   * `undefined` when the input resolves outside the workspace root
+   * (traversal via `../` segments, absolute paths not matching the root,
+   * platform-specific syntax like Windows drive letters, etc.). This is
+   * the only defense auxiliary subsystems have against hashing arbitrary
+   * host files when the tool-input path is attacker-controlled — the
+   * backend's own read/write/edit calls run the full containment gauntlet
+   * (symlink resolution, permission checks), but those run AFTER any
+   * cross-cutting subsystem has already observed the path.
+   *
+   * Exists so auxiliary subsystems (notably `@koi/checkpoint`, which hashes
+   * pre/post images of file ops) can hash blobs for the same path the
+   * backend will write to. Without this, tool-input paths like `/src/foo.ts`
+   * end up hashed against their raw form while the backend writes to
+   * `<workspace-root>/src/foo.ts`, and the restore protocol silently no-ops.
+   *
+   * Implementations that virtualize paths (e.g., strip a workspace prefix,
+   * treat leading-slash as workspace-relative) MUST implement this method.
+   * Implementations that pass paths through unchanged MAY omit it; callers
+   * treat `undefined` (either the method is absent or returns `undefined`)
+   * as "path is not safely resolvable — skip the cross-cutting operation."
+   */
+  readonly resolvePath?: (path: string) => string | undefined;
+
   readonly dispose?: () => void | Promise<void>;
 }

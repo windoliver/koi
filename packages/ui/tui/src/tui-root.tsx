@@ -77,8 +77,13 @@ function findCommandBySlashName(name: string): CommandDef | undefined {
 // ---------------------------------------------------------------------------
 
 export interface TuiRootProps {
-  /** Called when the user selects a command from the palette. */
-  readonly onCommand: (commandId: string) => void;
+  /**
+   * Called when the user selects a command from the palette or types a slash
+   * command in the input. `args` is the trimmed text after the command name
+   * (e.g., `/rewind 3` → `args = "3"`); empty string when no args were typed.
+   * Handlers that don't need args can ignore the parameter.
+   */
+  readonly onCommand: (commandId: string, args: string) => void;
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message in the conversation view. */
@@ -253,7 +258,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     store.dispatch({ kind: "set_modal", modal: null });
   };
 
-  const handleCommandSelect = (cmd: CommandDef): void => {
+  const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
     store.dispatch({ kind: "set_modal", modal: null });
     // Navigation commands are handled here — no CLI callback needed.
     const navView = resolveNavCommand(cmd.id);
@@ -266,17 +271,15 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
       return;
     }
-    // session:rename opens the rename modal inline (#14).
     if (cmd.id === "session:rename") {
       store.dispatch({ kind: "set_modal", modal: { kind: "session-rename" } });
       return;
     }
-    // session:fork notifies the bridge to create a fork (#13).
     if (cmd.id === "session:fork") {
       props.onFork?.();
       return;
     }
-    props.onCommand(cmd.id);
+    props.onCommand(cmd.id, args);
   };
 
   const handleSessionSelect = (session: SessionSummary): void => {
@@ -287,18 +290,18 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   // #14: session rename handler
   const handleRename = (newName: string): void => {
     store.dispatch({ kind: "set_modal", modal: null });
-    props.onCommand(`session:rename:${newName}`);
+    props.onCommand("session:rename", newName);
   };
 
   const handleSlashDetected = (query: string | null): void => {
     store.dispatch({ kind: "set_slash_query", query });
   };
 
-  const handleSlashSelect = (cmd: SlashCommand): void => {
+  const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
     store.dispatch({ kind: "set_slash_query", query: null });
     const commandDef = findCommandBySlashName(cmd.name);
     if (commandDef !== undefined) {
-      handleCommandSelect(commandDef);
+      handleCommandSelect(commandDef, args);
     }
   };
 

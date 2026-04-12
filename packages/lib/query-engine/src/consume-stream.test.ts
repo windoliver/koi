@@ -478,4 +478,38 @@ describe("consumeModelStream", () => {
     expect(events[0]).toEqual({ kind: "thinking_delta", delta: "Let me think..." });
     expect(events[1]).toEqual({ kind: "text_delta", delta: "Answer" });
   });
+
+  // Regression: before the iterator-cleanup fix, `consumeModelStream` called
+  // `iterator.return?.()` inside its finally but discarded the returned promise
+  // with `void`. Any inner async-generator finally that awaited I/O (e.g. the
+  // session-transcript middleware's `wrapModelStream.finally` writing JSONL
+  // entries) would run AFTER consumeModelStream yielded its terminal `done`
+  // event, racing the engine's `onAfterTurn` hooks. This test drives an inner
+  // stream whose finally block awaits an async sentinel, and asserts that by
+  // the time the outer for-await loop completes the sentinel has already
+  // resolved — i.e. the cleanup is awaited synchronously with the terminal
+  // event.
+  test("inner async-generator finally runs to completion before terminal event is observed", async () => {
+    let finallyCompleted = false;
+
+    async function* innerWithAsyncFinally(): AsyncIterable<ModelChunk> {
+      try {
+        yield { kind: "text_delta", delta: "hi" };
+        yield { kind: "done", response: DONE_RESPONSE };
+      } finally {
+        // Simulate an awaited I/O operation — must resolve BEFORE the outer
+        // consumer observes the done event and moves on.
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        finallyCompleted = true;
+      }
+    }
+
+    const events = await collect(consumeModelStream(innerWithAsyncFinally()));
+    // The terminal event is the synthesized `done` from consumeModelStream.
+    expect(events.at(-1)?.kind).toBe("done");
+    // And crucially, the inner finally must have completed by now — without
+    // the iterator-cleanup await fix, this would flake false at ~0% of runs
+    // but deterministically false when the awaited cleanup is discarded.
+    expect(finallyCompleted).toBe(true);
+  });
 });
