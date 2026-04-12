@@ -79,6 +79,19 @@ export function MessageList(props: MessageListProps): JSX.Element {
     }),
   );
 
+  // Resume auto-follow when Ctrl+C copy clears the selection from TuiRoot.
+  // renderer.clearSelection() doesn't emit a null selection event, so the
+  // useSelectionHandler callback never fires onSelectionEnd. This counter
+  // bridges the gap — TuiRoot dispatches resume_follow after Ctrl+C copy.
+  const resumeFollowCounter = useTuiStore((s) => s.resumeFollowCounter);
+  createEffect(
+    on(resumeFollowCounter, (_count: number, prev: number | undefined) => {
+      if (prev !== undefined) {
+        setScrollState((s) => onSelectionEnd(s));
+      }
+    }),
+  );
+
   // Detect streaming end → settling period (only if not user-paused)
   createEffect(
     on(agentStatus, (status, prevStatus) => {
@@ -121,13 +134,19 @@ export function MessageList(props: MessageListProps): JSX.Element {
   // so we auto-copy to clipboard via OSC 52 when the user finishes selecting.
   // After copying, clear the selection so the next click focuses the input
   // instead of starting a new selection.
+  // Note: renderer.clearSelection() does NOT emit a null selection event,
+  // so we must explicitly transition through onSelectionEnd to restore
+  // auto-follow after a copy.
   useSelectionHandler((selection) => {
     if (selection !== null && selection !== undefined) {
       setScrollState((s) => onSelectionStart(s));
       const text = selection.getSelectedText();
-      if (text.length > 0) {
-        copyToClipboard(text);
+      if (text.length > 0 && copyToClipboard(text)) {
         renderer.clearSelection();
+        // Restore auto-follow — clearSelection() doesn't emit a null
+        // selection event, so onSelectionEnd would never run otherwise.
+        // Only resume when the selection was actually cleared (copy OK).
+        setScrollState((s) => onSelectionEnd(s));
       }
     } else {
       setScrollState((s) => onSelectionEnd(s));

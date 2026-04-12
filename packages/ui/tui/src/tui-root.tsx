@@ -238,7 +238,13 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const text = sel?.getSelectedText();
         if (text && text.length > 0) {
           copyToClipboard(text);
+          // Always clear selection on Ctrl+C so subsequent Ctrl+C can
+          // interrupt the agent — prevents getting stuck in copy mode.
           renderer.clearSelection();
+          // clearSelection() doesn't emit a null selection event, so
+          // MessageList's onSelectionEnd never fires. Dispatch resume_follow
+          // to re-enable auto-scroll from the Ctrl+C path.
+          store.dispatch({ kind: "resume_follow" });
         } else {
           props.onInterrupt();
         }

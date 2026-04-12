@@ -24,6 +24,7 @@ exports[`createInitialState initial state shape 1`] = `
   "messages": [],
   "modal": null,
   "planTasks": null,
+  "resumeFollowCounter": 0,
   "retryState": null,
   "runningToolCount": 0,
   "sessionInfo": null,

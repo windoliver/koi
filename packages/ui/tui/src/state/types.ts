@@ -306,6 +306,8 @@ export interface TuiState {
   readonly toolsExpanded: boolean;
   /** Trajectory steps for /trajectory view — injected by host via set_trajectory_data. */
   readonly trajectorySteps: readonly TrajectoryStepSummary[];
+  /** Monotonic counter — incrementing resumes auto-follow in MessageList. */
+  readonly resumeFollowCounter: number;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -446,6 +448,7 @@ export type TuiAction =
     }
   | { readonly kind: "set_at_query"; readonly query: string | null }
   | { readonly kind: "set_at_results"; readonly results: readonly string[] }
+  | { readonly kind: "resume_follow" }
   | {
       /** Injected by the host with trajectory step summaries for /trajectory view. */
       readonly kind: "set_trajectory_data";

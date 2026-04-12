@@ -20,11 +20,18 @@
  *   partial inline markdown (bold, links, inline code).
  */
 
-import type { SyntaxStyle } from "@opentui/core";
+import type { Renderable, SyntaxStyle } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createMemo, Show } from "solid-js";
 import { healMarkdown } from "../streaming/heal-markdown.js";
 import { splitStreamingMarkdown } from "../streaming/split-streaming-markdown.js";
+
+/** Enable text selection on a renderable. MarkdownRenderable inherits
+ *  selectable=false from Renderable; OpenTUI's typed props don't expose
+ *  `selectable` on `<markdown>`, so we set it imperatively via ref. */
+function enableSelection(el: Renderable | null): void {
+  if (el) el.selectable = true;
+}
 
 interface TextBlockProps {
   readonly text: string;
@@ -62,6 +69,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
           fallback={
             // Non-streaming: render full text as single finalized markdown
             <markdown
+              ref={enableSelection}
               content={props.text}
               syntaxStyle={style()}
               streaming={false}
@@ -73,6 +81,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
             {/* With fence split: stable head (memoized, finalized) + healed tail */}
             <Show when={hasFenceSplit() && split().stable !== ""}>
               <markdown
+                ref={enableSelection}
                 content={split().stable}
                 syntaxStyle={style()}
                 streaming={false}
@@ -81,6 +90,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
             {/* Healed content — either tail-only (fence split) or full text (no fence) */}
             <Show when={healedContent() !== ""}>
               <markdown
+                ref={enableSelection}
                 content={healedContent()}
                 syntaxStyle={style()}
                 streaming={true}
