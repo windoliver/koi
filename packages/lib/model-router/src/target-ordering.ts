@@ -55,7 +55,13 @@ export function createTargetOrderer(options: TargetOrdererOptions): TargetOrdere
   // strategy === "weighted"
   const weights = options.weights ?? new Map<string, number>();
   const random = options.random ?? Math.random;
+  return createWeightedOrderer(weights, random);
+}
 
+function createWeightedOrderer(
+  weights: ReadonlyMap<string, number>,
+  random: () => number,
+): TargetOrderer {
   return (targets) => {
     if (targets.length <= 1) return targets;
 

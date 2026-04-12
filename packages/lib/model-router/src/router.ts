@@ -253,8 +253,8 @@ export function createModelRouter(
 
         // let: mutable — set to the caught throw so it can be re-thrown after bookkeeping
         let caughtError: unknown;
-        const stream = adapter.stream(modelRequest);
         try {
+          const stream = adapter.stream(modelRequest);
           for await (const chunk of stream) {
             // Error chunks from the adapter (e.g., HTTP 4xx/5xx yielded rather
             // than thrown) are treated as target failures when no content has been

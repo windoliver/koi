@@ -161,16 +161,8 @@ const routerConfigSchema = z.object({
 // Validation + resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Validates and resolves raw router config with defaults applied.
- */
-export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig, KoiError> {
-  const parsed = validateWith(routerConfigSchema, raw, "Model router config validation failed");
-  if (!parsed.ok) return parsed;
-
-  const config = parsed.value;
-
-  const resolvedTargets: readonly ResolvedTargetConfig[] = config.targets.map((t) => ({
+function resolveTarget(t: z.infer<typeof targetSchema>): ResolvedTargetConfig {
+  return {
     provider: t.provider,
     model: t.model,
     weight: t.weight ?? 1,
@@ -184,7 +176,17 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
     ...(t.capabilities !== undefined ? { capabilities: t.capabilities } : {}),
     ...(t.costPerInputToken !== undefined ? { costPerInputToken: t.costPerInputToken } : {}),
     ...(t.costPerOutputToken !== undefined ? { costPerOutputToken: t.costPerOutputToken } : {}),
-  }));
+  };
+}
+
+/**
+ * Validates and resolves raw router config with defaults applied.
+ */
+export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig, KoiError> {
+  const parsed = validateWith(routerConfigSchema, raw, "Model router config validation failed");
+  if (!parsed.ok) return parsed;
+
+  const config = parsed.value;
 
   const resolvedRetry: RetryConfig = {
     maxRetries: config.retry?.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries,
@@ -208,7 +210,7 @@ export function validateRouterConfig(raw: unknown): Result<ResolvedRouterConfig,
   return {
     ok: true,
     value: {
-      targets: resolvedTargets,
+      targets: config.targets.map(resolveTarget),
       strategy: config.strategy,
       retry: resolvedRetry,
       circuitBreaker: resolvedCB,
