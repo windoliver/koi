@@ -75,10 +75,20 @@ export NEXUS_PORT=$((3100 + ${TESTER_ID#t}))  # t1 → 3101, t2 → 3102, ...
 
 ### 1.4 Start Nexus (for backend-dependent scenarios)
 
+> **Nexus is an external backend service** — it is not built from this repo, and there is no canonical published image yet. See `docs/L3/nexus.md` for the wiring contract and the list of L2 packages it composes (`@koi/registry-nexus`, `@koi/permissions-nexus`, `@koi/audit-nexus`, etc.).
+>
+> You need a Nexus deployment you control. Export `NEXUS_IMAGE` to whatever image+tag your team uses (internal registry, locally built, etc.); the bug-bash steps below read it from the environment so the doc never hardcodes a stale tag.
+>
+> If you do not have access to a Nexus deployment, **skip every scenario tagged `nexus-backend`** and file `bug-bash` + `missing-coverage` issues against the affected scenarios. Most Phase 2 scenarios (Group M, Group R, fs-nexus tests) run via `bun test --filter=@koi/fs-nexus` and do **not** require a running Nexus — see the Group M note in §3 before assuming you are blocked.
+
 ```bash
+# Required: set NEXUS_IMAGE to your Nexus deployment's image:tag before running this block.
+# Example (replace with your team's actual registry/tag):
+#   export NEXUS_IMAGE="ghcr.io/<your-org>/nexus:<tag>"
+: "${NEXUS_IMAGE:?set NEXUS_IMAGE to your Nexus image:tag (see docs/L3/nexus.md), or skip nexus-backend scenarios}"
+
 # Start Nexus in a per-tester tmux session on a per-tester port.
-# Use whatever image/tag your Nexus deployment exposes — map it to $NEXUS_PORT on the host.
-tmux new-session -d -s "$NEXUS_SESSION" "docker run --rm -p ${NEXUS_PORT}:3100 <nexus-image>:<tag>"
+tmux new-session -d -s "$NEXUS_SESSION" "docker run --rm -p ${NEXUS_PORT}:3100 ${NEXUS_IMAGE}"
 tmux capture-pane -t "$NEXUS_SESSION" -p | tail -20
 # Verify admin API is reachable (each tester uses their own port):
 curl -s "http://localhost:${NEXUS_PORT}/admin/api/health"
