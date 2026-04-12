@@ -2,6 +2,7 @@ node_modules/
 dist/
 .turbo/
 coverage/
+**/__test_tmp__/
 *.tsbuildinfo
 tsup.config.bundled_*.mjs
 .env

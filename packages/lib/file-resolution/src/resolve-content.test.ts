@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveContent } from "./resolve-content.js";
 
 let tmpDir: string;
 
 beforeEach(async () => {
-  tmpDir = join(import.meta.dir, "__test_tmp__", crypto.randomUUID());
+  tmpDir = join(tmpdir(), "koi-file-resolution-test", crypto.randomUUID());
   await mkdir(tmpDir, { recursive: true });
 });
 

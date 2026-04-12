@@ -252,6 +252,20 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-otel": {
+      "name": "@koi/middleware-otel",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@opentelemetry/api": "1.9.1",
+      },
+      "devDependencies": {
+        "@opentelemetry/sdk-trace-base": "2.6.1",
+      },
+      "peerDependencies": {
+        "@opentelemetry/api": "^1.9.0",
+      },
+    },
     "packages/lib/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -550,6 +564,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
+        "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -1093,6 +1108,8 @@
 
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
 
+    "@koi/middleware-otel": ["@koi/middleware-otel@workspace:packages/lib/middleware-otel"],
+
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
@@ -1174,6 +1191,16 @@
     "@nodelib/fs.stat": ["@nodelib/fs.stat@2.0.5", "", {}, "sha512-RkhPPp2zrqDAQA/2jNhnztcPAlv64XdhIp7a7454A5ovI7Bukxgt7MX7udwAu3zg1DcpPU0rz3VV1SeaqvY4+A=="],
 
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
+
+    "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
+
+    "@opentelemetry/core": ["@opentelemetry/core@2.6.1", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.0.0 <1.10.0" } }, "sha512-8xHSGWpJP9wBxgBpnqGL0R3PbdWQndL1Qp50qrg71+B28zK5OQmUgcDKLJgzyAAV38t4tOyLMGDD60LneR5W8g=="],
+
+    "@opentelemetry/resources": ["@opentelemetry/resources@2.6.1", "", { "dependencies": { "@opentelemetry/core": "2.6.1", "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.3.0 <1.10.0" } }, "sha512-lID/vxSuKWXM55XhAKNoYXu9Cutoq5hFdkbTdI/zDKQktXzcWBVhNsOkiZFTMU9UtEWuGRNe0HUgmsFldIdxVA=="],
+
+    "@opentelemetry/sdk-trace-base": ["@opentelemetry/sdk-trace-base@2.6.1", "", { "dependencies": { "@opentelemetry/core": "2.6.1", "@opentelemetry/resources": "2.6.1", "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.3.0 <1.10.0" } }, "sha512-r86ut4T1e8vNwB35CqCcKd45yzqH6/6Wzvpk2/cZB8PsPLlZFTvrh8yfOS3CYZYcUmAx4hHTZJ8AO8Dj8nrdhw=="],
+
+    "@opentelemetry/semantic-conventions": ["@opentelemetry/semantic-conventions@1.40.0", "", {}, "sha512-cifvXDhcqMwwTlTK04GBNeIe7yyo28Mfby85QXFe1Yk8nmi36Ab/5UQwptOx84SsoGNRg+EVSjwzfSZMy6pmlw=="],
 
     "@opentui/core": ["@opentui/core@0.1.96", "", { "dependencies": { "bun-ffi-structs": "0.1.2", "diff": "8.0.2", "jimp": "1.6.0", "marked": "17.0.1", "yoga-layout": "3.2.1" }, "optionalDependencies": { "@dimforge/rapier2d-simd-compat": "^0.17.3", "@opentui/core-darwin-arm64": "0.1.96", "@opentui/core-darwin-x64": "0.1.96", "@opentui/core-linux-arm64": "0.1.96", "@opentui/core-linux-x64": "0.1.96", "@opentui/core-win32-arm64": "0.1.96", "@opentui/core-win32-x64": "0.1.96", "bun-webgpu": "0.1.5", "planck": "^1.4.2", "three": "0.177.0" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-VBO5zRiGM6fhibG3AwTMpf0JgbYWG0sXP5AsSJAYw8tQ18OCPj+EDLXGZ1DFmMnJWEi+glKYjmqnIp4yRCqi+Q=="],
 

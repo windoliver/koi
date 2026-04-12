@@ -466,6 +466,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
+    // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
+    ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
