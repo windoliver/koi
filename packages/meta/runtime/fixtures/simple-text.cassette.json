@@ -22,7 +22,6 @@
         "content": "4\n",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "stop",
-        "responseId": "gen-1775692708-XE3ZnONU30P56Ntl33Md",
         "richContent": [
           {
             "kind": "text",
@@ -32,11 +31,9 @@
         "usage": {
           "inputTokens": 13,
           "outputTokens": 2
-        },
-        "metadata": {
-          "promptPrefixFingerprint": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d"
         }
       }
     }
-  ]
+  ],
+  "schemaVersion": "cassette-v1"
 }

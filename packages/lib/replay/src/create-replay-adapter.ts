@@ -6,18 +6,27 @@ import type {
   ModelChunk,
 } from "@koi/core";
 import { consumeModelStream } from "@koi/query-engine";
-import { VCR_STREAM_TIMEOUT_MS } from "../types.js";
+
+/** Default replay timeout: 5 seconds — cassettes are pre-recorded, should not hang. */
+const REPLAY_TIMEOUT_MS = 5_000;
+
+const REPLAY_CAPABILITIES: EngineCapabilities = Object.freeze({
+  text: true,
+  images: false,
+  files: false,
+  audio: false,
+});
 
 /**
- * Creates an EngineAdapter that replays pre-recorded ModelChunk sequences.
+ * Creates an EngineAdapter that replays a pre-recorded ModelChunk sequence.
  * Zero API calls — deterministic, millisecond execution.
  *
- * Used by golden query tests in CI (replay mode) to verify structural
- * assertions without requiring an API key.
+ * Stateless across calls: each stream() invocation replays chunks from index 0.
+ * This matches production adapter semantics (each call is independent).
  */
 export function createReplayAdapter(
   chunks: readonly ModelChunk[],
-  timeoutMs: number = VCR_STREAM_TIMEOUT_MS,
+  timeoutMs: number = REPLAY_TIMEOUT_MS,
 ): EngineAdapter {
   return {
     engineId: "replay",
@@ -30,13 +39,6 @@ export function createReplayAdapter(
     },
   };
 }
-
-const REPLAY_CAPABILITIES: EngineCapabilities = Object.freeze({
-  text: true,
-  images: false,
-  files: false,
-  audio: false,
-});
 
 async function* toAsyncIterable(chunks: readonly ModelChunk[]): AsyncIterable<ModelChunk> {
   for (const chunk of chunks) {

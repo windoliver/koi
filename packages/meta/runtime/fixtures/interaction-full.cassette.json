@@ -284,7 +284,6 @@
         "content": "I'll execute all 11 steps in order. Let's begin!\n\n---\n\n**Step 1 — AskUserQuestion**",
         "model": "anthropic/claude-sonnet-4-6",
         "stopReason": "tool_use",
-        "responseId": "gen-1775670685-wUcUvMZ1C2IPnX1kQqqR",
         "richContent": [
           {
             "kind": "text",
@@ -317,11 +316,9 @@
         "usage": {
           "inputTokens": 2608,
           "outputTokens": 161
-        },
-        "metadata": {
-          "promptPrefixFingerprint": "de3082656acc151e96f8675546038542633f8823d5d372400667908f04ef1d86"
         }
       }
     }
-  ]
+  ],
+  "schemaVersion": "cassette-v1"
 }

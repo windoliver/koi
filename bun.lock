@@ -312,6 +312,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/replay": {
+      "name": "@koi/replay",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/query-engine": "workspace:*",
+      },
+    },
     "packages/lib/rules-loader": {
       "name": "@koi/rules-loader",
       "version": "0.0.0",
@@ -574,6 +582,7 @@
         "@koi/permissions": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
+        "@koi/replay": "workspace:*",
         "@koi/rules-loader": "workspace:*",
         "@koi/sandbox-os": "workspace:*",
         "@koi/session": "workspace:*",
@@ -1130,6 +1139,8 @@
     "@koi/query-engine": ["@koi/query-engine@workspace:packages/lib/query-engine"],
 
     "@koi/redaction": ["@koi/redaction@workspace:packages/security/redaction"],
+
+    "@koi/replay": ["@koi/replay@workspace:packages/lib/replay"],
 
     "@koi/rules-loader": ["@koi/rules-loader@workspace:packages/lib/rules-loader"],
 

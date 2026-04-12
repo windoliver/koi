@@ -316,9 +316,6 @@ export interface RuntimeConfig {
 /** Default stream timeout: 2 minutes for live API calls. */
 export const DEFAULT_STREAM_TIMEOUT_MS = 120_000 as const;
 
-/** Default stream timeout for VCR replay: 5 seconds. */
-export const VCR_STREAM_TIMEOUT_MS = 5_000 as const;
-
 // ---------------------------------------------------------------------------
 // Debug introspection
 // ---------------------------------------------------------------------------

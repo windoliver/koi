@@ -1,0 +1,26 @@
+{
+  "name": "@koi/replay",
+  "description": "Deterministic cassette recording and replay for Koi agent tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*",
+    "@koi/query-engine": "workspace:*"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test"
+  },
+  "koi": {
+    "optional": true
+  }
+}
