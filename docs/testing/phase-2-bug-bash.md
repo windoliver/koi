@@ -260,6 +260,49 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 | Q36 | (kill Python bridge mid-session) `Read README.md.` | fs_read | Clean error or auto-recovery; no hang; no zombie Python processes |
 | Q37 | (malformed mount URI in manifest) start process | startup | Fails fast with clear error; no bridge process spawned |
 
+### S14 — Memory Deep
+
+> The TUI uses `createInMemoryMemoryBackend()` — all memory is session-scoped.
+> This scenario exercises the full memory tool surface (store, recall, search, delete, dedup, extraction)
+> within a single TUI session. Cross-session persistence, dream consolidation, and team-sync are test-suite only.
+
+**All queries run in the SAME TUI session (no reset between queries).**
+
+| Q | Prompt | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q84 | `Remember: this project uses Bun 1.3 for runtime.` | memory_store | Stored as `project` type |
+| Q85 | `Remember: always use explicit return types on exported functions.` | memory_store | Stored as `feedback` type |
+| Q86 | `Remember: the main contact for infra is alice@example.com.` | memory_store | Stored as `reference` type |
+| Q87 | `Remember: I'm a senior backend engineer, new to this frontend codebase.` | memory_store | Stored as `user` type |
+| Q88 | `Remember: we prefer Bun 1.3 as our runtime.` (near-duplicate of Q84) | memory_store (dedup) | Dedup conflict warning returned (same name/type, similar content) |
+| Q89 | `Remember: we prefer Bun 1.3 as our runtime.` with force | memory_store (force) | Existing record updated (force=true overrides dedup) |
+| Q90 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact; relevance-ranked |
+| Q91 | `What do you remember?` (broad recall, no query filter) | memory_recall | Returns all stored memories; feedback weighted higher (typeRelevance=1.2) |
+| Q92 | `Search your memories for type=feedback only.` | memory_search | Returns only feedback-type memories (explicit return types) |
+| Q93 | `Search your memories for the keyword "Bun".` | memory_search | Returns memories with "Bun" in name/description/content |
+| Q94 | `Delete the memory about the infra contact.` | memory_delete | Memory removed; subsequent recall doesn't return it |
+| Q95 | `What do you remember about the infra contact?` | memory_recall | Returns nothing (deleted) |
+| Q96 | `Remember my AWS key is AKIAIOSFODNN7EXAMPLE.` | memory_store | Redacted or refused — secret never stored verbatim |
+| Q97 | (have agent run a tool that outputs `[LEARNING:pattern] Always validate input at boundaries`) verify extraction | extraction MW | Transcript shows extracted learning stored as `reference` type (marker-based, confidence 1.0) |
+| Q98 | (have agent run a tool whose output contains `Learned that connection pooling improves throughput`) verify extraction | extraction MW | Heuristic extraction fires ("learned that" pattern, confidence 0.7); stored as `reference` |
+| Q99 | `/new` (reset session) then `What do you remember?` | memory_recall | Returns nothing — in-memory backend cleared on session reset |
+
+**Test-suite only (not via TUI):**
+
+```bash
+# Dream consolidation (LLM merge + cold pruning)
+bun test --filter=@koi/dream
+
+# File-based persistence (Jaccard dedup, concurrent writes, MEMORY.md index)
+bun test --filter=@koi/memory-fs
+
+# Session-start recall injection (salience scoring, token budgeting)
+bun test --filter=@koi/memory
+
+# Team-sync filtering (type deny, secret scan, fail-closed)
+bun test --filter=@koi/memory-team-sync
+```
+
 ### S9 — Skills & Plugins
 
 **Setup for skills**: create skill at `$KOI_HOME/.claude/skills/hello/SKILL.md`
@@ -354,6 +397,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S7** | Context Window | Q23-Q24 | 1 (20+ turns) | magic word in first turn |
 | **S8** | MCP | Q25-Q27 | 1 | .mcp.json with stdio + HTTP servers |
 | **S13** | Nexus GWS Connectors & OAuth | Q28-Q37 | 3+ (restart for token persistence) | Via `koi start --manifest` (not TUI); Python bridge; `pip install nexus-fs` |
+| **S14** | Memory Deep | Q84-Q99 | 1 (no reset until Q99) | Same TUI session for all queries; tests full memory tool surface |
 | **S9** | Skills & Plugins | Q38-Q42 | 2 (reset between skills and plugins) | skill dirs; plugin.json |
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
@@ -402,7 +446,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/tasks | — | — | — | — | — | — | — | — | — | Q43-Q45 | — | — | |
 | @koi/skill-tool | — | — | — | — | — | — | — | — | Q39 | — | — | — | |
 | @koi/skills-runtime | — | — | — | — | — | — | — | — | Q38-Q40 | — | — | — | |
-| @koi/memory-tools | — | — | — | — | — | — | — | — | — | Q46-Q48 | — | — | |
+| @koi/memory-tools | — | — | — | — | — | — | — | — | — | Q46-Q48 | — | — | Q84-Q99 (S14) |
 | @koi/mcp | — | — | — | — | — | — | — | Q25-Q27 | — | — | — | — | |
 | @koi/plugins | — | — | — | — | — | — | — | — | Q41,Q42 | — | — | — | |
 | @koi/spawn-tools | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/spawn-tools` |
@@ -456,7 +500,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | Package | Scenario | Explicitly Tested By |
 |---------|----------|---------------------|
 | @koi/middleware-exfiltration-guard | S4 | Q16 (secret exfiltration blocked) |
-| @koi/middleware-extraction | S10 | Q46 (memory extraction from outputs) |
+| @koi/middleware-extraction | S10, S14 | Q46, Q97-Q98 (marker + heuristic extraction) |
 | @koi/middleware-semantic-retry | S12 | Q68 (malformed args → retry) |
 | @koi/fs-nexus | S13 | Q28-Q37 (Python bridge, GWS mounts, inline OAuth) |
 | @koi/secure-storage | S8, S13 | Q28-Q35 (OAuth token persistence) |
@@ -622,7 +666,7 @@ bun test --filter=@koi/runtime
 | T1 | S1 (Onboarding), S2 (File I/O), S3 (Notebook) | `t1` |
 | T2 | S4 (Bash/Security), S5 (Web), S6 (Permissions) | `t2` |
 | T3 | S7 (Context), S8 (MCP), S9 (Skills/Plugins) | `t3` |
-| T4 | S10 (Tasks/Memory), S11 (TUI UI) | `t4` |
+| T4 | S10 (Tasks/Memory), S11 (TUI UI), S14 (Memory Deep) | `t4` |
 | T5 | S12 (Resilience), CLI-only (Q78-Q83) | `t5` |
 | T6 | S13 (Nexus GWS Connectors & OAuth) | `t6` |
 | T7 | Test-suite-only packages (§6) | `t7` |
@@ -631,14 +675,14 @@ bun test --filter=@koi/runtime
 
 ## 8. Exit Criteria
 
-1. All S1-S13 scenarios run at least once
-2. All Q1-Q83 queries executed with pass/fail recorded
+1. All S1-S14 scenarios run at least once
+2. All Q1-Q99 queries executed with pass/fail recorded
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
 5. TUI feature matrix (§5) shows every command/shortcut/view/modal exercised
 6. `bun test --filter=@koi/runtime` (golden replay) passes on candidate commit
 7. Written summary posted with:
-   - Queries run: N/83
+   - Queries run: N/99
    - Bugs filed by severity
    - Unexercised packages + justification
    - Go / no-go recommendation
