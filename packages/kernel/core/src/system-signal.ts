@@ -9,6 +9,13 @@
  * Consumers: CompositionPlanner (@koi/proactive) — watches system signal sources
  * continuously and detects moments that warrant autonomous composition action.
  *
+ * ## Contract maturity
+ * **v2-only, no existing implementations.** This is a brand-new L0 contract
+ * introduced in v2. There are no existing `SystemSignalSource` implementations
+ * or `SystemSignal` consumers to migrate. All L2 adapters (governance source,
+ * VFS source, agent-monitor source) will be built against this contract in
+ * downstream PRs.
+ *
  * L0 types only — zero logic, zero deps beyond @koi/core internal files.
  */
 
@@ -16,6 +23,7 @@ import type { AnomalySignal } from "./agent-anomaly.js";
 import type { AgentId, ProcessState } from "./ecs.js";
 import type { KoiError } from "./errors.js";
 import type { ForgeDemandSignal } from "./forge-demand.js";
+import type { TransitionReason } from "./lifecycle.js";
 import type { TaskId } from "./scheduler.js";
 import type { ZoneId } from "./zone.js";
 
@@ -25,14 +33,24 @@ import type { ZoneId } from "./zone.js";
 
 /**
  * Narrowed subset of SchedulerEvent for the composition planner.
- * Only terminal task outcomes are routed to the composition layer —
- * operational events (task:submitted, task:started, schedule:paused, etc.)
- * are not relevant to composition decisions.
+ * Covers all terminal task outcomes — completed, failed, dead-lettered, and
+ * cancelled. Operational events (task:submitted, task:started, schedule:paused,
+ * etc.) are excluded as they are not composition-relevant.
+ *
+ * `task:cancelled` is included because `TaskScheduler.cancel()` is a first-class
+ * operation; excluding it would create a blind spot around aborted work,
+ * compensation, and retry-suppression after partial execution.
  */
 export type CompositionSchedulerEvent =
   | { readonly kind: "task:completed"; readonly taskId: TaskId; readonly result: unknown }
   | { readonly kind: "task:failed"; readonly taskId: TaskId; readonly error: KoiError }
-  | { readonly kind: "task:dead_letter"; readonly taskId: TaskId; readonly error: KoiError };
+  | { readonly kind: "task:dead_letter"; readonly taskId: TaskId; readonly error: KoiError }
+  /**
+   * Task was cancelled before execution began (queue cancellation only).
+   * Does NOT indicate partial execution — the task never started.
+   * Use for retry suppression on work that was explicitly aborted pre-start.
+   */
+  | { readonly kind: "task:cancelled"; readonly taskId: TaskId };
 
 // ---------------------------------------------------------------------------
 // SystemSignal — discriminated union of system-facing events
@@ -81,8 +99,25 @@ export type SystemSignal =
     }
   | {
       readonly kind: "vfs";
+      readonly event: "write" | "delete";
       readonly path: string;
-      readonly event: "write" | "delete" | "rename";
+      readonly zoneId?: ZoneId | undefined;
+      /** Unix timestamp (ms) of the filesystem event. */
+      readonly emittedAt: number;
+    }
+  | {
+      readonly kind: "vfs";
+      readonly event: "rename";
+      /**
+       * Source path before the rename. Aliased as `path` so handlers that
+       * narrow only on `kind === "vfs"` and read `signal.path` work uniformly
+       * across write, delete, and rename variants.
+       */
+      readonly path: string;
+      /** Source path before the rename (same as `path`). */
+      readonly from: string;
+      /** Destination path after the rename. */
+      readonly to: string;
       readonly zoneId?: ZoneId | undefined;
       /** Unix timestamp (ms) of the filesystem event. */
       readonly emittedAt: number;
@@ -100,6 +135,19 @@ export type SystemSignal =
       readonly agentId: AgentId;
       readonly from: ProcessState;
       readonly to: ProcessState;
+      /**
+       * Why the transition occurred. Allows the composition planner to
+       * distinguish normal completion from timeout, governance block,
+       * budget exhaustion, error, etc. Sourced from the registry transition
+       * event, which always carries a reason.
+       */
+      readonly reason: TransitionReason;
+      /**
+       * CAS generation counter from the registry entry at transition time.
+       * Use to reject stale or out-of-order lifecycle events. Monotonically
+       * increasing per agent; sourced from the registry, which always supplies it.
+       */
+      readonly generation: number;
       /** Unix timestamp (ms) of the state transition. */
       readonly emittedAt: number;
     }

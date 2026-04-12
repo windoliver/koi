@@ -93,6 +93,29 @@ const _anomalyHasKind: _AnomalyHasKind = true;
 void _anomalyHasKind;
 
 // ---------------------------------------------------------------------------
+// 6. VFS rename split — rename variant has from/to, not path
+// ---------------------------------------------------------------------------
+
+type _VfsWrite = Extract<SystemSignal, { kind: "vfs"; event: "write" }>;
+type _VfsRename = Extract<SystemSignal, { kind: "vfs"; event: "rename" }>;
+
+// write/delete variants must have path
+type _WriteHasPath = _VfsWrite extends { path: string } ? true : false;
+const _writePathCheck: _WriteHasPath = true;
+void _writePathCheck;
+
+// rename variant must have from/to AND path (path = from, for uniform access)
+type _RenameHasPath = _VfsRename extends { path: string } ? true : false;
+type _RenameHasFrom = _VfsRename extends { from: string } ? true : false;
+type _RenameHasTo = _VfsRename extends { to: string } ? true : false;
+const _renamePathCheck: _RenameHasPath = true;
+const _renameFromCheck: _RenameHasFrom = true;
+const _renameToCheck: _RenameHasTo = true;
+void _renamePathCheck;
+void _renameFromCheck;
+void _renameToCheck;
+
+// ---------------------------------------------------------------------------
 // 2. Structural conformance — SystemSignalSource
 // ---------------------------------------------------------------------------
 // Compile error if the SystemSignalSource interface shape changes incompatibly.
