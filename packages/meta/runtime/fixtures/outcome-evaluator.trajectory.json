@@ -1,0 +1,225 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "outcome-evaluator",
+  "agent": {
+    "name": "golden-outcome-evaluator",
+    "model_name": "google/gemini-2.0-flash-001"
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.006Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.007Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-12T04:26:24.017Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Write a two-sentence explanation of recursion. Make sure to mention the base case and how a function calls itself.",
+      "observation": {
+        "results": [
+          {
+            "content": "Recursion is a programming technique where a function calls itself within its own definition. A base case is required to stop the recursive calls and prevent infinite loops.\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 175,
+        "completion_tokens": 32
+      },
+      "duration_ms": 798,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "c475e54459402b6ac923d5f11b0f959398b64945049bbe0bbdc3bc43fabdd003"
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.823Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 803.1926250000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.824Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 801.624292,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "_original_timestamp": 1775967984822,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.825Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 800.3947500000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1775967984821,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.826Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 800.271166,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Write a two-sentence explanation of recursion. Make sure to mention the base case and how a function calls itself.",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Write a two-sentence explanation of recursion. Make sure to mention the base case and how a function calls itself."
+          }
+        ],
+        "_original_timestamp": 1775967984819,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.827Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 799.968875,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "_original_timestamp": 1775967984818,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.828Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 799.6735410000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1775967984817,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-12T04:26:24.829Z",
+      "model_name": "middleware:outcome-evaluator",
+      "duration_ms": 799.2142500000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "outcome-evaluator",
+        "hook": "wrapModelStream",
+        "phase": "observe",
+        "priority": 500,
+        "nextCalled": true,
+        "_original_timestamp": 1775967984816,
+        "__koi": {
+          "identifier": "middleware:outcome-evaluator"
+        }
+      }
+    }
+  ]
+}
