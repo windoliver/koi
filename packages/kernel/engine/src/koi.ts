@@ -638,7 +638,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       let enterIdle = false;
       // let justified: mutable counter for stop-gate re-prompts across the session
       let stopRetryCount = 0;
-      const maxStopRetries = DEFAULT_MAX_STOP_RETRIES;
+      const maxStopRetries = input.maxStopRetries ?? DEFAULT_MAX_STOP_RETRIES;
       // let justified: mutable deferred input for stop-gate retry (created after turn boundary)
       let pendingStopInput: EngineInput | undefined;
 

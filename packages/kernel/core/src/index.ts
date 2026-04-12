@@ -773,6 +773,14 @@ export { ANS_SCOPE_PRIORITY, DEFAULT_ANS_CONFIG } from "./name-service.js";
 // nexus-path — branded string type for Nexus namespace paths
 export type { NexusPath } from "./nexus-path.js";
 export { MAX_NEXUS_PATH_LENGTH, nexusPath } from "./nexus-path.js";
+// outcome-evaluator — rubric-graded LLM-as-judge iteration loop types
+export type {
+  CriterionResult,
+  OutcomeEvaluation,
+  OutcomeEvaluationResult,
+  OutcomeRubric,
+  RubricCriterion,
+} from "./outcome-evaluator.js";
 // outcome linkage — decision-to-business-outcome correlation
 export type {
   DecisionCorrelationId,
