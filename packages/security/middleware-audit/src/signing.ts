@@ -48,8 +48,11 @@ function buildStamper(privateKey: KeyObject): {
 
     const entryWithChain: AuditEntry = { ...entry, prev_hash: prevHash };
 
-    // Sign the full entry-with-chain (but without the signature field itself)
-    const payload = Buffer.from(JSON.stringify(entryWithChain));
+    // Sign the full entry-with-chain (but without the signature field itself).
+    // Use TextEncoder rather than Buffer.from so the payload is a plain
+    // Uint8Array<ArrayBuffer> — Node's `sign()` types reject Buffer's
+    // SharedArrayBuffer-capable backing under @types/node 22+.
+    const payload = new TextEncoder().encode(JSON.stringify(entryWithChain));
     const sigBuffer = sign(null, payload, privateKey);
     const signature = sigBuffer.toString("base64url");
 
@@ -99,8 +102,11 @@ export function verifyEntrySignature(entry: AuditEntry, publicKeyDer: Buffer): b
     readonly signature: string;
   };
 
-  const payload = Buffer.from(JSON.stringify(entryWithoutSig));
-  const sigBuffer = Buffer.from(sig, "base64url");
+  // See note in buildStamper(): TextEncoder yields a Uint8Array<ArrayBuffer>
+  // that satisfies node:crypto's ArrayBufferView constraint without the
+  // SharedArrayBuffer escape hatch that Buffer carries.
+  const payload = new TextEncoder().encode(JSON.stringify(entryWithoutSig));
+  const sigBuffer = new Uint8Array(Buffer.from(sig, "base64url"));
 
   try {
     return verify(null, payload, { key: publicKeyDer, format: "der", type: "spki" }, sigBuffer);
