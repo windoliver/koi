@@ -1032,6 +1032,50 @@ bun test --filter=@koi/runtime
 **Pass**: clean interrupt; no zombie processes
 **Watch**: interrupt killing the whole TUI; agent reporting completion of an interrupted tool
 
+#### Q1b. Double-tap SIGINT escalation (graceful → force)
+**Tags**: cli sigint-handler state machine, TUI force-exit path, koi start failsafe (#1684)
+**Covers**: the double-tap state machine landed in #1684 — single tap = graceful cancel, second tap within the 2s escalation window = forced shutdown (exit 130). This is the exact path that regressed historically; Q1 only covers the single-tap graceful branch.
+**Setup**: record the wrapper + child PIDs before starting so you can check for orphans after force exit:
+```bash
+# in another terminal
+pgrep -af 'koi (tui|start)' > /tmp/koi-pids-before.txt
+```
+**User query**: `Run 'sleep 120 && echo done' in bash.`
+
+**Variant A — TUI (`koi tui`)**
+**Action**:
+1. Wait until the bash tool is actively running (status bar shows `streaming…`, tool block visible).
+2. Press Ctrl+C **once**. Observe: status bar returns to `idle`, tool block marked `✗` cancelled, stderr shows `Interrupting… (Ctrl+C again to force)`, TUI stays open, no red error banner. Partial token usage is preserved on the turn.
+3. Start another long tool call (`Run 'sleep 120 && echo done' in bash.`) and wait for it to begin streaming.
+4. Press Ctrl+C **twice within 2 seconds** (intentional double-tap, not a bounce — aim for ~300–800ms gap; the handler coalesces taps under 150ms as defense against dual-ingress delivery).
+**Expected**:
+- (a) First tap flips the state machine to graceful cancel and aborts the active stream.
+- (b) Second tap (within 2s window) escalates to force: TUI aborts the foreground stream, kicks background-task SIGTERM, waits up to ~3.5s for the runtime's SIGKILL escalation, then exits 130.
+- (c) No orphan children: the `sleep 120` process is gone, and no `koi tui` / re-exec child remains.
+- (d) Exit code matches the terminal state of the state machine (`force` → 130).
+**Verify**:
+```bash
+echo $?                          # 130
+pgrep -af 'sleep 120'            # empty
+pgrep -af 'koi (tui|start)'      # empty (or only sessions unrelated to this run)
+diff /tmp/koi-pids-before.txt <(pgrep -af 'koi (tui|start)')  # no new survivors
+```
+**Pass**: first tap cancels gracefully without exiting, second tap force-exits within ~6s, exit code is 130, no orphaned `sleep` or re-exec children, interrupted turn is NOT committed to the transcript (TUI intentionally drops uncommitted turns on force to avoid partial-state corruption).
+**Watch**:
+- Second tap outside the 2s window being treated as a fresh single tap instead of escalation (off-by-one on the window boundary).
+- First tap silently escalating to force (the handler's `complete()` was disarmed by a stale `finally` from a prior run — cross-run race called out in the #1684 adversarial review).
+- Orphan `sleep` child surviving force exit (abort signal not propagated to the bash tool's child process group).
+- Wrapper (re-exec parent) surviving after the TUI child exits — indicates the SIGKILL escalation window in `tui-reexec-signals.ts` didn't fire.
+- Exit code ≠ 130 (state machine terminal state mismatch).
+- Cosmetic `[KeyHandler] Error … EditBuffer is destroyed` on stderr after force is a **known upstream race** in `@opentui/core@0.1.96` — do NOT file as a bug unless it appears *before* process exit or changes the exit code.
+
+**Variant B — `koi start` (single-prompt / loop mode)**
+**Action**: run `koi start --prompt "Run 'sleep 120 && echo done' in bash."` (or loop mode). Double-tap Ctrl+C within 2s after the tool starts.
+**Expected**: first tap aborts the session-wide `AbortController` and prints the `Interrupting…` hint; second tap hits the force path and `process.exit(130)` directly. The 30s unref'd failsafe is armed on `koi start` — if a non-cooperative tool ignores the abort signal, force escalation still lands within 30s without a second tap.
+**Verify**: `echo $?` → 130; no orphan `sleep` / `koi start` processes; `runtime.dispose?.()` cleanup ran (no leaked MCP resolvers — check with `lsof -p` on the parent before the second tap if you want to be thorough).
+**Pass**: force exit within ~2s of the second tap; exit code 130; failsafe path verifiable by *not* sending the second tap and waiting 30s on a tool that ignores abort (optional stretch check).
+**Watch**: `koi start` hanging past 30s with no second tap (failsafe timer not armed or unref'd incorrectly); `dispose()` not running on the force path leaving MCP child processes behind.
+
 #### Q2. Malformed tool input
 **Tags**: tools-core validate-tool-args, query-engine ensureToolResultPairing
 **Setup**: this requires provoking the model to produce malformed args (e.g., via an ambiguous query)
@@ -1144,7 +1188,8 @@ bun test --filter=@koi/runtime
 | cli single-prompt mode (`start --prompt`) | O1 |
 | cli manifest override (`start --manifest`) | O2 |
 | tui rendering | A1, B2, J3 |
-| tui interrupt (Ctrl+C) | Q1, C3 |
+| tui interrupt (Ctrl+C) | Q1, Q1b, C3 |
+| cli sigint state machine (#1684) | Q1b |
 | tui streaming | C1, Q3 |
 
 > Rows with `(add scenario if shipped)` indicate subsystems that are in the plan but where the current scenario set doesn't have dedicated coverage. Add scenarios during the bash if those subsystems are in scope for your run.
