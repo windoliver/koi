@@ -80,7 +80,7 @@ function UserContentBlock(props: { readonly block: ContentBlock }): JSX.Element 
   return (
     <Switch>
       <Match when={props.block.kind === "text" ? (props.block as TextContent) : undefined}>
-        {(b: Accessor<TextContent>) => <text>{b().text}</text>}
+        {(b: Accessor<TextContent>) => <text selectable>{b().text}</text>}
       </Match>
       <Match when={props.block.kind === "file" ? (props.block as FileContent) : undefined}>
         {(b: Accessor<FileContent>) => <text fg="cyan">[file: {b().name ?? b().url}]</text>}
@@ -184,7 +184,7 @@ function AssistantMessage(props: {
 
 function SystemMessage(props: { readonly message: SystemMessage_ }): JSX.Element {
   return (
-    <text fg="yellow">
+    <text fg="yellow" selectable>
       <i>{props.message.text}</i>
     </text>
   );

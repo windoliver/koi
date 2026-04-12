@@ -55,7 +55,7 @@ export function TextBlock(props: TextBlockProps): JSX.Element {
   });
 
   return (
-    <Show when={props.syntaxStyle} fallback={<text>{props.text}</text>}>
+    <Show when={props.syntaxStyle} fallback={<text selectable>{props.text}</text>}>
       {(style: () => SyntaxStyle) => (
         <Show
           when={props.streaming && (hasFenceSplit() || props.text !== "")}

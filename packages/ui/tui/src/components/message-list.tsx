@@ -18,7 +18,7 @@
  */
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
-import { onResize, useKeyboard, useSelectionHandler } from "@opentui/solid";
+import { onResize, useKeyboard, useRenderer, useSelectionHandler } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, For, on, onCleanup } from "solid-js";
 import {
@@ -33,6 +33,7 @@ import {
   shouldFollow,
 } from "../auto-scroll/auto-scroll-state.js";
 import { useTuiStore } from "../store-context.js";
+import { copyToClipboard } from "../utils/clipboard.js";
 import { MessageRow } from "./message-row.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
 
@@ -45,6 +46,7 @@ interface MessageListProps {
 }
 
 export function MessageList(props: MessageListProps): JSX.Element {
+  const renderer = useRenderer();
   const messages = useTuiStore((s) => s.messages);
   const [spinnerFrame, setSpinnerFrame] = createSignal(0);
 
@@ -114,10 +116,19 @@ export function MessageList(props: MessageListProps): JSX.Element {
     setScrollState(INITIAL_SCROLL_STATE);
   });
 
-  // Text selection pauses auto-scroll
+  // Copy-on-select (like OpenCode) + auto-scroll pause.
+  // Cmd+C is consumed by the terminal emulator and never reaches the app,
+  // so we auto-copy to clipboard via OSC 52 when the user finishes selecting.
+  // After copying, clear the selection so the next click focuses the input
+  // instead of starting a new selection.
   useSelectionHandler((selection) => {
     if (selection !== null && selection !== undefined) {
       setScrollState((s) => onSelectionStart(s));
+      const text = selection.getSelectedText();
+      if (text.length > 0) {
+        copyToClipboard(text);
+        renderer.clearSelection();
+      }
     } else {
       setScrollState((s) => onSelectionEnd(s));
     }
