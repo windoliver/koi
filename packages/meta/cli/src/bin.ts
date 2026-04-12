@@ -93,7 +93,13 @@ switch (result.kind) {
   case "tui": {
     const { runTuiCommand } = await import("./tui-command.js");
     await runTuiCommand(result.flags);
-    process.exit(0);
+    // No-arg exit so `process.exitCode` (published by the double-tap
+    // force path in tui-command.ts onForce) is preserved. Hard-coding
+    // `process.exit(0)` here overwrote the force-exit code 130, turning
+    // the double-tap state machine into a silent clean exit when the
+    // natural teardown path finished inside the 3.5s escalation window
+    // (#1698 Q1b finding).
+    process.exit();
     break;
   }
   case "run": {

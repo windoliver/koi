@@ -582,6 +582,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // running for the full 3.5s SIGKILL-escalation wait below.
       abortActiveStream();
       const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
+      // Publish the requested exit code NOW so any path that reaches
+      // `process.exit()` without an explicit code picks up 130. Without
+      // this, a natural teardown path (runTuiCommand returning because
+      // the engine stream closed cleanly after abort) racing the 3.5s
+      // timer below reached bin.ts's `process.exit(0)` first and
+      // overwrote the force-exit code with 0 — silently turning force
+      // into a clean exit (#1698 Q1b finding).
+      process.exitCode = 130;
       if (liveTasks) {
         // Wait long enough for the runtime's SIGKILL escalation window
         // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
@@ -655,6 +663,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const shutdown = async (exitCode = 0): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    // Publish the requested exit code NOW, before any await. If the
+    // natural teardown path (runTuiCommand returning after
+    // appHandle.stop) reaches bin.ts's `process.exit()` before this
+    // async body's `finally` runs, the no-arg exit still picks up
+    // `process.exitCode` and terminates with the right code instead of
+    // the default 0 (#1698 Q1b finding — the `shutdown(130)` path from
+    // onGraceful on an idle second tap exhibits the same race as
+    // onForce).
+    process.exitCode = exitCode;
     // Abort the active foreground run FIRST so no further model/tool
     // work can execute during teardown. Without this, long-running or
     // non-cooperative tools can keep mutating local/remote state during
