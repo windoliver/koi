@@ -49,6 +49,8 @@ bun run check:layers
 OPENROUTER_API_KEY=<your key from ~/koi/.env>
 ```
 
+> In a worktree, `.env` does not exist by default. Either copy your main checkout's `.env` over (`cp /path/to/main/.env .env`) or symlink it (`ln -s /path/to/main/.env .env`). Bun only auto-loads `.env` from the directory it is invoked from, so the file must exist at the worktree root.
+
 ### 1.3 Per-tester isolation (mandatory for parallel runs)
 
 Every stateful resource (HOME, fixture path, tmux session, Nexus port, capture files, session transcripts) MUST be namespaced per tester. Parallel testers on one workstation share nothing — no shared `~/.koi`, no shared `~/.config/nexus-fs`, no shared ports, no shared fixture, no shared `/tmp/koi-capture.txt`.
