@@ -8939,6 +8939,70 @@ describe("Golden: @koi/memory-team-sync", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/model-router
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/model-router", () => {
+  test("MW:model-router span present in trajectory with routing decisions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/model-router.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly decisions?: readonly Record<string, unknown>[];
+        };
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("model-router");
+
+    const routerSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "model-router",
+    );
+    expect(routerSpans.length).toBeGreaterThan(0);
+
+    const span = routerSpans[0];
+    expect(span?.extra?.decisions).toBeDefined();
+    expect(span?.extra?.decisions?.length).toBeGreaterThan(0);
+
+    const decision = span?.extra?.decisions?.[0];
+    expect(typeof decision?.["router.target.selected"]).toBe("string");
+    expect((decision?.["router.target.selected"] as string).length).toBeGreaterThan(0);
+    expect(Array.isArray(decision?.["router.target.attempted"])).toBe(true);
+    expect(typeof decision?.["router.fallback_occurred"]).toBe("boolean");
+    expect(typeof decision?.["router.latency_ms"]).toBe("number");
+  });
+
+  test("MW:model-router fallback visible in trajectory: primary fails → secondary selected", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/model-router.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly decisions?: readonly Record<string, unknown>[];
+        };
+      }[];
+    };
+
+    const routerSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "model-router",
+    );
+
+    const decision = routerSpans[0]?.extra?.decisions?.[0];
+    // Recording uses two-target config: failing primary + real secondary
+    expect(decision?.["router.fallback_occurred"]).toBe(true);
+    const attempted = decision?.["router.target.attempted"] as string[];
+    expect(attempted).toHaveLength(2);
+    expect(attempted[0]).toBe("primary-down:fast-primary");
+    // Selected is the secondary (backup) that actually served the request
+    expect(decision?.["router.target.selected"]).toBe(attempted[1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/loop (#1624)
 //
 // Standalone golden queries that exercise the runUntilPass() convergence

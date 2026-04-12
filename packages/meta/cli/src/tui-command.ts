@@ -12,7 +12,8 @@
  *   OPENROUTER_API_KEY — key for OpenRouter (default provider)
  *   OPENAI_API_KEY     — key for OpenAI (injects api.openai.com/v1)
  *   OPENAI_BASE_URL or OPENROUTER_BASE_URL — explicit base URL override
- *   KOI_MODEL — model name override (default: google/gemini-2.0-flash-001)
+ *   KOI_MODEL          — model name override (default: anthropic/claude-sonnet-4-6)
+ *   KOI_FALLBACK_MODEL — comma-separated fallback models; enables model-router
  *
  * Sessions are recorded to JSONL transcripts at ~/.koi/sessions/<sessionId>.jsonl.
  * The session ID is generated once per TUI process launch; agent:clear / session:new
@@ -35,6 +36,11 @@ import { sessionId } from "@koi/core";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import {
+  createModelRouter,
+  createModelRouterMiddleware,
+  validateRouterConfig,
+} from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import type { EventBatcher, SessionSummary, TrajectoryStepSummary, TuiStore } from "@koi/tui";
@@ -322,13 +328,61 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: modelName } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: modelName, fallbackModels } = apiConfigResult.value;
 
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
   });
+
+  // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the
+  // same API key and base URL (typical for OpenRouter which hosts all models).
+  // Primary is always the KOI_MODEL adapter; fallbacks follow in order.
+  //
+  // ProviderAdapter.stream returns AsyncGenerator; ModelAdapter.stream returns
+  // AsyncIterable. Wrap with async function* to bridge the gap.
+  const modelRouterMiddleware =
+    fallbackModels.length > 0
+      ? (() => {
+          const allModels = [modelName, ...fallbackModels];
+          const adapterMap = new Map(
+            allModels.map((m) => {
+              const a = createOpenAICompatAdapter({
+                apiKey,
+                ...(baseUrl !== undefined ? { baseUrl } : {}),
+                model: m,
+              });
+              return [
+                m,
+                {
+                  id: m,
+                  complete: (req: import("@koi/core").ModelRequest) => a.complete(req),
+                  stream: async function* (req: import("@koi/core").ModelRequest) {
+                    yield* a.stream(req);
+                  },
+                },
+              ] as const;
+            }),
+          );
+          const configResult = validateRouterConfig({
+            strategy: "fallback",
+            targets: allModels.map((m) => ({ provider: m, model: m, adapterConfig: {} })),
+            retry: { maxRetries: 0 },
+          });
+          if (!configResult.ok) {
+            process.stderr.write(
+              `warn: model-router config invalid (${configResult.error.message}) — routing disabled\n`,
+            );
+            return undefined;
+          }
+          const router = createModelRouter(configResult.value, adapterMap);
+          process.stderr.write(
+            `[koi/tui] model-router: ${modelName} → [${fallbackModels.join(", ")}]\n`,
+          );
+          return createModelRouterMiddleware(router);
+        })()
+      : undefined;
 
   // ---------------------------------------------------------------------------
   // 2. TUI state setup (P2-A: show TUI immediately, before runtime assembly)
@@ -404,6 +458,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     approvalHandler: permissionBridge.handler,
     cwd: process.cwd(),
     systemPrompt,
+    ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // In loop mode, session persistence is intentionally omitted so
     // failed iterations don't pollute the resumable JSONL transcript.
     // Loop mode is a self-correcting execution, not a conversation.

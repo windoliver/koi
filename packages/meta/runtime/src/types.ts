@@ -298,6 +298,19 @@ export interface RuntimeConfig {
    * Default: Date.now (wrapped in createMonotonicClock per stream).
    */
   readonly clock?: (() => number) | undefined;
+
+  /**
+   * Pre-constructed model-router middleware. When provided, routes all model
+   * calls through the failover chain before reaching the model adapter.
+   * Create via: createModelRouterMiddleware(createModelRouter(config, adapters))
+   *
+   * Placed innermost (after semantic-retry when present) so each retry attempt
+   * independently benefits from provider failover. When omitted, calls go
+   * directly to the adapter terminals (no routing).
+   *
+   * Ignored if a middleware named "model-router" is already in `middleware`.
+   */
+  readonly modelRouterMiddleware?: KoiMiddleware | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */

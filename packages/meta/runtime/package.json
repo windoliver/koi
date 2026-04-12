@@ -43,6 +43,7 @@
     "@koi/rules-loader": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
     "@koi/middleware-report": "workspace:*",
+    "@koi/model-router": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/permissions": "workspace:*",
     "@koi/plugins": "workspace:*",

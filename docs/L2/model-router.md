@@ -1,35 +1,37 @@
-# @koi/model-router — Multi-Provider LLM Routing with Cascade Escalation
+# @koi/model-router — Multi-Provider LLM Routing with Fallback and Health Monitoring
 
-Routes model calls across multiple LLM providers with retry, fallback chains, cascade escalation (cheap model first → evaluate confidence → escalate), circuit breakers, and manifest-driven configuration. One middleware to replace single-model setups with intelligent multi-model routing.
+Routes model calls across multiple LLM providers with retry, ordered fallback chains, per-target circuit breakers, latency health monitoring, and streaming-safe failover. One middleware to add production-grade reliability to any single-model agent.
+
+> **Phase 2** — ships `fallback`, `round-robin`, and `weighted` routing strategies.
+> Cascade escalation (cheap model first → confidence evaluator → escalate) is Phase 3.
 
 ---
 
 ## Why It Exists
 
-When an LLM agent uses a single model, you face a tradeoff:
+Production agents hit rate limits and provider outages mid-session. Without this package, every user wraps the SDK themselves, badly.
 
-1. **Use a cheap model** — fast and affordable, but struggles with complex reasoning tasks
-2. **Use an expensive model** — handles everything, but 10-30x the cost for simple queries
+An ordered fallback list (`[primary, secondary, local-fallback]`) is the simplest production-grade reliability pattern. This package provides:
 
-Most agent requests are simple (greetings, lookups, reformulations). A minority are complex (multi-step reasoning, code generation, architectural planning). Routing all traffic to one model wastes money or capability.
-
-This package solves the problem with **cascade routing**: start with a cheap model, evaluate its response confidence, and escalate to a stronger model only when needed. Combined with circuit breakers, retry, and fallback chains, it makes multi-model setups production-ready.
+- **Ordered fallback chain** — try targets in sequence; skip those with open circuit breakers
+- **Per-target circuit breakers** — open after N failures, half-open after cooldown, auto-recover
+- **Streaming-safe failover** — never splices two partial responses; only fails over before first chunk
+- **Latency tracking** — p50/p95 per target, updated on every request
+- **In-flight dedup** — prevents double-billing on concurrent identical requests
+- **Local health probing** — periodic pings to local providers to detect recovery
 
 ### Without model-router
 
 ```
-Every request → Claude Sonnet → $$$
-(even "what time is it?" uses the expensive model)
+Anthropic goes down → agent errors → session lost
 ```
 
-### With model-router (cascade)
+### With model-router
 
 ```
-Request → Complexity Classifier (<1ms)
-   │
-   ├─ Simple → Haiku → confidence check → ✓ done ($)
-   │
-   └─ Complex → skip Haiku → Sonnet directly ($$)
+Request → Anthropic (primary) → 5xx
+       → OpenAI (secondary)  → ✓ done
+       (user never notices)
 ```
 
 ---
@@ -63,45 +65,33 @@ Request → Complexity Classifier (<1ms)
 
 ## Architecture
 
-`@koi/model-router` is an **L2 feature package** at `packages/drivers/model-router/`. It depends on L0 (`@koi/core`) and L0u utilities (`@koi/errors`, `@koi/validation`, `@koi/token-estimator`, `@koi/resolve`).
+`@koi/model-router` is an **L2 feature package** at `packages/lib/model-router/`. It depends on L0 (`@koi/core`) and L0u utilities (`@koi/errors`, `@koi/validation`).
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │  @koi/model-router  (L2)                                         │
 │                                                                  │
-│  adapters/                                                       │
-│    anthropic.ts        ← Anthropic Messages API (raw fetch)      │
-│    openai.ts           ← OpenAI Chat Completions                 │
-│    openrouter.ts       ← OpenRouter (OpenAI-compatible)          │
-│    openai-compat.ts    ← Shared base for OpenAI-compatible APIs  │
-│    ollama.ts           ← Local Ollama                            │
-│    lm-studio.ts        ← Local LM Studio                        │
-│    vllm.ts             ← vLLM inference server                   │
-│    discover.ts         ← Auto-discover local providers           │
-│                                                                  │
-│  cascade/                                                        │
-│    complexity-classifier.ts  ← 14-dimension heuristic scorer     │
-│    evaluators.ts             ← Length, keyword, LLM evaluators   │
-│    cascade.ts                ← Cascade orchestration loop        │
-│    cascade-metrics.ts        ← Per-tier cost tracking            │
-│                                                                  │
+│  provider-adapter.ts   ← ProviderAdapter interface               │
 │  config.ts             ← Zod schema + validateRouterConfig()     │
-│  router.ts             ← createModelRouter() — main service      │
-│  middleware.ts          ← createModelRouterMiddleware() wrapper   │
-│  descriptor.ts          ← BrickDescriptor for manifest wiring    │
-│  circuit-breaker.ts     ← Per-target circuit breaker             │
-│  retry.ts               ← Exponential backoff with jitter        │
-│  fallback.ts            ← Ordered target fallback chain          │
+│  fallback.ts           ← Ordered target fallback chain           │
+│  target-ordering.ts    ← Orderers for round-robin/weighted       │
+│  latency-tracker.ts    ← 1000-sample ring buffer, p50/p95        │
+│  in-flight-cache.ts    ← In-flight request dedup (Map<hash,Prom>)│
+│  health-probe.ts       ← Local-only active health probing        │
+│  route-core.ts         ← executeForTarget + capability check     │
+│  router.ts             ← createModelRouter() — thin assembly     │
+│  middleware.ts         ← createModelRouterMiddleware() wrapper    │
+│  normalize.ts          ← Message normalization for adapters       │
 │                                                                  │
 ├──────────────────────────────────────────────────────────────────┤
 │  Dependencies                                                    │
-│  @koi/core              (L0)   Types, ModelRequest, KoiMiddleware│
-│  @koi/errors            (L0u)  KoiError constructors             │
-│  @koi/validation        (L0u)  Zod schema helpers                │
-│  @koi/token-estimator   (L0u)  Token counting for classifier     │
-│  @koi/resolve           (L0u)  BrickDescriptor, ResolutionContext│
+│  @koi/core    (L0)   ModelRequest, ModelChunk, KoiMiddleware     │
+│  @koi/errors  (L0u)  createCircuitBreaker, withRetry, KoiError   │
+│  @koi/validation (L0u) validateWith (Zod helper)                 │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+Concrete provider adapters (Anthropic, OpenAI, OpenRouter, Ollama) live in separate L2 packages (Phase 3). Callers pass a `ReadonlyMap<string, ProviderAdapter>` to `createModelRouter`.
 
 ---
 
@@ -111,80 +101,83 @@ Request → Complexity Classifier (<1ms)
 
 | Strategy | Behavior |
 |----------|----------|
-| `cascade` | Cheap model first → evaluate confidence → escalate if below threshold |
-| `fallback` | Try targets in order, skip to next on failure |
-| `round-robin` | Distribute requests across targets evenly |
-| `weighted` | Distribute by configured weights (0-1) |
+| `fallback` | Try targets in order; skip to next on failure or open circuit |
+| `round-robin` | Distribute requests across targets evenly; fallback on failure |
+| `weighted` | Weighted random primary selection; remaining sorted by weight as fallbacks |
 
-### Cascade Flow
+> Cascade (cheap model first → confidence check → escalate) is Phase 3.
+
+### Fallback Flow
 
 ```
 Incoming Model Call
        │
        ▼
 ┌─────────────────────────────────────┐
-│  Complexity Classifier (<1ms)       │
-│  14 dimensions → score → tier       │
-│                                     │
-│  LIGHT  (score < 0.25) → Tier 0    │
-│  MEDIUM (0.25 - 0.6)   → Tier 0    │
-│  HEAVY  (score > 0.6)  → Tier 1+   │
+│  Order targets by strategy          │
+│  (fallback / round-robin / weighted)│
 └──────────────┬──────────────────────┘
                │
                ▼
 ┌─────────────────────────────────────┐
-│  Execute on recommended tier        │
-│  (e.g., Haiku for LIGHT)            │
+│  Skip targets with OPEN circuits    │
+│  (graceful degradation: if ALL open,│
+│   try them anyway — prefer degraded │
+│   over nothing)                     │
 └──────────────┬──────────────────────┘
                │
                ▼
 ┌─────────────────────────────────────┐
-│  Confidence Evaluator               │
-│  Length heuristic + keyword check    │
-│  composed with "min" strategy       │
-│                                     │
-│  confidence >= 0.7 → return result  │
-│  confidence <  0.7 → escalate       │
+│  Retry target with backoff          │
+│  On 429/5xx/timeout: recordFailure  │
+│  On success: recordSuccess          │
 └──────────────┬──────────────────────┘
-               │ (escalate)
+               │ failure
                ▼
 ┌─────────────────────────────────────┐
-│  Execute on next tier (e.g., Sonnet)│
-│  → return result                    │
+│  Try next target in chain           │
+│  (withFallback loop)                │
 └─────────────────────────────────────┘
 ```
 
-### Complexity Classifier — 14 Dimensions
+### Streaming Failover Safety
 
-The classifier scores requests across 14 dimensions in <1ms (pure heuristic, no LLM call):
+Streaming uses a `chunksYielded` sentinel:
 
-| Dimension | What it measures |
-|-----------|-----------------|
-| `reasoning` | Logical reasoning keywords (analyze, compare, evaluate) |
-| `code` | Code generation/review indicators |
-| `multiStep` | Sequential task markers (first, then, finally) |
-| `technical` | Domain-specific vocabulary density |
-| `outputFormat` | Structured output requirements (JSON, table, list) |
-| `domain` | Specialized domain markers (legal, medical, financial) |
-| `tokenCount` | Raw input length (longer = likely more complex) |
-| `questionComplexity` | Question structure complexity |
-| `imperativeVerbs` | Task-oriented action words |
-| `constraints` | Explicit constraints (must, exactly, no more than) |
-| `creative` | Creative writing indicators |
-| `simpleIndicators` | Simple query signals — **negative weight** |
-| `relay` | Pass-through/relay patterns — **negative weight** |
-| `agentic` | Multi-tool/agent coordination markers |
+- If the stream fails **before** the first chunk → fall through to next target
+- If the stream fails **after** yielding chunks → propagate error immediately; do **not** switch providers (caller already has a partial response)
 
-### Confidence Evaluators
+### In-Flight Request Dedup
 
-Two built-in evaluators, composed with `"min"` strategy (conservative — both must pass):
+`createModelRouter` maintains a `Map<hash, Promise<ModelResponse>>`. If two identical requests (same messages, model, temperature) arrive concurrently, the second awaits the first result — one API call, zero double-billing.
 
-| Evaluator | Logic |
-|-----------|-------|
-| **Length heuristic** | Score based on response length. <10 chars → 0.0, ≥200 chars → 1.0, linear in between |
-| **Keyword** | Penalize 0.2 per uncertainty marker ("I'm not sure", "I don't know", etc.) |
+### Health Monitoring
 
-Optional third evaluator (not auto-wired): **Verbalized** — asks an LLM to self-rate confidence.
+`getMetrics()` returns per-target `TargetMetrics`:
+
+```typescript
+interface TargetMetrics {
+  readonly requests: number;
+  readonly failures: number;
+  readonly p50Ms: number | undefined;  // undefined until 2+ samples
+  readonly p95Ms: number | undefined;
+  readonly lastErrorAt: number | undefined;
+}
+```
+
+Latency samples are stored in a 1000-sample circular buffer per target. Percentiles are sorted on read — O(1000 log 1000), negligible.
+
+### Telemetry
+
+Every `wrapModelCall` invocation calls `ctx.reportDecision` with:
+
+```typescript
+{
+  "router.target.selected": "anthropic:claude-sonnet-4-6",
+  "router.fallover.count": 1,           // 0 if primary succeeded
+  "router.latency_ms": 423
+}
+```
 
 ### Middleware Position
 
@@ -215,138 +208,105 @@ Priority 900 means model-router intercepts **all** model calls before any other 
 
 ---
 
-## Manifest Configuration
+## Programmatic Configuration (Phase 2)
 
-### Basic cascade (recommended)
-
-```yaml
-middleware:
-  - model-router:
-      strategy: cascade
-      confidenceThreshold: 0.7
-      targets:
-        - anthropic:claude-haiku-4-5
-        - anthropic:claude-sonnet-4-5
-```
-
-### Multi-provider fallback
-
-```yaml
-middleware:
-  - model-router:
-      strategy: fallback
-      targets:
-        - anthropic:claude-sonnet-4-5
-        - openai:gpt-4o
-```
-
-### Full cascade with options
-
-```yaml
-middleware:
-  - model-router:
-      strategy: cascade
-      confidenceThreshold: 0.7
-      maxEscalations: 2
-      budgetLimitTokens: 100000
-      targets:
-        - anthropic:claude-haiku-4-5
-        - anthropic:claude-sonnet-4-5
-        - anthropic:claude-opus-4-5
-```
-
-### YAML options
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `strategy` | `"cascade" \| "fallback" \| "round-robin" \| "weighted"` | **required** | Routing strategy |
-| `targets` | `string[]` | **required** | List of `"provider:model"` strings, ordered cheapest → most expensive |
-| `confidenceThreshold` | `number` (0-1) | `0.7` | Minimum confidence to accept a response (cascade only) |
-| `maxEscalations` | `number` | `tiers.length - 1` | Max tier jumps per request (cascade only) |
-| `budgetLimitTokens` | `number` | `0` (disabled) | Total token budget across all tiers (cascade only) |
-
-### Supported providers
-
-| Provider prefix | Env variable | API |
-|----------------|-------------|-----|
-| `anthropic` | `ANTHROPIC_API_KEY` | Anthropic Messages API |
-| `openai` | `OPENAI_API_KEY` | OpenAI Chat Completions |
-| `openrouter` | `OPENROUTER_API_KEY` | OpenRouter (OpenAI-compatible) |
-
-API keys are read from environment variables automatically — no need to configure them in YAML.
-
----
-
-## Programmatic API
-
-### `createModelRouter(config, adapters, options)`
-
-Creates the core router service.
+In Phase 2, `createModelRouter` is the primary API. Callers provide their own adapter map.
 
 ```typescript
 import {
   createModelRouter,
-  createAnthropicAdapter,
-  createComplexityClassifier,
-  createLengthHeuristicEvaluator,
-  createKeywordEvaluator,
-  composeEvaluators,
+  createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
 
+// Callers bring their own ProviderAdapter implementations
 const adapters = new Map([
-  ["anthropic", createAnthropicAdapter({ apiKey: process.env.ANTHROPIC_API_KEY! })],
+  ["anthropic", myAnthropicAdapter],
+  ["openai", myOpenAIAdapter],
 ]);
 
 const configResult = validateRouterConfig({
-  strategy: "cascade",
+  strategy: "fallback",
   targets: [
-    { provider: "anthropic", model: "claude-haiku-4-5", adapterConfig: {} },
-    { provider: "anthropic", model: "claude-sonnet-4-5", adapterConfig: {} },
+    { provider: "anthropic", model: "claude-sonnet-4-6", adapterConfig: {} },
+    { provider: "openai",    model: "gpt-4o",            adapterConfig: {} },
   ],
-  cascade: {
-    tiers: [
-      { targetId: "anthropic:claude-haiku-4-5" },
-      { targetId: "anthropic:claude-sonnet-4-5" },
-    ],
-    confidenceThreshold: 0.7,
-  },
 });
 
 if (!configResult.ok) throw new Error(configResult.error.message);
 
 const router = createModelRouter(configResult.value, adapters, {
-  classifier: createComplexityClassifier(),
-  evaluator: composeEvaluators(
-    [createLengthHeuristicEvaluator(), createKeywordEvaluator()],
-    "min",
-  ),
+  clock: Date.now,    // injectable for tests
+  setInterval,       // injectable for tests
 });
 
-const result = await router.route(request);
-```
-
-### `createModelRouterMiddleware(router)`
-
-Wraps a `ModelRouter` as `KoiMiddleware` (priority 900).
-
-```typescript
-import { createModelRouterMiddleware } from "@koi/model-router";
-
+// Use as middleware
 const middleware = createModelRouterMiddleware(router);
-// middleware.name === "model-router"
-// middleware.priority === 900
+
+// Or call directly
+const result = await router.route(request);
+const stream  = router.routeStream(request);
+const health  = router.getHealth();   // ReadonlyMap<string, CircuitBreakerSnapshot>
+const metrics = router.getMetrics();  // RouterMetrics with ReadonlyMap<string, TargetMetrics>
+
+// Cleanup
+router.dispose();
 ```
 
-### `ModelRouter` interface
+> **Phase 3** adds a `BrickDescriptor` for YAML manifest wiring and concrete adapter packages
+> (`@koi/adapter-anthropic`, `@koi/adapter-openai`, etc.) that implement `ProviderAdapter`.
+
+### Config options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `strategy` | `"fallback" \| "round-robin" \| "weighted"` | **required** | Routing strategy |
+| `targets` | `ModelTargetConfig[]` | **required** | Ordered list of provider+model targets |
+| `retry.maxRetries` | `number` | `3` | Max retries per target |
+| `retry.initialDelayMs` | `number` | `1000` | Initial backoff delay |
+| `circuitBreaker.failureThreshold` | `number` | `5` | Failures to open circuit |
+| `circuitBreaker.cooldownMs` | `number` | `60000` | Cooldown before half-open probe |
+| `healthProbe.intervalMs` | `number` | `30000` | Health probe interval (local providers only) |
+
+---
+
+## `ModelRouter` interface
 
 ```typescript
+interface TargetMetrics {
+  readonly requests: number;
+  readonly failures: number;
+  readonly p50Ms: number | undefined;
+  readonly p95Ms: number | undefined;
+  readonly lastErrorAt: number | undefined;
+}
+
+interface RouterMetrics {
+  readonly totalRequests: number;
+  readonly totalFailures: number;
+  readonly byTarget: ReadonlyMap<string, TargetMetrics>;
+  readonly totalEstimatedCost: number;
+}
+
 interface ModelRouter {
-  readonly route: (request: ModelRequest) => Promise<Result<ModelResponse, KoiError>>;
-  readonly routeStream: (request: ModelRequest) => AsyncGenerator<StreamChunk>;
-  readonly getHealth: () => ReadonlyMap<string, CircuitBreakerSnapshot>;
+  readonly route:      (request: ModelRequest) => Promise<Result<ModelResponse, KoiError>>;
+  readonly routeStream:(request: ModelRequest) => AsyncIterable<ModelChunk>;
+  readonly getHealth:  () => ReadonlyMap<string, CircuitBreakerSnapshot>;
   readonly getMetrics: () => RouterMetrics;
-  readonly dispose: () => void;
+  readonly dispose:    () => void;
+}
+```
+
+## `ProviderAdapter` interface
+
+Implement this to wire any LLM provider into the router.
+
+```typescript
+interface ProviderAdapter {
+  readonly id: string;
+  readonly complete: (request: ModelRequest) => Promise<ModelResponse>;
+  readonly stream:   (request: ModelRequest) => AsyncGenerator<ModelChunk>;
+  readonly checkHealth?: () => Promise<boolean>;  // optional, used for local probing only
 }
 ```
 
@@ -356,14 +316,16 @@ interface ModelRouter {
 
 | Feature | Algorithm | Per-turn cost |
 |---------|-----------|---------------|
-| Complexity classification | 14-dim heuristic scoring | <1ms, zero allocations on hot path |
-| Length evaluator | String length comparison | O(1) |
-| Keyword evaluator | 10-marker scan | O(n) where n = response length |
 | Circuit breaker check | State lookup | O(1) |
+| In-flight dedup | Map<hash, Promise> lookup | O(1) hash + O(n) messages for hash |
+| Target ordering (fallback) | Identity | O(1) |
+| Target ordering (round-robin) | Counter mod | O(1) |
+| Target ordering (weighted) | Weighted scan + sort | O(n) targets |
 | Retry with backoff | Exponential + jitter | Only on failure |
+| Latency percentile | Ring buffer sort on read | O(1000 log 1000) at getMetrics() |
 | Adapter reuse | Map lookup by provider | O(1) |
 
-The classifier and evaluators add negligible overhead. The dominant cost is always the LLM API call itself. Cascade routing **saves** latency on simple requests by using faster cheap models.
+Overhead per request on the fast path (primary succeeds): one hash, one map lookup, one CB check. Dominant cost is always the LLM API call itself.
 
 ---
 
@@ -372,22 +334,23 @@ The classifier and evaluators add negligible overhead. The dominant cost is alwa
 ```
 L0  @koi/core ──────────────────────────────────────┐
     KoiMiddleware, ModelRequest, ModelResponse,      │
-    KoiError, Result                                 │
+    ModelChunk, KoiError, Result                     │
                                                       │
-L0u @koi/errors, @koi/validation,                    │
-    @koi/token-estimator, @koi/resolve               │
+L0u @koi/errors    createCircuitBreaker, withRetry   │
+    @koi/validation validateWith (Zod helper)        │
                                                       ▼
 L2  @koi/model-router ◄─────────────────────────────┘
     imports from L0 + L0u only
     ✗ never imports @koi/engine (L1)
     ✗ never imports peer L2 packages
-    ✗ zero external HTTP/SDK dependencies (uses raw fetch)
+    ✗ no external HTTP/SDK dependencies (raw fetch in adapters, which are separate packages)
 ```
 
 ---
 
 ## Related
 
-- Issue #681 — Phase routing (planning model → execution model) extension
-- `docs/architecture/manifest-resolution.md` — How descriptors are resolved from koi.yaml
+- Issue #1626 — Phase 2 implementation (this package)
+- Phase 3 — Cascade strategy (complexity classifier + confidence evaluators)
+- Phase 3 — `BrickDescriptor` for YAML manifest wiring + concrete adapter packages
 - `@koi/middleware-semantic-retry` — Complements model-router with intelligent retry on failure

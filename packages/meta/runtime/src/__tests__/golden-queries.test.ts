@@ -604,7 +604,7 @@ describe("Golden: @koi/audit-sink-ndjson", () => {
 // ---------------------------------------------------------------------------
 
 import { budgetConfigFromResolved, enforceBudget, resolveConfig } from "@koi/context-manager";
-import type { InboundMessage } from "@koi/core";
+import type { InboundMessage, ModelRequest, ModelResponse } from "@koi/core";
 
 describe("Golden: @koi/context-manager", () => {
   function makeMsg(senderId: "user" | "assistant", text: string): InboundMessage {
@@ -651,6 +651,263 @@ describe("Golden: @koi/context-manager", () => {
     expect(cfg.contextWindowSize).toBe(1_000_000);
     expect(cfg.softTriggerFraction).toBeDefined();
     expect(cfg.hardTriggerFraction).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/model-router (#1626)
+// ---------------------------------------------------------------------------
+
+import {
+  createModelRouter,
+  createModelRouterMiddleware,
+  validateRouterConfig,
+} from "@koi/model-router";
+
+describe("Golden: @koi/model-router", () => {
+  function makeRequest(text = "hello"): ModelRequest {
+    return {
+      messages: [{ senderId: "user", content: [{ kind: "text", text }], timestamp: 0 }],
+      model: "placeholder",
+    };
+  }
+
+  function makeResponse(model: string): ModelResponse {
+    return { content: `from ${model}`, model, usage: { inputTokens: 5, outputTokens: 10 } };
+  }
+
+  test("fallback routing: primary fails → secondary serves request", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const result = await router.route(makeRequest());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.response.model).toBe("safe");
+    expect(result.value.decision.fallbackOccurred).toBe(true);
+    expect(result.value.decision.selectedTargetId).toBe("backup:safe");
+    expect(result.value.decision.attemptedTargetIds).toEqual(["primary:fast", "backup:safe"]);
+
+    const metrics = router.getMetrics();
+    expect(metrics.totalRequests).toBe(1);
+    expect(metrics.byTarget.get("primary:fast")?.failures).toBe(1);
+    expect(metrics.byTarget.get("backup:safe")?.requests).toBe(1);
+
+    const health = router.getHealth();
+    expect(health.get("primary:fast")?.state).toBe("CLOSED");
+    expect(health.get("backup:safe")?.state).toBe("CLOSED");
+    router.dispose();
+  });
+
+  test("middleware reports fallback_occurred:true via ctx.reportDecision when primary fails", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    // Capture decisions emitted via ctx.reportDecision — this is what lands in ATIF
+    const reported: Record<string, unknown>[] = [];
+    const ctx = {
+      reportDecision: (d: Record<string, unknown>) => {
+        reported.push(d);
+      },
+    } as unknown as import("@koi/core").TurnContext;
+
+    // wrapModelCall: middleware should route, fallback, then report decisions
+    if (mw.wrapModelCall === undefined) throw new Error("wrapModelCall not defined");
+    const response = await mw.wrapModelCall(ctx, makeRequest(), async () => {
+      throw new Error("should not reach next — router handles it");
+    });
+
+    expect(response.model).toBe("safe");
+
+    // ATIF observability: router.fallback_occurred must be true in reported decisions
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.["router.fallback_occurred"]).toBe(true);
+    expect(reported[0]?.["router.target.selected"]).toBe("backup:safe");
+    expect(reported[0]?.["router.target.attempted"]).toEqual(["primary:fast", "backup:safe"]);
+    expect(typeof reported[0]?.["router.latency_ms"]).toBe("number");
+
+    router.dispose();
+  });
+
+  test("middleware reports fallback_occurred:true via ctx.reportDecision on stream fallback", async () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [
+        { provider: "primary", model: "fast", adapterConfig: {} },
+        { provider: "backup", model: "safe", adapterConfig: {} },
+      ],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "primary",
+        {
+          id: "primary",
+          async complete(): Promise<ModelResponse> {
+            throw new Error("primary-down");
+          },
+          stream(): AsyncGenerator<ModelChunk> {
+            throw new Error("primary-stream-down");
+          },
+        },
+      ],
+      [
+        "backup",
+        {
+          id: "backup",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("safe");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "from-backup" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    const reported: Record<string, unknown>[] = [];
+    const ctx = {
+      reportDecision: (d: Record<string, unknown>) => {
+        reported.push(d);
+      },
+    } as unknown as import("@koi/core").TurnContext;
+
+    if (mw.wrapModelStream === undefined) throw new Error("wrapModelStream not defined");
+    const chunks: ModelChunk[] = [];
+    for await (const chunk of mw.wrapModelStream(ctx, makeRequest(), async function* () {
+      yield* [] as ModelChunk[];
+    })) {
+      chunks.push(chunk);
+    }
+
+    expect(
+      chunks.some(
+        (c) => c.kind === "text_delta" && (c as { delta: string }).delta === "from-backup",
+      ),
+    ).toBe(true);
+
+    // ATIF observability: fallback must be visible in stream decisions
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.["router.fallback_occurred"]).toBe(true);
+    expect(reported[0]?.["router.target.selected"]).toBe("backup:safe");
+    expect(reported[0]?.["router.target.attempted"]).toEqual(["primary:fast", "backup:safe"]);
+
+    router.dispose();
+  });
+
+  test("middleware factory wires router into KoiMiddleware with correct priority", () => {
+    const configResult = validateRouterConfig({
+      strategy: "fallback",
+      targets: [{ provider: "p", model: "m", adapterConfig: {} }],
+      retry: { maxRetries: 0 },
+    });
+    expect(configResult.ok).toBe(true);
+    if (!configResult.ok) return;
+
+    const adapters = new Map([
+      [
+        "p",
+        {
+          id: "p",
+          async complete(): Promise<ModelResponse> {
+            return makeResponse("m");
+          },
+          async *stream(): AsyncGenerator<ModelChunk> {
+            yield { kind: "text_delta", delta: "x" };
+          },
+        },
+      ],
+    ]);
+
+    const router = createModelRouter(configResult.value, adapters);
+    const mw = createModelRouterMiddleware(router);
+
+    expect(mw.name).toBe("model-router");
+    expect(mw.priority).toBe(900);
+    expect(typeof mw.wrapModelCall).toBe("function");
+    expect(typeof mw.wrapModelStream).toBe("function");
+    router.dispose();
   });
 });
 
