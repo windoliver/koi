@@ -212,12 +212,12 @@ iter 3: {B} fail    → count=2 for {B}, TRIP → continue
 
 | `onGraderError` | Grader throws | Grader returns invalid JSON |
 |-----------------|---------------|----------------------------|
-| `"fail_closed"` (default) | `{ kind: "continue" }` | `{ kind: "continue" }` |
-| `"fail_open"` | `{ kind: "block", reason: ... }` | `{ kind: "block", reason: ... }` |
+| `"fail_closed"` (default) | `{ kind: "block" }` | `{ kind: "block" }` |
+| `"fail_open"` | `{ kind: "continue" }` | `{ kind: "continue" }` |
 
-**fail_closed** means "when in doubt, let the agent complete" — safe for production where grader availability is uncertain.
+**fail_closed** (default) means "deny by default" — grader errors block completion. Use when quality assurance is critical and ungraded output shipping is unacceptable.
 
-**fail_open** means "when in doubt, keep the agent in the loop" — use when evaluation is critical and false positives (unreviewed completions) are more dangerous than false negatives.
+**fail_open** means "allow by default" — grader errors let the agent complete. Use in production where grader availability is uncertain and blocking on transient failures is worse than shipping ungraded output.
 
 ---
 

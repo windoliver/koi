@@ -43,10 +43,14 @@ interface MutableStats {
 }
 
 interface SessionState {
-  // let justified: mutable iteration counter reset per run
+  // let justified: mutable iteration counter reset per completion attempt
   iteration: number;
   // let justified: mutable last model output captured by wrapModelStream
   capturedText: string;
+  // let justified: set to true on every terminal continue path so the NEXT
+  // onBeforeStop call resets iteration/circuit for a fresh completion attempt.
+  // This handles reuse: true sessions where multiple completions share one session.
+  resetNeeded: boolean;
   readonly circuitBreaker: ReturnType<typeof createCircuitBreaker>;
   // let justified: mutable stats accumulator
   readonly stats: MutableStats;
@@ -99,6 +103,7 @@ export function createOutcomeEvaluatorMiddleware(
     const state: SessionState = {
       iteration: 0,
       capturedText: "",
+      resetNeeded: false,
       circuitBreaker: createCircuitBreaker(circuitBreakAt),
       stats: { totalEvaluations: 0, satisfied: 0, circuitBreaks: 0, graderErrors: 0 },
     };
@@ -114,11 +119,19 @@ export function createOutcomeEvaluatorMiddleware(
   // Grader execution helpers
   // ---------------------------------------------------------------------------
 
-  async function callGraderWithTimeout(prompt: string): Promise<string> {
+  async function callGraderWithTimeout(
+    prompt: string,
+    parentSignal?: AbortSignal,
+  ): Promise<string> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), graderTimeoutMs);
+    // Compose timeout with run abort signal so cancellation terminates grading immediately
+    const signal =
+      parentSignal !== undefined
+        ? AbortSignal.any([controller.signal, parentSignal])
+        : controller.signal;
     try {
-      return await config.graderModelCall(prompt, controller.signal);
+      return await config.graderModelCall(prompt, signal);
     } finally {
       clearTimeout(timer);
     }
@@ -127,16 +140,17 @@ export function createOutcomeEvaluatorMiddleware(
   async function runSingleCallGrader(
     rubric: OutcomeRubric,
     artifact: string,
+    parentSignal?: AbortSignal,
   ): Promise<OutcomeEvaluation | null> {
     const prompt = buildGraderPrompt(rubric, artifact);
     try {
-      const raw = await callGraderWithTimeout(prompt);
+      const raw = await callGraderWithTimeout(prompt, parentSignal);
       const result = parseGraderResponse(raw, rubric, 0 /* iteration set later */);
       if (!result.ok) return null;
       return result.value;
     } catch (e: unknown) {
       if (e instanceof Error && e.name === "AbortError") {
-        return null; // timeout — caller handles
+        return null; // timeout or abort — caller handles
       }
       return null;
     }
@@ -147,6 +161,7 @@ export function createOutcomeEvaluatorMiddleware(
     artifact: string,
     iteration: number,
     sessionId: string,
+    parentSignal?: AbortSignal,
   ): Promise<OutcomeEvaluation | null> {
     const criteria = rubric.criteria as readonly RubricCriterion[];
     const concurrency = config.maxConcurrentGraderCalls ?? criteria.length;
@@ -154,6 +169,7 @@ export function createOutcomeEvaluatorMiddleware(
     // Process in batches of `concurrency`
     const allCriteriaResults: Array<import("@koi/core").CriterionResult> = [];
     let lastExplanation = "";
+    // Fail closed: any criterion evaluation failure means the overall evaluation is invalid
     let hadError = false;
 
     for (let i = 0; i < criteria.length; i += concurrency) {
@@ -162,7 +178,7 @@ export function createOutcomeEvaluatorMiddleware(
         batch.map(async (criterion) => {
           const prompt = buildGraderPrompt(rubric, artifact, criterion);
           try {
-            const raw = await callGraderWithTimeout(prompt);
+            const raw = await callGraderWithTimeout(prompt, parentSignal);
             const parsed = parseGraderResponse(
               raw,
               { ...rubric, criteria: [criterion] },
@@ -194,7 +210,11 @@ export function createOutcomeEvaluatorMiddleware(
       }
     }
 
-    if (hadError && allCriteriaResults.length === 0) return null;
+    // Fail closed: if ANY criterion call failed, the full evaluation is invalid.
+    // A partial result (some criteria evaluated, others errored) would exclude
+    // unevaluated criteria from the circuit-breaker's failing set, enabling a
+    // fail-open bypass on repeated partial outages. Apply onGraderError policy.
+    if (hadError) return null;
 
     // Determine overall result from required criteria
     const requiredFailing = allCriteriaResults.filter(
@@ -301,18 +321,35 @@ export function createOutcomeEvaluatorMiddleware(
       const state = getOrCreate(sessionId);
       return (async function* () {
         const textChunks: string[] = [];
+        // let justified: mutable fallback for done-only streams (no text_delta chunks)
+        let doneContent: string | undefined;
         for await (const chunk of next(request)) {
-          if (chunk.kind === "text_delta") textChunks.push(chunk.delta);
+          if (chunk.kind === "text_delta") {
+            textChunks.push(chunk.delta);
+          } else if (chunk.kind === "done") {
+            // Capture done.response.content as fallback for adapters that emit no text_delta
+            doneContent = chunk.response.content;
+          }
           yield chunk;
         }
-        // Overwrite on each stream so final response is always captured
-        state.capturedText = textChunks.join("");
+        // Prefer accumulated text_delta chunks; fall back to done.response.content
+        state.capturedText = textChunks.length > 0 ? textChunks.join("") : (doneContent ?? "");
       })();
     },
 
     async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
       const sessionId = ctx.session.sessionId as string;
       const state = getOrCreate(sessionId);
+
+      // Reset iteration and circuit state at the start of a new completion attempt.
+      // resetNeeded is set on every terminal continue path (satisfied, circuit, budget,
+      // grader-error pass-through). Stop-gate retries within a run do NOT set it, so
+      // the budget is correctly enforced across retries.
+      if (state.resetNeeded) {
+        state.iteration = 0;
+        state.circuitBreaker.reset();
+        state.resetNeeded = false;
+      }
 
       state.iteration++;
       state.stats.totalEvaluations++;
@@ -330,6 +367,7 @@ export function createOutcomeEvaluatorMiddleware(
           explanation: `Evaluation budget exhausted after ${effectiveMaxIter} iterations.`,
         };
         emit({ kind: "outcome.evaluation.end", sessionId, evaluation: exhaustedEval });
+        state.resetNeeded = true;
         return { kind: "continue" };
       }
 
@@ -348,12 +386,17 @@ export function createOutcomeEvaluatorMiddleware(
         };
         emit({ kind: "outcome.evaluation.end", sessionId, evaluation: errorEval });
         state.stats.graderErrors++;
-        return onGraderError === "fail_open"
-          ? { kind: "block", reason: "Artifact collection failed; review required." }
-          : { kind: "continue" };
+        if (onGraderError === "fail_open") {
+          // fail_open: let agent complete (grader unavailability is acceptable)
+          state.resetNeeded = true;
+          return { kind: "continue" };
+        }
+        // fail_closed (default): block — deny ungraded output by default
+        return { kind: "block", reason: "Artifact collection failed; review required." };
       }
 
-      // Run grader
+      // Run grader — propagate run abort signal so cancellation terminates grading
+      const runSignal = ctx.signal;
       let evaluation: OutcomeEvaluation | null;
       let graderTimedOut = false;
       try {
@@ -363,9 +406,10 @@ export function createOutcomeEvaluatorMiddleware(
             artifact,
             state.iteration,
             sessionId,
+            runSignal,
           );
         } else {
-          const result = await runSingleCallGrader(config.rubric, artifact);
+          const result = await runSingleCallGrader(config.rubric, artifact, runSignal);
           evaluation = result;
           if (evaluation !== null) {
             // Inject correct iteration number (runSingleCallGrader passes 0)
@@ -392,9 +436,13 @@ export function createOutcomeEvaluatorMiddleware(
             : "Grader returned unparseable response",
         };
         emit({ kind: "outcome.evaluation.end", sessionId, evaluation: errorEval });
-        return onGraderError === "fail_open"
-          ? { kind: "block", reason: "Quality evaluation failed; please retry." }
-          : { kind: "continue" };
+        if (onGraderError === "fail_open") {
+          // fail_open: let agent complete (grader unavailability is acceptable)
+          state.resetNeeded = true;
+          return { kind: "continue" };
+        }
+        // fail_closed (default): block — deny ungraded output by default
+        return { kind: "block", reason: "Quality evaluation failed; please retry." };
       }
 
       emit({ kind: "outcome.evaluation.end", sessionId, evaluation });
@@ -409,13 +457,13 @@ export function createOutcomeEvaluatorMiddleware(
 
       if (evaluation.result === "satisfied") {
         state.stats.satisfied++;
-        state.circuitBreaker.reset();
-        state.iteration = 0; // Reset for potential future sessions
+        state.resetNeeded = true;
         return { kind: "continue" };
       }
 
       if (circuitTripped) {
         state.stats.circuitBreaks++;
+        state.resetNeeded = true;
         return { kind: "continue" }; // Let agent complete despite not satisfying rubric
       }
 

@@ -201,6 +201,8 @@ describe("createOutcomeEvaluatorMiddleware — budget exhaustion", () => {
       rubric: RUBRIC,
       graderModelCall: async () => ALL_FAIL_RESPONSE,
       maxIterations: 2,
+      // Raise circuit threshold so it doesn't trip before budget is enforced
+      circuitBreakConsecutiveIdenticalFailures: 10,
     });
     const ctx = makeTurnContext();
     await captureStream(handle, ctx, "artifact");
@@ -322,7 +324,7 @@ describe("createOutcomeEvaluatorMiddleware — circuit breaker", () => {
 });
 
 describe("createOutcomeEvaluatorMiddleware — grader error handling", () => {
-  test("fail_closed (default): grader throws → continue (let agent complete)", async () => {
+  test("fail_closed (default): grader throws → block (deny ungraded output by default)", async () => {
     const handle = createOutcomeEvaluatorMiddleware({
       rubric: RUBRIC,
       graderModelCall: async () => {
@@ -333,10 +335,10 @@ describe("createOutcomeEvaluatorMiddleware — grader error handling", () => {
     const ctx = makeTurnContext();
     await captureStream(handle, ctx, "artifact");
     const result = await callStop(handle, ctx);
-    expect(result.kind).toBe("continue");
+    expect(result.kind).toBe("block");
   });
 
-  test("fail_open: grader throws → block (keep agent in loop)", async () => {
+  test("fail_open: grader throws → continue (let agent complete when grader unavailable)", async () => {
     const handle = createOutcomeEvaluatorMiddleware({
       rubric: RUBRIC,
       graderModelCall: async () => {
@@ -347,10 +349,10 @@ describe("createOutcomeEvaluatorMiddleware — grader error handling", () => {
     const ctx = makeTurnContext();
     await captureStream(handle, ctx, "artifact");
     const result = await callStop(handle, ctx);
-    expect(result.kind).toBe("block");
+    expect(result.kind).toBe("continue");
   });
 
-  test("grader returns unparseable response → treated as grader error", async () => {
+  test("grader returns unparseable response → treated as grader error (fail_closed blocks)", async () => {
     const handle = createOutcomeEvaluatorMiddleware({
       rubric: RUBRIC,
       graderModelCall: async () => "not json at all",
@@ -359,7 +361,7 @@ describe("createOutcomeEvaluatorMiddleware — grader error handling", () => {
     const ctx = makeTurnContext();
     await captureStream(handle, ctx, "artifact");
     const result = await callStop(handle, ctx);
-    expect(result.kind).toBe("continue"); // fail_closed
+    expect(result.kind).toBe("block"); // fail_closed: deny ungraded output
   });
 });
 
@@ -420,8 +422,8 @@ describe("createOutcomeEvaluatorMiddleware — artifact handling", () => {
     const ctx = makeTurnContext();
     // No captureStream call — capturedText stays ""
     const result = await callStop(handle, ctx);
-    // fail_closed default: grader_error + continue
-    expect(result.kind).toBe("continue");
+    // fail_closed default: grader_error → block (deny ungraded output)
+    expect(result.kind).toBe("block");
     expect(
       events.some(
         (e) => e.kind === "outcome.evaluation.end" && e.evaluation.result === "grader_error",
@@ -545,5 +547,139 @@ describe("createOutcomeEvaluatorMiddleware — ATIF events", () => {
       expect(result.reason).toContain("base_case");
       expect(result.reason).toContain("No base case mentioned");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for adversarial-review findings
+// ---------------------------------------------------------------------------
+
+describe("createOutcomeEvaluatorMiddleware — regression: isolated mode fail-closed", () => {
+  test("partial failure in isolated mode treats whole evaluation as grader error (fail-closed)", async () => {
+    // One criterion succeeds, one throws — old code accepted partial success
+    const events: OutcomeEvaluationEvent[] = [];
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: RUBRIC,
+      graderModelCall: async (prompt) => {
+        if (prompt.includes("base_case"))
+          return JSON.stringify({
+            criteria: [{ name: "base_case", passed: true }],
+            explanation: "ok",
+          });
+        throw new Error("Network error for self_call criterion");
+      },
+      isolateCriteria: true,
+      onGraderError: "fail_closed",
+      onEvent: (e) => events.push(e),
+    });
+    const ctx = makeTurnContext();
+    await captureStream(handle, ctx, "artifact");
+    const result = await callStop(handle, ctx);
+    // Fail-closed: partial isolated failure → grader_error → block (deny ungraded output)
+    expect(result.kind).toBe("block");
+    const endEvent = events.find((e) => e.kind === "outcome.evaluation.end");
+    expect(endEvent?.kind === "outcome.evaluation.end" && endEvent.evaluation.result).toBe(
+      "grader_error",
+    );
+  });
+});
+
+describe("createOutcomeEvaluatorMiddleware — regression: done-only stream capture", () => {
+  test("done-only stream (no text_delta) captures done.response.content as artifact", async () => {
+    const events: OutcomeEvaluationEvent[] = [];
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: RUBRIC,
+      graderModelCall: async () => ALL_PASS_RESPONSE,
+      onEvent: (e) => events.push(e),
+    });
+    const ctx = makeTurnContext();
+
+    // Simulate adapter that emits only a done chunk (no text_delta)
+    const wrapFn = handle.middleware.wrapModelStream;
+    if (wrapFn === undefined) throw new Error("wrapModelStream must be defined");
+    const stream = wrapFn(ctx, {} as never, async function* () {
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "done-only response text",
+          model: "test",
+          usage: { inputTokens: 5, outputTokens: 5 },
+        },
+      };
+    });
+    for await (const _ of stream) {
+      /* consume */
+    }
+
+    const result = await callStop(handle, ctx);
+    // Should grade successfully (artifact captured from done.response.content)
+    expect(result.kind).toBe("continue");
+    const endEvent = events.find((e) => e.kind === "outcome.evaluation.end");
+    expect(endEvent?.kind === "outcome.evaluation.end" && endEvent.evaluation.result).toBe(
+      "satisfied",
+    );
+  });
+});
+
+describe("createOutcomeEvaluatorMiddleware — regression: abort signal propagated", () => {
+  test("pre-aborted ctx.signal is propagated to graderModelCall via AbortSignal.any", async () => {
+    // The signal should reach the grader so network/compute can be cancelled.
+    // The grader receives the already-aborted signal; callers that respect it
+    // will throw AbortError immediately, which flows through the grader-error path.
+    let receivedSignal: AbortSignal | undefined;
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: RUBRIC,
+      graderModelCall: async (_prompt, signal) => {
+        receivedSignal = signal;
+        // Simulate a grader that respects the signal
+        if (signal?.aborted === true) throw new DOMException("Aborted", "AbortError");
+        return ALL_PASS_RESPONSE;
+      },
+      onGraderError: "fail_closed",
+    });
+    const abortController = new AbortController();
+    abortController.abort();
+    const ctx: TurnContext = { ...makeTurnContext(), signal: abortController.signal };
+
+    await captureStream(handle, ctx, "artifact");
+    const result = await callStop(handle, ctx);
+    // Fail-closed (default): grader abort → grader_error → block (deny ungraded output)
+    expect(result.kind).toBe("block");
+    // Signal was propagated
+    expect(receivedSignal?.aborted).toBe(true);
+  });
+});
+
+describe("createOutcomeEvaluatorMiddleware — regression: state reset between completions", () => {
+  test("resetNeeded flag resets state on next completion after budget exhaustion (same session)", async () => {
+    // Simulates reuse: true where the same session handles multiple completions.
+    // After budget exhaustion, the next completion must start fresh.
+    let graderCallCount = 0;
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: RUBRIC,
+      graderModelCall: async () => {
+        graderCallCount++;
+        return ALL_FAIL_RESPONSE;
+      },
+      maxIterations: 1,
+      circuitBreakConsecutiveIdenticalFailures: 10, // prevent circuit trip
+      onGraderError: "fail_open", // fail_open = continue so block doesn't interfere
+    });
+
+    // First completion: iter 1 (block) → iter 2 (budget exhausted → continue, resetNeeded=true)
+    const ctx = makeTurnContext("sess-reset");
+    await captureStream(handle, ctx, "first artifact");
+    await callStop(handle, ctx); // iter 1 → block (fail_closed would block here, use fail_open? no)
+    // Actually with fail_open on grader error: still needs_revision block from rubric
+    // Let's use a grader that always returns needs_revision to stay in block path
+    await callStop(handle, ctx); // iter 2 → budget exhausted → continue (resetNeeded=true)
+
+    const callsAfterFirst = graderCallCount;
+
+    // Second completion: resetNeeded=true → iter resets to 0 → grader should fire again
+    await captureStream(handle, ctx, "second artifact");
+    await callStop(handle, ctx); // iter 1 again (after reset) → grader fires
+
+    expect(graderCallCount).toBeGreaterThan(callsAfterFirst);
   });
 });
