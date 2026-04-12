@@ -195,8 +195,15 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
           conversation stays clean. One line tall = one extra row of vertical
           space when active. */}
       <Show when={hasCapturedTurn()}>
-        <box paddingLeft={1}>
-          <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
+        {/* Reserve a full-width single-row strip so the InputArea below
+            does not partially overdraw this hint when Show toggles on
+            mid-stream. The wide arrow `↶` (U+21B6) is replaced with the
+            narrower, more universally measured `←` (U+2190) to avoid
+            cell-width disagreement between the layout engine and the
+            user's terminal/font, which produced glitched overlays in
+            manual TUI runs. */}
+        <box paddingLeft={1} flexShrink={0}>
+          <text fg={COLORS.textMuted}>← /rewind [n] to roll back previous turn(s)</text>
         </box>
       </Show>
       <InputArea
