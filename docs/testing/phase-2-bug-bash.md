@@ -21,8 +21,13 @@ docker --version     # for Nexus
 gh --version         # to file bugs
 jq --version         # to parse JSONL transcripts
 
-# One-time: install deps
-bun install --frozen-lockfile
+# One-time: install deps.
+# In a git worktree, use `--ignore-scripts` — the `lefthook install` postinstall
+# fails because `core.hooksPath` is shared with the main checkout's `.git/hooks`,
+# so lefthook refuses to re-install. Hooks already work via the main checkout;
+# skipping the postinstall in worktrees is harmless.
+bun install --frozen-lockfile --ignore-scripts   # in a worktree
+# bun install --frozen-lockfile                  # in the main checkout
 
 # One-time: build all workspace packages.
 # Required before §1.6 — the TUI imports `@koi/core` (and many other workspace
