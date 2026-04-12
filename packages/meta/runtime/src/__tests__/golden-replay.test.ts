@@ -27,8 +27,9 @@ import type {
   ToolCallId,
   ToolRequest,
   ToolResponse,
+  TurnContext,
 } from "@koi/core";
-import { createSingleToolProvider } from "@koi/core";
+import { createSingleToolProvider, runId, sessionId } from "@koi/core";
 import { createKoi } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createHookMiddleware, loadHooks } from "@koi/hooks";
@@ -9691,4 +9692,232 @@ describe("Golden: @koi/loop — runUntilPass convergence primitive", () => {
 
     rmSync(trajDir, { recursive: true, force: true });
   }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/outcome-evaluator — per-criterion feedback iteration loop
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/outcome-evaluator", () => {
+  /**
+   * Unit-level golden assertions for @koi/outcome-evaluator.
+   * These tests exercise the L2 package directly (no LLM or cassette needed).
+   *
+   * For full-stack ATIF trajectory coverage, see the re-recordable cassette
+   * added to record-cassettes.ts (outcome-evaluator query).
+   */
+
+  test("1. evaluation.start fires before evaluation.end (event ordering)", async () => {
+    const { createOutcomeEvaluatorMiddleware } = await import("@koi/outcome-evaluator");
+    const events: Array<{ kind: string }> = [];
+
+    const rubric = {
+      description: "Test rubric",
+      criteria: [{ name: "has_content", description: "Has content" }],
+    };
+
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric,
+      graderModelCall: async () =>
+        JSON.stringify({
+          criteria: [{ name: "has_content", passed: true }],
+          explanation: "Good",
+        }),
+      onEvent: (e) => events.push({ kind: e.kind }),
+    });
+
+    const ctx = {
+      session: { agentId: "a", sessionId: sessionId("s1"), runId: runId("r1"), metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    // Capture text via wrapModelStream
+    const wrapFn1 = handle.middleware.wrapModelStream;
+    if (wrapFn1 === undefined) throw new Error("wrapModelStream must be defined");
+    const stream = wrapFn1(ctx, {} as never, async function* () {
+      yield { kind: "text_delta" as const, delta: "Hello world" };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "Hello world",
+          model: "test",
+          usage: { inputTokens: 5, outputTokens: 5 },
+        },
+      };
+    });
+    for await (const _ of stream) {
+      /* consume */
+    }
+
+    const stopFn1 = handle.middleware.onBeforeStop;
+    if (stopFn1 === undefined) throw new Error("onBeforeStop must be defined");
+    await stopFn1(ctx);
+
+    const startIdx = events.findIndex((e) => e.kind === "outcome.evaluation.start");
+    const endIdx = events.findIndex((e) => e.kind === "outcome.evaluation.end");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(endIdx).toBeGreaterThanOrEqual(0);
+    expect(startIdx).toBeLessThan(endIdx);
+  });
+
+  test("2. evaluation.end payload completeness: iteration, criteria[], result", async () => {
+    const { createOutcomeEvaluatorMiddleware } = await import("@koi/outcome-evaluator");
+    type Ev = {
+      kind: string;
+      evaluation?: { iteration: number; criteria: unknown[]; result: string };
+    };
+    const events: Ev[] = [];
+
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: {
+        description: "Test",
+        criteria: [{ name: "c1", description: "criterion 1" }],
+      },
+      graderModelCall: async () =>
+        JSON.stringify({ criteria: [{ name: "c1", passed: true }], explanation: "ok" }),
+      onEvent: (e) => events.push(e as Ev),
+    });
+
+    const ctx = {
+      session: { agentId: "a", sessionId: sessionId("s2"), runId: runId("r1"), metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    const wrapFn2 = handle.middleware.wrapModelStream;
+    if (wrapFn2 === undefined) throw new Error("wrapModelStream must be defined");
+    const stream = wrapFn2(ctx, {} as never, async function* () {
+      yield { kind: "text_delta" as const, delta: "output" };
+      yield {
+        kind: "done" as const,
+        response: { content: "output", model: "test", usage: { inputTokens: 5, outputTokens: 5 } },
+      };
+    });
+    for await (const _ of stream) {
+      /* consume */
+    }
+
+    const stopFn2 = handle.middleware.onBeforeStop;
+    if (stopFn2 === undefined) throw new Error("onBeforeStop must be defined");
+    await stopFn2(ctx);
+
+    const endEvent = events.find((e) => e.kind === "outcome.evaluation.end");
+    expect(endEvent).toBeDefined();
+    expect(typeof endEvent?.evaluation?.iteration).toBe("number");
+    expect(Array.isArray(endEvent?.evaluation?.criteria)).toBe(true);
+    expect(typeof endEvent?.evaluation?.result).toBe("string");
+  });
+
+  test("3. block reason contains structured gap feedback on needs_revision", async () => {
+    const { createOutcomeEvaluatorMiddleware } = await import("@koi/outcome-evaluator");
+
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: {
+        description: "Write clearly",
+        criteria: [
+          { name: "clarity", description: "Writing is clear" },
+          { name: "completeness", description: "All required topics covered" },
+        ],
+      },
+      graderModelCall: async () =>
+        JSON.stringify({
+          criteria: [
+            { name: "clarity", passed: false, gap: "Too vague and ambiguous" },
+            { name: "completeness", passed: true },
+          ],
+          explanation: "Needs clearer writing.",
+        }),
+    });
+
+    const ctx = {
+      session: { agentId: "a", sessionId: sessionId("s3"), runId: runId("r1"), metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    const wrapFn3 = handle.middleware.wrapModelStream;
+    if (wrapFn3 === undefined) throw new Error("wrapModelStream must be defined");
+    const stream = wrapFn3(ctx, {} as never, async function* () {
+      yield { kind: "text_delta" as const, delta: "vague output" };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "vague output",
+          model: "test",
+          usage: { inputTokens: 5, outputTokens: 5 },
+        },
+      };
+    });
+    for await (const _ of stream) {
+      /* consume */
+    }
+
+    const stopFn3 = handle.middleware.onBeforeStop;
+    if (stopFn3 === undefined) throw new Error("onBeforeStop must be defined");
+    const result = await stopFn3(ctx);
+    expect(result.kind).toBe("block");
+    if (result.kind === "block") {
+      // Block reason must contain the failing criterion name and its gap
+      expect(result.reason).toContain("clarity");
+      expect(result.reason).toContain("Too vague and ambiguous");
+    }
+  });
+
+  test("4. satisfied path: exactly 1 grader call, result is continue", async () => {
+    const { createOutcomeEvaluatorMiddleware } = await import("@koi/outcome-evaluator");
+    let graderCallCount = 0;
+
+    const handle = createOutcomeEvaluatorMiddleware({
+      rubric: {
+        description: "Write a haiku",
+        criteria: [{ name: "has_lines", description: "Has three lines" }],
+      },
+      graderModelCall: async () => {
+        graderCallCount++;
+        return JSON.stringify({
+          criteria: [{ name: "has_lines", passed: true }],
+          explanation: "Perfect haiku.",
+        });
+      },
+    });
+
+    const ctx = {
+      session: { agentId: "a", sessionId: sessionId("s4"), runId: runId("r1"), metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as TurnContext;
+
+    const wrapFn4 = handle.middleware.wrapModelStream;
+    if (wrapFn4 === undefined) throw new Error("wrapModelStream must be defined");
+    const stream = wrapFn4(ctx, {} as never, async function* () {
+      yield { kind: "text_delta" as const, delta: "haiku output" };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "haiku output",
+          model: "test",
+          usage: { inputTokens: 5, outputTokens: 5 },
+        },
+      };
+    });
+    for await (const _ of stream) {
+      /* consume */
+    }
+
+    const stopFn4 = handle.middleware.onBeforeStop;
+    if (stopFn4 === undefined) throw new Error("onBeforeStop must be defined");
+    const result = await stopFn4(ctx);
+
+    expect(result.kind).toBe("continue");
+    expect(graderCallCount).toBe(1); // exactly one grader call on satisfied path
+  });
 });
