@@ -8,7 +8,7 @@
  *
  * Captured per invocation:
  *   - middleware name, phase, priority
- *   - hook name (wrapModelCall, wrapToolCall, wrapModelStream)
+ *   - hook name (wrapModelCall, wrapToolCall, wrapModelStream, onBeforeStop)
  *   - request preview (message text or tool args)
  *   - response preview (model output or tool result)
  *   - duration (ms)
@@ -31,6 +31,7 @@ import type {
   ModelStreamHandler,
   RichTrajectoryStep,
   SessionContext,
+  StopGateResult,
   ToolHandler,
   ToolRequest,
   ToolResponse,
@@ -394,11 +395,63 @@ export function wrapMiddlewareWithTrace(
         }
       : undefined;
 
+  const wrappedOnBeforeStop =
+    mw.onBeforeStop !== undefined
+      ? async (ctx: TurnContext): Promise<StopGateResult> => {
+          const hook = mw.onBeforeStop;
+          if (hook === undefined) return { kind: "continue" };
+
+          const start = performance.now();
+          try {
+            const result = await hook(ctx);
+            recordStep({
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "success",
+              durationMs: performance.now() - start,
+              response: { text: result.kind },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "onBeforeStop",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+                stopGateResult: result.kind,
+                ...(result.kind === "block" ? { blockReason: result.reason.slice(0, 500) } : {}),
+              },
+            });
+            return result;
+          } catch (error: unknown) {
+            const errorText = error instanceof Error ? error.message : String(error);
+            recordStep({
+              timestamp: clock(),
+              source: "system",
+              kind: "model_call",
+              identifier: `middleware:${mw.name}`,
+              outcome: "failure",
+              durationMs: performance.now() - start,
+              error: { text: errorText },
+              metadata: {
+                type: "middleware_span",
+                middlewareName: mw.name,
+                hook: "onBeforeStop",
+                phase: mw.phase ?? "resolve",
+                priority: mw.priority ?? 500,
+              },
+            });
+            throw error;
+          }
+        }
+      : undefined;
+
   return {
     ...mw,
     ...(wrappedModelCall !== undefined ? { wrapModelCall: wrappedModelCall } : {}),
     ...(wrappedToolCall !== undefined ? { wrapToolCall: wrappedToolCall } : {}),
     ...(wrappedModelStream !== undefined ? { wrapModelStream: wrappedModelStream } : {}),
+    ...(wrappedOnBeforeStop !== undefined ? { onBeforeStop: wrappedOnBeforeStop } : {}),
     // Issue 13: flush buffered spans once per turn (single store.append vs N individual calls)
     onAfterTurn: async (ctx: TurnContext): Promise<void> => {
       if (mw.onAfterTurn !== undefined) await mw.onAfterTurn(ctx);
