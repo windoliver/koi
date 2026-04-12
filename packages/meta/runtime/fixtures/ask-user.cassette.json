@@ -33,7 +33,6 @@
         "content": "",
         "model": "google/gemini-2.0-flash-001",
         "stopReason": "tool_use",
-        "responseId": "gen-1775698504-aDnZl59EBmHVdyIetzWW",
         "richContent": [
           {
             "kind": "tool_call",
@@ -62,11 +61,9 @@
         "usage": {
           "inputTokens": 190,
           "outputTokens": 41
-        },
-        "metadata": {
-          "promptPrefixFingerprint": "387afd8e6f028ddb228928db009bbb66018e6300a624a41ff85d9063e7272d95"
         }
       }
     }
-  ]
+  ],
+  "schemaVersion": "cassette-v1"
 }

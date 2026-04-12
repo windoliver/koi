@@ -19,10 +19,17 @@ export {
   createFileGate,
   runUntilPass,
 } from "@koi/loop";
-// Cassette (VCR replay)
-export { loadCassette } from "./cassette/load-cassette.js";
-export { createReplayAdapter } from "./cassette/replay-adapter.js";
-export type { Cassette } from "./cassette/types.js";
+export type { Cassette, CassetteRegistry, CassetteSchemaVersion, ReplayContext } from "@koi/replay";
+// Cassette (VCR replay) — re-exported from @koi/replay
+export {
+  CASSETTE_SCHEMA_VERSION,
+  clearCassetteCache,
+  createCassetteRecorder,
+  createRegistry,
+  createReplayAdapter,
+  createReplayContext,
+  loadCassette,
+} from "@koi/replay";
 export type { FileSystemTools } from "./create-filesystem-provider.js";
 // Filesystem dispatch + provider
 export {
@@ -86,4 +93,4 @@ export type {
   RuntimeHandle,
   ToolDebugEntry,
 } from "./types.js";
-export { DEFAULT_STREAM_TIMEOUT_MS, VCR_STREAM_TIMEOUT_MS } from "./types.js";
+export { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";

@@ -35,12 +35,12 @@ describe.skipIf(!distExists)("build output", () => {
     }
   });
 
-  test("index bundle is under 23KB", async () => {
-    // Threshold updated: DEFAULT_FORK_MAX_TURNS constant + fork validation branch in
-    // validateSpawnRequest added for fork mode + recursion guard (Issue #1241).
-    // Previous threshold (22528) was set for ToolFilterSpec + AgentResolverQuery (#1240).
+  test("index bundle is under 25KB", async () => {
+    // Threshold updated: isModelChunk() runtime type guard added to validation-utils.ts
+    // for cassette validation in @koi/replay. ~1KB of compiled guard logic.
+    // Previous threshold (23552) was set for fork mode + recursion guard (#1241).
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(23552);
+    expect(size).toBeLessThan(25600);
   });
 });
