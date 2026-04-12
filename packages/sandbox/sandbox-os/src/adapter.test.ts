@@ -374,3 +374,54 @@ describe.skipIf(SKIP_MACOS_INTEGRATION)("exec maxOutputBytes truncation (macOS s
     expect(result.stdout.length).toBeLessThanOrEqual(20);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Process-group abort — regression for #1698 Q1b
+//
+// Without `detached: true` + pgroup-directed kill, an abort of a sandboxed
+// bash invocation signaled only the wrapper (sandbox-exec / bwrap) and left
+// grandchildren (e.g. `sleep` started by the bash subshell) running as
+// orphans reparented to init. Q1b surfaced this on every graceful or force
+// cancel. This test pins the pgroup-kill path so the regression cannot
+// reappear.
+// ---------------------------------------------------------------------------
+
+const SKIP_PGROUP_MACOS = !process.env.SANDBOX_INTEGRATION || process.platform !== "darwin";
+
+describe.skipIf(SKIP_PGROUP_MACOS)("abort kills bash grandchildren (macOS seatbelt)", () => {
+  test("signal.abort() terminates the sleep grandchild via process-group kill", async () => {
+    const adapter = createOsAdapterForTest({ platform: "seatbelt", available: true });
+    const instance = await adapter.create(openProfile(false));
+    const marker = `koi-pgroup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const controller = new AbortController();
+    const execPromise = instance.exec(
+      "bash",
+      ["--noprofile", "--norc", "-c", `sleep 30 && echo ${marker}`],
+      { signal: controller.signal },
+    );
+
+    // Wait for the bash subshell and its sleep grandchild to actually start
+    // — aborting pre-spawn would trivially "pass" without exercising the
+    // pgroup path.
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+    controller.abort();
+    await execPromise.catch(() => {
+      // Expected: abort may reject or resolve with a non-zero exit code.
+    });
+
+    // Give the OS a moment to finish reaping the grandchild before we
+    // assert it's gone.
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+
+    // `pgrep -f` matches on the full argv — the marker string only appears
+    // in the aborted invocation's bash argv, so a match here means the
+    // grandchild survived the abort.
+    const probe = Bun.spawnSync(["pgrep", "-f", marker], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const survivors = new TextDecoder().decode(probe.stdout).trim();
+    expect(survivors).toBe("");
+  });
+});

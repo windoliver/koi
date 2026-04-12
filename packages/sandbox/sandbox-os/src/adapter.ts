@@ -7,6 +7,7 @@ import type {
   SandboxInstance,
   SandboxProfile,
 } from "@koi/core";
+import type { Subprocess } from "bun";
 
 import {
   detectPlatform,
@@ -83,6 +84,36 @@ function missingBinaryCode(platform: SandboxPlatform): SandboxErrorCode {
 /** Shared mutable byte budget across stdout + stderr to enforce a combined cap. */
 interface ByteBudget {
   remaining: number;
+}
+
+/**
+ * Signal every process in the group led by `proc`. Falls back to the
+ * plain `proc.kill()` path if the pgroup target is unreachable (e.g. the
+ * wrapper has already exited so the PGID is gone). Swallows errors — at
+ * teardown we only care that the best available signal was sent.
+ *
+ * Relies on the wrapper having been spawned with `detached: true`, which
+ * calls `setsid()` on POSIX and makes `proc.pid === pgid`.
+ */
+function killProcessGroup(proc: Subprocess, signal: NodeJS.Signals): void {
+  const pid = proc.pid;
+  if (pid === undefined || pid <= 0) {
+    try {
+      proc.kill(signal);
+    } catch {
+      // Already exited — nothing to do.
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    try {
+      proc.kill(signal);
+    } catch {
+      // Already exited — nothing to do.
+    }
+  }
 }
 
 /**
@@ -237,9 +268,17 @@ function createInstance(
         spawnEnv = { ...opts.env, ...busEnv };
       }
 
+      // `detached: true` makes the spawned wrapper (sandbox-exec / bwrap) a
+      // new process-group leader via setsid() on POSIX. Without this, the
+      // abort path's `proc.kill()` signals only the wrapper PID, leaving
+      // the grandchildren (the actual bash tool and any of its children
+      // like `sleep`) running orphaned. With a group leader, the abort
+      // path can signal the entire group with `process.kill(-pid, sig)`,
+      // reaching every descendant.
       const spawnOpts: Parameters<typeof Bun.spawn>[1] = {
         stdout: "pipe",
         stderr: "pipe",
+        detached: true,
         ...(opts?.cwd !== undefined ? { cwd: opts.cwd } : {}),
         ...(spawnEnv !== undefined ? { env: spawnEnv } : {}),
         ...(opts?.stdin !== undefined ? { stdin: new TextEncoder().encode(opts.stdin) } : {}),
@@ -255,10 +294,18 @@ function createInstance(
       let sigkillEscalationTimer: ReturnType<typeof setTimeout> | undefined;
 
       const abortHandler = (): void => {
-        proc.kill(); // SIGTERM — ask the process to exit gracefully
+        // Signal the whole process group so bash grandchildren (e.g.
+        // `sleep` started by the sandboxed tool command) die with their
+        // parent. `proc.kill()` alone signals only the wrapper PID; the
+        // bash subshell's children survive as orphans reparented to init.
+        // `detached: true` above made the wrapper a process-group leader,
+        // so `pgid === proc.pid` and `process.kill(-pid, sig)` reaches
+        // every descendant.
+        killProcessGroup(proc, "SIGTERM");
         // Stop the named systemd scope so all child processes inside the cgroup
-        // are terminated. proc.kill() only signals the bwrap wrapper PID;
-        // grandchild processes survive unless the cgroup scope is stopped.
+        // are terminated. The pgroup kill above handles the plain-bwrap path;
+        // this handles the cgroup-scoped path where pgroup semantics alone
+        // are not sufficient.
         if (execUnitName !== undefined) {
           try {
             Bun.spawnSync(["systemctl", "--user", "stop", execUnitName], {
@@ -275,11 +322,7 @@ function createInstance(
         // permanent hang on proc.exited.
         sigkillEscalationTimer = setTimeout(() => {
           sentSigkillRef.value = true;
-          try {
-            proc.kill(9);
-          } catch {
-            // Process already exited — ignore.
-          }
+          killProcessGroup(proc, "SIGKILL");
         }, 2_000);
         // Cancel the escalation timer if the process exits before 2 s.
         void proc.exited.then(() => {
