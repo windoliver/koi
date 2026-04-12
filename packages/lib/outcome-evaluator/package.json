@@ -1,6 +1,6 @@
 {
   "name": "@koi/outcome-evaluator",
-  "description": "Rubric-graded LLM-as-judge iteration loop: separate grader evaluates agent output per criterion, re-prompts until all required criteria pass or budget is exhausted",
+  "description": "LLM-as-judge rubric evaluator: grades agent output per criterion, re-prompts until criteria pass or budget is exhausted",
   "version": "0.0.0",
   "private": true,
   "type": "module",
