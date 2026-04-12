@@ -5,6 +5,8 @@
  * Only runtime code: branded type constructors for SubsystemToken.
  */
 
+// agent anomaly — statistical and behavioral anomaly signal types for agent monitor
+export type { AnomalyBase, AnomalyDetail, AnomalySignal } from "./agent-anomaly.js";
 // agent definition — declarative agent template for discovery and loading
 export type {
   AgentDefinition,
@@ -1042,6 +1044,13 @@ export type {
   SupervisionStrategy,
 } from "./supervision.js";
 export { DEFAULT_SUPERVISION_CONFIG } from "./supervision.js";
+// system signal — operational/system events for the proactive intelligence layer
+export type {
+  CompositionSchedulerEvent,
+  SystemSignal,
+  SystemSignalSource,
+  SystemSignalSourceOptions,
+} from "./system-signal.js";
 // task-board — types
 // NOTE: `TaskStatus` is the task-board lifecycle type (pending | in_progress | completed |
 // failed | killed). The scheduler's status type was renamed to `ScheduledTaskStatus` above.
