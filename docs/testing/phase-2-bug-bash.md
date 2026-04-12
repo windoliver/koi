@@ -263,7 +263,7 @@ Launch TUI with manifest: `bun run .../bin.ts tui --manifest "$FIXTURE/koi.manif
 |---|--------|---------------|---------------|
 | Q49 | Model info display | `/model` or Ctrl+P → `model` | Shows model name + provider |
 | Q50 | Cost + token display | `/cost` then `/tokens` | Shows input/output tokens + cost (after ≥1 turn) |
-| Q51 | Compact history | `/compact` (after 5+ turns) | Message history summarized; turn count drops |
+| Q51 | Compact history | `/compact` (after 5+ turns) | Message history summarized; turn count drops. Note: TUI uses tail-window slicing, NOT `@koi/context-manager` real compaction — real compaction is test-suite only |
 | Q52 | Export session | `/export` (after ≥3 sessions) | Markdown file written |
 | Q53 | Rewind last turn | Send "Create file /tmp/rewind-test.txt" → `/rewind` | File edit undone; conversation rolled back |
 | Q54 | @-mention file completion | Type `@src/m` in input area | Overlay shows `src/math.ts` completion |
@@ -291,17 +291,21 @@ Launch TUI with manifest: `bun run .../bin.ts tui --manifest "$FIXTURE/koi.manif
 | Q71 | Very large file | Create 10MB `bigfile.txt`, ask `Read bigfile.txt, count lines` | No OOM; no hang; answer directional |
 | Q72 | Sandbox blocks forbidden write (macOS) | `Write "bad" to /etc/koi-test` | Sandbox denies; `/etc/koi-test` does not exist |
 | Q73 | Sandbox allows permitted write (macOS) | `Write "ok" to $FIXTURE/output.txt` | Write succeeds within project root |
+| Q74 | Session crash recovery | Kill TUI process mid-turn (`kill -9`), relaunch, resume session | Session-repair recovers; no data loss; JSONL not corrupted |
+| Q75 | Inactivity timeout (#1611) | Start TUI, send a query, wait for configured timeout period | Agent times out gracefully; session persisted; no hang |
+| Q76 | Tool argument type coercion (#1611) | Send query that causes model to pass string where number expected | Args coerced correctly; tool executes; no crash |
+| Q77 | Startup latency (#1637) | `time bun run .../bin.ts tui` (measure cold start) | < 2s cold start budget (P1 gate) |
 
 ### CLI-Only Scenarios (not TUI)
 
 | Q | Action | Command | Pass Criteria |
 |---|--------|---------|---------------|
-| Q74 | Single-prompt mode | `bun run .../bin.ts start --prompt "What is 2+2?"` | Prints answer on stdout; exits 0; no ANSI codes |
-| Q75 | Manifest override | `bun run .../bin.ts start --manifest /tmp/override.koi.yaml --prompt "hello"` | Override manifest loaded |
-| Q76 | CLI help + subcommands | `bun run .../bin.ts --help` + each subcommand `--help` | All print help; exit 0 |
-| Q77 | MCP auth (CLI) | `koi mcp auth gmail` | Browser opens; token stored in secure storage |
-| Q78 | MCP logout (CLI) | `koi mcp logout gmail` | Token deleted |
-| Q79 | MCP debug (CLI) | `koi mcp debug gmail` | Prints transport, OAuth status, tool count |
+| Q78 | Single-prompt mode | `bun run .../bin.ts start --prompt "What is 2+2?"` | Prints answer on stdout; exits 0; no ANSI codes |
+| Q79 | Manifest override | `bun run .../bin.ts start --manifest /tmp/override.koi.yaml --prompt "hello"` | Override manifest loaded |
+| Q80 | CLI help + subcommands | `bun run .../bin.ts --help` + each subcommand `--help` | All print help; exit 0 |
+| Q81 | MCP auth (CLI) | `koi mcp auth <server>` | Browser opens; token stored in secure storage |
+| Q82 | MCP logout (CLI) | `koi mcp logout <server>` | Token deleted |
+| Q83 | MCP debug (CLI) | `koi mcp debug <server>` | Prints transport, OAuth status, tool count |
 
 ---
 
@@ -323,7 +327,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S9** | Skills & Plugins | Q38-Q42 | 2 (reset between skills and plugins) | skill dirs; plugin.json |
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
-| **S12** | Resilience | Q66-Q73 | 1+ | 10MB file; sandbox profile (macOS) |
+| **S12** | Resilience | Q66-Q77 | 1+ | 10MB file; sandbox profile (macOS); crash recovery |
 
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
@@ -394,6 +398,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/fs-local | — | Q6-Q10 | — | — | — | Q20-Q22 | — | — | — | — | Q53 | Q71 | |
 | @koi/channel-base | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | |
 | @koi/shutdown | — | — | — | Q15 | — | — | — | — | — | — | — | Q66,Q67 | |
+| @koi/session-repair | — | — | — | — | — | — | — | — | — | — | — | Q74 | |
 | @koi/hook-prompt | — | — | — | — | — | Q21 | — | — | — | — | — | — | |
 
 ### Canonical L2 (from `scripts/layers.ts`) — Summary
@@ -449,39 +454,39 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 
 | Command | Shortcut | Scenario | Query |
 |---------|----------|----------|-------|
-| `nav:trajectory` | — | S11 | Q52 |
-| `nav:sessions` | Ctrl+S | S11 | Q53 |
-| `nav:help` | — | S11 | Q49 |
-| `nav:doctor` | — | S11 | Q50 |
-| `nav:agents` | — | S11 | Q51 |
+| `nav:trajectory` | — | S11 | Q62 |
+| `nav:sessions` | Ctrl+S | S11 | Q63 |
+| `nav:help` | — | S11 | Q59 |
+| `nav:doctor` | — | S11 | Q60 |
+| `nav:agents` | — | S11 | Q61 |
 | `agent:clear` | Ctrl+L | S1 | (implicit in reset) |
-| `agent:interrupt` | Ctrl+C | S4,S12 | Q15,Q56,Q57 |
-| `agent:compact` | — | S11 | Q41 |
-| `agent:rewind` | — | S11 | Q43 |
-| `session:new` | Ctrl+N | S11 | Q55 |
+| `agent:interrupt` | Ctrl+C | S4,S12 | Q15,Q66,Q67 |
+| `agent:compact` | — | S11 | Q51 |
+| `agent:rewind` | — | S11 | Q53 |
+| `session:new` | Ctrl+N | S11 | Q65 |
 | `session:resume` | — | S1 | Q5 |
 | `session:fork` | — | S11 | (implicit if ≥1 session) |
 | `session:rename` | — | S11 | (exercise via command palette) |
-| `session:export` | — | S11 | Q42 |
-| `system:model` | — | S11 | Q39 |
-| `system:cost` | — | S11 | Q40 |
-| `system:tokens` | — | S11 | Q40 |
-| `system:zoom` | — | S11 | Q48 |
+| `session:export` | — | S11 | Q52 |
+| `system:model` | — | S11 | Q49 |
+| `system:cost` | — | S11 | Q50 |
+| `system:tokens` | — | S11 | Q50 |
+| `system:zoom` | — | S11 | Q58 |
 | `system:quit` | — | S12 | (final cleanup) |
 
 ### Keyboard Shortcuts
 
 | Shortcut | Feature | Scenario | Query |
 |----------|---------|----------|-------|
-| Ctrl+P | Command palette | S11 | Q54 |
-| Ctrl+C | Interrupt | S4,S12 | Q15,Q56,Q57 |
-| Ctrl+S | Sessions view | S11 | Q53 |
+| Ctrl+P | Command palette | S11 | Q64 |
+| Ctrl+C | Interrupt | S4,S12 | Q15,Q66,Q67 |
+| Ctrl+S | Sessions view | S11 | Q63 |
 | Ctrl+L | Clear history | S1 | (implicit) |
-| Ctrl+N | New session | S11 | Q55 |
-| Ctrl+E | Expand/collapse tools | S11 | Q45 |
-| Ctrl+J | Multiline input | S11 | Q47 |
-| Escape | Dismiss modal | S6,S11 | Q20 (permission), Q54 (palette) |
-| Up/Down | Prompt history | S11 | Q46 |
+| Ctrl+N | New session | S11 | Q65 |
+| Ctrl+E | Expand/collapse tools | S11 | Q55 |
+| Ctrl+J | Multiline input | S11 | Q57 |
+| Escape | Dismiss modal | S6,S11 | Q20 (permission), Q64 (palette) |
+| Up/Down | Prompt history | S11 | Q56 |
 | Enter | Submit | all | all queries |
 | Backspace | Delete char | all | all input |
 
@@ -489,35 +494,35 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 
 | View | Scenario | Query |
 |------|----------|-------|
-| Conversation | S1-S12 | all queries |
-| Sessions | S11 | Q53 |
-| Doctor | S11 | Q50 |
-| Help | S11 | Q49 |
-| Agents | S11 | Q51 |
-| Trajectory | S11 | Q52 |
+| Conversation | S1-S13 | all queries |
+| Sessions | S11 | Q63 |
+| Doctor | S11 | Q60 |
+| Help | S11 | Q59 |
+| Agents | S11 | Q61 |
+| Trajectory | S11 | Q62 |
 
 ### Modals (6 total)
 
 | Modal | Scenario | Query |
 |-------|----------|-------|
-| Command palette | S11 | Q54 |
+| Command palette | S11 | Q64 |
 | Permission prompt | S6 | Q20 |
-| Session picker | S1,S11 | Q5,Q53 |
-| Session rename | S11 | (via command palette) |
-| @-mention overlay | S11 | Q44 |
-| Slash overlay | S11 | Q39-Q42 (triggered by `/` prefix) |
+| Session picker | S1,S11 | Q5,Q63 |
+| Session rename | S11 | (exercise via command palette) |
+| @-mention overlay | S11 | Q54 |
+| Slash overlay | S11 | Q49-Q52 (triggered by `/` prefix) |
 
 ### Status Bar Elements
 
 | Element | Scenario | Query |
 |---------|----------|-------|
-| Model name + provider | S11 | Q39 |
-| Token counts (T{turns}) | S11 | Q40 |
-| Cost ($X.XX) | S11 | Q40 |
-| Context % | S7,S11 | Q23 (high context), Q40 |
-| Connection status | S12 | Q59 (disconnect) |
+| Model name + provider | S11 | Q49 |
+| Token counts (T{turns}) | S11 | Q50 |
+| Cost ($X.XX) | S11 | Q50 |
+| Context % | S7,S11 | Q23 (high context), Q50 |
+| Connection status | S12 | Q69 (disconnect) |
 | Agent status (idle/processing) | all | all queries |
-| Retry countdown | S12 | Q58,Q59 |
+| Retry countdown | S12 | Q68,Q69 |
 | Elapsed time (streaming) | all | all queries |
 
 ### Streaming & Rendering
@@ -527,9 +532,9 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | Text block (markdown) | S1 | Q1,Q2 |
 | Thinking block | all | (model-dependent) |
 | Tool call block (running/complete/error) | S2 | Q6,Q8 |
-| Tool result accordion | S11 | Q45 (Ctrl+E toggle) |
+| Tool result accordion | S11 | Q55 (Ctrl+E toggle) |
 | Tool result N-line truncation | S2 | Q8 (multi-tool workflow) |
-| Error block | S12 | Q58 (malformed args) |
+| Error block | S12 | Q68 (malformed args) |
 | Spawn block | — | test-suite only (spawn stubbed) |
 | Auto-scroll + pause on scroll-up | S7 | Q23 (many turns) |
 | Markdown code fence healing | S2 | Q8 (JSDoc generation streams) |
@@ -588,7 +593,7 @@ bun test --filter=@koi/runtime
 | T2 | S4 (Bash/Security), S5 (Web), S6 (Permissions) | `t2` |
 | T3 | S7 (Context), S8 (MCP), S9 (Skills/Plugins) | `t3` |
 | T4 | S10 (Tasks/Memory), S11 (TUI UI) | `t4` |
-| T5 | S12 (Resilience), CLI-only (Q64-Q79) | `t5` |
+| T5 | S12 (Resilience), CLI-only (Q78-Q83) | `t5` |
 | T6 | S13 (Nexus GWS Connectors & OAuth) | `t6` |
 | T7 | Test-suite-only packages (§6) | `t7` |
 
@@ -597,13 +602,13 @@ bun test --filter=@koi/runtime
 ## 8. Exit Criteria
 
 1. All S1-S13 scenarios run at least once
-2. All Q1-Q79 queries executed with pass/fail recorded
+2. All Q1-Q83 queries executed with pass/fail recorded
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
 5. TUI feature matrix (§5) shows every command/shortcut/view/modal exercised
 6. `bun test --filter=@koi/runtime` (golden replay) passes on candidate commit
 7. Written summary posted with:
-   - Queries run: N/79
+   - Queries run: N/83
    - Bugs filed by severity
    - Unexercised packages + justification
    - Go / no-go recommendation
