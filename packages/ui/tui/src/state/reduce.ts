@@ -736,6 +736,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const rehydrated: TuiMessage[] = [];
       for (const [idx, msg] of action.messages.entries()) {
         if (msg.senderId === "user") {
+          // `resumeFromTranscript` rewrites plain `role: "system"`
+          // transcript entries (stop-hook feedback, engine-injected
+          // non-privileged system notices, etc.) into
+          // `{ senderId: "user", metadata: { resumedSystemRole: true } }`
+          // so they replay into the model on the next turn without
+          // escalating to privileged `system:*` senders. Those must
+          // stay hidden from the visible chat — they are internal
+          // feedback, not user speech.
+          const resumedSystem =
+            msg.metadata !== undefined &&
+            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
+          if (resumedSystem) continue;
           rehydrated.push({
             kind: "user",
             id: `resumed-user-${idx}`,

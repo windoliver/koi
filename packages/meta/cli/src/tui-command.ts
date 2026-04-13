@@ -588,6 +588,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // let: promise tracking the in-flight `drainEngineStream` call.
+  // `resetConversation()` must await this before truncating or
+  // overwriting the session file, otherwise the session-transcript
+  // middleware's finally-block append (which runs on turns that
+  // already observed a `done` chunk before the caller aborted) can
+  // land AFTER the truncate and silently resurrect pre-clear history.
+  let activeRunPromise: Promise<void> | null = null;
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
@@ -727,13 +734,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Clear trajectory data so /trajectory doesn't show prior-session data.
     store.dispatch({ kind: "set_trajectory_data", steps: [] });
 
+    // Snapshot the in-flight run promise BEFORE scheduling any
+    // asynchronous reset work. `drainEngineStream` may still be
+    // running against the now-aborted controller, and the session-
+    // transcript middleware commits turn entries in a `finally` block
+    // whenever it already observed a `done` chunk. If we truncated
+    // before that append resolved, the committed entries would land
+    // on the freshly-emptied file and silently resurrect pre-clear
+    // history. Await the drain first, then truncate.
+    const inflightRun = activeRunPromise;
     // Always reset runtime session state — even in the idle case (no active stream).
     // resetSessionState is async (awaits task board + trajectory prune).
     // New submits block on resetBarrier before proceeding.
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
-      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(async () => {
+      resetBarrier = (async () => {
+        // Drain any in-flight run to its settled state so late
+        // middleware-finally appends from the aborted turn cannot
+        // land after the truncate below. drainEngineStream catches
+        // AbortError and returns normally, so this await never
+        // rejects; still guard with catch for any other teardown
+        // exception so the reset pipeline cannot wedge.
+        if (inflightRun !== null) {
+          try {
+            await inflightRun;
+          } catch {
+            /* already reported upstream via add_error */
+          }
+        }
+        await runtimeHandle?.resetSessionState(idleController.signal);
         runtimeHandle?.transcript.splice(0);
         // Truncate the on-disk JSONL so a subsequent `--resume` of
         // this session id cannot resurrect the pre-clear conversation.
@@ -752,7 +782,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
           });
         }
-      });
+      })();
     }
   };
 
@@ -1243,7 +1273,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               text,
               signal: controller.signal,
             });
-        await drainEngineStream(stream, store, batcher, controller.signal);
+        const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
+        activeRunPromise = drainPromise;
+        await drainPromise;
 
         // Refresh trajectory data after each turn so /trajectory view is current.
         // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
@@ -1267,6 +1299,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const isStillActive = activeController === controller;
         if (isStillActive) {
           activeController = null;
+          activeRunPromise = null;
         }
         // The active run has settled. Reset the double-tap window so a
         // later Ctrl+C is treated as a fresh first tap rather than a

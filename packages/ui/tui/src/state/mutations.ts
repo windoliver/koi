@@ -590,6 +590,14 @@ export function mutate(state: Draft, action: TuiAction): void {
       const rehydrated: TuiMessage[] = [];
       for (const [idx, msg] of action.messages.entries()) {
         if (msg.senderId === "user") {
+          // See reduce.ts — resumeFromTranscript rewrites plain
+          // `role: "system"` entries as user messages with a
+          // `resumedSystemRole` marker so they replay into the model
+          // without privilege escalation; those must stay hidden.
+          const resumedSystem =
+            msg.metadata !== undefined &&
+            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
+          if (resumedSystem) continue;
           rehydrated.push({
             kind: "user",
             id: `resumed-user-${idx}`,
