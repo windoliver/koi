@@ -98,6 +98,16 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let doomLoopBlockedCalls: AccumulatedToolCall[] = [];
   const startTime = performance.now();
 
+  // #1742 loop-3 round 7: cap tool-error recovery to ONE extra turn.
+  // Without this, a deterministic tool failure (permission denial,
+  // policy block, broken tool) drives the outer loop until maxTurns
+  // — model retry, blocked tool, synthetic error, model retry, ...
+  // — burning tokens and stalling users. After one recovery turn,
+  // a second tool-execution failure transitions to error and breaks
+  // the loop instead of looping again.
+  // let justified: mutable per-run flag, set inside the catch path
+  let toolErrorRecoveryUsed = false;
+
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
   if (isAborted(signal)) {
@@ -690,6 +700,23 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           // error in the next turn and can explain it to the user or try
           // a different approach. The "error" state is still recorded via
           // errorMetadata so observability / stop reasons remain accurate.
+          //
+          // #1742 loop-3 round 7: cap recovery to ONE extra model turn.
+          // If a SECOND tool-execution failure happens after we already
+          // gave the model a recovery turn, the failure is effectively
+          // deterministic (permission denial, policy block, broken
+          // tool). Looping again would burn budget and stall the user —
+          // fail closed instead.
+          if (toolErrorRecoveryUsed) {
+            errorMetadata = { source: "tool_execution", message: msg };
+            state = transitionTurn(state, {
+              kind: "error",
+              message: `Tool execution failed again after recovery turn: ${msg}`,
+            });
+            yield { kind: "turn_end", turnIndex: state.turnIndex };
+            break;
+          }
+          toolErrorRecoveryUsed = true;
           errorMetadata = { source: "tool_execution", message: msg };
           const syntheticOutput = {
             error: `Tool execution failed: ${msg}`,

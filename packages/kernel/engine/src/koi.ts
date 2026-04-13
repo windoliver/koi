@@ -1517,12 +1517,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // #1742 round 14: refuse to cycle a disposed runtime.
       // Loop-3 round 3: also reject during the dispose-in-flight
       // window — see the parallel guard in run() above.
+      // Loop-3 round 7: also reject when the runtime is poisoned.
+      // A poisoned runtime hit a settle-timeout or onSessionEnd
+      // failure and is in an inconsistent state — letting
+      // cycleSession rotate the session here would mask the
+      // original fatal state and reopen the half-torn-down
+      // mutation paths this branch is closing. Mirror the run()
+      // and rebindSessionId() guards.
       if (disposed || disposing) {
         throw KoiRuntimeError.from(
           "VALIDATION",
           disposed
             ? "Runtime has been disposed. Create a new runtime instead."
             : "Runtime is being disposed. cycleSession is not valid during teardown.",
+        );
+      }
+      if (poisoned) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Runtime is poisoned: a prior cleanup timed out or onSessionEnd failed. Dispose and recreate before further lifecycle operations.",
         );
       }
       // #1742 round 10: serialize via lifecycle mutex so two concurrent
