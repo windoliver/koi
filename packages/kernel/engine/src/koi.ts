@@ -199,6 +199,38 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
   const factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
 
+  // --- Session lifecycle (runtime-scoped, NOT per-run) ---
+  //
+  // The agent "session" spans the lifetime of this runtime instance — from
+  // createKoi() to runtime.dispose(). Middleware hooks onSessionStart /
+  // onSessionEnd fire exactly once per runtime, not once per run(). This
+  // matches the stable factorySessionId (same ID across every run on this
+  // runtime) and lets session-scoped state (caches, always-allow grants,
+  // trackers) survive turn boundaries as the hook names imply.
+  //
+  // #1742 regression: firing onSessionEnd at the end of every run() was
+  // nuking `@koi/middleware-permissions`'s alwaysAllowedBySession between
+  // turns, so pressing "a" (Always allow Bash this session) only persisted
+  // for the current run. Second turns re-prompted, the prompt timed out,
+  // the tool was denied, and the user saw "no reply after second message".
+  //
+  // Hosts that need to clear session state between user-facing conversations
+  // (e.g. TUI /clear, session:new) already call explicit middleware APIs
+  // like `clearSessionApprovals(sessionId)` — they never relied on the
+  // per-run onSessionEnd to do it for them.
+  const lifecycleSessionCtx: SessionContext = {
+    agentId: pid.id,
+    sessionId: factorySessionId,
+    runId: runId(crypto.randomUUID()),
+    ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
+    ...(options.userId !== undefined ? { userId: options.userId } : {}),
+    ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
+    metadata: {},
+  };
+  // let justified: mutable flags guarding one-shot lifecycle hook firing
+  let lifecycleSessionStarted = false;
+  let lifecycleSessionEnded = false;
+
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
     const sessionStartedAt = Date.now();
@@ -206,7 +238,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let currentTurnIndex = 0;
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
-    let sessionStarted = false;
 
     // AbortSignal: compose caller signal with internal controller
     const abortController = new AbortController();
@@ -328,10 +359,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
-      // --- Session initialization ---
+      // --- Run / session initialization ---
+      // onSessionStart fires exactly once across the runtime's lifetime,
+      // on the first run() call, with this run's sessionCtx (tests rely on
+      // `ctx.runId` captured here matching the first run's per-turn runId).
+      // onSessionEnd is deferred entirely to runtime.dispose — see the
+      // factorySessionId block above (#1742) — and uses a separate
+      // runtime-scoped ctx because dispose may happen long after any run.
       agent.transition({ kind: "start" });
-      await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
-      sessionStarted = true;
+      if (!lifecycleSessionStarted) {
+        lifecycleSessionStarted = true;
+        await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+      }
 
       // Wire registry watcher → engine events for child agent visibility.
       // Only surface events for agents whose parentId matches this agent
@@ -1131,14 +1170,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
 
-      // Session end hooks (if session was started)
-      if (sessionStarted) {
-        try {
-          await runSessionHooks(allMiddleware, "onSessionEnd", sessionCtx);
-        } catch (sessionEndError: unknown) {
-          console.warn("[koi] onSessionEnd failed during cleanup", { cause: sessionEndError });
-        }
-      }
+      // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
+      // of every run(). See factorySessionId block above.
     }
   }
 
@@ -1159,6 +1192,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     dispose: async (): Promise<void> => {
       if (disposed) return;
       disposed = true;
+      // #1742: session lifecycle ends when the runtime is disposed — not at
+      // the end of every run(). Fire onSessionEnd here so middleware
+      // session-scoped state (caches, always-allow grants, trackers) is
+      // dropped exactly once, when the agent session truly ends.
+      if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+        lifecycleSessionEnded = true;
+        try {
+          await runSessionHooks(allMiddleware, "onSessionEnd", lifecycleSessionCtx);
+        } catch (sessionEndError: unknown) {
+          console.warn("[koi] onSessionEnd failed during dispose", { cause: sessionEndError });
+        }
+      }
       await adapter.dispose?.();
     },
 

@@ -362,6 +362,7 @@ describe("createKoi middleware hooks", () => {
   });
 
   test("calls onSessionEnd on user middleware", async () => {
+    // #1742: onSessionEnd fires at runtime.dispose, not at the end of run().
     const onSessionEnd = mock(() => Promise.resolve());
     const runtime = await createKoi({
       manifest: testManifest(),
@@ -370,6 +371,8 @@ describe("createKoi middleware hooks", () => {
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
@@ -1021,7 +1024,10 @@ describe("createKoi early return", () => {
     expect(runtime.agent.state).toBe("terminated");
   });
 
-  test("onSessionEnd fires on early return", async () => {
+  test("onSessionEnd fires on dispose after early return", async () => {
+    // #1742: onSessionEnd is a runtime-lifetime hook — fires at dispose,
+    // not at the end of a single run(). Early-return from a run() still
+    // leaves the runtime alive and reusable until dispose.
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "infinite-adapter",
@@ -1048,10 +1054,15 @@ describe("createKoi early return", () => {
       if (count >= 1) break;
     }
 
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
-  test("unexpected error transitions agent to terminated and fires onSessionEnd", async () => {
+  test("adapter crash transitions agent to terminated; onSessionEnd fires on dispose", async () => {
+    // #1742: adapter crashes still propagate as run()-level errors, but
+    // onSessionEnd is no longer tied to per-run cleanup. The runtime stays
+    // alive until the host calls dispose, which is where the hook fires.
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
@@ -1078,6 +1089,8 @@ describe("createKoi early return", () => {
       "unexpected crash",
     );
     expect(runtime.agent.state).toBe("terminated");
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
@@ -2339,7 +2352,12 @@ describe("createKoi concurrent run guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("createKoi onSessionEnd error preservation", () => {
-  test("original error preserved when onSessionEnd throws", async () => {
+  test("original run() error still propagates even if onSessionEnd would later throw", async () => {
+    // #1742: onSessionEnd is runtime-lifetime, not per-run. The original
+    // run() error must still propagate (no interference from the disposal
+    // hook), and the runtime.dispose() call that later fires the crashing
+    // hook must not re-raise it — the legacy contract is that onSessionEnd
+    // crashes are swallowed/logged, not propagated.
     const onSessionEnd = mock(() => {
       throw new Error("onSessionEnd crash");
     });
@@ -2367,6 +2385,9 @@ describe("createKoi onSessionEnd error preservation", () => {
     await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
       "original error",
     );
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    // dispose must not throw even though the hook throws
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
@@ -3178,6 +3199,9 @@ describe("createKoi error paths", () => {
     // Should produce no adapter events (aborted before adapter started)
     // May produce turn_start or nothing depending on timing
     expect(runtime.agent.state).toBe("terminated");
+    // #1742: onSessionEnd is a runtime-lifetime hook, not per-run.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
@@ -3230,7 +3254,9 @@ describe("createKoi error paths", () => {
     await iter.return?.();
 
     expect(runtime.agent.state).toBe("terminated");
-    // onSessionEnd should be called exactly once despite concurrent cleanup paths
+    // #1742: onSessionEnd fires once on dispose, not on run-level cleanup.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
