@@ -6,4 +6,4 @@
  * with path traversal prevention.
  */
 
-export { createLocalFileSystem } from "./local-filesystem-backend.js";
+export { createLocalFileSystem, type LocalFileSystemOptions } from "./local-filesystem-backend.js";

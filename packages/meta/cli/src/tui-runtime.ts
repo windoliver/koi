@@ -793,7 +793,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
 
   // --- @koi/fs-local: local filesystem backend ---
-  const localFs = createLocalFileSystem(cwd);
+  const localFs = createLocalFileSystem(cwd, { allowAbsolutePaths: true });
 
   // --- @koi/tools-builtin: Glob, Grep, ToolSearch search provider ---
   // Also provides fs_read, fs_write, fs_edit via individual providers below.

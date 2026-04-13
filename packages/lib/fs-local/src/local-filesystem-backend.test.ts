@@ -247,6 +247,107 @@ describe("LocalFileSystemBackend (path coercion)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// allowAbsolutePaths mode
+// ---------------------------------------------------------------------------
+
+describe("LocalFileSystemBackend (allowAbsolutePaths)", () => {
+  // let: mutable — reset per test to isolate state
+  let testDir: string;
+  // let: mutable — outside dir for absolute path tests
+  let outsideDir: string;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpBase, "abs-"));
+    outsideDir = mkdtempSync(join(tmpBase, "abs-outside-"));
+  });
+
+  test("write to absolute path outside workspace succeeds", async () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const target = join(outsideDir, "abs-write.txt");
+    const result = await backend.write(target, "absolute content");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.bytesWritten).toBeGreaterThan(0);
+      expect(result.value.resolvedPath).toBeUndefined();
+    }
+    // Verify the file actually exists at the absolute path
+    const file = Bun.file(target);
+    expect(await file.text()).toBe("absolute content");
+  });
+
+  test("read from absolute path outside workspace succeeds", async () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const target = join(outsideDir, "abs-read.txt");
+    writeFileSync(target, "outside content");
+    const result = await backend.read(target);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.content).toBe("outside content");
+      expect(result.value.resolvedPath).toBeUndefined();
+    }
+  });
+
+  test("edit at absolute path outside workspace succeeds", async () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const target = join(outsideDir, "abs-edit.txt");
+    writeFileSync(target, "hello world");
+    const result = await backend.edit(target, [{ oldText: "hello", newText: "goodbye" }]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.hunksApplied).toBe(1);
+      expect(result.value.resolvedPath).toBeUndefined();
+    }
+  });
+
+  test("delete at absolute path outside workspace succeeds", async () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const target = join(outsideDir, "abs-delete.txt");
+    writeFileSync(target, "doomed");
+    const result = await backend.delete?.(target);
+    expect(result).toBeDefined();
+    if (result === undefined) return;
+    expect(result.ok).toBe(true);
+  });
+
+  test("workspace-relative paths still work in allowAbsolutePaths mode", async () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const writeResult = await backend.write("local.txt", "workspace content");
+    expect(writeResult.ok).toBe(true);
+    const readResult = await backend.read("local.txt");
+    expect(readResult.ok).toBe(true);
+    if (readResult.ok) expect(readResult.value.content).toBe("workspace content");
+  });
+
+  test("absolute path outside workspace is coerced without allowAbsolutePaths", async () => {
+    const backend = createLocalFileSystem(testDir);
+    const target = join(outsideDir, "coerced.txt");
+    const result = await backend.write(target, "coerced");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Without allowAbsolutePaths, leading "/" is stripped and path is
+      // resolved under workspace — so resolvedPath is set (coercion happened)
+      expect(result.value.resolvedPath).toBeDefined();
+    }
+  });
+
+  test("resolvePath returns absolute path outside workspace when allowed", () => {
+    const backend = createLocalFileSystem(testDir, { allowAbsolutePaths: true });
+    const target = "/tmp/some-file.txt";
+    const resolved = backend.resolvePath?.(target);
+    expect(resolved).toBe("/tmp/some-file.txt");
+  });
+
+  test("resolvePath returns undefined for absolute path outside workspace when not allowed", () => {
+    const backend = createLocalFileSystem(testDir);
+    const resolved = backend.resolvePath?.("/tmp/some-file.txt");
+    // /tmp/some-file.txt is outside workspace — in default mode, leading "/" is stripped
+    // and it resolves under the workspace root, so it's allowed (but coerced)
+    expect(resolved).toBeDefined();
+    expect(resolved).toStartWith(realpathSync(testDir));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Symlink escape prevention
 // ---------------------------------------------------------------------------
 

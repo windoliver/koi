@@ -57,8 +57,23 @@ function toApiPath(p: string): string {
   return sep === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
+/** Options for the local filesystem backend. */
+export interface LocalFileSystemOptions {
+  /**
+   * When true, absolute paths outside the workspace root are used as-is
+   * instead of being coerced to workspace-relative. The permission system
+   * (tool approval dialog) is the security boundary — not path chroot.
+   *
+   * Default: false (sandbox mode — all paths resolved under workspace root).
+   */
+  readonly allowAbsolutePaths?: boolean;
+}
+
 /** Create a local filesystem backend rooted at `rootPath`. */
-export function createLocalFileSystem(rootPath: string): FileSystemBackend {
+export function createLocalFileSystem(
+  rootPath: string,
+  options?: LocalFileSystemOptions,
+): FileSystemBackend {
   // Resolve the root with realpath so symlinked roots are handled correctly.
   // Uses sync because this runs once at construction time.
   const root = realpathSync(resolve(rootPath));
@@ -66,11 +81,15 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   // Append path separator so /Users/foo/koi doesn't match /Users/foo/koi2
   const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 
+  const allowAbsolute = options?.allowAbsolutePaths === true;
+
   /** Result of lexical path resolution — carries coercion metadata. */
   interface LexicalResult {
     readonly absolute: string;
     readonly relative: string;
     readonly coerced: boolean;
+    /** True when the path is an allowed absolute path outside the workspace. */
+    readonly outsideWorkspace: boolean;
   }
 
   /**
@@ -81,10 +100,29 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
    * Absolute paths that match the workspace root prefix are also accepted and
    * stripped (e.g., "/Users/foo/workspace/src/index.ts" → "src/index.ts").
    *
+   * When `allowAbsolutePaths` is enabled, absolute paths outside the workspace
+   * are passed through as-is — the permission system is the security boundary.
+   *
    * The symlink containment check in safePath() prevents actual filesystem
    * escape regardless of the input path.
    */
   function lexicalCheck(path: string): Result<LexicalResult, KoiError> {
+    // When allowAbsolutePaths is enabled, absolute paths outside the workspace
+    // are used directly — resolve() normalizes ".." segments.
+    if (
+      allowAbsolute &&
+      path.startsWith("/") &&
+      !path.startsWith(rootPrefix) &&
+      !path.startsWith(`${root}/`) &&
+      path !== root
+    ) {
+      const resolved = resolve(path);
+      return {
+        ok: true,
+        value: { absolute: resolved, relative: path, coerced: false, outsideWorkspace: true },
+      };
+    }
+
     // Strip workspace root prefix from absolute paths that include it
     // (models sometimes send full absolute paths).
     // For all other paths, strip leading "/" to treat as workspace-relative
@@ -103,7 +141,12 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     }
     return {
       ok: true,
-      value: { absolute: resolved, relative: stripped, coerced: stripped !== path },
+      value: {
+        absolute: resolved,
+        relative: stripped,
+        coerced: stripped !== path,
+        outsideWorkspace: false,
+      },
     };
   }
 
@@ -118,6 +161,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   async function safePath(path: string): Promise<Result<LexicalResult, KoiError>> {
     const lexical = lexicalCheck(path);
     if (!lexical.ok) return lexical;
+
+    // Absolute paths outside the workspace skip containment checks —
+    // the permission system (tool approval dialog) is the guard.
+    if (lexical.value.outsideWorkspace) return lexical;
 
     // Walk up to find the nearest existing path component, then realpath it.
     // This handles both existing files and not-yet-created paths (write/rename).
@@ -195,8 +242,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     async read(path: string, options?: FileReadOptions): Promise<Result<FileReadResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
-      if (!symCheck.ok) return symCheck;
+      if (!p.value.outsideWorkspace) {
+        const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
+        if (!symCheck.ok) return symCheck;
+      }
 
       try {
         const file = Bun.file(p.value.absolute);
@@ -231,8 +280,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<FileWriteResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
-      if (!symCheck.ok) return symCheck;
+      if (!p.value.outsideWorkspace) {
+        const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
+        if (!symCheck.ok) return symCheck;
+      }
       const coercionField = p.value.coerced ? { resolvedPath: p.value.relative } : {};
 
       try {
@@ -275,8 +326,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<FileEditResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
-      if (!symCheck.ok) return symCheck;
+      if (!p.value.outsideWorkspace) {
+        const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
+        if (!symCheck.ok) return symCheck;
+      }
 
       try {
         const file = Bun.file(p.value.absolute);
@@ -451,8 +504,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     async delete(path: string): Promise<Result<FileDeleteResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
-      if (!symCheck.ok) return symCheck;
+      if (!p.value.outsideWorkspace) {
+        const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
+        if (!symCheck.ok) return symCheck;
+      }
 
       try {
         await unlink(p.value.absolute);
@@ -471,8 +526,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<{ readonly from: string; readonly to: string }, KoiError>> {
       const fromPath = await safePath(from);
       if (!fromPath.ok) return fromPath;
-      const fromSymCheck = await rejectEscapingSymlink(fromPath.value.absolute, from);
-      if (!fromSymCheck.ok) return fromSymCheck;
+      if (!fromPath.value.outsideWorkspace) {
+        const fromSymCheck = await rejectEscapingSymlink(fromPath.value.absolute, from);
+        if (!fromSymCheck.ok) return fromSymCheck;
+      }
       const toPath = await safePath(to);
       if (!toPath.ok) return toPath;
 
@@ -506,6 +563,17 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
      * not here. This method is necessary but not sufficient.
      */
     resolvePath(path: string): string | undefined {
+      // Mirror lexicalCheck: allow absolute paths outside workspace when enabled.
+      if (
+        allowAbsolute &&
+        path.startsWith("/") &&
+        !path.startsWith(rootPrefix) &&
+        !path.startsWith(`${root}/`) &&
+        path !== root
+      ) {
+        return resolve(path);
+      }
+
       const stripped = path.startsWith(rootPrefix)
         ? path.slice(rootPrefix.length)
         : path.startsWith(`${root}/`)
