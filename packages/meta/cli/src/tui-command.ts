@@ -843,12 +843,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // post-quit resume hint points at a file whose identity no
   // longer matches that work.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
-    // Clear any stale flag from a PREVIOUS reset — if the
-    // current truncate succeeds, shutdown's hint suppression
-    // should not fire on the basis of an earlier transient
-    // failure. The new truncate path below will re-set the flag
-    // if and only if THIS reset's durable clear fails.
-    clearPersistFailed = false;
+    // Clear any stale flag from a PREVIOUS clear — if the current
+    // reset is going to re-truncate the transcript, shutdown's
+    // hint suppression should not fire on the basis of an earlier
+    // transient failure. The new truncate path below will re-set
+    // the flag if and only if THIS reset's durable clear fails.
+    //
+    // Critically, we only clear the flag when `truncatePersistedTranscript`
+    // is true. Non-destructive resets (session picker load,
+    // rewind post-restore) must NOT clear it — if a prior
+    // `/clear` or `/new` failed to truncate, the pre-clear
+    // content is still on disk, and a later picker/rewind
+    // reset must not silently re-enable writes. The sticky-
+    // across-non-truncating-resets semantics close the earlier
+    // bypass where a failed clear followed by a picker switch
+    // could silently resume writing to the old transcript.
+    if (options.truncatePersistedTranscript) {
+      clearPersistFailed = false;
+    }
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
