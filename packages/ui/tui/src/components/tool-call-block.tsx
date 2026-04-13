@@ -223,6 +223,19 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   // #7: per-block full-body expand (show more / truncated view)
   const isBodyExpanded = useTuiStore((s) => s.expandedBodyToolCallIds.has(props.block.callId));
 
+  // #1759: hide the elapsed-time counter while a permission prompt for this
+  // tool is open. Without this gate the spinner would show the user's
+  // read/decide time as if the tool were executing. The reducer's
+  // `tool_execution_started` handler (dispatched by the permission bridge on
+  // approval) then resets startedAt so the counter starts fresh from 0 once
+  // the prompt closes and the tool actually runs.
+  const isAwaitingApproval = useTuiStore(
+    (s) =>
+      props.block.status === "running" &&
+      s.modal?.kind === "permission-prompt" &&
+      s.modal.prompt.toolId === props.block.toolName,
+  );
+
   /** Merge arg chips and result chips for the chips row. */
   const allChips = createMemo((): readonly string[] => {
     const argChips = display()?.chips ?? [];
@@ -273,7 +286,7 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
         <StatusIndicator
           status={props.block.status}
           spinnerFrame={props.spinnerFrame}
-          startedAt={props.block.startedAt}
+          startedAt={isAwaitingApproval() ? undefined : props.block.startedAt}
           durationMs={props.block.durationMs}
         />
         <Show
