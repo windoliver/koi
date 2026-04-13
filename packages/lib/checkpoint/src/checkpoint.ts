@@ -261,6 +261,13 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         getTurnBuffer(state, turnKey).push(record);
       }
 
+      ctx.reportDecision?.({
+        action: "capture",
+        toolId: request.toolId,
+        path,
+        captured: record !== undefined,
+      });
+
       return response;
     } finally {
       tracker.exitTool(sid);

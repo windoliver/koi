@@ -822,8 +822,20 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_at_results":
       return { ...state, atResults: action.results };
 
-    case "set_trajectory_data":
-      return { ...state, trajectorySteps: action.steps };
+    case "set_trajectory_data": {
+      // When steps is empty (session clear), reset all ledger fields too.
+      const isReset = action.steps.length === 0;
+      return {
+        ...state,
+        trajectorySteps: action.steps,
+        auditEntries: action.auditEntries ?? (isReset ? [] : state.auditEntries),
+        ledgerSources: action.ledgerSources ?? (isReset ? null : state.ledgerSources),
+        runReportSummary: action.runReportSummary ?? (isReset ? null : state.runReportSummary),
+      };
+    }
+
+    case "resume_follow":
+      return { ...state, resumeFollowCounter: state.resumeFollowCounter + 1 };
 
     case "load_history": {
       if (action.messages.length === 0) return state;

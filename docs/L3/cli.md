@@ -135,7 +135,12 @@ frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store u
 fine-grained signal updates.
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
-(session-scoped); PageUp/PageDown pauses auto-scroll.
+(session-scoped); PageUp/PageDown pauses auto-scroll. Ctrl+C copies selected text to clipboard
+(falls through to interrupt when no selection).
+
+**Copy-on-select:** Mouse-drag to select text auto-copies to system clipboard via OSC 52 when
+the selection finishes (same pattern as OpenCode). Works in iTerm2, Ghostty, WezTerm, Kitty.
+Selections exceeding 100 KB are not copied (OSC 52 terminal payload limit).
 
 ```bash
 koi tui
@@ -447,6 +452,10 @@ the exact decision payload shapes. The CI enforcement test in
 decision-making middleware wired into the runtime emits at least one span
 with non-empty `decisions` metadata in full-stack replay.
 
+### Trajectory Visibility
+
+`@koi/decision-ledger` is now a dependency. `refreshTrajectoryData()` uses the decision ledger as the primary data source for the `/trajectory` view, with fallback to raw `getTrajectorySteps()`.
+
 ---
 
 ## Testing
@@ -512,4 +521,8 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 
 > **Checkpoint middleware + /rewind command:** `koi tui` now wires `@koi/checkpoint` middleware and `@koi/snapshot-store-sqlite` into the TUI runtime. The `/rewind [n]` slash command dispatches through `tui-command.ts` to trigger checkpoint-based conversation rollback. The checkpoint middleware config receives `resolvePath` from the filesystem backend for workspace-scoped path validation.
 
+> **#1744 — TUI quit no longer logs `EditBuffer is destroyed`:** `@koi/tui`'s `InputArea` now routes every textarea read/write through `safeText`/`safeSetText` and sets a `disposed` flag in Solid `onCleanup` so the `useKeyboard` callback bails out once the component is being torn down. Previously, keystrokes that drained through the renderer's `KeyHandler` after `appHandle.stop()` had destroyed the textarea's underlying `EditBuffer` would call `getText()` on a dead buffer, throw, and surface as `[KeyHandler] Error in global keypress handler: error: EditBuffer is destroyed` on every `koi tui` quit. No CLI wiring change in `tui-command.ts` — the fix is local to `@koi/tui`.
+
 > **OTel opt-in for TUI sessions (#1628):** `TuiRuntimeConfig` gains `otel?: OtelMiddlewareConfig | true | false`. When truthy, `createTuiRuntime` creates an `OtelHandle` from `@koi/middleware-otel`, wires `otelHandle.onStep` into `createEventTraceMiddleware` (ATIF ↔ OTel trace identity sharing via `otel.traceId`/`otel.spanId` in `step.metadata`), and appends `otelHandle.middleware` to the middleware stack. `tui-command.ts` passes `otel: true` when `KOI_OTEL_ENABLED=true` is set in the environment. Requires an OTel SDK initialised before the TUI starts — `trace.getTracer()` reads from the global registry; no SDK = no-op tracer, zero crash.
+
+> **Per-turn trajectory grouping (PR #1758):** `tui-command.ts` injects a synthetic `koi:tui_turn_start` ATIF step (via `runtimeHandle.appendTrajectoryStep`) before each `runtime.run()` call. This is necessary because the engine resets `ctx.turnIndex` to 0 on every `run()` invocation — in the TUI's interactive mode (one `run()` per user message), the engine's turn counter is always 0. The synthetic step carries `metadata.tuiTurnIndex` (monotonic, 0-based, reset on `/clear`). `computeTurnIndices()` uses three-tier priority: (1) `tui_turn_start` boundary steps, (2) `metadata.turnIndex` from event-trace for sub-turns within a single `run()`, (3) `totalMessages` delta for legacy ATIF fixtures. `@koi/tui`'s `TrajectoryView` consumes the resulting `turnIndex` field on `TrajectoryStepSummary` to render collapsible per-turn groups.

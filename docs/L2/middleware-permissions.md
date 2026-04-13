@@ -418,6 +418,10 @@ steps above — approval steps are standalone `source: "user"` steps for human
 judgment, while MW decisions ride on the middleware span for the permission
 check itself.
 
+### Trajectory Visibility
+
+Reports `{phase: "filter", totalTools, allowedCount, filteredCount}` via `ctx.reportDecision()` on `wrapModelCall` for all outcomes (including when all tools are allowed). Shows `[filter:N/N]` in the TUI trajectory view.
+
 ---
 
 ## Circuit Breaker

@@ -52,6 +52,8 @@ import {
   agentId as makeAgentId,
   memoryRecordId,
 } from "@koi/core";
+import type { DecisionLedgerReader } from "@koi/decision-ledger";
+import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import {
   createInMemorySpawnLedger,
@@ -396,6 +398,12 @@ export interface TuiRuntimeHandle {
    * in the TUI so they are aware of the reduced isolation posture.
    */
   readonly sandboxActive: boolean;
+  /**
+   * Decision ledger factory — creates a per-session ledger reader backed by
+   * the in-memory trajectory store. Used by the /trajectory view to show
+   * audit entries and source status alongside trajectory steps.
+   */
+  readonly createDecisionLedger: () => DecisionLedgerReader;
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1330,15 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     checkpoint: checkpointHandle,
     transcript,
     sandboxActive: osSandboxResult.ok,
+    createDecisionLedger: () =>
+      createDecisionLedger({
+        // The TUI stores all trajectory data under a fixed doc ID
+        // ("koi-tui-session"), not per-session. Wrap the store so the
+        // ledger's getDocument(sessionId) reads from the correct key.
+        trajectoryStore: {
+          getDocument: () => trajectoryStore.getDocument(TUI_DOC_ID),
+        },
+      }),
     getTrajectorySteps: async () => {
       const steps = await trajectoryStore.getDocument(TUI_DOC_ID);
       // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.

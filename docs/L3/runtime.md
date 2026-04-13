@@ -150,6 +150,10 @@ Current middleware with decision metadata:
 - `@koi/middleware-semantic-retry` — on retry/abort actions (silent on success)
 - `@koi/model-router` — on every model call: selected target, attempted targets, fallback_occurred, latency_ms
 
+### Trajectory Visibility
+
+The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping the trajectory store to resolve the TUI's fixed document ID. All integrated L2 middleware report decisions via `ctx.reportDecision()` for TUI trajectory visibility.
+
 ---
 
 ## CI Gates
@@ -210,3 +214,5 @@ Current middleware with decision metadata:
 > **Model router RuntimeConfig opt-in (issue #1704):** `RuntimeConfig.modelRouterMiddleware?: KoiMiddleware` added. Pass a pre-constructed `createModelRouterMiddleware(...)` instance and `createRuntime()` appends it as the innermost model-call interceptor (after exfiltration guard). Skipped if a middleware named `"model-router"` is already present in `config.middleware`. `@koi-agent/cli` wires this via `KOI_FALLBACK_MODEL` env var (comma-separated model names): the TUI builds a per-model `ProviderAdapter` map (all sharing the same API key/base URL) and passes `modelRouterMiddleware` to `createTuiRuntime()`. Startup log: `[koi/tui] model-router: <primary> → [<fallback>, ...]`.
 
 > **Outcome evaluator (PR #1706, issue #1686):** `@koi/outcome-evaluator` wired as a new L2 dependency. `createOutcomeEvaluatorMiddleware()` evaluates agent output against a structured `OutcomeRubric` using a separate grader model call after each turn's `onTurnEnd`. Failing criteria are injected as structured feedback into the next turn's context block until all required criteria pass or `maxIterations` is exhausted. Circuit breaker (`maxConsecutiveIdenticalFailures`) prevents infinite loops when the agent produces the same failing output repeatedly. Optional `isolateCriteria` mode fires one grader call per criterion to prevent halo effects. Standalone goldens only (2 tests in `golden-replay.test.ts`): event ordering (`evaluation.start` fires before `evaluation.end`) and pass-through behavior when all criteria pass on the first attempt.
+
+> **Event-trace turnIndex metadata (PR #1758):** `@koi/event-trace`'s `buildModelStep` now threads `ctx.turnIndex` into `metadata.turnIndex` on agent model call steps. This is a data-only change in the L2 package — no `@koi/runtime` wiring changes needed. The field enables downstream consumers (TUI `/trajectory` view, ATIF analysis) to identify sub-turn boundaries within a single engine `run()` call.

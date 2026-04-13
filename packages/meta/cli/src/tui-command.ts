@@ -31,7 +31,13 @@
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
+import type {
+  AuditEntry,
+  EngineEvent,
+  JsonObject,
+  RichTrajectoryStep,
+  SessionTranscript,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
@@ -43,7 +49,13 @@ import {
 } from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
-import type { EventBatcher, SessionSummary, TrajectoryStepSummary, TuiStore } from "@koi/tui";
+import type {
+  EventBatcher,
+  LedgerAuditEntry,
+  SessionSummary,
+  TrajectoryStepSummary,
+  TuiStore,
+} from "@koi/tui";
 import {
   createEventBatcher,
   createInitialState,
@@ -95,12 +107,58 @@ function annotateSandboxed(step: RichTrajectoryStep): string {
   return step.identifier;
 }
 
+/**
+ * Detect turn index for each step.
+ *
+ * Turn 0 = session setup steps before the first user turn.
+ * Turn 1+ = user turns (1-based).
+ *
+ * Signal priority (first match wins):
+ *   1. `tui_turn_start` synthetic step — written by the TUI before each run().
+ *      This is a reliable cross-run boundary marker.
+ *   2. `metadata.turnIndex` from event-trace — 0-based ctx.turnIndex.
+ *      Useful inside a single run() with multiple sub-turns (agent loops).
+ *   3. `metadata.totalMessages` delta ≥ 2 — fallback for older ATIF fixtures.
+ */
+function computeTurnIndices(steps: readonly RichTrajectoryStep[]): readonly number[] {
+  let currentTurnIdx = 0;
+  let lastMsgCount: number | undefined;
+  return steps.map((step) => {
+    // Primary: synthetic tui_turn_start boundary injected before each run()
+    if (step.metadata?.type === "tui_turn_start") {
+      const rawTurn = step.metadata?.tuiTurnIndex;
+      currentTurnIdx = (typeof rawTurn === "number" ? rawTurn : currentTurnIdx) + 1;
+      return currentTurnIdx;
+    }
+    if (step.source === "agent" && step.kind === "model_call") {
+      // Secondary: ctx.turnIndex from event-trace (sub-turns within a single run)
+      const rawTurn = step.metadata?.turnIndex;
+      if (typeof rawTurn === "number" && rawTurn > 0) {
+        currentTurnIdx = currentTurnIdx + rawTurn;
+      } else {
+        // Fallback: totalMessages delta for ATIF fixtures
+        const rawCount = step.metadata?.totalMessages;
+        const count = typeof rawCount === "number" ? rawCount : undefined;
+        if (lastMsgCount === undefined) {
+          if (currentTurnIdx === 0) currentTurnIdx = 1;
+        } else if (count !== undefined && count - lastMsgCount >= 2) {
+          currentTurnIdx++;
+        }
+        if (count !== undefined) lastMsgCount = count;
+      }
+    }
+    return currentTurnIdx;
+  });
+}
+
 /** Map rich trajectory steps to TUI summaries with content for expandable detail. */
 function mapTrajectorySteps(
   steps: readonly RichTrajectoryStep[],
 ): readonly TrajectoryStepSummary[] {
-  return steps.map((step) => ({
+  const turnIndices = computeTurnIndices(steps);
+  return steps.map((step, i) => ({
     stepIndex: step.stepIndex,
+    turnIndex: turnIndices[i] ?? 0,
     kind: step.kind,
     identifier: annotateSandboxed(step),
     durationMs: step.durationMs,
@@ -123,9 +181,63 @@ function mapTrajectorySteps(
             hook: step.metadata.hook as string | undefined,
             phase: step.metadata.phase as string | undefined,
             nextCalled: step.metadata.nextCalled as boolean | undefined,
+            decisions: Array.isArray(step.metadata.decisions)
+              ? (step.metadata.decisions as readonly JsonObject[])
+              : undefined,
           }
         : undefined,
   }));
+}
+
+/** Map an AuditEntry to a TUI-friendly summary. */
+function mapAuditEntry(entry: AuditEntry): LedgerAuditEntry {
+  const summary =
+    entry.kind === "tool_call" && entry.request !== undefined
+      ? `tool: ${JSON.stringify(entry.request).slice(0, 120)}`
+      : entry.kind === "permission_decision" && entry.response !== undefined
+        ? `perm: ${JSON.stringify(entry.response).slice(0, 120)}`
+        : `${entry.agentId} turn:${entry.turnIndex} ${entry.durationMs}ms`;
+  return { timestamp: entry.timestamp, kind: entry.kind, summary };
+}
+
+/** Map DecisionLedger SourceStatus to a simple string label. */
+function mapSourceState(status: { readonly state: string }): string {
+  return status.state;
+}
+
+/**
+ * Refresh trajectory + ledger data and dispatch to the TUI store.
+ *
+ * Uses the decision ledger as the single data source for all three lanes
+ * (trajectory, audit, report). Falls back to raw getTrajectorySteps()
+ * if the ledger query fails.
+ */
+async function refreshTrajectoryData(
+  handle: TuiRuntimeHandle,
+  store: TuiStore,
+  currentSessionId: string,
+): Promise<void> {
+  const reader = handle.createDecisionLedger();
+  const result = await reader.getLedger(currentSessionId);
+  if (result.ok) {
+    const ledger = result.value;
+    store.dispatch({
+      kind: "set_trajectory_data",
+      steps: mapTrajectorySteps(ledger.trajectorySteps),
+      auditEntries: ledger.auditEntries.map(mapAuditEntry),
+      ledgerSources: {
+        trajectory: mapSourceState(ledger.sources.trajectory),
+        audit: mapSourceState(ledger.sources.audit),
+        report: mapSourceState(ledger.sources.report),
+      },
+      runReportSummary:
+        ledger.runReport !== undefined ? JSON.stringify(ledger.runReport).slice(0, 300) : undefined,
+    });
+  } else {
+    // Fallback: raw trajectory steps without ledger enrichment
+    const steps = await handle.getTrajectorySteps();
+    store.dispatch({ kind: "set_trajectory_data", steps: mapTrajectorySteps(steps) });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -707,6 +819,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // is actually in.
   let resetBarrier: Promise<boolean> = Promise.resolve(true);
 
+  // Monotonically increasing TUI-session turn counter. Resets on session clear.
+  // Injected as a synthetic ATIF step before each run() so /trajectory can
+  // group steps by user turn regardless of engine-internal ctx.turnIndex resets.
+  // let: justified — incremented per user submission
+  let tuiTurnCounter = 0;
+
   const resetConversation = (): void => {
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
@@ -733,11 +851,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         .resetSessionState(idleController.signal)
         .then((): boolean => {
           // Only NOW that the engine confirmed the session was rotated
-          // do we wipe visible state. Order: store messages, trajectory,
-          // then runtime transcript.
+          // do we wipe visible state. Order: store messages, trajectory
+          // + audit ledger, runtime transcript, TUI turn counter.
           store.dispatch({ kind: "clear_messages" });
-          store.dispatch({ kind: "set_trajectory_data", steps: [] });
+          store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
           runtimeHandle?.transcript.splice(0);
+          tuiTurnCounter = 0;
           // #1742 loop-3 round 1: surface the cumulative-budget caveat
           // to the user. /clear gives a fresh per-iteration turn/duration
           // budget (resetIterationBudgetPerRun: true above) but token
@@ -1080,14 +1199,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               metadata: { type: "checkpoint_rewind" },
             };
             await runtimeHandle.appendTrajectoryStep(rewindStep);
-            // Refresh the trajectory view so the step shows up in the
-            // UI without waiting for the next turn to refresh it.
-            void runtimeHandle.getTrajectorySteps().then((steps) => {
-              store.dispatch({
-                kind: "set_trajectory_data",
-                steps: mapTrajectorySteps(steps),
-              });
-            });
+            // Refresh the trajectory + decision ledger view so the step
+            // shows up without waiting for the next turn.
+            void refreshTrajectoryData(runtimeHandle, store, runtimeHandle.runtime.sessionId);
 
             // Surface drift warnings — paths the rewind could not restore
             // because they were modified outside the tracked tool pipeline
@@ -1265,6 +1379,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
       const controller = new AbortController();
       activeController = controller;
+
+      // Inject a synthetic turn-boundary step so /trajectory can group steps
+      // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
+      // so we maintain our own counter here at the TUI session level.
+      const thisTurnIndex = tuiTurnCounter++;
+      await runtimeHandle.appendTrajectoryStep({
+        stepIndex: 0,
+        timestamp: Date.now(),
+        source: "system",
+        kind: "tool_call",
+        identifier: "koi:tui_turn_start",
+        outcome: "success",
+        durationMs: 0,
+        metadata: {
+          type: "tui_turn_start",
+          tuiTurnIndex: thisTurnIndex,
+        } as import("@koi/core").JsonObject,
+      });
+
       try {
         // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
         // middleware composition, tool dispatch, and transcript management.
@@ -1319,19 +1452,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         });
         await drainEngineStream(stream, store, batcher, controller.signal);
 
-        // Refresh trajectory data after each turn so /trajectory view is current.
-        // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
+        // Refresh trajectory + decision ledger data after each turn.
+        // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
         // wrapMiddlewareWithTrace records MW spans asynchronously via
-        // void store.append(...). Without the delay, getTrajectorySteps()
-        // reads before all spans are written.
-        void new Promise<void>((resolve) => setTimeout(resolve, 500))
-          .then(() => handle.getTrajectorySteps())
-          .then((steps) => {
-            store.dispatch({
-              kind: "set_trajectory_data",
-              steps: mapTrajectorySteps(steps),
-            });
-          });
+        // void store.append(...). Without the delay, getLedger() reads
+        // before all spans are written.
+        void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
+          refreshTrajectoryData(handle, store, handle.runtime.sessionId),
+        );
       } finally {
         // Guard against cross-run races: only clear activeController and
         // reset the SIGINT handler if THIS run is still the active one.

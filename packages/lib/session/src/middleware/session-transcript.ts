@@ -185,6 +185,11 @@ export function createSessionTranscriptMiddleware(
             }
 
             if (toAppend.length > 0) {
+              ctx.reportDecision?.({
+                action: "record",
+                entries: toAppend.length,
+                toolCalls: toolCallArgs.size,
+              });
               // Await the write so the turn is durable before the generator completes.
               // The stream is already exhausted here — this is the commit boundary.
               try {
@@ -245,6 +250,10 @@ export function createSessionTranscriptMiddleware(
           { cause: appendError },
         );
       }
+      ctx.reportDecision?.({
+        action: "record",
+        toolId: request.toolId,
+      });
       return response;
     },
   };

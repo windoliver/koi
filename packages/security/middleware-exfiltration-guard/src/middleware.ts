@@ -303,6 +303,15 @@ export function createExfiltrationGuardMiddleware(
         // "warn" — return unchanged
       }
 
+      // Clean pass — no secrets detected in input or output
+      const cleanDecision = {
+        location: "tool",
+        toolId: request.toolId,
+        action: "clean",
+        matchCount: 0,
+      };
+      ctx.reportDecision?.(cleanDecision);
+
       return response;
     },
 
