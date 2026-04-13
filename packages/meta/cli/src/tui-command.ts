@@ -1221,6 +1221,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         });
         return;
       }
+      // Block fork after a failed durable clear. The on-disk
+      // transcript still contains the pre-clear conversation
+      // the user explicitly asked to drop, and `handleFork`
+      // clones THAT file into a new session id — duplicating
+      // the sensitive data into a fresh resumable copy. This
+      // mirrors the SUBMIT_AFTER_FAILED_CLEAR guard in
+      // onSubmit; both paths must refuse to operate on the
+      // stale transcript.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_CLEAR",
+          message:
+            "Fork is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. The current file still " +
+            "contains pre-clear content that the fork would copy into a new " +
+            "session id. Quit and relaunch, or resolve the underlying I/O " +
+            "issue and retry /clear before forking.",
+        });
+        return;
+      }
       // Block fork in picker mode. `handleFork()` clones by
       // `runtime.sessionId`, which in picker mode is still the
       // startup session — not the conversation the user is viewing.
@@ -1877,6 +1898,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             "durably truncate this session's transcript. New turns would append to " +
             "the pre-clear content and a later `--resume` would resurrect it. " +
             "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        });
+        return;
+      }
+      // Also re-check `lastResetFailed` — the in-memory reset
+      // (resetSessionState, transcript splice, batcher rotate)
+      // can fail independently of the durable truncate. If it
+      // threw before `runtimeHandle.transcript.splice(0)` ran,
+      // the UI has been cleared but the runtime transcript still
+      // contains pre-clear messages, and the next submit would
+      // run against stale history while the operator believes
+      // the session was wiped. Mirror the picker / rewind block
+      // logic and refuse here.
+      if (lastResetFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_RESET",
+          message:
+            "Submit is disabled because the most recent session reset failed. " +
+            "The runtime may still hold stale conversation context. " +
+            "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
+            "clean state.",
         });
         return;
       }
