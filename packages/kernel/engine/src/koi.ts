@@ -221,19 +221,37 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
-  function lifecycleSettleTimeout(): Promise<"timeout"> {
-    return new Promise<"timeout">((resolve) => {
-      const timer = setTimeout(() => {
+  /**
+   * Race `currentRunSettled` against the lifecycle settle timeout.
+   * Returns `"settled"` when the run unwound first, `"timeout"` when
+   * the timer fired. Either branch CLEARS the timer so a successful
+   * settle does not leave a dangling timeout that poisons the runtime
+   * 5 seconds later (#1742, round 7 review).
+   */
+  async function awaitSettleOrTimeout(): Promise<"settled" | "timeout"> {
+    // let justified: mutable timer handle owned by the timeout side
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => {
         poisoned = true;
         console.warn(
           `[koi] lifecycle settle timeout (${LIFECYCLE_SETTLE_TIMEOUT_MS}ms) — runtime poisoned, an in-flight tool ignored abort. Caller must dispose and recreate the runtime before submitting another turn.`,
         );
         resolve("timeout");
       }, LIFECYCLE_SETTLE_TIMEOUT_MS);
-      // Don't pin the event loop — if the run settles before the
-      // timeout, the timer is GC'd anyway via the Promise.race winner.
-      (timer as { unref?: () => void }).unref?.();
+      // Unref so the timer doesn't pin the event loop on its own.
+      (timer as unknown as { unref?: () => void }).unref?.();
     });
+    try {
+      return await Promise.race([currentRunSettled.then(() => "settled" as const), timeoutPromise]);
+    } finally {
+      // Always cancel the timer. If the settle won the race the timer
+      // would otherwise still fire ~5s later and incorrectly poison
+      // the runtime even though cleanup already completed normally.
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
   }
 
   // Session ID created at factory scope so runtime.sessionId can reference it.
@@ -1316,10 +1334,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // hosts to dispose and recreate the runtime when a tool ignores
       // abort.
       if (running) {
-        const result = await Promise.race([
-          currentRunSettled.then(() => "settled" as const),
-          lifecycleSettleTimeout(),
-        ]);
+        const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
           throw KoiRuntimeError.from(
             "TIMEOUT",
@@ -1378,10 +1393,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // Caller is responsible for first aborting the run signal so
       // the stream actually terminates promptly.
       if (running) {
-        const result = await Promise.race([
-          currentRunSettled.then(() => "settled" as const),
-          lifecycleSettleTimeout(),
-        ]);
+        const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
           console.warn(
             "[koi] dispose proceeding after settle timeout — late tool callbacks may corrupt downstream state",

@@ -484,6 +484,75 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEndFiredAfterAdapter).toBe(true);
   });
 
+  test("#1742: successful cycleSession does not leave a dangling poison timer", async () => {
+    // Round 7 regression: `lifecycleSettleTimeout()` used to schedule a
+    // setTimeout that flipped `poisoned = true` after 5s, with no way to
+    // cancel it. Even on the happy path (run aborts, finally runs, race
+    // resolves to "settled"), the timer kept ticking and would poison
+    // the runtime ~5s after a successful /clear, breaking the next user
+    // submit. Verify the timer is actually cancelled.
+    const adapter: EngineAdapter = {
+      engineId: "abort-on-signal-clean",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: (input) => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          await new Promise<void>((resolve, reject) => {
+            const signal = input.signal;
+            if (signal === undefined) {
+              resolve();
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          });
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Start a run and abort it cleanly so cycleSession resolves quickly.
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* expected */
+      }
+    })();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    const cyclePromise = runtime.cycleSession?.();
+    controller.abort();
+    await drainPromise;
+    await cyclePromise;
+
+    // Wait LONGER than the production lifecycle-settle timeout (5s) so a
+    // dangling timer would have fired by now. Use 5500ms to be safe.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5500));
+
+    // The runtime must NOT be poisoned — the timer was cancelled when
+    // currentRunSettled won the race.
+    expect(() => {
+      // collectEvents is fine because the adapter would re-enter its
+      // signal handling loop; we just want run() to NOT throw.
+      const it = runtime.run({ kind: "text", text: "after-clear" })[Symbol.asyncIterator]();
+      void it.return?.();
+    }).not.toThrow();
+
+    await runtime.dispose();
+  }, 12_000);
+
   test("#1742: cycleSession FAILS CLOSED on settle timeout — throws + poisons + skips cleanup", async () => {
     // Non-cooperative tool path: the adapter never honors the abort
     // signal, so the run's finally never fires and currentRunSettled
