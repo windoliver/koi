@@ -26,6 +26,7 @@
  *   @koi/tools-builtin        — Glob/Grep/ToolSearch + TodoWrite/plan-mode interaction tools
  *   @koi/fs-local             — local filesystem backend
  *   @koi/skills-runtime       — skill discovery + SkillComponent attach
+ *   @koi/outcome-evaluator    — LLM-as-judge rubric iteration loop
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
@@ -84,6 +85,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { createOutcomeEvaluatorMiddleware } from "@koi/outcome-evaluator";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import {
@@ -3516,6 +3518,52 @@ const queries: readonly QueryConfig[] = [
     hooks: [],
     providers: [],
     maxTurns: 2,
+  },
+
+  // @koi/outcome-evaluator — LLM-as-judge rubric iteration loop (#1686)
+  // Agent explains recursion; grader evaluates two criteria (base case + self-call).
+  // On first pass the grader should mark both satisfied; trajectory shows
+  // evaluation.start → evaluation.end with result="satisfied" and criteria[].
+  {
+    name: "outcome-evaluator",
+    prompt:
+      "Write a two-sentence explanation of recursion. Make sure to mention the base case and how a function calls itself.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    maxTurns: 4,
+    extraMiddleware: [
+      createOutcomeEvaluatorMiddleware({
+        rubric: {
+          description: "Explain recursion clearly",
+          criteria: [
+            { name: "mentions_base_case", description: "Mentions a base case" },
+            {
+              name: "mentions_self_reference",
+              description: "Mentions that a function calls itself",
+            },
+          ],
+        },
+        graderModelCall: async (prompt: string, signal?: AbortSignal): Promise<string> => {
+          // Use the same model adapter as the agent for grading
+          const response = await modelAdapter.complete({
+            messages: [
+              {
+                senderId: "user",
+                timestamp: Date.now(),
+                content: [{ kind: "text", text: prompt }],
+              },
+            ],
+            model: MODEL,
+            signal,
+          });
+          return typeof response.content === "string" ? response.content : prompt;
+        },
+        maxIterations: 3,
+      }).middleware,
+    ],
   },
 ];
 

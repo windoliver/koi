@@ -306,6 +306,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/outcome-evaluator": {
+      "name": "@koi/outcome-evaluator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/plugins": {
       "name": "@koi/plugins",
       "version": "0.0.0",
@@ -601,6 +610,7 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
+        "@koi/outcome-evaluator": "workspace:*",
         "@koi/permissions": "workspace:*",
         "@koi/plugins": "workspace:*",
         "@koi/query-engine": "workspace:*",
@@ -1156,6 +1166,8 @@
     "@koi/model-registry": ["@koi/model-registry@workspace:packages/lib/model-registry"],
 
     "@koi/model-router": ["@koi/model-router@workspace:packages/lib/model-router"],
+
+    "@koi/outcome-evaluator": ["@koi/outcome-evaluator@workspace:packages/lib/outcome-evaluator"],
 
     "@koi/permissions": ["@koi/permissions@workspace:packages/security/permissions"],
 

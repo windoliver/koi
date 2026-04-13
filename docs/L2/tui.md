@@ -222,6 +222,7 @@ dispatch skips notification entirely.
 | `plan_update` event | Replaces `planTasks` with mapped snapshot |
 | `task_progress` event | Patches matching task in `planTasks`; no-op if `planTasks` is null |
 | `set_trajectory_data` with steps | Replaces `trajectorySteps` with new data |
+| Keypress drains after `EditBuffer` destroy on quit (#1744) | `InputArea` reads/writes go through `safeText`/`safeSetText`; `disposed` flag set on `onCleanup` short-circuits the `useKeyboard` callback so a stale `textareaRef` cannot throw `EditBuffer is destroyed` through the global `KeyHandler`. |
 
 ## Phase 2k: SolidJS Migration + Worker Infrastructure
 
