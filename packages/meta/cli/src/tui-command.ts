@@ -739,14 +739,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // is still surfaced via
   // `store.dispatch({ code: "SESSION_CLEAR_PERSIST_FAILED" })`.
   //
-  // Reset at the top of each `resetConversation()` call so a
-  // subsequent successful clear re-enables the hint. A sticky
+  // Reset at the top of each truncating `resetConversation()` call
+  // so a subsequent successful clear re-enables the hint. A sticky
   // process-wide flag would permanently strand the user if a
   // transient I/O blip during one clear happened to precede hours
   // of later work — the shutdown hint would be withheld even
   // though the final session state is perfectly resumable.
-  // let: justified — toggled per clear attempt.
+  // Non-truncating resets (picker / rewind) preserve the latch.
+  // let: justified — toggled per truncating-clear attempt.
   let clearPersistFailed = false;
+
+  // Reflects the most recent `resetConversation()` IIFE outcome.
+  // Set to `true` whenever the reset body's `catch` runs (a
+  // `resetSessionState()` throw, a runtime-handle disposal
+  // failure, etc.). Used by picker hydration and rewind replay
+  // to refuse to proceed onto contaminated runtime state — if
+  // the task board / approval store / trajectory prune partially
+  // failed, the next picker load or rewind would otherwise
+  // hydrate fresh history onto stale middleware state. Reset at
+  // the top of each `resetConversation()` call so each new reset
+  // attempt can succeed independently.
+  // let: justified — toggled per reset attempt.
+  let lastResetFailed = false;
 
   // Rewind-boundary tracking: `rewindBoundaryActive` is true
   // whenever `/rewind` must refuse to walk past some boundary
@@ -861,6 +875,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (options.truncatePersistedTranscript) {
       clearPersistFailed = false;
     }
+    // `lastResetFailed` IS reset on every attempt (including
+    // non-truncating ones) because each reset attempt is an
+    // independent operation: a transient failure during one
+    // picker switch should not block a successful subsequent
+    // reset. The flag latches if the IIFE body throws below,
+    // and downstream callers (picker hydration, rewind replay,
+    // submit) check it before proceeding.
+    lastResetFailed = false;
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
@@ -960,10 +982,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // set `clearPersistFailed` here — that flag is the
           // permanent submit lock, and only an actual durable
           // truncate failure (handled in the explicit branch
-          // above) warrants it. A transient task-board /
-          // trajectory / approval-store reset error during
-          // `/rewind` or a picker switch must surface to the UI
-          // without locking the whole session out of writes.
+          // above) warrants it. We DO set `lastResetFailed` so
+          // downstream picker hydration and rewind replay can
+          // refuse to proceed onto contaminated runtime state.
+          lastResetFailed = true;
           store.dispatch({
             kind: "add_error",
             code: "SESSION_RESET_FAILED",
@@ -1023,6 +1045,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // reset error must not flip `clearPersistFailed`,
           // because that flag is the permanent submit lock and
           // only an actual durable truncate failure warrants it.
+          // We DO set `lastResetFailed` so downstream callers
+          // can refuse to hydrate onto contaminated state.
+          lastResetFailed = true;
           store.dispatch({
             kind: "add_error",
             code: "SESSION_RESET_FAILED",
@@ -1427,6 +1452,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // count — an extra truncate would wipe the kept prefix.
             resetConversation({ truncatePersistedTranscript: false });
             await resetBarrier;
+            // Refuse to hydrate onto contaminated state if the
+            // reset itself failed — the task board, approval
+            // store, or trajectory store may be in a stale
+            // half-state and replaying old turns into them
+            // would mask the failure with apparently-normal
+            // operation. The reset error is already surfaced via
+            // store.dispatch from the catch block above.
+            if (lastResetFailed) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_REPLAY_BLOCKED",
+                message:
+                  "Rewind restored the workspace but the in-memory session " +
+                  "reset failed. Quit and relaunch with `koi tui --resume <id>` " +
+                  "to reload the session from a clean runtime.",
+              });
+              return;
+            }
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
               for (const msg of resumeResult.value.messages) {
@@ -1628,16 +1671,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
 
           // Phase 2: non-destructive validate/load of the target.
-          // resumeForSession wraps `jsonlTranscript.load()` internally,
-          // so a load failure (missing file, parse error, repair
-          // abort) surfaces here without having touched anything.
+          // Use the hardened `resumeSessionFromJsonl` helper (the
+          // same one `--resume` uses) so picker selections of
+          // stale, deleted, or empty sessions fail closed instead
+          // of opening as silent empty conversations.
+          // `resumeSessionFromJsonl` probes filesystem existence
+          // before reading and tries both raw and decoded
+          // candidate paths, so legacy `agent:<pid>:<uuid>` ids
+          // copied from `koi sessions list` work alongside plain
+          // UUIDs minted by this branch.
           const targetSid = sessionId(selectedId);
-          const resumeResult = await resumeForSession(targetSid, jsonlTranscript);
+          const resumeResult = await resumeSessionFromJsonl(
+            selectedId,
+            jsonlTranscript,
+            SESSIONS_DIR,
+          );
           if (!resumeResult.ok) {
             store.dispatch({
               kind: "add_error",
               code: "SESSION_RESUME_ERROR",
-              message: `Could not load session: ${resumeResult.error.message}`,
+              message: `Could not load session: ${resumeResult.error}`,
             });
             return;
           }
@@ -1655,6 +1708,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // no-op here.
           resetConversation({ truncatePersistedTranscript: false });
           await resetBarrier;
+
+          // Refuse to hydrate onto contaminated state if the
+          // reset itself failed — the task board, approval
+          // store, or trajectory store may be in a stale
+          // half-state and replaying picker-loaded turns into
+          // them would mask the failure with apparently-normal
+          // operation. The reset error is already surfaced via
+          // store.dispatch from the catch block above.
+          if (lastResetFailed) {
+            store.dispatch({
+              kind: "add_error",
+              code: "PICKER_LOAD_BLOCKED",
+              message:
+                "Cannot load the selected session because the in-memory reset " +
+                "failed. Quit and relaunch with `koi tui --resume <id>` to load " +
+                "the session into a clean runtime.",
+            });
+            return;
+          }
 
           // Step 3: hydrate memory + UI from the validated target.
           // The picked session is loaded into the runtime's
