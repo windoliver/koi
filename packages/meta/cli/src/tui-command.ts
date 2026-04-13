@@ -716,11 +716,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — set once on first clear, never unset
   let hasClearedSinceAssembly = false;
 
+  // Shared reset primitive. Callers that represent a true privacy /
+  // rollback boundary (agent:clear, session:new) must additionally
+  // flip `hasClearedSinceAssembly` themselves — session-switch via
+  // the picker intentionally does NOT flip it, because the post-
+  // switch turns establish a usable rewind chain of their own.
   const resetConversation = (): void => {
-    // Mark the session as cleared so `/rewind` refuses to walk back
-    // across the boundary — see `hasClearedSinceAssembly` declaration
-    // for the full rationale.
-    hasClearedSinceAssembly = true;
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
@@ -826,19 +827,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     try {
       await appHandle?.stop();
+      // Wait for any in-flight clear/reset barrier to land BEFORE
+      // emitting the resume hint. Without this, `/clear` followed by
+      // an immediate `/quit` can race: the hint may print and
+      // `process.exit` fire while `jsonlTranscript.truncate()` is
+      // still in flight, leaving the old JSONL on disk and allowing
+      // a later `--resume` to resurrect the supposedly-cleared
+      // history. The barrier is bounded by `SHUTDOWN_HARD_EXIT_MS`
+      // via the failsafe timer above, so a wedged reset cannot
+      // block exit indefinitely.
+      // let: justified — flipped in the catch path below so the
+      // hint is suppressed when the durable clear failed.
+      let clearPersistFailed = false;
+      try {
+        await resetBarrier;
+      } catch {
+        clearPersistFailed = true;
+      }
       // Print the resume hint here — after the TUI renderer has
-      // released the alt screen but before any potentially-slow
-      // runtime teardown — so the user always sees it, even if a
-      // later teardown step hangs and the hard-exit failsafe fires
-      // from outside this try/finally.
-      // Loop mode (--until-pass) intentionally skips transcript
-      // persistence, so there is nothing to resume from.
+      // released the alt screen and the reset barrier has settled
+      // but before any potentially-slow runtime teardown — so the
+      // user always sees it, even if a later teardown step hangs
+      // and the hard-exit failsafe fires from outside this
+      // try/finally. Loop mode (--until-pass) intentionally skips
+      // transcript persistence, so there is nothing to resume from.
       // writeSync on fd 1 is used because the eventual process.exit()
       // aborts before async stdout flushes, which would otherwise
       // swallow the hint entirely.
       if (!isLoopMode) {
         try {
-          writeSync(1, formatResumeHint(tuiSessionId));
+          if (clearPersistFailed) {
+            writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
+          } else {
+            writeSync(1, formatResumeHint(tuiSessionId));
+          }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
         }
@@ -958,6 +980,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           onInterrupt();
           break;
         case "agent:clear":
+          hasClearedSinceAssembly = true;
           resetConversation();
           break;
         case "agent:rewind":
@@ -1123,6 +1146,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           void shutdown();
           break;
         case "session:new":
+          hasClearedSinceAssembly = true;
           resetConversation();
           break;
         default:
@@ -1136,22 +1160,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
     onSessionSelect: (selectedId: string): void => {
-      // Abort any in-flight stream, clear the display, and wipe history so no
-      // stale context leaks into the resumed session.
-      resetConversation();
+      // Atomic session-switch flow:
+      //   1. Load + validate the target session FIRST (non-destructive).
+      //   2. Only on success, reset the live session (abort/clear/truncate).
+      //   3. Copy the loaded entries into the live file and replay
+      //      them into the UI + runtime transcript.
+      //
+      // Do NOT call `resetConversation()` up front — that would
+      // truncate the live JSONL before we know whether the target
+      // even exists, causing irreversible data loss on a failed pick.
       store.dispatch({ kind: "set_view", view: "conversation" });
 
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
         try {
-          // Ensure runtime is ready AND prior reset is complete before hydrating.
-          // Without awaiting resetBarrier, the async transcript.splice(0) from
-          // resetConversation() can wipe the just-loaded history.
+          // Runtime must be ready so we have a handle to prime after
+          // the reset. Any prior reset barrier must also settle first.
           if (runtimeHandle === null) {
             await runtimeReady;
           }
           await resetBarrier;
-          const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
+
+          // Step 1: non-destructive validate/load of the target.
+          const targetSid = sessionId(selectedId);
+          const resumeResult = await resumeForSession(targetSid, jsonlTranscript);
           if (!resumeResult.ok) {
             store.dispatch({
               kind: "add_error",
@@ -1160,26 +1192,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             return;
           }
-          // Pre-populate conversation history so the AI has full context.
+          const rawLoad = await jsonlTranscript.load(targetSid);
+          if (!rawLoad.ok) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESUME_ERROR",
+              message: `Could not load session transcript: ${rawLoad.error.message}`,
+            });
+            return;
+          }
+
+          // Step 2: target is valid. Now it is safe to reset the live
+          // session — this truncates `<tuiSessionId>.jsonl`, aborts
+          // any in-flight turn, and clears the UI.
+          resetConversation();
+          await resetBarrier;
+
+          // Step 3: hydrate memory + disk from the validated target.
           if (runtimeHandle !== null) {
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
             }
           }
-          // The engine's session-transcript middleware continues routing
-          // writes to `tuiSessionId` (baked in as createKoi's sessionId
+          // The engine's session-transcript middleware routes writes
+          // to `tuiSessionId` (baked in as createKoi's sessionId
           // override at runtime assembly and unchangeable mid-session).
           // Copy the picker-selected transcript entries into the live
-          // tuiSessionId file — resetConversation() just truncated it —
-          // so new turns taken from this point append to a file that
-          // already contains the selected history. Future `--resume
-          // <tuiSessionId>` then sees the full conversation; the
-          // original `selectedId` file is left untouched as a read-only
-          // archive. Without this copy, the live file would drift from
-          // what the UI shows and the post-quit resume hint would
-          // point at a file missing the picker-loaded turns.
-          const rawLoad = await jsonlTranscript.load(sessionId(selectedId));
-          if (rawLoad.ok && rawLoad.value.entries.length > 0) {
+          // `tuiSessionId` file — `resetConversation()` just truncated
+          // it — so new turns append to a file that already contains
+          // the selected history. Future `--resume <tuiSessionId>`
+          // then sees the full conversation; the original `selectedId`
+          // file is left untouched as a read-only archive.
+          if (rawLoad.value.entries.length > 0) {
             const appendResult = await jsonlTranscript.append(tuiSessionId, rawLoad.value.entries);
             if (!appendResult.ok) {
               store.dispatch({
