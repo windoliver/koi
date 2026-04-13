@@ -758,8 +758,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // was a rollback-safety regression for any later bad edit), we
   // track `postClearTurnCount` below as a bounded fence: rewind is
   // allowed only within turns taken AFTER the most recent clear.
-  // let: justified — set once on first clear, never unset
-  let hasClearedSinceAssembly = false;
+  //
+  // Initialized to `true` whenever we launched from `--resume`,
+  // because the prior process may have issued a clear that we
+  // have no way to see from here. The engine attaches to the
+  // persistent checkpoint chain for this session id, which may
+  // contain pre-clear snapshots we must never cross. Setting the
+  // flag on resume makes `/rewind` refuse anything beyond
+  // `postClearTurnCount` (which starts at 0), so rewind is
+  // bounded to turns taken within the current process — the only
+  // ones whose chain membership we can reason about. Without
+  // this, a resumed TUI could walk back through pre-clear
+  // snapshots and restore state the prior process's `/clear`
+  // was meant to drop.
+  // let: justified — may also be flipped by subsequent in-process clears
+  let hasClearedSinceAssembly = flags.resume !== undefined;
 
   // Counts user turns taken AFTER the most recent `agent:clear` /
   // `session:new` boundary. Reset to 0 each time the flag flips and
@@ -1304,23 +1317,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
 
             // Bound rewind to turns taken AFTER the most recent
-            // `/clear` / `/new`. The checkpoint chain is still
-            // physically reachable via `runtime.sessionId`, so an
-            // unbounded rewind would restore workspace state from
-            // BEFORE the clear — which the user explicitly asked us
-            // to drop. Letting rewind walk back up to
-            // `postClearTurnCount` keeps the rollback-safety
-            // affordance for mistakes made in the new session while
-            // still enforcing the privacy/context boundary.
+            // boundary — either an explicit `/clear` / `/new` in
+            // this process, OR the resume point itself when the
+            // TUI was launched with `--resume`. The checkpoint
+            // chain is still physically reachable via
+            // `runtime.sessionId` and may contain pre-boundary
+            // snapshots (from a prior process, or from before
+            // `/clear`), so an unbounded rewind would restore
+            // workspace state the user explicitly asked to drop.
+            // Letting rewind walk back up to `postClearTurnCount`
+            // keeps the rollback-safety affordance for mistakes
+            // made in the current session while still enforcing
+            // the privacy/context fence.
             if (hasClearedSinceAssembly && n > postClearTurnCount) {
+              const boundaryLabel =
+                flags.resume !== undefined && postClearTurnCount === 0
+                  ? "resume point"
+                  : "most recent /clear or /new boundary";
               store.dispatch({
                 kind: "add_error",
                 code: "REWIND_ACROSS_CLEAR_BOUNDARY",
                 message:
-                  `Rewind depth ${n} would cross the most recent /clear or /new ` +
-                  `boundary (${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"} ` +
+                  `Rewind depth ${n} would cross the ${boundaryLabel} ` +
+                  `(${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"} ` +
                   "since that boundary). Rewinding past it would restore file " +
-                  "state the clear was meant to drop. Rewind at most " +
+                  "state from before the boundary, which may belong to a prior " +
+                  "process or a cleared conversation. Rewind at most " +
                   `${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"}, or ` +
                   "start a fresh koi tui session to rewind earlier work.",
               });
