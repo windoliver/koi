@@ -132,10 +132,12 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </Show>
       </box>
 
-      {/* Tool info */}
+      {/* Tool info — `reason` is intentionally omitted: it tends to be a
+          long internal explanation (e.g. policy id, AST-walker fail mode)
+          that distracts from the command/args the user is actually
+          deciding about. The args block below is the relevant signal. */}
       <box flexDirection="column" marginTop={1}>
         <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
-        <text fg={COLORS.textSecondary}>{`Reason: ${props.prompt.reason}`}</text>
       </box>
 
       {/* Args preview */}
