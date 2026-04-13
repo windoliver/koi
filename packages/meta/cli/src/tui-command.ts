@@ -730,6 +730,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — set once on first successful picker load, never unset
   let hasPickerLoadSinceAssembly = false;
 
+  // The session id the user is currently VIEWING. Starts as
+  // `tuiSessionId` (the startup session), but gets rotated to the
+  // picked session id after a successful `onSessionSelect`. The
+  // post-quit resume hint, the status-bar chip, and the operator-
+  // facing "relaunch with --resume" guidance all use this id so
+  // the user is always pointed at the file that matches what they
+  // just saw on screen. This stays decoupled from `tuiSessionId`
+  // (the runtime's durable routing key) because the runtime cannot
+  // be rebound mid-session — the two ids intentionally diverge in
+  // picker mode.
+  // let: justified — rotated once on successful picker load
+  let viewedSessionId: SessionId = tuiSessionId;
+
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
   // flip `hasClearedSinceAssembly` themselves — session-switch via
@@ -902,7 +915,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (clearPersistFailed) {
             writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
           } else {
-            writeSync(1, formatResumeHint(tuiSessionId));
+            // Use `viewedSessionId` instead of `tuiSessionId`: after
+            // a picker load, `tuiSessionId` still points at the
+            // startup (often empty) file, whereas `viewedSessionId`
+            // points at the picked session the user was actually
+            // looking at when they quit. In the non-picker case the
+            // two are equal.
+            writeSync(1, formatResumeHint(viewedSessionId));
           }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
@@ -960,6 +979,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           kind: "add_error",
           code: "FORK_NOT_READY",
           message: "Cannot fork: runtime not yet initialized.",
+        });
+        return;
+      }
+      // Block fork in picker mode. `handleFork()` clones by
+      // `runtime.sessionId`, which in picker mode is still the
+      // startup session — not the conversation the user is viewing.
+      // Forking here would silently clone the wrong transcript and
+      // report success, which is a real wrong-target mutation.
+      if (hasPickerLoadSinceAssembly) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_PICKER_LOAD",
+          message:
+            "Fork is disabled after loading a saved session via the picker — " +
+            "the command would clone this process's original session, not the " +
+            "one you are viewing. Quit and relaunch with " +
+            "`koi tui --resume <id>` to fork from a runtime bound to the " +
+            "loaded session.",
         });
         return;
       }
@@ -1333,6 +1370,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // `koi tui --resume <pickedId>` as the correct way to
           // durably continue the picked session.
           hasPickerLoadSinceAssembly = true;
+          // Rotate the VIEWED session id so the status-bar chip and
+          // the post-quit resume hint both point at the picked
+          // session (the conversation on screen), not the startup
+          // session (which is unrelated to what the user just
+          // loaded). The runtime's internal routing key stays
+          // `tuiSessionId` — that is intentional and documented in
+          // the read-only-mode guards above.
+          viewedSessionId = targetSid;
+          store.dispatch({
+            kind: "set_session_info",
+            modelName,
+            provider,
+            sessionName: "",
+            sessionId: targetSid,
+          });
         } finally {
           store.dispatch({ kind: "set_connection_status", status: "disconnected" });
         }
