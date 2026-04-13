@@ -764,32 +764,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — incremented per turn, reset on each clear.
   let postClearTurnCount = 0;
 
-  // Tracks whether the user has loaded another session via the
-  // in-TUI picker. The runtime's `sessionId` override is baked in
-  // at createKoi assembly time and cannot be rotated mid-session,
-  // so post-picker turns would continue writing to the startup
-  // session file while the displayed conversation belongs to the
-  // picked session — a silent history-mixing hazard that also
-  // leaves `/rewind` walking the original chain across the pick
-  // boundary. Until the runtime can be rebound, make the picker a
-  // read-only "view" operation: new submissions and `/rewind` are
-  // refused with an explicit message that points the user at
-  // `koi tui --resume <pickedId>` as the way to durably continue.
-  // let: justified — set once on first successful picker load, never unset
-  let hasPickerLoadSinceAssembly = false;
-
   // The session id the user is currently VIEWING. Starts as
-  // `tuiSessionId` (the startup session), but gets rotated to the
-  // picked session id after a successful `onSessionSelect`. The
-  // post-quit resume hint, the status-bar chip, and the operator-
-  // facing "relaunch with --resume" guidance all use this id so
-  // the user is always pointed at the file that matches what they
-  // just saw on screen. This stays decoupled from `tuiSessionId`
-  // (the runtime's durable routing key) because the runtime cannot
-  // be rebound mid-session — the two ids intentionally diverge in
-  // picker mode.
-  // let: justified — rotated once on successful picker load
+  // `tuiSessionId` (the startup session), gets rotated to the
+  // picked session id after a successful `onSessionSelect`, and
+  // rotates BACK to `tuiSessionId` when the user selects the
+  // startup session from the picker. The post-quit resume hint,
+  // the status-bar chip, and the operator-facing "relaunch with
+  // --resume" guidance all use this id so the user is always
+  // pointed at the file that matches what they just saw on
+  // screen. This stays decoupled from `tuiSessionId` (the
+  // runtime's durable routing key) because the runtime cannot be
+  // rebound mid-session.
+  //
+  // Picker read-only mode is DERIVED from the comparison
+  // `viewedSessionId !== tuiSessionId` rather than a one-way
+  // latch. A user who opens an archive, then returns to the
+  // startup session via the picker, regains full submit / clear /
+  // rewind / fork capability the moment the two ids converge
+  // again — matches the pre-branch behavior of the picker flow.
+  // let: justified — rotated on every successful picker load
   let viewedSessionId: SessionId = tuiSessionId;
+  const isInPickerMode = (): boolean => viewedSessionId !== tuiSessionId;
 
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
@@ -1113,7 +1108,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // startup session — not the conversation the user is viewing.
       // Forking here would silently clone the wrong transcript and
       // report success, which is a real wrong-target mutation.
-      if (hasPickerLoadSinceAssembly) {
+      if (isInPickerMode()) {
         store.dispatch({
           kind: "add_error",
           code: "FORK_AFTER_PICKER_LOAD",
@@ -1192,7 +1187,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // visible (picker-loaded) session. That is destructive
           // data loss AND a privacy failure for the picked session,
           // which stays intact on disk.
-          if (hasPickerLoadSinceAssembly) {
+          if (isInPickerMode()) {
             store.dispatch({
               kind: "add_error",
               code: "CLEAR_AFTER_PICKER_LOAD",
@@ -1224,13 +1219,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // Refuse rewind after a picker load. The checkpoint chain
-            // is keyed on the startup session id and was built from
-            // the original session's turns, so rewinding would walk
-            // back into snapshots that belong to a different
-            // conversation than the one the user is currently
-            // viewing. See `hasPickerLoadSinceAssembly` above.
-            if (hasPickerLoadSinceAssembly) {
+            // Refuse rewind in picker mode. The checkpoint chain
+            // is keyed on the startup session id and was built
+            // from the original session's turns, so rewinding
+            // would walk back into snapshots that belong to a
+            // different conversation than the one the user is
+            // currently viewing. See `isInPickerMode` above.
+            if (isInPickerMode()) {
               store.dispatch({
                 kind: "add_error",
                 code: "REWIND_AFTER_PICKER_LOAD",
@@ -1400,7 +1395,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         case "session:new":
           // Same guard as agent:clear — see the comment there for
           // the data-loss rationale.
-          if (hasPickerLoadSinceAssembly) {
+          if (isInPickerMode()) {
             store.dispatch({
               kind: "add_error",
               code: "NEW_AFTER_PICKER_LOAD",
@@ -1543,14 +1538,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // pick boundary. The user is pointed at
           // `koi tui --resume <pickedId>` as the correct way to
           // durably continue the picked session.
-          hasPickerLoadSinceAssembly = true;
-          // Rotate the VIEWED session id so the status-bar chip and
-          // the post-quit resume hint both point at the picked
-          // session (the conversation on screen), not the startup
-          // session (which is unrelated to what the user just
-          // loaded). The runtime's internal routing key stays
-          // `tuiSessionId` — that is intentional and documented in
-          // the read-only-mode guards above.
+          //
+          // Rotate the VIEWED session id so the status-bar chip,
+          // the post-quit resume hint, and every picker-mode
+          // guard all use the conversation on screen. The runtime
+          // routing key stays `tuiSessionId`. Because
+          // `isInPickerMode()` is derived from
+          // `viewedSessionId !== tuiSessionId`, the read-only
+          // guards auto-enable here AND auto-disable again the
+          // moment the user picks the startup session back.
           viewedSessionId = targetSid;
           store.dispatch({
             kind: "set_session_info",
@@ -1568,10 +1564,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
       // Picker-loaded sessions are read-only: the runtime is still
-      // bound to the startup session id, so submitting would mix the
-      // picked conversation into the startup archive. See
-      // `hasPickerLoadSinceAssembly` above for the full rationale.
-      if (hasPickerLoadSinceAssembly) {
+      // bound to the startup session id, so submitting would mix
+      // the picked conversation into the startup archive. See
+      // `isInPickerMode` above. The moment the user switches back
+      // to the startup session via the picker this check fails
+      // and submit re-enables.
+      if (isInPickerMode()) {
         store.dispatch({
           kind: "add_error",
           code: "SUBMIT_AFTER_PICKER_LOAD",
