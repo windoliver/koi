@@ -584,27 +584,36 @@ export function mutate(state: Draft, action: TuiAction): void {
     case "rehydrate_messages": {
       // Mirrors the pure-reducer case in reduce.ts — wholesale replace
       // of the visible message list at TUI startup when `--resume` is
-      // set. See reduce.ts for commentary on non-text block folding.
-      const rehydrated: TuiMessage[] = action.messages.map((msg, idx) => {
+      // set. Tool-related entries are skipped; see reduce.ts for the
+      // full rationale on why `senderId === "tool"` and
+      // `metadata.toolCalls` messages are hidden from rehydration.
+      const rehydrated: TuiMessage[] = [];
+      for (const [idx, msg] of action.messages.entries()) {
         if (msg.senderId === "user") {
-          return {
+          rehydrated.push({
             kind: "user",
             id: `resumed-user-${idx}`,
             blocks: msg.content,
-          };
+          });
+          continue;
         }
+        if (msg.senderId === "tool") continue;
+        const hasToolCalls =
+          msg.metadata !== undefined &&
+          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
+        if (hasToolCalls) continue;
         const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
           block.kind === "text"
             ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
             : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
         );
-        return {
+        rehydrated.push({
           kind: "assistant",
           id: `resumed-assistant-${idx}`,
           blocks: assistantBlocks,
           streaming: false,
-        };
-      });
+        });
+      }
       (state as { messages: readonly TuiMessage[] }).messages = rehydrated;
       break;
     }

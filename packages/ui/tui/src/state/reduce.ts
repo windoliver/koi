@@ -718,31 +718,52 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "rehydrate_messages": {
       // Replaces the visible message list wholesale — callers are
       // responsible for dispatching this exactly once at startup when
-      // `--resume` is set. Non-text content blocks are folded into a
-      // `[<kind>]` placeholder because replayed assistant messages
-      // never carry live tool-call state; fidelity is not the goal,
-      // showing the conversation so the user knows where they left off
-      // is.
-      const rehydrated: readonly TuiMessage[] = action.messages.map((msg, idx) => {
+      // `--resume` is set. Tool-related transcript entries are skipped
+      // because `resumeFromTranscript` lowers them into noisy shapes:
+      //   - `tool_call` becomes an assistant message whose content is
+      //     the raw tool-call UUID as text and whose real payload
+      //     lives in `metadata.toolCalls`;
+      //   - `tool_result` becomes a `senderId: "tool"` message whose
+      //     content is the raw tool output JSON.
+      // Rendering those verbatim in the UI dumps `toolu_vrtx_…` ids
+      // and `{"toolId":…}` blobs into the transcript view. The
+      // assistant's surrounding natural-language turn already
+      // summarizes what happened, so dropping them is the right level
+      // of fidelity for "remind me where we left off". The full
+      // in-memory transcript (including tool calls/results) is still
+      // primed into the runtime so the model sees every detail on
+      // the first resumed turn.
+      const rehydrated: TuiMessage[] = [];
+      for (const [idx, msg] of action.messages.entries()) {
         if (msg.senderId === "user") {
-          return {
+          rehydrated.push({
             kind: "user",
             id: `resumed-user-${idx}`,
             blocks: msg.content,
-          };
+          });
+          continue;
         }
-        const assistantBlocks: readonly TuiAssistantBlock[] = msg.content.map((block) =>
+        // Skip tool results and assistant-tool-call placeholder messages.
+        if (msg.senderId === "tool") continue;
+        const hasToolCalls =
+          msg.metadata !== undefined &&
+          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
+        if (hasToolCalls) continue;
+        // Plain assistant (or privileged system:*) text turn — fold
+        // non-text content blocks to `[<kind>]` placeholders so image
+        // or file blocks don't vanish silently.
+        const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
           block.kind === "text"
             ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
             : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
         );
-        return {
+        rehydrated.push({
           kind: "assistant",
           id: `resumed-assistant-${idx}`,
           blocks: assistantBlocks,
           streaming: false,
-        };
-      });
+        });
+      }
       return { ...state, messages: rehydrated };
     }
 

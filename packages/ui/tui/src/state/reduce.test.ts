@@ -1645,6 +1645,67 @@ describe("reduce — rehydrate_messages", () => {
     const next = reduce(state, { kind: "rehydrate_messages", messages: [] });
     expect(next.messages).toEqual([]);
   });
+
+  test("skips tool_result (senderId: tool) messages", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hi" }],
+        },
+        {
+          senderId: "tool",
+          timestamp: 2,
+          content: [{ kind: "text", text: '{"toolId":"memory_store","output":{"stored":true}}' }],
+          metadata: { callId: "c1", toolCallId: "c1", toolName: "memory_store" },
+        },
+        {
+          senderId: "assistant",
+          timestamp: 3,
+          content: [{ kind: "text", text: "done" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(2);
+    expect(next.messages[0]?.kind).toBe("user");
+    expect(next.messages[1]?.kind).toBe("assistant");
+  });
+
+  test("skips assistant messages that carry a metadata.toolCalls placeholder", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          // resumeFromTranscript stores the first call's UUID here and
+          // hides the real payload in metadata.toolCalls — the UI
+          // should not render the UUID verbatim.
+          content: [{ kind: "text", text: "toolu_vrtx_01V7jrJFaYL5rMqaR5tZtdhQ" }],
+          metadata: {
+            toolCalls: [
+              {
+                id: "toolu_vrtx_01V7jrJFaYL5rMqaR5tZtdhQ",
+                type: "function",
+                function: { name: "memory_store", arguments: "{}" },
+              },
+            ],
+          },
+        },
+        {
+          senderId: "assistant",
+          timestamp: 2,
+          content: [{ kind: "text", text: "Nice to meet you, Jane!" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(1);
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect((msg.blocks[0] as { kind: string; text: string }).text).toBe("Nice to meet you, Jane!");
+  });
 });
 
 // ---------------------------------------------------------------------------
