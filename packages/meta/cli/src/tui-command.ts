@@ -956,8 +956,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // Belt-and-suspenders: keep the barrier a settle-success
           // promise even if an unexpected reset step throws, so
           // awaiters in onSubmit / onSessionSelect / rewind don't
-          // turn into unhandled rejections.
-          clearPersistFailed = true;
+          // turn into unhandled rejections. Crucially we do NOT
+          // set `clearPersistFailed` here — that flag is the
+          // permanent submit lock, and only an actual durable
+          // truncate failure (handled in the explicit branch
+          // above) warrants it. A transient task-board /
+          // trajectory / approval-store reset error during
+          // `/rewind` or a picker switch must surface to the UI
+          // without locking the whole session out of writes.
           store.dispatch({
             kind: "add_error",
             code: "SESSION_RESET_FAILED",
@@ -1013,7 +1019,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           }
         } catch (err: unknown) {
-          clearPersistFailed = true;
+          // See the post-runtime-ready branch — a generic
+          // reset error must not flip `clearPersistFailed`,
+          // because that flag is the permanent submit lock and
+          // only an actual durable truncate failure warrants it.
           store.dispatch({
             kind: "add_error",
             code: "SESSION_RESET_FAILED",
@@ -1426,6 +1435,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               store.dispatch({
                 kind: "load_history",
                 messages: resumeResult.value.messages,
+              });
+            } else {
+              // Replay of the kept transcript prefix failed after a
+              // successful file-state restore. The workspace is at the
+              // rewound snapshot, but the runtime's in-memory transcript
+              // has been spliced to empty and the UI is blank. Surface
+              // this loudly — silently proceeding would let the next
+              // submit run as if the session had no prior context, which
+              // is a hard-to-detect correctness regression. The user
+              // should quit and relaunch with `--resume <id>` to reload
+              // from disk under a clean path.
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_REPLAY_FAILED",
+                message:
+                  "Rewind restored the workspace to the target snapshot, but " +
+                  "replaying the kept transcript prefix failed: " +
+                  `${resumeResult.error.message}. The file state is at the target, ` +
+                  "but the in-memory conversation is now empty. Quit and relaunch " +
+                  "with `koi tui --resume <id>` to reload the session cleanly.",
               });
             }
 
