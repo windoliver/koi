@@ -135,7 +135,12 @@ frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store u
 fine-grained signal updates.
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
-(session-scoped); PageUp/PageDown pauses auto-scroll.
+(session-scoped); PageUp/PageDown pauses auto-scroll. Ctrl+C copies selected text to clipboard
+(falls through to interrupt when no selection).
+
+**Copy-on-select:** Mouse-drag to select text auto-copies to system clipboard via OSC 52 when
+the selection finishes (same pattern as OpenCode). Works in iTerm2, Ghostty, WezTerm, Kitty.
+Selections exceeding 100 KB are not copied (OSC 52 terminal payload limit).
 
 ```bash
 koi tui
