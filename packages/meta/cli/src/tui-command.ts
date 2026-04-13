@@ -748,41 +748,48 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — toggled per clear attempt.
   let clearPersistFailed = false;
 
-  // Tracks whether the user has issued `agent:clear` or `session:new`
-  // since the runtime was assembled. The checkpoint package keeps its
-  // snapshot chain keyed on `runtime.sessionId` and has no public API
-  // for pruning the chain, so once a chain exists `/rewind` could
-  // walk back into pre-clear snapshots and restore workspace state
-  // that predates the clear boundary — a privacy/context violation.
-  // Rather than ban `/rewind` outright after the first clear (which
-  // was a rollback-safety regression for any later bad edit), we
-  // track `postClearTurnCount` below as a bounded fence: rewind is
-  // allowed only within turns taken AFTER the most recent clear.
-  //
-  // Initialized to `true` whenever we launched from `--resume`,
-  // because the prior process may have issued a clear that we
-  // have no way to see from here. The engine attaches to the
-  // persistent checkpoint chain for this session id, which may
-  // contain pre-clear snapshots we must never cross. Setting the
-  // flag on resume makes `/rewind` refuse anything beyond
-  // `postClearTurnCount` (which starts at 0), so rewind is
-  // bounded to turns taken within the current process — the only
-  // ones whose chain membership we can reason about. Without
-  // this, a resumed TUI could walk back through pre-clear
-  // snapshots and restore state the prior process's `/clear`
-  // was meant to drop.
-  // let: justified — may also be flipped by subsequent in-process clears
-  let hasClearedSinceAssembly = flags.resume !== undefined;
+  // Rewind-boundary tracking: `rewindBoundaryActive` is true
+  // whenever `/rewind` must refuse to walk past some boundary
+  // earlier in the persistent checkpoint chain. Two conditions
+  // flip it:
+  //   1. The user issued `agent:clear` or `session:new` in this
+  //      process — pre-clear snapshots still exist in the chain
+  //      and rewinding past them would restore file state the
+  //      user explicitly asked to drop.
+  //   2. The TUI was launched with `--resume` — the prior
+  //      process may have issued a clear we cannot see from
+  //      here, and the chain still contains whatever snapshots
+  //      it ever held. The safe default is to treat the resume
+  //      point itself as a boundary until the user takes new
+  //      turns in this process.
+  // Rewind is then bounded to `postClearTurnCount`, which counts
+  // only turns whose snapshots were definitely added by this
+  // process, so we can't accidentally cross into territory we
+  // don't own.
+  // let: justified — may be flipped by subsequent in-process clears
+  let rewindBoundaryActive = flags.resume !== undefined;
 
-  // Counts user turns taken AFTER the most recent `agent:clear` /
-  // `session:new` boundary. Reset to 0 each time the flag flips and
-  // incremented in `onSubmit` after each turn settles. `/rewind n`
-  // rejects when `n > postClearTurnCount`, so a rewind can never
-  // cross the clear boundary while still letting users roll back
-  // mistakes made in the new session. In the non-clear case the
-  // counter is effectively unused because `hasClearedSinceAssembly`
-  // stays false and the guard skips the check entirely.
-  // let: justified — incremented per turn, reset on each clear.
+  // Clear-only tracking: `clearedThisProcess` is `true` only
+  // when the user EXPLICITLY issued `/clear` or `/new` in the
+  // current process. Shutdown uses this (NOT the rewind flag
+  // above) to decide whether to suppress the resume hint for a
+  // cleared-and-untouched session. Reusing the rewind flag
+  // would misclassify a plain `--resume` + quit as "cleared"
+  // and strand inspection-only opens without a hint to relaunch.
+  // let: justified — set on explicit /clear or /new, never on resume
+  let clearedThisProcess = false;
+
+  // Counts user turns taken AFTER the most recent rewind
+  // boundary (either an explicit `/clear`/`/new` OR the resume
+  // point at launch when `--resume` was used). Reset to 0 each
+  // time the boundary shifts and incremented in `onSubmit` after
+  // each turn settles. `/rewind n` rejects when
+  // `n > postClearTurnCount`, so a rewind can never cross the
+  // boundary while still letting users roll back mistakes made
+  // in the current session. When `rewindBoundaryActive` is
+  // false the counter is effectively unused because the guard
+  // skips the check entirely.
+  // let: justified — incremented per turn, reset on each boundary shift.
   let postClearTurnCount = 0;
 
   // The session id the user is currently VIEWING. Starts as
@@ -821,9 +828,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
-  // flip `hasClearedSinceAssembly` themselves — session-switch via
-  // the picker intentionally does NOT flip it, because the post-
-  // switch turns establish a usable rewind chain of their own.
+  // flip `rewindBoundaryActive` and `clearedThisProcess` themselves
+  // — session-switch via the picker intentionally does NOT flip
+  // them, because the post-switch turns establish a usable rewind
+  // chain of their own.
   //
   // `truncatePersistedTranscript` controls whether the on-disk
   // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
@@ -1082,7 +1090,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // an id that the next launch will reject. Suppress the
           // hint instead — the user explicitly asked to drop
           // this session, so offering to restore it is pointless.
-          const sessionIsEmpty = hasClearedSinceAssembly && postClearTurnCount === 0;
+          // Suppress the hint ONLY on an explicit /clear or /new
+          // that left the session empty. `rewindBoundaryActive`
+          // also flips on `--resume`, which must still print a
+          // hint for inspection-only opens.
+          const sessionIsEmpty = clearedThisProcess && postClearTurnCount === 0;
           if (clearPersistFailed) {
             writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
           } else if (sessionIsEmpty) {
@@ -1260,7 +1272,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             break;
           }
-          hasClearedSinceAssembly = true;
+          rewindBoundaryActive = true;
+          clearedThisProcess = true;
           postClearTurnCount = 0;
           resetConversation({ truncatePersistedTranscript: true });
           break;
@@ -1329,7 +1342,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // keeps the rollback-safety affordance for mistakes
             // made in the current session while still enforcing
             // the privacy/context fence.
-            if (hasClearedSinceAssembly && n > postClearTurnCount) {
+            if (rewindBoundaryActive && n > postClearTurnCount) {
               const boundaryLabel =
                 flags.resume !== undefined && postClearTurnCount === 0
                   ? "resume point"
@@ -1376,7 +1389,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // through the clear boundary and restore pre-clear
             // state). Clamp to 0 so an over-rewind doesn't
             // accidentally permit negative-budget rewinds.
-            if (hasClearedSinceAssembly) {
+            if (rewindBoundaryActive) {
               postClearTurnCount = Math.max(0, postClearTurnCount - result.turnsRewound);
             }
 
@@ -1489,7 +1502,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             break;
           }
-          hasClearedSinceAssembly = true;
+          rewindBoundaryActive = true;
+          clearedThisProcess = true;
           postClearTurnCount = 0;
           resetConversation({ truncatePersistedTranscript: true });
           break;
@@ -1661,6 +1675,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     syntaxStyle: SyntaxStyle.create(),
     treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
+      // Fail closed after a durable clear failure. If the last
+      // `/clear` or `/new` could not truncate the JSONL, the
+      // file still contains pre-clear content the user asked to
+      // drop. Accepting new turns would mix them into that
+      // unwanted history and a later `--resume` would replay the
+      // combined conversation. Block submits until the user
+      // resolves the underlying I/O issue and quits/relaunches.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_CLEAR",
+          message:
+            "Submit is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. New turns would append to " +
+            "the pre-clear content and a later `--resume` would resurrect it. " +
+            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        });
+        return;
+      }
       // Picker-loaded sessions are read-only: the runtime is still
       // bound to the startup session id, so submitting would mix
       // the picked conversation into the startup archive. See
@@ -1761,7 +1794,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // aborted at any point during the drain as "no new
         // checkpoint snapshot", which matches the chain's actual
         // state after the restore protocol settles.
-        if (hasClearedSinceAssembly && !controller.signal.aborted) {
+        if (rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
 
