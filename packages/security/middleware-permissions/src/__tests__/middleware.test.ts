@@ -1706,15 +1706,13 @@ describe("createPermissionsMiddleware", () => {
   });
 
   // -------------------------------------------------------------------------
-  // metadata.callId — visible to backend policy queries, stripped from
-  // cache/dedup keys. Repeated identical asks must coalesce in the
-  // approval cache even when the turn-runner threads a per-call
-  // `metadata.callId` for the TUI-side timer reset, but custom backends
-  // that look at `_request.callId` MUST keep seeing it. (#1759 review
-  // rounds 4 + 5)
+  // ToolRequest.callId — UI/observability identifier carried on a dedicated
+  // field. NOT inside `metadata`, so it never enters policy queries or
+  // approval-cache identity. Forwarded to ApprovalRequest.callId so the
+  // TUI permission bridge can target a specific invocation. (#1759 round 6)
   // -------------------------------------------------------------------------
-  describe("wrapToolCall — callId visible to backend, stripped from cache", () => {
-    test("backend sees full request.metadata including callId", async () => {
+  describe("wrapToolCall — callId is UI-only, not policy-visible", () => {
+    test("backend policy query NEVER sees callId in _request", async () => {
       const seenContexts: Array<JsonObject | undefined> = [];
       const mw = createPermissionsMiddleware({
         backend: {
@@ -1728,21 +1726,22 @@ describe("createPermissionsMiddleware", () => {
       const req: ToolRequest = {
         toolId: "Bash",
         input: { command: "echo a" },
-        metadata: { callId: "call-xyz", origin: "agent-foo" },
+        metadata: { origin: "agent-foo" },
+        callId: "call-xyz",
       };
       await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(seenContexts).toHaveLength(1);
       const ctxStr = JSON.stringify(seenContexts[0] ?? null);
-      // Backend MUST see both fields — callId must NOT be silently
-      // stripped from the policy query (round-5 review fix).
+      // Backend sees regular metadata
       expect(ctxStr).toContain("origin");
       expect(ctxStr).toContain("agent-foo");
-      expect(ctxStr).toContain("callId");
-      expect(ctxStr).toContain("call-xyz");
+      // Backend does NOT see callId — it's a separate field on the
+      // request, not part of metadata
+      expect(ctxStr).not.toContain("callId");
+      expect(ctxStr).not.toContain("call-xyz");
     });
 
-    test("approval cache reuses prior decision for repeated input even with different callId", async () => {
-      // Use askAll backend so the approval flow + cache path runs.
+    test("approval cache reuses prior decision for repeated input regardless of callId", async () => {
       let approvalCount = 0;
       const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => {
         approvalCount++;
@@ -1756,22 +1755,21 @@ describe("createPermissionsMiddleware", () => {
       const reqA: ToolRequest = {
         toolId: "Bash",
         input: { command: "echo a" },
-        metadata: { callId: "call-aaa" },
+        callId: "call-aaa",
       };
       const reqB: ToolRequest = {
         toolId: "Bash",
         input: { command: "echo a" },
-        metadata: { callId: "call-bbb" },
+        callId: "call-bbb",
       };
       await mw.wrapToolCall?.(ctx, reqA, noopToolHandler);
       await mw.wrapToolCall?.(ctx, reqB, noopToolHandler);
-      // First call goes through the approval handler; second hits the
-      // cache because cacheMeta strips callId. Without the strip, each
-      // call would be a fresh cache entry and approvalCount would be 2.
+      // Second call must hit the cache. Because callId lives on its own
+      // field (not in metadata), the cache key is identical for both.
       expect(approvalCount).toBe(1);
     });
 
-    test("approval handler still receives metadata.callId for bridge dispatch", async () => {
+    test("approval handler receives callId on the dedicated field, not in metadata", async () => {
       const seenApprovalRequests: ApprovalRequest[] = [];
       const mw = createPermissionsMiddleware({ backend: askAll() });
       const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
@@ -1782,12 +1780,14 @@ describe("createPermissionsMiddleware", () => {
       const req: ToolRequest = {
         toolId: "Bash",
         input: { command: "echo a" },
-        metadata: { callId: "call-xyz" },
+        callId: "call-xyz",
       };
       await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(seenApprovalRequests).toHaveLength(1);
       const approvalReq = seenApprovalRequests[0];
-      expect(approvalReq?.metadata?.callId).toBe("call-xyz");
+      expect(approvalReq?.callId).toBe("call-xyz");
+      // Sanity: callId was NOT spliced into metadata
+      expect(approvalReq?.metadata).toBeUndefined();
     });
   });
 });

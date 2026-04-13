@@ -304,7 +304,7 @@ describe("permission bridge — tool_execution_started dispatch", () => {
       },
     };
     const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
-    void local.handler(makeRequest({ toolId: "Bash", metadata: { callId: "call-xyz" } }));
+    void local.handler(makeRequest({ toolId: "Bash", callId: "call-xyz" }));
     const state = store.getState();
     const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
 
@@ -349,7 +349,7 @@ describe("permission bridge — tool_execution_started dispatch", () => {
       },
     };
     const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
-    void local.handler(makeRequest({ toolId: "Bash", metadata: { callId: "call-xyz" } }));
+    void local.handler(makeRequest({ toolId: "Bash", callId: "call-xyz" }));
     const state = store.getState();
     const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
 

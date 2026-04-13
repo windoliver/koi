@@ -242,13 +242,12 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
           }, timeoutMs)
         : null;
 
-      // Pick up the call-scoped id the turn-runner threaded through
-      // `metadata.callId`. May be undefined if an older caller didn't
-      // populate it — the bridge then falls back to no-id behavior.
-      const callId =
-        request.metadata !== undefined && typeof request.metadata.callId === "string"
-          ? (request.metadata.callId as string)
-          : undefined;
+      // Pick up the call-scoped id from the dedicated `callId` field on
+      // ApprovalRequest (turn-runner sets ToolRequest.callId, the
+      // permissions middleware forwards it here). NOT inside `metadata`
+      // — `metadata` is policy-visible and we deliberately keep
+      // UI/observability identifiers out of it. (#1759 round 6)
+      const callId = request.callId;
 
       // UX timer starts null — only activated when the prompt reaches the front of the queue
       const entry: PendingApproval = {
