@@ -32,7 +32,13 @@ import { writeSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
+import type {
+  EngineEvent,
+  InboundMessage,
+  RichTrajectoryStep,
+  SessionTranscript,
+  TranscriptEntry,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
@@ -419,22 +425,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — recreated on resetConversation() to drop stale pre-clear events
   let batcher = createEventBatcher<EngineEvent>(dispatchBatch);
 
-  // One session ID per TUI process launch. agent:clear / session:new reset the
-  // conversation history but continue writing to the same transcript file — the
-  // JSONL is a journal of everything that happened in this TUI invocation.
-  // When `--resume <id>` is passed, the id is replaced below with the resumed
-  // session id so new writes continue appending to the same JSONL file.
-  // let: justified — reassigned once on successful --resume
+  // Placeholder session id — used as the `idPrefix` for the session-transcript
+  // middleware (entry-id generation only) and as the initial status-bar chip
+  // until `runtimeHandle.runtime.sessionId` becomes available after runtime
+  // assembly. The authoritative routing key is the composite
+  // `agent:{agentId}:{uuid}` minted inside createKoi, which is what the JSONL
+  // file is actually keyed on and therefore what the post-quit resume hint
+  // must print.
+  // let: justified — reassigned below to `runtime.sessionId` once runtime is
+  // ready, so the status bar, resume hint, and runtime.session config all
+  // agree on a single id that resolves to a file on disk.
   let tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
   // --- Session resume (optional, --resume <id>) ---
   // Loads the historical message list from the JSONL transcript and
   // dispatches `rehydrate_messages` so the TUI renders the previous
-  // conversation on mount. The resumed session id replaces the fresh
-  // random id so subsequent writes continue the same transcript file.
-  // Failure exits cleanly: the TUI has not yet initialized an alt
-  // screen at this point, so stderr output is visible.
+  // conversation on mount. We also stash the raw entries so that, once
+  // the runtime is assembled and its composite session id is known,
+  // those entries can be copied into the new session file — future
+  // resumes of this new file then see the complete history instead of
+  // only the post-resume turns (matching the user's mental model of
+  // "resume continues the conversation").
+  // let: justified — populated on successful --resume, consumed once
+  // after runtime assembly.
+  let resumedEntriesToCopy: readonly TranscriptEntry[] | null = null;
+  // let: justified — the resumed message list must be spliced into the
+  // runtime's mutable transcript array after assembly, because the
+  // model's context window is built from that array on every turn.
+  // Dispatching `rehydrate_messages` alone only updates the UI — the
+  // model would still see an empty history and treat the resumed
+  // session as a fresh conversation.
+  let resumedMessagesToPrime: readonly InboundMessage[] = [];
   if (flags.resume !== undefined) {
     const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript);
     if (!resumeResult.ok) {
@@ -443,17 +465,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       );
       process.exit(1);
     }
-    tuiSessionId = resumeResult.value.sid;
     store.dispatch({
       kind: "rehydrate_messages",
       messages: resumeResult.value.messages,
     });
+    resumedMessagesToPrime = resumeResult.value.messages;
     if (resumeResult.value.issueCount > 0) {
       // Non-fatal: surface once via stderr (visible before alt-screen
       // engages) so the operator knows the transcript needed repair.
       process.stderr.write(
         `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
+    }
+    // Re-load the raw JSONL entries so they can be copied into the
+    // new session file after runtime assembly. The `messages` path
+    // above only exposes the rehydrated InboundMessage[] for the UI.
+    const rawLoad = await jsonlTranscript.load(resumeResult.value.sid);
+    if (rawLoad.ok) {
+      resumedEntriesToCopy = rawLoad.value.entries;
     }
   }
 
@@ -558,8 +587,54 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         });
       }
     },
-  }).then((handle) => {
+  }).then(async (handle) => {
     runtimeHandle = handle;
+    // The engine's session factory mints the authoritative session id
+    // (`agent:{agentId}:{uuid}`). That is the JSONL routing key, and
+    // therefore the id the post-quit resume hint must print and the
+    // status bar must display. Replace the placeholder `tuiSessionId`
+    // with the real one and re-dispatch `set_session_info` so the chip
+    // updates live the moment the runtime is ready.
+    const engineSid = sessionId(handle.runtime.sessionId);
+    tuiSessionId = engineSid;
+    store.dispatch({
+      kind: "set_session_info",
+      modelName,
+      provider,
+      sessionName: "",
+      sessionId: engineSid,
+    });
+    // Prime the runtime's in-memory transcript with the resumed
+    // messages. The runtime's context-window builder reads from this
+    // array on every turn, so without this push the model would see
+    // an empty history and treat the first post-resume turn as a
+    // fresh conversation. Dispatching `rehydrate_messages` only
+    // updates the UI; this line makes the agent remember.
+    if (resumedMessagesToPrime.length > 0) {
+      handle.transcript.push(...resumedMessagesToPrime);
+      resumedMessagesToPrime = [];
+    }
+    // On --resume, the rehydrated history lives only in memory at this
+    // point; the new session's JSONL file contains nothing yet. Copy
+    // the resumed entries into the new file so a subsequent
+    // `koi tui --resume <engineSid>` gives the user back the full
+    // conversation, not just the turns taken after the original resume.
+    if (resumedEntriesToCopy !== null && resumedEntriesToCopy.length > 0) {
+      const copyResult = await jsonlTranscript.append(engineSid, resumedEntriesToCopy);
+      if (!copyResult.ok) {
+        // Non-fatal: the in-memory context is still correct, so the
+        // agent sees the history. Only the durability of the new
+        // file is affected. Surface to the store as a system error
+        // so the user knows future resumes of the new id will not
+        // see the pre-resume turns.
+        store.dispatch({
+          kind: "add_error",
+          code: "RESUME_COPY_FAILED",
+          message: `Failed to copy resumed history into new session file — ${copyResult.error.message}`,
+        });
+      }
+      resumedEntriesToCopy = null;
+    }
     return handle;
   });
 
