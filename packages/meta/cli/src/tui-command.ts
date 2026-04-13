@@ -716,6 +716,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — set once on first clear, never unset
   let hasClearedSinceAssembly = false;
 
+  // Tracks whether the user has loaded another session via the
+  // in-TUI picker. The runtime's `sessionId` override is baked in
+  // at createKoi assembly time and cannot be rotated mid-session,
+  // so post-picker turns would continue writing to the startup
+  // session file while the displayed conversation belongs to the
+  // picked session — a silent history-mixing hazard that also
+  // leaves `/rewind` walking the original chain across the pick
+  // boundary. Until the runtime can be rebound, make the picker a
+  // read-only "view" operation: new submissions and `/rewind` are
+  // refused with an explicit message that points the user at
+  // `koi tui --resume <pickedId>` as the way to durably continue.
+  // let: justified — set once on first successful picker load, never unset
+  let hasPickerLoadSinceAssembly = false;
+
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
   // flip `hasClearedSinceAssembly` themselves — session-switch via
@@ -784,9 +798,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // in-memory state — the durable transcript still holds the
           // old turns and they reappear on the next resume, silently
           // breaking any user who treats clear as a privacy or context
-          // boundary. Truncate errors are surfaced as a store error so
-          // the operator knows the on-disk reset failed and can decide
-          // whether to trust the in-memory clear.
+          // boundary.
+          //
+          // On failure: surface to the store AND throw so the reset
+          // barrier rejects. Shutdown's `await resetBarrier` catches
+          // the rejection and suppresses the resume hint — without
+          // this, shutdown would still print
+          // `koi start --resume <id>` for a file whose durable clear
+          // never landed, silently advertising the pre-clear history
+          // as resumable.
           const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
           if (!truncateResult.ok) {
             store.dispatch({
@@ -794,9 +814,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               code: "SESSION_CLEAR_PERSIST_FAILED",
               message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
             });
+            throw new Error(
+              `durable clear failed for session ${String(tuiSessionId)}: ${truncateResult.error.message}`,
+            );
           }
         }
       })();
+      // Attach a catch so the rejected barrier does not crash
+      // the event loop as an unhandled rejection. The rejection is
+      // still observable to `shutdown()` via its own await, because
+      // that await sees the original chain before this swallow.
+      resetBarrier.catch(() => {
+        /* handled by shutdown */
+      });
     }
   };
 
@@ -1030,6 +1060,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // Refuse rewind after a picker load. The checkpoint chain
+            // is keyed on the startup session id and was built from
+            // the original session's turns, so rewinding would walk
+            // back into snapshots that belong to a different
+            // conversation than the one the user is currently
+            // viewing. See `hasPickerLoadSinceAssembly` above.
+            if (hasPickerLoadSinceAssembly) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_AFTER_PICKER_LOAD",
+                message:
+                  "Rewind is disabled after loading a saved session via the picker — " +
+                  "the rewind chain belongs to this process's original session, not the " +
+                  "loaded one. Quit and relaunch with `koi tui --resume <id>` to get a " +
+                  "fresh rewind chain for the loaded session.",
+              });
+              return;
+            }
 
             // Parse the rewind count: empty string defaults to 1, otherwise
             // require a positive integer. Reject anything else loudly so the
@@ -1242,6 +1290,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             kind: "load_history",
             messages: resumeResult.value.messages,
           });
+          // Lock the session into read-only picker mode. Subsequent
+          // submissions and `/rewind` are refused because the runtime
+          // still routes writes to the startup session id and the
+          // checkpoint chain still belongs to that session — allowing
+          // mutation would silently mix the picked conversation with
+          // the startup archive and let `/rewind` walk across the
+          // pick boundary. The user is pointed at
+          // `koi tui --resume <pickedId>` as the correct way to
+          // durably continue the picked session.
+          hasPickerLoadSinceAssembly = true;
         } finally {
           store.dispatch({ kind: "set_connection_status", status: "disconnected" });
         }
@@ -1250,6 +1308,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     syntaxStyle: SyntaxStyle.create(),
     treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
+      // Picker-loaded sessions are read-only: the runtime is still
+      // bound to the startup session id, so submitting would mix the
+      // picked conversation into the startup archive. See
+      // `hasPickerLoadSinceAssembly` above for the full rationale.
+      if (hasPickerLoadSinceAssembly) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_PICKER_LOAD",
+          message:
+            "This TUI process loaded a saved session via the picker, which is read-only. " +
+            "Quit and relaunch with `koi tui --resume <id>` to durably continue the loaded session.",
+        });
+        return;
+      }
       // Guard against overlapping submits: reject while a stream is in flight.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
       if (activeController !== null) {
