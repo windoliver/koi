@@ -353,7 +353,31 @@ async function loadSessionList(
 // ---------------------------------------------------------------------------
 
 /**
+ * Number of text/thinking deltas to accumulate before yielding to the render
+ * loop. Lower values = smoother streaming; higher values = less overhead.
+ * 3 is the sweet spot: ~12 chars per flush at typical token sizes, yielding
+ * ~60+ renders per second during active streaming.
+ */
+const STREAM_FLUSH_EVERY_N = 3;
+
+/**
  * Drain an async engine event stream into the store via the batcher.
+ *
+ * Streaming strategy (inspired by OpenCode's event bus architecture):
+ *
+ * 1. **Lifecycle events flush immediately and separately.** `turn_start`,
+ *    `turn_end`, and `done` each get their own flush so the UI sees the
+ *    streaming indicator BEFORE any text arrives and the finalization
+ *    AFTER all text has rendered.
+ *
+ * 2. **Text/thinking deltas bypass the batcher.** They go directly to
+ *    `store.streamDelta()` which uses a produce()-based O(1) path update
+ *    instead of reconcile()'s O(state-tree) diff — enabling per-delta
+ *    rendering without performance penalty. Every N deltas the loop
+ *    yields to the event loop so the HTTP stream continues and OpenTUI
+ *    can paint.
+ *
+ * 3. **Tool lifecycle events use the batcher** at the normal 16ms cadence.
  *
  * Sets connection status to "connected" before streaming, "disconnected" after.
  * On stream failure: dispatches add_error + disconnected.
@@ -415,24 +439,20 @@ export async function drainEngineStream(
   try {
     // `let` justified: tracks last yield time for frame-rate-limited yielding
     let lastYieldAt = Date.now();
+    // `let` justified: counts deltas since last yield for count-based flushing
+    let deltasSinceYield = 0;
+
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
       // feeding events into a dead sink — they would silently vanish and
       // leave the UI with a half-rendered or missing reply. The drain exits
       // cleanly; the caller's finally block handles connection-status reset.
-      //
-      // #1742 loop-3 round 8: also dispatch a synthetic terminal `done`
-      // event directly to the store BEFORE returning, so the reducer
-      // closes any active assistant turn and clears running tool state.
-      // Without this, a failed `/clear` (history preserved) leaves the
-      // UI stuck in a "processing" state with no way to recover. In
-      // the success path the store has already been cleared by
-      // resetConversation's success branch, so the reducer's
-      // engine_event handler safely no-ops on an empty active turn.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
+
+      // --- Usage tracking (unchanged) ---
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -442,37 +462,59 @@ export async function drainEngineStream(
           partialOutputTokens = usage.outputTokens;
         }
       }
+
+      // --- Lifecycle events: flush before AND after to isolate them ---
+      // This ensures turn_start creates the streaming message before any
+      // deltas arrive, and turn_end/done closes it only after all deltas
+      // have been rendered. Without this, they can land in the same batch
+      // and the UI never sees the intermediate streaming state.
+      if (event.kind === "turn_start" || event.kind === "turn_end" || event.kind === "done") {
+        batcher.flushSync();
+        batcher.enqueue(event);
+        batcher.flushSync();
+        await yieldToEventLoop();
+        lastYieldAt = Date.now();
+        deltasSinceYield = 0;
+        continue;
+      }
+
+      // --- Text/thinking deltas: fast path via store.streamDelta() ---
+      // Bypasses the batcher entirely. Each delta fires a surgical O(1)
+      // store update (produce-based path setter), rendering immediately.
+      // We yield every N deltas so the HTTP stream and paint loop continue.
+      if (event.kind === "text_delta" || event.kind === "thinking_delta") {
+        const blockKind = event.kind === "text_delta" ? "text" : "thinking";
+        store.streamDelta(event.delta, blockKind);
+        deltasSinceYield++;
+
+        if (deltasSinceYield >= STREAM_FLUSH_EVERY_N) {
+          await yieldToEventLoop();
+          lastYieldAt = Date.now();
+          deltasSinceYield = 0;
+        }
+        continue;
+      }
+
+      // --- All other events: batcher at normal cadence ---
       batcher.enqueue(event);
-      // #1742 loop-3 round 10: the batcher may have been disposed
-      // between the check above and this enqueue (resetConversation
-      // runs synchronously). enqueue is a no-op on a disposed
-      // batcher, so this event is already lost — finalize and
-      // return so a `done` lost in this race window doesn't leave
-      // the UI stuck "processing".
+      // #1742: batcher may have been disposed between the top-of-loop
+      // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
-      // Yield to the event loop at most once per frame (~16ms) during any
-      // consumer-visible streaming event so OpenTUI can paint progressively.
-      //
-      // Without yielding, HTTP response body chunks contain many SSE events
-      // which are all consumed synchronously, starving the render loop.
-      // This covers text_delta, thinking_delta, and tool_call lifecycle —
-      // not just text — so the thinking spinner and tool status animate
-      // during tool-first or reasoning-first turns.
       if (
-        event.kind === "text_delta" ||
-        event.kind === "thinking_delta" ||
         event.kind === "tool_call_start" ||
         event.kind === "tool_call_delta" ||
-        event.kind === "tool_call_end"
+        event.kind === "tool_call_end" ||
+        event.kind === "tool_result"
       ) {
         const now = Date.now();
         if (now - lastYieldAt >= 16) {
           batcher.flushSync();
-          await new Promise<void>((r) => setTimeout(r, 0));
+          await yieldToEventLoop();
           lastYieldAt = Date.now();
+          deltasSinceYield = 0;
         }
       }
     }
@@ -541,6 +583,11 @@ export async function drainEngineStream(
   } finally {
     store.dispatch({ kind: "set_connection_status", status: "disconnected" });
   }
+}
+
+/** Yield to the event loop so OpenTUI can paint and the HTTP stream can deliver. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, 0));
 }
 
 // ---------------------------------------------------------------------------
