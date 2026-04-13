@@ -295,15 +295,40 @@ describe("run() — session resume", () => {
   });
 
   test("resumes session and returns OK when resumeForSession succeeds", async () => {
+    // Non-empty messages list so resumeSessionFromJsonl treats the
+    // load as a real resume. An empty list is now rejected as
+    // "session not found" to catch typoed or stale ids.
     mockResumeForSession.mockImplementation(async () => ({
       ok: true as const,
-      value: { messages: [], issues: [] },
+      value: {
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 1,
+            content: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        issues: [],
+      },
     }));
     mockRunInteractive.mockImplementation(async () => {});
     const { run } = await import("./start.js");
     const result = await run(makeFlags({ resume: "ses_abc" }));
     expect(result).toBe(ExitCode.OK);
     expect(mockResumeForSession).toHaveBeenCalledTimes(1);
+  });
+
+  test("returns FAILURE when resumeForSession succeeds with empty messages", async () => {
+    // The JSONL store returns `{ ok: true, entries: [] }` for a
+    // nonexistent file. Without this guard, `--resume <typo>`
+    // would silently fork into a new blank session.
+    mockResumeForSession.mockImplementation(async () => ({
+      ok: true as const,
+      value: { messages: [], issues: [] },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ resume: "ses_typo" }));
+    expect(result).toBe(ExitCode.FAILURE);
   });
 
   test("returns FAILURE when resumeForSession fails", async () => {

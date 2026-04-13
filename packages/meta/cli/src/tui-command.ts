@@ -784,7 +784,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // again — matches the pre-branch behavior of the picker flow.
   // let: justified — rotated on every successful picker load
   let viewedSessionId: SessionId = tuiSessionId;
-  const isInPickerMode = (): boolean => viewedSessionId !== tuiSessionId;
+
+  // Latches to `true` for the duration of an in-flight
+  // `onSessionSelect` async flow, so the picker-mode guards fire
+  // the instant the user clicks a session even though
+  // `viewedSessionId` is only rotated after the async
+  // load/validate/reset work settles. Without this, a fast submit
+  // (or slash command) in the window between "user picked" and
+  // "async flow completed" would still run against the startup
+  // session, silently mutating the wrong transcript. Cleared in
+  // the `onSessionSelect` finally block regardless of outcome.
+  // let: justified — toggled per picker-select invocation.
+  let pendingSessionSwitch = false;
+  const isInPickerMode = (): boolean => pendingSessionSwitch || viewedSessionId !== tuiSessionId;
 
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
@@ -1452,6 +1464,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       store.dispatch({ kind: "set_view", view: "conversation" });
 
+      // Latch `pendingSessionSwitch` BEFORE any await so every
+      // picker-mode guard (submit/clear/new/rewind/fork) fires
+      // during the async load window. Without this, a fast submit
+      // in the window between click and hydration would hit the
+      // startup session and silently mutate the wrong transcript.
+      // Cleared in the finally below, regardless of whether the
+      // load succeeded or failed.
+      pendingSessionSwitch = true;
+
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
         try {
@@ -1556,6 +1577,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             sessionId: targetSid,
           });
         } finally {
+          // Release the pre-await latch so picker-mode guards go
+          // back to being derived purely from
+          // `viewedSessionId !== tuiSessionId`. This runs on both
+          // success (where viewedSessionId has been rotated) and
+          // failure (where it has not), so the guards settle on
+          // the correct post-flow state in either case.
+          pendingSessionSwitch = false;
           store.dispatch({ kind: "set_connection_status", status: "disconnected" });
         }
       })();

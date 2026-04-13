@@ -223,6 +223,26 @@ export async function resumeSessionFromJsonl(
   if (!result.ok) {
     return { ok: false, error: result.error.message };
   }
+  // Fail closed for nonexistent / empty sessions. The JSONL store
+  // returns `{ ok: true, entries: [] }` for a missing file (to
+  // support the "session not started yet" case at append time),
+  // which means a typoed or stale `--resume <id>` would otherwise
+  // succeed silently: the runtime would bind to the mistyped id
+  // and start writing to a brand-new transcript under it, and the
+  // user would see an empty TUI instead of the expected history.
+  // That is a wrong-target fork that looks identical to "my
+  // session vanished". Surface it as an explicit failure so the
+  // caller can prompt the user to check the id.
+  if (result.value.messages.length === 0) {
+    return {
+      ok: false,
+      error:
+        `no transcript found for session id "${rawId}" — ` +
+        "the file either does not exist or contains no turns. " +
+        "Check the id (the post-quit hint prints the exact command) or " +
+        "use `koi sessions list` to see saved sessions.",
+    };
+  }
   return {
     ok: true,
     value: {
