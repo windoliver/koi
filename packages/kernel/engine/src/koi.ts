@@ -211,6 +211,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable resolver for currentRunSettled, captured in run()
   let currentRunResolveSettled: (() => void) | undefined;
 
+  // #1742: bounded fallback for cycleSession()/dispose() so a
+  // non-cooperative tool/stream that ignores abort can't deadlock the
+  // host. After the timeout we proceed with cleanup anyway and emit a
+  // warning. 5 seconds is generous for cooperative cleanup but short
+  // enough to keep the TUI responsive on /clear.
+  const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
+  function lifecycleSettleTimeout(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        console.warn(
+          `[koi] lifecycle settle timeout (${LIFECYCLE_SETTLE_TIMEOUT_MS}ms) — proceeding without waiting for in-flight run; non-cooperative tool may have ignored abort`,
+        );
+        resolve();
+      }, LIFECYCLE_SETTLE_TIMEOUT_MS);
+      // Don't pin the event loop — if the run settles before the
+      // timeout, the timer is GC'd anyway via the Promise.race winner.
+      (timer as { unref?: () => void }).unref?.();
+    });
+  }
+
   // Session ID created at factory scope so runtime.sessionId can reference it.
   // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
   const factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
@@ -1256,10 +1276,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // BEFORE the run's finally block has fully unwound. To avoid racing
       // that cleanup, wait for `currentRunSettled` (resolved from the
       // streamEvents finally) instead of throwing on `running === true`.
-      // The resolver is invoked unconditionally, so even an aborted /
-      // crashed run releases this promise.
+      //
+      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a
+      // non-cooperative tool / model stream that ignores abort can't
+      // deadlock the host. After the timeout we proceed with cycling
+      // anyway and log a warning — the previous-run middleware state is
+      // accepted as collateral damage to keep the host responsive.
       if (running) {
-        await currentRunSettled;
+        await Promise.race([currentRunSettled, lifecycleSettleTimeout()]);
       }
       if (lifecycleSessionStarted && !lifecycleSessionEnded) {
         try {
@@ -1287,11 +1311,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // and can flush session-scoped state (or destroy the adapter
       // backing an active iterator) underneath an in-progress event.
       // Mirrors the same wait-for-settle pattern as cycleSession().
+      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a
+      // non-cooperative tool that ignores abort can't deadlock shutdown.
       // Caller is responsible for first aborting the run signal so the
-      // stream actually terminates; otherwise dispose() will block until
-      // the run completes naturally.
+      // stream actually terminates promptly.
       if (running) {
-        await currentRunSettled;
+        await Promise.race([currentRunSettled, lifecycleSettleTimeout()]);
       }
       // #1742: session lifecycle ends when the runtime is disposed — not at
       // the end of every run(). Fire onSessionEnd here so middleware

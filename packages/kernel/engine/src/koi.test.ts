@@ -484,6 +484,55 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEndFiredAfterAdapter).toBe(true);
   });
 
+  test("#1742: cycleSession does not deadlock when the in-flight run ignores abort", async () => {
+    // Non-cooperative tool path: the adapter never honors the abort
+    // signal, so the run's finally never fires and currentRunSettled
+    // never resolves. cycleSession must give up after the bounded
+    // lifecycle-settle timeout (5s in production) instead of hanging
+    // forever, so the host (TUI /clear) stays responsive.
+    const sessionEnd = mock(() => Promise.resolve());
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          // Hang forever — no signal handling. Simulates a tool that
+          // ignores cancellation entirely.
+          await new Promise<void>(() => {});
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEnd },
+      ],
+      loopDetection: false,
+    });
+
+    // Spin up the run in the background; we never drain it past the first
+    // event, so `running` stays true.
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next(); // pull the first event
+
+    // cycleSession races against the lifecycle-settle timeout. Bound OUR
+    // wait at 7 seconds (5s production timeout + 2s slack) so a regression
+    // would visibly fail rather than hang the test suite.
+    const start = Date.now();
+    const cyclePromise = runtime.cycleSession?.();
+    const watchdog = new Promise<"watchdog">((resolve) =>
+      setTimeout(() => resolve("watchdog"), 7000),
+    );
+    const winner = await Promise.race([cyclePromise?.then(() => "cycle" as const), watchdog]);
+    expect(winner).toBe("cycle");
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+    // Should have waited at least the timeout, not returned immediately
+    // (the run's finally never fired because the adapter is hung).
+    expect(Date.now() - start).toBeGreaterThanOrEqual(4500);
+  }, 10_000);
+
   test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
     // Hosts typically call cycleSession() right after aborting the active
     // run, while the run's finally block is still draining. cycleSession

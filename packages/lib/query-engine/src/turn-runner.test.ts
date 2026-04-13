@@ -311,6 +311,36 @@ describe("runTurn", () => {
     }
   });
 
+  test("#1742: aborting tool execution emits exactly one turn_end (no duplicate)", async () => {
+    // Regression for a hypothesized round-4 review concern: the catch
+    // block's `yield turn_end` followed by `break` must not also fall
+    // through to the trailing unconditional `yield turn_end` at the
+    // bottom of the while body. Verifies the abort path emits exactly
+    // one turn_end and exactly one done.
+    const controller = new AbortController();
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (): AsyncIterable<ModelChunk> =>
+        toolCallStreamGen("failTool", "tc-abort-once", '{"x":1}'),
+      toolCall: async (): Promise<ToolResponse> => {
+        controller.abort();
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(
+      runTurn({ callHandlers: handlers, messages: [], signal: controller.signal }),
+    );
+
+    const turnEnds = events.filter((e) => e.kind === "turn_end");
+    const dones = events.filter((e) => e.kind === "done");
+    expect(turnEnds).toHaveLength(1);
+    expect(dones).toHaveLength(1);
+  });
+
   test("#1742: tool throw on aborted signal terminates as interrupted; no re-prompt", async () => {
     // Cancellation must short-circuit the synthetic-recovery path so users
     // who interrupt mid-tool don't get an extra model call after stop.
