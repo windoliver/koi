@@ -1440,14 +1440,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       //      on-disk `<tuiSessionId>.jsonl` is intentionally left
       //      untouched — see the comment in phase 3 for rationale.
       //
-      // Fast path: selecting the session the runtime is ALREADY
-      // bound to is a no-op refresh. Without this guard, the
-      // picker happily "switches" to the current session and
-      // latches `hasPickerLoadSinceAssembly`, permanently disabling
-      // submit / rewind / clear / new / fork for the rest of the
-      // process — a user-visible lockup triggered by a benign
-      // action. Just close the picker and leave everything alone.
-      if (selectedId === String(tuiSessionId)) {
+      // Fast path: selecting the session the user is ALREADY
+      // viewing is a no-op refresh — just close the picker and
+      // leave everything alone. Comparing against
+      // `viewedSessionId` (not `tuiSessionId`) is important: after
+      // a picker load the two diverge, and selecting the
+      // originally-viewed conversation from the picker should
+      // still reload it so the user can get back to the startup
+      // session after inspecting an archive. The earlier version
+      // of this guard compared to `tuiSessionId`, which meant
+      // picking the original session after an archive load was
+      // silently ignored and stranded the user in the archive.
+      if (selectedId === String(viewedSessionId)) {
         store.dispatch({ kind: "set_view", view: "conversation" });
         return;
       }
@@ -1649,13 +1653,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         activeRunPromise = drainPromise;
         await drainPromise;
 
-        // Count the turn for rewind boundary enforcement. Only
-        // increments on turns that reached `drainPromise` settle,
-        // so an aborted turn that never completed its stream does
-        // not artificially raise the post-clear rewind budget.
-        // Skipped when no clear has happened yet because the
-        // counter is only consulted in the post-clear guard.
-        if (hasClearedSinceAssembly) {
+        // Count the turn for rewind boundary enforcement, but ONLY
+        // when the turn completed uninterrupted. `drainEngineStream`
+        // synthesizes a `done` event on abort and returns normally,
+        // so a simple settle-check would count aborted turns as
+        // rewindable — but checkpoint capture (which advances the
+        // chain) only runs on real engine-complete turns. Counting
+        // an interrupted turn would let `/rewind 1` walk past the
+        // clear boundary and restore pre-clear state, silently
+        // violating the privacy fence. Treat a signal that was
+        // aborted at any point during the drain as "no new
+        // checkpoint snapshot", which matches the chain's actual
+        // state after the restore protocol settles.
+        if (hasClearedSinceAssembly && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
 
