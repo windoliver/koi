@@ -1758,6 +1758,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Prevents hitting stale task board or trajectory state.
       await resetBarrier;
 
+      // Re-check `clearPersistFailed` after the barrier settles.
+      // The early guard above could pass even though a `/clear`
+      // was in flight: the reset IIFE only flips the flag INSIDE
+      // the async truncate path, so a submit dispatched before
+      // `onCommand: agent:clear` scheduled its truncate would
+      // see `clearPersistFailed === false`, await the barrier,
+      // and then (without this second check) proceed to append
+      // new turns onto an un-truncated transcript. Re-reading
+      // the flag here is cheap and closes the race cleanly.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_CLEAR",
+          message:
+            "Submit is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. New turns would append to " +
+            "the pre-clear content and a later `--resume` would resurrect it. " +
+            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        });
+        return;
+      }
+
       // #11: include any pending clipboard images as image ContentBlocks
       // alongside the text. Bridge clears pendingImages after dispatch so the
       // next submit starts with an empty list.

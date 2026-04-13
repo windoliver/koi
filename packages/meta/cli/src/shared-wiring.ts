@@ -219,7 +219,29 @@ export async function resumeSessionFromJsonl(
   | { readonly ok: true; readonly value: ResumedSession }
   | { readonly ok: false; readonly error: string }
 > {
-  const sid = sessionId(rawId);
+  // Resume ids can arrive in two shapes:
+  //   1. A plain branded id minted by this branch (e.g.
+  //      `86cfcc00-...`). The file lives at
+  //      `<sessionsDir>/86cfcc00-....jsonl` and the encoding is
+  //      a no-op.
+  //   2. A legacy composite id from an older engine or from
+  //      `koi sessions list`, which exposes the raw basename
+  //      without decoding (`agent%3A<pid>%3A<uuid>`). The file
+  //      lives at `<sessionsDir>/agent%3A...%3A....jsonl`, but
+  //      blindly passing that basename through
+  //      `encodeURIComponent` produces `agent%253A...` and
+  //      misses the file. Try raw first, then fall back to the
+  //      decoded form so users can copy-paste either what
+  //      `koi sessions list` prints OR what the new post-quit
+  //      hint prints.
+  const candidates: string[] = [rawId];
+  try {
+    const decoded = decodeURIComponent(rawId);
+    if (decoded !== rawId) candidates.push(decoded);
+  } catch {
+    // Malformed percent-encoding — fall through with just the raw id.
+  }
+
   // Fail closed for nonexistent session files. The JSONL store
   // returns `{ ok: true, entries: [] }` for a missing file so
   // that appends-to-new-sessions can work, which means a typoed
@@ -231,17 +253,29 @@ export async function resumeSessionFromJsonl(
   // probing filesystem existence directly — Bun.file exposes
   // an explicit `exists()` that the SessionTranscript interface
   // does not.
-  const transcriptPath = `${sessionsDir}/${encodeURIComponent(String(sid))}.jsonl`;
-  const fileExists = await Bun.file(transcriptPath).exists();
-  if (!fileExists) {
+  // let: justified — assigned once a candidate's file is found
+  let foundCanonical: string | null = null;
+  // let: justified — captured for the error path below
+  let lastProbedPath = "";
+  for (const candidate of candidates) {
+    const candidatePath = `${sessionsDir}/${encodeURIComponent(candidate)}.jsonl`;
+    lastProbedPath = candidatePath;
+    if (await Bun.file(candidatePath).exists()) {
+      foundCanonical = candidate;
+      break;
+    }
+  }
+  if (foundCanonical === null) {
     return {
       ok: false,
       error:
-        `no transcript found for session id "${rawId}" at ${transcriptPath}. ` +
+        `no transcript found for session id "${rawId}" at ${lastProbedPath}. ` +
         "Check the id (the post-quit hint prints the exact command) or " +
         "use `koi sessions list` to see saved sessions.",
     };
   }
+
+  const sid = sessionId(foundCanonical);
   const result = await resumeForSession(sid, jsonlTranscript);
   if (!result.ok) {
     return { ok: false, error: result.error.message };
