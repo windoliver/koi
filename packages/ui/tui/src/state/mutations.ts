@@ -7,6 +7,7 @@
  */
 
 import type { EngineEvent } from "@koi/core/engine";
+import { convertResumedMessagesToTui } from "./reduce.js";
 import type {
   CumulativeMetrics,
   PlanTask,
@@ -582,50 +583,15 @@ export function mutate(state: Draft, action: TuiAction): void {
     }
 
     case "rehydrate_messages": {
-      // Mirrors the pure-reducer case in reduce.ts — wholesale replace
-      // of the visible message list at TUI startup when `--resume` is
-      // set. Tool-related entries are skipped; see reduce.ts for the
-      // full rationale on why `senderId === "tool"` and
-      // `metadata.toolCalls` messages are hidden from rehydration.
-      const rehydrated: TuiMessage[] = [];
-      for (const [idx, msg] of action.messages.entries()) {
-        if (msg.senderId === "user") {
-          // See reduce.ts — resumeFromTranscript rewrites plain
-          // `role: "system"` entries as user messages with a
-          // `resumedSystemRole` marker so they replay into the model
-          // without privilege escalation; those must stay hidden.
-          const resumedSystem =
-            msg.metadata !== undefined &&
-            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
-          if (resumedSystem) continue;
-          rehydrated.push({
-            kind: "user",
-            id: `resumed-user-${idx}`,
-            blocks: msg.content,
-          });
-          continue;
-        }
-        if (msg.senderId === "tool") continue;
-        const hasToolCalls =
-          msg.metadata !== undefined &&
-          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
-        if (hasToolCalls) continue;
-        // See reduce.ts — privileged system:* senders leak prompt
-        // and governance internals and must not be rendered as chat.
-        if (msg.senderId.startsWith("system:")) continue;
-        const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
-          block.kind === "text"
-            ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
-            : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
-        );
-        rehydrated.push({
-          kind: "assistant",
-          id: `resumed-assistant-${idx}`,
-          blocks: assistantBlocks,
-          streaming: false,
-        });
-      }
-      (state as { messages: readonly TuiMessage[] }).messages = rehydrated;
+      // Mirrors the pure-reducer case in reduce.ts — wholesale
+      // replace of the visible message list at TUI startup when
+      // `--resume` is set. Filtering/shape conversion is delegated
+      // to `convertResumedMessagesToTui` so this path and the pure
+      // reducer + `load_history` path all render identical history.
+      (state as { messages: readonly TuiMessage[] }).messages = convertResumedMessagesToTui(
+        action.messages,
+        "resumed",
+      );
       break;
     }
 

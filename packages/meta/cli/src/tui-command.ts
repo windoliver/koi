@@ -1294,15 +1294,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
     onSessionSelect: (selectedId: string): void => {
-      // Atomic session-switch flow:
-      //   1. Load + validate the target session FIRST (non-destructive).
-      //   2. Only on success, reset the live session (abort/clear/truncate).
-      //   3. Copy the loaded entries into the live file and replay
-      //      them into the UI + runtime transcript.
-      //
-      // Do NOT call `resetConversation()` up front — that would
-      // truncate the live JSONL before we know whether the target
-      // even exists, causing irreversible data loss on a failed pick.
+      // Atomic session-switch flow, in three phases:
+      //   1. Abort + drain the current in-flight run IMMEDIATELY so
+      //      no long-running tool or side-effecting turn can keep
+      //      mutating workspace / remote / transcript state while
+      //      we're loading the target session.
+      //   2. Non-destructively validate/load the target session.
+      //      If the target is missing or corrupt, surface an error
+      //      without touching the live JSONL file.
+      //   3. On success, non-destructively reset the UI/runtime
+      //      memory and hydrate it from the validated target. The
+      //      on-disk `<tuiSessionId>.jsonl` is intentionally left
+      //      untouched — see the comment in phase 3 for rationale.
       store.dispatch({ kind: "set_view", view: "conversation" });
 
       void (async (): Promise<void> => {
@@ -1315,7 +1318,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
           await resetBarrier;
 
-          // Step 1: non-destructive validate/load of the target.
+          // Phase 1: abort the active turn and wait for the drain
+          // to settle before we even LOOK at the target file. This
+          // prevents a long-running tool on the outgoing session
+          // from continuing to mutate state while the user has
+          // already moved on. Abort is a signal, so we also await
+          // `activeRunPromise` to make sure the stream (and the
+          // session-transcript middleware's finally-block append)
+          // has fully unwound.
+          activeController?.abort();
+          activeController = null;
+          const inflightRun = activeRunPromise;
+          if (inflightRun !== null) {
+            try {
+              await inflightRun;
+            } catch {
+              /* already reported upstream via add_error */
+            }
+          }
+
+          // Phase 2: non-destructive validate/load of the target.
           // resumeForSession wraps `jsonlTranscript.load()` internally,
           // so a load failure (missing file, parse error, repair
           // abort) surfaces here without having touched anything.
@@ -1330,14 +1352,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
 
-          // Step 2: target is valid. Reset the live session NON-
-          // DESTRUCTIVELY — abort any in-flight turn, clear the UI,
-          // and rebuild in-memory state — but LEAVE the on-disk
-          // `<tuiSessionId>.jsonl` untouched. The live file belongs
-          // to the startup session id and must survive the switch;
-          // overwriting it destroys any work done before the pick
-          // and leaves the post-quit resume hint pointing at a file
-          // whose identity no longer matches that work.
+          // Phase 3: target is valid. Reset the live session NON-
+          // DESTRUCTIVELY — clear the UI and rebuild in-memory
+          // state — but LEAVE the on-disk `<tuiSessionId>.jsonl`
+          // untouched. The live file belongs to the startup
+          // session id and must survive the switch; overwriting it
+          // destroys any work done before the pick and leaves the
+          // post-quit resume hint pointing at a file whose
+          // identity no longer matches that work. The abort in
+          // phase 1 already took care of stopping the outgoing
+          // stream, so resetConversation's internal abort is a
+          // no-op here.
           resetConversation({ truncatePersistedTranscript: false });
           await resetBarrier;
 

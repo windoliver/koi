@@ -9,9 +9,9 @@ describe("formatResumeHint", () => {
     expect(hint).toContain("cf61a663-0c88-4a37-8590-700aa7f6f5d0");
   });
 
-  test("uses `koi start --resume` as the resume command", () => {
+  test("uses `koi tui --resume` as the resume command", () => {
     const id = sessionId("abc");
-    expect(formatResumeHint(id)).toContain("koi start --resume abc");
+    expect(formatResumeHint(id)).toContain("koi tui --resume abc");
   });
 
   test("leads with a blank line and a human-readable prompt", () => {

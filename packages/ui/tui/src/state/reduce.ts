@@ -53,6 +53,74 @@ function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
   return arr.with(idx, value);
 }
 
+/**
+ * Convert a replayed `InboundMessage`-shaped list into the TUI's
+ * internal `TuiMessage` shape. Shared by `rehydrate_messages` and
+ * `load_history` so every replay entrypoint — `--resume` at startup,
+ * session picker, rewind, reload — renders identical visible history.
+ *
+ * Filtering rules:
+ *   - `senderId === "tool"` messages are dropped (raw tool-result
+ *     JSON — not user-visible chat)
+ *   - Assistant messages with `metadata.toolCalls` set are dropped
+ *     (tool_call transcript entries whose `content` is the raw call
+ *     UUID; the real payload lives in metadata)
+ *   - `senderId.startsWith("system:")` messages are dropped
+ *     (privileged engine-injected control/system text)
+ *   - User messages with `metadata.resumedSystemRole === true` are
+ *     dropped (plain `role: "system"` transcript entries rewritten
+ *     by `resumeFromTranscript` to replay without privilege
+ *     escalation — internal feedback, not user speech)
+ *
+ * Non-text content blocks on assistant messages are preserved as
+ * `[<kind>]` text placeholders so image/file-only turns still show
+ * up in the transcript view. Assistant messages whose entire
+ * content folds to empty text are kept (empty blocks array) to
+ * preserve turn structure.
+ */
+export function convertResumedMessagesToTui(
+  messages: readonly {
+    readonly senderId: string;
+    readonly content: readonly {
+      readonly kind: string;
+      readonly text?: string;
+    }[];
+    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
+  }[],
+  idPrefix: string,
+): readonly TuiMessage[] {
+  const out: TuiMessage[] = [];
+  for (const [idx, msg] of messages.entries()) {
+    if (msg.senderId === "user") {
+      const resumedSystem = msg.metadata !== undefined && msg.metadata.resumedSystemRole === true;
+      if (resumedSystem) continue;
+      out.push({
+        kind: "user",
+        id: `${idPrefix}-user-${idx}`,
+        blocks: msg.content as readonly import("@koi/core/message").ContentBlock[],
+      });
+      continue;
+    }
+    if (msg.senderId === "tool") continue;
+    if (msg.senderId.startsWith("system:")) continue;
+    if (msg.senderId !== "assistant") continue;
+    const hasToolCalls = msg.metadata !== undefined && Array.isArray(msg.metadata.toolCalls);
+    if (hasToolCalls) continue;
+    const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
+      block.kind === "text"
+        ? ({ kind: "text", text: block.text ?? "" } satisfies TuiAssistantBlock)
+        : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
+    );
+    out.push({
+      kind: "assistant",
+      id: `${idPrefix}-assistant-${idx}`,
+      blocks: assistantBlocks,
+      streaming: false,
+    });
+  }
+  return out;
+}
+
 /** Update the last assistant message in the messages array. */
 function updateAssistant(
   messages: readonly TuiMessage[],
@@ -718,71 +786,10 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "rehydrate_messages": {
       // Replaces the visible message list wholesale — callers are
       // responsible for dispatching this exactly once at startup when
-      // `--resume` is set. Tool-related transcript entries are skipped
-      // because `resumeFromTranscript` lowers them into noisy shapes:
-      //   - `tool_call` becomes an assistant message whose content is
-      //     the raw tool-call UUID as text and whose real payload
-      //     lives in `metadata.toolCalls`;
-      //   - `tool_result` becomes a `senderId: "tool"` message whose
-      //     content is the raw tool output JSON.
-      // Rendering those verbatim in the UI dumps `toolu_vrtx_…` ids
-      // and `{"toolId":…}` blobs into the transcript view. The
-      // assistant's surrounding natural-language turn already
-      // summarizes what happened, so dropping them is the right level
-      // of fidelity for "remind me where we left off". The full
-      // in-memory transcript (including tool calls/results) is still
-      // primed into the runtime so the model sees every detail on
-      // the first resumed turn.
-      const rehydrated: TuiMessage[] = [];
-      for (const [idx, msg] of action.messages.entries()) {
-        if (msg.senderId === "user") {
-          // `resumeFromTranscript` rewrites plain `role: "system"`
-          // transcript entries (stop-hook feedback, engine-injected
-          // non-privileged system notices, etc.) into
-          // `{ senderId: "user", metadata: { resumedSystemRole: true } }`
-          // so they replay into the model on the next turn without
-          // escalating to privileged `system:*` senders. Those must
-          // stay hidden from the visible chat — they are internal
-          // feedback, not user speech.
-          const resumedSystem =
-            msg.metadata !== undefined &&
-            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
-          if (resumedSystem) continue;
-          rehydrated.push({
-            kind: "user",
-            id: `resumed-user-${idx}`,
-            blocks: msg.content,
-          });
-          continue;
-        }
-        // Skip tool results and assistant-tool-call placeholder messages.
-        if (msg.senderId === "tool") continue;
-        const hasToolCalls =
-          msg.metadata !== undefined &&
-          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
-        if (hasToolCalls) continue;
-        // Privileged engine-injected messages (system:doom-loop,
-        // system:capabilities, system:goal, …) must never be surfaced
-        // as assistant chat — they leak governance / prompt internals.
-        // The session-transcript middleware persists their original
-        // senderId for request-mapper round-tripping; the UI must
-        // drop them unconditionally on rehydration.
-        if (msg.senderId.startsWith("system:")) continue;
-        // Plain assistant (or privileged system:*) text turn — fold
-        // non-text content blocks to `[<kind>]` placeholders so image
-        // or file blocks don't vanish silently.
-        const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
-          block.kind === "text"
-            ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
-            : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
-        );
-        rehydrated.push({
-          kind: "assistant",
-          id: `resumed-assistant-${idx}`,
-          blocks: assistantBlocks,
-          streaming: false,
-        });
-      }
+      // `--resume` is set. Filtering + shape-conversion lives in
+      // `convertResumedMessagesToTui` so every replay surface
+      // (`--resume`, picker, rewind, reload) shows identical history.
+      const rehydrated = convertResumedMessagesToTui(action.messages, "resumed");
       return { ...state, messages: rehydrated };
     }
 
@@ -898,55 +905,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, trajectorySteps: action.steps };
 
     case "load_history": {
-      // Shares the same filtering rules as `rehydrate_messages`:
-      //   - Skip `senderId === "tool"` messages (raw tool-result JSON).
-      //   - Skip `assistant` messages with `metadata.toolCalls` set
-      //     (tool-call entries whose content is the raw call UUID).
-      //   - Skip `senderId.startsWith("system:")` privileged entries.
-      //   - Skip `user` messages with `metadata.resumedSystemRole`
-      //     (plain `role: "system"` transcript entries rewritten by
-      //     `resumeFromTranscript` to replay without privilege
-      //     escalation — internal feedback, not user speech).
-      // All four paths (`--resume`, session picker, rewind, reload)
-      // therefore apply identical filtering, so the transcript view
-      // never leaks internal artifacts regardless of entrypoint.
+      // Shares the same filtering rules as `rehydrate_messages` via
+      // `convertResumedMessagesToTui`, so `--resume`, picker load,
+      // rewind, and reload all surface identical visible history.
+      // Non-text assistant blocks are preserved as `[kind]`
+      // placeholders (matching rehydrate), rather than stripped.
       if (action.messages.length === 0) return state;
-      const historical: TuiMessage[] = [];
-      let assistantIdx = 0;
-      let userIdx = 0;
-      for (const msg of action.messages) {
-        if (msg.senderId === "user") {
-          const resumedSystem =
-            msg.metadata !== undefined &&
-            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
-          if (resumedSystem) continue;
-          historical.push({
-            kind: "user",
-            id: `history-user-${userIdx++}`,
-            blocks: msg.content,
-          });
-          continue;
-        }
-        if (msg.senderId === "tool") continue;
-        if (msg.senderId.startsWith("system:")) continue;
-        if (msg.senderId !== "assistant") continue;
-        const hasToolCalls =
-          msg.metadata !== undefined &&
-          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
-        if (hasToolCalls) continue;
-        const text = msg.content
-          .filter((b) => b.kind === "text")
-          .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-          .join("");
-        if (text.length > 0) {
-          historical.push({
-            kind: "assistant",
-            id: `history-assistant-${assistantIdx++}`,
-            blocks: [{ kind: "text", text }],
-            streaming: false,
-          });
-        }
-      }
+      const historical = convertResumedMessagesToTui(action.messages, "history");
       if (historical.length === 0) return state;
       // Prepend history before any live messages accumulated since load_history was queued.
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
