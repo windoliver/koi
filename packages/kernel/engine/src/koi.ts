@@ -209,6 +209,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // cycleSession/dispose against each other.)
   // let justified: mutable in-flight dispose tracker
   let disposeInFlight: Promise<void> | undefined;
+  // #1742 loop-3 round 3: synchronously-set teardown flag. dispose()
+  // sets this BEFORE its first await so a concurrent run() or
+  // cycleSession() racing into the disposeInFlight window rejects
+  // immediately instead of attaching to a runtime whose adapter /
+  // session is being torn down. `disposed` (set at the END of cleanup)
+  // covers the post-cleanup case; `disposing` covers the in-flight
+  // window. Cleared in dispose's finally so a retried dispose can
+  // re-enter.
+  // let justified: mutable teardown-in-progress flag
+  let disposing = false;
   // let justified: mutable flag for concurrent run() guard
   let running = false;
   // #1742: monotonically increasing session epoch. Bumped by
@@ -376,7 +386,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // created before dispose()/cycleSession() could slip in between the
     // dispose() entry and the sessionEpoch bump, then execute against
     // half-torn-down session/adapter state.
-    if (disposed || lifecycleInFlight !== undefined || expectedEpoch !== sessionEpoch) {
+    if (
+      disposed ||
+      disposing ||
+      lifecycleInFlight !== undefined ||
+      expectedEpoch !== sessionEpoch
+    ) {
       // #1742 round 13: only clear `running` if THIS stale iterable
       // still owns the latch. cycleSession's else-branch may have
       // already cleared the latch, OR a fresh run B may have taken it
@@ -389,9 +404,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
       const reason = disposed
         ? "Runtime has been disposed."
-        : lifecycleInFlight !== undefined
-          ? "Runtime teardown (cycleSession/dispose) is in flight."
-          : "Run was discarded by cycleSession before iteration began.";
+        : disposing
+          ? "Runtime is being disposed."
+          : lifecycleInFlight !== undefined
+            ? "Runtime teardown (cycleSession/dispose) is in flight."
+            : "Run was discarded by cycleSession before iteration began.";
       throw KoiRuntimeError.from(
         "VALIDATION",
         `${reason} Recreate the run after the lifecycle settles or on a new runtime.`,
@@ -1433,14 +1450,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         );
       }
       // #1742 round 14: refuse new submits once dispose has begun.
-      // dispose() sets `disposed = true` before any await, so a
-      // concurrent submit racing against teardown sees this guard
-      // immediately and rejects with a clear error instead of
-      // attaching to a half-torn-down session.
-      if (disposed) {
+      // Loop-3 round 3: also reject during the dispose-in-flight
+      // window. `disposed` is now only latched after cleanup
+      // completes successfully; `disposing` is set synchronously at
+      // dispose() entry so a concurrent submit racing into teardown
+      // sees the guard immediately and rejects with a clear error
+      // instead of attaching to a half-torn-down session.
+      if (disposed || disposing) {
         throw KoiRuntimeError.from(
           "VALIDATION",
-          "Runtime has been disposed. Create a new runtime instead.",
+          disposed
+            ? "Runtime has been disposed. Create a new runtime instead."
+            : "Runtime is being disposed. Wait for dispose() to settle or create a new runtime.",
         );
       }
       // #1742 round 13: refuse new submits while a lifecycle transition
@@ -1494,10 +1515,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     cycleSession: async (): Promise<void> => {
       // #1742 round 14: refuse to cycle a disposed runtime.
-      if (disposed) {
+      // Loop-3 round 3: also reject during the dispose-in-flight
+      // window — see the parallel guard in run() above.
+      if (disposed || disposing) {
         throw KoiRuntimeError.from(
           "VALIDATION",
-          "Runtime has been disposed. Create a new runtime instead.",
+          disposed
+            ? "Runtime has been disposed. Create a new runtime instead."
+            : "Runtime is being disposed. cycleSession is not valid during teardown.",
         );
       }
       // #1742 round 10: serialize via lifecycle mutex so two concurrent
@@ -1656,6 +1681,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (disposeInFlight !== undefined) {
         return disposeInFlight;
       }
+      // Loop-3 round 3: publish the teardown-in-progress flag
+      // synchronously before any await. run() and cycleSession()
+      // reject on this so concurrent callers can't slip work into
+      // the disposeInFlight window.
+      disposing = true;
+      // Also bump streamEvents-visible epoch so any pre-existing
+      // iterable that races into its first iteration sees the new
+      // disposed/in-flight state via the epoch check.
       disposeInFlight = (async (): Promise<void> => {
         // #1742 loop-2 round 7: bump sessionEpoch synchronously here too.
         // The streamEvents `disposed` check already covers iterables that
@@ -1749,11 +1782,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       try {
         return await disposeInFlight;
       } finally {
-        // Always clear the in-flight slot. If the IIFE threw
-        // (timeout path), this lets a retry re-enter. If it
-        // succeeded, `disposed` is now true so the early return
-        // at the top short-circuits the next call anyway.
+        // Always clear the in-flight slot AND the disposing flag.
+        // If the IIFE threw (timeout path), this lets a retry re-
+        // enter and also re-opens the run() / cycleSession() guards
+        // so the host can decide what to do during the recovery
+        // window. If it succeeded, `disposed` is now true so the
+        // early return at the top short-circuits the next call
+        // anyway and the run()/cycleSession() guards still reject
+        // via the `disposed` branch.
         disposeInFlight = undefined;
+        disposing = false;
       }
     },
 

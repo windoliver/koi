@@ -1104,12 +1104,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         kind: "image" as const,
         url: img.url,
       }));
-      pendingImages = [];
-      store.dispatch({
-        kind: "add_user_message",
-        id: `user-${Date.now()}`,
-        blocks: [{ kind: "text", text }, ...imageBlocks],
-      });
 
       const controller = new AbortController();
       activeController = controller;
@@ -1127,6 +1121,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // cycleSession/dispose, disposed runtime, or already-running latch).
         // Catch those here so the user sees a recoverable error toast instead
         // of an unhandled rejection bubbling out of onSubmit.
+        //
+        // #1742 loop-3 round 3: construct the stream FIRST, dispatch the
+        // user message only AFTER stream construction succeeds. Otherwise
+        // a synchronous rejection leaves a phantom user message in the
+        // visible UI even though no engine stream ever started — the
+        // next successful turn would run without that prompt in model
+        // context, so users could believe the agent saw a message it
+        // never actually received.
         let stream: AsyncIterable<EngineEvent>;
         try {
           stream = isLoopMode
@@ -1142,8 +1144,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             code: "RUNTIME_REJECTED",
             message: err instanceof Error ? err.message : String(err),
           });
+          // Reset pendingImages — they were never sent, but they were
+          // collected for THIS submit. Don't leak them into the next.
+          pendingImages = [];
           return;
         }
+        // Stream construction succeeded — now stage the visible user
+        // message. The prompt will reach the engine through the stream
+        // we just created (which already received the text in run()'s
+        // input) so the visible UI and engine transcript stay in sync.
+        pendingImages = [];
+        store.dispatch({
+          kind: "add_user_message",
+          id: `user-${Date.now()}`,
+          blocks: [{ kind: "text", text }, ...imageBlocks],
+        });
         await drainEngineStream(stream, store, batcher, controller.signal);
 
         // Refresh trajectory data after each turn so /trajectory view is current.
