@@ -152,6 +152,21 @@ export interface KoiRuntime {
   readonly conflicts: readonly AssemblyConflict[];
   /** Run the agent with the given input. Returns an async iterable of engine events. */
   readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
+  /**
+   * Cycle session-scoped middleware state without disposing the runtime.
+   *
+   * Fires `onSessionEnd` then re-arms `onSessionStart` on the next `run()`
+   * so session-scoped middleware state (caches, always-allow grants, goal
+   * completion, skill snapshots, hot memory, etc.) is dropped and
+   * re-initialized at a host-driven boundary like the TUI's `/clear` or
+   * `session:new` commands.
+   *
+   * Optional — hosts that don't expose user-visible session boundaries
+   * (and most test/mock runtimes) can leave this undefined; `onSessionEnd`
+   * still fires once on `dispose()`. Hosts must ensure no run is in flight
+   * when calling this; cycling mid-run is undefined behavior.
+   */
+  readonly cycleSession?: () => Promise<void>;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
   /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */

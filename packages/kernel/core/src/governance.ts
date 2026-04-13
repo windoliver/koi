@@ -90,7 +90,16 @@ export type GovernanceEvent =
       readonly costUsd?: number | undefined;
     }
   | { readonly kind: "tool_error"; readonly toolName: string }
-  | { readonly kind: "tool_success"; readonly toolName: string };
+  | { readonly kind: "tool_success"; readonly toolName: string }
+  /**
+   * Reset per-run iteration counters (turns, tokens, accumulated cost,
+   * duration start) to give each `runtime.run()` invocation a fresh
+   * iteration budget. Spawn counts and rolling error-rate windows are
+   * intentionally NOT reset because they are session/runtime-scoped
+   * resources, not per-run budgets. Fired by `@koi/engine` at the start
+   * of each `run()` (#1742). Hosts can also fire it manually.
+   */
+  | { readonly kind: "iteration_reset" };
 
 // ---------------------------------------------------------------------------
 // GovernanceController — runtime interface (replaces GovernanceComponent)

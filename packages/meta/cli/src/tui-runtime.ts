@@ -1286,21 +1286,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
-    // #1742: the default governance budget (maxTokens: 100_000,
-    // maxDurationMs: 5 min) is sized for batch/headless runs and trips
-    // quickly in an interactive TUI session where each turn can easily
-    // pull 14k input tokens from a large context window. Raise the
-    // ceiling well above the model's context window so the guard only
-    // fires on pathological runaways; the engine-adapter's per-run
-    // maxTurns (10) remains the effective safety valve for a single
-    // user submit.
-    governance: {
-      iteration: {
-        maxTurns: 9_999_999,
-        maxTokens: 1_000_000_000,
-        maxDurationMs: 24 * 60 * 60 * 1000, // 24h
-      },
-    },
   });
 
   return {
@@ -1354,20 +1339,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       });
       boardRef.current = newBoard;
 
-      // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      // 5. Cycle middleware session lifecycle — fires onSessionEnd then
+      //    re-arms onSessionStart for the next run() so goal completion,
+      //    skill surfaces, hot memory, governance windows, and any other
+      //    session-scoped middleware state is refreshed for the new
+      //    conversation. Safe under #1742 because onSessionEnd no longer
+      //    races per-run cleanup (it now fires only here and on dispose).
+      //    The earlier abort upstream guarantees no run is in flight.
+      await runtime.cycleSession?.();
+
+      // 6. Clear trajectory store — AWAITED so new-session steps can't be pruned.
       //
-      // Known limitation: goal middleware state and skill surfaces are NOT reset
-      // on session:new / agent:clear. Goal state (completed items, reminder
-      // backoff, drift) persists across TUI session resets. Skill descriptor
-      // listing and system prompt skill snapshot are static for the process
-      // lifetime. Both require a full TUI restart to refresh.
-      //
-      // Manual lifecycle hook cycling (onSessionEnd/onSessionStart) is unsafe
-      // here because the aborted run's engine finally block also calls
-      // onSessionEnd on the same sessionId, creating a race that can delete
-      // freshly-initialized goal state. Rebuilding the runtime on reset would
-      // fix both, but requires createKoi to support hot-swapping — tracked as
-      // a known limitation.
+      // Skill descriptor listing and system prompt skill snapshot are still
+      // static for the process lifetime: they were captured before createKoi
+      // assembly, not stored as session-scoped middleware state. A full TUI
+      // restart is still required to pick up new skill files.
       await trajectoryStore.prune(Date.now() + 86_400_000);
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,

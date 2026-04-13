@@ -53,7 +53,8 @@ export function createGovernanceController(
   let turnCount = 0;
   let tokenUsage = 0;
   let spawnCount = 0;
-  const startedAt = Date.now();
+  // let justified: mutable run-start so duration_ms resets per run via iteration_reset
+  let startedAt = Date.now();
 
   // Cost tracking
   const costConfig = resolved.cost;
@@ -275,6 +276,17 @@ export function createGovernanceController(
       }
       case "tool_success":
         totalCallsWindow.record(Date.now());
+        break;
+      case "iteration_reset":
+        // #1742: reset per-run iteration budgets (turns, tokens, cost,
+        // duration start) so each `runtime.run()` invocation gets a fresh
+        // budget. Spawn counts and rolling error-rate windows are
+        // intentionally NOT reset — they track runtime/session-scoped
+        // resources, not per-run budgets.
+        turnCount = 0;
+        tokenUsage = 0;
+        accumulatedCostUsd = 0;
+        startedAt = Date.now();
         break;
     }
   }

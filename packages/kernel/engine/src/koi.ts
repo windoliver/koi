@@ -15,6 +15,7 @@ import type {
   EngineEvent,
   EngineInput,
   EngineStopReason,
+  GovernanceController,
   InboundMessage,
   InboxComponent,
   InboxItem,
@@ -33,7 +34,14 @@ import type {
   ToolResponse,
   TurnContext,
 } from "@koi/core";
-import { DEFAULT_MAX_STOP_RETRIES, INBOX, runId, sessionId, toolToken } from "@koi/core";
+import {
+  DEFAULT_MAX_STOP_RETRIES,
+  GOVERNANCE,
+  INBOX,
+  runId,
+  sessionId,
+  toolToken,
+} from "@koi/core";
 import type { DebugInstrumentation, TerminalHandlers } from "@koi/engine-compose";
 import {
   composeExtensions,
@@ -370,6 +378,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (!lifecycleSessionStarted) {
         lifecycleSessionStarted = true;
         await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+      }
+
+      // #1742: per-run iteration budget reset. The governance controller's
+      // turn/token/duration counters accumulate from instance creation, so
+      // long-lived runtimes (TUI, daemons) would trip the iteration guard
+      // after enough total activity even though each run is healthy. Fire
+      // a one-shot `iteration_reset` event at run start so each run() gets
+      // a fresh budget. Spawn counts and rolling error-rate windows are
+      // intentionally NOT reset because they are runtime-scoped resources.
+      // Hosts that want cumulative budgets simply omit this event by using
+      // an EngineAdapter that calls runTurn directly without going through
+      // createKoi's run() entry point.
+      const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+      if (govCtl !== undefined) {
+        await govCtl.record({ kind: "iteration_reset" });
       }
 
       // Wire registry watcher → engine events for child agent visibility.
@@ -1204,6 +1227,34 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
       running = true;
       return { [Symbol.asyncIterator]: () => streamEvents(input) };
+    },
+
+    cycleSession: async (): Promise<void> => {
+      // #1742: refresh session-scoped middleware state without tearing down
+      // the runtime. Used by hosts (e.g. TUI `/clear`, `session:new`) that
+      // expose user-visible conversation boundaries inside one process.
+      // Caller must ensure no run is in flight; cycling mid-run is undefined.
+      if (running) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot cycleSession while a run is in progress — abort first",
+        );
+      }
+      if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+        try {
+          await runSessionHooks(allMiddleware, "onSessionEnd", lifecycleSessionCtx);
+        } catch (sessionEndError: unknown) {
+          console.warn("[koi] onSessionEnd failed during cycleSession", {
+            cause: sessionEndError,
+          });
+        }
+      }
+      // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
+      // with a fresh sessionCtx (its first turn's runId, like the original
+      // first-run path). Until that next run, the runtime is in a quiescent
+      // pre-session state — same as immediately after createKoi() returned.
+      lifecycleSessionStarted = false;
+      lifecycleSessionEnded = false;
     },
 
     dispose: async (): Promise<void> => {

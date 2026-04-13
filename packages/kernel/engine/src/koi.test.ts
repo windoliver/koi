@@ -376,6 +376,68 @@ describe("createKoi middleware hooks", () => {
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
+  test("#1742: cycleSession fires onSessionEnd then re-arms onSessionStart on next run", async () => {
+    const sessionStart = mock(() => Promise.resolve());
+    const sessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "lifecycle-observer",
+          describeCapabilities: () => undefined,
+          onSessionStart: sessionStart,
+          onSessionEnd: sessionEnd,
+        },
+      ],
+    });
+
+    // First run() fires onSessionStart once.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionEnd).toHaveBeenCalledTimes(0);
+
+    // cycleSession() fires onSessionEnd once.
+    await runtime.cycleSession?.();
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledTimes(1); // not re-armed yet
+
+    // Subsequent run() re-fires onSessionStart for the fresh session.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(sessionStart).toHaveBeenCalledTimes(2);
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+
+    // dispose() fires the final onSessionEnd for the second session.
+    await runtime.dispose();
+    expect(sessionEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test("#1742: cycleSession rejects while a run is in progress", async () => {
+    // Adapter that yields one event then waits forever — keeps `running` true.
+    const adapter: EngineAdapter = {
+      engineId: "infinite",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          while (true) {
+            yield { kind: "text_delta" as const, delta: "x" };
+          }
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+    // Start a run but don't drain it — running flag stays true.
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next();
+    await expect(runtime.cycleSession?.()).rejects.toThrow(/run is in progress/i);
+    await iter.return?.();
+    await runtime.dispose();
+  });
+
   test("calls onAfterTurn on turn_end events", async () => {
     const onAfterTurn = mock(() => Promise.resolve());
     const runtime = await createKoi({

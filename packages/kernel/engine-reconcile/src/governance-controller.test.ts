@@ -231,6 +231,42 @@ describe("createGovernanceController", () => {
     expect(r?.current).toBe(80);
   });
 
+  test("#1742: iteration_reset clears per-run iteration counters but preserves spawn/error windows", async () => {
+    // Tight per-run budget so we can verify the reset re-opens it.
+    const ctrl = createGovernanceController({
+      iteration: { maxTurns: 3, maxTokens: 100, maxDurationMs: 60_000 },
+      errorRate: { windowMs: 60_000, threshold: 0.5, minSampleSize: 2 },
+    });
+
+    // Burn through the per-run budget...
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "token_usage", count: 99 });
+    // ...and accrue runtime-scoped state we want to keep.
+    ctrl.record({ kind: "spawn", depth: 1 });
+    ctrl.record({ kind: "tool_error", toolName: "t" });
+    ctrl.record({ kind: "tool_success", toolName: "t" });
+
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(false);
+    const tokenBefore = ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
+    expect(tokenBefore?.current).toBe(99);
+    const spawnBefore = ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT);
+    expect(spawnBefore?.current).toBe(1);
+
+    // Per-run reset (fired by createKoi at the start of each runtime.run()).
+    ctrl.record({ kind: "iteration_reset" });
+
+    // Iteration counters cleared:
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TURN_COUNT)?.current).toBe(0);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(0);
+
+    // Runtime-scoped state preserved:
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.ERROR_RATE)?.current).toBeCloseTo(0.5);
+  });
+
   test("record tool_error increments error window and total", () => {
     const ctrl = createGovernanceController({ errorRate: { windowMs: 60000, threshold: 0.5 } });
     ctrl.record({ kind: "tool_error", toolName: "test" });
