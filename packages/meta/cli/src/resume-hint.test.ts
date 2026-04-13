@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { sessionId } from "@koi/core";
-import { formatResumeHint } from "./resume-hint.js";
+import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 
 describe("formatResumeHint", () => {
   test("includes the session id verbatim", () => {
@@ -53,5 +53,25 @@ describe("formatResumeHint", () => {
     const id = sessionId("has space `pwd`");
     const hint = formatResumeHint(id);
     expect(hint).toContain("koi tui --resume 'has space `pwd`'\n");
+  });
+});
+
+describe("formatPickerModeResumeHint", () => {
+  test("surfaces both writable and viewed ids", () => {
+    const writable = sessionId("aaaaaaaa-0000-0000-0000-000000000000");
+    const viewed = sessionId("bbbbbbbb-1111-1111-1111-111111111111");
+    const hint = formatPickerModeResumeHint(writable, viewed);
+    expect(hint).toContain("koi tui --resume aaaaaaaa-0000-0000-0000-000000000000");
+    expect(hint).toContain("koi tui --resume bbbbbbbb-1111-1111-1111-111111111111");
+    expect(hint).toContain("writable");
+    expect(hint).toContain("archive");
+  });
+
+  test("shell-quotes both ids independently", () => {
+    const writable = sessionId("a safe-one");
+    const viewed = sessionId("b;rm -rf /");
+    const hint = formatPickerModeResumeHint(writable, viewed);
+    expect(hint).toContain("koi tui --resume 'a safe-one'");
+    expect(hint).toContain("koi tui --resume 'b;rm -rf /'");
   });
 });

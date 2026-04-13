@@ -43,3 +43,33 @@ export function formatResumeHint(id: SessionId): string {
   const quoted = shellQuoteSessionId(String(id));
   return `\nResume this session with:\n  koi tui --resume ${quoted}\n`;
 }
+
+/**
+ * Post-quit hint for a picker-mode session. The TUI's runtime is
+ * still bound to the startup session id — that is where any new
+ * work written during this process lives — while the user may have
+ * been viewing a picked archive whose id differs. Print BOTH so
+ * the operator can choose:
+ *
+ *   - the writable startup session (where this process's work
+ *     actually landed on disk), and
+ *   - the archive they had loaded when they quit (useful for
+ *     reopening the same read-only view).
+ *
+ * Without this, the hint would pick one or the other and strand
+ * the other handle — either hiding the archive the user was
+ * inspecting, or hiding the writable session that owns their
+ * recent work.
+ */
+export function formatPickerModeResumeHint(
+  writableSessionId: SessionId,
+  viewedSessionId: SessionId,
+): string {
+  const writable = shellQuoteSessionId(String(writableSessionId));
+  const viewed = shellQuoteSessionId(String(viewedSessionId));
+  return (
+    "\nResume this session:\n" +
+    `  koi tui --resume ${writable}     # writable session (your new work)\n` +
+    `  koi tui --resume ${viewed}     # viewed archive (read-only)\n`
+  );
+}

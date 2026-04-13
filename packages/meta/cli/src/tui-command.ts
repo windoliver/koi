@@ -62,7 +62,7 @@ import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
-import { formatResumeHint } from "./resume-hint.js";
+import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
@@ -1032,14 +1032,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         try {
           if (clearPersistFailed) {
             writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
+          } else if (tuiSessionId === viewedSessionId) {
+            // Non-picker (or picker-of-self) case: both ids agree.
+            // Print the single normal hint.
+            writeSync(1, formatResumeHint(tuiSessionId));
           } else {
-            // Use `viewedSessionId` instead of `tuiSessionId`: after
-            // a picker load, `tuiSessionId` still points at the
-            // startup (often empty) file, whereas `viewedSessionId`
-            // points at the picked session the user was actually
-            // looking at when they quit. In the non-picker case the
-            // two are equal.
-            writeSync(1, formatResumeHint(viewedSessionId));
+            // Picker mode: `tuiSessionId` is the writable startup
+            // session where any work done this process landed on
+            // disk; `viewedSessionId` is the read-only archive the
+            // user was inspecting when they quit. Print BOTH so
+            // the user can choose — otherwise the hint would
+            // strand one handle. Without this, a user who did
+            // work in the startup session, opened the picker to
+            // inspect an older archive, and quit would only see
+            // the archive id and might conclude their recent
+            // work is lost.
+            writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
           }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
