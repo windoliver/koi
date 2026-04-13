@@ -55,6 +55,7 @@ import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
+import { formatResumeHint } from "./resume-hint.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
 import { createTuiRuntime } from "./tui-runtime.js";
@@ -696,6 +697,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       approvalStore?.close();
     } finally {
+      // Loop mode (--until-pass) intentionally skips transcript
+      // persistence, so there is nothing to resume from. Only print
+      // the hint when the session has a resumable JSONL transcript.
+      if (!isLoopMode) {
+        process.stdout.write(formatResumeHint(tuiSessionId));
+      }
       process.exit(exitCode);
     }
   };
