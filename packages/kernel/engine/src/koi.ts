@@ -519,14 +519,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // never-actually-started session. Roll back on throw so retries
         // get a clean attempt.
         const candidateCtx = sessionCtx;
-        try {
-          await runSessionHooks(allMiddleware, "onSessionStart", candidateCtx);
-          lifecycleSessionStarted = true;
-          activeSessionCtx = candidateCtx;
-        } catch (sessionStartError: unknown) {
-          // Leave lifecycleSessionStarted false / activeSessionCtx undef.
-          throw sessionStartError;
-        }
+        // If runSessionHooks throws, lifecycleSessionStarted stays false and
+        // activeSessionCtx stays undefined — the next run() retries cleanly.
+        await runSessionHooks(allMiddleware, "onSessionStart", candidateCtx);
+        lifecycleSessionStarted = true;
+        activeSessionCtx = candidateCtx;
       }
 
       // #1742: per-run iteration budget reset. Opt-in via
@@ -1399,6 +1396,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           "Runtime is poisoned: a prior cleanup timed out waiting for a non-cooperative tool. Dispose and recreate.",
         );
       }
+      // #1742 round 14: refuse new submits once dispose has begun.
+      // dispose() sets `disposed = true` before any await, so a
+      // concurrent submit racing against teardown sees this guard
+      // immediately and rejects with a clear error instead of
+      // attaching to a half-torn-down session.
+      if (disposed) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Runtime has been disposed. Create a new runtime instead.",
+        );
+      }
       // #1742 round 13: refuse new submits while a lifecycle transition
       // (cycleSession / dispose) is mid-flight. Otherwise a caller could
       // slip a fresh run() into the window where the session is half
@@ -1437,6 +1445,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
 
     cycleSession: async (): Promise<void> => {
+      // #1742 round 14: refuse to cycle a disposed runtime.
+      if (disposed) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Runtime has been disposed. Create a new runtime instead.",
+        );
+      }
       // #1742 round 10: serialize via lifecycle mutex so two concurrent
       // callers (overlapping /clear, /clear + dispose, etc.) don't both
       // pass the !lifecycleSessionEnded guard and fire onSessionEnd

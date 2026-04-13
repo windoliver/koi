@@ -1099,13 +1099,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
-        const stream = isLoopMode
-          ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
-          : handle.runtime.run({
-              kind: "text",
-              text,
-              signal: controller.signal,
-            });
+        // run() can throw synchronously when the engine rejects the request
+        // (poisoned runtime after a settle timeout, lifecycleInFlight during
+        // cycleSession/dispose, disposed runtime, or already-running latch).
+        // Catch those here so the user sees a recoverable error toast instead
+        // of an unhandled rejection bubbling out of onSubmit.
+        let stream: AsyncIterable<EngineEvent>;
+        try {
+          stream = isLoopMode
+            ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
+            : handle.runtime.run({
+                kind: "text",
+                text,
+                signal: controller.signal,
+              });
+        } catch (err) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RUNTIME_REJECTED",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return;
+        }
         await drainEngineStream(stream, store, batcher, controller.signal);
 
         // Refresh trajectory data after each turn so /trajectory view is current.

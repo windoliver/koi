@@ -116,9 +116,11 @@ export interface CreateKoiOptions {
   /**
    * When `true`, fire `iteration_reset` on the governance controller at the
    * start of every `runtime.run()` invocation, giving each run a fresh
-   * iteration budget (turns / tokens / cost / duration). Spawn counts and
-   * rolling error-rate windows are NOT reset because they track
-   * runtime/session-scoped resources.
+   * per-iteration turn count and duration window. Token usage, cost, spawn
+   * counts, and rolling error-rate windows are NOT reset — those continue to
+   * accumulate across runs because they track runtime/session-scoped
+   * resources. To reset everything, call `cycleSession()` (which fires
+   * `session_reset`) instead.
    *
    * Defaults to `false` so cumulative session-level enforcement remains the
    * default contract for batch / headless / `koi start` hosts. Interactive
