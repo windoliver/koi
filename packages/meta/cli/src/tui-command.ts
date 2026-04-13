@@ -31,7 +31,13 @@
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { EngineEvent, RichTrajectoryStep, SessionTranscript } from "@koi/core";
+import type {
+  AuditEntry,
+  EngineEvent,
+  JsonObject,
+  RichTrajectoryStep,
+  SessionTranscript,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
@@ -43,7 +49,13 @@ import {
 } from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
-import type { EventBatcher, SessionSummary, TrajectoryStepSummary, TuiStore } from "@koi/tui";
+import type {
+  EventBatcher,
+  LedgerAuditEntry,
+  SessionSummary,
+  TrajectoryStepSummary,
+  TuiStore,
+} from "@koi/tui";
 import {
   createEventBatcher,
   createInitialState,
@@ -169,9 +181,63 @@ function mapTrajectorySteps(
             hook: step.metadata.hook as string | undefined,
             phase: step.metadata.phase as string | undefined,
             nextCalled: step.metadata.nextCalled as boolean | undefined,
+            decisions: Array.isArray(step.metadata.decisions)
+              ? (step.metadata.decisions as readonly JsonObject[])
+              : undefined,
           }
         : undefined,
   }));
+}
+
+/** Map an AuditEntry to a TUI-friendly summary. */
+function mapAuditEntry(entry: AuditEntry): LedgerAuditEntry {
+  const summary =
+    entry.kind === "tool_call" && entry.request !== undefined
+      ? `tool: ${JSON.stringify(entry.request).slice(0, 120)}`
+      : entry.kind === "permission_decision" && entry.response !== undefined
+        ? `perm: ${JSON.stringify(entry.response).slice(0, 120)}`
+        : `${entry.agentId} turn:${entry.turnIndex} ${entry.durationMs}ms`;
+  return { timestamp: entry.timestamp, kind: entry.kind, summary };
+}
+
+/** Map DecisionLedger SourceStatus to a simple string label. */
+function mapSourceState(status: { readonly state: string }): string {
+  return status.state;
+}
+
+/**
+ * Refresh trajectory + ledger data and dispatch to the TUI store.
+ *
+ * Uses the decision ledger as the single data source for all three lanes
+ * (trajectory, audit, report). Falls back to raw getTrajectorySteps()
+ * if the ledger query fails.
+ */
+async function refreshTrajectoryData(
+  handle: TuiRuntimeHandle,
+  store: TuiStore,
+  currentSessionId: string,
+): Promise<void> {
+  const reader = handle.createDecisionLedger();
+  const result = await reader.getLedger(currentSessionId);
+  if (result.ok) {
+    const ledger = result.value;
+    store.dispatch({
+      kind: "set_trajectory_data",
+      steps: mapTrajectorySteps(ledger.trajectorySteps),
+      auditEntries: ledger.auditEntries.map(mapAuditEntry),
+      ledgerSources: {
+        trajectory: mapSourceState(ledger.sources.trajectory),
+        audit: mapSourceState(ledger.sources.audit),
+        report: mapSourceState(ledger.sources.report),
+      },
+      runReportSummary:
+        ledger.runReport !== undefined ? JSON.stringify(ledger.runReport).slice(0, 300) : undefined,
+    });
+  } else {
+    // Fallback: raw trajectory steps without ledger enrichment
+    const steps = await handle.getTrajectorySteps();
+    store.dispatch({ kind: "set_trajectory_data", steps: mapTrajectorySteps(steps) });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -681,8 +747,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
     store.dispatch({ kind: "clear_messages" });
-    // Clear trajectory data so /trajectory doesn't show prior-session data.
-    store.dispatch({ kind: "set_trajectory_data", steps: [] });
+    // Clear trajectory + ledger data so /trajectory doesn't show prior-session data.
+    store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
     tuiTurnCounter = 0;
 
     // Always reset runtime session state — even in the idle case (no active stream).
@@ -955,14 +1021,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               metadata: { type: "checkpoint_rewind" },
             };
             await runtimeHandle.appendTrajectoryStep(rewindStep);
-            // Refresh the trajectory view so the step shows up in the
-            // UI without waiting for the next turn to refresh it.
-            void runtimeHandle.getTrajectorySteps().then((steps) => {
-              store.dispatch({
-                kind: "set_trajectory_data",
-                steps: mapTrajectorySteps(steps),
-              });
-            });
+            // Refresh the trajectory + decision ledger view so the step
+            // shows up without waiting for the next turn.
+            void refreshTrajectoryData(runtimeHandle, store, runtimeHandle.runtime.sessionId);
 
             // Surface drift warnings — paths the rewind could not restore
             // because they were modified outside the tracked tool pipeline
@@ -1144,19 +1205,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
         await drainEngineStream(stream, store, batcher, controller.signal);
 
-        // Refresh trajectory data after each turn so /trajectory view is current.
-        // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
+        // Refresh trajectory + decision ledger data after each turn.
+        // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
         // wrapMiddlewareWithTrace records MW spans asynchronously via
-        // void store.append(...). Without the delay, getTrajectorySteps()
-        // reads before all spans are written.
-        void new Promise<void>((resolve) => setTimeout(resolve, 500))
-          .then(() => handle.getTrajectorySteps())
-          .then((steps) => {
-            store.dispatch({
-              kind: "set_trajectory_data",
-              steps: mapTrajectorySteps(steps),
-            });
-          });
+        // void store.append(...). Without the delay, getLedger() reads
+        // before all spans are written.
+        void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
+          refreshTrajectoryData(handle, store, handle.runtime.sessionId),
+        );
       } finally {
         // Guard against cross-run races: only clear activeController and
         // reset the SIGINT handler if THIS run is still the active one.

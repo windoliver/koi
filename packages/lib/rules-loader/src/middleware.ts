@@ -157,6 +157,14 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
     async wrapModelCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
       if (state === undefined) return next(request);
+      ctx.reportDecision?.({
+        action: "inject",
+        files: state.ruleset.files.length,
+        fileNames: state.ruleset.files.map((f) => f.replace(/^.*\//, "")),
+        estimatedTokens: state.ruleset.estimatedTokens,
+        contentLength: state.ruleset.content.length,
+        truncated: state.ruleset.truncated,
+      });
       return next(injectRules(request, state.ruleset));
     },
 
@@ -170,6 +178,14 @@ export function createRulesMiddleware(config?: RulesLoaderConfig): KoiMiddleware
         yield* next(request);
         return;
       }
+      ctx.reportDecision?.({
+        action: "inject",
+        files: state.ruleset.files.length,
+        fileNames: state.ruleset.files.map((f) => f.replace(/^.*\//, "")),
+        estimatedTokens: state.ruleset.estimatedTokens,
+        contentLength: state.ruleset.content.length,
+        truncated: state.ruleset.truncated,
+      });
       yield* next(injectRules(request, state.ruleset));
     },
 

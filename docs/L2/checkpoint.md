@@ -178,6 +178,10 @@ await koi.checkpoint.rewind(3);                    // rewind 3 turns
 await koi.checkpoint.rewindTo("snapshot-id-abc");  // rewind to a specific node
 ```
 
+### Trajectory Visibility
+
+Reports `{action: "capture", toolId, path, captured}` via `ctx.reportDecision()` on `wrapToolCall` for tracked file-editing tools. Shows `[capture:path]` or `[pass]` in the TUI trajectory view.
+
 ## Testing
 
 The package ships with four mandatory test suites (per #1625 acceptance criteria):

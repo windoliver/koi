@@ -369,6 +369,12 @@ export function createSemanticRetryMiddleware(config: SemanticRetryConfig): Sema
           if (isFailedResponse(response)) {
             const failError = new Error(`Model call failed: stopReason=${response.stopReason}`);
             await handleFailure(sessionId, state, failError, request, ctx.turnIndex);
+          } else {
+            ctx.reportDecision?.({
+              action: "pass",
+              retryCount: state.records.length,
+              budgetRemaining: minBudget(state.budgets),
+            });
           }
           return response;
         } catch (e: unknown) {

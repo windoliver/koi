@@ -98,13 +98,23 @@ export function createSystemPromptMiddleware(prompt: string): KoiMiddleware {
     name: "spawned-agent:system-prompt",
     phase: "resolve",
     priority: 100,
-    async wrapModelCall(_ctx, request, next) {
+    async wrapModelCall(ctx, request, next) {
+      ctx.reportDecision?.({
+        action: "inject",
+        promptLength: prompt.length,
+        preview: prompt.slice(0, 200),
+      });
       return next({
         ...request,
         systemPrompt: mergeSystemPrompt(prompt, request.systemPrompt),
       });
     },
-    async *wrapModelStream(_ctx, request, next) {
+    async *wrapModelStream(ctx, request, next) {
+      ctx.reportDecision?.({
+        action: "inject",
+        promptLength: prompt.length,
+        preview: prompt.slice(0, 200),
+      });
       yield* next({
         ...request,
         systemPrompt: mergeSystemPrompt(prompt, request.systemPrompt),

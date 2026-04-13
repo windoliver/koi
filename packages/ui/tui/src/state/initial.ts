@@ -41,5 +41,8 @@ export function createInitialState(): TuiState {
     toolsExpanded: false,
     trajectorySteps: [],
     resumeFollowCounter: 0,
+    auditEntries: [],
+    ledgerSources: null,
+    runReportSummary: null,
   };
 }

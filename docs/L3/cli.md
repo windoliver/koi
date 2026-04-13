@@ -452,6 +452,10 @@ the exact decision payload shapes. The CI enforcement test in
 decision-making middleware wired into the runtime emits at least one span
 with non-empty `decisions` metadata in full-stack replay.
 
+### Trajectory Visibility
+
+`@koi/decision-ledger` is now a dependency. `refreshTrajectoryData()` uses the decision ledger as the primary data source for the `/trajectory` view, with fallback to raw `getTrajectorySteps()`.
+
 ---
 
 ## Testing

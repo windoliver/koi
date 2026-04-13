@@ -241,6 +241,10 @@ All `fireDetection` telemetry paths have paired `reportDecision` calls for ATIF
 audit completeness. The decision appears in the trajectory as
 `metadata.decisions[]` on the `middleware:exfiltration-guard` span.
 
+### Trajectory Visibility
+
+Reports `{location: "tool", toolId, action: "clean", matchCount: 0}` via `ctx.reportDecision()` on `wrapToolCall` when no secrets are detected. Shows `[clean:0]` in the TUI trajectory view. Block/redact decisions were already reported.
+
 ---
 
 ## Tests
