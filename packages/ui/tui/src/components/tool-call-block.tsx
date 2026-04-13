@@ -224,13 +224,19 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   const isBodyExpanded = useTuiStore((s) => s.expandedBodyToolCallIds.has(props.block.callId));
 
   // #1759: hide the elapsed-time counter while a permission prompt for THIS
-  // exact tool call is open. Without this gate the spinner would show the
-  // user's read/decide time as if the tool were executing. Matched on
-  // `metadata.callId` (threaded through from the turn-runner via
-  // ApprovalRequest.metadata) so queued prompts for the same tool cannot
-  // cross-hide each other. The reducer's `tool_execution_started` handler
-  // then resets startedAt so the counter starts fresh from 0 when the
-  // prompt closes and the tool actually runs.
+  // tool call is open. Without this gate the spinner would show the user's
+  // read/decide time as if the tool were executing.
+  //
+  // Preferred match: `metadata.callId` threaded through from the turn-runner
+  // via ApprovalRequest.metadata — exact per-call match, immune to queued
+  // prompts for the same tool name cross-hiding each other.
+  //
+  // Fallback match: when no callId is present on the prompt (older callers,
+  // or any path that doesn't populate metadata.callId), fall back to matching
+  // on `toolName`. This keeps the hide gate working in the common single-
+  // in-flight case — the turn-runner executes tool calls sequentially (see
+  // @koi/query-engine turn-runner.ts), so at most one permission prompt is
+  // open at a time, and a tool-name match is safe under that invariant.
   const isAwaitingApproval = useTuiStore((s) => {
     if (props.block.status !== "running") return false;
     if (s.modal?.kind !== "permission-prompt") return false;
@@ -239,7 +245,10 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
       typeof s.modal.prompt.metadata.callId === "string"
         ? s.modal.prompt.metadata.callId
         : undefined;
-    return promptCallId === props.block.callId;
+    if (promptCallId !== undefined) {
+      return promptCallId === props.block.callId;
+    }
+    return s.modal.prompt.toolId === props.block.toolName;
   });
 
   /** Merge arg chips and result chips for the chips row. */
