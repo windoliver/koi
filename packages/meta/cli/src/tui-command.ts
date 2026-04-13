@@ -1023,6 +1023,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           onInterrupt();
           break;
         case "agent:clear":
+          // Block `/clear` in picker mode: `tuiSessionId` is still
+          // bound to the startup session, so a truncate would delete
+          // the unrelated startup archive instead of clearing the
+          // visible (picker-loaded) session. That is destructive
+          // data loss AND a privacy failure for the picked session,
+          // which stays intact on disk.
+          if (hasPickerLoadSinceAssembly) {
+            store.dispatch({
+              kind: "add_error",
+              code: "CLEAR_AFTER_PICKER_LOAD",
+              message:
+                "/clear is disabled after loading a saved session via the picker — " +
+                "the command would erase this process's original session, not the " +
+                "one you are viewing. Quit and relaunch with " +
+                "`koi tui --resume <id>` if you want to continue the loaded session " +
+                "with full clear/rewind support.",
+            });
+            break;
+          }
           hasClearedSinceAssembly = true;
           resetConversation({ truncatePersistedTranscript: true });
           break;
@@ -1210,6 +1229,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           void shutdown();
           break;
         case "session:new":
+          // Same guard as agent:clear — see the comment there for
+          // the data-loss rationale.
+          if (hasPickerLoadSinceAssembly) {
+            store.dispatch({
+              kind: "add_error",
+              code: "NEW_AFTER_PICKER_LOAD",
+              message:
+                "/new is disabled after loading a saved session via the picker — " +
+                "the command would erase this process's original session, not the " +
+                "one you are viewing. Quit and relaunch with " +
+                "`koi tui --resume <id>` if you want to continue the loaded session.",
+            });
+            break;
+          }
           hasClearedSinceAssembly = true;
           resetConversation({ truncatePersistedTranscript: true });
           break;
