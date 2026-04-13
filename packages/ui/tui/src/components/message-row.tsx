@@ -47,7 +47,13 @@ function AssistantBlock(props: {
         )}
       </Match>
       <Match when={props.block.kind === "thinking" ? (props.block as ThinkingBlock_) : undefined}>
-        {(b: Accessor<ThinkingBlock_>) => <ThinkingBlock text={b().text} />}
+        {(b: Accessor<ThinkingBlock_>) => (
+          <ThinkingBlock
+            text={b().text}
+            streaming={props.streaming}
+            syntaxStyle={props.syntaxStyle}
+          />
+        )}
       </Match>
       <Match when={props.block.kind === "tool_call" ? (props.block as ToolCallBlock_) : undefined}>
         {(b: Accessor<ToolCallBlock_>) => (
