@@ -95,12 +95,58 @@ function annotateSandboxed(step: RichTrajectoryStep): string {
   return step.identifier;
 }
 
+/**
+ * Detect turn index for each step.
+ *
+ * Turn 0 = session setup steps before the first user turn.
+ * Turn 1+ = user turns (1-based).
+ *
+ * Signal priority (first match wins):
+ *   1. `tui_turn_start` synthetic step — written by the TUI before each run().
+ *      This is a reliable cross-run boundary marker.
+ *   2. `metadata.turnIndex` from event-trace — 0-based ctx.turnIndex.
+ *      Useful inside a single run() with multiple sub-turns (agent loops).
+ *   3. `metadata.totalMessages` delta ≥ 2 — fallback for older ATIF fixtures.
+ */
+function computeTurnIndices(steps: readonly RichTrajectoryStep[]): readonly number[] {
+  let currentTurnIdx = 0;
+  let lastMsgCount: number | undefined;
+  return steps.map((step) => {
+    // Primary: synthetic tui_turn_start boundary injected before each run()
+    if (step.metadata?.type === "tui_turn_start") {
+      const rawTurn = step.metadata?.tuiTurnIndex;
+      currentTurnIdx = (typeof rawTurn === "number" ? rawTurn : currentTurnIdx) + 1;
+      return currentTurnIdx;
+    }
+    if (step.source === "agent" && step.kind === "model_call") {
+      // Secondary: ctx.turnIndex from event-trace (sub-turns within a single run)
+      const rawTurn = step.metadata?.turnIndex;
+      if (typeof rawTurn === "number" && rawTurn > 0) {
+        currentTurnIdx = currentTurnIdx + rawTurn;
+      } else {
+        // Fallback: totalMessages delta for ATIF fixtures
+        const rawCount = step.metadata?.totalMessages;
+        const count = typeof rawCount === "number" ? rawCount : undefined;
+        if (lastMsgCount === undefined) {
+          if (currentTurnIdx === 0) currentTurnIdx = 1;
+        } else if (count !== undefined && count - lastMsgCount >= 2) {
+          currentTurnIdx++;
+        }
+        if (count !== undefined) lastMsgCount = count;
+      }
+    }
+    return currentTurnIdx;
+  });
+}
+
 /** Map rich trajectory steps to TUI summaries with content for expandable detail. */
 function mapTrajectorySteps(
   steps: readonly RichTrajectoryStep[],
 ): readonly TrajectoryStepSummary[] {
-  return steps.map((step) => ({
+  const turnIndices = computeTurnIndices(steps);
+  return steps.map((step, i) => ({
     stepIndex: step.stepIndex,
+    turnIndex: turnIndices[i] ?? 0,
     kind: step.kind,
     identifier: annotateSandboxed(step),
     durationMs: step.durationMs,
@@ -618,6 +664,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — replaced on each reset
   let resetBarrier: Promise<void> = Promise.resolve();
 
+  // Monotonically increasing TUI-session turn counter. Resets on session clear.
+  // Injected as a synthetic ATIF step before each run() so /trajectory can
+  // group steps by user turn regardless of engine-internal ctx.turnIndex resets.
+  // let: justified — incremented per user submission
+  let tuiTurnCounter = 0;
+
   const resetConversation = (): void => {
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
@@ -631,6 +683,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     store.dispatch({ kind: "clear_messages" });
     // Clear trajectory data so /trajectory doesn't show prior-session data.
     store.dispatch({ kind: "set_trajectory_data", steps: [] });
+    tuiTurnCounter = 0;
 
     // Always reset runtime session state — even in the idle case (no active stream).
     // resetSessionState is async (awaits task board + trajectory prune).
@@ -1054,6 +1107,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
       const controller = new AbortController();
       activeController = controller;
+
+      // Inject a synthetic turn-boundary step so /trajectory can group steps
+      // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
+      // so we maintain our own counter here at the TUI session level.
+      const thisTurnIndex = tuiTurnCounter++;
+      await runtimeHandle.appendTrajectoryStep({
+        stepIndex: 0,
+        timestamp: Date.now(),
+        source: "system",
+        kind: "tool_call",
+        identifier: "koi:tui_turn_start",
+        outcome: "success",
+        durationMs: 0,
+        metadata: {
+          type: "tui_turn_start",
+          tuiTurnIndex: thisTurnIndex,
+        } as import("@koi/core").JsonObject,
+      });
+
       try {
         // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
         // middleware composition, tool dispatch, and transcript management.

@@ -314,6 +314,8 @@ export interface TuiState {
 export interface TrajectoryStepSummary {
   /** Step index in the trajectory. */
   readonly stepIndex: number;
+  /** Turn index: 0 = session setup (pre-agent), 1+ = user turns (1-based). */
+  readonly turnIndex: number;
   /** Step kind: "model_call", "tool_call", "system", etc. */
   readonly kind: string;
   /** Tool name (for tool steps) or model identifier (for model steps). */
