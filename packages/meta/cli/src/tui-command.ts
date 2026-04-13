@@ -32,7 +32,13 @@ import { writeSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { EngineEvent, InboundMessage, RichTrajectoryStep, SessionTranscript } from "@koi/core";
+import type {
+  EngineEvent,
+  InboundMessage,
+  RichTrajectoryStep,
+  SessionId,
+  SessionTranscript,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
