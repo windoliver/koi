@@ -471,6 +471,19 @@ export async function drainEngineStream(
         return;
       }
 
+      // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
+      // stderr doesn't interfere with the TUI (alternate screen buffer).
+      if (process.env.KOI_DEBUG_STREAM === "1") {
+        const elapsed = Date.now() - lastYieldAt;
+        const preview =
+          event.kind === "text_delta"
+            ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+            : event.kind === "thinking_delta"
+              ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+              : "";
+        process.stderr.write(`[stream] +${elapsed}ms ${event.kind}${preview}\n`);
+      }
+
       // --- Usage tracking (unchanged) ---
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
