@@ -1058,7 +1058,51 @@ describe("createKoi middleware hooks", () => {
     }).toThrow(/poisoned/i);
 
     // dispose still works (must always be safe to dispose).
+    // #1742 loop-3 round 9: dispose ALSO retries onSessionEnd. The
+    // failed cycleSession used to permanently latch
+    // lifecycleSessionEnded=true (round 10 early-flip), so dispose()
+    // skipped its own onSessionEnd retry — leaking session-scoped
+    // cleanup. Now cycleSession only latches the flag on success, so
+    // dispose attempts the hook again. Here it fails again (same
+    // mock), which dispose's catch block logs and tolerates.
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
     await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test("#1742: dispose retries onSessionEnd after a failed cycleSession (loop-3 round 9)", async () => {
+    // Loop-3 round 9 regression: lifecycleSessionEnded used to be
+    // latched BEFORE the cycleSession onSessionEnd await, so a hook
+    // throw permanently suppressed the flag and dispose() skipped
+    // its own onSessionEnd retry. After the host fixed whatever
+    // caused the throw, no path was left to clean up session state.
+    // Now the flag only latches on success, so dispose can retry
+    // and complete cleanup once the underlying issue is resolved.
+    // let: mutable counter — fail first, succeed on retry
+    let callCount = 0;
+    const onSessionEnd = mock(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("cleanup blew up first time");
+      }
+      // Second call (from dispose) succeeds.
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "recoverable", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // First cycleSession fails, runtime is poisoned.
+    await expect(runtime.cycleSession?.()).rejects.toThrow(/cycleSession failed/i);
+    expect(callCount).toBe(1);
+
+    // dispose retries onSessionEnd, this time succeeds.
+    await runtime.dispose();
+    expect(callCount).toBe(2);
   });
 
   test("#1742: iterable created before dispose is rejected when iterated after dispose completes", async () => {

@@ -1602,27 +1602,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             runningEpoch = undefined;
           }
           if (lifecycleSessionStarted && !lifecycleSessionEnded) {
-            // #1742 round 10: flip ended BEFORE the await so a second
-            // entrant (if the mutex check above were ever bypassed)
-            // can't double-fire the hook.
-            lifecycleSessionEnded = true;
+            // #1742 loop-3 round 9: only flip `lifecycleSessionEnded`
+            // AFTER the hook succeeds. Previously this happened
+            // BEFORE the await (round 10's "no double-fire"
+            // protection), but the mutex (lifecycleInFlight) above
+            // already serializes overlapping cycleSession/dispose
+            // calls, so the early flip wasn't actually needed for
+            // double-fire safety. The early flip DID cause a real
+            // bug: a throwing onSessionEnd left the flag latched as
+            // "ended", so a later dispose() would skip its own
+            // onSessionEnd retry — permanently leaking session-
+            // scoped middleware cleanup (token budgets, hook
+            // registry drain, persistent flush, etc.). By only
+            // latching on success, dispose() can re-attempt cleanup
+            // after the host SIGKILLs whatever caused the throw.
+            //
             // #1742 loop-2 round 9: FAIL CLOSED on onSessionEnd
-            // failure. Middleware cleanup (token budgets, hook
-            // registry drain, persistent-state flush, etc.) may run
-            // ONLY in the awaited body of onSessionEnd. Swallowing
-            // the error and continuing into governance reset +
-            // sessionId rotation lets stale middleware state bleed
-            // into the next conversation while reporting success.
-            // Instead, poison the runtime and re-throw — the host
-            // (TUI resetConversation()) catches this and surfaces
-            // RESET_FAILED to the user. Recovery requires runtime
-            // recreate.
+            // failure. Poison the runtime and re-throw — the host
+            // catches this and surfaces RESET_FAILED. Recovery
+            // requires dispose-and-recreate.
             try {
               await runSessionHooks(
                 allMiddleware,
                 "onSessionEnd",
                 activeSessionCtx ?? lifecycleSessionCtx,
               );
+              lifecycleSessionEnded = true;
             } catch (sessionEndError: unknown) {
               poisoned = true;
               console.warn(
