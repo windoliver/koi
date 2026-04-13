@@ -346,7 +346,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // onSessionStart on the new session or run pre-clear input against
     // freshly cleared state. Throw so the consumer gets a clear failure
     // instead of garbled cross-session behavior.
-    if (expectedEpoch !== sessionEpoch) {
+    //
+    // #1742 loop-2 round 7: ALSO refuse if the runtime has been disposed
+    // OR a teardown is currently in flight. Without this, an iterable
+    // created before dispose()/cycleSession() could slip in between the
+    // dispose() entry and the sessionEpoch bump, then execute against
+    // half-torn-down session/adapter state.
+    if (disposed || lifecycleInFlight !== undefined || expectedEpoch !== sessionEpoch) {
       // #1742 round 13: only clear `running` if THIS stale iterable
       // still owns the latch. cycleSession's else-branch may have
       // already cleared the latch, OR a fresh run B may have taken it
@@ -357,9 +363,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         running = false;
         runningEpoch = undefined;
       }
+      const reason = disposed
+        ? "Runtime has been disposed."
+        : lifecycleInFlight !== undefined
+          ? "Runtime teardown (cycleSession/dispose) is in flight."
+          : "Run was discarded by cycleSession before iteration began.";
       throw KoiRuntimeError.from(
         "VALIDATION",
-        "Run was discarded by cycleSession before iteration began. Recreate it on the new session.",
+        `${reason} Recreate the run after the lifecycle settles or on a new runtime.`,
       );
     }
     // #1742: initialize the settle promise here, NOT in run(). The
@@ -1461,6 +1472,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         await lifecycleInFlight;
         return;
       }
+      // #1742 loop-2 round 7: bump sessionEpoch SYNCHRONOUSLY, before
+      // we yield to any await below. This invalidates every iterable
+      // created before this point — including any whose first .next()
+      // is racing with the IIFE entry. Without this bump, a stale
+      // iterable could slip past the streamEvents disposed/in-flight
+      // check during the brief window the IIFE schedules and pass the
+      // epoch check (which would otherwise still match), then attach
+      // to a half-torn-down session.
+      sessionEpoch += 1;
       lifecycleInFlight = (async (): Promise<void> => {
         try {
           // #1742: only wait when a run has actually entered streamEvents
@@ -1532,10 +1552,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // the host's `permMw.clearSessionApprovals(runtime.sessionId)` —
           // automatically picks up the new ID after this point.
           rotateFactorySessionId();
-          // #1742 round 10: bump epoch so any iterable created BEFORE
-          // this point is rejected on its first iteration instead of
-          // attaching to the freshly-armed session.
-          sessionEpoch += 1;
+          // #1742 loop-2 round 7: sessionEpoch was already bumped at
+          // the synchronous IIFE entry above so stale iterables get
+          // rejected as early as possible. No second bump needed here.
           lifecycleSessionCtx = buildLifecycleSessionCtx();
           // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
           // with a fresh sessionCtx (its first turn's runId, like the original
@@ -1554,6 +1573,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     dispose: async (): Promise<void> => {
       if (disposed) return;
       disposed = true;
+      // #1742 loop-2 round 7: bump sessionEpoch synchronously here too.
+      // The streamEvents `disposed` check already covers iterables that
+      // first iterate AFTER `disposed = true` is visible, but bumping
+      // the epoch belt-and-braces invalidates them via the same code
+      // path as cycleSession and matches the "any pre-existing iterable
+      // is now stale" invariant.
+      sessionEpoch += 1;
       // #1742 round 10: if a cycleSession or earlier dispose is still
       // in flight, wait for it to finish before starting our own
       // teardown. Otherwise the two paths could both pass the

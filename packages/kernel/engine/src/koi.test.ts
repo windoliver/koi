@@ -810,6 +810,79 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   });
 
+  test("#1742: iterable created before cycleSession is rejected even while teardown is mid-flight (epoch + in-flight guards)", async () => {
+    // Loop-2 round 7 regression: even though the prior round bumped
+    // sessionEpoch, the bump used to happen LATE in cycleSession's IIFE
+    // (after onSessionEnd, governance reset, etc). A stale iterable
+    // racing its first .next() against cycleSession's await window
+    // could pass the (still-stale) epoch check and attach to a
+    // half-torn-down session. Fixed by bumping sessionEpoch
+    // synchronously at IIFE entry AND adding a lifecycleInFlight guard
+    // in streamEvents.
+    let releaseSessionEnd: (() => void) | undefined;
+    const sessionEndPromise = new Promise<void>((resolve) => {
+      releaseSessionEnd = resolve;
+    });
+    const onSessionEnd = mock(() => sessionEndPromise);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "slow-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create the stale iterable BEFORE cycleSession.
+    const stale = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Kick off cycleSession; it suspends in onSessionEnd.
+    const cyclePromise = runtime.cycleSession?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // Now iterate the stale iterable WHILE cycleSession is still in
+    // flight. It must throw — not silently attach to the half-torn-
+    // down session.
+    await expect(stale.next()).rejects.toThrow(
+      /(in flight|discarded by cycleSession|Runtime has been disposed)/i,
+    );
+
+    releaseSessionEnd?.();
+    await cyclePromise;
+
+    // After cycleSession resolves, fresh run() works normally.
+    await collectEvents(runtime.run({ kind: "text", text: "after" }));
+    await runtime.dispose();
+  }, 8_000);
+
+  test("#1742: iterable created before dispose is rejected when iterated after dispose completes", async () => {
+    // Loop-2 round 7 regression: dispose used to mark `disposed = true`
+    // but never invalidated already-created iterables. A caller that
+    // did `const it = runtime.run(...); await runtime.dispose();
+    // await it.next();` would execute against a runtime whose adapter
+    // and session hooks had already been torn down — undefined
+    // behavior. Now streamEvents() refuses on first iteration if
+    // `disposed === true`, and dispose() also bumps sessionEpoch for
+    // belt-and-braces invalidation.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+    // Open a session so dispose's lifecycle path actually runs.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create the iterable BEFORE dispose. Don't iterate it.
+    const stale = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Dispose the runtime. (The abandoned-iterable skip-settle path
+    // releases the running latch.)
+    await runtime.dispose();
+
+    // Iterating the stale iterable after dispose must throw, not run
+    // against the torn-down adapter.
+    await expect(stale.next()).rejects.toThrow(/disposed|discarded|in flight/i);
+  }, 8_000);
+
   test("#1742: overlapping cycleSession() calls fire onSessionEnd exactly once (lifecycle mutex)", async () => {
     // Round 10 regression: two concurrent cycleSession() calls used to
     // both pass the !lifecycleSessionEnded guard and double-fire the
