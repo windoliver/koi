@@ -1583,10 +1583,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             // mid-await on a wedged tool, .return() is queued and the
             // existing timeout still bounds the wait.
             try {
-              void currentGenerator?.return?.(undefined);
+              // #1742 loop-3 round 10: attach a no-op rejection
+              // handler so a generator cleanup throw doesn't escape
+              // as an unhandled promise rejection. The await on
+              // currentRunSettled below is the source of truth for
+              // whether the unwind succeeded or timed out.
+              const returnPromise = currentGenerator?.return?.(undefined);
+              if (returnPromise !== undefined) {
+                returnPromise.catch(() => {
+                  // Cleanup rejection swallowed — settle race below
+                  // is authoritative.
+                });
+              }
             } catch {
-              // .return() rejects are non-fatal — the await below
-              // is the source of truth for settle.
+              // Synchronous throw from accessing .return — also
+              // non-fatal.
             }
             const result = await awaitSettleOrTimeout();
             if (result === "timeout") {
@@ -1809,10 +1820,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // #1742 loop-3 round 1: same fast-path as cycleSession —
           // signal the active generator to unwind so abandoned-after-
           // iteration callers don't pay the 5s timeout.
+          // Loop-3 round 10: attach a no-op rejection handler so a
+          // generator cleanup throw doesn't escape as an unhandled
+          // promise rejection during teardown.
           try {
-            void currentGenerator?.return?.(undefined);
+            const returnPromise = currentGenerator?.return?.(undefined);
+            if (returnPromise !== undefined) {
+              returnPromise.catch(() => {
+                // Cleanup rejection swallowed — settle race below
+                // is authoritative.
+              });
+            }
           } catch {
-            // .return() rejects are non-fatal.
+            // Synchronous throw from accessing .return — non-fatal.
           }
           const result = await awaitSettleOrTimeout();
           if (result === "timeout") {

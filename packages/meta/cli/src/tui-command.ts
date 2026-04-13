@@ -280,6 +280,16 @@ export async function drainEngineStream(
         }
       }
       batcher.enqueue(event);
+      // #1742 loop-3 round 10: the batcher may have been disposed
+      // between the check above and this enqueue (resetConversation
+      // runs synchronously). enqueue is a no-op on a disposed
+      // batcher, so this event is already lost — finalize and
+      // return so a `done` lost in this race window doesn't leave
+      // the UI stuck "processing".
+      if (batcher.isDisposed) {
+        finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+        return;
+      }
       // Yield to the event loop at most once per frame (~16ms) during any
       // consumer-visible streaming event so OpenTUI can paint progressively.
       //
@@ -303,7 +313,18 @@ export async function drainEngineStream(
         }
       }
     }
-    if (!batcher.isDisposed) batcher.flushSync();
+    // #1742 loop-3 round 10: cover the race where the batcher was
+    // disposed AFTER the per-iteration check but BEFORE we got a
+    // chance to enqueue the terminal event (or where the stream
+    // ended normally on the same tick disposal happened). Without
+    // this final check, the stream's terminal `done` is silently
+    // dropped and finalizeAbandonedStream is never called — the
+    // UI can stay stuck in "processing".
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      return;
+    }
+    batcher.flushSync();
   } catch (e: unknown) {
     // #1742: the batcher may have been disposed by resetConversation() while
     // the stream was still producing. Finalize the active turn before
