@@ -1333,37 +1333,27 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         );
       }
 
-      // 1. Reset Bash tracked cwd so the new session starts from workspaceRoot.
-      bashHandle.resetCwd();
-
-      // 1b. Clear in-memory memory backend so prior-session memories
-      //     don't leak into the new session via memory_recall/memory_search.
-      memoryBackend.clear();
-
-      // 2. Abort prior-session background subprocesses (SIGTERM→SIGKILL) and
-      //    rotate the controller so new background tasks use a fresh signal.
-      //    Wait for the SIGKILL escalation window so old jobs can't mutate
-      //    the workspace after reset completes (same pattern as shutdown).
+      // 1. Signal-only step: abort prior-session background subprocesses
+      //    (SIGTERM→SIGKILL). This ONLY raises the abort signal — it
+      //    does NOT rotate the controller or mutate any shared state
+      //    yet, so the still-running tool sees a clean cancellation
+      //    request without observing fresh-session state. Wait for the
+      //    SIGKILL escalation window so old jobs can't mutate the
+      //    workspace after reset completes (same pattern as shutdown).
       const hadLiveProcesses = liveSubprocessCount > 0;
       bgController.abort();
-      bgController = new AbortController();
       if (hadLiveProcesses) {
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
 
-      // 3. Cycle middleware session lifecycle FIRST. This awaits the
-      //    in-flight run's settle (bounded by ~5s in the engine). On
-      //    success the prior run is fully unwound and we know it can no
-      //    longer write into the cleared state we're about to rotate
-      //    next. On settle timeout cycleSession throws TIMEOUT — we
-      //    propagate so the host can surface a "restart required"
-      //    error and recreate the runtime instead of mutating shared
-      //    state underneath a wedged in-flight tool. (#1742)
-      //
-      //    Order matters: previously approvals/board were cleared
-      //    BEFORE this point, which meant late callbacks from a
-      //    non-cooperative run could repopulate the freshly-cleared
-      //    approval cache or steer task ops into the new board.
+      // 2. Cycle middleware session lifecycle. This awaits the in-flight
+      //    run's settle (bounded by ~5s in the engine). On success the
+      //    prior run is fully unwound and we know it can no longer
+      //    write into the shared state we're about to clear/rotate
+      //    below. On settle timeout cycleSession throws TIMEOUT — we
+      //    propagate so the caller (resetConversation) can surface a
+      //    "restart required" error and abandon the reset WITHOUT
+      //    having mutated any shared session state. (#1742 round 12)
       //
       //    Capture the OLD sessionId before the cycle so we can clear
       //    the prior session's permission state. cycleSession() rotates
@@ -1374,20 +1364,38 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       const priorSessionId = runtime.sessionId;
       await runtime.cycleSession?.();
 
-      // 4. Clear the OLD session's approval state (always-allow, caches,
+      // ─── EVERYTHING BELOW THIS POINT IS POST-SETTLE ────────────────
+      // From here on the prior run is guaranteed dead (cycleSession
+      // failed closed if it wasn't). Mutating shared session state is
+      // safe because no late callback can observe it.
+
+      // 3. Reset Bash tracked cwd so the new session starts from workspaceRoot.
+      bashHandle.resetCwd();
+
+      // 4. Clear in-memory memory backend so prior-session memories
+      //    don't leak into the new session via memory_recall/memory_search.
+      memoryBackend.clear();
+
+      // 5. Rotate the background-process controller so new background
+      //    tasks use a fresh signal. The OLD controller already had
+      //    abort() called above; this just swaps in the new one for
+      //    future task launches.
+      bgController = new AbortController();
+
+      // 6. Clear the OLD session's approval state (always-allow, caches,
       //    trackers). Safe to do now — no run is in flight, and the
       //    map entry for `priorSessionId` is the one we want gone.
       //    The new session has nothing in the map yet.
       permMw.clearSessionApprovals(priorSessionId);
 
-      // 5. Rotate task board — AWAITED so new-session submits can't hit the old board.
+      // 7. Rotate task board — AWAITED so new-session submits can't hit the old board.
       const newBoard = await createManagedTaskBoard({
         store: createMemoryTaskBoardStore(),
         resultsDir: TASK_RESULTS_DIR,
       });
       boardRef.current = newBoard;
 
-      // 6. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      // 8. Clear trajectory store — AWAITED so new-session steps can't be pruned.
       //
       // Skill descriptor listing and system prompt skill snapshot are still
       // static for the process lifetime: they were captured before createKoi
