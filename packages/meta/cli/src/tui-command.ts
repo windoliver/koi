@@ -197,6 +197,40 @@ async function loadSessionList(
  *
  * Exported for testing. Not part of the public @koi/tui API.
  */
+/**
+ * #1742 loop-3 round 8: dispatch a synthetic terminal `done` event
+ * directly to the store when the batcher has been disposed mid-stream.
+ *
+ * Bypasses the dead batcher (which would otherwise drop the event)
+ * by routing through `dispatchBatch` shape — `engine_event` action.
+ * The reducer closes any active assistant turn and clears the
+ * "processing" status. Safe in both reset paths: in the success
+ * path the store was already cleared so this is a no-op; in the
+ * failed-reset path it leaves the preserved transcript with a
+ * coherent terminal state instead of stuck running.
+ */
+function finalizeAbandonedStream(
+  store: TuiStore,
+  partialInputTokens: number,
+  partialOutputTokens: number,
+): void {
+  const syntheticDone: EngineEvent = {
+    kind: "done",
+    output: {
+      stopReason: "interrupted",
+      content: [],
+      metrics: {
+        totalTokens: partialInputTokens + partialOutputTokens,
+        inputTokens: partialInputTokens,
+        outputTokens: partialOutputTokens,
+        turns: 0,
+        durationMs: 0,
+      },
+    },
+  };
+  store.dispatch({ kind: "engine_event", event: syntheticDone });
+}
+
 export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
@@ -223,7 +257,19 @@ export async function drainEngineStream(
       // feeding events into a dead sink — they would silently vanish and
       // leave the UI with a half-rendered or missing reply. The drain exits
       // cleanly; the caller's finally block handles connection-status reset.
-      if (batcher.isDisposed) return;
+      //
+      // #1742 loop-3 round 8: also dispatch a synthetic terminal `done`
+      // event directly to the store BEFORE returning, so the reducer
+      // closes any active assistant turn and clears running tool state.
+      // Without this, a failed `/clear` (history preserved) leaves the
+      // UI stuck in a "processing" state with no way to recover. In
+      // the success path the store has already been cleared by
+      // resetConversation's success branch, so the reducer's
+      // engine_event handler safely no-ops on an empty active turn.
+      if (batcher.isDisposed) {
+        finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+        return;
+      }
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -260,9 +306,13 @@ export async function drainEngineStream(
     if (!batcher.isDisposed) batcher.flushSync();
   } catch (e: unknown) {
     // #1742: the batcher may have been disposed by resetConversation() while
-    // the stream was still producing. In that case the store has already been
-    // cleared/reset, so there is nothing to flush or signal — just return.
-    if (batcher.isDisposed) return;
+    // the stream was still producing. Finalize the active turn before
+    // returning so a failed-reset (history preserved) path still ends
+    // with the reducer in idle/error state instead of stuck "processing".
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      return;
+    }
     batcher.flushSync();
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
