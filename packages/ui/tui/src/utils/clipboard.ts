@@ -19,12 +19,16 @@ export const MAX_CLIPBOARD_BYTES = 100_000;
 /**
  * Copy text to the system clipboard via OSC 52 terminal escape sequence.
  *
- * Returns `true` if the sequence was written, `false` if stdout is not a TTY.
+ * Returns `true` if the sequence was written, `false` if stdout is not a TTY
+ * or the text exceeds the safe OSC 52 payload limit.
  */
 export function copyToClipboard(text: string): boolean {
   if (!process.stdout.isTTY) return false;
 
-  const base64 = Buffer.from(text).toString("base64");
+  const bytes = Buffer.from(text);
+  if (bytes.byteLength > MAX_CLIPBOARD_BYTES) return false;
+
+  const base64 = bytes.toString("base64");
   process.stdout.write(`\x1b]52;c;${base64}\x07`);
   return true;
 }
