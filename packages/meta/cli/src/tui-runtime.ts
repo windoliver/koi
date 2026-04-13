@@ -1353,10 +1353,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     createDecisionLedger: () =>
       createDecisionLedger({
         // The TUI stores all trajectory data under a fixed doc ID
-        // ("koi-tui-session"), not per-session. Wrap the store so the
-        // ledger's getDocument(sessionId) reads from the correct key.
+        // ("koi-tui-session"), not per-session. The wrapper validates the
+        // requested docId against the live runtime sessionId — a mismatch
+        // indicates a stale or cross-session read (e.g. a delayed
+        // refresh fired after `session:new`/resume) and must NOT silently
+        // serve the global document. Returns an empty array in that case
+        // so the caller's set_trajectory_data dispatch produces an empty
+        // (cleared) lane rather than leaking the prior session's steps.
+        // (#1764)
         trajectoryStore: {
-          getDocument: () => trajectoryStore.getDocument(TUI_DOC_ID),
+          getDocument: async (docId: string): Promise<readonly RichTrajectoryStep[]> => {
+            if (docId !== (runtime.sessionId as string)) {
+              return [];
+            }
+            return trajectoryStore.getDocument(TUI_DOC_ID);
+          },
         },
       }),
     getTrajectorySteps: async () => {
