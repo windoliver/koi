@@ -830,6 +830,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // history. Await the drain first, then truncate.
     const inflightRun = activeRunPromise;
     const shouldTruncate = options.truncatePersistedTranscript;
+    // A `/clear` / `/new` issued during the startup resume window
+    // (before createTuiRuntime has resolved) still has to honor
+    // the privacy boundary. Two concrete holes need closing:
+    //   1. `resumedMessagesToPrime` is pushed into the runtime's
+    //      in-memory transcript inside the `runtimeReady.then(...)`
+    //      callback. Without clearing it here, a pre-ready clear
+    //      would drop the UI but still prime the model with the
+    //      pre-clear history on the first post-ready turn.
+    //   2. The on-disk JSONL truncate was previously gated behind
+    //      `runtimeHandle !== null`, so a pre-ready clear left the
+    //      durable transcript intact. A follow-up `--resume <id>`
+    //      from the hint would resurrect the supposedly-cleared
+    //      history.
+    // Clearing the prime array is synchronous and safe regardless
+    // of runtime readiness. The truncate is deferred into the
+    // barrier either way — see the branches below.
+    resumedMessagesToPrime = [];
     // Always reset runtime session state — even in the idle case (no active stream).
     // resetSessionState is async (awaits task board + trajectory prune).
     // New submits block on resetBarrier before proceeding.
@@ -886,6 +903,52 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // promise even if an unexpected reset step throws, so
           // awaiters in onSubmit / onSessionSelect / rewind don't
           // turn into unhandled rejections.
+          clearPersistFailed = true;
+          store.dispatch({
+            kind: "add_error",
+            code: "SESSION_RESET_FAILED",
+            message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
+          });
+        }
+      })();
+    } else {
+      // Pre-runtime-ready reset path. `resetConversation` was
+      // called before `createTuiRuntime` resolved, so we can't do
+      // the runtime-scoped reset work yet. Schedule it behind
+      // `runtimeReady`: the barrier waits for assembly to finish,
+      // then performs the in-memory splice + (optional) durable
+      // truncate. Future submits, shutdown, and session-pick
+      // actions all `await resetBarrier`, so they correctly block
+      // on the deferred work even though the call returned
+      // synchronously. Without this branch, a `/clear` issued
+      // during the startup resume window would silently leave
+      // both `resumedMessagesToPrime` (cleared above) and the
+      // durable JSONL untouched — a real privacy/context hole.
+      resetBarrier = (async () => {
+        try {
+          // Wait for runtime assembly. After this resolves,
+          // `runtimeHandle` is guaranteed non-null and the
+          // runtime-ready `.then()` callback has already seen an
+          // empty `resumedMessagesToPrime`, so no stale history
+          // will have been pushed into `handle.transcript`.
+          await runtimeReady.catch(() => {
+            /* runtime init errors are reported upstream via add_error */
+          });
+          if (runtimeHandle !== null) {
+            runtimeHandle.transcript.splice(0);
+          }
+          if (shouldTruncate) {
+            const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+            if (!truncateResult.ok) {
+              clearPersistFailed = true;
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_CLEAR_PERSIST_FAILED",
+                message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+              });
+            }
+          }
+        } catch (err: unknown) {
           clearPersistFailed = true;
           store.dispatch({
             kind: "add_error",
