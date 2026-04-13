@@ -17,6 +17,29 @@
 
 import type { SessionId } from "@koi/core";
 
+/**
+ * Shell-safe characters in bash/zsh (plus the common session-id
+ * alphabet: hyphen, underscore, colon, period, slash, `%`, digits,
+ * letters). Anything outside this set must be quoted before being
+ * embedded in a command the user might copy-paste.
+ */
+const SHELL_SAFE_SESSION_ID = /^[\w.:/%@+=,-]+$/;
+
+/**
+ * Wrap a session id in POSIX single quotes, escaping any embedded
+ * single quotes via the canonical `'"'"'` dance so the result is a
+ * single shell token no matter what characters the id contains.
+ * Unsafe characters include `$`, backticks, whitespace, newlines,
+ * `;`, `&`, `|`, `<`, `>`, `(`, `)`, `*`, `?`, `[`, `]`, `{`, `}`,
+ * `!`, `~`, `#`, backslash, and quotes — any of which could execute
+ * extra shell syntax if the user copy-pastes the hint verbatim.
+ */
+function shellQuoteSessionId(id: string): string {
+  if (SHELL_SAFE_SESSION_ID.test(id)) return id;
+  return `'${id.replaceAll("'", `'"'"'`)}'`;
+}
+
 export function formatResumeHint(id: SessionId): string {
-  return `\nResume this session with:\n  koi tui --resume ${id}\n`;
+  const quoted = shellQuoteSessionId(String(id));
+  return `\nResume this session with:\n  koi tui --resume ${quoted}\n`;
 }

@@ -25,4 +25,33 @@ describe("formatResumeHint", () => {
     const id = sessionId("x");
     expect(formatResumeHint(id).endsWith("\n")).toBe(true);
   });
+
+  test("leaves plain UUIDs unquoted (shell-safe)", () => {
+    const id = sessionId("cf61a663-0c88-4a37-8590-700aa7f6f5d0");
+    expect(formatResumeHint(id)).toContain(
+      "koi tui --resume cf61a663-0c88-4a37-8590-700aa7f6f5d0\n",
+    );
+  });
+
+  test("shell-quotes ids containing metacharacters", () => {
+    // Session picker can load user-controlled session files; their
+    // names flow into the hint verbatim. Anything outside the
+    // whitelist must become one single-quoted shell token so a
+    // copy-paste cannot execute extra syntax.
+    const id = sessionId("foo; rm -rf /");
+    const hint = formatResumeHint(id);
+    expect(hint).toContain("koi tui --resume 'foo; rm -rf /'\n");
+  });
+
+  test("escapes embedded single quotes via the canonical '\"'\"' dance", () => {
+    const id = sessionId("a'b");
+    const hint = formatResumeHint(id);
+    expect(hint).toContain("koi tui --resume 'a'\"'\"'b'\n");
+  });
+
+  test("shell-quotes whitespace and backtick-bearing ids", () => {
+    const id = sessionId("has space `pwd`");
+    const hint = formatResumeHint(id);
+    expect(hint).toContain("koi tui --resume 'has space `pwd`'\n");
+  });
 });

@@ -711,16 +711,41 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — replaced on each reset
   let resetBarrier: Promise<void> = Promise.resolve();
 
+  // Latches to `true` when `jsonlTranscript.truncate()` fails during
+  // a clear/new reset. Shutdown checks this flag (not resetBarrier
+  // rejection) to suppress the post-quit resume hint — advertising a
+  // session as resumable when its durable clear didn't land would
+  // silently re-expose the pre-clear history on the next
+  // `koi tui --resume`. Using a flag instead of a rejected promise
+  // lets `onSubmit` and other `await resetBarrier` sites proceed
+  // cleanly after a failed clear; the visible error is still
+  // surfaced via `store.dispatch({ code: "SESSION_CLEAR_PERSIST_FAILED" })`.
+  // let: justified — set once on first failed truncate, never unset.
+  let clearPersistFailed = false;
+
   // Tracks whether the user has issued `agent:clear` or `session:new`
   // since the runtime was assembled. The checkpoint package keeps its
   // snapshot chain keyed on `runtime.sessionId` and has no public API
-  // for pruning the chain, so once a chain exists `/rewind` can still
+  // for pruning the chain, so once a chain exists `/rewind` could
   // walk back into pre-clear snapshots and restore workspace state
   // that predates the clear boundary — a privacy/context violation.
-  // Refusing `/rewind` once the flag is set is the minimal correct
-  // fence until the checkpoint API grows a `clear(sessionId)` method.
+  // Rather than ban `/rewind` outright after the first clear (which
+  // was a rollback-safety regression for any later bad edit), we
+  // track `postClearTurnCount` below as a bounded fence: rewind is
+  // allowed only within turns taken AFTER the most recent clear.
   // let: justified — set once on first clear, never unset
   let hasClearedSinceAssembly = false;
+
+  // Counts user turns taken AFTER the most recent `agent:clear` /
+  // `session:new` boundary. Reset to 0 each time the flag flips and
+  // incremented in `onSubmit` after each turn settles. `/rewind n`
+  // rejects when `n > postClearTurnCount`, so a rewind can never
+  // cross the clear boundary while still letting users roll back
+  // mistakes made in the new session. In the non-clear case the
+  // counter is effectively unused because `hasClearedSinceAssembly`
+  // stays false and the guard skips the check entirely.
+  // let: justified — incremented per turn, reset on each clear.
+  let postClearTurnCount = 0;
 
   // Tracks whether the user has loaded another session via the
   // in-TUI picker. The runtime's `sessionId` override is baked in
@@ -795,57 +820,63 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       const idleController = new AbortController();
       idleController.abort();
       resetBarrier = (async () => {
-        // Drain any in-flight run to its settled state so late
-        // middleware-finally appends from the aborted turn cannot
-        // land after the truncate below. drainEngineStream catches
-        // AbortError and returns normally, so this await never
-        // rejects; still guard with catch for any other teardown
-        // exception so the reset pipeline cannot wedge.
-        if (inflightRun !== null) {
-          try {
-            await inflightRun;
-          } catch {
-            /* already reported upstream via add_error */
+        try {
+          // Drain any in-flight run to its settled state so late
+          // middleware-finally appends from the aborted turn cannot
+          // land after the truncate below. drainEngineStream catches
+          // AbortError and returns normally, so this await never
+          // rejects; still guard with catch for any other teardown
+          // exception so the reset pipeline cannot wedge.
+          if (inflightRun !== null) {
+            try {
+              await inflightRun;
+            } catch {
+              /* already reported upstream via add_error */
+            }
           }
-        }
-        await runtimeHandle?.resetSessionState(idleController.signal);
-        runtimeHandle?.transcript.splice(0);
-        if (shouldTruncate) {
-          // Truncate the on-disk JSONL so a subsequent `--resume` of
-          // this session id cannot resurrect the pre-clear conversation.
-          // Without this, `agent:clear` / `session:new` only wipe
-          // in-memory state — the durable transcript still holds the
-          // old turns and they reappear on the next resume, silently
-          // breaking any user who treats clear as a privacy or context
-          // boundary.
-          //
-          // On failure: surface to the store AND throw so the reset
-          // barrier rejects. Shutdown's `await resetBarrier` catches
-          // the rejection and suppresses the resume hint — without
-          // this, shutdown would still print
-          // `koi start --resume <id>` for a file whose durable clear
-          // never landed, silently advertising the pre-clear history
-          // as resumable.
-          const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
-          if (!truncateResult.ok) {
-            store.dispatch({
-              kind: "add_error",
-              code: "SESSION_CLEAR_PERSIST_FAILED",
-              message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
-            });
-            throw new Error(
-              `durable clear failed for session ${String(tuiSessionId)}: ${truncateResult.error.message}`,
-            );
+          await runtimeHandle?.resetSessionState(idleController.signal);
+          runtimeHandle?.transcript.splice(0);
+          if (shouldTruncate) {
+            // Truncate the on-disk JSONL so a subsequent `--resume`
+            // of this session id cannot resurrect the pre-clear
+            // conversation. Without this, `agent:clear` /
+            // `session:new` only wipe in-memory state — the durable
+            // transcript still holds the old turns and they reappear
+            // on the next resume, silently breaking any user who
+            // treats clear as a privacy or context boundary.
+            //
+            // On failure: surface to the store AND set the
+            // `clearPersistFailed` flag so shutdown suppresses the
+            // resume hint. We do NOT throw — an earlier version of
+            // this code made the reset barrier reject to signal
+            // failure, but `onSubmit` also awaits the barrier, and
+            // a rejection there turned every later submit into an
+            // unhandled-rejection crash. The flag-based approach
+            // keeps the barrier a normal settle-success promise so
+            // submits after a failed clear still reach the runtime.
+            const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+            if (!truncateResult.ok) {
+              clearPersistFailed = true;
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_CLEAR_PERSIST_FAILED",
+                message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+              });
+            }
           }
+        } catch (err: unknown) {
+          // Belt-and-suspenders: keep the barrier a settle-success
+          // promise even if an unexpected reset step throws, so
+          // awaiters in onSubmit / onSessionSelect / rewind don't
+          // turn into unhandled rejections.
+          clearPersistFailed = true;
+          store.dispatch({
+            kind: "add_error",
+            code: "SESSION_RESET_FAILED",
+            message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
+          });
         }
       })();
-      // Attach a catch so the rejected barrier does not crash
-      // the event loop as an unhandled rejection. The rejection is
-      // still observable to `shutdown()` via its own await, because
-      // that await sees the original chain before this swallow.
-      resetBarrier.catch(() => {
-        /* handled by shutdown */
-      });
     }
   };
 
@@ -898,12 +929,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // history. The barrier is bounded by `SHUTDOWN_HARD_EXIT_MS`
       // via the failsafe timer above, so a wedged reset cannot
       // block exit indefinitely.
-      // let: justified — flipped in the catch path below so the
-      // hint is suppressed when the durable clear failed.
-      let clearPersistFailed = false;
       try {
         await resetBarrier;
       } catch {
+        // Defensive: resetConversation now only resolves its
+        // barrier, but if a future change accidentally reintroduces
+        // a rejection path we still want shutdown to suppress the
+        // resume hint rather than propagate an unhandled rejection.
         clearPersistFailed = true;
       }
       // Print the resume hint here — after the TUI renderer has
@@ -1086,6 +1118,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             break;
           }
           hasClearedSinceAssembly = true;
+          postClearTurnCount = 0;
           resetConversation({ truncatePersistedTranscript: true });
           break;
         case "agent:rewind":
@@ -1100,25 +1133,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 kind: "add_error",
                 code: "REWIND_RUNTIME_NOT_READY",
                 message: "Runtime is still initializing — try again in a moment.",
-              });
-              return;
-            }
-            // Refuse rewind once `agent:clear` / `session:new` has
-            // rotated the session. The checkpoint chain is still
-            // physically reachable via runtime.sessionId, so a rewind
-            // would restore workspace state from before the clear —
-            // which the user explicitly asked us to drop. This is the
-            // fence the checkpoint package cannot currently enforce
-            // itself; see `hasClearedSinceAssembly` above.
-            if (hasClearedSinceAssembly) {
-              store.dispatch({
-                kind: "add_error",
-                code: "REWIND_ACROSS_CLEAR_BOUNDARY",
-                message:
-                  "Rewind is disabled after /clear or /new — the rewind chain " +
-                  "would walk back across the cleared boundary and restore " +
-                  "file state the clear was meant to drop. Start a fresh " +
-                  "koi tui session to rewind earlier work.",
               });
               return;
             }
@@ -1157,6 +1171,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 return;
               }
               n = parsed;
+            }
+
+            // Bound rewind to turns taken AFTER the most recent
+            // `/clear` / `/new`. The checkpoint chain is still
+            // physically reachable via `runtime.sessionId`, so an
+            // unbounded rewind would restore workspace state from
+            // BEFORE the clear — which the user explicitly asked us
+            // to drop. Letting rewind walk back up to
+            // `postClearTurnCount` keeps the rollback-safety
+            // affordance for mistakes made in the new session while
+            // still enforcing the privacy/context boundary.
+            if (hasClearedSinceAssembly && n > postClearTurnCount) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_ACROSS_CLEAR_BOUNDARY",
+                message:
+                  `Rewind depth ${n} would cross the most recent /clear or /new ` +
+                  `boundary (${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"} ` +
+                  "since that boundary). Rewinding past it would restore file " +
+                  "state the clear was meant to drop. Rewind at most " +
+                  `${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"}, or ` +
+                  "start a fresh koi tui session to rewind earlier work.",
+              });
+              return;
             }
 
             // Use the ENGINE session ID (from @koi/engine's createKoi),
@@ -1287,6 +1325,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             break;
           }
           hasClearedSinceAssembly = true;
+          postClearTurnCount = 0;
           resetConversation({ truncatePersistedTranscript: true });
           break;
         default:
@@ -1509,6 +1548,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         await drainPromise;
+
+        // Count the turn for rewind boundary enforcement. Only
+        // increments on turns that reached `drainPromise` settle,
+        // so an aborted turn that never completed its stream does
+        // not artificially raise the post-clear rewind budget.
+        // Skipped when no clear has happened yet because the
+        // counter is only consulted in the post-clear guard.
+        if (hasClearedSinceAssembly) {
+          postClearTurnCount += 1;
+        }
 
         // Refresh trajectory data after each turn so /trajectory view is current.
         // Delay 100ms to let fire-and-forget trace-wrapper appends settle —
