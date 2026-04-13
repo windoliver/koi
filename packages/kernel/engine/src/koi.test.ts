@@ -854,6 +854,38 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 8_000);
 
+  test("#1742: cycleSession fails closed and poisons the runtime when onSessionEnd throws", async () => {
+    // Loop-2 round 9 regression: cycleSession used to swallow
+    // onSessionEnd errors and continue into governance reset / sessionId
+    // rotation / lifecycle re-arm. Middleware that performs cleanup
+    // (token budget reset, hook registry drain, persistent flush) only
+    // in awaited body code would have its cleanup skipped while
+    // cycleSession reported success — stale state bleeds into the next
+    // session. Now cycleSession poisons the runtime and re-throws so
+    // the host can surface a fatal RESET_FAILED and force a recreate.
+    const onSessionEnd = mock(() => Promise.reject(new Error("cleanup blew up")));
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "broken-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    // Open a session by running once normally.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // cycleSession must throw, not silently rotate.
+    await expect(runtime.cycleSession?.()).rejects.toThrow(/cycleSession failed.*onSessionEnd/i);
+
+    // Subsequent run() must be rejected because the runtime is poisoned.
+    expect(() => {
+      runtime.run({ kind: "text", text: "after-failed-cycle" });
+    }).toThrow(/poisoned/i);
+
+    // dispose still works (must always be safe to dispose).
+    await runtime.dispose();
+  });
+
   test("#1742: iterable created before dispose is rejected when iterated after dispose completes", async () => {
     // Loop-2 round 7 regression: dispose used to mark `disposed = true`
     // but never invalidated already-created iterables. A caller that

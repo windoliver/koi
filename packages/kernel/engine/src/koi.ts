@@ -1517,11 +1517,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (lifecycleSessionStarted && !lifecycleSessionEnded) {
             // #1742 round 10: flip ended BEFORE the await so a second
             // entrant (if the mutex check above were ever bypassed)
-            // can't double-fire the hook. Even if the hook throws, we
-            // do NOT roll the flag back — the cleanup partially
-            // happened and re-running it could destroy the
-            // freshly-re-armed session.
+            // can't double-fire the hook.
             lifecycleSessionEnded = true;
+            // #1742 loop-2 round 9: FAIL CLOSED on onSessionEnd
+            // failure. Middleware cleanup (token budgets, hook
+            // registry drain, persistent-state flush, etc.) may run
+            // ONLY in the awaited body of onSessionEnd. Swallowing
+            // the error and continuing into governance reset +
+            // sessionId rotation lets stale middleware state bleed
+            // into the next conversation while reporting success.
+            // Instead, poison the runtime and re-throw — the host
+            // (TUI resetConversation()) catches this and surfaces
+            // RESET_FAILED to the user. Recovery requires runtime
+            // recreate.
             try {
               await runSessionHooks(
                 allMiddleware,
@@ -1529,9 +1537,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 activeSessionCtx ?? lifecycleSessionCtx,
               );
             } catch (sessionEndError: unknown) {
-              console.warn("[koi] onSessionEnd failed during cycleSession", {
-                cause: sessionEndError,
-              });
+              poisoned = true;
+              console.warn(
+                "[koi] onSessionEnd failed during cycleSession — runtime poisoned, recreate required",
+                { cause: sessionEndError },
+              );
+              throw KoiRuntimeError.from(
+                "INTERNAL",
+                `cycleSession failed: middleware onSessionEnd threw (${
+                  sessionEndError instanceof Error
+                    ? sessionEndError.message
+                    : String(sessionEndError)
+                }). Runtime is poisoned; dispose and recreate.`,
+                { cause: sessionEndError },
+              );
             }
           }
           // #1742: clear per-session governance state (rolling tool-error
