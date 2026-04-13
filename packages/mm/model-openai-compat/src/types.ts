@@ -34,6 +34,22 @@ export interface ProviderCompat {
   readonly supportsStrictMode?: boolean | undefined;
   /** Whether the provider supports Anthropic-style prompt caching via cache_control. Default: false (opt-in). */
   readonly supportsPromptCaching?: boolean | undefined;
+  /**
+   * Whether the provider supports the `reasoning` request field for extended
+   * thinking (OpenRouter). When true, `buildRequestBody` includes
+   * `reasoning: { effort }` so models that support it return reasoning tokens
+   * as `reasoning_content` in the SSE stream. Default: false.
+   *
+   * OpenRouter ignores this field for models without reasoning capability,
+   * so it's safe to enable broadly for the provider.
+   */
+  readonly supportsReasoning?: boolean | undefined;
+  /**
+   * Default reasoning effort level. Only used when `supportsReasoning` is true.
+   * Maps to OpenRouter's `reasoning.effort` values: "low" | "medium" | "high".
+   * Default: "medium".
+   */
+  readonly defaultReasoningEffort?: "low" | "medium" | "high" | undefined;
 }
 
 /** Fully resolved compat with all fields set. */
@@ -47,6 +63,8 @@ export interface ResolvedCompat {
   readonly requiresThinkingAsText: boolean;
   readonly supportsStrictMode: boolean;
   readonly supportsPromptCaching: boolean;
+  readonly supportsReasoning: boolean;
+  readonly defaultReasoningEffort: "low" | "medium" | "high";
 }
 
 const _DEFAULT_COMPAT: ResolvedCompat = {
@@ -59,6 +77,8 @@ const _DEFAULT_COMPAT: ResolvedCompat = {
   requiresThinkingAsText: false,
   supportsStrictMode: true,
   supportsPromptCaching: false,
+  supportsReasoning: false,
+  defaultReasoningEffort: "medium",
 };
 
 /**
@@ -93,6 +113,8 @@ function detectCompat(baseUrl: string): ResolvedCompat {
     requiresThinkingAsText: isGroq || isDeepSeek,
     supportsStrictMode: isFullyCompatible,
     supportsPromptCaching: isOpenRouter,
+    supportsReasoning: isOpenRouter,
+    defaultReasoningEffort: "medium",
   };
 }
 
@@ -112,6 +134,8 @@ export function resolveCompat(baseUrl: string, overrides?: ProviderCompat): Reso
     requiresThinkingAsText: overrides.requiresThinkingAsText ?? detected.requiresThinkingAsText,
     supportsStrictMode: overrides.supportsStrictMode ?? detected.supportsStrictMode,
     supportsPromptCaching: overrides.supportsPromptCaching ?? detected.supportsPromptCaching,
+    supportsReasoning: overrides.supportsReasoning ?? detected.supportsReasoning,
+    defaultReasoningEffort: overrides.defaultReasoningEffort ?? detected.defaultReasoningEffort,
   };
 }
 

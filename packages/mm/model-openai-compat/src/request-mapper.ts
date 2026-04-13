@@ -425,5 +425,12 @@ export function buildRequestBody(
     body.tools = tools;
   }
 
+  // Reasoning / extended thinking — OpenRouter returns reasoning tokens as
+  // `reasoning_content` in the SSE stream when this field is present.
+  // Models without reasoning capability ignore it silently.
+  if (config.compat.supportsReasoning) {
+    body.reasoning = { effort: config.compat.defaultReasoningEffort };
+  }
+
   return body;
 }
