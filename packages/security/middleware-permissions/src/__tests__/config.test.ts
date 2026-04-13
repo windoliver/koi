@@ -56,6 +56,18 @@ describe("validatePermissionsConfig", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("accepts Number.POSITIVE_INFINITY approvalTimeoutMs (unbounded approval window, #1759)", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      approvalTimeoutMs: Number.POSITIVE_INFINITY,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.approvalTimeoutMs).toBe(Number.POSITIVE_INFINITY);
+      expect(Number.isFinite(result.value.approvalTimeoutMs)).toBe(false);
+    }
+  });
+
   // Cache config
   test("accepts cache: true", () => {
     const result = validatePermissionsConfig({
