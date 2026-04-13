@@ -622,7 +622,7 @@ describe("reduce — engine_event — tool args cap", () => {
 // ---------------------------------------------------------------------------
 
 describe("reduce — tool_execution_started (approval-timer reset)", () => {
-  test("resets startedAt on the most recent running tool block matching toolName", async () => {
+  test("resets startedAt on the running tool block with matching callId", async () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
@@ -647,7 +647,7 @@ describe("reduce — tool_execution_started (approval-timer reset)", () => {
 
     const afterApproval = reduce(afterStart, {
       kind: "tool_execution_started",
-      toolId: "Bash",
+      callId: "call-1",
     });
     const msgApproved = lastMessage(afterApproval);
     if (msgApproved.kind !== "assistant") throw new Error("expected assistant");
@@ -657,7 +657,7 @@ describe("reduce — tool_execution_started (approval-timer reset)", () => {
     expect(approvedBlock.startedAt ?? 0).toBeGreaterThan(initialStart ?? 0);
   });
 
-  test("no-op when no running tool block matches the toolName", () => {
+  test("no-op when no running tool block matches the callId", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
@@ -671,52 +671,53 @@ describe("reduce — tool_execution_started (approval-timer reset)", () => {
     );
     const afterApproval = reduce(afterStart, {
       kind: "tool_execution_started",
-      toolId: "Bash", // different tool
+      callId: "call-other", // different call
     });
-    // fs_read block is unchanged
+    // No matching block — state unchanged
     expect(afterApproval).toBe(afterStart);
   });
 
-  test("targets the most recent running block when multiple tool blocks share a toolName", () => {
+  test("callId disambiguates queued prompts for the same tool name", () => {
     const state = stateWith({
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
     });
-    // Two sequential Bash calls — only the newer one is "running"
+    // Two concurrent Bash calls — both running, only one is being approved
     const blocks: TuiAssistantBlock[] = [
       {
         kind: "tool_call",
-        callId: "call-old",
-        toolName: "Bash",
-        status: "complete",
-        startedAt: 1,
-      },
-      {
-        kind: "tool_call",
-        callId: "call-new",
+        callId: "call-a",
         toolName: "Bash",
         status: "running",
         startedAt: 1_000,
+      },
+      {
+        kind: "tool_call",
+        callId: "call-b",
+        toolName: "Bash",
+        status: "running",
+        startedAt: 2_000,
       },
     ];
     const withBoth = stateWith({
       ...state,
       messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
     });
+    // Approve call-a only
     const after = reduce(withBoth, {
       kind: "tool_execution_started",
-      toolId: "Bash",
+      callId: "call-a",
     });
     const msg = lastMessage(after);
     if (msg.kind !== "assistant") throw new Error("expected assistant");
-    const oldBlock = blockAt(msg, 0);
-    const newBlock = blockAt(msg, 1);
-    if (oldBlock.kind !== "tool_call" || newBlock.kind !== "tool_call") {
+    const blockA = blockAt(msg, 0);
+    const blockB = blockAt(msg, 1);
+    if (blockA.kind !== "tool_call" || blockB.kind !== "tool_call") {
       throw new Error("expected tool_call");
     }
-    // Completed block untouched
-    expect(oldBlock.startedAt).toBe(1);
-    // Running block reset to recent wall-clock
-    expect(newBlock.startedAt ?? 0).toBeGreaterThan(1_000);
+    // call-a reset to recent wall-clock
+    expect(blockA.startedAt ?? 0).toBeGreaterThan(1_000);
+    // call-b untouched — the other queued prompt
+    expect(blockB.startedAt).toBe(2_000);
   });
 });
 

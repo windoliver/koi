@@ -710,27 +710,18 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "tool_execution_started": {
-      // Reset startedAt on the most recent running tool-call block whose
-      // toolName matches. Dispatched by the permission bridge after a user
-      // approves a permission prompt, so the elapsed-time counter reflects
-      // actual tool execution time — not the user's read/decide time. (#1759)
+      // Reset startedAt on the tool-call block with matching callId.
+      // Dispatched by the permission bridge after a user approves a
+      // permission prompt, so the elapsed-time counter reflects actual
+      // tool execution time — not the user's read/decide time. Keyed by
+      // callId (not toolName) so queued prompts for the same tool cannot
+      // cross-reset each other. (#1759)
       const found = findLastAssistant(state.messages);
       if (found === undefined) return state;
-      // Walk blocks from the end and find the newest running tool_call
-      // matching the toolName. This is the only block that could be waiting
-      // on approval — approvals are serialized per tool call.
-      const blocks = found.msg.blocks;
-      let targetIdx = -1;
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const b = blocks[i];
-        if (b?.kind === "tool_call" && b.status === "running" && b.toolName === action.toolId) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx < 0) return state;
-      const updatedBlocks = replaceAt(blocks, targetIdx, {
-        ...(blocks[targetIdx] as ToolCallBlock),
+      const tool = findToolBlock(found.msg.blocks, action.callId);
+      if (tool === undefined || tool.block.status !== "running") return state;
+      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+        ...tool.block,
         startedAt: Date.now(),
       });
       return {

@@ -30,16 +30,19 @@ import type { PermissionPromptData, PermissionRiskLevel, TuiModal } from "../sta
 // ---------------------------------------------------------------------------
 
 /**
- * Default timeout for permission prompts (ms). `Number.POSITIVE_INFINITY`
- * disables the fail-closed deny — the user may take as long as they need
- * to respond. Aligned with @koi/middleware-permissions
- * DEFAULT_APPROVAL_TIMEOUT_MS so the TUI prompt and the engine-side approval
- * window share the same policy.
+ * Default timeout for permission prompts (ms). 30s fail-closed deny,
+ * aligned with @koi/middleware-permissions DEFAULT_APPROVAL_TIMEOUT_MS so
+ * the TUI prompt and the engine-side approval window share the same policy
+ * by default.
  *
- * Callers (tests, agent-to-agent runtimes) may pass a finite `timeoutMs`
- * to restore a fail-closed deadline.
+ * Interactive TUI wiring opts into `Number.POSITIVE_INFINITY` explicitly
+ * (see `packages/meta/cli/src/tui-command.ts`) to give users unbounded
+ * decide-time on permission prompts. Ctrl+C remains the escape hatch.
+ *
+ * The bridge still honors a finite `timeoutMs` argument — startTimer /
+ * lifetimeTimer only no-op when the caller asks for Infinity. (#1759)
  */
-export const DEFAULT_PERMISSION_TIMEOUT_MS: number = Number.POSITIVE_INFINITY;
+export const DEFAULT_PERMISSION_TIMEOUT_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,11 +52,15 @@ export const DEFAULT_PERMISSION_TIMEOUT_MS: number = Number.POSITIVE_INFINITY;
 interface PendingApproval {
   readonly requestId: string;
   /**
-   * Tool id from the ApprovalRequest — used to dispatch
-   * `tool_execution_started` to the reducer so the matching running tool
-   * block can reset its startedAt on user approval (#1759).
+   * Call-scoped identifier from `ApprovalRequest.metadata.callId` (set by
+   * the turn-runner). When present, the bridge dispatches
+   * `tool_execution_started` with this id so the reducer can reset
+   * `startedAt` on the exact running tool block instead of matching on
+   * tool name (which can collide across queued prompts). `undefined` if
+   * upstream didn't thread a callId — falls back to best-effort behavior.
+   * (#1759 round 1 review)
    */
-  readonly toolId: string;
+  readonly callId: string | undefined;
   readonly resolve: (decision: ApprovalDecision) => void;
   /**
    * UX timer — starts when prompt becomes visible (front of queue).
@@ -202,10 +209,18 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
           }, timeoutMs)
         : null;
 
+      // Pick up the call-scoped id the turn-runner threaded through
+      // `metadata.callId`. May be undefined if an older caller didn't
+      // populate it — the bridge then falls back to no-id behavior.
+      const callId =
+        request.metadata !== undefined && typeof request.metadata.callId === "string"
+          ? (request.metadata.callId as string)
+          : undefined;
+
       // UX timer starts null — only activated when the prompt reaches the front of the queue
       const entry: PendingApproval = {
         requestId,
-        toolId: request.toolId,
+        callId,
         resolve,
         timer: null,
         lifetimeTimer,
@@ -253,15 +268,16 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
     // Dispatch to store so reducer dismisses modal
     store.dispatch({ kind: "permission_response", requestId, decision });
 
-    // If the user approved, notify the reducer so the matching running tool
+    // If the user approved, notify the reducer so the exact running tool
     // block resets its startedAt — the elapsed-time counter will then reflect
-    // actual tool execution time, not the user's read/decide time. (#1759)
+    // actual tool execution time, not the user's read/decide time. The
+    // dispatch is keyed by callId when available so queued prompts for the
+    // same tool cannot cross-reset each other. (#1759)
     if (
-      decision.kind === "allow" ||
-      decision.kind === "always-allow" ||
-      decision.kind === "modify"
+      entry.callId !== undefined &&
+      (decision.kind === "allow" || decision.kind === "always-allow" || decision.kind === "modify")
     ) {
-      store.dispatch({ kind: "tool_execution_started", toolId: entry.toolId });
+      store.dispatch({ kind: "tool_execution_started", callId: entry.callId });
     }
 
     // Resolve the engine's awaited Promise

@@ -223,18 +223,24 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   // #7: per-block full-body expand (show more / truncated view)
   const isBodyExpanded = useTuiStore((s) => s.expandedBodyToolCallIds.has(props.block.callId));
 
-  // #1759: hide the elapsed-time counter while a permission prompt for this
-  // tool is open. Without this gate the spinner would show the user's
-  // read/decide time as if the tool were executing. The reducer's
-  // `tool_execution_started` handler (dispatched by the permission bridge on
-  // approval) then resets startedAt so the counter starts fresh from 0 once
-  // the prompt closes and the tool actually runs.
-  const isAwaitingApproval = useTuiStore(
-    (s) =>
-      props.block.status === "running" &&
-      s.modal?.kind === "permission-prompt" &&
-      s.modal.prompt.toolId === props.block.toolName,
-  );
+  // #1759: hide the elapsed-time counter while a permission prompt for THIS
+  // exact tool call is open. Without this gate the spinner would show the
+  // user's read/decide time as if the tool were executing. Matched on
+  // `metadata.callId` (threaded through from the turn-runner via
+  // ApprovalRequest.metadata) so queued prompts for the same tool cannot
+  // cross-hide each other. The reducer's `tool_execution_started` handler
+  // then resets startedAt so the counter starts fresh from 0 when the
+  // prompt closes and the tool actually runs.
+  const isAwaitingApproval = useTuiStore((s) => {
+    if (props.block.status !== "running") return false;
+    if (s.modal?.kind !== "permission-prompt") return false;
+    const promptCallId =
+      s.modal.prompt.metadata !== undefined &&
+      typeof s.modal.prompt.metadata.callId === "string"
+        ? s.modal.prompt.metadata.callId
+        : undefined;
+    return promptCallId === props.block.callId;
+  });
 
   /** Merge arg chips and result chips for the chips row. */
   const allChips = createMemo((): readonly string[] => {

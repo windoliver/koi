@@ -53,13 +53,15 @@ export const DEFAULT_APPROVAL_CACHE_TTL_MS: number = 300_000;
 export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number = 256;
 
 /**
- * Default approval timeout. `Number.POSITIVE_INFINITY` disables the
- * engine-side fail-closed deadline so users may take as long as they need
- * to respond to an interactive permission prompt. Callers may still pass a
- * finite `approvalTimeoutMs` for agent-to-agent flows where a hung
- * approval handler must be bounded. (#1759)
+ * Default approval timeout — 30s fail-closed deny. Agent-to-agent callers
+ * and non-interactive flows use this default so a stuck/disconnected
+ * approval handler never wedges a turn indefinitely.
+ *
+ * Interactive TUIs that want unbounded user-decision time must opt in
+ * explicitly by passing `approvalTimeoutMs: Number.POSITIVE_INFINITY`
+ * (see `packages/meta/cli/src/tui-runtime.ts` for the TUI wiring). (#1759)
  */
-export const DEFAULT_APPROVAL_TIMEOUT_MS: number = Number.POSITIVE_INFINITY;
+export const DEFAULT_APPROVAL_TIMEOUT_MS: number = 30_000;
 
 export const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number = 3;
 export const DEFAULT_DENIAL_ESCALATION_WINDOW_MS: number = 300_000;

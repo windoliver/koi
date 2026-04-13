@@ -569,20 +569,17 @@ export function mutate(state: Draft, action: TuiAction): void {
     }
 
     case "tool_execution_started": {
-      // Reset startedAt on the most recent running tool-call block whose
-      // toolName matches. Dispatched by the permission bridge after a user
-      // approves a permission prompt, so the elapsed-time counter reflects
-      // actual execution time rather than the user's read/decide time. (#1759)
+      // Reset startedAt on the tool-call block with matching callId.
+      // Dispatched by the permission bridge after a user approves a
+      // permission prompt. Keyed by callId (not toolName) so queued
+      // prompts for the same tool cannot cross-reset each other. (#1759)
       const msg = lastAssistant(state);
       if (!msg) break;
-      const blocks = msg.blocks as TuiAssistantBlock[];
-      for (let i = blocks.length - 1; i >= 0; i--) {
-        const b = blocks[i];
-        if (b?.kind === "tool_call" && b.status === "running" && b.toolName === action.toolId) {
-          (b as { startedAt?: number }).startedAt = Date.now();
-          break;
-        }
-      }
+      const blockIdx = findToolBlockIdx(msg.blocks, action.callId);
+      if (blockIdx < 0) break;
+      const block = msg.blocks[blockIdx] as ToolCallBlock;
+      if (block.status !== "running") break;
+      (block as { startedAt?: number }).startedAt = Date.now();
       break;
     }
 

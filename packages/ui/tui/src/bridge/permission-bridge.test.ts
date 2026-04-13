@@ -294,17 +294,17 @@ describe("permission bridge — queued lifetime timer", () => {
 // ---------------------------------------------------------------------------
 
 describe("permission bridge — tool_execution_started dispatch", () => {
-  test("respond with allow dispatches tool_execution_started with the toolId", () => {
-    const captured: Array<{ readonly kind: string; readonly toolId?: string }> = [];
+  test("respond with allow dispatches tool_execution_started with the callId from metadata", () => {
+    const captured: Array<{ readonly kind: string; readonly callId?: string }> = [];
     const wrapped: TuiStore = {
       ...store,
       dispatch: (action) => {
-        captured.push(action as { readonly kind: string; readonly toolId?: string });
+        captured.push(action as { readonly kind: string; readonly callId?: string });
         store.dispatch(action);
       },
     };
     const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
-    void local.handler(makeRequest({ toolId: "Bash" }));
+    void local.handler(makeRequest({ toolId: "Bash", metadata: { callId: "call-xyz" } }));
     const state = store.getState();
     const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
 
@@ -312,7 +312,30 @@ describe("permission bridge — tool_execution_started dispatch", () => {
 
     const dispatched = captured.find((a) => a.kind === "tool_execution_started");
     expect(dispatched).toBeDefined();
-    expect(dispatched?.toolId).toBe("Bash");
+    expect(dispatched?.callId).toBe("call-xyz");
+    local.dispose();
+  });
+
+  test("respond with allow WITHOUT callId in metadata does not dispatch (fallback path)", () => {
+    const captured: Array<{ readonly kind: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    // No metadata.callId — older caller path
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "allow" });
+
+    // Without a call-scoped id the bridge cannot safely target a specific
+    // running block, so the dispatch is intentionally skipped.
+    expect(captured.some((a) => a.kind === "tool_execution_started")).toBe(false);
     local.dispose();
   });
 
@@ -326,7 +349,7 @@ describe("permission bridge — tool_execution_started dispatch", () => {
       },
     };
     const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
-    void local.handler(makeRequest({ toolId: "Bash" }));
+    void local.handler(makeRequest({ toolId: "Bash", metadata: { callId: "call-xyz" } }));
     const state = store.getState();
     const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
 

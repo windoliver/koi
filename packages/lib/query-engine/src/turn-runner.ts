@@ -626,6 +626,10 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             // Use coerced args when available, fall back to raw parsedArgs
             input:
               coercedArgsMap.get(tc.callId) ?? (tc.parsedArgs as import("@koi/core").JsonObject),
+            // Thread callId through metadata so middleware (esp. permissions)
+            // can key per-call state like timer/UI attribution on the
+            // specific invocation instead of the tool name (#1759 round 1).
+            metadata: { callId: tc.callId as string },
             ...(signal !== undefined ? { signal } : {}),
           });
           // Record result BEFORE checking abort — the tool already ran and

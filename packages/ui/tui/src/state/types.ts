@@ -409,16 +409,16 @@ export type TuiAction =
       /**
        * Dispatched by the permission bridge when a tool's approval has been
        * granted and the engine is about to begin real execution. The reducer
-       * stamps `startedAt = Date.now()` on the most recent running tool-call
-       * block matching `toolId`, so the TUI's elapsed-time counter reflects
-       * actual tool runtime — not the time the user spent reading the prompt.
+       * stamps `startedAt = Date.now()` on the tool-call block identified by
+       * `callId`, so the TUI's elapsed-time counter reflects actual tool
+       * runtime — not the time the user spent reading the prompt.
        *
        * Fires only for the ask → approve path; allow / cached-allow paths
        * already have an accurate startedAt from tool_call_start because there
        * is no user-facing delay on those paths.
        */
       readonly kind: "tool_execution_started";
-      readonly toolId: string;
+      readonly callId: string;
     }
   | {
       /** Set by the host on session start (model name, provider, session name). */

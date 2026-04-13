@@ -787,6 +787,11 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: "koi tui — default permission mode",
+    // #1759: interactive users need unbounded decide-time on permission
+    // prompts — Ctrl+C remains the escape hatch. The engine's default
+    // 30s fail-closed timeout is retained for agent-to-agent / non-TUI
+    // callers (see @koi/middleware-permissions DEFAULT_APPROVAL_TIMEOUT_MS).
+    approvalTimeoutMs: Number.POSITIVE_INFINITY,
     ...(config.persistentApprovals !== undefined
       ? { persistentApprovals: config.persistentApprovals, persistentAgentId: "koi-tui" }
       : {}),
