@@ -25,10 +25,11 @@ export const MAX_CLIPBOARD_BYTES = 100_000;
 export function copyToClipboard(text: string): boolean {
   if (!process.stdout.isTTY) return false;
 
-  const bytes = Buffer.from(text);
-  if (bytes.byteLength > MAX_CLIPBOARD_BYTES) return false;
+  const base64 = Buffer.from(text).toString("base64");
+  // Enforce limit on the encoded payload (what the terminal actually receives).
+  // OSC 52 framing adds ~8 bytes; the base64 string is the dominant cost.
+  if (base64.length > MAX_CLIPBOARD_BYTES) return false;
 
-  const base64 = bytes.toString("base64");
   process.stdout.write(`\x1b]52;c;${base64}\x07`);
   return true;
 }

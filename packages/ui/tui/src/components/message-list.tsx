@@ -141,11 +141,15 @@ export function MessageList(props: MessageListProps): JSX.Element {
     if (selection !== null && selection !== undefined) {
       setScrollState((s) => onSelectionStart(s));
       const text = selection.getSelectedText();
-      if (text.length > 0 && copyToClipboard(text)) {
-        renderer.clearSelection();
-        // Restore auto-follow — clearSelection() doesn't emit a null
-        // selection event, so onSelectionEnd would never run otherwise.
-        // Only resume when the selection was actually cleared (copy OK).
+      if (text.length > 0) {
+        const copied = copyToClipboard(text);
+        if (copied) {
+          renderer.clearSelection();
+        }
+        // Restore auto-follow regardless — either the copy succeeded and
+        // selection is cleared, or it failed (oversize / non-TTY) and
+        // holding the pause would strand the viewport. clearSelection()
+        // doesn't emit a null event so onSelectionEnd would never fire.
         setScrollState((s) => onSelectionEnd(s));
       }
     } else {
