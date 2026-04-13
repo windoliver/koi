@@ -854,6 +854,48 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 8_000);
 
+  test("#1742: rebindSessionId rejects mid-session and accepts post-cycleSession (loop-3 round 6)", async () => {
+    // Loop-3 round 6 regression: rebindSessionId must HARD REJECT
+    // mid-session rebinds, otherwise session-scoped middleware would
+    // attribute approvals/teardown to the wrong sessionId. Allowed
+    // window is the quiescent post-cycleSession / pre-next-run state.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Pre-session (post-construction, no run yet): rebind must work.
+    runtime.rebindSessionId?.("agent:test:before-first-run");
+    expect(runtime.sessionId).toBe("agent:test:before-first-run");
+
+    // First run starts the session.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Mid-session rebind must throw.
+    expect(() => {
+      runtime.rebindSessionId?.("agent:test:mid-session");
+    }).toThrow(/mid-session/i);
+    expect(runtime.sessionId).toBe("agent:test:before-first-run");
+
+    // Cycle ends the session — now we're back in the quiescent window.
+    await runtime.cycleSession?.();
+
+    // Post-cycle, pre-next-run rebind must work.
+    runtime.rebindSessionId?.("agent:test:after-cycle");
+    expect(runtime.sessionId).toBe("agent:test:after-cycle");
+
+    // Next run picks up the rebound id.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+
+    // Mid-session rebind must throw again on the new session.
+    expect(() => {
+      runtime.rebindSessionId?.("agent:test:mid-session-2");
+    }).toThrow(/mid-session/i);
+
+    await runtime.dispose();
+  });
+
   test("#1742: dispose() is retryable after a settle-timeout failure (loop-3 round 2)", async () => {
     // Loop-3 round 2 regression: dispose() used to set `disposed = true`
     // at entry. On settle timeout it threw without running onSessionEnd

@@ -1668,8 +1668,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // to a specific value (e.g. when resuming a saved session from
       // disk). Without this, cycleSession() rotates to a fresh UUID
       // and future turns persist under a new chain — orphaning the
-      // resumed session. Same safety constraints as cycleSession:
-      // must not be called while a run is in flight.
+      // resumed session.
       if (disposed || disposing) {
         throw KoiRuntimeError.from(
           "VALIDATION",
@@ -1692,6 +1691,24 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         throw KoiRuntimeError.from(
           "VALIDATION",
           "Cannot rebind sessionId while cycleSession/dispose is in flight. Await the lifecycle promise first.",
+        );
+      }
+      // #1742 loop-3 round 6: HARD REJECT mid-session rebinds. The
+      // runtime captures `activeSessionCtx` once at onSessionStart
+      // and uses that snapshot for onSessionEnd. A mid-session
+      // rebind would leave session-scoped middleware (permissions,
+      // reporting, hooks, persistence) attributing approvals and
+      // teardown work to the wrong session id — a real isolation
+      // /trust-boundary break, not just bookkeeping drift.
+      // Rebinding is only valid in the quiescent window between
+      // cycleSession() (or runtime construction) and the next
+      // run() that fires onSessionStart. The host's resume flow
+      // calls cycleSession() then rebindSessionId() before the
+      // next run, which satisfies this invariant.
+      if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot rebind sessionId mid-session. Call cycleSession() first to end the active session, then rebind before the next run().",
         );
       }
       factorySessionId = sessionId(id);
