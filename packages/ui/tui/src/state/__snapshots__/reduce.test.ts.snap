@@ -15,6 +15,19 @@ exports[`createInitialState initial state shape 1`] = `
     "engineTurns": 0,
     "inputTokens": 0,
     "outputTokens": 0,
+    [Symbol(solid-proxy)]: {
+  "totalTokens": 0,
+  "inputTokens": 0,
+  "outputTokens": 0,
+  "turns": 0,
+  "engineTurns": 0,
+  "costUsd": null
+},
+    [Symbol(store-node)]: {
+      "engineTurns": [Function: readSignal],
+      "totalTokens": [Function: readSignal],
+      "turns": [Function: readSignal],
+    },
     "totalTokens": 0,
     "turns": 0,
   },
