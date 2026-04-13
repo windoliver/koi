@@ -637,30 +637,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
-    store.dispatch({ kind: "clear_messages" });
-    // Clear trajectory data so /trajectory doesn't show prior-session data.
-    store.dispatch({ kind: "set_trajectory_data", steps: [] });
 
-    // Always reset runtime session state — even in the idle case (no active stream).
-    // resetSessionState is async (awaits task board + trajectory prune).
-    // New submits block on resetBarrier before proceeding.
-    //
-    // #1742 round 11: catch resetSessionState rejections (most importantly
-    // the cycleSession TIMEOUT path which fails closed when a tool ignored
-    // abort). Without this, the rejected promise would be assigned into
-    // `resetBarrier` and every future submit would `await` it and fail
-    // immediately with no recovery — one wedged /clear would brick the TUI
-    // until restart. Catch the error, surface a visible "restart koi tui"
-    // toast, splice the transcript anyway so the user at least sees a
-    // clear conversation, and resolve the barrier so subsequent submits
-    // get a controlled rejection from the engine itself (poisoned runtime)
-    // rather than a stale rejected promise.
+    // #1742 loop-2 round 5: do NOT clear the visible transcript or splice
+    // runtimeHandle.transcript until resetSessionState() actually resolves.
+    // resetSessionState fails closed on cycleSession TIMEOUT — if we wiped
+    // the screen first, the user would lose all visible history while
+    // approvals/memory/etc were still in the wedged old session. The user
+    // is then debugging blind. Defer destructive cleanup to the success
+    // branch; on failure leave the screen intact and surface an error
+    // banner so the operator can inspect what wedged.
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
       resetBarrier = runtimeHandle
         .resetSessionState(idleController.signal)
         .then(() => {
+          // Only NOW that the engine confirmed the session was rotated
+          // do we wipe visible state. Order: store messages, trajectory,
+          // then runtime transcript.
+          store.dispatch({ kind: "clear_messages" });
+          store.dispatch({ kind: "set_trajectory_data", steps: [] });
           runtimeHandle?.transcript.splice(0);
         })
         .catch((resetError: unknown) => {
@@ -668,14 +664,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           store.dispatch({
             kind: "add_error",
             code: "RESET_FAILED",
-            message: `Session reset failed: ${message}. Please restart koi tui to recover.`,
+            message: `Session reset failed: ${message}. Visible history preserved. Please restart koi tui to recover.`,
           });
-          // Splice the transcript locally even though resetSessionState
-          // didn't finish — the user already cleared the visible
-          // history via clear_messages above.
-          runtimeHandle?.transcript.splice(0);
-          // Resolve the barrier so future submits proceed (and likely
-          // hit the engine's poisoned-runtime guard with a clear error).
+          // Leave store messages, trajectory, and runtime transcript
+          // intact so the operator still has the conversation context
+          // to inspect / decide how to recover. Resolve the barrier so
+          // future submits proceed and either succeed (if the engine
+          // wasn't actually wedged) or hit the engine's poisoned-runtime
+          // guard with a clear error.
         });
     }
   };

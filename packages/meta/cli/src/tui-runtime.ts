@@ -1288,15 +1288,22 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     loopDetection: false,
     // #1742: each user submit in the TUI is a logically fresh request,
     // so opt in to per-iteration budget reset for turn count and
-    // duration. Token usage and accumulated cost remain CUMULATIVE
-    // across the runtime lifetime so operators retain a real cap on
-    // total spend per process.
+    // duration. Token usage stays CUMULATIVE across the runtime
+    // lifetime so the process retains a hard ceiling on total spend.
     //
-    // The cumulative token ceiling is raised to 5M (≈ $15-75 worst case
-    // on Sonnet 4.6, sized for a long interactive session) because the
-    // 100k default is too tight for any moderately-long TUI use. Cost
-    // tracking is left at default-disabled (`maxCostUsd: 0`) — wire it
-    // up explicitly when you want a hard dollar cap.
+    // The cumulative token ceiling is raised from the 100k default to
+    // 1M — a 10x relaxation, not 50x — because 100k trips inside a
+    // single moderately-long TUI session but 1M still bounds runaway
+    // tool/model loops well before they become a real cost incident
+    // (~$3-15 worst case on Sonnet 4.6). The per-iteration maxTurns:25
+    // reset above is the primary loop guard; this token ceiling is the
+    // secondary "user keeps submitting expensive prompts" guard.
+    //
+    // Cost tracking (`maxCostUsd`) is left at the default-disabled
+    // value because costPerInputToken/costPerOutputToken default to 0
+    // and we don't have a model-aware pricing source wired in. When
+    // a host wires real token pricing, also set `cost.maxCostUsd` here
+    // for a stricter dollar-denominated cap.
     resetIterationBudgetPerRun: true,
     governance: {
       iteration: {
@@ -1305,7 +1312,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
         maxDurationMs: 300_000, // 5 min per submit
         // Cumulative spend ceiling (NOT reset by iteration_reset):
-        maxTokens: 5_000_000,
+        maxTokens: 1_000_000,
       },
     },
   });
