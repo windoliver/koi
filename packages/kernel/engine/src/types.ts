@@ -26,6 +26,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
+  SessionId,
   SpawnInheritanceConfig,
   SpawnLedger,
   StoreChangeEvent,
@@ -137,6 +138,23 @@ export interface CreateKoiOptions {
   readonly channelId?: string;
   /** Stable conversation ID that spans multiple runtime.run() calls. Injected into SessionContext. */
   readonly conversationId?: string;
+  /**
+   * Optional override for the factory-level session id.
+   *
+   * By default, `createKoi` mints a composite id of the form
+   * `agent:{agentId}:{uuid}` at factory-construction time. Hosts that
+   * need a user-facing, human-typable session id (e.g. `koi tui` for
+   * its post-quit resume hint) can pass a pre-branded `SessionId`
+   * here; the factory will use that value verbatim for both
+   * `runtime.sessionId` and `ctx.session.sessionId`, which is what
+   * the session-transcript middleware routes on.
+   *
+   * Callers are responsible for uniqueness — the factory trusts the
+   * override. Collisions in the session-transcript directory result
+   * in appends to an existing JSONL file (which is how `--resume`
+   * works on top of this knob).
+   */
+  readonly sessionId?: SessionId;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */

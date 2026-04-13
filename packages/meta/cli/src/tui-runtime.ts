@@ -1191,10 +1191,17 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   );
 
   // --- Assemble runtime via createKoi ---
+  // When a session is configured, thread `config.session.sessionId` into
+  // createKoi as its `sessionId` override so the engine's factory-level
+  // session id (used as the JSONL routing key) matches the plain, user-
+  // typable UUID the host minted — rather than the default verbose
+  // `agent:{agentId}:{uuid}` form. This is what makes the post-quit resume
+  // hint short and copy-pasteable.
   const runtime = await createKoi({
     manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
     adapter: engineAdapter,
     middleware: tracedMiddleware,
+    ...(config.session !== undefined ? { sessionId: config.session.sessionId } : {}),
     providers: [
       builtinSearchProvider,
       fsReadProvider,

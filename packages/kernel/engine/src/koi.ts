@@ -196,8 +196,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let running = false;
 
   // Session ID created at factory scope so runtime.sessionId can reference it.
-  // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
-  const factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // Default format: "agent:{agentId}:{uuid}" — trust boundary is parseable from
+  // the ID. Hosts that need a user-facing, human-typable id can pass
+  // `options.sessionId` to replace the default; the override is used verbatim
+  // for `runtime.sessionId` and `ctx.session.sessionId` (the routing key the
+  // session-transcript middleware uses to pick a JSONL file).
+  const factorySessionId: SessionId =
+    options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
