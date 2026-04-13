@@ -555,6 +555,30 @@ export function createPermissionsMiddleware(
   // Internal helpers
   // -----------------------------------------------------------------------
 
+  /**
+   * Strip ephemeral / per-invocation fields from request metadata before
+   * the metadata is used for policy queries, approval cache lookups, or
+   * in-flight dedup keys. The TUI threads `callId` through `metadata.callId`
+   * so the permission bridge can dispatch a per-call timer reset (#1759),
+   * but `callId` is unique per invocation — letting it bleed into the
+   * cache/dedup key would defeat approval coalescing for repeated
+   * identical asks and could change backend rule outcomes for
+   * installations that match on `_request` metadata. Returns the original
+   * reference when nothing was stripped (cheap fast path) and `undefined`
+   * when stripping leaves the object empty so empty-object metadata still
+   * collapses into the no-metadata branch downstream. (#1759 review round)
+   */
+  function policyMetadataOf(metadata?: JsonObject): JsonObject | undefined {
+    if (metadata === undefined) return undefined;
+    if (!Object.hasOwn(metadata, "callId")) return metadata;
+    const stripped: Record<string, unknown> = {};
+    for (const key of Object.keys(metadata)) {
+      if (key === "callId") continue;
+      stripped[key] = metadata[key];
+    }
+    return Object.keys(stripped).length === 0 ? undefined : (stripped as JsonObject);
+  }
+
   function queryForTool(
     ctx: TurnContext,
     resource: string,
@@ -1109,7 +1133,11 @@ export function createPermissionsMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      const query = queryForTool(ctx, request.toolId, request.metadata);
+      // Strip ephemeral fields (callId) from the metadata used for policy
+      // evaluation so identical asks still share one cache/dedup identity.
+      // (#1759 review round)
+      const policyMeta = policyMetadataOf(request.metadata);
+      const query = queryForTool(ctx, request.toolId, policyMeta);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;
@@ -1200,6 +1228,9 @@ export function createPermissionsMiddleware(
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
   ): Promise<ToolResponse> {
+    // Strip ephemeral fields (callId) from metadata before using it as a
+    // cache / dedup key — see policyMetadataOf doc + #1759 review round.
+    const policyMeta = policyMetadataOf(request.metadata);
     const approvalHandler: ApprovalHandler | undefined = ctx.requestApproval;
 
     if (approvalHandler === undefined) {
@@ -1302,7 +1333,7 @@ export function createPermissionsMiddleware(
         request.toolId,
         request.input,
         ctxStr,
-        request.metadata,
+        policyMeta,
         decision.reason,
       );
 
@@ -1325,7 +1356,7 @@ export function createPermissionsMiddleware(
       request.toolId,
       request.input,
       dedupCtx,
-      request.metadata,
+      policyMeta,
       decision.reason,
     );
 
@@ -1625,7 +1656,7 @@ export function createPermissionsMiddleware(
           request.toolId,
           request.input,
           ctxStr,
-          request.metadata,
+          policyMeta,
           decision.reason,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);

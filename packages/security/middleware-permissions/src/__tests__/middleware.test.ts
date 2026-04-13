@@ -1704,4 +1704,88 @@ describe("createPermissionsMiddleware", () => {
       expect(meta.denyReason).toBe("rejected");
     });
   });
+
+  // -------------------------------------------------------------------------
+  // policyMetadataOf — ephemeral fields stripped from policy/cache identity
+  // (#1759 review round). Repeated identical asks must coalesce/cache even
+  // when the turn-runner threads a per-call `metadata.callId` for the
+  // TUI-side timer reset.
+  // -------------------------------------------------------------------------
+  describe("wrapToolCall — metadata.callId stripped from policy identity", () => {
+    test("backend sees identical query for repeated calls with different callIds", async () => {
+      const seenContexts: Array<JsonObject | undefined> = [];
+      const mw = createPermissionsMiddleware({
+        backend: {
+          check: (query: PermissionQuery) => {
+            seenContexts.push(query.context);
+            return { effect: "allow" };
+          },
+        },
+      });
+      const ctx = makeTurnContext();
+      const reqA: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-aaa" },
+      };
+      const reqB: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-bbb" },
+      };
+      await mw.wrapToolCall?.(ctx, reqA, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, reqB, noopToolHandler);
+      expect(seenContexts).toHaveLength(2);
+      // Both calls must have produced an identical policy context — i.e.
+      // `_request` must be either undefined or NOT contain the callId.
+      const ctxAStr = JSON.stringify(seenContexts[0] ?? null);
+      const ctxBStr = JSON.stringify(seenContexts[1] ?? null);
+      expect(ctxAStr).toBe(ctxBStr);
+      expect(ctxAStr).not.toContain("call-aaa");
+      expect(ctxBStr).not.toContain("call-bbb");
+    });
+
+    test("non-callId metadata still flows into policy context", async () => {
+      const seenContexts: Array<JsonObject | undefined> = [];
+      const mw = createPermissionsMiddleware({
+        backend: {
+          check: (query: PermissionQuery) => {
+            seenContexts.push(query.context);
+            return { effect: "allow" };
+          },
+        },
+      });
+      const ctx = makeTurnContext();
+      const req: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-xyz", origin: "agent-foo" },
+      };
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
+      expect(seenContexts).toHaveLength(1);
+      const ctxStr = JSON.stringify(seenContexts[0] ?? null);
+      expect(ctxStr).toContain("origin");
+      expect(ctxStr).toContain("agent-foo");
+      expect(ctxStr).not.toContain("call-xyz");
+    });
+
+    test("approval handler still receives metadata.callId for bridge dispatch", async () => {
+      const seenApprovalRequests: ApprovalRequest[] = [];
+      const mw = createPermissionsMiddleware({ backend: askAll() });
+      const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+        seenApprovalRequests.push(req);
+        return { kind: "allow" };
+      };
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+      const req: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-xyz" },
+      };
+      await mw.wrapToolCall?.(ctx, req, noopToolHandler);
+      expect(seenApprovalRequests).toHaveLength(1);
+      const approvalReq = seenApprovalRequests[0];
+      expect(approvalReq?.metadata?.callId).toBe("call-xyz");
+    });
+  });
 });

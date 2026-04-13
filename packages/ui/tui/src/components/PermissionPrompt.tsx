@@ -78,6 +78,20 @@ export function formatInputPreview(input: Record<string, unknown>, maxLength = 2
   return json.slice(0, maxLength) + "\n  ...";
 }
 
+/**
+ * Compact, single-line truncation of the permission reason string. Kept
+ * visible at the approval boundary as a safety signal but rendered tightly
+ * so it doesn't crowd out the args block (#1759 review balance: original
+ * removal hid load-bearing context, original two-line layout dominated the
+ * prompt). 120 chars matches typical terminal half-width while still
+ * carrying enough text for an operator to recognize the policy reason.
+ */
+export function truncateReason(reason: string, maxLength = 120): string {
+  const normalized = reason.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return normalized.slice(0, maxLength - 1) + "…";
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -132,10 +146,7 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         </Show>
       </box>
 
-      {/* Tool info — `reason` is intentionally omitted: it tends to be a
-          long internal explanation (e.g. policy id, AST-walker fail mode)
-          that distracts from the command/args the user is actually
-          deciding about. The args block below is the relevant signal. */}
+      {/* Tool info */}
       <box flexDirection="column" marginTop={1}>
         <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
       </box>
@@ -144,6 +155,16 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       <box marginTop={1}>
         <text fg={COLORS.textMuted}>{`Arguments:\n${inputPreview()}`}</text>
       </box>
+
+      {/* Compact reason chip — kept visible at the approval boundary as a
+          safety signal (round-3 review of #1759). Rendered single-line in
+          dim text without a prominent "Reason:" label so it doesn't
+          dominate the prompt the way the original two-line layout did. */}
+      <Show when={props.prompt.reason !== undefined && props.prompt.reason !== ""}>
+        <box marginTop={1}>
+          <text fg={COLORS.textMuted}>{`↳ ${truncateReason(props.prompt.reason)}`}</text>
+        </box>
+      </Show>
 
       {/* Key hints — always-allow copy explicitly names the tool and scope */}
       <Show when={props.focused}>

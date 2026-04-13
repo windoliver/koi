@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatInputPreview, processPermissionKey } from "./PermissionPrompt.js";
+import { formatInputPreview, processPermissionKey, truncateReason } from "./PermissionPrompt.js";
 
 // ---------------------------------------------------------------------------
 // processPermissionKey
@@ -64,5 +64,34 @@ describe("formatInputPreview", () => {
     const result = formatInputPreview({ a: "b", c: "d" }, 10);
     expect(result.length).toBeLessThanOrEqual(16);
     expect(result).toContain("...");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// truncateReason — keeps the safety-relevant reason visible at the approval
+// boundary while bounding length so it doesn't crowd out the args block.
+// (#1759 review balance)
+// ---------------------------------------------------------------------------
+
+describe("truncateReason", () => {
+  test("returns short reasons unchanged", () => {
+    expect(truncateReason("No matching permission rule")).toBe("No matching permission rule");
+  });
+
+  test("collapses internal whitespace", () => {
+    expect(truncateReason("AST  walker\n  failed")).toBe("AST walker failed");
+  });
+
+  test("truncates to maxLength with ellipsis", () => {
+    const long = "x".repeat(500);
+    const out = truncateReason(long, 50);
+    expect(out.length).toBe(50);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  test("default maxLength is 120 chars", () => {
+    const long = "y".repeat(500);
+    const out = truncateReason(long);
+    expect(out.length).toBe(120);
   });
 });
