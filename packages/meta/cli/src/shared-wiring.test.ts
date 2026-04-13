@@ -121,9 +121,9 @@ describe("mergeUserAndPluginHooks", () => {
   test("preserves user-then-plugin order", () => {
     const user = [
       {
+        id: "u1#0",
         hook: commandHook("u1"),
         tier: "user" as const,
-        manifestName: "user",
       },
     ];
     const plugin = [commandHook("p1"), commandHook("p2")];
@@ -158,9 +158,9 @@ describe("mergeUserAndPluginHooks", () => {
     // present — the merge step is not the place for a belt-and-suspenders.
     const user = [
       {
+        id: "u1#0",
         hook: agentHook("u1"),
         tier: "user" as const,
-        manifestName: "user",
       },
     ];
     const merged = mergeUserAndPluginHooks(user, [], { filterAgentHooks: true });
