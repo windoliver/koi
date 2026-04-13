@@ -946,8 +946,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // #1742 loop-3 round 5: load and validate the transcript
+            // BEFORE rebinding the runtime. If the JSONL is missing or
+            // corrupt, surface the error and leave the runtime on the
+            // freshly-rotated post-reset session id rather than
+            // adopting an id the host could not actually load.
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
+              // Rebind the engine sessionId BACK to the rewound
+              // session id so future turns/checkpoints persist on
+              // the same chain instead of orphaning to the rotated
+              // post-reset uuid. Mirrors the round-4 fix in
+              // onSessionSelect.
+              if (runtimeHandle.runtime.rebindSessionId !== undefined) {
+                try {
+                  runtimeHandle.runtime.rebindSessionId(String(engineSessionId));
+                } catch (rebindErr) {
+                  store.dispatch({
+                    kind: "add_error",
+                    code: "REWIND_ABORTED",
+                    message: `Rewind aborted: cannot rebind runtime to session ${String(engineSessionId)}: ${
+                      rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                    }`,
+                  });
+                  return;
+                }
+              }
               for (const msg of resumeResult.value.messages) {
                 runtimeHandle.transcript.push(msg);
               }
@@ -1069,12 +1093,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             return;
           }
-          // #1742 loop-3 round 4: rebind the engine sessionId to the
-          // user-selected one BEFORE hydrating history. cycleSession
-          // (called via resetConversation above) rotates to a fresh
-          // UUID; without rebinding, future turns persist under the
-          // new id and orphan the resumed session — so checkpoints,
-          // /rewind, and fork all break for the resumed conversation.
+          // #1742 loop-3 round 5: load and validate the session FIRST,
+          // then rebind only after we know the transcript is good.
+          // Round 4 had this in the wrong order — a missing/corrupt
+          // session file would leave the runtime adopted to the
+          // selected id even though no history was loaded, so the
+          // next submit would write into the wrong chain.
+          const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
+          if (!resumeResult.ok) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESUME_ERROR",
+              message: `Could not load session: ${resumeResult.error.message}`,
+            });
+            return;
+          }
+          // Transcript loaded successfully — now rebind the engine
+          // sessionId to the user-selected one. cycleSession (called
+          // via resetConversation above) rotated to a fresh UUID;
+          // without rebinding, future turns persist under the new id
+          // and orphan the resumed session — so checkpoints, /rewind,
+          // and fork all break for the resumed conversation.
           if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
             try {
               runtimeHandle.runtime.rebindSessionId(selectedId);
@@ -1088,15 +1127,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-          }
-          const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
-          if (!resumeResult.ok) {
-            store.dispatch({
-              kind: "add_error",
-              code: "SESSION_RESUME_ERROR",
-              message: `Could not load session: ${resumeResult.error.message}`,
-            });
-            return;
           }
           // Pre-populate conversation history so the AI has full context.
           if (runtimeHandle !== null) {
