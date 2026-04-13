@@ -1351,24 +1351,31 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
 
-      // 3. Clear session-scoped approval state (always-allow, caches, trackers).
+      // 3. Cycle middleware session lifecycle FIRST. This awaits the
+      //    in-flight run's settle (bounded by ~5s in the engine). On
+      //    success the prior run is fully unwound and we know it can no
+      //    longer write into the cleared state we're about to rotate
+      //    next. On settle timeout cycleSession throws TIMEOUT — we
+      //    propagate so the host can surface a "restart required"
+      //    error and recreate the runtime instead of mutating shared
+      //    state underneath a wedged in-flight tool. (#1742)
+      //
+      //    Order matters: previously approvals/board were cleared
+      //    BEFORE this point, which meant late callbacks from a
+      //    non-cooperative run could repopulate the freshly-cleared
+      //    approval cache or steer task ops into the new board.
+      await runtime.cycleSession?.();
+
+      // 4. Clear session-scoped approval state (always-allow, caches,
+      //    trackers). Safe to do now — no run is in flight.
       permMw.clearSessionApprovals(runtime.sessionId);
 
-      // 4. Rotate task board — AWAITED so new-session submits can't hit the old board.
+      // 5. Rotate task board — AWAITED so new-session submits can't hit the old board.
       const newBoard = await createManagedTaskBoard({
         store: createMemoryTaskBoardStore(),
         resultsDir: TASK_RESULTS_DIR,
       });
       boardRef.current = newBoard;
-
-      // 5. Cycle middleware session lifecycle — fires onSessionEnd then
-      //    re-arms onSessionStart for the next run() so goal completion,
-      //    skill surfaces, hot memory, governance windows, and any other
-      //    session-scoped middleware state is refreshed for the new
-      //    conversation. Safe under #1742 because onSessionEnd no longer
-      //    races per-run cleanup (it now fires only here and on dispose).
-      //    The earlier abort upstream guarantees no run is in flight.
-      await runtime.cycleSession?.();
 
       // 6. Clear trajectory store — AWAITED so new-session steps can't be pruned.
       //

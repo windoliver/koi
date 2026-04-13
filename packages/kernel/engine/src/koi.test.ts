@@ -484,13 +484,16 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEndFiredAfterAdapter).toBe(true);
   });
 
-  test("#1742: cycleSession bounded by settle timeout poisons runtime when run ignores abort", async () => {
+  test("#1742: cycleSession FAILS CLOSED on settle timeout — throws + poisons + skips cleanup", async () => {
     // Non-cooperative tool path: the adapter never honors the abort
     // signal, so the run's finally never fires and currentRunSettled
-    // never resolves. cycleSession must give up after the bounded
-    // lifecycle-settle timeout (5s in production) AND poison the
-    // runtime so the host (TUI /clear) sees a clear error on the next
-    // submit instead of layering work onto a wedged session.
+    // never resolves. cycleSession must:
+    //   1. wait the bounded lifecycle-settle timeout (5s in production)
+    //   2. throw TIMEOUT instead of running cleanup against the live run
+    //   3. poison the runtime so future run() calls reject loudly
+    //
+    // Failing closed prevents middleware/adapter cleanup from racing a
+    // late tool callback that could write into freshly-armed state.
     const sessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "noncooperative",
@@ -518,24 +521,33 @@ describe("createKoi middleware hooks", () => {
     const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
     await iter.next(); // pull the first event
 
-    // cycleSession races against the lifecycle-settle timeout. Bound OUR
-    // wait at 7 seconds (5s production timeout + 2s slack) so a regression
-    // would visibly fail rather than hang the test suite.
+    // cycleSession should reject after ~5s (the production settle
+    // timeout). Bound OUR wait at 7s so a regression visibly fails.
     const start = Date.now();
-    const cyclePromise = runtime.cycleSession?.();
+    // let justified: mutable error capture for later assertion
+    let cycleErrorMessage: string | undefined;
+    const cyclePromise = (async (): Promise<"rejected" | "fulfilled"> => {
+      try {
+        await runtime.cycleSession?.();
+        return "fulfilled";
+      } catch (e) {
+        cycleErrorMessage = e instanceof Error ? e.message : String(e);
+        return "rejected";
+      }
+    })();
     const watchdog = new Promise<"watchdog">((resolve) =>
       setTimeout(() => resolve("watchdog"), 7000),
     );
-    const winner = await Promise.race([cyclePromise?.then(() => "cycle" as const), watchdog]);
-    expect(winner).toBe("cycle");
-    expect(sessionEnd).toHaveBeenCalledTimes(1);
-    // Should have waited at least the timeout, not returned immediately
-    // (the run's finally never fired because the adapter is hung).
+    const winner = await Promise.race([cyclePromise, watchdog]);
+    expect(winner).toBe("rejected");
+    expect(cycleErrorMessage).toMatch(/wedged|abort/i);
     expect(Date.now() - start).toBeGreaterThanOrEqual(4500);
 
-    // Runtime is now POISONED — submitting another run must fail loudly
-    // instead of either rejecting with the misleading "Agent is already
-    // running" or quietly accepting work onto a wedged session.
+    // onSessionEnd must NOT have fired — fail-closed means we did NOT
+    // run cleanup against the still-live run.
+    expect(sessionEnd).toHaveBeenCalledTimes(0);
+
+    // Runtime is now POISONED — submitting another run must fail loudly.
     expect(() => {
       runtime.run({ kind: "text", text: "another" });
     }).toThrow(/poisoned/i);

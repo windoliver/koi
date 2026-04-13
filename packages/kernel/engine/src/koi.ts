@@ -1306,13 +1306,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // that cleanup, wait for `currentRunSettled` (resolved from the
       // streamEvents finally) instead of throwing on `running === true`.
       //
-      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a
-      // non-cooperative tool / model stream that ignores abort can't
-      // deadlock the host. After the timeout we proceed with cycling
-      // anyway and log a warning — the previous-run middleware state is
-      // accepted as collateral damage to keep the host responsive.
+      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS`. If the timeout
+      // fires we FAIL CLOSED: poison the runtime and throw, so the host
+      // cannot accidentally clear/rotate session state while the old run
+      // is still executing. The previous design ran cleanup anyway and
+      // depended on the host noticing the poisoned flag on the next run(),
+      // but that left a window where late tool/model callbacks could write
+      // into freshly re-armed middleware state. Failing closed here forces
+      // hosts to dispose and recreate the runtime when a tool ignores
+      // abort.
       if (running) {
-        await Promise.race([currentRunSettled, lifecycleSettleTimeout()]);
+        const result = await Promise.race([
+          currentRunSettled.then(() => "settled" as const),
+          lifecycleSettleTimeout(),
+        ]);
+        if (result === "timeout") {
+          throw KoiRuntimeError.from(
+            "TIMEOUT",
+            `Runtime is wedged: in-flight run ignored abort for ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms. Dispose and recreate.`,
+          );
+        }
       }
       if (lifecycleSessionStarted && !lifecycleSessionEnded) {
         try {
@@ -1354,13 +1367,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // dispose() races the active stream's middleware/adapter cleanup
       // and can flush session-scoped state (or destroy the adapter
       // backing an active iterator) underneath an in-progress event.
-      // Mirrors the same wait-for-settle pattern as cycleSession().
-      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a
-      // non-cooperative tool that ignores abort can't deadlock shutdown.
-      // Caller is responsible for first aborting the run signal so the
-      // stream actually terminates promptly.
+      //
+      // Bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a non-cooperative
+      // tool can't deadlock shutdown. Unlike `cycleSession`, dispose
+      // proceeds with cleanup even on timeout because the caller has
+      // already committed to throwing the runtime away — leaving it
+      // half-disposed would be worse. State corruption from the
+      // late-running tool is accepted as collateral damage; the
+      // poisoned runtime warning makes the situation visible.
+      // Caller is responsible for first aborting the run signal so
+      // the stream actually terminates promptly.
       if (running) {
-        await Promise.race([currentRunSettled, lifecycleSettleTimeout()]);
+        const result = await Promise.race([
+          currentRunSettled.then(() => "settled" as const),
+          lifecycleSettleTimeout(),
+        ]);
+        if (result === "timeout") {
+          console.warn(
+            "[koi] dispose proceeding after settle timeout — late tool callbacks may corrupt downstream state",
+          );
+        }
       }
       // #1742: session lifecycle ends when the runtime is disposed — not at
       // the end of every run(). Fire onSessionEnd here so middleware
