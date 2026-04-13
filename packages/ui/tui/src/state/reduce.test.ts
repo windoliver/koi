@@ -2481,6 +2481,7 @@ describe("reduce — set_trajectory_data", () => {
       readonly timestamp: number;
     },
   ): import("./types.js").TrajectoryStepSummary => ({
+    turnIndex: 1,
     durationMs: undefined,
     outcome: undefined,
     requestText: undefined,

@@ -410,13 +410,18 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
     caughtError: unknown,
     reasoningContent: string | undefined,
     sessionId?: string,
+    turnIndex?: number,
   ): RichTrajectoryStep {
     const durationMs = clock() - startTime;
     const stepIndex = state.nextLocalIndex;
     state.nextLocalIndex += 1;
     const requestMeta = extractModelRequestMetadata(request);
     const responseMeta = response !== undefined ? extractResponseMetadata(response) : {};
-    const metadata = { ...requestMeta, ...responseMeta } as JsonObject;
+    const metadata = {
+      ...requestMeta,
+      ...responseMeta,
+      ...(turnIndex !== undefined ? { turnIndex } : {}),
+    } as JsonObject;
 
     // Determine outcome: non-success stop reasons (error, hook_blocked) are failures
     // even when a ModelResponse is returned, since the response is a denial or error
@@ -532,6 +537,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
             caughtError,
             undefined,
             ctx.session.sessionId as string,
+            ctx.turnIndex,
           );
           recordStep(state, step, ctx.session.sessionId as string);
         } catch {
@@ -582,6 +588,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
                 undefined,
                 reasoning,
                 ctx.session.sessionId as string,
+                ctx.turnIndex,
               );
               recordStep(state, step, ctx.session.sessionId as string);
               recorded = true;
@@ -607,6 +614,7 @@ export function createEventTraceMiddleware(config: EventTraceConfig): EventTrace
               caughtError,
               reasoning,
               ctx.session.sessionId as string,
+              ctx.turnIndex,
             );
             recordStep(state, step, ctx.session.sessionId as string);
           } catch {
