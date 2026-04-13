@@ -658,6 +658,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           store.dispatch({ kind: "clear_messages" });
           store.dispatch({ kind: "set_trajectory_data", steps: [] });
           runtimeHandle?.transcript.splice(0);
+          // #1742 loop-3 round 1: surface the cumulative-budget caveat
+          // to the user. /clear gives a fresh per-iteration turn/duration
+          // budget (resetIterationBudgetPerRun: true above) but token
+          // usage and accumulated cost continue across /clear so the
+          // process keeps a real spend ceiling. Without this notice a
+          // user could /clear, see an empty session, and immediately
+          // hit a token-budget error caused by the prior conversation
+          // with no in-product way to understand why. Restart koi tui
+          // is the only way to fully reset cumulative spend.
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_NOTICE",
+            message:
+              "Conversation cleared. Note: cumulative token usage continues across /clear; restart koi tui to fully reset the runtime-wide spend cap.",
+          });
         })
         .catch((resetError: unknown) => {
           const message = resetError instanceof Error ? resetError.message : String(resetError);

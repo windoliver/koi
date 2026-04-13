@@ -854,6 +854,60 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 8_000);
 
+  test("#1742: cycleSession fast-paths an iterable abandoned after first iteration (no false poison)", async () => {
+    // Loop-3 round 1 regression: previously, calling .next() once and
+    // then dropping the iterable left the generator suspended at
+    // `yield` with `currentRunSettled` unresolved. The next
+    // cycleSession() / dispose() would burn the full 5s settle
+    // timeout and falsely poison the runtime — turning a normal host
+    // bug (forgot to fully iterate) into permanent runtime rejection.
+    // Fix tracks the active generator and calls .return() on it
+    // during the wait, so an abandoned iterable's finally fires
+    // immediately.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: {
+        engineId: "abandon-after-first",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => ({
+          async *[Symbol.asyncIterator]() {
+            // Yield several deltas; each yield suspends the generator
+            // until the next .next() call.
+            yield { kind: "text_delta" as const, delta: "hello " };
+            yield { kind: "text_delta" as const, delta: "world" };
+            // Done event the consumer will never reach because we
+            // abandon after the first delta.
+            yield {
+              kind: "done" as const,
+              output: doneOutput(),
+            };
+          },
+        }),
+      },
+      loopDetection: false,
+    });
+
+    // Start a run, pull ONE event, then drop the iterator without
+    // calling .return() or finishing the loop.
+    const iter = runtime.run({ kind: "text", text: "abandon-after-first" })[Symbol.asyncIterator]();
+    const firstEvent = await iter.next();
+    expect(firstEvent.done).toBe(false);
+    // (intentionally do NOT call iter.next() again or iter.return())
+
+    // cycleSession must complete promptly — under the 5s settle
+    // timeout — and must NOT poison the runtime.
+    const start = Date.now();
+    await runtime.cycleSession?.();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+
+    // A fresh run() must succeed (no poisoned-runtime rejection).
+    const events = await collectEvents(runtime.run({ kind: "text", text: "after-cycle" }));
+    expect(events.find((e) => e.kind === "done")).toBeDefined();
+
+    await runtime.dispose();
+  }, 8_000);
+
   test("#1742: cycleSession fails closed and poisons the runtime when onSessionEnd throws", async () => {
     // Loop-2 round 9 regression: cycleSession used to swallow
     // onSessionEnd errors and continue into governance reset / sessionId
@@ -987,18 +1041,45 @@ describe("createKoi middleware hooks", () => {
     //
     // Failing closed prevents middleware/adapter cleanup from racing a
     // late tool callback that could write into freshly-armed state.
+    // Loop-3 round 1: cycleSession now calls .return() on the active
+    // generator, which fast-paths most "abandoned/hung at await"
+    // patterns. To still exercise the fail-closed timeout path we
+    // need an adapter whose iterator's .return() ALSO hangs — that
+    // means the engine's finally block (which awaits
+    // adapterIterator.return()) blocks before currentRunResolveSettled
+    // fires, so the lifecycle settle timer wins.
     const sessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "noncooperative",
       capabilities: { text: true, images: false, files: false, audio: false },
-      stream: () => ({
-        async *[Symbol.asyncIterator]() {
-          yield { kind: "text_delta" as const, delta: "x" };
-          // Hang forever — no signal handling. Simulates a tool that
-          // ignores cancellation entirely.
-          await new Promise<void>(() => {});
-        },
-      }),
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable — true after we yielded the one event
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                // Subsequent .next() hangs forever.
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              // CRITICAL: .return() also hangs — simulates a non-
+              // cooperative cleanup path where engine.finally cannot
+              // unwind the adapter iterator.
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
     };
     const runtime = await createKoi({
       manifest: testManifest(),
@@ -1009,10 +1090,20 @@ describe("createKoi middleware hooks", () => {
       loopDetection: false,
     });
 
-    // Spin up the run in the background; we never drain it past the first
-    // event, so `running` stays true.
+    // Spin up the run and START a second .next() that's now pending on
+    // the adapter's hanging await. The generator is genuinely wedged
+    // mid-iteration — NOT just suspended at a yield — so cycleSession's
+    // round-1 .return() fast-path is queued (not immediately processed)
+    // and the existing settle-timeout path still bounds the wait.
     const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
-    await iter.next(); // pull the first event
+    await iter.next(); // pull the first event (delta)
+    // Fire the second next() but don't await it — it'll hang forever
+    // on the adapter's `await new Promise<void>(() => {})`.
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {
+      // .return() during cycleSession will eventually surface as a
+      // rejection here; ignore it.
+    });
 
     // cycleSession should reject after ~5s (the production settle
     // timeout). Bound OUR wait at 7s so a regression visibly fails.

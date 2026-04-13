@@ -227,6 +227,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let currentRunSettled: Promise<void> = Promise.resolve();
   // let justified: mutable resolver for currentRunSettled, captured in run()
   let currentRunResolveSettled: (() => void) | undefined;
+  // #1742 loop-3 round 1: reference to the active stream generator so
+  // cycleSession()/dispose() can call .return() to fast-path the
+  // "iterated once then abandoned" case. Without this, an iterable
+  // whose consumer pulled at least one event before dropping the
+  // reference left `currentRunSettled` unresolved (the generator is
+  // suspended at `yield`, the finally never runs), and the next
+  // cycleSession would burn the full 5s settle timeout and falsely
+  // poison the runtime. Calling .return() on a suspended generator
+  // resumes it with a return instruction so the finally runs
+  // immediately. For wedged generators (stuck mid-await on a
+  // non-cooperative tool) the return() is queued and processed when
+  // the await finally resolves, so the existing timeout still
+  // bounds true wedge cases.
+  // let justified: mutable per-run reference, set in run() / cleared in finally
+  let currentGenerator: AsyncGenerator<EngineEvent> | undefined;
 
   // #1742: bounded fallback for cycleSession()/dispose() so a
   // non-cooperative tool/stream that ignores abort can't deadlock the
@@ -1375,6 +1390,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // cycleSession() / dispose() can safely proceed.
       currentRunResolveSettled?.();
       currentRunResolveSettled = undefined;
+      currentGenerator = undefined;
       running = false;
       runningEpoch = undefined;
 
@@ -1452,7 +1468,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // of attaching to the new session and running pre-clear input
       // against freshly cleared state.
       const runEpoch = sessionEpoch;
-      return { [Symbol.asyncIterator]: () => streamEvents(input, runEpoch) };
+      return {
+        [Symbol.asyncIterator]: () => {
+          // #1742 loop-3 round 1: capture the generator so cycleSession()
+          // / dispose() can call .return() to fast-path abandoned-after-
+          // iteration cleanup. The generator overwrites currentGenerator
+          // for itself on first iteration (via the same closure since
+          // we set it here at iterator creation, before any consumer
+          // .next() can race in).
+          const gen = streamEvents(input, runEpoch);
+          currentGenerator = gen;
+          return gen;
+        },
+      };
     },
 
     cycleSession: async (): Promise<void> => {
@@ -1501,6 +1529,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           //   const it = runtime.run(...); await runtime.cycleSession();
           // leaves the runtime ready for a fresh submit.
           if (running && currentRunResolveSettled !== undefined) {
+            // #1742 loop-3 round 1: signal the active generator to
+            // unwind. If the consumer abandoned the iterator after a
+            // few events (suspended at a `yield`), .return() runs the
+            // finally immediately — no 5s timeout. If the generator is
+            // mid-await on a wedged tool, .return() is queued and the
+            // existing timeout still bounds the wait.
+            try {
+              void currentGenerator?.return?.(undefined);
+            } catch {
+              // .return() rejects are non-fatal — the await below
+              // is the source of truth for settle.
+            }
             const result = await awaitSettleOrTimeout();
             if (result === "timeout") {
               throw KoiRuntimeError.from(
@@ -1633,6 +1673,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // The host is responsible for process-level cleanup
       // (e.g. SIGKILL the wedged tool) before recreating a runtime.
       if (running && currentRunResolveSettled !== undefined) {
+        // #1742 loop-3 round 1: same fast-path as cycleSession —
+        // signal the active generator to unwind so abandoned-after-
+        // iteration callers don't pay the 5s timeout.
+        try {
+          void currentGenerator?.return?.(undefined);
+        } catch {
+          // .return() rejects are non-fatal.
+        }
         const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
           poisoned = true;
