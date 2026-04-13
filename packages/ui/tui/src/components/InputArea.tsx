@@ -13,7 +13,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, on, Show } from "solid-js";
+import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import { detectSlashPrefix } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
 import { readClipboardImage } from "../utils/clipboard.js";
@@ -81,6 +81,33 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   // #11: track attached images (component-local, not in TuiState)
   const [attachedImages, setAttachedImages] = createSignal<readonly ClipboardImage[]>([]);
 
+  // #1744: keypress events can drain through the renderer's KeyHandler after the
+  // textarea's underlying EditBuffer has been destroyed during shutdown. Reads on
+  // a destroyed buffer throw "EditBuffer is destroyed". Drop the ref and bail out
+  // of the keypress callback once the component is being torn down so neither
+  // reads nor writes hit a dead buffer.
+  let disposed = false;
+  onCleanup(() => {
+    disposed = true;
+    textareaRef = null;
+  });
+  function safeText(): string {
+    if (disposed || textareaRef === null) return "";
+    try {
+      return textareaRef.plainText;
+    } catch {
+      return "";
+    }
+  }
+  function safeSetText(text: string): void {
+    if (disposed || textareaRef === null) return;
+    try {
+      textareaRef.setText(text);
+    } catch {
+      /* buffer destroyed during teardown — drop the write */
+    }
+  }
+
   // `let` justified: mutable mirror of props.disabled for useKeyboard callback.
   // useKeyboard registers its callback once via onMount (OpenTUI pattern).
   // Reading props.disabled directly inside that callback may not trigger Solid's
@@ -97,7 +124,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     on(
       () => props.clearTrigger,
       () => {
-        textareaRef?.setText("");
+        safeSetText("");
         props.onSlashDetected(null);
       },
       { defer: true },
@@ -105,7 +132,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   );
 
   useKeyboard((key: KeyEvent) => {
-    if (!props.focused || disabledRef) return;
+    if (disposed || !props.focused || disabledRef) return;
 
     // #11: Ctrl+V — check clipboard for image before normal paste
     if (key.ctrl && key.name === "v") {
@@ -118,7 +145,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       // Don't prevent default — let terminal paste text too if present
     }
 
-    const currentText = textareaRef?.plainText ?? "";
+    const currentText = safeText();
     const result = processInputKey(key, currentText);
 
     switch (result.kind) {
@@ -138,7 +165,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         if (result.text.trim() !== "") {
           props.onSubmit(result.text);
         }
-        textareaRef?.setText("");
+        safeSetText("");
         props.onSlashDetected(null);
         props.onAtDetected?.(null);
         setAttachedImages([]);
@@ -146,7 +173,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       }
       case "clear-line":
         key.preventDefault();
-        textareaRef?.setText("");
+        safeSetText("");
         props.onSlashDetected(null);
         props.onAtDetected?.(null);
         setAttachedImages([]);
@@ -161,7 +188,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         // API — if a future version defers textarea updates asynchronously,
         // replace this with an onInput/onChange callback on <textarea> instead.
         queueMicrotask(() => {
-          const text = textareaRef?.plainText ?? "";
+          const text = safeText();
           props.onSlashDetected(detectSlashPrefix(text));
           props.onAtDetected?.(detectAtPrefix(text));
         });
@@ -170,7 +197,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       case "backspace":
       case "delete-word": {
         queueMicrotask(() => {
-          const text = textareaRef?.plainText ?? "";
+          const text = safeText();
           props.onSlashDetected(detectSlashPrefix(text));
           props.onAtDetected?.(detectAtPrefix(text));
         });
@@ -178,7 +205,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       }
       case "history-up":
       case "history-down": {
-        const text = textareaRef?.plainText ?? "";
+        const text = safeText();
         // Skip history when:
         // - Multiline input: let textarea handle normal caret movement
         // - Slash overlay active: let overlay own Up/Down for selection
@@ -191,7 +218,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           const direction = result.kind === "history-up" ? "up" : "down";
           const historyText = props.onHistoryNav(direction, text);
           if (historyText !== null) {
-            textareaRef?.setText(historyText);
+            safeSetText(historyText);
             // Recompute slash state after programmatic text replacement
             // so the overlay stays in sync with the buffer contents
             queueMicrotask(() => {
