@@ -214,34 +214,37 @@ export interface ResumedSession {
 export async function resumeSessionFromJsonl(
   rawId: string,
   jsonlTranscript: SessionTranscript,
+  sessionsDir: string,
 ): Promise<
   | { readonly ok: true; readonly value: ResumedSession }
   | { readonly ok: false; readonly error: string }
 > {
   const sid = sessionId(rawId);
-  const result = await resumeForSession(sid, jsonlTranscript);
-  if (!result.ok) {
-    return { ok: false, error: result.error.message };
-  }
-  // Fail closed for nonexistent / empty sessions. The JSONL store
-  // returns `{ ok: true, entries: [] }` for a missing file (to
-  // support the "session not started yet" case at append time),
-  // which means a typoed or stale `--resume <id>` would otherwise
-  // succeed silently: the runtime would bind to the mistyped id
-  // and start writing to a brand-new transcript under it, and the
-  // user would see an empty TUI instead of the expected history.
-  // That is a wrong-target fork that looks identical to "my
-  // session vanished". Surface it as an explicit failure so the
-  // caller can prompt the user to check the id.
-  if (result.value.messages.length === 0) {
+  // Fail closed for nonexistent session files. The JSONL store
+  // returns `{ ok: true, entries: [] }` for a missing file so
+  // that appends-to-new-sessions can work, which means a typoed
+  // or stale `--resume <id>` would otherwise succeed silently
+  // and fork into a new blank transcript under the mistyped id.
+  // Valid-but-empty sessions (a file that exists but contains
+  // zero turns because of a prior `/clear` truncate) must still
+  // resume successfully, so we distinguish the two states by
+  // probing filesystem existence directly — Bun.file exposes
+  // an explicit `exists()` that the SessionTranscript interface
+  // does not.
+  const transcriptPath = `${sessionsDir}/${encodeURIComponent(String(sid))}.jsonl`;
+  const fileExists = await Bun.file(transcriptPath).exists();
+  if (!fileExists) {
     return {
       ok: false,
       error:
-        `no transcript found for session id "${rawId}" — ` +
-        "the file either does not exist or contains no turns. " +
+        `no transcript found for session id "${rawId}" at ${transcriptPath}. ` +
         "Check the id (the post-quit hint prints the exact command) or " +
         "use `koi sessions list` to see saved sessions.",
     };
+  }
+  const result = await resumeForSession(sid, jsonlTranscript);
+  if (!result.ok) {
+    return { ok: false, error: result.error.message };
   }
   return {
     ok: true,

@@ -469,7 +469,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // session as a fresh conversation.
   let resumedMessagesToPrime: readonly InboundMessage[] = [];
   if (flags.resume !== undefined) {
-    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript);
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
     if (!resumeResult.ok) {
       process.stderr.write(
         `koi tui: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
@@ -728,16 +728,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — replaced on each reset
   let resetBarrier: Promise<void> = Promise.resolve();
 
-  // Latches to `true` when `jsonlTranscript.truncate()` fails during
-  // a clear/new reset. Shutdown checks this flag (not resetBarrier
-  // rejection) to suppress the post-quit resume hint — advertising a
-  // session as resumable when its durable clear didn't land would
-  // silently re-expose the pre-clear history on the next
-  // `koi tui --resume`. Using a flag instead of a rejected promise
-  // lets `onSubmit` and other `await resetBarrier` sites proceed
-  // cleanly after a failed clear; the visible error is still
-  // surfaced via `store.dispatch({ code: "SESSION_CLEAR_PERSIST_FAILED" })`.
-  // let: justified — set once on first failed truncate, never unset.
+  // Reflects the most recent `jsonlTranscript.truncate()` outcome
+  // during a clear/new reset. Shutdown checks this flag (not
+  // resetBarrier rejection) to suppress the post-quit resume hint:
+  // advertising a session as resumable when its durable clear
+  // didn't land would silently re-expose the pre-clear history on
+  // the next `koi tui --resume`. Using a flag instead of a
+  // rejected promise lets `onSubmit` and other `await resetBarrier`
+  // sites proceed cleanly after a failed clear; the visible error
+  // is still surfaced via
+  // `store.dispatch({ code: "SESSION_CLEAR_PERSIST_FAILED" })`.
+  //
+  // Reset at the top of each `resetConversation()` call so a
+  // subsequent successful clear re-enables the hint. A sticky
+  // process-wide flag would permanently strand the user if a
+  // transient I/O blip during one clear happened to precede hours
+  // of later work — the shutdown hint would be withheld even
+  // though the final session state is perfectly resumable.
+  // let: justified — toggled per clear attempt.
   let clearPersistFailed = false;
 
   // Tracks whether the user has issued `agent:clear` or `session:new`
@@ -814,6 +822,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // post-quit resume hint points at a file whose identity no
   // longer matches that work.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
+    // Clear any stale flag from a PREVIOUS reset — if the
+    // current truncate succeeds, shutdown's hint suppression
+    // should not fire on the basis of an earlier transient
+    // failure. The new truncate path below will re-set the flag
+    // if and only if THIS reset's durable clear fails.
+    clearPersistFailed = false;
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();

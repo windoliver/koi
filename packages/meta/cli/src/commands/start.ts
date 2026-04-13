@@ -222,7 +222,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let sid = sessionId(crypto.randomUUID());
 
   if (flags.resume !== undefined) {
-    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript);
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
     if (!resumeResult.ok) {
       process.stderr.write(
         `koi start: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
