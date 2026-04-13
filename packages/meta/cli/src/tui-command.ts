@@ -955,8 +955,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           await runtimeReady.catch(() => {
             /* runtime init errors are reported upstream via add_error */
           });
-          if (runtimeHandle !== null) {
-            runtimeHandle.transcript.splice(0);
+          // TS narrows the captured `runtimeHandle` to `null`
+          // inside this branch because the enclosing
+          // `if (runtimeHandle !== null) { ... } else { ... }`
+          // check narrowed it there. After the `await runtimeReady`
+          // above, the `.then(handle => { runtimeHandle = handle; })`
+          // side of the promise has definitely run, but TS can't
+          // see that. Read the value through a function boundary
+          // so TS widens it back to the full `TuiRuntimeHandle | null`
+          // type.
+          const handleAfterReady = ((): TuiRuntimeHandle | null => runtimeHandle)();
+          if (handleAfterReady !== null) {
+            handleAfterReady.transcript.splice(0);
           }
           if (shouldTruncate) {
             const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
