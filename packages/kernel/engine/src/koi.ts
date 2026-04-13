@@ -1281,6 +1281,18 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     dispose: async (): Promise<void> => {
       if (disposed) return;
       disposed = true;
+      // #1742: if a run is still in flight, wait for its finally to
+      // unwind before tearing down session/adapter state. Without this,
+      // dispose() races the active stream's middleware/adapter cleanup
+      // and can flush session-scoped state (or destroy the adapter
+      // backing an active iterator) underneath an in-progress event.
+      // Mirrors the same wait-for-settle pattern as cycleSession().
+      // Caller is responsible for first aborting the run signal so the
+      // stream actually terminates; otherwise dispose() will block until
+      // the run completes naturally.
+      if (running) {
+        await currentRunSettled;
+      }
       // #1742: session lifecycle ends when the runtime is disposed — not at
       // the end of every run(). Fire onSessionEnd here so middleware
       // session-scoped state (caches, always-allow grants, trackers) is

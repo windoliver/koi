@@ -1286,12 +1286,28 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
-    // #1742: each user submit in the TUI is a logically fresh request.
-    // Opt in to per-run iteration budget reset so the default 100k token
-    // / 5 min / 25 turn caps apply per submit instead of accumulating
-    // across the runtime lifetime. Spawn / error-rate state remains
-    // runtime-scoped.
+    // #1742: each user submit in the TUI is a logically fresh request,
+    // so opt in to per-iteration budget reset for turn count and
+    // duration. Token usage and accumulated cost remain CUMULATIVE
+    // across the runtime lifetime so operators retain a real cap on
+    // total spend per process.
+    //
+    // The cumulative token ceiling is raised to 5M (≈ $15-75 worst case
+    // on Sonnet 4.6, sized for a long interactive session) because the
+    // 100k default is too tight for any moderately-long TUI use. Cost
+    // tracking is left at default-disabled (`maxCostUsd: 0`) — wire it
+    // up explicitly when you want a hard dollar cap.
     resetIterationBudgetPerRun: true,
+    governance: {
+      iteration: {
+        // Per-iteration UX budgets (reset on every run via
+        // resetIterationBudgetPerRun above):
+        maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
+        maxDurationMs: 300_000, // 5 min per submit
+        // Cumulative spend ceiling (NOT reset by iteration_reset):
+        maxTokens: 5_000_000,
+      },
+    },
   });
 
   return {

@@ -412,6 +412,78 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEnd).toHaveBeenCalledTimes(2);
   });
 
+  test("#1742: dispose waits for an in-flight run to settle before firing onSessionEnd", async () => {
+    // dispose() must not race the streamEvents finally — otherwise it
+    // can flush session-scoped middleware state or tear down the adapter
+    // underneath an in-progress event. Same wait-for-settle pattern as
+    // cycleSession.
+    // let justified: mutable flag set by adapter generator's finally
+    let adapterFinallyDone = false;
+    // let justified: mutable flag confirming sessionEnd order
+    let sessionEndFiredAfterAdapter = false;
+    const adapter: EngineAdapter = {
+      engineId: "abort-on-signal-dispose",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: (input) => ({
+        async *[Symbol.asyncIterator]() {
+          try {
+            yield { kind: "text_delta" as const, delta: "x" };
+            await new Promise<void>((resolve, reject) => {
+              const signal = input.signal;
+              if (signal === undefined) {
+                resolve();
+                return;
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  const err = new Error("aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                },
+                { once: true },
+              );
+            });
+          } finally {
+            adapterFinallyDone = true;
+          }
+        },
+      }),
+    };
+    const sessionEndFn = mock(() => {
+      sessionEndFiredAfterAdapter = adapterFinallyDone;
+      return Promise.resolve();
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEndFn },
+      ],
+      loopDetection: false,
+    });
+
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* AbortError expected */
+      }
+    })();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // Issue dispose in parallel with abort. dispose must wait for the
+    // run's finally to unwind before firing onSessionEnd.
+    const disposePromise = runtime.dispose();
+    controller.abort();
+    await drainPromise;
+    await disposePromise;
+
+    expect(sessionEndFn).toHaveBeenCalledTimes(1);
+    expect(sessionEndFiredAfterAdapter).toBe(true);
+  });
+
   test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
     // Hosts typically call cycleSession() right after aborting the active
     // run, while the run's finally block is still draining. cycleSession

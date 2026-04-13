@@ -92,12 +92,17 @@ export type GovernanceEvent =
   | { readonly kind: "tool_error"; readonly toolName: string }
   | { readonly kind: "tool_success"; readonly toolName: string }
   /**
-   * Reset per-run iteration counters (turns, tokens, accumulated cost,
-   * duration start) to give each `runtime.run()` invocation a fresh
-   * iteration budget. Spawn counts and rolling error-rate windows are
-   * intentionally NOT reset because they are session/runtime-scoped
-   * resources, not per-run budgets. Fired by `@koi/engine` at the start
-   * of each `run()` (#1742). Hosts can also fire it manually.
+   * Reset per-iteration UX budgets — turn count and duration start —
+   * to give each `runtime.run()` invocation a fresh model-call window
+   * and wall-clock window. Token usage, accumulated cost, spawn counts
+   * and rolling error-rate windows are intentionally NOT reset because
+   * they back runtime-wide safety/spend tracking that operators rely on
+   * for runaway containment. The split lets interactive hosts (TUI)
+   * give each user submit its own turn/duration budget while preserving
+   * cumulative total-spend ceilings for the whole runtime lifetime.
+   * Fired by `@koi/engine` at the start of each `run()` when the host
+   * opts in via `CreateKoiOptions.resetIterationBudgetPerRun` (#1742).
+   * Hosts can also fire it manually.
    */
   | { readonly kind: "iteration_reset" };
 

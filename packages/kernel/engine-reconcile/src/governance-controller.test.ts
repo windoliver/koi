@@ -231,38 +231,48 @@ describe("createGovernanceController", () => {
     expect(r?.current).toBe(80);
   });
 
-  test("#1742: iteration_reset clears per-run iteration counters but preserves spawn/error windows", async () => {
-    // Tight per-run budget so we can verify the reset re-opens it.
+  test("#1742: iteration_reset resets turn count + duration but preserves cumulative tokens/cost/spawns/error-window", async () => {
+    // Tight per-iteration turn budget + a generous (cumulative) token
+    // ceiling so we can verify that the reset re-opens the per-iteration
+    // window WITHOUT clearing runtime-wide spend tracking.
     const ctrl = createGovernanceController({
-      iteration: { maxTurns: 3, maxTokens: 100, maxDurationMs: 60_000 },
+      iteration: { maxTurns: 3, maxTokens: 1_000_000, maxDurationMs: 60_000 },
       errorRate: { windowMs: 60_000, threshold: 0.5, minSampleSize: 2 },
+      cost: { maxCostUsd: 10, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
     });
 
-    // Burn through the per-run budget...
+    // Burn through the per-iteration turn budget and accrue runtime-wide
+    // state (tokens, cost, spawns, error rate).
     ctrl.record({ kind: "turn" });
     ctrl.record({ kind: "turn" });
     ctrl.record({ kind: "turn" });
-    ctrl.record({ kind: "token_usage", count: 99 });
-    // ...and accrue runtime-scoped state we want to keep.
+    ctrl.record({ kind: "token_usage", count: 50_000, inputTokens: 30_000, outputTokens: 20_000 });
     ctrl.record({ kind: "spawn", depth: 1 });
     ctrl.record({ kind: "tool_error", toolName: "t" });
     ctrl.record({ kind: "tool_success", toolName: "t" });
 
     expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(false);
     const tokenBefore = ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE);
-    expect(tokenBefore?.current).toBe(99);
+    expect(tokenBefore?.current).toBe(50_000);
+    const costBefore = ctrl.reading(GOVERNANCE_VARIABLES.COST_USD);
+    expect(costBefore?.current).toBeGreaterThan(0);
     const spawnBefore = ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT);
     expect(spawnBefore?.current).toBe(1);
 
-    // Per-run reset (fired by createKoi at the start of each runtime.run()).
+    // Per-iteration reset (fired by createKoi at the start of each runtime.run()).
     ctrl.record({ kind: "iteration_reset" });
 
-    // Iteration counters cleared:
+    // Turn count cleared (per-iteration UX budget reopens):
     expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);
     expect(ctrl.reading(GOVERNANCE_VARIABLES.TURN_COUNT)?.current).toBe(0);
-    expect(ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(0);
 
-    // Runtime-scoped state preserved:
+    // Runtime-wide spend / safety state PRESERVED — operators still get a
+    // hard ceiling on total tokens and cost across the whole runtime.
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(50_000);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.COST_USD)?.current).toBeCloseTo(
+      costBefore?.current ?? 0,
+      6,
+    );
     expect(ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
     expect(ctrl.reading(GOVERNANCE_VARIABLES.ERROR_RATE)?.current).toBeCloseTo(0.5);
   });
