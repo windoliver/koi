@@ -618,6 +618,109 @@ describe("reduce — engine_event — tool args cap", () => {
 });
 
 // ---------------------------------------------------------------------------
+// tool_execution_started — permission-approval timer reset (#1759)
+// ---------------------------------------------------------------------------
+
+describe("reduce — tool_execution_started (approval-timer reset)", () => {
+  test("resets startedAt on the most recent running tool block matching toolName", async () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const afterStart = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "Bash",
+        callId: testCallId("call-1"),
+      }),
+    );
+    const msgStart = lastMessage(afterStart);
+    if (msgStart.kind !== "assistant") throw new Error("expected assistant");
+    const startedBlock = blockAt(msgStart, 0);
+    if (startedBlock.kind !== "tool_call") throw new Error("expected tool_call");
+    const initialStart = startedBlock.startedAt;
+    expect(initialStart).toBeDefined();
+
+    // Simulate user reading the permission prompt — advance wall-clock at
+    // least 5ms so the post-approval startedAt is strictly later.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const afterApproval = reduce(afterStart, {
+      kind: "tool_execution_started",
+      toolId: "Bash",
+    });
+    const msgApproved = lastMessage(afterApproval);
+    if (msgApproved.kind !== "assistant") throw new Error("expected assistant");
+    const approvedBlock = blockAt(msgApproved, 0);
+    if (approvedBlock.kind !== "tool_call") throw new Error("expected tool_call");
+    expect(approvedBlock.startedAt).toBeDefined();
+    expect(approvedBlock.startedAt ?? 0).toBeGreaterThan(initialStart ?? 0);
+  });
+
+  test("no-op when no running tool block matches the toolName", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    const afterStart = reduce(
+      state,
+      engineEvent({
+        kind: "tool_call_start",
+        toolName: "fs_read",
+        callId: testCallId("call-1"),
+      }),
+    );
+    const afterApproval = reduce(afterStart, {
+      kind: "tool_execution_started",
+      toolId: "Bash", // different tool
+    });
+    // fs_read block is unchanged
+    expect(afterApproval).toBe(afterStart);
+  });
+
+  test("targets the most recent running block when multiple tool blocks share a toolName", () => {
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks: [] })],
+    });
+    // Two sequential Bash calls — only the newer one is "running"
+    const blocks: TuiAssistantBlock[] = [
+      {
+        kind: "tool_call",
+        callId: "call-old",
+        toolName: "Bash",
+        status: "complete",
+        startedAt: 1,
+      },
+      {
+        kind: "tool_call",
+        callId: "call-new",
+        toolName: "Bash",
+        status: "running",
+        startedAt: 1_000,
+      },
+    ];
+    const withBoth = stateWith({
+      ...state,
+      messages: [assistantMsg("", { id: "assistant-0", streaming: true, blocks })],
+    });
+    const after = reduce(withBoth, {
+      kind: "tool_execution_started",
+      toolId: "Bash",
+    });
+    const msg = lastMessage(after);
+    if (msg.kind !== "assistant") throw new Error("expected assistant");
+    const oldBlock = blockAt(msg, 0);
+    const newBlock = blockAt(msg, 1);
+    if (oldBlock.kind !== "tool_call" || newBlock.kind !== "tool_call") {
+      throw new Error("expected tool_call");
+    }
+    // Completed block untouched
+    expect(oldBlock.startedAt).toBe(1);
+    // Running block reset to recent wall-clock
+    expect(newBlock.startedAt ?? 0).toBeGreaterThan(1_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tool result cap — via tool_result event (not tool_call_end)
 // ---------------------------------------------------------------------------
 

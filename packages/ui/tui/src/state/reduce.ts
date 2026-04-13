@@ -388,6 +388,12 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const initialArgs =
         event.args !== undefined ? capOutput(JSON.stringify(event.args)) : undefined;
 
+      // startedAt is set here as a best-effort initial timestamp for the
+      // common fast-path (allow / cached-allow decisions, no user prompt).
+      // The permission bridge dispatches `tool_execution_started` after a
+      // user actually approves an ask-path prompt, which RESETS this
+      // timestamp to Date.now() so the elapsed-time counter doesn't include
+      // the user's read/decide time. (See #1759.)
       const newBlock: TuiAssistantBlock = {
         kind: "tool_call",
         callId,
@@ -701,6 +707,36 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         return state;
       }
       return { ...state, modal: null };
+    }
+
+    case "tool_execution_started": {
+      // Reset startedAt on the most recent running tool-call block whose
+      // toolName matches. Dispatched by the permission bridge after a user
+      // approves a permission prompt, so the elapsed-time counter reflects
+      // actual tool execution time — not the user's read/decide time. (#1759)
+      const found = findLastAssistant(state.messages);
+      if (found === undefined) return state;
+      // Walk blocks from the end and find the newest running tool_call
+      // matching the toolName. This is the only block that could be waiting
+      // on approval — approvals are serialized per tool call.
+      const blocks = found.msg.blocks;
+      let targetIdx = -1;
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b?.kind === "tool_call" && b.status === "running" && b.toolName === action.toolId) {
+          targetIdx = i;
+          break;
+        }
+      }
+      if (targetIdx < 0) return state;
+      const updatedBlocks = replaceAt(blocks, targetIdx, {
+        ...(blocks[targetIdx] as ToolCallBlock),
+        startedAt: Date.now(),
+      });
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+      };
     }
 
     case "set_session_info": {

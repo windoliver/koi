@@ -290,6 +290,71 @@ describe("permission bridge — queued lifetime timer", () => {
 });
 
 // ---------------------------------------------------------------------------
+// tool_execution_started dispatch (#1759)
+// ---------------------------------------------------------------------------
+
+describe("permission bridge — tool_execution_started dispatch", () => {
+  test("respond with allow dispatches tool_execution_started with the toolId", () => {
+    const captured: Array<{ readonly kind: string; readonly toolId?: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string; readonly toolId?: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "allow" });
+
+    const dispatched = captured.find((a) => a.kind === "tool_execution_started");
+    expect(dispatched).toBeDefined();
+    expect(dispatched?.toolId).toBe("Bash");
+    local.dispose();
+  });
+
+  test("respond with deny does NOT dispatch tool_execution_started", () => {
+    const captured: Array<{ readonly kind: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "deny", reason: "nope" });
+
+    expect(captured.some((a) => a.kind === "tool_execution_started")).toBe(false);
+    local.dispose();
+  });
+
+  test("infinite timeout: handler never auto-denies, waits until respond is called", async () => {
+    const local = createPermissionBridge({ store, timeoutMs: Number.POSITIVE_INFINITY });
+    const promise = local.handler(makeRequest({ toolId: "Bash" }));
+    // Yield the event loop a few times — with a finite timer this would fire.
+    await new Promise<void>((r) => setTimeout(r, 20));
+    expect(local.pendingCount()).toBe(1);
+
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+    local.respond(requestId, { kind: "allow" });
+
+    const decision = await promise;
+    expect(decision).toEqual({ kind: "allow" });
+    expect(local.pendingCount()).toBe(0);
+    local.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Negative / edge cases
 // ---------------------------------------------------------------------------
 
