@@ -28,6 +28,7 @@
  *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
+import { writeSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -685,6 +686,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     try {
       await appHandle?.stop();
+      // Print the resume hint here — after the TUI renderer has
+      // released the alt screen but before any potentially-slow
+      // runtime teardown — so the user always sees it, even if a
+      // later teardown step hangs and the hard-exit failsafe fires
+      // from outside this try/finally.
+      // Loop mode (--until-pass) intentionally skips transcript
+      // persistence, so there is nothing to resume from.
+      // writeSync on fd 1 is used because the eventual process.exit()
+      // aborts before async stdout flushes, which would otherwise
+      // swallow the hint entirely.
+      if (!isLoopMode) {
+        try {
+          writeSync(1, formatResumeHint(tuiSessionId));
+        } catch {
+          // stdout may be closed during abnormal teardown — swallow.
+        }
+      }
       batcher.dispose();
       if (runtimeHandle !== null) {
         // Only pay the SIGTERM→SIGKILL escalation wait when we actually
@@ -697,12 +715,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       approvalStore?.close();
     } finally {
-      // Loop mode (--until-pass) intentionally skips transcript
-      // persistence, so there is nothing to resume from. Only print
-      // the hint when the session has a resumable JSONL transcript.
-      if (!isLoopMode) {
-        process.stdout.write(formatResumeHint(tuiSessionId));
-      }
       process.exit(exitCode);
     }
   };
