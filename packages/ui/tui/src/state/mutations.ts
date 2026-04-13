@@ -602,6 +602,9 @@ export function mutate(state: Draft, action: TuiAction): void {
           msg.metadata !== undefined &&
           Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
         if (hasToolCalls) continue;
+        // See reduce.ts — privileged system:* senders leak prompt
+        // and governance internals and must not be rendered as chat.
+        if (msg.senderId.startsWith("system:")) continue;
         const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
           block.kind === "text"
             ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)

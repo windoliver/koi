@@ -718,8 +718,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
-      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(() => {
+      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(async () => {
         runtimeHandle?.transcript.splice(0);
+        // Truncate the on-disk JSONL so a subsequent `--resume` of
+        // this session id cannot resurrect the pre-clear conversation.
+        // Without this, `agent:clear` / `session:new` only wipe
+        // in-memory state — the durable transcript still holds the
+        // old turns and they reappear on the next resume, silently
+        // breaking any user who treats clear as a privacy or context
+        // boundary. Truncate errors are surfaced as a store error so
+        // the operator knows the on-disk reset failed and can decide
+        // whether to trust the in-memory clear.
+        const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+        if (!truncateResult.ok) {
+          store.dispatch({
+            kind: "add_error",
+            code: "SESSION_CLEAR_PERSIST_FAILED",
+            message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+          });
+        }
       });
     }
   };

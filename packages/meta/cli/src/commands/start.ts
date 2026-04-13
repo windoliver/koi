@@ -420,11 +420,21 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   //   3. If the round 33 concern materializes, users can disable
   //      it explicitly by building their own runtime; the default
   //      stays safe.
+  // Thread the resolved session id (`sid`) into createKoi as the
+  // factory-level override so the engine routes the session-transcript
+  // middleware to the SAME JSONL file we already pre-populated with
+  // the resumed messages. Without this, the runtime mints a fresh
+  // `agent:{agentId}:{uuid}` internally and new turns get written to
+  // a different file — the printed `--resume` command then resumes a
+  // partial session that is missing everything after the fork point.
+  // Skipped in loop mode because loop mode intentionally disables
+  // session-transcript persistence entirely (see isLoopMode above).
   const runtime = await createKoi({
     manifest: { name: "koi", version: "0.0.1", model: { name: model } },
     adapter: engineAdapter,
     middleware,
     providers,
+    ...(isLoopMode ? {} : { sessionId: sid }),
   });
 
   const channel = createCliChannel({ theme: "default" });

@@ -749,6 +749,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
           msg.metadata !== undefined &&
           Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
         if (hasToolCalls) continue;
+        // Privileged engine-injected messages (system:doom-loop,
+        // system:capabilities, system:goal, …) must never be surfaced
+        // as assistant chat — they leak governance / prompt internals.
+        // The session-transcript middleware persists their original
+        // senderId for request-mapper round-tripping; the UI must
+        // drop them unconditionally on rehydration.
+        if (msg.senderId.startsWith("system:")) continue;
         // Plain assistant (or privileged system:*) text turn — fold
         // non-text content blocks to `[<kind>]` placeholders so image
         // or file blocks don't vanish silently.
