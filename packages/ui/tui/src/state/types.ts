@@ -98,6 +98,13 @@ export interface SessionInfo {
   readonly modelName: string;
   readonly provider: string;
   readonly sessionName: string;
+  /**
+   * Stable identifier for the current TUI process's session.
+   * Used by the status bar (short prefix) and the post-quit resume
+   * hint so the user can pick the session back up with
+   * `koi start --resume <id>`.
+   */
+  readonly sessionId: string;
 }
 
 /** Summary of a saved session for the session picker. */
@@ -380,11 +387,12 @@ export type TuiAction =
       readonly decision: ApprovalDecision;
     }
   | {
-      /** Set by the host on session start (model name, provider, session name). */
+      /** Set by the host on session start (model name, provider, session name, session id). */
       readonly kind: "set_session_info";
       readonly modelName: string;
       readonly provider: string;
       readonly sessionName: string;
+      readonly sessionId: string;
       /** Max context tokens for the model — used for context % indicator (#17). */
       readonly maxTokens?: number | undefined;
     }

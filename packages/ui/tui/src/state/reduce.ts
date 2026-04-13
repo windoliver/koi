@@ -708,6 +708,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         modelName: action.modelName,
         provider: action.provider,
         sessionName: action.sessionName,
+        sessionId: action.sessionId,
       };
       const maxContextTokens =
         action.maxTokens !== undefined ? action.maxTokens : state.maxContextTokens;

@@ -424,6 +424,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
+  // Populate the status-bar session chip immediately so users see the
+  // same identifier the post-quit resume hint will emit, instead of the
+  // placeholder "no session" label. Provider is a best-effort label
+  // derived from the resolved base URL (or "openrouter" when omitted,
+  // which matches resolveApiConfig's default).
+  const provider = ((): string => {
+    if (baseUrl === undefined) return "openrouter";
+    try {
+      const host = new URL(baseUrl).hostname;
+      if (host.includes("openrouter")) return "openrouter";
+      if (host.includes("openai.com")) return "openai";
+      return host;
+    } catch {
+      return "custom";
+    }
+  })();
+  store.dispatch({
+    kind: "set_session_info",
+    modelName,
+    provider,
+    sessionName: "",
+    sessionId: tuiSessionId,
+  });
+
   // ---------------------------------------------------------------------------
   // 3. Assemble runtime (A1-A: delegate to createTuiRuntime)
   // ---------------------------------------------------------------------------

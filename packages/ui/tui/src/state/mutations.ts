@@ -573,6 +573,7 @@ export function mutate(state: Draft, action: TuiAction): void {
         modelName: action.modelName,
         provider: action.provider,
         sessionName: action.sessionName,
+        sessionId: action.sessionId,
       };
       if (action.maxTokens !== undefined) {
         (state as { maxContextTokens: number }).maxContextTokens = action.maxTokens;
