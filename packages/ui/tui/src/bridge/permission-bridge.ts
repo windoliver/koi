@@ -129,6 +129,15 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
   // Pending approvals keyed by requestId
   const pending = new Map<string, PendingApproval>();
 
+  // Monotonically increasing counter assigned per `handleApproval` call —
+  // shown to the user in the prompt header so consecutive prompts (which
+  // the engine often serializes one-at-a-time, see #1759) have a visibly
+  // different number. Without this, the user can't tell whether the prompt
+  // that appeared after pressing `y` is a NEW tool call or a re-render of
+  // the same one. Process-scoped, never persisted.
+  // let: justified — incremented per prompt
+  let promptSequenceCounter = 0;
+
   // Queue of prompt data waiting to be shown (front = currently displayed)
   const queue: PermissionPromptData[] = [];
 
@@ -154,7 +163,18 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
   function showFrontOrDismiss(): void {
     const front = queue[0];
     if (front !== undefined) {
-      store.dispatch({ kind: "set_modal", modal: { kind: "permission-prompt", prompt: front } });
+      // Annotate the front prompt with its 1-indexed position in the
+      // pending queue (always 1 — the front is the visible one) and the
+      // total depth, so the PermissionPrompt component can render a
+      // "(1 of N)" hint. Without this, users hit y to approve, see the
+      // next queued prompt pop up, and assume the prior approval failed.
+      // (#1759)
+      const decorated: PermissionPromptData =
+        queue.length > 1 ? { ...front, queuePosition: 1, queueDepth: queue.length } : front;
+      store.dispatch({
+        kind: "set_modal",
+        modal: { kind: "permission-prompt", prompt: decorated },
+      });
       // Start timeout now that this prompt is visible to the user
       const entry = pending.get(front.requestId);
       if (entry !== undefined) {
@@ -184,6 +204,7 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
       // requests are visually prominent even if the caller forgets to wire classifyRisk.
       const riskLevel = classifyRisk !== undefined ? classifyRisk(request) : "high";
 
+      promptSequenceCounter += 1;
       const promptData: PermissionPromptData = {
         requestId,
         toolId: request.toolId,
@@ -192,6 +213,7 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
         riskLevel,
         metadata: request.metadata,
         permanentAvailable,
+        sequenceNumber: promptSequenceCounter,
       };
 
       // Backstop lifetime timer — starts NOW at enqueue time, matching the engine's

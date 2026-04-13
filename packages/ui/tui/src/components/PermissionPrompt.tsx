@@ -112,6 +112,24 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       <box flexDirection="row" gap={1}>
         <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
         <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+        {/* Counter hint — shows queue position when multiple prompts are
+            pending in the bridge queue, OR the monotonically incrementing
+            sequence number when prompts arrive one at a time (the common
+            engine-serialized case). Lets the user tell that the prompt
+            that appeared after pressing y is a NEW tool call, not a
+            re-render of the same one. (#1759) */}
+        <Show
+          when={(props.prompt.queueDepth ?? 0) > 1}
+          fallback={
+            <Show when={props.prompt.sequenceNumber !== undefined}>
+              <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
+            </Show>
+          }
+        >
+          <text fg={COLORS.amber}>
+            {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
+          </text>
+        </Show>
       </box>
 
       {/* Tool info */}

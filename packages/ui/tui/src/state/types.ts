@@ -56,6 +56,27 @@ export interface PermissionPromptData {
   readonly metadata?: JsonObject | undefined;
   /** Whether persistent "always" approval is available (store configured + user authenticated). */
   readonly permanentAvailable?: boolean | undefined;
+  /**
+   * 1-indexed position of this prompt in the bridge's pending queue at the
+   * moment it was dispatched. `undefined` when there is exactly one prompt
+   * in flight. Used by the PermissionPrompt component to render a
+   * "(1 of N)" hint so users can tell that a follow-up prompt after `y`
+   * is a *next* queued tool call, not a duplicate of the same call. (#1759)
+   */
+  readonly queuePosition?: number | undefined;
+  /** Total number of pending prompts at the moment of dispatch. */
+  readonly queueDepth?: number | undefined;
+  /**
+   * Monotonically-increasing counter of permission prompts the bridge has
+   * shown since process start. Distinct from `queuePosition` because the
+   * engine often serializes tool calls so the bridge sees them
+   * sequentially rather than queued — `queueDepth` is always 1 in that
+   * case and gives the user no way to tell that the next prompt is a
+   * NEW tool call rather than a re-render of the previous one. The
+   * sequence number is always rendered (e.g. `#7 → #8`) so consecutive
+   * prompts visibly differ. (#1759)
+   */
+  readonly sequenceNumber?: number | undefined;
 }
 
 /** Transient overlay that preserves the underlying view. */
