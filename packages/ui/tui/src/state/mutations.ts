@@ -581,6 +581,34 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
+    case "rehydrate_messages": {
+      // Mirrors the pure-reducer case in reduce.ts — wholesale replace
+      // of the visible message list at TUI startup when `--resume` is
+      // set. See reduce.ts for commentary on non-text block folding.
+      const rehydrated: TuiMessage[] = action.messages.map((msg, idx) => {
+        if (msg.senderId === "user") {
+          return {
+            kind: "user",
+            id: `resumed-user-${idx}`,
+            blocks: msg.content,
+          };
+        }
+        const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
+          block.kind === "text"
+            ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
+            : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
+        );
+        return {
+          kind: "assistant",
+          id: `resumed-assistant-${idx}`,
+          blocks: assistantBlocks,
+          streaming: false,
+        };
+      });
+      (state as { messages: readonly TuiMessage[] }).messages = rehydrated;
+      break;
+    }
+
     case "set_session_list": {
       const sorted = [...action.sessions].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
       (state as { sessions: readonly SessionSummary[] }).sessions = sorted.slice(0, MAX_SESSIONS);

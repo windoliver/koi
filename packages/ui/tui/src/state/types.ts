@@ -7,7 +7,7 @@
 
 import type { JsonObject } from "@koi/core/common";
 import type { EngineEvent } from "@koi/core/engine";
-import type { ContentBlock } from "@koi/core/message";
+import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
 
 // ---------------------------------------------------------------------------
@@ -395,6 +395,17 @@ export type TuiAction =
       readonly sessionId: string;
       /** Max context tokens for the model — used for context % indicator (#17). */
       readonly maxTokens?: number | undefined;
+    }
+  | {
+      /**
+       * Rehydrate the visible message list from a replayed session
+       * transcript. Dispatched once at TUI startup when the user passes
+       * `koi tui --resume <id>`. The reducer converts each InboundMessage
+       * to the TUI-local TuiMessage shape — conversion lives in the TUI
+       * package so InboundMessage never leaks into the reducer output.
+       */
+      readonly kind: "rehydrate_messages";
+      readonly messages: readonly InboundMessage[];
     }
   | {
       /** Injected by the host from persistence; TUI never performs I/O. */

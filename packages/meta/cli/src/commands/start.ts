@@ -41,11 +41,7 @@ import {
 } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
-import {
-  createJsonlTranscript,
-  createSessionTranscriptMiddleware,
-  resumeForSession,
-} from "@koi/session";
+import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -60,6 +56,7 @@ import {
   loadUserRegisteredHooks,
   type McpSetup,
   mergeUserAndPluginHooks,
+  resumeSessionFromJsonl,
 } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
@@ -221,14 +218,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     transcriptGeneration += 1;
   };
 
+  // let: justified — reassigned once on successful --resume
   let sid = sessionId(crypto.randomUUID());
 
   if (flags.resume !== undefined) {
-    const resumeSid = sessionId(flags.resume);
-    const resumeResult = await resumeForSession(resumeSid, jsonlTranscript);
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript);
     if (!resumeResult.ok) {
       process.stderr.write(
-        `koi start: cannot resume session "${flags.resume}" — ${resumeResult.error.message}\n`,
+        `koi start: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
       );
       return ExitCode.FAILURE;
     }
@@ -236,10 +233,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     for (const msg of resumeResult.value.messages) {
       transcript.push(msg);
     }
-    sid = resumeSid;
-    if (flags.verbose && resumeResult.value.issues.length > 0) {
+    sid = resumeResult.value.sid;
+    if (flags.verbose && resumeResult.value.issueCount > 0) {
       process.stderr.write(
-        `koi start: resumed with ${resumeResult.value.issues.length} repair issue(s)\n`,
+        `koi start: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
     }
   }

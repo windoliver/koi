@@ -1560,6 +1560,94 @@ describe("reduce — set_session_info", () => {
 });
 
 // ---------------------------------------------------------------------------
+// rehydrate_messages
+// ---------------------------------------------------------------------------
+
+describe("reduce — rehydrate_messages", () => {
+  test("replaces the message list wholesale on resume", () => {
+    const state = stateWith({
+      messages: [{ kind: "user", id: "pre-1", blocks: [{ kind: "text", text: "stale" }] }],
+    });
+    const next = reduce(state, {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hi" }],
+        },
+        {
+          senderId: "assistant",
+          timestamp: 2,
+          content: [{ kind: "text", text: "hello" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(2);
+    expect(next.messages[0]?.kind).toBe("user");
+    expect(next.messages[1]?.kind).toBe("assistant");
+  });
+
+  test("converts assistant text blocks to TuiAssistantBlock text", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hello" }],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect(msg.blocks[0]).toEqual({ kind: "text", text: "hello" });
+    expect(msg.streaming).toBe(false);
+  });
+
+  test("folds non-text blocks into a placeholder for assistants", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          content: [{ kind: "image", url: "https://example.com/x.png" }],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect(msg.blocks[0]).toEqual({ kind: "text", text: "[image]" });
+  });
+
+  test("preserves user content blocks verbatim (no mapping)", () => {
+    const block = { kind: "text" as const, text: "verbatim" };
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [block],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "user") throw new Error("expected user");
+    expect(msg.blocks).toEqual([block]);
+  });
+
+  test("empty rehydrate clears the message list", () => {
+    const state = stateWith({
+      messages: [{ kind: "user", id: "old", blocks: [{ kind: "text", text: "old" }] }],
+    });
+    const next = reduce(state, { kind: "rehydrate_messages", messages: [] });
+    expect(next.messages).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_session_list
 // ---------------------------------------------------------------------------
 

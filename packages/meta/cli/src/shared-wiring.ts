@@ -12,6 +12,7 @@
  *   - Plugin MCP setup (activated plugins' mcpServers → resolver → provider)
  *   - User hook loading (~/.koi/hooks.json → tier-tagged RegisteredHook[])
  *   - User + plugin hook merging (tier-tagged, deterministic order)
+ *   - Session resume (JSONL transcript → resumed messages + repair issues)
  *
  * Intentionally NOT extracted: bash tool wiring (TUI uses
  * createBashToolWithHooks + elicit + trackCwd; `koi start` uses the
@@ -23,13 +24,21 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ComponentProvider, HookConfig } from "@koi/core";
+import type {
+  ComponentProvider,
+  HookConfig,
+  InboundMessage,
+  SessionId,
+  SessionTranscript,
+} from "@koi/core";
+import { sessionId } from "@koi/core";
 import type { RegisteredHook } from "@koi/hooks";
 import { createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver, McpServerConfig } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createSkillsMcpBridge } from "@koi/runtime";
+import { resumeForSession } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 
@@ -170,4 +179,56 @@ export function mergeUserAndPluginHooks(
     : pluginHookConfigs;
   const pluginRegistered = createRegisteredHooks(filteredPluginConfigs, "session");
   return [...userHooks, ...pluginRegistered];
+}
+
+// ---------------------------------------------------------------------------
+// Session resume
+// ---------------------------------------------------------------------------
+
+/** Successful resume payload — messages to rehydrate + repair-issue count. */
+export interface ResumedSession {
+  /** Branded id of the resumed session (same as the rawId argument, branded). */
+  readonly sid: SessionId;
+  /** Conversation history as it was when the session was last persisted. */
+  readonly messages: readonly InboundMessage[];
+  /**
+   * Number of repair issues found while replaying the JSONL. Non-zero
+   * means the transcript had corrupt or partial entries that the resume
+   * pipeline recovered from; callers may want to surface this to the
+   * operator (stderr for CLI, a system message for TUI).
+   */
+  readonly issueCount: number;
+}
+
+/**
+ * Load a JSONL session transcript and return the rehydrated messages.
+ *
+ * This is the shared resume entrypoint for `koi start --resume` and
+ * `koi tui --resume`. The helper branded-wraps the raw session id,
+ * calls `@koi/session/resumeForSession`, and normalizes the result
+ * into a plain `Result<ResumedSession, string>` so each command can
+ * present the failure in its own UI idiom (stderr for start, a
+ * rendered error banner for tui). The helper intentionally performs
+ * no I/O-side logging — callers own the user-facing output.
+ */
+export async function resumeSessionFromJsonl(
+  rawId: string,
+  jsonlTranscript: SessionTranscript,
+): Promise<
+  | { readonly ok: true; readonly value: ResumedSession }
+  | { readonly ok: false; readonly error: string }
+> {
+  const sid = sessionId(rawId);
+  const result = await resumeForSession(sid, jsonlTranscript);
+  if (!result.ok) {
+    return { ok: false, error: result.error.message };
+  }
+  return {
+    ok: true,
+    value: {
+      sid,
+      messages: result.value.messages,
+      issueCount: result.value.issues.length,
+    },
+  };
 }

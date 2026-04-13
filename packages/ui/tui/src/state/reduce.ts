@@ -715,6 +715,37 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, sessionInfo, maxContextTokens };
     }
 
+    case "rehydrate_messages": {
+      // Replaces the visible message list wholesale — callers are
+      // responsible for dispatching this exactly once at startup when
+      // `--resume` is set. Non-text content blocks are folded into a
+      // `[<kind>]` placeholder because replayed assistant messages
+      // never carry live tool-call state; fidelity is not the goal,
+      // showing the conversation so the user knows where they left off
+      // is.
+      const rehydrated: readonly TuiMessage[] = action.messages.map((msg, idx) => {
+        if (msg.senderId === "user") {
+          return {
+            kind: "user",
+            id: `resumed-user-${idx}`,
+            blocks: msg.content,
+          };
+        }
+        const assistantBlocks: readonly TuiAssistantBlock[] = msg.content.map((block) =>
+          block.kind === "text"
+            ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
+            : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
+        );
+        return {
+          kind: "assistant",
+          id: `resumed-assistant-${idx}`,
+          blocks: assistantBlocks,
+          streaming: false,
+        };
+      });
+      return { ...state, messages: rehydrated };
+    }
+
     case "set_session_list": {
       // Sort by most-recent-first without mutating the incoming array.
       const sorted = [...action.sessions].sort((a, b) => b.lastActivityAt - a.lastActivityAt);

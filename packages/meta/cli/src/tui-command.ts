@@ -57,6 +57,7 @@ import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
 import { formatResumeHint } from "./resume-hint.js";
+import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
 import { createTuiRuntime } from "./tui-runtime.js";
@@ -421,8 +422,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // One session ID per TUI process launch. agent:clear / session:new reset the
   // conversation history but continue writing to the same transcript file — the
   // JSONL is a journal of everything that happened in this TUI invocation.
-  const tuiSessionId = sessionId(crypto.randomUUID());
+  // When `--resume <id>` is passed, the id is replaced below with the resumed
+  // session id so new writes continue appending to the same JSONL file.
+  // let: justified — reassigned once on successful --resume
+  let tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
+
+  // --- Session resume (optional, --resume <id>) ---
+  // Loads the historical message list from the JSONL transcript and
+  // dispatches `rehydrate_messages` so the TUI renders the previous
+  // conversation on mount. The resumed session id replaces the fresh
+  // random id so subsequent writes continue the same transcript file.
+  // Failure exits cleanly: the TUI has not yet initialized an alt
+  // screen at this point, so stderr output is visible.
+  if (flags.resume !== undefined) {
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript);
+    if (!resumeResult.ok) {
+      process.stderr.write(
+        `koi tui: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
+      );
+      process.exit(1);
+    }
+    tuiSessionId = resumeResult.value.sid;
+    store.dispatch({
+      kind: "rehydrate_messages",
+      messages: resumeResult.value.messages,
+    });
+    if (resumeResult.value.issueCount > 0) {
+      // Non-fatal: surface once via stderr (visible before alt-screen
+      // engages) so the operator knows the transcript needed repair.
+      process.stderr.write(
+        `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
+      );
+    }
+  }
 
   // Populate the status-bar session chip immediately so users see the
   // same identifier the post-quit resume hint will emit, instead of the
