@@ -140,3 +140,5 @@ Test files:
 - `@koi/audit-sink-sqlite` — SQLite sink with WAL mode and time+kind index
 - `@koi/redaction` — secret pattern detection and field-name censoring
 - `@koi/core` `AuditEntry` — the canonical record shape
+
+> **Ed25519 signing — TextEncoder payloads (#1742):** `signing.ts` now builds the canonical payload via `TextEncoder` + `new Uint8Array(...)` instead of `Buffer.from(...)`. `Buffer` is a Node.js global that the TS 6 strict DTS build can't statically resolve under `isolatedDeclarations`, so it broke the package's `.d.ts` emit. The Web Crypto interface only requires `BufferSource`; `Uint8Array` satisfies that and is portable to non-Node hosts. No behavioral change — the canonical bytes are byte-for-byte identical for any UTF-8 input.
