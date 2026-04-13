@@ -1286,6 +1286,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
+    // #1742: the default governance budget (maxTokens: 100_000,
+    // maxDurationMs: 5 min) is sized for batch/headless runs and trips
+    // quickly in an interactive TUI session where each turn can easily
+    // pull 14k input tokens from a large context window. Raise the
+    // ceiling well above the model's context window so the guard only
+    // fires on pathological runaways; the engine-adapter's per-run
+    // maxTurns (10) remains the effective safety valve for a single
+    // user submit.
+    governance: {
+      iteration: {
+        maxTurns: 9_999_999,
+        maxTokens: 1_000_000_000,
+        maxDurationMs: 24 * 60 * 60 * 1000, // 24h
+      },
+    },
   });
 
   return {
