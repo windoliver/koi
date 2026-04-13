@@ -364,6 +364,10 @@ for the `hooks` middleware:
 }
 ```
 
+### Trajectory Visibility
+
+Reports `{event, hooksFired, aggregated}` via `ctx.reportDecision()` on all hooks. When no user hooks are registered, reports `{hooksFired: 0, aggregated: "pass"}`. Shows `[0 hooks]` or `[allow]`/`[block]` in the TUI trajectory view.
+
 ### Phase & Priority
 
 The hook middleware runs at `resolve` phase, priority 400. Hooks are

@@ -480,7 +480,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
     const preResults = await registry.execute(sessionId, preEvent);
     const aggregated = aggregateDecisions(preResults);
     // Report hook fire records + aggregated decision for trace recording
-    if (preResults.length > 0) {
+    if (preResults.length === 0) {
+      ctx.reportDecision?.({ event: "compact.before", hooksFired: 0, aggregated: "pass" });
+    } else {
       ctx.reportDecision?.({
         event: "compact.before",
         aggregated: aggregated.decision.kind,
@@ -600,7 +602,14 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const aggregated = aggregateDecisions(preResults);
 
       // Report pre-call hook fire records + aggregated decision for trace recording
-      if (preResults.length > 0) {
+      if (preResults.length === 0) {
+        ctx.reportDecision?.({
+          event: "tool.before",
+          toolId: request.toolId,
+          hooksFired: 0,
+          aggregated: "pass",
+        });
+      } else {
         ctx.reportDecision?.({
           event: "tool.before",
           toolId: request.toolId,
@@ -763,7 +772,9 @@ export function createHookMiddleware(options: CreateHookMiddlewareOptions): KoiM
       const preResults = await registry.execute(sessionId, preEvent);
       const aggregated = aggregateDecisions(preResults);
       // Report model pre-call hook fire records + aggregated decision
-      if (preResults.length > 0) {
+      if (preResults.length === 0) {
+        ctx.reportDecision?.({ event: "compact.before", hooksFired: 0, aggregated: "pass" });
+      } else {
         ctx.reportDecision?.({
           event: "compact.before",
           aggregated: aggregated.decision.kind,

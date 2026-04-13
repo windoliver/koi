@@ -308,6 +308,12 @@ export interface TuiState {
   readonly trajectorySteps: readonly TrajectoryStepSummary[];
   /** Monotonic counter — incrementing resumes auto-follow in MessageList. */
   readonly resumeFollowCounter: number;
+  /** Audit entries from decision ledger — injected alongside trajectory steps. */
+  readonly auditEntries: readonly LedgerAuditEntry[];
+  /** Per-lane source status from decision ledger (e.g. "present", "missing"). */
+  readonly ledgerSources: LedgerSources | null;
+  /** One-line run report summary, when a ReportStore is configured. */
+  readonly runReportSummary: string | null;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -346,6 +352,8 @@ export interface TrajectoryMiddlewareSpan {
   readonly phase: string | undefined;
   /** Whether next() was called (false = middleware blocked the chain). */
   readonly nextCalled: boolean | undefined;
+  /** Structured decisions reported by the middleware via ctx.reportDecision(). */
+  readonly decisions: readonly JsonObject[] | undefined;
 }
 
 /** Token metrics for a single trajectory step. */
@@ -353,6 +361,20 @@ export interface TrajectoryTokenMetrics {
   readonly promptTokens: number | undefined;
   readonly completionTokens: number | undefined;
   readonly cachedTokens: number | undefined;
+}
+
+/** Audit entry from the decision ledger, mapped for TUI display. */
+export interface LedgerAuditEntry {
+  readonly timestamp: number;
+  readonly kind: string;
+  readonly summary: string;
+}
+
+/** Per-lane source status from the decision ledger. */
+export interface LedgerSources {
+  readonly trajectory: string;
+  readonly audit: string;
+  readonly report: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -452,9 +474,12 @@ export type TuiAction =
   | { readonly kind: "set_at_results"; readonly results: readonly string[] }
   | { readonly kind: "resume_follow" }
   | {
-      /** Injected by the host with trajectory step summaries for /trajectory view. */
+      /** Injected by the host with trajectory + ledger data for /trajectory view. */
       readonly kind: "set_trajectory_data";
       readonly steps: readonly TrajectoryStepSummary[];
+      readonly auditEntries?: readonly LedgerAuditEntry[] | undefined;
+      readonly ledgerSources?: LedgerSources | undefined;
+      readonly runReportSummary?: string | undefined;
     }
   | {
       /**

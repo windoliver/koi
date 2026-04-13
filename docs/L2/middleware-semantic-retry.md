@@ -423,6 +423,10 @@ Passthrough turns (no retry needed) emit no decision — only actionable events
 appear in the ATIF trajectory. Consumers can replay exact retry behavior from
 the decision history in `/trajectory`.
 
+### Trajectory Visibility
+
+Reports `{action: "pass", retryCount, budgetRemaining}` via `ctx.reportDecision()` on successful first-attempt model calls. Shows `[pass:N]` in the TUI trajectory view. Also reports `rewrite` and `abort` decisions.
+
 ---
 
 ## End-to-End Flow Example

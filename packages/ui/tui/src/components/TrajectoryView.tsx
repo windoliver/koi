@@ -18,7 +18,7 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import type { JSX } from "solid-js";
-import type { TrajectoryStepSummary } from "../state/types.js";
+import type { LedgerAuditEntry, LedgerSources, TrajectoryStepSummary } from "../state/types.js";
 import { useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
 import { createScrollableList } from "./select-overlay-helpers.js";
@@ -141,15 +141,77 @@ function formatTokens(step: TrajectoryStepSummary): string | undefined {
   return parts.length > 0 ? parts.join(" ") : undefined;
 }
 
+/** Summarize the first decision into a compact suffix label. */
+function summarizeDecision(d: Record<string, unknown>): string | undefined {
+  // Permissions MW — filter phase
+  if (d.phase === "filter" && typeof d.allowedCount === "number" && typeof d.totalTools === "number") {
+    return `filter:${d.allowedCount}/${d.totalTools}`;
+  }
+  // Permissions MW — execute phase
+  if (d.phase === "execute" && typeof d.action === "string") {
+    const label = String(d.action);
+    return d.toolId !== undefined ? `${label}:${String(d.toolId)}` : label;
+  }
+  // Exfiltration guard — clean or match
+  if (typeof d.location === "string" && typeof d.action === "string") {
+    return d.matchCount !== undefined ? `${String(d.action)}:${String(d.matchCount)}` : String(d.action);
+  }
+  // Hooks MW — with or without hooks fired
+  if (typeof d.event === "string" && typeof d.aggregated === "string") {
+    if (d.hooksFired === 0) return "0 hooks";
+    return String(d.aggregated);
+  }
+  // Semantic retry — pass, rewrite, or abort
+  if (d.action === "pass" && typeof d.budgetRemaining === "number") {
+    return `pass:${d.budgetRemaining}`;
+  }
+  if (typeof d.action === "string" && (d.action === "rewrite" || d.action === "abort")) {
+    return d.rewriteKind !== undefined ? `${String(d.action)}:${String(d.rewriteKind)}` : String(d.action);
+  }
+  // Rules MW — injection
+  if (d.action === "inject" && typeof d.files === "number") {
+    return `inject:${d.files} files ${String(d.estimatedTokens ?? "")}tok`;
+  }
+  // System prompt MW — injection
+  if (d.action === "inject" && typeof d.promptLength === "number") {
+    return `inject:${d.promptLength}ch`;
+  }
+  // Session transcript — record
+  if (d.action === "record") {
+    return d.toolId !== undefined ? `record:${String(d.toolId)}` : `record:${String(d.entries ?? 0)}`;
+  }
+  // Checkpoint — capture
+  if (d.action === "capture") {
+    return d.captured === true ? `capture:${String(d.path ?? "")}` : "skip";
+  }
+  return undefined;
+}
+
 function formatMwSpanSuffix(step: TrajectoryStepSummary): string | undefined {
   if (step.middlewareSpan === undefined) return undefined;
-  const parts: string[] = [];
-  if (step.middlewareSpan.hook !== undefined) {
-    const short = step.middlewareSpan.hook.replace("wrap", "").replace("Call", "");
-    parts.push(short);
+  const { decisions, nextCalled, hook } = step.middlewareSpan;
+  // Prefer decision summary over hook name
+  if (decisions !== undefined && decisions.length > 0) {
+    const first = decisions[0];
+    if (first !== undefined) {
+      const summary = summarizeDecision(first as Record<string, unknown>);
+      if (summary !== undefined) {
+        const extra = decisions.length > 1 ? ` +${decisions.length - 1}` : "";
+        return nextCalled === false ? `${summary} BLOCKED${extra}` : `${summary}${extra}`;
+      }
+    }
   }
-  if (step.middlewareSpan.nextCalled === false) parts.push("BLOCKED");
-  return parts.length > 0 ? parts.join(" ") : undefined;
+  // Fallback: "pass" for no-op hooks, "BLOCKED" if chain stopped
+  if (nextCalled === false) return "BLOCKED";
+  return "pass";
+}
+
+/** Format a single decision object as a one-line key-value summary. */
+function formatDecisionLine(d: Record<string, unknown>): string {
+  return Object.entries(d)
+    .filter(([, v]) => v !== undefined && v !== null)
+    .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+    .join(" · ");
 }
 
 function truncateContent(text: string): string {
@@ -241,6 +303,25 @@ function StepRow(props: {
               <text fg={COLORS.red}>{truncateContent(props.step.errorText ?? "")}</text>
             </box>
           </Show>
+
+          {/* MW Decisions */}
+          <Show
+            when={
+              props.step.middlewareSpan?.decisions !== undefined
+              && props.step.middlewareSpan.decisions.length > 0
+            }
+          >
+            <text fg={COLORS.dim}>{"─ decisions:"}</text>
+            <box paddingLeft={2} flexDirection="column">
+              <For each={props.step.middlewareSpan?.decisions ?? []}>
+                {(d, i) => (
+                  <text fg={COLORS.white}>
+                    {`[${i()}] ${formatDecisionLine(d as Record<string, unknown>)}`}
+                  </text>
+                )}
+              </For>
+            </box>
+          </Show>
         </box>
       </Show>
     </box>
@@ -251,8 +332,30 @@ function StepRow(props: {
 // Main component
 // ---------------------------------------------------------------------------
 
+function formatSourceStatus(label: string, status: string): string {
+  if (status === "present" || status === "present-unverified") return `${label}:ok`;
+  if (status === "present-with-leakage") return `${label}:leak`;
+  if (status === "missing") return `${label}:—`;
+  if (status === "unqueryable") return `${label}:n/a`;
+  return `${label}:${status}`;
+}
+
+function sourceColor(status: string): string {
+  if (status === "present" || status === "present-unverified") return COLORS.green;
+  if (status === "missing" || status === "unqueryable") return COLORS.dim;
+  return COLORS.yellow;
+}
+
+function formatAuditEntry(entry: LedgerAuditEntry): string {
+  const ts = new Date(entry.timestamp).toISOString().slice(11, 19);
+  return `${ts} [${entry.kind}] ${entry.summary}`;
+}
+
 export function TrajectoryView(): JSX.Element {
   const steps = useTuiStore((s) => s.trajectorySteps);
+  const auditEntries = useTuiStore((s) => s.auditEntries);
+  const ledgerSources = useTuiStore((s) => s.ledgerSources);
+  const runReportSummary = useTuiStore((s) => s.runReportSummary);
 
   const turns = createMemo(() => groupByTurn(steps()));
 
@@ -360,6 +463,54 @@ export function TrajectoryView(): JSX.Element {
             + `${steps().filter((s) => s.kind === "model_call").length} model · `
             + `${steps().filter((s) => s.kind === "tool_call").length} tool`}
         </text>
+
+        {/* Ledger source status */}
+        <Show when={ledgerSources() !== null}>
+          {(_src: () => unknown) => {
+            const src = ledgerSources() as LedgerSources;
+            return (
+              <text fg={COLORS.dim}>
+                {`  sources: `}
+                <text fg={sourceColor(src.trajectory)}>
+                  {formatSourceStatus("trajectory", src.trajectory)}
+                </text>
+                {` · `}
+                <text fg={sourceColor(src.audit)}>
+                  {formatSourceStatus("audit", src.audit)}
+                </text>
+                {` · `}
+                <text fg={sourceColor(src.report)}>
+                  {formatSourceStatus("report", src.report)}
+                </text>
+              </text>
+            );
+          }}
+        </Show>
+
+        {/* Audit entries */}
+        <Show when={auditEntries().length > 0}>
+          <text>{" "}</text>
+          <text fg={COLORS.cyan}>
+            <b>{`Audit Entries (${auditEntries().length})`}</b>
+          </text>
+          <For each={auditEntries().slice(0, 20)}>
+            {(entry) => (
+              <text fg={COLORS.dim}>{`  ${formatAuditEntry(entry)}`}</text>
+            )}
+          </For>
+          <Show when={auditEntries().length > 20}>
+            <text fg={COLORS.dim}>{`  … ${auditEntries().length - 20} more`}</text>
+          </Show>
+        </Show>
+
+        {/* Run report */}
+        <Show when={runReportSummary() !== null}>
+          <text>{" "}</text>
+          <text fg={COLORS.cyan}>
+            <b>{"Run Report"}</b>
+          </text>
+          <text fg={COLORS.dim}>{`  ${runReportSummary()}`}</text>
+        </Show>
       </Show>
     </box>
   );

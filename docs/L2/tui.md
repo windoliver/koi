@@ -490,6 +490,10 @@ subscriptions.
 | `stop()` before `start()` | No-op (idempotent) |
 | `stop()` called twice | No-op (idempotent) |
 
+### Trajectory Visibility
+
+The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]`/`[Tool]`. Decision data flows through `TrajectoryMiddlewareSpan.decisions` and is rendered as compact suffixes (e.g., `[filter:26/26]`, `[clean:0]`, `[inject:1 files 6538tok]`). Expanded steps show full decision key-value detail. Ledger source status, audit entries, and run report are shown at the bottom when available.
+
 ## Layer Compliance
 
 - State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)

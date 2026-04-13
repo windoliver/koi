@@ -150,6 +150,10 @@ Current middleware with decision metadata:
 - `@koi/middleware-semantic-retry` — on retry/abort actions (silent on success)
 - `@koi/model-router` — on every model call: selected target, attempted targets, fallback_occurred, latency_ms
 
+### Trajectory Visibility
+
+The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping the trajectory store to resolve the TUI's fixed document ID. All integrated L2 middleware report decisions via `ctx.reportDecision()` for TUI trajectory visibility.
+
 ---
 
 ## CI Gates
