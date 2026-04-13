@@ -213,7 +213,7 @@ describe("checkpoint middleware", () => {
     // The fileOp must carry the real callId from ToolRequest.callId,
     // not a synthetic placeholder. Without the round-7 fix, callId
     // would have been undefined → fall through to `synth-${uuid}`.
-    expect(op?.callId).toBe("call-real-001");
+    expect(op?.callId as string | undefined).toBe("call-real-001");
   });
 
   test("fileOps record falls back to metadata.callId for legacy callers", async () => {
@@ -241,7 +241,7 @@ describe("checkpoint middleware", () => {
     const head = rig.store.head(chainId(String(session.sessionId)));
     if (!head.ok || head.value === undefined) throw new Error("no head");
     const op = head.value.data.fileOps[0];
-    expect(op?.callId).toBe("call-legacy-001");
+    expect(op?.callId as string | undefined).toBe("call-legacy-001");
   });
 
   test("fileOps record falls back to synthetic UUID when no callId is set", async () => {
