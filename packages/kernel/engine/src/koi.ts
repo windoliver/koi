@@ -202,6 +202,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let disposed = false;
   // let justified: mutable flag for concurrent run() guard
   let running = false;
+  // #1742: monotonically increasing session epoch. Bumped by
+  // `cycleSession()` so a `run()` iterable created before the boundary
+  // can detect on its first iteration that the session has rotated and
+  // refuse to attach to the new session. Without this, a host that
+  // creates an iterable, then `/clear`s, then iterates would re-fire
+  // onSessionStart on the NEW session and run pre-clear input against
+  // freshly cleared approvals/checkpoints. (#1742 round 10)
+  // let justified: mutable epoch counter
+  let sessionEpoch = 0;
   // #1742: Promise that resolves when the active run's streamEvents finally
   // block has settled (running cleared, hooks fired, adapter cleaned up).
   // cycleSession() awaits this so a /clear that races a just-aborted run
@@ -221,6 +230,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
   // let justified: mutable poison flag set on settle timeout
   let poisoned = false;
+  // #1742 round 10: lifecycle mutex — single-flight gate for
+  // cycleSession() and dispose() so two overlapping callers can't both
+  // pass the `lifecycleSessionStarted && !lifecycleSessionEnded` guard
+  // and fire onSessionEnd twice. Holds the in-flight lifecycle promise
+  // (if any). New callers chain onto it.
+  // let justified: mutable in-flight lifecycle promise
+  let lifecycleInFlight: Promise<void> | undefined;
   /**
    * Race `currentRunSettled` against the lifecycle settle timeout.
    * Returns `"settled"` when the run unwound first, `"timeout"` when
@@ -312,7 +328,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let activeSessionCtx: SessionContext | undefined;
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
-  async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
+  async function* streamEvents(
+    input: EngineInput,
+    expectedEpoch: number,
+  ): AsyncGenerator<EngineEvent> {
+    // #1742 round 10: refuse to attach to a rotated session. If
+    // cycleSession() bumped sessionEpoch between run() and the first
+    // iteration, this iterable is stale and must NOT silently re-fire
+    // onSessionStart on the new session or run pre-clear input against
+    // freshly cleared state. Throw so the consumer gets a clear failure
+    // instead of garbled cross-session behavior.
+    if (expectedEpoch !== sessionEpoch) {
+      // Clear `running` for the abandoned run so the next run() can
+      // proceed. We never created currentRunSettled, so no resolver
+      // needs to fire and no settle wait is pending.
+      running = false;
+      throw KoiRuntimeError.from(
+        "VALIDATION",
+        "Run was discarded by cycleSession before iteration began. Recreate it on the new session.",
+      );
+    }
     // #1742: initialize the settle promise here, NOT in run(). The
     // generator only enters this body once the consumer calls next(),
     // so an abandoned async iterable never creates the promise — and
@@ -1361,88 +1396,115 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // cycleSession() / dispose() spent the full settle timeout
       // waiting for a run that never started — and falsely poisoned
       // the runtime.
-      return { [Symbol.asyncIterator]: () => streamEvents(input) };
+      //
+      // #1742 round 10: snapshot the current session epoch. The
+      // generator validates this on its first iteration so an iterable
+      // that crosses a `cycleSession()` boundary is rejected instead
+      // of attaching to the new session and running pre-clear input
+      // against freshly cleared state.
+      const runEpoch = sessionEpoch;
+      return { [Symbol.asyncIterator]: () => streamEvents(input, runEpoch) };
     },
 
     cycleSession: async (): Promise<void> => {
-      // #1742: refresh session-scoped middleware state without tearing down
-      // the runtime. Used by hosts (e.g. TUI `/clear`, `session:new`) that
-      // expose user-visible conversation boundaries inside one process.
-      //
-      // Hosts typically call this AFTER aborting the active run signal but
-      // BEFORE the run's finally block has fully unwound. To avoid racing
-      // that cleanup, wait for `currentRunSettled` (resolved from the
-      // streamEvents finally) instead of throwing on `running === true`.
-      //
-      // The wait is bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS`. If the timeout
-      // fires we FAIL CLOSED: poison the runtime and throw, so the host
-      // cannot accidentally clear/rotate session state while the old run
-      // is still executing. The previous design ran cleanup anyway and
-      // depended on the host noticing the poisoned flag on the next run(),
-      // but that left a window where late tool/model callbacks could write
-      // into freshly re-armed middleware state. Failing closed here forces
-      // hosts to dispose and recreate the runtime when a tool ignores
-      // abort.
-      // #1742: only wait when a run has actually entered streamEvents
-      // (`currentRunResolveSettled` becomes defined on first iteration).
-      // `running === true` alone doesn't imply the generator has begun:
-      // a caller can call run() and abandon the async iterable, in
-      // which case `running` is true but the generator's finally will
-      // never fire — waiting would falsely time out and poison the
-      // runtime.
-      if (running && currentRunResolveSettled !== undefined) {
-        const result = await awaitSettleOrTimeout();
-        if (result === "timeout") {
-          throw KoiRuntimeError.from(
-            "TIMEOUT",
-            `Runtime is wedged: in-flight run ignored abort for ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms. Dispose and recreate.`,
-          );
-        }
+      // #1742 round 10: serialize via lifecycle mutex so two concurrent
+      // callers (overlapping /clear, /clear + dispose, etc.) don't both
+      // pass the !lifecycleSessionEnded guard and fire onSessionEnd
+      // twice. The second caller awaits the first's promise and then
+      // observes the new state.
+      if (lifecycleInFlight !== undefined) {
+        await lifecycleInFlight;
+        return;
       }
-      if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+      lifecycleInFlight = (async (): Promise<void> => {
         try {
-          await runSessionHooks(
-            allMiddleware,
-            "onSessionEnd",
-            activeSessionCtx ?? lifecycleSessionCtx,
-          );
-        } catch (sessionEndError: unknown) {
-          console.warn("[koi] onSessionEnd failed during cycleSession", {
-            cause: sessionEndError,
-          });
+          // #1742: only wait when a run has actually entered streamEvents
+          // (`currentRunResolveSettled` becomes defined on first iteration).
+          // `running === true` alone doesn't imply the generator has begun:
+          // a caller can call run() and abandon the async iterable, in
+          // which case `running` is true but the generator's finally will
+          // never fire — waiting would falsely time out and poison the
+          // runtime.
+          if (running && currentRunResolveSettled !== undefined) {
+            const result = await awaitSettleOrTimeout();
+            if (result === "timeout") {
+              throw KoiRuntimeError.from(
+                "TIMEOUT",
+                `Runtime is wedged: in-flight run ignored abort for ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms. Dispose and recreate.`,
+              );
+            }
+          }
+          if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+            // #1742 round 10: flip ended BEFORE the await so a second
+            // entrant (if the mutex check above were ever bypassed)
+            // can't double-fire the hook. Even if the hook throws, we
+            // do NOT roll the flag back — the cleanup partially
+            // happened and re-running it could destroy the
+            // freshly-re-armed session.
+            lifecycleSessionEnded = true;
+            try {
+              await runSessionHooks(
+                allMiddleware,
+                "onSessionEnd",
+                activeSessionCtx ?? lifecycleSessionCtx,
+              );
+            } catch (sessionEndError: unknown) {
+              console.warn("[koi] onSessionEnd failed during cycleSession", {
+                cause: sessionEndError,
+              });
+            }
+          }
+          // #1742: clear per-session governance state (rolling tool-error
+          // window, total-call window, iteration counters) so the next
+          // conversation isn't immediately blocked by error-rate history
+          // inherited from the previous one. Token usage, accumulated cost,
+          // and spawn counts remain CUMULATIVE so process-level safety/
+          // spend ceilings still hold across the runtime lifetime.
+          const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+          if (govCtl !== undefined) {
+            await govCtl.record({ kind: "session_reset" });
+          }
+          // #1742: rotate the engine sessionId and rebuild the runtime-scoped
+          // lifecycle ctx so checkpoint chains, persistent approval keys,
+          // and any other middleware state keyed off `ctx.session.sessionId`
+          // are isolated across the user-driven conversation boundary.
+          // `runtime.sessionId` is now a getter, so every caller — including
+          // the host's `permMw.clearSessionApprovals(runtime.sessionId)` —
+          // automatically picks up the new ID after this point.
+          rotateFactorySessionId();
+          // #1742 round 10: bump epoch so any iterable created BEFORE
+          // this point is rejected on its first iteration instead of
+          // attaching to the freshly-armed session.
+          sessionEpoch += 1;
+          lifecycleSessionCtx = buildLifecycleSessionCtx();
+          // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
+          // with a fresh sessionCtx (its first turn's runId, like the original
+          // first-run path). Until that next run, the runtime is in a quiescent
+          // pre-session state — same as immediately after createKoi() returned.
+          lifecycleSessionStarted = false;
+          lifecycleSessionEnded = false;
+          activeSessionCtx = undefined;
+        } finally {
+          lifecycleInFlight = undefined;
         }
-      }
-      // #1742: clear per-session governance state (rolling tool-error
-      // window, total-call window, iteration counters) so the next
-      // conversation isn't immediately blocked by error-rate history
-      // inherited from the previous one. Token usage, accumulated cost,
-      // and spawn counts remain CUMULATIVE so process-level safety/
-      // spend ceilings still hold across the runtime lifetime.
-      const govCtl = agent.component<GovernanceController>(GOVERNANCE);
-      if (govCtl !== undefined) {
-        await govCtl.record({ kind: "session_reset" });
-      }
-      // #1742: rotate the engine sessionId and rebuild the runtime-scoped
-      // lifecycle ctx so checkpoint chains, persistent approval keys,
-      // and any other middleware state keyed off `ctx.session.sessionId`
-      // are isolated across the user-driven conversation boundary.
-      // `runtime.sessionId` is now a getter, so every caller — including
-      // the host's `permMw.clearSessionApprovals(runtime.sessionId)` —
-      // automatically picks up the new ID after this point.
-      rotateFactorySessionId();
-      lifecycleSessionCtx = buildLifecycleSessionCtx();
-      // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
-      // with a fresh sessionCtx (its first turn's runId, like the original
-      // first-run path). Until that next run, the runtime is in a quiescent
-      // pre-session state — same as immediately after createKoi() returned.
-      lifecycleSessionStarted = false;
-      lifecycleSessionEnded = false;
-      activeSessionCtx = undefined;
+      })();
+      return lifecycleInFlight;
     },
 
     dispose: async (): Promise<void> => {
       if (disposed) return;
       disposed = true;
+      // #1742 round 10: if a cycleSession or earlier dispose is still
+      // in flight, wait for it to finish before starting our own
+      // teardown. Otherwise the two paths could both pass the
+      // lifecycleSessionStarted guard and double-fire onSessionEnd.
+      if (lifecycleInFlight !== undefined) {
+        try {
+          await lifecycleInFlight;
+        } catch {
+          // swallow — the in-flight caller already handled its error
+        }
+      }
       // #1742: if a run is still in flight, wait for its finally to
       // unwind before tearing down session/adapter state. Without this,
       // dispose() races the active stream's middleware/adapter cleanup

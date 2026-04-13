@@ -629,6 +629,83 @@ describe("createKoi middleware hooks", () => {
     expect(elapsed).toBeLessThan(2000);
   }, 8_000);
 
+  test("#1742: iterable created before cycleSession is rejected on first iteration (epoch guard)", async () => {
+    // Round 10 regression: an async iterable created before /clear used
+    // to silently re-fire onSessionStart on the new session and run
+    // pre-clear input against freshly cleared state. Now the run binds
+    // the current session epoch in run() and the generator validates
+    // it on first iteration.
+    const onSessionStart = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionStart }],
+      loopDetection: false,
+    });
+
+    // Open a session by running a first turn.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // Create an iterable for a second run BUT do not iterate it yet.
+    const iter = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Cycle the session — this should rotate the epoch and reject the
+    // iterable on its first iteration.
+    await runtime.cycleSession?.();
+
+    // First iteration of the stale iterable must throw with a clear
+    // "discarded by cycleSession" error rather than attaching to the
+    // new session.
+    await expect(iter.next()).rejects.toThrow(/discarded by cycleSession/i);
+
+    // The new (empty) session was NOT started by the stale iterable.
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // A fresh run() works normally on the new session.
+    await collectEvents(runtime.run({ kind: "text", text: "fresh" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(2);
+
+    await runtime.dispose();
+  });
+
+  test("#1742: overlapping cycleSession() calls fire onSessionEnd exactly once (lifecycle mutex)", async () => {
+    // Round 10 regression: two concurrent cycleSession() calls used to
+    // both pass the !lifecycleSessionEnded guard and double-fire the
+    // teardown hook. Verify the lifecycle mutex serializes them.
+    const onSessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Issue two cycleSession() calls in parallel. Both must resolve and
+    // onSessionEnd must fire exactly once.
+    await Promise.all([runtime.cycleSession?.(), runtime.cycleSession?.()]);
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+
+    await runtime.dispose();
+  });
+
+  test("#1742: cycleSession + dispose overlap fires onSessionEnd exactly once", async () => {
+    const onSessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Issue cycleSession and dispose concurrently. Both must complete
+    // and onSessionEnd must fire exactly once across both code paths.
+    await Promise.all([runtime.cycleSession?.(), runtime.dispose()]);
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
   test("#1742: cycleSession rotates runtime.sessionId so per-session state is isolated", async () => {
     const runtime = await createKoi({
       manifest: testManifest(),
