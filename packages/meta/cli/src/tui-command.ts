@@ -595,10 +595,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const permissionBridge = createPermissionBridge({
     store,
     permanentAvailable: approvalStore !== undefined,
-    // #1759: interactive users need unbounded decide-time on permission
-    // prompts — Ctrl+C remains the escape hatch. Non-interactive bridges
-    // (tests, agent-to-agent) still get a finite default.
-    timeoutMs: Number.POSITIVE_INFINITY,
+    // #1759: interactive users get effectively unbounded decide-time on
+    // permission prompts (60 minutes). Much longer than any reasonable
+    // human decision window, but still finite so a wedged renderer /
+    // stuck input / detached terminal eventually fails closed instead
+    // of hanging forever. Aligned with the engine-side TUI_APPROVAL_TIMEOUT_MS
+    // in tui-runtime.ts so both layers share the same deadline.
+    timeoutMs: 60 * 60 * 1000,
   });
 
   // Flush callback: reduces entire batch in one pass, single notification.

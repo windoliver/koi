@@ -131,6 +131,18 @@ const DEFAULT_MAX_TURNS = 10;
 const MAX_TRANSCRIPT_MESSAGES = 100;
 
 /**
+ * Permission-approval timeout for the interactive TUI (ms). 60 minutes.
+ *
+ * Long enough that any reasonable user decision window completes without
+ * the turn failing, but finite so a broken renderer / stuck bridge /
+ * detached terminal eventually triggers a fail-closed deny rather than
+ * wedging the agent forever. Ctrl+C remains the primary escape hatch
+ * while the user is present. Engine default (30 s) still applies to
+ * non-TUI callers via `@koi/middleware-permissions` defaults. (#1759)
+ */
+const TUI_APPROVAL_TIMEOUT_MS = 60 * 60 * 1000;
+
+/**
  * Temp directory for task result storage. Enables `task_update(status="completed")`
  * by making `hasResultPersistence()` return true. Results survive the session but
  * not reboots — acceptable for interactive TUI sessions.
@@ -787,11 +799,14 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: "koi tui — default permission mode",
-    // #1759: interactive users need unbounded decide-time on permission
-    // prompts — Ctrl+C remains the escape hatch. The engine's default
-    // 30s fail-closed timeout is retained for agent-to-agent / non-TUI
-    // callers (see @koi/middleware-permissions DEFAULT_APPROVAL_TIMEOUT_MS).
-    approvalTimeoutMs: Number.POSITIVE_INFINITY,
+    // #1759: interactive users get effectively unbounded decide-time on
+    // permission prompts (60 minutes). Much longer than any reasonable
+    // human decision window, but still fail-closed so a wedged renderer
+    // / stuck bridge / detached terminal eventually aborts the turn
+    // rather than hanging forever. Ctrl+C remains the primary escape
+    // hatch while the user is present. The engine default (30 s)
+    // continues to apply to agent-to-agent and non-TUI callers.
+    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     ...(config.persistentApprovals !== undefined
       ? { persistentApprovals: config.persistentApprovals, persistentAgentId: "koi-tui" }
       : {}),
