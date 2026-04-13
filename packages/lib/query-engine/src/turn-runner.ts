@@ -662,11 +662,25 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       } catch (e: unknown) {
         if (state.phase !== "complete") {
           const msg = e instanceof Error ? e.message : String(e);
-          // #1742: a throw from a tool or its wrapping middleware (e.g. a
-          // security guard) used to transition the turn to "error", which
-          // killed the agent loop without giving the model a chance to
-          // react. The model never produced a final reply and the user
-          // saw a silent empty turn.
+          // #1742: cancellation must short-circuit before the recovery
+          // path. If the run signal is aborted (user pressed Ctrl+C, the
+          // host triggered /clear, etc.) OR the thrown error is an
+          // AbortError, the user already cancelled — do NOT synthesize
+          // tool results and re-prompt the model. That would cost extra
+          // provider calls AFTER the user said stop.
+          const isAbortError =
+            e instanceof Error &&
+            (e.name === "AbortError" || (e as { code?: unknown }).code === "ABORT_ERR");
+          if (isAborted(signal) || isAbortError) {
+            errorMetadata = { source: "tool_execution", message: msg };
+            state = transitionTurn(state, { kind: "abort" });
+            yield { kind: "turn_end", turnIndex: state.turnIndex };
+            break;
+          }
+          // Non-cancellation throw: a tool or its wrapping middleware (e.g.
+          // a security guard) crashed. Previously this transitioned the
+          // turn to "error" and killed the agent loop without giving the
+          // model a chance to react — the user saw a silent empty turn.
           //
           // Instead, synthesize a tool_result for every tool call in this
           // batch that has not yet produced one and feed it back to the

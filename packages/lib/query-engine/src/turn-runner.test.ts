@@ -311,6 +311,43 @@ describe("runTurn", () => {
     }
   });
 
+  test("#1742: tool throw on aborted signal terminates as interrupted; no re-prompt", async () => {
+    // Cancellation must short-circuit the synthetic-recovery path so users
+    // who interrupt mid-tool don't get an extra model call after stop.
+    const modelCallRequests: ModelRequest[] = [];
+    const controller = new AbortController();
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (req: ModelRequest): AsyncIterable<ModelChunk> => {
+        modelCallRequests.push(req);
+        return toolCallStreamGen("failTool", "tc-abort", '{"x":1}');
+      },
+      toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+        // Simulate the tool observing the user's cancellation and throwing.
+        controller.abort();
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(
+      runTurn({ callHandlers: handlers, messages: [], signal: controller.signal }),
+    );
+
+    // Exactly ONE model call — the runner must not synthesize an error
+    // result and re-prompt after the user cancelled.
+    expect(modelCallRequests).toHaveLength(1);
+
+    // Final stop reason is interrupted, not error / completed.
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind === "done") {
+      expect(done.output.stopReason).toBe("interrupted");
+    }
+  });
+
   test("#1742: tool execution error feeds synthetic tool_result + re-prompts model", async () => {
     // Regression for #1742: a throw from a tool call (or a wrapping
     // security/permissions middleware) used to transition the turn to

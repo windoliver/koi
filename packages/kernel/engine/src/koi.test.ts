@@ -412,30 +412,78 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEnd).toHaveBeenCalledTimes(2);
   });
 
-  test("#1742: cycleSession rejects while a run is in progress", async () => {
-    // Adapter that yields one event then waits forever — keeps `running` true.
+  test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
+    // Hosts typically call cycleSession() right after aborting the active
+    // run, while the run's finally block is still draining. cycleSession
+    // must wait for the run to fully unwind (so onSessionEnd doesn't race
+    // the in-progress per-run cleanup) instead of rejecting.
+    const sessionEnd = mock(() => Promise.resolve());
+    // Adapter whose stream throws AbortError when the signal aborts. We
+    // arrange a delay so the abort happens AFTER cycleSession is queued
+    // — that way cycleSession observes `running === true` and must wait.
     const adapter: EngineAdapter = {
-      engineId: "infinite",
+      engineId: "abort-on-signal",
       capabilities: { text: true, images: false, files: false, audio: false },
-      stream: () => ({
+      stream: (input) => ({
         async *[Symbol.asyncIterator]() {
-          while (true) {
-            yield { kind: "text_delta" as const, delta: "x" };
-          }
+          yield { kind: "text_delta" as const, delta: "x" };
+          await new Promise<void>((resolve, reject) => {
+            const signal = input.signal;
+            if (signal === undefined) {
+              resolve();
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          });
         },
       }),
     };
     const runtime = await createKoi({
       manifest: testManifest(),
       adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEnd },
+      ],
       loopDetection: false,
     });
-    // Start a run but don't drain it — running flag stays true.
-    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
-    await iter.next();
-    await expect(runtime.cycleSession?.()).rejects.toThrow(/run is in progress/i);
-    await iter.return?.();
+
+    // Drain the run on a background task so the generator stays "running"
+    // until the abort propagates. We expect the drain to throw AbortError
+    // when the signal fires.
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* AbortError expected */
+      }
+    })();
+
+    // Microtask-yield so the run's first event is emitted and `running`
+    // is true; then queue cycleSession. It will block on currentRunSettled.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    const cyclePromise = runtime.cycleSession?.();
+    // Now abort — the adapter rejects, finally runs, currentRunSettled
+    // resolves, cycleSession proceeds.
+    controller.abort();
+    await drainPromise;
+    await cyclePromise;
+
+    // onSessionEnd fired exactly once, after the run unwound.
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
     await runtime.dispose();
+    // dispose fires onSessionEnd again for the new (post-cycle) session,
+    // which was never opened (no second run), so the lifecycle flag is
+    // false and dispose's onSessionEnd path skips. Total stays at 1.
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
   });
 
   test("calls onAfterTurn on turn_end events", async () => {

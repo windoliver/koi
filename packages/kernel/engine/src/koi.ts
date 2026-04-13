@@ -202,6 +202,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   let disposed = false;
   // let justified: mutable flag for concurrent run() guard
   let running = false;
+  // #1742: Promise that resolves when the active run's streamEvents finally
+  // block has settled (running cleared, hooks fired, adapter cleaned up).
+  // cycleSession() awaits this so a /clear that races a just-aborted run
+  // doesn't reject — it waits for the prior run to fully unwind first.
+  // let justified: mutable per-run promise, replaced on every run()
+  let currentRunSettled: Promise<void> = Promise.resolve();
+  // let justified: mutable resolver for currentRunSettled, captured in run()
+  let currentRunResolveSettled: (() => void) | undefined;
 
   // Session ID created at factory scope so runtime.sessionId can reference it.
   // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
@@ -380,19 +388,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
       }
 
-      // #1742: per-run iteration budget reset. The governance controller's
-      // turn/token/duration counters accumulate from instance creation, so
-      // long-lived runtimes (TUI, daemons) would trip the iteration guard
-      // after enough total activity even though each run is healthy. Fire
-      // a one-shot `iteration_reset` event at run start so each run() gets
-      // a fresh budget. Spawn counts and rolling error-rate windows are
-      // intentionally NOT reset because they are runtime-scoped resources.
-      // Hosts that want cumulative budgets simply omit this event by using
-      // an EngineAdapter that calls runTurn directly without going through
-      // createKoi's run() entry point.
-      const govCtl = agent.component<GovernanceController>(GOVERNANCE);
-      if (govCtl !== undefined) {
-        await govCtl.record({ kind: "iteration_reset" });
+      // #1742: per-run iteration budget reset. Opt-in via
+      // `options.resetIterationBudgetPerRun` so cumulative session-level
+      // budget enforcement remains the default for batch/headless hosts.
+      // Interactive hosts (TUI) opt in to give each user submit a fresh
+      // turn/token/cost/duration budget. Spawn counts and rolling
+      // error-rate windows are NOT reset (runtime-scoped resources).
+      if (options.resetIterationBudgetPerRun === true) {
+        const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+        if (govCtl !== undefined) {
+          await govCtl.record({ kind: "iteration_reset" });
+        }
       }
 
       // Wire registry watcher → engine events for child agent visibility.
@@ -1210,6 +1216,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
 
+      // #1742: signal that this run has fully unwound so a queued
+      // cycleSession() / dispose() can safely proceed.
+      currentRunResolveSettled?.();
+      currentRunResolveSettled = undefined;
+
       // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
       // of every run(). See factorySessionId block above.
     }
@@ -1226,6 +1237,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
       running = true;
+      // #1742: track when this run's finally block has fully settled so
+      // cycleSession can wait for an aborted run to fully unwind before
+      // cycling middleware lifecycle. resolveSettled is called from the
+      // finally block in streamEvents.
+      currentRunSettled = new Promise<void>((resolve) => {
+        currentRunResolveSettled = resolve;
+      });
       return { [Symbol.asyncIterator]: () => streamEvents(input) };
     },
 
@@ -1233,12 +1251,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // #1742: refresh session-scoped middleware state without tearing down
       // the runtime. Used by hosts (e.g. TUI `/clear`, `session:new`) that
       // expose user-visible conversation boundaries inside one process.
-      // Caller must ensure no run is in flight; cycling mid-run is undefined.
+      //
+      // Hosts typically call this AFTER aborting the active run signal but
+      // BEFORE the run's finally block has fully unwound. To avoid racing
+      // that cleanup, wait for `currentRunSettled` (resolved from the
+      // streamEvents finally) instead of throwing on `running === true`.
+      // The resolver is invoked unconditionally, so even an aborted /
+      // crashed run releases this promise.
       if (running) {
-        throw KoiRuntimeError.from(
-          "VALIDATION",
-          "Cannot cycleSession while a run is in progress — abort first",
-        );
+        await currentRunSettled;
       }
       if (lifecycleSessionStarted && !lifecycleSessionEnded) {
         try {

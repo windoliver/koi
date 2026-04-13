@@ -1286,6 +1286,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
+    // #1742: each user submit in the TUI is a logically fresh request.
+    // Opt in to per-run iteration budget reset so the default 100k token
+    // / 5 min / 25 turn caps apply per submit instead of accumulating
+    // across the runtime lifetime. Spawn / error-rate state remains
+    // runtime-scoped.
+    resetIterationBudgetPerRun: true,
   });
 
   return {

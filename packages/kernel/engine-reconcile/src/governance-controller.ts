@@ -120,7 +120,8 @@ export function createGovernanceController(
     read: () => turnCount,
     limit: resolved.iteration.maxTurns,
     retryable: false,
-    description: "Maximum turns per session",
+    description:
+      "Maximum turns per session (or per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       if (turnCount >= resolved.iteration.maxTurns) {
         return failCheck(
@@ -137,7 +138,8 @@ export function createGovernanceController(
     read: () => tokenUsage,
     limit: resolved.iteration.maxTokens,
     retryable: false,
-    description: "Maximum total tokens per session",
+    description:
+      "Maximum total tokens per session (or per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       if (tokenUsage >= resolved.iteration.maxTokens) {
         return failCheck(
@@ -154,7 +156,8 @@ export function createGovernanceController(
     read: () => Date.now() - startedAt,
     limit: resolved.iteration.maxDurationMs,
     retryable: false,
-    description: "Maximum session duration in milliseconds",
+    description:
+      "Maximum session duration in milliseconds (or per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       const elapsed = Date.now() - startedAt;
       if (elapsed >= resolved.iteration.maxDurationMs) {
@@ -199,7 +202,8 @@ export function createGovernanceController(
     read: () => accumulatedCostUsd,
     limit: costConfig.maxCostUsd,
     retryable: false,
-    description: "Maximum session cost in USD",
+    description:
+      "Maximum session cost in USD (or per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       // Skip check when cost tracking is disabled (maxCostUsd === 0)
       if (costConfig.maxCostUsd <= 0) return { ok: true };
