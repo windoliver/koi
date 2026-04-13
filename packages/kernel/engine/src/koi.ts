@@ -211,6 +211,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // freshly cleared approvals/checkpoints. (#1742 round 10)
   // let justified: mutable epoch counter
   let sessionEpoch = 0;
+  // #1742 round 13: epoch of the run that currently owns the `running`
+  // latch (undefined when no run is in flight). The stale-iterable
+  // path uses this to make sure it only clears the latch IT owns —
+  // otherwise a stale iterable iterated after a fresh run B has
+  // started would clear B's latch and let a third run() proceed
+  // concurrently with B.
+  // let justified: mutable owner-epoch counter
+  let runningEpoch: number | undefined;
   // #1742: Promise that resolves when the active run's streamEvents finally
   // block has settled (running cleared, hooks fired, adapter cleaned up).
   // cycleSession() awaits this so a /clear that races a just-aborted run
@@ -339,10 +347,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // freshly cleared state. Throw so the consumer gets a clear failure
     // instead of garbled cross-session behavior.
     if (expectedEpoch !== sessionEpoch) {
-      // Clear `running` for the abandoned run so the next run() can
-      // proceed. We never created currentRunSettled, so no resolver
-      // needs to fire and no settle wait is pending.
-      running = false;
+      // #1742 round 13: only clear `running` if THIS stale iterable
+      // still owns the latch. cycleSession's else-branch may have
+      // already cleared the latch, OR a fresh run B may have taken it
+      // (`runningEpoch` then matches B's epoch, NOT this stale
+      // iterable's). Clearing unconditionally would let a third run()
+      // run concurrently with B.
+      if (runningEpoch === expectedEpoch) {
+        running = false;
+        runningEpoch = undefined;
+      }
       throw KoiRuntimeError.from(
         "VALIDATION",
         "Run was discarded by cycleSession before iteration began. Recreate it on the new session.",
@@ -1354,6 +1368,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       currentRunResolveSettled?.();
       currentRunResolveSettled = undefined;
       running = false;
+      runningEpoch = undefined;
 
       // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
       // of every run(). See factorySessionId block above.
@@ -1384,10 +1399,25 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           "Runtime is poisoned: a prior cleanup timed out waiting for a non-cooperative tool. Dispose and recreate.",
         );
       }
+      // #1742 round 13: refuse new submits while a lifecycle transition
+      // (cycleSession / dispose) is mid-flight. Otherwise a caller could
+      // slip a fresh run() into the window where the session is half
+      // torn-down — onSessionEnd has fired but factorySessionId,
+      // sessionEpoch, lifecycleSessionStarted have not yet been
+      // re-armed — and attach to a corrupted state. The TUI's own
+      // resetBarrier already serializes its submits, but other hosts
+      // calling `createKoi()` directly need this engine-level guard.
+      if (lifecycleInFlight !== undefined) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot start a new run while cycleSession/dispose is in flight. Await the lifecycle promise first.",
+        );
+      }
       if (running) {
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
       running = true;
+      runningEpoch = sessionEpoch;
       // #1742: currentRunSettled / currentRunResolveSettled are now
       // initialized INSIDE streamEvents on its first iteration, not
       // here. Round 9 review: setting them in run() synchronously meant
@@ -1447,6 +1477,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             // No generator entry yet — nothing to wait for, just
             // release the concurrent-run latch.
             running = false;
+            runningEpoch = undefined;
           }
           if (lifecycleSessionStarted && !lifecycleSessionEnded) {
             // #1742 round 10: flip ended BEFORE the await so a second
@@ -1547,6 +1578,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         }
       } else if (running) {
         running = false;
+        runningEpoch = undefined;
       }
       // #1742: session lifecycle ends when the runtime is disposed — not at
       // the end of every run(). Fire onSessionEnd here so middleware

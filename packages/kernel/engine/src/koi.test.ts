@@ -629,6 +629,96 @@ describe("createKoi middleware hooks", () => {
     expect(elapsed).toBeLessThan(2000);
   }, 8_000);
 
+  test("#1742: stale iterable iterated AFTER fresh run starts cannot release fresh run's latch", async () => {
+    // Round 13 regression: the stale-iterable rejection path used to
+    // unconditionally clear `running`. If a fresh run B had already
+    // taken the latch, this would let a third concurrent run C through
+    // the "Agent is already running" guard. Verify the latch is now
+    // protected by `runningEpoch` ownership.
+    const adapter: EngineAdapter = {
+      engineId: "hangs-on-iter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          // Hang here so run B stays in flight while we touch the
+          // stale iterable.
+          await new Promise<void>(() => {});
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Create stale iterable A, then cycle (which clears A's latch
+    // because A never iterated).
+    const staleA = runtime.run({ kind: "text", text: "A" })[Symbol.asyncIterator]();
+    await runtime.cycleSession?.();
+
+    // Start fresh run B and pull its first event so it's actively
+    // holding the latch.
+    const iterB = runtime.run({ kind: "text", text: "B" })[Symbol.asyncIterator]();
+    await iterB.next();
+
+    // NOW iterate stale A. It must throw "discarded by cycleSession"
+    // AND must NOT clear B's latch.
+    await expect(staleA.next()).rejects.toThrow(/discarded by cycleSession/i);
+
+    // A third concurrent run() must STILL be rejected because B is
+    // running. The bug would have allowed it through.
+    expect(() => {
+      runtime.run({ kind: "text", text: "C" });
+    }).toThrow(/already running/i);
+
+    await iterB.return?.();
+    await runtime.dispose();
+  }, 8_000);
+
+  test("#1742: run() rejects while cycleSession is in flight (lifecycle mutex)", async () => {
+    // Round 13 regression: cycleSession is serialized via lifecycleInFlight
+    // but run() didn't check it. A caller could slip a fresh run() into
+    // the window after onSessionEnd fired but before the session was
+    // re-armed, and attach to a half-torn-down session. run() must
+    // reject loudly while a lifecycle transition is mid-flight.
+    // Middleware's onSessionEnd hangs so cycleSession is suspended
+    // long enough for us to race a run() against it.
+    let releaseSessionEnd: (() => void) | undefined;
+    const sessionEndPromise = new Promise<void>((resolve) => {
+      releaseSessionEnd = resolve;
+    });
+    const onSessionEnd = mock(() => sessionEndPromise);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "slow-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Kick off cycleSession; it will await sessionEndPromise inside
+    // runSessionHooks, leaving lifecycleInFlight set.
+    const cyclePromise = runtime.cycleSession?.();
+    // Yield so cycleSession enters the IIFE and starts awaiting.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // run() during this window must throw — not silently attach to
+    // the half-torn-down session.
+    expect(() => {
+      runtime.run({ kind: "text", text: "racing" });
+    }).toThrow(/cycleSession\/dispose is in flight/i);
+
+    // Release the slow hook so cycleSession can finish.
+    releaseSessionEnd?.();
+    await cyclePromise;
+
+    // After cycleSession completes, run() works again.
+    await collectEvents(runtime.run({ kind: "text", text: "after-cycle" }));
+    await runtime.dispose();
+  });
+
   test("#1742: cycleSession releases the running latch when the iterable was abandoned before iteration", async () => {
     // Round 11 regression: `run()` flips `running = true` synchronously
     // but cycleSession used to only clear it via the generator's finally,
