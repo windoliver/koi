@@ -721,7 +721,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // flip `hasClearedSinceAssembly` themselves — session-switch via
   // the picker intentionally does NOT flip it, because the post-
   // switch turns establish a usable rewind chain of their own.
-  const resetConversation = (): void => {
+  //
+  // `truncatePersistedTranscript` controls whether the on-disk
+  // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
+  // state. agent:clear / session:new pass `true` because the
+  // durable transcript is exactly what the user wants erased.
+  // Session switching must NOT pass `true` — the live JSONL
+  // belongs to the startup session id and must survive the switch,
+  // otherwise any work done before the pick is destroyed and the
+  // post-quit resume hint points at a file whose identity no
+  // longer matches that work.
+  const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
@@ -744,6 +754,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // on the freshly-emptied file and silently resurrect pre-clear
     // history. Await the drain first, then truncate.
     const inflightRun = activeRunPromise;
+    const shouldTruncate = options.truncatePersistedTranscript;
     // Always reset runtime session state — even in the idle case (no active stream).
     // resetSessionState is async (awaits task board + trajectory prune).
     // New submits block on resetBarrier before proceeding.
@@ -766,22 +777,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
         await runtimeHandle?.resetSessionState(idleController.signal);
         runtimeHandle?.transcript.splice(0);
-        // Truncate the on-disk JSONL so a subsequent `--resume` of
-        // this session id cannot resurrect the pre-clear conversation.
-        // Without this, `agent:clear` / `session:new` only wipe
-        // in-memory state — the durable transcript still holds the
-        // old turns and they reappear on the next resume, silently
-        // breaking any user who treats clear as a privacy or context
-        // boundary. Truncate errors are surfaced as a store error so
-        // the operator knows the on-disk reset failed and can decide
-        // whether to trust the in-memory clear.
-        const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
-        if (!truncateResult.ok) {
-          store.dispatch({
-            kind: "add_error",
-            code: "SESSION_CLEAR_PERSIST_FAILED",
-            message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
-          });
+        if (shouldTruncate) {
+          // Truncate the on-disk JSONL so a subsequent `--resume` of
+          // this session id cannot resurrect the pre-clear conversation.
+          // Without this, `agent:clear` / `session:new` only wipe
+          // in-memory state — the durable transcript still holds the
+          // old turns and they reappear on the next resume, silently
+          // breaking any user who treats clear as a privacy or context
+          // boundary. Truncate errors are surfaced as a store error so
+          // the operator knows the on-disk reset failed and can decide
+          // whether to trust the in-memory clear.
+          const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+          if (!truncateResult.ok) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_CLEAR_PERSIST_FAILED",
+              message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+            });
+          }
         }
       })();
     }
@@ -981,7 +994,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           break;
         case "agent:clear":
           hasClearedSinceAssembly = true;
-          resetConversation();
+          resetConversation({ truncatePersistedTranscript: true });
           break;
         case "agent:rewind":
           // /rewind <n> rolls back N turns (file edits + conversation) via
@@ -1062,7 +1075,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // the async reset is complete before we push the retained
             // entries back in. Without the reset, the next user submit
             // runs against a stale engine state and produces no output.
-            resetConversation();
+            // `truncatePersistedTranscript: false` because the restore
+            // protocol has already shrunk the JSONL to the target turn
+            // count — an extra truncate would wipe the kept prefix.
+            resetConversation({ truncatePersistedTranscript: false });
             await resetBarrier;
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
@@ -1147,7 +1163,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           break;
         case "session:new":
           hasClearedSinceAssembly = true;
-          resetConversation();
+          resetConversation({ truncatePersistedTranscript: true });
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
@@ -1182,6 +1198,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           await resetBarrier;
 
           // Step 1: non-destructive validate/load of the target.
+          // resumeForSession wraps `jsonlTranscript.load()` internally,
+          // so a load failure (missing file, parse error, repair
+          // abort) surfaces here without having touched anything.
           const targetSid = sessionId(selectedId);
           const resumeResult = await resumeForSession(targetSid, jsonlTranscript);
           if (!resumeResult.ok) {
@@ -1192,51 +1211,33 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             return;
           }
-          const rawLoad = await jsonlTranscript.load(targetSid);
-          if (!rawLoad.ok) {
-            store.dispatch({
-              kind: "add_error",
-              code: "SESSION_RESUME_ERROR",
-              message: `Could not load session transcript: ${rawLoad.error.message}`,
-            });
-            return;
-          }
 
-          // Step 2: target is valid. Now it is safe to reset the live
-          // session — this truncates `<tuiSessionId>.jsonl`, aborts
-          // any in-flight turn, and clears the UI.
-          resetConversation();
+          // Step 2: target is valid. Reset the live session NON-
+          // DESTRUCTIVELY — abort any in-flight turn, clear the UI,
+          // and rebuild in-memory state — but LEAVE the on-disk
+          // `<tuiSessionId>.jsonl` untouched. The live file belongs
+          // to the startup session id and must survive the switch;
+          // overwriting it destroys any work done before the pick
+          // and leaves the post-quit resume hint pointing at a file
+          // whose identity no longer matches that work.
+          resetConversation({ truncatePersistedTranscript: false });
           await resetBarrier;
 
-          // Step 3: hydrate memory + disk from the validated target.
+          // Step 3: hydrate memory + UI from the validated target.
+          // The picked session is loaded into the runtime's
+          // in-memory transcript so the model sees the prior context
+          // on the next turn, and into the TUI store so the user
+          // sees it rendered. The picked session's JSONL file is
+          // NOT copied anywhere on disk — it remains the
+          // authoritative archive under its own id. If the user
+          // wants to durably continue the picked session rather than
+          // the live one, they should quit and relaunch with
+          // `koi tui --resume <pickedId>`.
           if (runtimeHandle !== null) {
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
             }
           }
-          // The engine's session-transcript middleware routes writes
-          // to `tuiSessionId` (baked in as createKoi's sessionId
-          // override at runtime assembly and unchangeable mid-session).
-          // Copy the picker-selected transcript entries into the live
-          // `tuiSessionId` file — `resetConversation()` just truncated
-          // it — so new turns append to a file that already contains
-          // the selected history. Future `--resume <tuiSessionId>`
-          // then sees the full conversation; the original `selectedId`
-          // file is left untouched as a read-only archive.
-          if (rawLoad.value.entries.length > 0) {
-            const appendResult = await jsonlTranscript.append(tuiSessionId, rawLoad.value.entries);
-            if (!appendResult.ok) {
-              store.dispatch({
-                kind: "add_error",
-                code: "SESSION_COPY_FAILED",
-                message:
-                  "Loaded session into memory but failed to persist it under the live session id — " +
-                  `future resumes of ${String(tuiSessionId).slice(0, 8)} will only see post-pick turns. Cause: ${appendResult.error.message}`,
-              });
-            }
-          }
-          // Replay messages into the TUI store so the user sees the prior
-          // conversation. Tool entries are skipped (display-only limitation).
           store.dispatch({
             kind: "load_history",
             messages: resumeResult.value.messages,

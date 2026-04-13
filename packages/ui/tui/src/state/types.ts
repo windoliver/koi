@@ -475,11 +475,16 @@ export type TuiAction =
        * Replays loaded session history into the message list.
        * Injected by the host after resumeForSession; TUI never performs I/O.
        * Prepended before any live messages so the conversation reads top-to-bottom.
-       * Only user/assistant messages are shown; tool entries are skipped.
+       * Only user/assistant text messages are shown; tool entries,
+       * privileged system:* senders, metadata.toolCalls placeholders,
+       * and resumedSystemRole-tagged user entries are all filtered
+       * out — the reducer needs `metadata` visibility to apply those
+       * rules uniformly with `rehydrate_messages`.
        */
       readonly kind: "load_history";
       readonly messages: readonly {
         readonly senderId: string;
         readonly content: readonly ContentBlock[];
+        readonly metadata?: JsonObject | undefined;
       }[];
     };

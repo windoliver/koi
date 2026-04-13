@@ -898,33 +898,54 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, trajectorySteps: action.steps };
 
     case "load_history": {
+      // Shares the same filtering rules as `rehydrate_messages`:
+      //   - Skip `senderId === "tool"` messages (raw tool-result JSON).
+      //   - Skip `assistant` messages with `metadata.toolCalls` set
+      //     (tool-call entries whose content is the raw call UUID).
+      //   - Skip `senderId.startsWith("system:")` privileged entries.
+      //   - Skip `user` messages with `metadata.resumedSystemRole`
+      //     (plain `role: "system"` transcript entries rewritten by
+      //     `resumeFromTranscript` to replay without privilege
+      //     escalation — internal feedback, not user speech).
+      // All four paths (`--resume`, session picker, rewind, reload)
+      // therefore apply identical filtering, so the transcript view
+      // never leaks internal artifacts regardless of entrypoint.
       if (action.messages.length === 0) return state;
       const historical: TuiMessage[] = [];
       let assistantIdx = 0;
       let userIdx = 0;
       for (const msg of action.messages) {
         if (msg.senderId === "user") {
+          const resumedSystem =
+            msg.metadata !== undefined &&
+            (msg.metadata as { readonly resumedSystemRole?: unknown }).resumedSystemRole === true;
+          if (resumedSystem) continue;
           historical.push({
             kind: "user",
             id: `history-user-${userIdx++}`,
             blocks: msg.content,
           });
-        } else if (msg.senderId === "assistant") {
-          const text = msg.content
-            .filter((b) => b.kind === "text")
-            .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-            .join("");
-          if (text.length > 0) {
-            historical.push({
-              kind: "assistant",
-              id: `history-assistant-${assistantIdx++}`,
-              blocks: [{ kind: "text", text }],
-              streaming: false,
-            });
-          }
+          continue;
         }
-        // tool entries are skipped — they're in conversationHistory for model context
-        // but not needed in the display (no tool_call/tool_result rendering in replay)
+        if (msg.senderId === "tool") continue;
+        if (msg.senderId.startsWith("system:")) continue;
+        if (msg.senderId !== "assistant") continue;
+        const hasToolCalls =
+          msg.metadata !== undefined &&
+          Array.isArray((msg.metadata as { readonly toolCalls?: unknown }).toolCalls);
+        if (hasToolCalls) continue;
+        const text = msg.content
+          .filter((b) => b.kind === "text")
+          .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
+          .join("");
+        if (text.length > 0) {
+          historical.push({
+            kind: "assistant",
+            id: `history-assistant-${assistantIdx++}`,
+            blocks: [{ kind: "text", text }],
+            streaming: false,
+          });
+        }
       }
       if (historical.length === 0) return state;
       // Prepend history before any live messages accumulated since load_history was queued.
