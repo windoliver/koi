@@ -1357,27 +1357,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         resultsDir: TASK_RESULTS_DIR,
       });
 
-      // 2. Signal-only step: abort prior-session background subprocesses
-      //    (SIGTERM→SIGKILL). This ONLY raises the abort signal — it
-      //    does NOT rotate the controller or mutate any shared state
-      //    yet, so the still-running tool sees a clean cancellation
-      //    request without observing fresh-session state. Wait for the
-      //    SIGKILL escalation window so old jobs can't mutate the
-      //    workspace after reset completes (same pattern as shutdown).
-      const hadLiveProcesses = liveSubprocessCount > 0;
-      bgController.abort();
-      if (hadLiveProcesses) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
-      }
-
-      // 3. Cycle middleware session lifecycle. This awaits the in-flight
+      // 2. Cycle middleware session lifecycle. This awaits the in-flight
       //    run's settle (bounded by ~5s in the engine). On success the
       //    prior run is fully unwound and we know it can no longer
       //    write into the shared state we're about to clear/rotate
-      //    below. On settle timeout cycleSession throws TIMEOUT — we
-      //    propagate so the caller (resetConversation) can surface a
-      //    "restart required" error and abandon the reset WITHOUT
-      //    having mutated any shared session state. (#1742 round 12)
+      //    below. On settle timeout / onSessionEnd failure cycleSession
+      //    throws — we propagate so the caller (resetConversation)
+      //    surfaces a "restart required" error and the prior session
+      //    stays inspectable. NO destructive cleanup has happened yet.
+      //
+      //    #1742 loop-2 round 10: bgController.abort() / wait used to
+      //    happen BEFORE cycleSession. That meant a failed cycleSession
+      //    left the user without their bash_background jobs even
+      //    though we were claiming the old session was preserved.
+      //    Background cleanup is now deferred to the post-cycle commit
+      //    block so failure leaves bg jobs alive too.
       //
       //    Capture the OLD sessionId before the cycle so we can clear
       //    the prior session's permission state. cycleSession() rotates
@@ -1390,8 +1384,19 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
 
       // ─── EVERYTHING BELOW THIS POINT IS POST-SETTLE ────────────────
       // From here on the prior run is guaranteed dead (cycleSession
-      // failed closed if it wasn't). Mutating shared session state is
-      // safe because no late callback can observe it.
+      // failed closed if it wasn't). Destructive cleanup including
+      // background-subprocess termination is now safe and committed.
+
+      // 3. Abort prior-session background subprocesses (SIGTERM→SIGKILL).
+      //    Deferred until after cycleSession succeeds so a failed reset
+      //    doesn't kill bg jobs the user expected to keep. Wait the
+      //    SIGKILL escalation window so old jobs can't mutate the
+      //    workspace after reset completes (same pattern as shutdown).
+      const hadLiveProcesses = liveSubprocessCount > 0;
+      bgController.abort();
+      if (hadLiveProcesses) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
 
       // 4. Reset Bash tracked cwd so the new session starts from workspaceRoot.
       bashHandle.resetCwd();

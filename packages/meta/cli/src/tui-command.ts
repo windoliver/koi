@@ -724,7 +724,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         if (hadLiveTasks) {
           await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
         }
-        await runtimeHandle.runtime.dispose();
+        // #1742 loop-2 round 10: dispose now fails closed on settle
+        // timeout. Catch the throw so the rest of shutdown (approval
+        // store close, process.exit) still runs. The hard-exit timer
+        // is the ultimate failsafe if process.exit itself wedges.
+        try {
+          await runtimeHandle.runtime.dispose();
+        } catch (disposeErr) {
+          process.stderr.write(
+            `[koi tui] runtime.dispose failed during shutdown: ${
+              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+            }\n`,
+          );
+        }
       }
       approvalStore?.close();
     } finally {

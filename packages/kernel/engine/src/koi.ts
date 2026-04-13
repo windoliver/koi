@@ -1617,23 +1617,34 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // backing an active iterator) underneath an in-progress event.
       //
       // Bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a non-cooperative
-      // tool can't deadlock shutdown. Unlike `cycleSession`, dispose
-      // proceeds with cleanup even on timeout because the caller has
-      // already committed to throwing the runtime away — leaving it
-      // half-disposed would be worse. State corruption from the
-      // late-running tool is accepted as collateral damage; the
-      // poisoned runtime warning makes the situation visible.
-      // Caller is responsible for first aborting the run signal so
-      // the stream actually terminates promptly.
-      // Same guard as cycleSession: only wait if the generator has
-      // actually entered streamEvents (currentRunResolveSettled set).
-      // Round 11: also release the `running` latch in the abandoned-
-      // iterable path so dispose isn't blocked by a stale flag.
+      // tool can't deadlock shutdown. Caller is responsible for first
+      // aborting the run signal so the stream actually terminates
+      // promptly. Round 11: also release the `running` latch in the
+      // abandoned-iterable path so dispose isn't blocked by a stale flag.
+      //
+      // #1742 loop-2 round 10: FAIL CLOSED on dispose timeout the
+      // same way cycleSession does. Previously dispose proceeded into
+      // onSessionEnd and adapter.dispose() with a console.warn,
+      // accepting "state corruption from late tool callbacks" as
+      // collateral damage. That meant a wedged tool could continue
+      // executing against torn-down middleware/adapter state — the
+      // exact corruption class this branch is closing. Now: throw
+      // TIMEOUT, mark poisoned, and skip the destructive teardown.
+      // The host is responsible for process-level cleanup
+      // (e.g. SIGKILL the wedged tool) before recreating a runtime.
       if (running && currentRunResolveSettled !== undefined) {
         const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
+          poisoned = true;
           console.warn(
-            "[koi] dispose proceeding after settle timeout — late tool callbacks may corrupt downstream state",
+            "[koi] dispose timed out: in-flight run ignored abort. " +
+              "Skipping onSessionEnd / adapter.dispose to avoid corrupting " +
+              "still-live state. Runtime is poisoned; host must SIGKILL the " +
+              "wedged tool before any downstream resource will be released.",
+          );
+          throw KoiRuntimeError.from(
+            "TIMEOUT",
+            `dispose timed out after ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms waiting for an in-flight run to settle. Runtime is poisoned; the wedged tool must be killed at the OS level before any clean recovery is possible.`,
           );
         }
       } else if (running) {
