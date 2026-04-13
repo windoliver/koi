@@ -1340,7 +1340,24 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         );
       }
 
-      // 1. Signal-only step: abort prior-session background subprocesses
+      // 1. PRE-CREATE the new task board BEFORE anything else commits.
+      //    Round 8: previously this happened post-cycleSession and was
+      //    catch-and-warn — but task tools (`task_list`, `task_get`,
+      //    `task_output`, `bash_background`) are backed by the
+      //    boardRef.current proxy, so retaining the old board after a
+      //    "successful" reset would let the next session see and
+      //    mutate prior-session tasks. createManagedTaskBoard does
+      //    async store + filesystem setup that can throw under
+      //    degraded disk/permission conditions. By creating it FIRST,
+      //    a failure aborts the reset cleanly with NO state mutated:
+      //    the user sees a RESET_FAILED toast and the old session
+      //    stays intact.
+      const newBoardCandidate = await createManagedTaskBoard({
+        store: createMemoryTaskBoardStore(),
+        resultsDir: TASK_RESULTS_DIR,
+      });
+
+      // 2. Signal-only step: abort prior-session background subprocesses
       //    (SIGTERM→SIGKILL). This ONLY raises the abort signal — it
       //    does NOT rotate the controller or mutate any shared state
       //    yet, so the still-running tool sees a clean cancellation
@@ -1353,7 +1370,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
 
-      // 2. Cycle middleware session lifecycle. This awaits the in-flight
+      // 3. Cycle middleware session lifecycle. This awaits the in-flight
       //    run's settle (bounded by ~5s in the engine). On success the
       //    prior run is fully unwound and we know it can no longer
       //    write into the shared state we're about to clear/rotate
@@ -1376,58 +1393,43 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       // failed closed if it wasn't). Mutating shared session state is
       // safe because no late callback can observe it.
 
-      // 3. Reset Bash tracked cwd so the new session starts from workspaceRoot.
+      // 4. Reset Bash tracked cwd so the new session starts from workspaceRoot.
       bashHandle.resetCwd();
 
-      // 4. Clear in-memory memory backend so prior-session memories
+      // 5. Clear in-memory memory backend so prior-session memories
       //    don't leak into the new session via memory_recall/memory_search.
       memoryBackend.clear();
 
-      // 5. Rotate the background-process controller so new background
+      // 6. Rotate the background-process controller so new background
       //    tasks use a fresh signal. The OLD controller already had
       //    abort() called above; this just swaps in the new one for
       //    future task launches.
       bgController = new AbortController();
 
-      // 6. Clear the OLD session's approval state (always-allow, caches,
+      // 7. Clear the OLD session's approval state (always-allow, caches,
       //    trackers). Safe to do now — no run is in flight, and the
       //    map entry for `priorSessionId` is the one we want gone.
       //    The new session has nothing in the map yet.
       permMw.clearSessionApprovals(priorSessionId);
 
+      // 8. Atomic swap to the pre-created new task board. createManagedTaskBoard
+      //    already ran successfully at step 1; this is a sync reference swap
+      //    so it cannot fail. After this point all task tools see the new,
+      //    empty board — prior-session tasks are no longer reachable via
+      //    task_list / task_get / task_output / bash_background.
+      boardRef.current = newBoardCandidate;
+
       // ─── ATOMIC COMMIT POINT ──────────────────────────────────────
       // From here on, cycleSession() has already rotated the engine
-      // session AND the synchronous in-process cleanup (steps 3-6) has
-      // run. The reset is committed as far as the conversation context
-      // is concerned: the next run() will attach to a fresh session
-      // with no stale approvals, memory, cwd, or signal. Steps 7-8
-      // below are best-effort housekeeping (board rotation, trajectory
-      // prune). Their failures are non-fatal — they would only leak
-      // telemetry / leftover task records, NOT bleed prior-session
-      // context into the new conversation. We catch + log so the reset
-      // still resolves successfully and the TUI commits the visible
-      // clear. (#1742 loop-2 round 6 — atomic-after-cycle invariant.)
+      // session AND the synchronous in-process cleanup (steps 4-8) has
+      // run. The reset is fully committed: the next run() attaches to
+      // a fresh session with no stale approvals, memory, cwd, signal,
+      // or task board. Step 9 is best-effort housekeeping (trajectory
+      // prune). Its failure is non-fatal — it would only leave stale
+      // /trajectory entries visible, NOT bleed prior-session context
+      // into the new conversation.
 
-      // 7. Rotate task board — best-effort. On failure, retain the old
-      //    board reference (its sessions point at the prior session,
-      //    which is now closed, so new submits will get a clean
-      //    rejection from the engine instead of mixing contexts).
-      try {
-        const newBoard = await createManagedTaskBoard({
-          store: createMemoryTaskBoardStore(),
-          resultsDir: TASK_RESULTS_DIR,
-        });
-        boardRef.current = newBoard;
-      } catch (boardErr) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[koi tui] task board rotation after /clear failed: ${
-            boardErr instanceof Error ? boardErr.message : String(boardErr)
-          }. Reset committed; old board retained.`,
-        );
-      }
-
-      // 8. Clear trajectory store — best-effort. On failure, old
+      // 9. Clear trajectory store — best-effort. On failure, old
       //    trajectory entries remain visible in /trajectory until next
       //    process restart but cannot bleed into model context.
       //
