@@ -2083,8 +2083,12 @@ describe("createKoi turn_start emission", () => {
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    // #1742: guard errors (KoiRuntimeError) now emit a synthetic text_delta
+    // explanation between turn_start and done so the user sees WHY the agent
+    // stopped instead of an empty reply. Order: turn_start, text_delta, done.
     expect(events[0]?.kind).toBe("turn_start");
-    expect(events[1]?.kind).toBe("done");
+    expect(events[1]?.kind).toBe("text_delta");
+    expect(events[2]?.kind).toBe("done");
   });
 
   test("multi-turn: turn_start for each turn", async () => {

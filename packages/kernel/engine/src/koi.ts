@@ -1128,10 +1128,27 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             ? "max_turns"
             : "error";
         agent.transition({ kind: "complete", stopReason });
+        // #1742: surface the guard error to the user as visible assistant text
+        // so the TUI (and any other consumer) doesn't render an empty reply
+        // when governance trips (turn count, token budget, duration, rate
+        // limit, etc.). Previously `content: []` was emitted, and the
+        // preceding turn_end had already closed the active assistant block,
+        // so the reducer had nowhere to attach the error. The user just saw
+        // a silent stop. Emitting a `text_delta` before the `done` opens a
+        // fresh assistant block with the error reason, matching the
+        // behavior of engine-adapter's synthetic-done path for turn-runner
+        // errors (engine-adapter.ts:explainNonCompletedStop).
+        const reason =
+          stopReason === "max_turns"
+            ? `[Turn stopped: ${error.message}. Raise the session budget or resubmit to continue.]`
+            : stopReason === "interrupted"
+              ? "[Turn interrupted before the model produced a reply.]"
+              : `[Turn failed: ${error.message}.]`;
+        yield { kind: "text_delta", delta: `\n${reason}\n` } as EngineEvent;
         const doneEvent: EngineEvent = {
           kind: "done",
           output: {
-            content: [],
+            content: [{ kind: "text", text: reason }],
             stopReason,
             metrics: {
               totalTokens: 0,
