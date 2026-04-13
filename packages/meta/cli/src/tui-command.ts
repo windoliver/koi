@@ -1037,8 +1037,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // swallow the hint entirely.
       if (!isLoopMode) {
         try {
+          // A cleared-and-untouched session is intentionally
+          // unresumable: `/clear` / `/new` truncated the JSONL to
+          // zero entries, and `resumeSessionFromJsonl` rejects
+          // empty transcripts as "not found" to catch typos.
+          // Printing a resume hint in that case would advertise
+          // an id that the next launch will reject. Suppress the
+          // hint instead — the user explicitly asked to drop
+          // this session, so offering to restore it is pointless.
+          const sessionIsEmpty = hasClearedSinceAssembly && postClearTurnCount === 0;
           if (clearPersistFailed) {
             writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
+          } else if (sessionIsEmpty) {
+            writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
           } else if (tuiSessionId === viewedSessionId) {
             // Non-picker (or picker-of-self) case: both ids agree.
             // Print the single normal hint.
@@ -1308,6 +1319,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 message: `Rewind failed: ${result.error.message}`,
               });
               return;
+            }
+            // Shrink the post-clear rewind budget to match the
+            // number of turns actually rolled back. Without this,
+            // chained rewinds would cumulatively cross the clear
+            // boundary: `/clear`, 3 turns, `/rewind 2` (allowed),
+            // `/rewind 2` again (previously allowed because the
+            // counter still said 3 — but only 1 post-clear turn
+            // remained, so the second rewind would walk back
+            // through the clear boundary and restore pre-clear
+            // state). Clamp to 0 so an over-rewind doesn't
+            // accidentally permit negative-budget rewinds.
+            if (hasClearedSinceAssembly) {
+              postClearTurnCount = Math.max(0, postClearTurnCount - result.turnsRewound);
             }
 
             // After a successful rewind the restore protocol has already
