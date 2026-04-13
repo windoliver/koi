@@ -62,9 +62,7 @@ import {
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
-import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
-import type { McpResolver } from "@koi/mcp";
-import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
+import { createHookMiddleware } from "@koi/hooks";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -82,8 +80,7 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { runTurn } from "@koi/query-engine";
 import { createRulesMiddleware } from "@koi/rules-loader";
-import type { SkillsMcpBridge } from "@koi/runtime";
-import { createHookObserver, createSkillsMcpBridge, wrapMiddlewareWithTrace } from "@koi/runtime";
+import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
@@ -106,8 +103,14 @@ import {
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
-import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 import { loadPluginComponents } from "./plugin-activation.js";
+import {
+  buildPluginMcpSetup,
+  loadUserMcpSetup,
+  loadUserRegisteredHooks,
+  type McpSetup,
+  mergeUserAndPluginHooks,
+} from "./shared-wiring.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -398,52 +401,9 @@ export interface TuiRuntimeHandle {
   readonly sandboxActive: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// MCP loading (optional, from .mcp.json)
-// ---------------------------------------------------------------------------
-
-interface McpSetup {
-  readonly resolver: McpResolver;
-  readonly provider: import("@koi/core").ComponentProvider;
-  readonly bridge: SkillsMcpBridge | undefined;
-  readonly dispose: () => void;
-}
-
-async function loadMcp(
-  cwd: string,
-  skillsRuntime: SkillsRuntime | undefined,
-): Promise<McpSetup | undefined> {
-  const mcpConfigPath = join(cwd, ".mcp.json");
-  const result = await loadMcpJsonFile(mcpConfigPath);
-  if (!result.ok) return undefined;
-  if (result.value.servers.length === 0) return undefined;
-
-  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
-  const resolver = createMcpResolver(connections);
-  const provider = createMcpComponentProvider({ resolver });
-
-  // Wire bridge if skillsRuntime provided
-  let bridge: SkillsMcpBridge | undefined;
-  if (skillsRuntime !== undefined) {
-    bridge = createSkillsMcpBridge({ resolver, runtime: skillsRuntime });
-    try {
-      await bridge.sync();
-    } catch {
-      // Non-fatal — MCP tools just won't appear as skills
-      bridge = undefined;
-    }
-  }
-
-  return {
-    resolver,
-    provider,
-    bridge,
-    dispose: () => {
-      bridge?.dispose();
-      resolver.dispose();
-    },
-  };
-}
+// MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
+// `koi tui` now call `loadUserMcpSetup` / `buildPluginMcpSetup` from there
+// so the `.mcp.json` discovery + SkillsMcpBridge logic lives in one place.
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -586,7 +546,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   const configHotReload = await setupConfigHotReload();
 
   // --- MCP setup (optional, from .mcp.json) ---
-  const mcpSetup = await loadMcp(cwd, skillsRuntime);
+  const mcpSetup = await loadUserMcpSetup(cwd, skillsRuntime);
 
   // --- Plugin activation: load enabled plugins' hooks, MCP, skills ---
   const pluginUserRoot = join(homedir(), ".koi", "plugins");
@@ -607,23 +567,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
 
-  // Create additional MCP connections from plugins
-  let pluginMcpSetup: McpSetup | undefined;
-  if (pluginComponents.mcpServers.length > 0) {
-    const connections = pluginComponents.mcpServers.map((server) =>
-      createOAuthAwareMcpConnection(server),
-    );
-    const resolver = createMcpResolver(connections);
-    const provider = createMcpComponentProvider({ resolver });
-    pluginMcpSetup = {
-      resolver,
-      provider,
-      bridge: undefined,
-      dispose: () => {
-        resolver.dispose();
-      },
-    };
-  }
+  const pluginMcpSetup: McpSetup | undefined = buildPluginMcpSetup(pluginComponents.mcpServers);
 
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
@@ -681,42 +625,26 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   });
 
   // --- @koi/hooks: load hooks from ~/.koi/hooks.json + command hook dispatch ---
-  // Same pattern as koi start: load user hooks, wire observer tap for ATIF recording.
+  // Same loader the CLI host uses, via ./shared-wiring.ts.
   // Absent/unreadable file = no hooks (empty array, middleware is a no-op).
-  // Agent hooks (kind: "agent") are filtered out because the TUI does not provide
-  // a spawnFn — createHookMiddleware throws if any agent hook is present without one.
-  // Prompt hooks (kind: "prompt") are supported via a lightweight PromptModelCaller
-  // that delegates to the TUI's model adapter for single-shot verification.
-  const hooksConfigPath = join(homedir(), ".koi", "hooks.json");
-  // let: justified — set after async load
-  let loadedHooks: readonly import("@koi/hooks").RegisteredHook[] = [];
-  try {
-    const raw: unknown = await Bun.file(hooksConfigPath).json();
-    const hookResult = loadRegisteredHooks(raw, "user");
-    if (hookResult.ok) {
-      const agentHooks = hookResult.value.filter((rh) => rh.hook.kind === "agent");
-      if (agentHooks.length > 0) {
-        console.warn(
-          `[koi tui] ${agentHooks.length} agent hook(s) skipped (not supported in TUI): ` +
-            agentHooks.map((rh) => rh.hook.name).join(", "),
-        );
-      }
-      loadedHooks = hookResult.value.filter((rh) => rh.hook.kind !== "agent");
-    }
-  } catch {
-    // Absent or unreadable — silently skip (no hooks configured)
-  }
-
+  // Agent hooks (kind: "agent") are filtered out because the TUI does not
+  // provide a spawnFn — createHookMiddleware throws if any agent hook is
+  // present without one. Prompt hooks (kind: "prompt") are supported via a
+  // lightweight PromptModelCaller that delegates to the TUI's model adapter
+  // for single-shot verification.
+  const loadedHooks = await loadUserRegisteredHooks({
+    filterAgentHooks: true,
+    onAgentHooksFiltered: (names) => {
+      console.warn(
+        `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
+      );
+    },
+  });
   // Merge plugin hooks (session tier) with user hooks (user tier).
   // Plugin hooks run first within their tier; user hooks in the next tier phase.
-  const pluginRegistered = createRegisteredHooks(
-    pluginComponents.hooks.filter((h) => h.kind !== "agent"),
-    "session",
-  );
-  const allHooks: readonly import("@koi/hooks").RegisteredHook[] = [
-    ...loadedHooks,
-    ...pluginRegistered,
-  ];
+  const allHooks = mergeUserAndPluginHooks(loadedHooks, pluginComponents.hooks, {
+    filterAgentHooks: true,
+  });
 
   // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
   // single-shot LLM verification. Builds a minimal ModelRequest with the

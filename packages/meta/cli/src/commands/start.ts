@@ -33,9 +33,8 @@ import type {
 import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
 import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
-import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
+import { createHookMiddleware } from "@koi/hooks";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
-import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import {
   createPatternPermissionBackend,
   createPermissionsMiddleware,
@@ -54,8 +53,14 @@ import type { StartFlags } from "../args/start.js";
 import { budgetConfigForModel } from "../engine-adapter.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
-import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
 import { loadPluginComponents } from "../plugin-activation.js";
+import {
+  buildPluginMcpSetup,
+  loadUserMcpSetup,
+  loadUserRegisteredHooks,
+  type McpSetup,
+  mergeUserAndPluginHooks,
+} from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
@@ -67,8 +72,6 @@ const DEFAULT_MAX_TURNS = 10;
 const MAX_INTERACTIVE_TURNS = 50;
 /** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
-/** Optional hooks config path — loaded if present, silently skipped otherwise. */
-const HOOKS_CONFIG_PATH = join(homedir(), ".koi", "hooks.json");
 
 // ---------------------------------------------------------------------------
 // Tool / middleware builders
@@ -123,37 +126,6 @@ async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
   const todoProvider = wrapToolAsProvider(todoTool);
 
   return [searchProvider, webProvider, bashProvider, todoProvider];
-}
-
-/**
- * Load an optional MCP ComponentProvider from `.mcp.json` in `cwd`.
- * Returns undefined (no error) when the file is absent or unreadable.
- */
-async function loadMcpProvider(cwd: string): Promise<ComponentProvider | undefined> {
-  const mcpConfigPath = join(cwd, ".mcp.json");
-  const result = await loadMcpJsonFile(mcpConfigPath);
-  if (!result.ok) return undefined; // absent or unreadable — silently skip
-  if (result.value.servers.length === 0) return undefined;
-
-  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
-  const resolver = createMcpResolver(connections);
-  return createMcpComponentProvider({ resolver });
-}
-
-/**
- * Load an optional hooks middleware from `~/.koi/hooks.json`.
- * Returns undefined when absent, invalid, or empty.
- */
-async function loadHookMiddleware(): Promise<KoiMiddleware | undefined> {
-  let raw: unknown;
-  try {
-    raw = await Bun.file(HOOKS_CONFIG_PATH).json();
-  } catch {
-    return undefined;
-  }
-  const result = loadRegisteredHooks(raw, "user");
-  if (!result.ok || result.value.length === 0) return undefined;
-  return createHookMiddleware({ hooks: result.value });
 }
 
 /**
@@ -366,9 +338,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   const cwd = process.cwd();
   const pluginUserRoot = join(homedir(), ".koi", "plugins");
-  const [mcpProvider, hookMiddleware, staticProviders, pluginComponents] = await Promise.all([
-    loadMcpProvider(cwd),
-    loadHookMiddleware(),
+  // `koi start` does not pass a SkillsRuntime, so MCP tools stay in the
+  // MCP provider and are never bridged into the skills registry — matches
+  // the prior loadMcpProvider() behavior verbatim.
+  const [mcpSetup, userHooks, staticProviders, pluginComponents] = await Promise.all([
+    loadUserMcpSetup(cwd, undefined),
+    loadUserRegisteredHooks({ filterAgentHooks: false }),
     buildStaticProviders(cwd),
     loadPluginComponents(pluginUserRoot),
   ]);
@@ -383,45 +358,20 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     );
   }
 
-  // Plugin MCP provider (additional MCP servers from installed plugins)
-  let pluginMcpProvider: ComponentProvider | undefined;
-  if (pluginComponents.mcpServers.length > 0) {
-    const connections = pluginComponents.mcpServers.map((server) =>
-      createOAuthAwareMcpConnection(server),
-    );
-    const resolver = createMcpResolver(connections);
-    pluginMcpProvider = createMcpComponentProvider({ resolver });
-  }
+  const pluginMcpSetup: McpSetup | undefined = buildPluginMcpSetup(pluginComponents.mcpServers);
 
-  // Plugin hooks merged into hook middleware with tier tagging:
-  // user hooks = "user" tier, plugin hooks = "session" tier.
-  let mergedHookMiddleware = hookMiddleware;
-  if (pluginComponents.hooks.length > 0) {
-    const pluginRegistered = createRegisteredHooks(pluginComponents.hooks, "session");
-    if (hookMiddleware !== undefined) {
-      // Rebuild with merged hooks (user hooks loaded via loadHookMiddleware don't
-      // expose the underlying array, so re-load user hooks and merge)
-      const userHooksPath = join(homedir(), ".koi", "hooks.json");
-      let userRegistered: readonly import("@koi/hooks").RegisteredHook[] = [];
-      try {
-        const raw: unknown = await Bun.file(userHooksPath).json();
-        const result = loadRegisteredHooks(raw, "user");
-        if (result.ok) userRegistered = result.value;
-      } catch {
-        // Already loaded above — fallback to empty
-      }
-      mergedHookMiddleware = createHookMiddleware({
-        hooks: [...userRegistered, ...pluginRegistered],
-      });
-    } else {
-      mergedHookMiddleware = createHookMiddleware({ hooks: pluginRegistered });
-    }
-  }
+  // User hooks (user tier) come first; plugin hooks (session tier) are
+  // appended — same merge order the old inline block produced.
+  const allHooks = mergeUserAndPluginHooks(userHooks, pluginComponents.hooks, {
+    filterAgentHooks: false,
+  });
+  const mergedHookMiddleware: KoiMiddleware | undefined =
+    allHooks.length > 0 ? createHookMiddleware({ hooks: allHooks }) : undefined;
 
   const providers: ComponentProvider[] = [
     ...staticProviders,
-    ...(mcpProvider !== undefined ? [mcpProvider] : []),
-    ...(pluginMcpProvider !== undefined ? [pluginMcpProvider] : []),
+    ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
+    ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
   ];
 
   // In loop mode (--until-pass), session-transcript persistence is
