@@ -256,7 +256,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   // Session ID created at factory scope so runtime.sessionId can reference it.
   // Format: "agent:{agentId}:{uuid}" — trust boundary is parseable from the ID.
-  const factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // #1742: rotated by `cycleSession()` so a host-driven conversation
+  // boundary mints a fresh identity. checkpoint chains and other
+  // session-keyed durable state are then isolated across /clear.
+  // let justified: mutable so cycleSession can rotate the identity
+  let factorySessionId: SessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  function rotateFactorySessionId(): void {
+    factorySessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  }
 
   // --- Session lifecycle (runtime-scoped, NOT per-run) ---
   //
@@ -277,15 +284,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // (e.g. TUI /clear, session:new) already call explicit middleware APIs
   // like `clearSessionApprovals(sessionId)` — they never relied on the
   // per-run onSessionEnd to do it for them.
-  const lifecycleSessionCtx: SessionContext = {
-    agentId: pid.id,
-    sessionId: factorySessionId,
-    runId: runId(crypto.randomUUID()),
-    ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
-    ...(options.userId !== undefined ? { userId: options.userId } : {}),
-    ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
-    metadata: {},
-  };
+  // #1742: rebuilt by `cycleSession()` after rotating factorySessionId
+  // so the runtime-scoped fallback ctx for onSessionEnd never uses a
+  // stale sessionId. Initialized inline at factory creation time.
+  function buildLifecycleSessionCtx(): SessionContext {
+    return {
+      agentId: pid.id,
+      sessionId: factorySessionId,
+      runId: runId(crypto.randomUUID()),
+      ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
+      ...(options.userId !== undefined ? { userId: options.userId } : {}),
+      ...(options.channelId !== undefined ? { channelId: options.channelId } : {}),
+      metadata: {},
+    };
+  }
+  // let justified: mutable runtime-scoped fallback ctx, rebuilt on cycleSession
+  let lifecycleSessionCtx: SessionContext = buildLifecycleSessionCtx();
   // let justified: mutable flags guarding one-shot lifecycle hook firing
   let lifecycleSessionStarted = false;
   let lifecycleSessionEnded = false;
@@ -1253,7 +1267,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       agent.transition({ kind: "error", error });
       throw error;
     } finally {
-      running = false;
+      // #1742: keep `running === true` until the resolver fires, so a
+      // host that reads `running` to decide whether to wait for settle
+      // never observes the "false but still cleaning up" window. Round
+      // 8 review found that clearing `running` at the top of finally
+      // let cycleSession()/dispose() skip the wait while the adapter
+      // iterator was still being torn down. The flag is lowered only
+      // after every cleanup step AND the resolver have completed.
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
@@ -1276,6 +1296,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // cycleSession() / dispose() can safely proceed.
       currentRunResolveSettled?.();
       currentRunResolveSettled = undefined;
+      running = false;
 
       // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
       // of every run(). See factorySessionId block above.
@@ -1285,7 +1306,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // --- 7. Build runtime ---
   const runtime: KoiRuntime = {
     agent,
-    sessionId: factorySessionId as string,
+    // #1742: getter so callers always see the CURRENT factorySessionId,
+    // including after `cycleSession()` rotates it for a fresh
+    // conversation. Reading at construction time was correct when the
+    // ID was immutable; now it must be live.
+    get sessionId(): string {
+      return factorySessionId as string;
+    },
     conflicts,
 
     run(input: EngineInput): AsyncIterable<EngineEvent> {
@@ -1365,6 +1392,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (govCtl !== undefined) {
         await govCtl.record({ kind: "session_reset" });
       }
+      // #1742: rotate the engine sessionId and rebuild the runtime-scoped
+      // lifecycle ctx so checkpoint chains, persistent approval keys,
+      // and any other middleware state keyed off `ctx.session.sessionId`
+      // are isolated across the user-driven conversation boundary.
+      // `runtime.sessionId` is now a getter, so every caller — including
+      // the host's `permMw.clearSessionApprovals(runtime.sessionId)` —
+      // automatically picks up the new ID after this point.
+      rotateFactorySessionId();
+      lifecycleSessionCtx = buildLifecycleSessionCtx();
       // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
       // with a fresh sessionCtx (its first turn's runId, like the original
       // first-run path). Until that next run, the runtime is in a quiescent

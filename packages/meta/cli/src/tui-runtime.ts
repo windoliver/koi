@@ -1364,11 +1364,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       //    BEFORE this point, which meant late callbacks from a
       //    non-cooperative run could repopulate the freshly-cleared
       //    approval cache or steer task ops into the new board.
+      //
+      //    Capture the OLD sessionId before the cycle so we can clear
+      //    the prior session's permission state. cycleSession() rotates
+      //    `runtime.sessionId` to a fresh value; reading it after
+      //    rotation would target the empty new session and leave the
+      //    old approval entries leaking in the middleware's per-session
+      //    map.
+      const priorSessionId = runtime.sessionId;
       await runtime.cycleSession?.();
 
-      // 4. Clear session-scoped approval state (always-allow, caches,
-      //    trackers). Safe to do now — no run is in flight.
-      permMw.clearSessionApprovals(runtime.sessionId);
+      // 4. Clear the OLD session's approval state (always-allow, caches,
+      //    trackers). Safe to do now — no run is in flight, and the
+      //    map entry for `priorSessionId` is the one we want gone.
+      //    The new session has nothing in the map yet.
+      permMw.clearSessionApprovals(priorSessionId);
 
       // 5. Rotate task board — AWAITED so new-session submits can't hit the old board.
       const newBoard = await createManagedTaskBoard({

@@ -553,6 +553,31 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 12_000);
 
+  test("#1742: cycleSession rotates runtime.sessionId so per-session state is isolated", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Open a session by running once.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    const idBeforeCycle = runtime.sessionId;
+    expect(typeof idBeforeCycle).toBe("string");
+    expect(idBeforeCycle.length).toBeGreaterThan(0);
+
+    // Cycle the session — host-driven /clear or session:new boundary.
+    await runtime.cycleSession?.();
+
+    // sessionId must rotate so checkpoint chains (chainId == sessionId)
+    // and other session-keyed state can't bleed across the boundary.
+    const idAfterCycle = runtime.sessionId;
+    expect(idAfterCycle).not.toBe(idBeforeCycle);
+    expect(typeof idAfterCycle).toBe("string");
+    expect(idAfterCycle.length).toBeGreaterThan(0);
+    await runtime.dispose();
+  });
+
   test("#1742: cycleSession FAILS CLOSED on settle timeout — throws + poisons + skips cleanup", async () => {
     // Non-cooperative tool path: the adapter never honors the abort
     // signal, so the run's finally never fires and currentRunSettled
