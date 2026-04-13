@@ -854,6 +854,85 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 8_000);
 
+  test("#1742: dispose() is retryable after a settle-timeout failure (loop-3 round 2)", async () => {
+    // Loop-3 round 2 regression: dispose() used to set `disposed = true`
+    // at entry. On settle timeout it threw without running onSessionEnd
+    // or adapter.dispose(), and every subsequent dispose() returned
+    // immediately via the early-exit guard. The runtime was permanently
+    // half-disposed even after the host killed the wedged tool. Now
+    // disposed is only latched after the FULL cleanup sequence
+    // succeeds, so a retry can complete the work.
+    const onSessionEnd = mock(() => Promise.resolve());
+    const adapterDispose = mock(() => Promise.resolve());
+    // let: mutable resolver — host SIGKILLs the wedged tool by
+    // calling this between the failing and retried dispose() calls.
+    let unwedge: (() => void) | undefined;
+    const wedgePromise = new Promise<IteratorResult<EngineEvent>>((resolve) => {
+      unwedge = () => resolve({ value: undefined, done: true });
+    });
+    const adapter: EngineAdapter = {
+      engineId: "wedge-then-recover",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable yielded flag
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                // Subsequent .next() awaits the wedge promise. The host
+                // resolves it (simulating SIGKILL) between the failing
+                // and retried dispose calls.
+                return wedgePromise;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return wedgePromise;
+              },
+            };
+          },
+        };
+      },
+      dispose: adapterDispose,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [{ name: "recover", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    // Start a run, pull one event, fire a wedged second .next().
+    const iter = runtime.run({ kind: "text", text: "first" })[Symbol.asyncIterator]();
+    await iter.next();
+    void iter.next().catch(() => {});
+
+    // First dispose() must throw TIMEOUT (wedged).
+    await expect(runtime.dispose()).rejects.toThrow(/timed out|wedged/i);
+    // Cleanup did NOT run yet — the host still has to kill the tool.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    expect(adapterDispose).toHaveBeenCalledTimes(0);
+
+    // Host "SIGKILLs" the wedged tool by unwedging the adapter.
+    unwedge?.();
+
+    // Retry dispose — must now complete cleanup.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    expect(adapterDispose).toHaveBeenCalledTimes(1);
+
+    // Third dispose() is a no-op.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    expect(adapterDispose).toHaveBeenCalledTimes(1);
+  }, 15_000);
+
   test("#1742: cycleSession fast-paths an iterable abandoned after first iteration (no false poison)", async () => {
     // Loop-3 round 1 regression: previously, calling .next() once and
     // then dropping the iterable left the generator suspended at

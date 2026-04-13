@@ -198,8 +198,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   };
 
   // --- 5. Track disposal ---
-  // let justified: mutable flag for one-shot dispose guard
+  // let justified: mutable flag — set true ONLY after dispose() cleanup
+  // completes successfully. A timeout/throw during dispose leaves this
+  // false so a retry can re-enter once the host kills the wedged tool.
   let disposed = false;
+  // #1742 loop-3 round 2: in-flight dispose promise. Concurrent
+  // dispose() calls await this instead of running cleanup twice.
+  // Cleared in dispose's finally so a failed-then-retried dispose
+  // can re-enter. (Distinct from `lifecycleInFlight` which serializes
+  // cycleSession/dispose against each other.)
+  // let justified: mutable in-flight dispose tracker
+  let disposeInFlight: Promise<void> | undefined;
   // let justified: mutable flag for concurrent run() guard
   let running = false;
   // #1742: monotonically increasing session epoch. Bumped by
@@ -1630,92 +1639,122 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
 
     dispose: async (): Promise<void> => {
+      // #1742 loop-3 round 2: split disposed/disposing so a timeout
+      // during cleanup does NOT permanently latch the runtime as
+      // disposed. Previously dispose() set `disposed = true` at entry,
+      // then on settle timeout threw without running onSessionEnd or
+      // adapter.dispose() — and every subsequent dispose() returned
+      // early via the `if (disposed) return` guard. After the host
+      // killed the wedged tool there was no code path left to finish
+      // teardown. Now: only set `disposed = true` AFTER the full
+      // cleanup sequence (settle wait + onSessionEnd + adapter.dispose)
+      // succeeds. A timeout throw leaves `disposed = false` so a
+      // retry can re-enter and complete the work.
       if (disposed) return;
-      disposed = true;
-      // #1742 loop-2 round 7: bump sessionEpoch synchronously here too.
-      // The streamEvents `disposed` check already covers iterables that
-      // first iterate AFTER `disposed = true` is visible, but bumping
-      // the epoch belt-and-braces invalidates them via the same code
-      // path as cycleSession and matches the "any pre-existing iterable
-      // is now stale" invariant.
-      sessionEpoch += 1;
-      // #1742 round 10: if a cycleSession or earlier dispose is still
-      // in flight, wait for it to finish before starting our own
-      // teardown. Otherwise the two paths could both pass the
-      // lifecycleSessionStarted guard and double-fire onSessionEnd.
-      if (lifecycleInFlight !== undefined) {
-        try {
-          await lifecycleInFlight;
-        } catch {
-          // swallow — the in-flight caller already handled its error
-        }
+      // Concurrent / overlapping dispose() calls await the first one's
+      // promise instead of running cleanup twice.
+      if (disposeInFlight !== undefined) {
+        return disposeInFlight;
       }
-      // #1742: if a run is still in flight, wait for its finally to
-      // unwind before tearing down session/adapter state. Without this,
-      // dispose() races the active stream's middleware/adapter cleanup
-      // and can flush session-scoped state (or destroy the adapter
-      // backing an active iterator) underneath an in-progress event.
-      //
-      // Bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a non-cooperative
-      // tool can't deadlock shutdown. Caller is responsible for first
-      // aborting the run signal so the stream actually terminates
-      // promptly. Round 11: also release the `running` latch in the
-      // abandoned-iterable path so dispose isn't blocked by a stale flag.
-      //
-      // #1742 loop-2 round 10: FAIL CLOSED on dispose timeout the
-      // same way cycleSession does. Previously dispose proceeded into
-      // onSessionEnd and adapter.dispose() with a console.warn,
-      // accepting "state corruption from late tool callbacks" as
-      // collateral damage. That meant a wedged tool could continue
-      // executing against torn-down middleware/adapter state — the
-      // exact corruption class this branch is closing. Now: throw
-      // TIMEOUT, mark poisoned, and skip the destructive teardown.
-      // The host is responsible for process-level cleanup
-      // (e.g. SIGKILL the wedged tool) before recreating a runtime.
-      if (running && currentRunResolveSettled !== undefined) {
-        // #1742 loop-3 round 1: same fast-path as cycleSession —
-        // signal the active generator to unwind so abandoned-after-
-        // iteration callers don't pay the 5s timeout.
-        try {
-          void currentGenerator?.return?.(undefined);
-        } catch {
-          // .return() rejects are non-fatal.
+      disposeInFlight = (async (): Promise<void> => {
+        // #1742 loop-2 round 7: bump sessionEpoch synchronously here too.
+        // The streamEvents `disposed` check already covers iterables that
+        // first iterate AFTER `disposed = true` is visible, but bumping
+        // the epoch belt-and-braces invalidates them via the same code
+        // path as cycleSession and matches the "any pre-existing iterable
+        // is now stale" invariant.
+        sessionEpoch += 1;
+        // #1742 round 10: if a cycleSession or earlier dispose is still
+        // in flight, wait for it to finish before starting our own
+        // teardown. Otherwise the two paths could both pass the
+        // lifecycleSessionStarted guard and double-fire onSessionEnd.
+        if (lifecycleInFlight !== undefined) {
+          try {
+            await lifecycleInFlight;
+          } catch {
+            // swallow — the in-flight caller already handled its error
+          }
         }
-        const result = await awaitSettleOrTimeout();
-        if (result === "timeout") {
-          poisoned = true;
-          console.warn(
-            "[koi] dispose timed out: in-flight run ignored abort. " +
-              "Skipping onSessionEnd / adapter.dispose to avoid corrupting " +
-              "still-live state. Runtime is poisoned; host must SIGKILL the " +
-              "wedged tool before any downstream resource will be released.",
-          );
-          throw KoiRuntimeError.from(
-            "TIMEOUT",
-            `dispose timed out after ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms waiting for an in-flight run to settle. Runtime is poisoned; the wedged tool must be killed at the OS level before any clean recovery is possible.`,
-          );
+        // #1742: if a run is still in flight, wait for its finally to
+        // unwind before tearing down session/adapter state. Without this,
+        // dispose() races the active stream's middleware/adapter cleanup
+        // and can flush session-scoped state (or destroy the adapter
+        // backing an active iterator) underneath an in-progress event.
+        //
+        // Bounded by `LIFECYCLE_SETTLE_TIMEOUT_MS` so a non-cooperative
+        // tool can't deadlock shutdown. Caller is responsible for first
+        // aborting the run signal so the stream actually terminates
+        // promptly. Round 11: also release the `running` latch in the
+        // abandoned-iterable path so dispose isn't blocked by a stale flag.
+        //
+        // #1742 loop-2 round 10: FAIL CLOSED on dispose timeout the
+        // same way cycleSession does. Previously dispose proceeded into
+        // onSessionEnd and adapter.dispose() with a console.warn,
+        // accepting "state corruption from late tool callbacks" as
+        // collateral damage. That meant a wedged tool could continue
+        // executing against torn-down middleware/adapter state. Now:
+        // throw TIMEOUT, mark poisoned, and skip the destructive
+        // teardown. Loop-3 round 2: leave `disposed = false` so that
+        // a retry (after the host SIGKILLs the wedged tool) can
+        // re-enter and complete onSessionEnd / adapter.dispose().
+        if (running && currentRunResolveSettled !== undefined) {
+          // #1742 loop-3 round 1: same fast-path as cycleSession —
+          // signal the active generator to unwind so abandoned-after-
+          // iteration callers don't pay the 5s timeout.
+          try {
+            void currentGenerator?.return?.(undefined);
+          } catch {
+            // .return() rejects are non-fatal.
+          }
+          const result = await awaitSettleOrTimeout();
+          if (result === "timeout") {
+            poisoned = true;
+            console.warn(
+              "[koi] dispose timed out: in-flight run ignored abort. " +
+                "Skipping onSessionEnd / adapter.dispose to avoid corrupting " +
+                "still-live state. Runtime is poisoned; host must SIGKILL the " +
+                "wedged tool, then call dispose() again to complete cleanup.",
+            );
+            throw KoiRuntimeError.from(
+              "TIMEOUT",
+              `dispose timed out after ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms waiting for an in-flight run to settle. Runtime is poisoned; SIGKILL the wedged tool then call dispose() again to retry cleanup.`,
+            );
+          }
+        } else if (running) {
+          running = false;
+          runningEpoch = undefined;
         }
-      } else if (running) {
-        running = false;
-        runningEpoch = undefined;
+        // #1742: session lifecycle ends when the runtime is disposed — not at
+        // the end of every run(). Fire onSessionEnd here so middleware
+        // session-scoped state (caches, always-allow grants, trackers) is
+        // dropped exactly once, when the agent session truly ends.
+        if (lifecycleSessionStarted && !lifecycleSessionEnded) {
+          lifecycleSessionEnded = true;
+          try {
+            await runSessionHooks(
+              allMiddleware,
+              "onSessionEnd",
+              activeSessionCtx ?? lifecycleSessionCtx,
+            );
+          } catch (sessionEndError: unknown) {
+            console.warn("[koi] onSessionEnd failed during dispose", { cause: sessionEndError });
+          }
+        }
+        await adapter.dispose?.();
+        // Cleanup completed. Latch disposed=true now so future
+        // dispose() calls become no-ops and run()/cycleSession()
+        // reject via their existing disposed checks.
+        disposed = true;
+      })();
+      try {
+        return await disposeInFlight;
+      } finally {
+        // Always clear the in-flight slot. If the IIFE threw
+        // (timeout path), this lets a retry re-enter. If it
+        // succeeded, `disposed` is now true so the early return
+        // at the top short-circuits the next call anyway.
+        disposeInFlight = undefined;
       }
-      // #1742: session lifecycle ends when the runtime is disposed — not at
-      // the end of every run(). Fire onSessionEnd here so middleware
-      // session-scoped state (caches, always-allow grants, trackers) is
-      // dropped exactly once, when the agent session truly ends.
-      if (lifecycleSessionStarted && !lifecycleSessionEnded) {
-        lifecycleSessionEnded = true;
-        try {
-          await runSessionHooks(
-            allMiddleware,
-            "onSessionEnd",
-            activeSessionCtx ?? lifecycleSessionCtx,
-          );
-        } catch (sessionEndError: unknown) {
-          console.warn("[koi] onSessionEnd failed during dispose", { cause: sessionEndError });
-        }
-      }
-      await adapter.dispose?.();
     },
 
     ...(debugInstrumentation !== undefined
