@@ -183,6 +183,25 @@ export interface KoiRuntime {
    * when calling this; cycling mid-run is undefined behavior.
    */
   readonly cycleSession?: () => Promise<void>;
+  /**
+   * Rebind the runtime's session identity to a specific id.
+   *
+   * Use this immediately after `cycleSession()` when resuming a saved
+   * session: cycleSession rotates the engine sessionId to a fresh
+   * UUID, but a resume flow needs future turns to be persisted under
+   * the user-selected session id (so checkpoints, transcripts, and
+   * `/rewind` operate on the resumed chain instead of starting a
+   * fresh chain).
+   *
+   * Requirements:
+   * - Must be called when no run is in flight (between cycleSession
+   *   and the next run()).
+   * - Must NOT be called on a disposed or poisoned runtime.
+   *
+   * Optional — hosts that don't expose session resume can leave this
+   * undefined.
+   */
+  readonly rebindSessionId?: (id: string) => void;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
   /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */

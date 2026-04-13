@@ -1663,6 +1663,46 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       return lifecycleInFlight;
     },
 
+    rebindSessionId: (id: string): void => {
+      // #1742 loop-3 round 4: allow hosts to set the runtime sessionId
+      // to a specific value (e.g. when resuming a saved session from
+      // disk). Without this, cycleSession() rotates to a fresh UUID
+      // and future turns persist under a new chain — orphaning the
+      // resumed session. Same safety constraints as cycleSession:
+      // must not be called while a run is in flight.
+      if (disposed || disposing) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot rebind sessionId on a disposed or disposing runtime.",
+        );
+      }
+      if (poisoned) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot rebind sessionId on a poisoned runtime. Recreate first.",
+        );
+      }
+      if (running) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot rebind sessionId while a run is in flight. Await cycleSession first.",
+        );
+      }
+      if (lifecycleInFlight !== undefined) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Cannot rebind sessionId while cycleSession/dispose is in flight. Await the lifecycle promise first.",
+        );
+      }
+      factorySessionId = sessionId(id);
+      lifecycleSessionCtx = buildLifecycleSessionCtx();
+      // Bump epoch so any pre-existing iterable created before the
+      // rebind is rejected on first iteration — same invariant as
+      // cycleSession: pre-rebind iterables don't attach to a new
+      // identity.
+      sessionEpoch += 1;
+    },
+
     dispose: async (): Promise<void> => {
       // #1742 loop-3 round 2: split disposed/disposing so a timeout
       // during cleanup does NOT permanently latch the runtime as

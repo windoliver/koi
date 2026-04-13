@@ -625,7 +625,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Promise that resolves when session reset is complete. New submits block on
   // this to prevent hitting stale task board / trajectory state.
   // let: justified — replaced on each reset
-  let resetBarrier: Promise<void> = Promise.resolve();
+  // #1742 loop-3 round 4: resolve to `true` when the reset committed,
+  // `false` when it failed-closed (cycleSession TIMEOUT, onSessionEnd
+  // poison, board pre-create error). Callers that depend on a clean
+  // session boundary (onSessionSelect, /rewind hydration) MUST check
+  // the value before loading history, otherwise they'd hydrate stale
+  // transcript into a runtime whose engine session never rotated.
+  // onSubmit can ignore the value — it just blocks until the reset
+  // settles, then the run() guard catches whatever state the runtime
+  // is actually in.
+  let resetBarrier: Promise<boolean> = Promise.resolve(true);
 
   const resetConversation = (): void => {
     // Abort the active controller first — C4-A ordering constraint requires
@@ -651,7 +660,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       idleController.abort();
       resetBarrier = runtimeHandle
         .resetSessionState(idleController.signal)
-        .then(() => {
+        .then((): boolean => {
           // Only NOW that the engine confirmed the session was rotated
           // do we wipe visible state. Order: store messages, trajectory,
           // then runtime transcript.
@@ -673,8 +682,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             message:
               "Conversation cleared. Note: cumulative token usage continues across /clear; restart koi tui to fully reset the runtime-wide spend cap.",
           });
+          return true;
         })
-        .catch((resetError: unknown) => {
+        .catch((resetError: unknown): boolean => {
           const message = resetError instanceof Error ? resetError.message : String(resetError);
           store.dispatch({
             kind: "add_error",
@@ -683,10 +693,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           });
           // Leave store messages, trajectory, and runtime transcript
           // intact so the operator still has the conversation context
-          // to inspect / decide how to recover. Resolve the barrier so
-          // future submits proceed and either succeed (if the engine
-          // wasn't actually wedged) or hit the engine's poisoned-runtime
-          // guard with a clear error.
+          // to inspect / decide how to recover. Resolve the barrier
+          // with `false` so callers (onSessionSelect, /rewind) know
+          // not to hydrate history into a still-stale runtime.
+          return false;
         });
     }
   };
@@ -921,7 +931,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // entries back in. Without the reset, the next user submit
             // runs against a stale engine state and produces no output.
             resetConversation();
-            await resetBarrier;
+            // #1742 loop-3 round 4: do NOT hydrate history if the reset
+            // failed-closed (cycleSession TIMEOUT, onSessionEnd poison,
+            // pre-flight error). The engine session never rotated, so
+            // loading the rewound transcript on top would mix old
+            // approvals/memory/board state with the new history.
+            const rewindResetOk = await resetBarrier;
+            if (!rewindResetOk) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_ABORTED",
+                message:
+                  "Rewind aborted: session reset failed. Restart koi tui and retry the rewind on a fresh runtime.",
+              });
+              return;
+            }
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
               for (const msg of resumeResult.value.messages) {
@@ -1031,7 +1055,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (runtimeHandle === null) {
             await runtimeReady;
           }
-          await resetBarrier;
+          // #1742 loop-3 round 4: abort the resume if the reset
+          // failed-closed. Hydrating into a runtime whose engine
+          // session never rotated would mix stale state with the
+          // new history.
+          const resumeResetOk = await resetBarrier;
+          if (!resumeResetOk) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESUME_ABORTED",
+              message:
+                "Cannot resume session: reset failed. Restart koi tui and try again on a fresh runtime.",
+            });
+            return;
+          }
+          // #1742 loop-3 round 4: rebind the engine sessionId to the
+          // user-selected one BEFORE hydrating history. cycleSession
+          // (called via resetConversation above) rotates to a fresh
+          // UUID; without rebinding, future turns persist under the
+          // new id and orphan the resumed session — so checkpoints,
+          // /rewind, and fork all break for the resumed conversation.
+          if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
+            try {
+              runtimeHandle.runtime.rebindSessionId(selectedId);
+            } catch (rebindErr) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ABORTED",
+                message: `Cannot rebind runtime to session ${selectedId}: ${
+                  rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                }`,
+              });
+              return;
+            }
+          }
           const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
           if (!resumeResult.ok) {
             store.dispatch({
