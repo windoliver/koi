@@ -135,7 +135,12 @@ frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store u
 fine-grained signal updates.
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
-(session-scoped); PageUp/PageDown pauses auto-scroll.
+(session-scoped); PageUp/PageDown pauses auto-scroll. Ctrl+C copies selected text to clipboard
+(falls through to interrupt when no selection).
+
+**Copy-on-select:** Mouse-drag to select text auto-copies to system clipboard via OSC 52 when
+the selection finishes (same pattern as OpenCode). Works in iTerm2, Ghostty, WezTerm, Kitty.
+Selections exceeding 100 KB are not copied (OSC 52 terminal payload limit).
 
 ```bash
 koi tui
@@ -511,5 +516,7 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 > **#1689 — TUI stdin parser reset after permission approval:** `@koi/tui`'s `createTuiApp` now wraps `permissionBridge.respond` so every tool-approval decision (y/n/a or Esc) flows `bridge.respond → stdinParser.reset()`. The wrap is a transport-layer concern and lives entirely inside `@koi/tui` — no CLI wiring changes in `tui-runtime.ts` or `tui-command.ts`. Visible to CLI users as: after a `fs_write`/permission-gated tool approval, Enter / Backspace / Esc / Tab on the next prompt are no longer silently dropped, and slash commands (`/rewind`, `/help`, etc.) submit cleanly. Root cause lives in `@opentui/core@0.1.96`'s stdin parser paste latch; see `docs/L2/tui.md` for the full trace. Upstream patch to `@opentui/core` is tracked separately.
 
 > **Checkpoint middleware + /rewind command:** `koi tui` now wires `@koi/checkpoint` middleware and `@koi/snapshot-store-sqlite` into the TUI runtime. The `/rewind [n]` slash command dispatches through `tui-command.ts` to trigger checkpoint-based conversation rollback. The checkpoint middleware config receives `resolvePath` from the filesystem backend for workspace-scoped path validation.
+
+> **#1744 — TUI quit no longer logs `EditBuffer is destroyed`:** `@koi/tui`'s `InputArea` now routes every textarea read/write through `safeText`/`safeSetText` and sets a `disposed` flag in Solid `onCleanup` so the `useKeyboard` callback bails out once the component is being torn down. Previously, keystrokes that drained through the renderer's `KeyHandler` after `appHandle.stop()` had destroyed the textarea's underlying `EditBuffer` would call `getText()` on a dead buffer, throw, and surface as `[KeyHandler] Error in global keypress handler: error: EditBuffer is destroyed` on every `koi tui` quit. No CLI wiring change in `tui-command.ts` — the fix is local to `@koi/tui`.
 
 > **OTel opt-in for TUI sessions (#1628):** `TuiRuntimeConfig` gains `otel?: OtelMiddlewareConfig | true | false`. When truthy, `createTuiRuntime` creates an `OtelHandle` from `@koi/middleware-otel`, wires `otelHandle.onStep` into `createEventTraceMiddleware` (ATIF ↔ OTel trace identity sharing via `otel.traceId`/`otel.spanId` in `step.metadata`), and appends `otelHandle.middleware` to the middleware stack. `tui-command.ts` passes `otel: true` when `KOI_OTEL_ENABLED=true` is set in the environment. Requires an OTel SDK initialised before the TUI starts — `trace.getTracer()` reads from the global registry; no SDK = no-op tracer, zero crash.

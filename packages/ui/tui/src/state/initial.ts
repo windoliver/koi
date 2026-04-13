@@ -40,5 +40,6 @@ export function createInitialState(): TuiState {
     atResults: [],
     toolsExpanded: false,
     trajectorySteps: [],
+    resumeFollowCounter: 0,
   };
 }
