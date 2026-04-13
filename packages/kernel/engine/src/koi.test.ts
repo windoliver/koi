@@ -362,6 +362,7 @@ describe("createKoi middleware hooks", () => {
   });
 
   test("calls onSessionEnd on user middleware", async () => {
+    // #1742: onSessionEnd fires at runtime.dispose, not at the end of run().
     const onSessionEnd = mock(() => Promise.resolve());
     const runtime = await createKoi({
       manifest: testManifest(),
@@ -370,7 +371,1009 @@ describe("createKoi middleware hooks", () => {
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("#1742: cycleSession fires onSessionEnd then re-arms onSessionStart on next run", async () => {
+    const sessionStart = mock(() => Promise.resolve());
+    const sessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "lifecycle-observer",
+          describeCapabilities: () => undefined,
+          onSessionStart: sessionStart,
+          onSessionEnd: sessionEnd,
+        },
+      ],
+    });
+
+    // First run() fires onSessionStart once.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionEnd).toHaveBeenCalledTimes(0);
+
+    // cycleSession() fires onSessionEnd once.
+    await runtime.cycleSession?.();
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledTimes(1); // not re-armed yet
+
+    // Subsequent run() re-fires onSessionStart for the fresh session.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(sessionStart).toHaveBeenCalledTimes(2);
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+
+    // dispose() fires the final onSessionEnd for the second session.
+    await runtime.dispose();
+    expect(sessionEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test("#1742: dispose waits for an in-flight run to settle before firing onSessionEnd", async () => {
+    // dispose() must not race the streamEvents finally — otherwise it
+    // can flush session-scoped middleware state or tear down the adapter
+    // underneath an in-progress event. Same wait-for-settle pattern as
+    // cycleSession.
+    // let justified: mutable flag set by adapter generator's finally
+    let adapterFinallyDone = false;
+    // let justified: mutable flag confirming sessionEnd order
+    let sessionEndFiredAfterAdapter = false;
+    const adapter: EngineAdapter = {
+      engineId: "abort-on-signal-dispose",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: (input) => ({
+        async *[Symbol.asyncIterator]() {
+          try {
+            yield { kind: "text_delta" as const, delta: "x" };
+            await new Promise<void>((resolve, reject) => {
+              const signal = input.signal;
+              if (signal === undefined) {
+                resolve();
+                return;
+              }
+              signal.addEventListener(
+                "abort",
+                () => {
+                  const err = new Error("aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                },
+                { once: true },
+              );
+            });
+          } finally {
+            adapterFinallyDone = true;
+          }
+        },
+      }),
+    };
+    const sessionEndFn = mock(() => {
+      sessionEndFiredAfterAdapter = adapterFinallyDone;
+      return Promise.resolve();
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEndFn },
+      ],
+      loopDetection: false,
+    });
+
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* AbortError expected */
+      }
+    })();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // Issue dispose in parallel with abort. dispose must wait for the
+    // run's finally to unwind before firing onSessionEnd.
+    const disposePromise = runtime.dispose();
+    controller.abort();
+    await drainPromise;
+    await disposePromise;
+
+    expect(sessionEndFn).toHaveBeenCalledTimes(1);
+    expect(sessionEndFiredAfterAdapter).toBe(true);
+  });
+
+  test("#1742: successful cycleSession does not leave a dangling poison timer", async () => {
+    // Round 7 regression: `lifecycleSettleTimeout()` used to schedule a
+    // setTimeout that flipped `poisoned = true` after 5s, with no way to
+    // cancel it. Even on the happy path (run aborts, finally runs, race
+    // resolves to "settled"), the timer kept ticking and would poison
+    // the runtime ~5s after a successful /clear, breaking the next user
+    // submit. Verify the timer is actually cancelled.
+    const adapter: EngineAdapter = {
+      engineId: "abort-on-signal-clean",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: (input) => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          await new Promise<void>((resolve, reject) => {
+            const signal = input.signal;
+            if (signal === undefined) {
+              resolve();
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          });
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Start a run and abort it cleanly so cycleSession resolves quickly.
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* expected */
+      }
+    })();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    const cyclePromise = runtime.cycleSession?.();
+    controller.abort();
+    await drainPromise;
+    await cyclePromise;
+
+    // Wait LONGER than the production lifecycle-settle timeout (5s) so a
+    // dangling timer would have fired by now. Use 5500ms to be safe.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5500));
+
+    // The runtime must NOT be poisoned — the timer was cancelled when
+    // currentRunSettled won the race.
+    expect(() => {
+      // collectEvents is fine because the adapter would re-enter its
+      // signal handling loop; we just want run() to NOT throw.
+      const it = runtime.run({ kind: "text", text: "after-clear" })[Symbol.asyncIterator]();
+      void it.return?.();
+    }).not.toThrow();
+
+    await runtime.dispose();
+  }, 12_000);
+
+  test("#1742: failing onSessionStart leaves session unstarted so retry can re-attempt the hook", async () => {
+    // Round 9 regression: lifecycleSessionStarted was being set BEFORE
+    // the hook awaited, so a throwing onSessionStart left the session
+    // permanently latched as "started". The retry skipped onSessionStart
+    // entirely, and dispose/cycleSession would later fire onSessionEnd
+    // for a never-started session.
+    // let justified: mutable counter for the throwing-then-succeeding hook
+    let attempt = 0;
+    const onSessionStart = mock(() => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new Error("first attempt fails");
+      }
+      return Promise.resolve();
+    });
+    const onSessionEnd = mock(() => Promise.resolve());
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "flaky-start",
+          describeCapabilities: () => undefined,
+          onSessionStart,
+          onSessionEnd,
+        },
+      ],
+      loopDetection: false,
+    });
+
+    // First run: hook throws → run() rejects.
+    await expect(collectEvents(runtime.run({ kind: "text", text: "first" }))).rejects.toThrow(
+      /first attempt fails/,
+    );
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // Retry: lifecycleSessionStarted MUST still be false so onSessionStart
+    // gets a second attempt. Without the rollback, the retry would silently
+    // skip onSessionStart and the session would never be initialized.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(2);
+
+    // dispose() fires onSessionEnd for the SUCCESSFUL session — and only
+    // for that one. The failed first attempt must not have left a phantom
+    // session for which onSessionEnd would also fire.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("#1742: dispose/cycleSession do not falsely poison runtime when run() iterable is abandoned", async () => {
+    // Round 9 regression: run() used to set `running = true` AND create
+    // currentRunSettled synchronously, before the generator had a chance
+    // to start. If a caller called run() but never iterated the result,
+    // the generator's finally never fired — and a later dispose() /
+    // cycleSession() spent the full settle timeout waiting for a run
+    // that never started, then poisoned the runtime.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Create the iterable but never iterate it. This is a benign lazy
+    // pattern — the consumer can choose not to start streaming.
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned; // explicitly unused
+
+    // dispose() must complete promptly — not after waiting LIFECYCLE_SETTLE_TIMEOUT_MS.
+    const start = Date.now();
+    await runtime.dispose();
+    const elapsed = Date.now() - start;
+    // Generous bound: must NOT have waited the full 5s settle timeout.
+    expect(elapsed).toBeLessThan(2000);
+  }, 8_000);
+
+  test("#1742: stale iterable iterated AFTER fresh run starts cannot release fresh run's latch", async () => {
+    // Round 13 regression: the stale-iterable rejection path used to
+    // unconditionally clear `running`. If a fresh run B had already
+    // taken the latch, this would let a third concurrent run C through
+    // the "Agent is already running" guard. Verify the latch is now
+    // protected by `runningEpoch` ownership.
+    const adapter: EngineAdapter = {
+      engineId: "hangs-on-iter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          // Hang here so run B stays in flight while we touch the
+          // stale iterable.
+          await new Promise<void>(() => {});
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      loopDetection: false,
+    });
+
+    // Create stale iterable A, then cycle (which clears A's latch
+    // because A never iterated).
+    const staleA = runtime.run({ kind: "text", text: "A" })[Symbol.asyncIterator]();
+    await runtime.cycleSession?.();
+
+    // Start fresh run B and pull its first event so it's actively
+    // holding the latch.
+    const iterB = runtime.run({ kind: "text", text: "B" })[Symbol.asyncIterator]();
+    await iterB.next();
+
+    // NOW iterate stale A. It must throw "discarded by cycleSession"
+    // AND must NOT clear B's latch.
+    await expect(staleA.next()).rejects.toThrow(/discarded by cycleSession/i);
+
+    // A third concurrent run() must STILL be rejected because B is
+    // running. The bug would have allowed it through.
+    expect(() => {
+      runtime.run({ kind: "text", text: "C" });
+    }).toThrow(/already running/i);
+
+    await iterB.return?.();
+    await runtime.dispose();
+  }, 8_000);
+
+  test("#1742: run() rejects while cycleSession is in flight (lifecycle mutex)", async () => {
+    // Round 13 regression: cycleSession is serialized via lifecycleInFlight
+    // but run() didn't check it. A caller could slip a fresh run() into
+    // the window after onSessionEnd fired but before the session was
+    // re-armed, and attach to a half-torn-down session. run() must
+    // reject loudly while a lifecycle transition is mid-flight.
+    // Middleware's onSessionEnd hangs so cycleSession is suspended
+    // long enough for us to race a run() against it.
+    let releaseSessionEnd: (() => void) | undefined;
+    const sessionEndPromise = new Promise<void>((resolve) => {
+      releaseSessionEnd = resolve;
+    });
+    const onSessionEnd = mock(() => sessionEndPromise);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "slow-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Kick off cycleSession; it will await sessionEndPromise inside
+    // runSessionHooks, leaving lifecycleInFlight set.
+    const cyclePromise = runtime.cycleSession?.();
+    // Yield so cycleSession enters the IIFE and starts awaiting.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // run() during this window must throw — not silently attach to
+    // the half-torn-down session.
+    expect(() => {
+      runtime.run({ kind: "text", text: "racing" });
+    }).toThrow(/cycleSession\/dispose is in flight/i);
+
+    // Release the slow hook so cycleSession can finish.
+    releaseSessionEnd?.();
+    await cyclePromise;
+
+    // After cycleSession completes, run() works again.
+    await collectEvents(runtime.run({ kind: "text", text: "after-cycle" }));
+    await runtime.dispose();
+  });
+
+  test("#1742: cycleSession releases the running latch when the iterable was abandoned before iteration", async () => {
+    // Round 11 regression: `run()` flips `running = true` synchronously
+    // but cycleSession used to only clear it via the generator's finally,
+    // which never runs for an abandoned iterable. Result: the supported
+    // lazy pattern `const it = run(); await cycleSession();` left the
+    // runtime rejecting every fresh `run()` with "Agent is already
+    // running" until the abandoned iterable was touched. Verify the
+    // runtime is reusable after cycleSession in this exact pattern.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Open a session by running once normally.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create a second iterable but DO NOT iterate it.
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned;
+
+    // cycleSession must release the running latch (and bump the session
+    // epoch so the abandoned iterable is rejected if ever touched).
+    await runtime.cycleSession?.();
+
+    // A fresh run() must work — no "Agent is already running".
+    const events = await collectEvents(runtime.run({ kind: "text", text: "fresh" }));
+    expect(events.find((e) => e.kind === "done")).toBeDefined();
+
+    await runtime.dispose();
+  });
+
+  test("#1742: dispose releases the running latch when the iterable was abandoned before iteration", async () => {
+    // Round 11 regression mirror: same fix in dispose's skip-settle path.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned;
+
+    // dispose must complete promptly and not be blocked by the latched
+    // running flag from the abandoned iterable.
+    const start = Date.now();
+    await runtime.dispose();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+  }, 8_000);
+
+  test("#1742: iterable created before cycleSession is rejected on first iteration (epoch guard)", async () => {
+    // Round 10 regression: an async iterable created before /clear used
+    // to silently re-fire onSessionStart on the new session and run
+    // pre-clear input against freshly cleared state. Now the run binds
+    // the current session epoch in run() and the generator validates
+    // it on first iteration.
+    const onSessionStart = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionStart }],
+      loopDetection: false,
+    });
+
+    // Open a session by running a first turn.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // Create an iterable for a second run BUT do not iterate it yet.
+    const iter = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Cycle the session — this should rotate the epoch and reject the
+    // iterable on its first iteration.
+    await runtime.cycleSession?.();
+
+    // First iteration of the stale iterable must throw with a clear
+    // "discarded by cycleSession" error rather than attaching to the
+    // new session.
+    await expect(iter.next()).rejects.toThrow(/discarded by cycleSession/i);
+
+    // The new (empty) session was NOT started by the stale iterable.
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // A fresh run() works normally on the new session.
+    await collectEvents(runtime.run({ kind: "text", text: "fresh" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(2);
+
+    await runtime.dispose();
+  });
+
+  test("#1742: iterable created before cycleSession is rejected even while teardown is mid-flight (epoch + in-flight guards)", async () => {
+    // Loop-2 round 7 regression: even though the prior round bumped
+    // sessionEpoch, the bump used to happen LATE in cycleSession's IIFE
+    // (after onSessionEnd, governance reset, etc). A stale iterable
+    // racing its first .next() against cycleSession's await window
+    // could pass the (still-stale) epoch check and attach to a
+    // half-torn-down session. Fixed by bumping sessionEpoch
+    // synchronously at IIFE entry AND adding a lifecycleInFlight guard
+    // in streamEvents.
+    let releaseSessionEnd: (() => void) | undefined;
+    const sessionEndPromise = new Promise<void>((resolve) => {
+      releaseSessionEnd = resolve;
+    });
+    const onSessionEnd = mock(() => sessionEndPromise);
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "slow-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create the stale iterable BEFORE cycleSession.
+    const stale = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Kick off cycleSession; it suspends in onSessionEnd.
+    const cyclePromise = runtime.cycleSession?.();
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+    // Now iterate the stale iterable WHILE cycleSession is still in
+    // flight. It must throw — not silently attach to the half-torn-
+    // down session.
+    await expect(stale.next()).rejects.toThrow(
+      /(in flight|discarded by cycleSession|Runtime has been disposed)/i,
+    );
+
+    releaseSessionEnd?.();
+    await cyclePromise;
+
+    // After cycleSession resolves, fresh run() works normally.
+    await collectEvents(runtime.run({ kind: "text", text: "after" }));
+    await runtime.dispose();
+  }, 8_000);
+
+  test("#1742: rebindSessionId rejects mid-session and accepts post-cycleSession (loop-3 round 6)", async () => {
+    // Loop-3 round 6 regression: rebindSessionId must HARD REJECT
+    // mid-session rebinds, otherwise session-scoped middleware would
+    // attribute approvals/teardown to the wrong sessionId. Allowed
+    // window is the quiescent post-cycleSession / pre-next-run state.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Pre-session (post-construction, no run yet): rebind must work.
+    runtime.rebindSessionId?.("agent:test:before-first-run");
+    expect(runtime.sessionId).toBe("agent:test:before-first-run");
+
+    // First run starts the session.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Mid-session rebind must throw.
+    expect(() => {
+      runtime.rebindSessionId?.("agent:test:mid-session");
+    }).toThrow(/mid-session/i);
+    expect(runtime.sessionId).toBe("agent:test:before-first-run");
+
+    // Cycle ends the session — now we're back in the quiescent window.
+    await runtime.cycleSession?.();
+
+    // Post-cycle, pre-next-run rebind must work.
+    runtime.rebindSessionId?.("agent:test:after-cycle");
+    expect(runtime.sessionId).toBe("agent:test:after-cycle");
+
+    // Next run picks up the rebound id.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+
+    // Mid-session rebind must throw again on the new session.
+    expect(() => {
+      runtime.rebindSessionId?.("agent:test:mid-session-2");
+    }).toThrow(/mid-session/i);
+
+    await runtime.dispose();
+  });
+
+  test("#1742: dispose() is retryable after a settle-timeout failure (loop-3 round 2)", async () => {
+    // Loop-3 round 2 regression: dispose() used to set `disposed = true`
+    // at entry. On settle timeout it threw without running onSessionEnd
+    // or adapter.dispose(), and every subsequent dispose() returned
+    // immediately via the early-exit guard. The runtime was permanently
+    // half-disposed even after the host killed the wedged tool. Now
+    // disposed is only latched after the FULL cleanup sequence
+    // succeeds, so a retry can complete the work.
+    const onSessionEnd = mock(() => Promise.resolve());
+    const adapterDispose = mock(() => Promise.resolve());
+    // let: mutable resolver — host SIGKILLs the wedged tool by
+    // calling this between the failing and retried dispose() calls.
+    let unwedge: (() => void) | undefined;
+    const wedgePromise = new Promise<IteratorResult<EngineEvent>>((resolve) => {
+      unwedge = () => resolve({ value: undefined, done: true });
+    });
+    const adapter: EngineAdapter = {
+      engineId: "wedge-then-recover",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable yielded flag
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                // Subsequent .next() awaits the wedge promise. The host
+                // resolves it (simulating SIGKILL) between the failing
+                // and retried dispose calls.
+                return wedgePromise;
+              },
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return wedgePromise;
+              },
+            };
+          },
+        };
+      },
+      dispose: adapterDispose,
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [{ name: "recover", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    // Start a run, pull one event, fire a wedged second .next().
+    const iter = runtime.run({ kind: "text", text: "first" })[Symbol.asyncIterator]();
+    await iter.next();
+    void iter.next().catch(() => {});
+
+    // First dispose() must throw TIMEOUT (wedged).
+    await expect(runtime.dispose()).rejects.toThrow(/timed out|wedged/i);
+    // Cleanup did NOT run yet — the host still has to kill the tool.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    expect(adapterDispose).toHaveBeenCalledTimes(0);
+
+    // Host "SIGKILLs" the wedged tool by unwedging the adapter.
+    unwedge?.();
+
+    // Retry dispose — must now complete cleanup.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    expect(adapterDispose).toHaveBeenCalledTimes(1);
+
+    // Third dispose() is a no-op.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    expect(adapterDispose).toHaveBeenCalledTimes(1);
+  }, 15_000);
+
+  test("#1742: cycleSession fast-paths an iterable abandoned after first iteration (no false poison)", async () => {
+    // Loop-3 round 1 regression: previously, calling .next() once and
+    // then dropping the iterable left the generator suspended at
+    // `yield` with `currentRunSettled` unresolved. The next
+    // cycleSession() / dispose() would burn the full 5s settle
+    // timeout and falsely poison the runtime — turning a normal host
+    // bug (forgot to fully iterate) into permanent runtime rejection.
+    // Fix tracks the active generator and calls .return() on it
+    // during the wait, so an abandoned iterable's finally fires
+    // immediately.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: {
+        engineId: "abandon-after-first",
+        capabilities: { text: true, images: false, files: false, audio: false },
+        stream: () => ({
+          async *[Symbol.asyncIterator]() {
+            // Yield several deltas; each yield suspends the generator
+            // until the next .next() call.
+            yield { kind: "text_delta" as const, delta: "hello " };
+            yield { kind: "text_delta" as const, delta: "world" };
+            // Done event the consumer will never reach because we
+            // abandon after the first delta.
+            yield {
+              kind: "done" as const,
+              output: doneOutput(),
+            };
+          },
+        }),
+      },
+      loopDetection: false,
+    });
+
+    // Start a run, pull ONE event, then drop the iterator without
+    // calling .return() or finishing the loop.
+    const iter = runtime.run({ kind: "text", text: "abandon-after-first" })[Symbol.asyncIterator]();
+    const firstEvent = await iter.next();
+    expect(firstEvent.done).toBe(false);
+    // (intentionally do NOT call iter.next() again or iter.return())
+
+    // cycleSession must complete promptly — under the 5s settle
+    // timeout — and must NOT poison the runtime.
+    const start = Date.now();
+    await runtime.cycleSession?.();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+
+    // A fresh run() must succeed (no poisoned-runtime rejection).
+    const events = await collectEvents(runtime.run({ kind: "text", text: "after-cycle" }));
+    expect(events.find((e) => e.kind === "done")).toBeDefined();
+
+    await runtime.dispose();
+  }, 8_000);
+
+  test("#1742: cycleSession fails closed and poisons the runtime when onSessionEnd throws", async () => {
+    // Loop-2 round 9 regression: cycleSession used to swallow
+    // onSessionEnd errors and continue into governance reset / sessionId
+    // rotation / lifecycle re-arm. Middleware that performs cleanup
+    // (token budget reset, hook registry drain, persistent flush) only
+    // in awaited body code would have its cleanup skipped while
+    // cycleSession reported success — stale state bleeds into the next
+    // session. Now cycleSession poisons the runtime and re-throws so
+    // the host can surface a fatal RESET_FAILED and force a recreate.
+    const onSessionEnd = mock(() => Promise.reject(new Error("cleanup blew up")));
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "broken-end", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    // Open a session by running once normally.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // cycleSession must throw, not silently rotate.
+    await expect(runtime.cycleSession?.()).rejects.toThrow(/cycleSession failed.*onSessionEnd/i);
+
+    // Subsequent run() must be rejected because the runtime is poisoned.
+    expect(() => {
+      runtime.run({ kind: "text", text: "after-failed-cycle" });
+    }).toThrow(/poisoned/i);
+
+    // dispose still works (must always be safe to dispose).
+    // #1742 loop-3 round 9: dispose ALSO retries onSessionEnd. The
+    // failed cycleSession used to permanently latch
+    // lifecycleSessionEnded=true (round 10 early-flip), so dispose()
+    // skipped its own onSessionEnd retry — leaking session-scoped
+    // cleanup. Now cycleSession only latches the flag on success, so
+    // dispose attempts the hook again. Here it fails again (same
+    // mock), which dispose's catch block logs and tolerates.
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(2);
+  });
+
+  test("#1742: dispose retries onSessionEnd after a failed cycleSession (loop-3 round 9)", async () => {
+    // Loop-3 round 9 regression: lifecycleSessionEnded used to be
+    // latched BEFORE the cycleSession onSessionEnd await, so a hook
+    // throw permanently suppressed the flag and dispose() skipped
+    // its own onSessionEnd retry. After the host fixed whatever
+    // caused the throw, no path was left to clean up session state.
+    // Now the flag only latches on success, so dispose can retry
+    // and complete cleanup once the underlying issue is resolved.
+    // let: mutable counter — fail first, succeed on retry
+    let callCount = 0;
+    const onSessionEnd = mock(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("cleanup blew up first time");
+      }
+      // Second call (from dispose) succeeds.
+    });
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "recoverable", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // First cycleSession fails, runtime is poisoned.
+    await expect(runtime.cycleSession?.()).rejects.toThrow(/cycleSession failed/i);
+    expect(callCount).toBe(1);
+
+    // dispose retries onSessionEnd, this time succeeds.
+    await runtime.dispose();
+    expect(callCount).toBe(2);
+  });
+
+  test("#1742: iterable created before dispose is rejected when iterated after dispose completes", async () => {
+    // Loop-2 round 7 regression: dispose used to mark `disposed = true`
+    // but never invalidated already-created iterables. A caller that
+    // did `const it = runtime.run(...); await runtime.dispose();
+    // await it.next();` would execute against a runtime whose adapter
+    // and session hooks had already been torn down — undefined
+    // behavior. Now streamEvents() refuses on first iteration if
+    // `disposed === true`, and dispose() also bumps sessionEpoch for
+    // belt-and-braces invalidation.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+    // Open a session so dispose's lifecycle path actually runs.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create the iterable BEFORE dispose. Don't iterate it.
+    const stale = runtime.run({ kind: "text", text: "stale" })[Symbol.asyncIterator]();
+
+    // Dispose the runtime. (The abandoned-iterable skip-settle path
+    // releases the running latch.)
+    await runtime.dispose();
+
+    // Iterating the stale iterable after dispose must throw, not run
+    // against the torn-down adapter.
+    await expect(stale.next()).rejects.toThrow(/disposed|discarded|in flight/i);
+  }, 8_000);
+
+  test("#1742: overlapping cycleSession() calls fire onSessionEnd exactly once (lifecycle mutex)", async () => {
+    // Round 10 regression: two concurrent cycleSession() calls used to
+    // both pass the !lifecycleSessionEnded guard and double-fire the
+    // teardown hook. Verify the lifecycle mutex serializes them.
+    const onSessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Issue two cycleSession() calls in parallel. Both must resolve and
+    // onSessionEnd must fire exactly once.
+    await Promise.all([runtime.cycleSession?.(), runtime.cycleSession?.()]);
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+
+    await runtime.dispose();
+  });
+
+  test("#1742: cycleSession + dispose overlap fires onSessionEnd exactly once", async () => {
+    const onSessionEnd = mock(() => Promise.resolve());
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [{ name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd }],
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Issue cycleSession and dispose concurrently. Both must complete
+    // and onSessionEnd must fire exactly once across both code paths.
+    await Promise.all([runtime.cycleSession?.(), runtime.dispose()]);
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("#1742: cycleSession rotates runtime.sessionId so per-session state is isolated", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Open a session by running once.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    const idBeforeCycle = runtime.sessionId;
+    expect(typeof idBeforeCycle).toBe("string");
+    expect(idBeforeCycle.length).toBeGreaterThan(0);
+
+    // Cycle the session — host-driven /clear or session:new boundary.
+    await runtime.cycleSession?.();
+
+    // sessionId must rotate so checkpoint chains (chainId == sessionId)
+    // and other session-keyed state can't bleed across the boundary.
+    const idAfterCycle = runtime.sessionId;
+    expect(idAfterCycle).not.toBe(idBeforeCycle);
+    expect(typeof idAfterCycle).toBe("string");
+    expect(idAfterCycle.length).toBeGreaterThan(0);
+    await runtime.dispose();
+  });
+
+  test("#1742: cycleSession FAILS CLOSED on settle timeout — throws + poisons + skips cleanup", async () => {
+    // Non-cooperative tool path: the adapter never honors the abort
+    // signal, so the run's finally never fires and currentRunSettled
+    // never resolves. cycleSession must:
+    //   1. wait the bounded lifecycle-settle timeout (5s in production)
+    //   2. throw TIMEOUT instead of running cleanup against the live run
+    //   3. poison the runtime so future run() calls reject loudly
+    //
+    // Failing closed prevents middleware/adapter cleanup from racing a
+    // late tool callback that could write into freshly-armed state.
+    // Loop-3 round 1: cycleSession now calls .return() on the active
+    // generator, which fast-paths most "abandoned/hung at await"
+    // patterns. To still exercise the fail-closed timeout path we
+    // need an adapter whose iterator's .return() ALSO hangs — that
+    // means the engine's finally block (which awaits
+    // adapterIterator.return()) blocks before currentRunResolveSettled
+    // fires, so the lifecycle settle timer wins.
+    const sessionEnd = mock(() => Promise.resolve());
+    const adapter: EngineAdapter = {
+      engineId: "noncooperative",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: () => {
+        const hang = new Promise<void>(() => {});
+        return {
+          [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+            // let: mutable — true after we yielded the one event
+            let yielded = false;
+            return {
+              next(): Promise<IteratorResult<EngineEvent>> {
+                if (!yielded) {
+                  yielded = true;
+                  return Promise.resolve({
+                    value: { kind: "text_delta" as const, delta: "x" },
+                    done: false,
+                  });
+                }
+                // Subsequent .next() hangs forever.
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+              // CRITICAL: .return() also hangs — simulates a non-
+              // cooperative cleanup path where engine.finally cannot
+              // unwind the adapter iterator.
+              return(): Promise<IteratorResult<EngineEvent>> {
+                return hang as unknown as Promise<IteratorResult<EngineEvent>>;
+              },
+            };
+          },
+        };
+      },
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEnd },
+      ],
+      loopDetection: false,
+    });
+
+    // Spin up the run and START a second .next() that's now pending on
+    // the adapter's hanging await. The generator is genuinely wedged
+    // mid-iteration — NOT just suspended at a yield — so cycleSession's
+    // round-1 .return() fast-path is queued (not immediately processed)
+    // and the existing settle-timeout path still bounds the wait.
+    const iter = runtime.run({ kind: "text", text: "hi" })[Symbol.asyncIterator]();
+    await iter.next(); // pull the first event (delta)
+    // Fire the second next() but don't await it — it'll hang forever
+    // on the adapter's `await new Promise<void>(() => {})`.
+    const pendingNext = iter.next();
+    void pendingNext.catch(() => {
+      // .return() during cycleSession will eventually surface as a
+      // rejection here; ignore it.
+    });
+
+    // cycleSession should reject after ~5s (the production settle
+    // timeout). Bound OUR wait at 7s so a regression visibly fails.
+    const start = Date.now();
+    // let justified: mutable error capture for later assertion
+    let cycleErrorMessage: string | undefined;
+    const cyclePromise = (async (): Promise<"rejected" | "fulfilled"> => {
+      try {
+        await runtime.cycleSession?.();
+        return "fulfilled";
+      } catch (e) {
+        cycleErrorMessage = e instanceof Error ? e.message : String(e);
+        return "rejected";
+      }
+    })();
+    const watchdog = new Promise<"watchdog">((resolve) =>
+      setTimeout(() => resolve("watchdog"), 7000),
+    );
+    const winner = await Promise.race([cyclePromise, watchdog]);
+    expect(winner).toBe("rejected");
+    expect(cycleErrorMessage).toMatch(/wedged|abort/i);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(4500);
+
+    // onSessionEnd must NOT have fired — fail-closed means we did NOT
+    // run cleanup against the still-live run.
+    expect(sessionEnd).toHaveBeenCalledTimes(0);
+
+    // Runtime is now POISONED — submitting another run must fail loudly.
+    expect(() => {
+      runtime.run({ kind: "text", text: "another" });
+    }).toThrow(/poisoned/i);
+  }, 10_000);
+
+  test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {
+    // Hosts typically call cycleSession() right after aborting the active
+    // run, while the run's finally block is still draining. cycleSession
+    // must wait for the run to fully unwind (so onSessionEnd doesn't race
+    // the in-progress per-run cleanup) instead of rejecting.
+    const sessionEnd = mock(() => Promise.resolve());
+    // Adapter whose stream throws AbortError when the signal aborts. We
+    // arrange a delay so the abort happens AFTER cycleSession is queued
+    // — that way cycleSession observes `running === true` and must wait.
+    const adapter: EngineAdapter = {
+      engineId: "abort-on-signal",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      stream: (input) => ({
+        async *[Symbol.asyncIterator]() {
+          yield { kind: "text_delta" as const, delta: "x" };
+          await new Promise<void>((resolve, reject) => {
+            const signal = input.signal;
+            if (signal === undefined) {
+              resolve();
+              return;
+            }
+            signal.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          });
+        },
+      }),
+    };
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      middleware: [
+        { name: "lifecycle", describeCapabilities: () => undefined, onSessionEnd: sessionEnd },
+      ],
+      loopDetection: false,
+    });
+
+    // Drain the run on a background task so the generator stays "running"
+    // until the abort propagates. We expect the drain to throw AbortError
+    // when the signal fires.
+    const controller = new AbortController();
+    const drainPromise = (async () => {
+      try {
+        await collectEvents(runtime.run({ kind: "text", text: "hi", signal: controller.signal }));
+      } catch {
+        /* AbortError expected */
+      }
+    })();
+
+    // Microtask-yield so the run's first event is emitted and `running`
+    // is true; then queue cycleSession. It will block on currentRunSettled.
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    const cyclePromise = runtime.cycleSession?.();
+    // Now abort — the adapter rejects, finally runs, currentRunSettled
+    // resolves, cycleSession proceeds.
+    controller.abort();
+    await drainPromise;
+    await cyclePromise;
+
+    // onSessionEnd fired exactly once, after the run unwound.
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
+    await runtime.dispose();
+    // dispose fires onSessionEnd again for the new (post-cycle) session,
+    // which was never opened (no second run), so the lifecycle flag is
+    // false and dispose's onSessionEnd path skips. Total stays at 1.
+    expect(sessionEnd).toHaveBeenCalledTimes(1);
   });
 
   test("calls onAfterTurn on turn_end events", async () => {
@@ -1021,7 +2024,10 @@ describe("createKoi early return", () => {
     expect(runtime.agent.state).toBe("terminated");
   });
 
-  test("onSessionEnd fires on early return", async () => {
+  test("onSessionEnd fires on dispose after early return", async () => {
+    // #1742: onSessionEnd is a runtime-lifetime hook — fires at dispose,
+    // not at the end of a single run(). Early-return from a run() still
+    // leaves the runtime alive and reusable until dispose.
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "infinite-adapter",
@@ -1048,10 +2054,15 @@ describe("createKoi early return", () => {
       if (count >= 1) break;
     }
 
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
-  test("unexpected error transitions agent to terminated and fires onSessionEnd", async () => {
+  test("adapter crash transitions agent to terminated; onSessionEnd fires on dispose", async () => {
+    // #1742: adapter crashes still propagate as run()-level errors, but
+    // onSessionEnd is no longer tied to per-run cleanup. The runtime stays
+    // alive until the host calls dispose, which is where the hook fires.
     const onSessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "crash-adapter",
@@ -1078,6 +2089,8 @@ describe("createKoi early return", () => {
       "unexpected crash",
     );
     expect(runtime.agent.state).toBe("terminated");
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
@@ -2070,8 +3083,12 @@ describe("createKoi turn_start emission", () => {
     });
 
     const events = await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    // #1742: guard errors (KoiRuntimeError) now emit a synthetic text_delta
+    // explanation between turn_start and done so the user sees WHY the agent
+    // stopped instead of an empty reply. Order: turn_start, text_delta, done.
     expect(events[0]?.kind).toBe("turn_start");
-    expect(events[1]?.kind).toBe("done");
+    expect(events[1]?.kind).toBe("text_delta");
+    expect(events[2]?.kind).toBe("done");
   });
 
   test("multi-turn: turn_start for each turn", async () => {
@@ -2339,7 +3356,12 @@ describe("createKoi concurrent run guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("createKoi onSessionEnd error preservation", () => {
-  test("original error preserved when onSessionEnd throws", async () => {
+  test("original run() error still propagates even if onSessionEnd would later throw", async () => {
+    // #1742: onSessionEnd is runtime-lifetime, not per-run. The original
+    // run() error must still propagate (no interference from the disposal
+    // hook), and the runtime.dispose() call that later fires the crashing
+    // hook must not re-raise it — the legacy contract is that onSessionEnd
+    // crashes are swallowed/logged, not propagated.
     const onSessionEnd = mock(() => {
       throw new Error("onSessionEnd crash");
     });
@@ -2367,6 +3389,9 @@ describe("createKoi onSessionEnd error preservation", () => {
     await expect(collectEvents(runtime.run({ kind: "text", text: "test" }))).rejects.toThrow(
       "original error",
     );
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    // dispose must not throw even though the hook throws
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });
@@ -3178,6 +4203,9 @@ describe("createKoi error paths", () => {
     // Should produce no adapter events (aborted before adapter started)
     // May produce turn_start or nothing depending on timing
     expect(runtime.agent.state).toBe("terminated");
+    // #1742: onSessionEnd is a runtime-lifetime hook, not per-run.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 
@@ -3230,7 +4258,9 @@ describe("createKoi error paths", () => {
     await iter.return?.();
 
     expect(runtime.agent.state).toBe("terminated");
-    // onSessionEnd should be called exactly once despite concurrent cleanup paths
+    // #1742: onSessionEnd fires once on dispose, not on run-level cleanup.
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });

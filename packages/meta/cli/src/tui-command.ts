@@ -309,6 +309,40 @@ async function loadSessionList(
  *
  * Exported for testing. Not part of the public @koi/tui API.
  */
+/**
+ * #1742 loop-3 round 8: dispatch a synthetic terminal `done` event
+ * directly to the store when the batcher has been disposed mid-stream.
+ *
+ * Bypasses the dead batcher (which would otherwise drop the event)
+ * by routing through `dispatchBatch` shape — `engine_event` action.
+ * The reducer closes any active assistant turn and clears the
+ * "processing" status. Safe in both reset paths: in the success
+ * path the store was already cleared so this is a no-op; in the
+ * failed-reset path it leaves the preserved transcript with a
+ * coherent terminal state instead of stuck running.
+ */
+function finalizeAbandonedStream(
+  store: TuiStore,
+  partialInputTokens: number,
+  partialOutputTokens: number,
+): void {
+  const syntheticDone: EngineEvent = {
+    kind: "done",
+    output: {
+      stopReason: "interrupted",
+      content: [],
+      metrics: {
+        totalTokens: partialInputTokens + partialOutputTokens,
+        inputTokens: partialInputTokens,
+        outputTokens: partialOutputTokens,
+        turns: 0,
+        durationMs: 0,
+      },
+    },
+  };
+  store.dispatch({ kind: "engine_event", event: syntheticDone });
+}
+
 export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
@@ -331,6 +365,23 @@ export async function drainEngineStream(
     // `let` justified: tracks last yield time for frame-rate-limited yielding
     let lastYieldAt = Date.now();
     for await (const event of stream) {
+      // #1742: if resetConversation() disposed our batcher mid-stream, stop
+      // feeding events into a dead sink — they would silently vanish and
+      // leave the UI with a half-rendered or missing reply. The drain exits
+      // cleanly; the caller's finally block handles connection-status reset.
+      //
+      // #1742 loop-3 round 8: also dispatch a synthetic terminal `done`
+      // event directly to the store BEFORE returning, so the reducer
+      // closes any active assistant turn and clears running tool state.
+      // Without this, a failed `/clear` (history preserved) leaves the
+      // UI stuck in a "processing" state with no way to recover. In
+      // the success path the store has already been cleared by
+      // resetConversation's success branch, so the reducer's
+      // engine_event handler safely no-ops on an empty active turn.
+      if (batcher.isDisposed) {
+        finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+        return;
+      }
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -341,6 +392,16 @@ export async function drainEngineStream(
         }
       }
       batcher.enqueue(event);
+      // #1742 loop-3 round 10: the batcher may have been disposed
+      // between the check above and this enqueue (resetConversation
+      // runs synchronously). enqueue is a no-op on a disposed
+      // batcher, so this event is already lost — finalize and
+      // return so a `done` lost in this race window doesn't leave
+      // the UI stuck "processing".
+      if (batcher.isDisposed) {
+        finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+        return;
+      }
       // Yield to the event loop at most once per frame (~16ms) during any
       // consumer-visible streaming event so OpenTUI can paint progressively.
       //
@@ -364,8 +425,27 @@ export async function drainEngineStream(
         }
       }
     }
+    // #1742 loop-3 round 10: cover the race where the batcher was
+    // disposed AFTER the per-iteration check but BEFORE we got a
+    // chance to enqueue the terminal event (or where the stream
+    // ended normally on the same tick disposal happened). Without
+    // this final check, the stream's terminal `done` is silently
+    // dropped and finalizeAbandonedStream is never called — the
+    // UI can stay stuck in "processing".
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      return;
+    }
     batcher.flushSync();
   } catch (e: unknown) {
+    // #1742: the batcher may have been disposed by resetConversation() while
+    // the stream was still producing. Finalize the active turn before
+    // returning so a failed-reset (history preserved) path still ends
+    // with the reducer in idle/error state instead of stuck "processing".
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      return;
+    }
     batcher.flushSync();
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
@@ -728,7 +808,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Promise that resolves when session reset is complete. New submits block on
   // this to prevent hitting stale task board / trajectory state.
   // let: justified — replaced on each reset
-  let resetBarrier: Promise<void> = Promise.resolve();
+  // #1742 loop-3 round 4: resolve to `true` when the reset committed,
+  // `false` when it failed-closed (cycleSession TIMEOUT, onSessionEnd
+  // poison, board pre-create error). Callers that depend on a clean
+  // session boundary (onSessionSelect, /rewind hydration) MUST check
+  // the value before loading history, otherwise they'd hydrate stale
+  // transcript into a runtime whose engine session never rotated.
+  // onSubmit can ignore the value — it just blocks until the reset
+  // settles, then the run() guard catches whatever state the runtime
+  // is actually in.
+  let resetBarrier: Promise<boolean> = Promise.resolve(true);
 
   // Monotonically increasing TUI-session turn counter. Resets on session clear.
   // Injected as a synthetic ATIF step before each run() so /trajectory can
@@ -746,20 +835,59 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
-    store.dispatch({ kind: "clear_messages" });
-    // Clear trajectory + ledger data so /trajectory doesn't show prior-session data.
-    store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
-    tuiTurnCounter = 0;
 
-    // Always reset runtime session state — even in the idle case (no active stream).
-    // resetSessionState is async (awaits task board + trajectory prune).
-    // New submits block on resetBarrier before proceeding.
+    // #1742 loop-2 round 5: do NOT clear the visible transcript or splice
+    // runtimeHandle.transcript until resetSessionState() actually resolves.
+    // resetSessionState fails closed on cycleSession TIMEOUT — if we wiped
+    // the screen first, the user would lose all visible history while
+    // approvals/memory/etc were still in the wedged old session. The user
+    // is then debugging blind. Defer destructive cleanup to the success
+    // branch; on failure leave the screen intact and surface an error
+    // banner so the operator can inspect what wedged.
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
-      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(() => {
-        runtimeHandle?.transcript.splice(0);
-      });
+      resetBarrier = runtimeHandle
+        .resetSessionState(idleController.signal)
+        .then((): boolean => {
+          // Only NOW that the engine confirmed the session was rotated
+          // do we wipe visible state. Order: store messages, trajectory
+          // + audit ledger, runtime transcript, TUI turn counter.
+          store.dispatch({ kind: "clear_messages" });
+          store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
+          runtimeHandle?.transcript.splice(0);
+          tuiTurnCounter = 0;
+          // #1742 loop-3 round 1: surface the cumulative-budget caveat
+          // to the user. /clear gives a fresh per-iteration turn/duration
+          // budget (resetIterationBudgetPerRun: true above) but token
+          // usage and accumulated cost continue across /clear so the
+          // process keeps a real spend ceiling. Without this notice a
+          // user could /clear, see an empty session, and immediately
+          // hit a token-budget error caused by the prior conversation
+          // with no in-product way to understand why. Restart koi tui
+          // is the only way to fully reset cumulative spend.
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_NOTICE",
+            message:
+              "Conversation cleared. Note: cumulative token usage continues across /clear; restart koi tui to fully reset the runtime-wide spend cap.",
+          });
+          return true;
+        })
+        .catch((resetError: unknown): boolean => {
+          const message = resetError instanceof Error ? resetError.message : String(resetError);
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_FAILED",
+            message: `Session reset failed: ${message}. Visible history preserved. Please restart koi tui to recover.`,
+          });
+          // Leave store messages, trajectory, and runtime transcript
+          // intact so the operator still has the conversation context
+          // to inspect / decide how to recover. Resolve the barrier
+          // with `false` so callers (onSessionSelect, /rewind) know
+          // not to hydrate history into a still-stale runtime.
+          return false;
+        });
     }
   };
 
@@ -811,7 +939,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         if (hadLiveTasks) {
           await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
         }
-        await runtimeHandle.runtime.dispose();
+        // #1742 loop-2 round 10: dispose now fails closed on settle
+        // timeout. Catch the throw so the rest of shutdown (approval
+        // store close, process.exit) still runs. The hard-exit timer
+        // is the ultimate failsafe if process.exit itself wedges.
+        try {
+          await runtimeHandle.runtime.dispose();
+        } catch (disposeErr) {
+          process.stderr.write(
+            `[koi tui] runtime.dispose failed during shutdown: ${
+              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+            }\n`,
+          );
+        }
       }
       approvalStore?.close();
     } finally {
@@ -981,9 +1121,47 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // entries back in. Without the reset, the next user submit
             // runs against a stale engine state and produces no output.
             resetConversation();
-            await resetBarrier;
+            // #1742 loop-3 round 4: do NOT hydrate history if the reset
+            // failed-closed (cycleSession TIMEOUT, onSessionEnd poison,
+            // pre-flight error). The engine session never rotated, so
+            // loading the rewound transcript on top would mix old
+            // approvals/memory/board state with the new history.
+            const rewindResetOk = await resetBarrier;
+            if (!rewindResetOk) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_ABORTED",
+                message:
+                  "Rewind aborted: session reset failed. Restart koi tui and retry the rewind on a fresh runtime.",
+              });
+              return;
+            }
+            // #1742 loop-3 round 5: load and validate the transcript
+            // BEFORE rebinding the runtime. If the JSONL is missing or
+            // corrupt, surface the error and leave the runtime on the
+            // freshly-rotated post-reset session id rather than
+            // adopting an id the host could not actually load.
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
+              // Rebind the engine sessionId BACK to the rewound
+              // session id so future turns/checkpoints persist on
+              // the same chain instead of orphaning to the rotated
+              // post-reset uuid. Mirrors the round-4 fix in
+              // onSessionSelect.
+              if (runtimeHandle.runtime.rebindSessionId !== undefined) {
+                try {
+                  runtimeHandle.runtime.rebindSessionId(String(engineSessionId));
+                } catch (rebindErr) {
+                  store.dispatch({
+                    kind: "add_error",
+                    code: "REWIND_ABORTED",
+                    message: `Rewind aborted: cannot rebind runtime to session ${String(engineSessionId)}: ${
+                      rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                    }`,
+                  });
+                  return;
+                }
+              }
               for (const msg of resumeResult.value.messages) {
                 runtimeHandle.transcript.push(msg);
               }
@@ -1086,7 +1264,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (runtimeHandle === null) {
             await runtimeReady;
           }
-          await resetBarrier;
+          // #1742 loop-3 round 4: abort the resume if the reset
+          // failed-closed. Hydrating into a runtime whose engine
+          // session never rotated would mix stale state with the
+          // new history.
+          const resumeResetOk = await resetBarrier;
+          if (!resumeResetOk) {
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESUME_ABORTED",
+              message:
+                "Cannot resume session: reset failed. Restart koi tui and try again on a fresh runtime.",
+            });
+            return;
+          }
+          // #1742 loop-3 round 5: load and validate the session FIRST,
+          // then rebind only after we know the transcript is good.
+          // Round 4 had this in the wrong order — a missing/corrupt
+          // session file would leave the runtime adopted to the
+          // selected id even though no history was loaded, so the
+          // next submit would write into the wrong chain.
           const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
           if (!resumeResult.ok) {
             store.dispatch({
@@ -1095,6 +1292,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               message: `Could not load session: ${resumeResult.error.message}`,
             });
             return;
+          }
+          // Transcript loaded successfully — now rebind the engine
+          // sessionId to the user-selected one. cycleSession (called
+          // via resetConversation above) rotated to a fresh UUID;
+          // without rebinding, future turns persist under the new id
+          // and orphan the resumed session — so checkpoints, /rewind,
+          // and fork all break for the resumed conversation.
+          if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
+            try {
+              runtimeHandle.runtime.rebindSessionId(selectedId);
+            } catch (rebindErr) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ABORTED",
+                message: `Cannot rebind runtime to session ${selectedId}: ${
+                  rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                }`,
+              });
+              return;
+            }
           }
           // Pre-populate conversation history so the AI has full context.
           if (runtimeHandle !== null) {
@@ -1159,12 +1376,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         kind: "image" as const,
         url: img.url,
       }));
-      pendingImages = [];
-      store.dispatch({
-        kind: "add_user_message",
-        id: `user-${Date.now()}`,
-        blocks: [{ kind: "text", text }, ...imageBlocks],
-      });
 
       const controller = new AbortController();
       activeController = controller;
@@ -1196,13 +1407,49 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
-        const stream = isLoopMode
-          ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
-          : handle.runtime.run({
-              kind: "text",
-              text,
-              signal: controller.signal,
-            });
+        // run() can throw synchronously when the engine rejects the request
+        // (poisoned runtime after a settle timeout, lifecycleInFlight during
+        // cycleSession/dispose, disposed runtime, or already-running latch).
+        // Catch those here so the user sees a recoverable error toast instead
+        // of an unhandled rejection bubbling out of onSubmit.
+        //
+        // #1742 loop-3 round 3: construct the stream FIRST, dispatch the
+        // user message only AFTER stream construction succeeds. Otherwise
+        // a synchronous rejection leaves a phantom user message in the
+        // visible UI even though no engine stream ever started — the
+        // next successful turn would run without that prompt in model
+        // context, so users could believe the agent saw a message it
+        // never actually received.
+        let stream: AsyncIterable<EngineEvent>;
+        try {
+          stream = isLoopMode
+            ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
+            : handle.runtime.run({
+                kind: "text",
+                text,
+                signal: controller.signal,
+              });
+        } catch (err) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RUNTIME_REJECTED",
+            message: err instanceof Error ? err.message : String(err),
+          });
+          // Reset pendingImages — they were never sent, but they were
+          // collected for THIS submit. Don't leak them into the next.
+          pendingImages = [];
+          return;
+        }
+        // Stream construction succeeded — now stage the visible user
+        // message. The prompt will reach the engine through the stream
+        // we just created (which already received the text in run()'s
+        // input) so the visible UI and engine transcript stay in sync.
+        pendingImages = [];
+        store.dispatch({
+          kind: "add_user_message",
+          id: `user-${Date.now()}`,
+          blocks: [{ kind: "text", text }, ...imageBlocks],
+        });
         await drainEngineStream(stream, store, batcher, controller.signal);
 
         // Refresh trajectory + decision ledger data after each turn.

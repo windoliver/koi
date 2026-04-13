@@ -53,7 +53,8 @@ export function createGovernanceController(
   let turnCount = 0;
   let tokenUsage = 0;
   let spawnCount = 0;
-  const startedAt = Date.now();
+  // let justified: mutable run-start so duration_ms resets per run via iteration_reset
+  let startedAt = Date.now();
 
   // Cost tracking
   const costConfig = resolved.cost;
@@ -119,7 +120,8 @@ export function createGovernanceController(
     read: () => turnCount,
     limit: resolved.iteration.maxTurns,
     retryable: false,
-    description: "Maximum turns per session",
+    description:
+      "Maximum turns per session (reset per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       if (turnCount >= resolved.iteration.maxTurns) {
         return failCheck(
@@ -136,7 +138,7 @@ export function createGovernanceController(
     read: () => tokenUsage,
     limit: resolved.iteration.maxTokens,
     retryable: false,
-    description: "Maximum total tokens per session",
+    description: "Maximum cumulative tokens per runtime lifetime (not reset by iteration_reset)",
     check(): GovernanceCheck {
       if (tokenUsage >= resolved.iteration.maxTokens) {
         return failCheck(
@@ -153,7 +155,8 @@ export function createGovernanceController(
     read: () => Date.now() - startedAt,
     limit: resolved.iteration.maxDurationMs,
     retryable: false,
-    description: "Maximum session duration in milliseconds",
+    description:
+      "Maximum session duration in milliseconds (reset per run when iteration_reset is fired between runs)",
     check(): GovernanceCheck {
       const elapsed = Date.now() - startedAt;
       if (elapsed >= resolved.iteration.maxDurationMs) {
@@ -198,7 +201,8 @@ export function createGovernanceController(
     read: () => accumulatedCostUsd,
     limit: costConfig.maxCostUsd,
     retryable: false,
-    description: "Maximum session cost in USD",
+    description:
+      "Maximum cumulative cost in USD per runtime lifetime (not reset by iteration_reset)",
     check(): GovernanceCheck {
       // Skip check when cost tracking is disabled (maxCostUsd === 0)
       if (costConfig.maxCostUsd <= 0) return { ok: true };
@@ -275,6 +279,32 @@ export function createGovernanceController(
       }
       case "tool_success":
         totalCallsWindow.record(Date.now());
+        break;
+      case "iteration_reset":
+        // #1742: reset per-iteration UX budgets (turn count, run duration)
+        // so each `runtime.run()` invocation gets a fresh model-call /
+        // wall-clock budget. Token usage and accumulated cost are
+        // INTENTIONALLY NOT reset — they back runtime-wide spend safety
+        // caps that operators rely on for runaway containment. Spawn
+        // counts and rolling error-rate windows are also runtime-scoped
+        // and unaffected. The split lets a TUI host give each user
+        // submit its own turn/duration budget while keeping a real
+        // total-spend ceiling for the entire process lifetime.
+        turnCount = 0;
+        startedAt = Date.now();
+        break;
+      case "session_reset":
+        // #1742: reset per-session state at a host-driven conversation
+        // boundary (TUI /clear, session:new). Clears iteration counters
+        // (turn count, duration) AND the rolling tool error / total-call
+        // windows so a fresh conversation isn't immediately blocked by
+        // error-rate state inherited from the previous one. Token usage,
+        // accumulated cost, and spawn counts remain CUMULATIVE so
+        // process-level spend / fan-out ceilings still hold.
+        turnCount = 0;
+        startedAt = Date.now();
+        errorWindow.clear();
+        totalCallsWindow.clear();
         break;
     }
   }

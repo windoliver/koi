@@ -223,9 +223,30 @@ export interface KoiMiddleware {
    * meaningfully inspect an independent copy of a streaming async iterable.
    */
   readonly concurrent?: boolean;
-  /** Called once when an agent session begins. */
+  /**
+   * Called once when an agent session begins.
+   *
+   * #1742: a "session" spans the entire runtime lifetime by default.
+   * `onSessionStart` fires on the FIRST `runtime.run()` call (NOT
+   * once per `run()`) and the captured `SessionContext` — including
+   * `runId` — is reused for every subsequent run() in the session.
+   * Hosts that expose user-visible session boundaries (TUI `/clear`,
+   * `session:new`) can call `runtime.cycleSession()` to fire
+   * `onSessionEnd` and re-arm `onSessionStart` on the next run().
+   *
+   * Use `onBeforeTurn` / `onAfterTurn` for per-run() hooks. Use
+   * `onSessionStart` / `onSessionEnd` only for state that should
+   * persist across multiple runs in the same session (always-allow
+   * permission grants, hot caches, session-scoped budgets, etc.).
+   */
   readonly onSessionStart?: (ctx: SessionContext) => Promise<void>;
-  /** Called once when an agent session ends. */
+  /**
+   * Called once when an agent session ends.
+   *
+   * Fires from `runtime.dispose()` or `runtime.cycleSession()` — NOT
+   * at the end of every `run()`. See `onSessionStart` for the
+   * runtime-lifetime semantics.
+   */
   readonly onSessionEnd?: (ctx: SessionContext) => Promise<void>;
   /** Called before each turn's model call. */
   readonly onBeforeTurn?: (ctx: TurnContext) => Promise<void>;

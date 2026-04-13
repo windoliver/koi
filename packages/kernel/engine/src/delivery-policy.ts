@@ -144,9 +144,13 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
     return {
       spawnResult,
       runChild: async (input: EngineInput): Promise<void> => {
-        const stream = spawnResult.runtime.run(input);
+        // #1742 loop-2 round 6: runtime.run() can now throw synchronously
+        // (poisoned, disposed, lifecycleInFlight, already-running). Wrap
+        // the construction in the same try block as stream consumption so
+        // the existing structured error path runs in either case.
         let output: EngineOutput; // let: assigned in try block
         try {
+          const stream = spawnResult.runtime.run(input);
           output = await consumeStream(stream);
         } catch (e: unknown) {
           if (e instanceof KoiRuntimeError) throw e;
@@ -192,9 +196,12 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
     spawnResult,
     runChild: async (input: EngineInput): Promise<void> => {
       const startedAt = Date.now();
-      const stream = spawnResult.runtime.run(input);
+      // #1742 loop-2 round 6: runtime.run() can throw synchronously now;
+      // construct inside the try so synchronous rejection is translated
+      // to the same structured delivery error the caller already handles.
       let output: EngineOutput; // let: assigned in try block
       try {
+        const stream = spawnResult.runtime.run(input);
         output = await consumeStream(stream);
       } catch (e: unknown) {
         if (e instanceof KoiRuntimeError) throw e;
