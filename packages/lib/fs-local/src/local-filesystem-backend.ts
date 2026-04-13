@@ -66,6 +66,13 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   // Append path separator so /Users/foo/koi doesn't match /Users/foo/koi2
   const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 
+  /** Result of lexical path resolution — carries coercion metadata. */
+  interface LexicalResult {
+    readonly absolute: string;
+    readonly relative: string;
+    readonly coerced: boolean;
+  }
+
   /**
    * Lexical path check — prevents ".." traversal.
    *
@@ -77,7 +84,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
    * The symlink containment check in safePath() prevents actual filesystem
    * escape regardless of the input path.
    */
-  function lexicalCheck(path: string): Result<string, KoiError> {
+  function lexicalCheck(path: string): Result<LexicalResult, KoiError> {
     // Strip workspace root prefix from absolute paths that include it
     // (models sometimes send full absolute paths).
     // For all other paths, strip leading "/" to treat as workspace-relative
@@ -94,7 +101,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     if (resolved !== root && !resolved.startsWith(rootPrefix)) {
       return { ok: false, error: err("PERMISSION", `Path outside workspace: ${path}`) };
     }
-    return { ok: true, value: resolved };
+    return {
+      ok: true,
+      value: { absolute: resolved, relative: stripped, coerced: stripped !== path },
+    };
   }
 
   /**
@@ -105,15 +115,14 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
    * the real path is still under the workspace root. This prevents symlinks
    * inside the workspace from escaping the sandbox.
    */
-  async function safePath(path: string): Promise<Result<string, KoiError>> {
+  async function safePath(path: string): Promise<Result<LexicalResult, KoiError>> {
     const lexical = lexicalCheck(path);
     if (!lexical.ok) return lexical;
-    const resolved = lexical.value;
 
     // Walk up to find the nearest existing path component, then realpath it.
     // This handles both existing files and not-yet-created paths (write/rename).
     // let: mutable — walks up the directory tree
-    let check = resolved;
+    let check = lexical.value.absolute;
     for (;;) {
       try {
         const real = await realpath(check);
@@ -133,7 +142,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       }
     }
 
-    return { ok: true, value: resolved };
+    return lexical;
   }
 
   /**
@@ -186,11 +195,11 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     async read(path: string, options?: FileReadOptions): Promise<Result<FileReadResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value, path);
+      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
       if (!symCheck.ok) return symCheck;
 
       try {
-        const file = Bun.file(p.value);
+        const file = Bun.file(p.value.absolute);
         if (!(await file.exists())) {
           return { ok: false, error: err("NOT_FOUND", `File not found: ${path}`) };
         }
@@ -201,7 +210,15 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
         const limit = options?.limit ?? lines.length;
         const content = lines.slice(offset, offset + limit).join("\n");
 
-        return { ok: true, value: { content, path, size: file.size } };
+        return {
+          ok: true,
+          value: {
+            content,
+            path,
+            size: file.size,
+            ...(p.value.coerced ? { resolvedPath: p.value.relative } : {}),
+          },
+        };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to read: ${path}`, e) };
       }
@@ -214,15 +231,16 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<FileWriteResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value, path);
+      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
       if (!symCheck.ok) return symCheck;
+      const coercionField = p.value.coerced ? { resolvedPath: p.value.relative } : {};
 
       try {
         // Always ensure parent directories exist — matches Nexus behavior
         // where writes implicitly create the path. createDirectories option
         // is kept for API compatibility but defaults to true.
         if (options?.createDirectories !== false) {
-          await mkdir(dirname(p.value), { recursive: true });
+          await mkdir(dirname(p.value.absolute), { recursive: true });
         }
 
         if (options?.overwrite === false) {
@@ -230,8 +248,11 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           // check and write. The 'wx' flag fails with EEXIST if the file
           // already exists, making conflict detection and write a single op.
           try {
-            await writeFile(p.value, content, { flag: "wx" });
-            return { ok: true, value: { path, bytesWritten: Buffer.byteLength(content) } };
+            await writeFile(p.value.absolute, content, { flag: "wx" });
+            return {
+              ok: true,
+              value: { path, bytesWritten: Buffer.byteLength(content), ...coercionField },
+            };
           } catch (wxErr: unknown) {
             if (wxErr instanceof Error && "code" in wxErr && wxErr.code === "EEXIST") {
               return { ok: false, error: err("CONFLICT", `File already exists: ${path}`) };
@@ -240,8 +261,8 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           }
         }
 
-        const bytes = await Bun.write(p.value, content);
-        return { ok: true, value: { path, bytesWritten: bytes } };
+        const bytes = await Bun.write(p.value.absolute, content);
+        return { ok: true, value: { path, bytesWritten: bytes, ...coercionField } };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to write: ${path}`, e) };
       }
@@ -254,17 +275,17 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<FileEditResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value, path);
+      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
       if (!symCheck.ok) return symCheck;
 
       try {
-        const file = Bun.file(p.value);
+        const file = Bun.file(p.value.absolute);
         if (!(await file.exists())) {
           return { ok: false, error: err("NOT_FOUND", `File not found: ${path}`) };
         }
 
         // Capture mtime before read for optimistic concurrency check
-        const preStat = await stat(p.value);
+        const preStat = await stat(p.value.absolute);
         const preMs = preStat.mtimeMs;
 
         // let: mutable — progressively modified by each hunk
@@ -281,7 +302,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
         if (options?.dryRun !== true) {
           // Verify file hasn't been modified between read and write (OCC guard).
           // Matches the ETag-based guard in @koi/fs-nexus's composite edit.
-          const postStat = await stat(p.value);
+          const postStat = await stat(p.value.absolute);
           if (postStat.mtimeMs !== preMs) {
             return {
               ok: false,
@@ -290,12 +311,19 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           }
           // Write to temp file then rename for atomicity — prevents partial
           // writes from corrupting the file if the process crashes mid-write.
-          const tmpPath = `${p.value}.koi-edit-${crypto.randomUUID()}`;
+          const tmpPath = `${p.value.absolute}.koi-edit-${crypto.randomUUID()}`;
           await Bun.write(tmpPath, text);
-          await rename(tmpPath, p.value);
+          await rename(tmpPath, p.value.absolute);
         }
 
-        return { ok: true, value: { path, hunksApplied: applied } };
+        return {
+          ok: true,
+          value: {
+            path,
+            hunksApplied: applied,
+            ...(p.value.coerced ? { resolvedPath: p.value.relative } : {}),
+          },
+        };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to edit: ${path}`, e) };
       }
@@ -310,8 +338,8 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           const rawGlob = options.glob ?? "**/*";
           const glob = new Bun.Glob(rawGlob.startsWith("/") ? rawGlob.slice(1) : rawGlob);
           const entries: FileListEntry[] = [];
-          for await (const match of glob.scan({ cwd: p.value, dot: false })) {
-            const fullPath = join(p.value, match);
+          for await (const match of glob.scan({ cwd: p.value.absolute, dot: false })) {
+            const fullPath = join(p.value.absolute, match);
             try {
               // Skip symlinks that escape the workspace root
               if (!(await isContained(fullPath))) continue;
@@ -329,11 +357,11 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           return { ok: true, value: { entries, truncated: false } };
         }
 
-        const dirents = await readdir(p.value, { withFileTypes: true });
+        const dirents = await readdir(p.value.absolute, { withFileTypes: true });
         const entries: FileListEntry[] = [];
         for (const entry of dirents) {
           if (entry.name.startsWith(".")) continue;
-          const fullPath = join(p.value, entry.name);
+          const fullPath = join(p.value.absolute, entry.name);
 
           // Skip symlinks that escape the workspace — use lstat to avoid
           // following the link, then check containment if it's a symlink.
@@ -423,12 +451,15 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     async delete(path: string): Promise<Result<FileDeleteResult, KoiError>> {
       const p = await safePath(path);
       if (!p.ok) return p;
-      const symCheck = await rejectEscapingSymlink(p.value, path);
+      const symCheck = await rejectEscapingSymlink(p.value.absolute, path);
       if (!symCheck.ok) return symCheck;
 
       try {
-        await unlink(p.value);
-        return { ok: true, value: { path } };
+        await unlink(p.value.absolute);
+        return {
+          ok: true,
+          value: { path, ...(p.value.coerced ? { resolvedPath: p.value.relative } : {}) },
+        };
       } catch (e: unknown) {
         return { ok: false, error: mapFsError(e, path) };
       }
@@ -440,15 +471,15 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     ): Promise<Result<{ readonly from: string; readonly to: string }, KoiError>> {
       const fromPath = await safePath(from);
       if (!fromPath.ok) return fromPath;
-      const fromSymCheck = await rejectEscapingSymlink(fromPath.value, from);
+      const fromSymCheck = await rejectEscapingSymlink(fromPath.value.absolute, from);
       if (!fromSymCheck.ok) return fromSymCheck;
       const toPath = await safePath(to);
       if (!toPath.ok) return toPath;
 
       try {
         // Ensure parent directory of destination exists
-        await mkdir(dirname(toPath.value), { recursive: true });
-        await rename(fromPath.value, toPath.value);
+        await mkdir(dirname(toPath.value.absolute), { recursive: true });
+        await rename(fromPath.value.absolute, toPath.value.absolute);
         return { ok: true, value: { from, to } };
       } catch (e: unknown) {
         return { ok: false, error: mapFsError(e, from) };

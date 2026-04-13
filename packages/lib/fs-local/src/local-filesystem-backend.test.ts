@@ -167,6 +167,86 @@ describe("LocalFileSystemBackend (local-specific)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Path coercion surfacing (resolvedPath)
+// ---------------------------------------------------------------------------
+
+describe("LocalFileSystemBackend (path coercion)", () => {
+  // let: mutable — reset per test to isolate state
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpBase, "coercion-"));
+  });
+
+  test("write to absolute path surfaces resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    const result = await backend.write("/tmp/koi-test.txt", "hello");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resolvedPath).toBe("tmp/koi-test.txt");
+      expect(result.value.path).toBe("/tmp/koi-test.txt");
+      expect(result.value.bytesWritten).toBe(5);
+    }
+  });
+
+  test("write to relative path does not surface resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    const result = await backend.write("foo.txt", "hello");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resolvedPath).toBeUndefined();
+    }
+  });
+
+  test("read from absolute path surfaces resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    await backend.write("tmp/koi-test.txt", "hello");
+    const result = await backend.read("/tmp/koi-test.txt");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resolvedPath).toBe("tmp/koi-test.txt");
+      expect(result.value.content).toBe("hello");
+    }
+  });
+
+  test("edit on absolute path surfaces resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    await backend.write("tmp/koi-test.txt", "hello world");
+    const result = await backend.edit("/tmp/koi-test.txt", [
+      { oldText: "hello", newText: "goodbye" },
+    ]);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resolvedPath).toBe("tmp/koi-test.txt");
+      expect(result.value.hunksApplied).toBe(1);
+    }
+  });
+
+  test("delete on absolute path surfaces resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    await backend.write("tmp/koi-test.txt", "hello");
+    const result = await backend.delete?.("/tmp/koi-test.txt");
+    expect(result).toBeDefined();
+    if (result === undefined) return;
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.resolvedPath).toBe("tmp/koi-test.txt");
+    }
+  });
+
+  test("write to workspace-absolute path surfaces resolvedPath", async () => {
+    const backend = createLocalFileSystem(testDir);
+    const realTestDir = realpathSync(testDir);
+    const result = await backend.write(`${realTestDir}/inside.txt`, "hello");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      // Workspace-absolute paths are coerced to relative
+      expect(result.value.resolvedPath).toBe("inside.txt");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Symlink escape prevention
 // ---------------------------------------------------------------------------
 

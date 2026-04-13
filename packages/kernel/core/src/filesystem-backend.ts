@@ -25,6 +25,8 @@ export interface FileReadResult {
   readonly content: string;
   readonly path: string;
   readonly size: number;
+  /** Workspace-relative path when the input was coerced (e.g. absolute → relative). */
+  readonly resolvedPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,8 @@ export interface FileWriteOptions {
 export interface FileWriteResult {
   readonly path: string;
   readonly bytesWritten: number;
+  /** Workspace-relative path when the input was coerced (e.g. absolute → relative). */
+  readonly resolvedPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +61,8 @@ export interface FileEditOptions {
 export interface FileEditResult {
   readonly path: string;
   readonly hunksApplied: number;
+  /** Workspace-relative path when the input was coerced (e.g. absolute → relative). */
+  readonly resolvedPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +116,8 @@ export interface FileSearchResult {
 
 export interface FileDeleteResult {
   readonly path: string;
+  /** Workspace-relative path when the input was coerced (e.g. absolute → relative). */
+  readonly resolvedPath?: string;
 }
 
 // ---------------------------------------------------------------------------
