@@ -1425,6 +1425,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // which case `running` is true but the generator's finally will
           // never fire — waiting would falsely time out and poison the
           // runtime.
+          //
+          // #1742 round 11: the abandoned-iterable path ALSO needs to
+          // release the `running` latch. The session epoch is bumped
+          // below, so the stale iterable is rejected on first iteration
+          // (and clears `running` itself), but a host that never
+          // touches the iterable would otherwise be stuck rejecting
+          // future run() with "Agent is already running". Clear it
+          // here so the supported lazy pattern
+          //   const it = runtime.run(...); await runtime.cycleSession();
+          // leaves the runtime ready for a fresh submit.
           if (running && currentRunResolveSettled !== undefined) {
             const result = await awaitSettleOrTimeout();
             if (result === "timeout") {
@@ -1433,6 +1443,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
                 `Runtime is wedged: in-flight run ignored abort for ${LIFECYCLE_SETTLE_TIMEOUT_MS}ms. Dispose and recreate.`,
               );
             }
+          } else if (running) {
+            // No generator entry yet — nothing to wait for, just
+            // release the concurrent-run latch.
+            running = false;
           }
           if (lifecycleSessionStarted && !lifecycleSessionEnded) {
             // #1742 round 10: flip ended BEFORE the await so a second
@@ -1522,6 +1536,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // the stream actually terminates promptly.
       // Same guard as cycleSession: only wait if the generator has
       // actually entered streamEvents (currentRunResolveSettled set).
+      // Round 11: also release the `running` latch in the abandoned-
+      // iterable path so dispose isn't blocked by a stale flag.
       if (running && currentRunResolveSettled !== undefined) {
         const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
@@ -1529,6 +1545,8 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             "[koi] dispose proceeding after settle timeout — late tool callbacks may corrupt downstream state",
           );
         }
+      } else if (running) {
+        running = false;
       }
       // #1742: session lifecycle ends when the runtime is disposed — not at
       // the end of every run(). Fire onSessionEnd here so middleware

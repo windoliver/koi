@@ -644,12 +644,39 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // Always reset runtime session state — even in the idle case (no active stream).
     // resetSessionState is async (awaits task board + trajectory prune).
     // New submits block on resetBarrier before proceeding.
+    //
+    // #1742 round 11: catch resetSessionState rejections (most importantly
+    // the cycleSession TIMEOUT path which fails closed when a tool ignored
+    // abort). Without this, the rejected promise would be assigned into
+    // `resetBarrier` and every future submit would `await` it and fail
+    // immediately with no recovery — one wedged /clear would brick the TUI
+    // until restart. Catch the error, surface a visible "restart koi tui"
+    // toast, splice the transcript anyway so the user at least sees a
+    // clear conversation, and resolve the barrier so subsequent submits
+    // get a controlled rejection from the engine itself (poisoned runtime)
+    // rather than a stale rejected promise.
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
-      resetBarrier = runtimeHandle.resetSessionState(idleController.signal).then(() => {
-        runtimeHandle?.transcript.splice(0);
-      });
+      resetBarrier = runtimeHandle
+        .resetSessionState(idleController.signal)
+        .then(() => {
+          runtimeHandle?.transcript.splice(0);
+        })
+        .catch((resetError: unknown) => {
+          const message = resetError instanceof Error ? resetError.message : String(resetError);
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_FAILED",
+            message: `Session reset failed: ${message}. Please restart koi tui to recover.`,
+          });
+          // Splice the transcript locally even though resetSessionState
+          // didn't finish — the user already cleared the visible
+          // history via clear_messages above.
+          runtimeHandle?.transcript.splice(0);
+          // Resolve the barrier so future submits proceed (and likely
+          // hit the engine's poisoned-runtime guard with a clear error).
+        });
     }
   };
 

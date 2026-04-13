@@ -629,6 +629,57 @@ describe("createKoi middleware hooks", () => {
     expect(elapsed).toBeLessThan(2000);
   }, 8_000);
 
+  test("#1742: cycleSession releases the running latch when the iterable was abandoned before iteration", async () => {
+    // Round 11 regression: `run()` flips `running = true` synchronously
+    // but cycleSession used to only clear it via the generator's finally,
+    // which never runs for an abandoned iterable. Result: the supported
+    // lazy pattern `const it = run(); await cycleSession();` left the
+    // runtime rejecting every fresh `run()` with "Agent is already
+    // running" until the abandoned iterable was touched. Verify the
+    // runtime is reusable after cycleSession in this exact pattern.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Open a session by running once normally.
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+
+    // Create a second iterable but DO NOT iterate it.
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned;
+
+    // cycleSession must release the running latch (and bump the session
+    // epoch so the abandoned iterable is rejected if ever touched).
+    await runtime.cycleSession?.();
+
+    // A fresh run() must work — no "Agent is already running".
+    const events = await collectEvents(runtime.run({ kind: "text", text: "fresh" }));
+    expect(events.find((e) => e.kind === "done")).toBeDefined();
+
+    await runtime.dispose();
+  });
+
+  test("#1742: dispose releases the running latch when the iterable was abandoned before iteration", async () => {
+    // Round 11 regression mirror: same fix in dispose's skip-settle path.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+    await collectEvents(runtime.run({ kind: "text", text: "first" }));
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned;
+
+    // dispose must complete promptly and not be blocked by the latched
+    // running flag from the abandoned iterable.
+    const start = Date.now();
+    await runtime.dispose();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(2000);
+  }, 8_000);
+
   test("#1742: iterable created before cycleSession is rejected on first iteration (epoch guard)", async () => {
     // Round 10 regression: an async iterable created before /clear used
     // to silently re-fire onSessionStart on the new session and run
