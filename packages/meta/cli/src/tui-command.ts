@@ -728,6 +728,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — replaced on each reset
   let resetBarrier: Promise<void> = Promise.resolve();
 
+  // Monotonic id for each `resetConversation()` invocation.
+  // Bumped synchronously at the top of every call. Reset IIFEs
+  // capture the value at start, and the catch / truncate-failure
+  // paths consult `resetGeneration` before mutating the
+  // `clearPersistFailed` / `lastResetFailed` latches — older
+  // completions ignore their state and only the most recent
+  // reset can publish results. Without this, a `/clear` followed
+  // quickly by another reset path could let the older truncate
+  // failure overwrite the newer reset's success state.
+  // let: justified — incremented per reset attempt.
+  let resetGeneration = 0;
+
   // Reflects the most recent `jsonlTranscript.truncate()` outcome
   // during a clear/new reset. Shutdown checks this flag (not
   // resetBarrier rejection) to suppress the post-quit resume hint:
@@ -840,6 +852,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let pendingSessionSwitch = false;
   const isInPickerMode = (): boolean => pendingSessionSwitch || viewedSessionId !== tuiSessionId;
 
+  // Monotonic id for each `onSessionSelect` invocation. Bumped
+  // synchronously at the top of the handler, captured by the
+  // async flow, and consulted at every state-publication point
+  // (clearing `pendingSessionSwitch`, mutating `viewedSessionId`,
+  // hydrating `runtimeHandle.transcript`, dispatching
+  // `set_session_info` / `load_history`). Stale completions —
+  // selections superseded by a later click — exit without side
+  // effects. Without this, rapid A→B clicks let whichever load
+  // finishes last "win" regardless of the user's intent, and
+  // the first completion can flip `pendingSessionSwitch = false`
+  // while the second is still in flight, briefly re-enabling
+  // submit / clear / new / rewind on the wrong session.
+  // let: justified — incremented per picker-select.
+  let pickerGeneration = 0;
+
   // Shared reset primitive. Callers that represent a true privacy /
   // rollback boundary (agent:clear, session:new) must additionally
   // flip `rewindBoundaryActive` and `clearedThisProcess` themselves
@@ -857,6 +884,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // post-quit resume hint points at a file whose identity no
   // longer matches that work.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
+    // Bump the reset generation BEFORE any other state changes
+    // so older async reset IIFEs can detect that they've been
+    // superseded and abort their state-publication side effects.
+    resetGeneration += 1;
+    const myGeneration = resetGeneration;
     // Clear any stale flag from a PREVIOUS clear — if the current
     // reset is going to re-truncate the transcript, shutdown's
     // hint suppression should not fire on the basis of an earlier
@@ -966,12 +998,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // submits after a failed clear still reach the runtime.
             const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
             if (!truncateResult.ok) {
-              clearPersistFailed = true;
-              store.dispatch({
-                kind: "add_error",
-                code: "SESSION_CLEAR_PERSIST_FAILED",
-                message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
-              });
+              // Generation-scoped: only publish the failure if
+              // we're still the authoritative reset. Otherwise a
+              // stale earlier truncate could overwrite a newer
+              // reset's success state and surface the failure
+              // long after the user moved on.
+              if (myGeneration === resetGeneration) {
+                clearPersistFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_CLEAR_PERSIST_FAILED",
+                  message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+                });
+              }
             }
           }
         } catch (err: unknown) {
@@ -985,12 +1024,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // above) warrants it. We DO set `lastResetFailed` so
           // downstream picker hydration and rewind replay can
           // refuse to proceed onto contaminated runtime state.
-          lastResetFailed = true;
-          store.dispatch({
-            kind: "add_error",
-            code: "SESSION_RESET_FAILED",
-            message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
-          });
+          // Generation-scoped: don't pollute newer resets.
+          if (myGeneration === resetGeneration) {
+            lastResetFailed = true;
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESET_FAILED",
+              message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
         }
       })();
     } else {
@@ -1032,12 +1074,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (shouldTruncate) {
             const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
             if (!truncateResult.ok) {
-              clearPersistFailed = true;
-              store.dispatch({
-                kind: "add_error",
-                code: "SESSION_CLEAR_PERSIST_FAILED",
-                message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
-              });
+              // Generation-scoped: see the post-ready branch.
+              if (myGeneration === resetGeneration) {
+                clearPersistFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_CLEAR_PERSIST_FAILED",
+                  message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+                });
+              }
             }
           }
         } catch (err: unknown) {
@@ -1047,12 +1092,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // only an actual durable truncate failure warrants it.
           // We DO set `lastResetFailed` so downstream callers
           // can refuse to hydrate onto contaminated state.
-          lastResetFailed = true;
-          store.dispatch({
-            kind: "add_error",
-            code: "SESSION_RESET_FAILED",
-            message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
-          });
+          // Generation-scoped: don't pollute newer resets.
+          if (myGeneration === resetGeneration) {
+            lastResetFailed = true;
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_RESET_FAILED",
+              message: `Session reset failed — ${err instanceof Error ? err.message : String(err)}`,
+            });
+          }
         }
       })();
     }
@@ -1661,6 +1709,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Cleared in the finally below, regardless of whether the
       // load succeeded or failed.
       pendingSessionSwitch = true;
+      // Stamp this selection with a monotonic id. Stale
+      // completions (a click superseded by a later click)
+      // detect via `myPickerGeneration !== pickerGeneration`
+      // and exit without mutating shared state.
+      pickerGeneration += 1;
+      const myPickerGeneration = pickerGeneration;
 
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
@@ -1708,11 +1762,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             SESSIONS_DIR,
           );
           if (!resumeResult.ok) {
-            store.dispatch({
-              kind: "add_error",
-              code: "SESSION_RESUME_ERROR",
-              message: `Could not load session: ${resumeResult.error}`,
-            });
+            // Stale completions stay quiet — the newer click is
+            // already in flight and will surface its own error.
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message: `Could not load session: ${resumeResult.error}`,
+              });
+            }
+            return;
+          }
+
+          // If a newer picker click superseded us during the
+          // load, abort silently — the newer flow owns the
+          // state-publication side effects.
+          if (myPickerGeneration !== pickerGeneration) {
             return;
           }
 
@@ -1729,6 +1794,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // no-op here.
           resetConversation({ truncatePersistedTranscript: false });
           await resetBarrier;
+
+          // After awaiting the reset barrier, re-check that
+          // we're still the authoritative selection — a newer
+          // click could have arrived while the reset was
+          // settling, and proceeding here would publish stale
+          // hydration on top of the newer load.
+          if (myPickerGeneration !== pickerGeneration) {
+            return;
+          }
 
           // Refuse to hydrate onto contaminated state if the
           // reset itself failed — the task board, approval
@@ -1797,12 +1871,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         } finally {
           // Release the pre-await latch so picker-mode guards go
           // back to being derived purely from
-          // `viewedSessionId !== tuiSessionId`. This runs on both
-          // success (where viewedSessionId has been rotated) and
-          // failure (where it has not), so the guards settle on
-          // the correct post-flow state in either case.
-          pendingSessionSwitch = false;
-          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+          // `viewedSessionId !== tuiSessionId`. ONLY clear the
+          // latch if we're still the authoritative selection —
+          // a newer click is still in flight and needs the
+          // latch held until ITS finally runs. Without this
+          // guard, a stale completion finishing late could
+          // briefly re-enable submit/clear/new/rewind on the
+          // wrong session while the user's intended switch is
+          // still loading.
+          if (myPickerGeneration === pickerGeneration) {
+            pendingSessionSwitch = false;
+            store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+          }
         }
       })();
     },
