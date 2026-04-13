@@ -724,7 +724,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // earlier turns or permanently break MCP tools for the rest of the
   // session. Users who want to reset everything can use `/clear` or quit.
   const abortActiveStream = (): void => {
-    permissionBridge.dispose();
+    // Per-turn cancellation: deny any pending permission prompts and
+    // dismiss the modal so the user is not stuck behind a stale 60-minute
+    // approval window after Ctrl+C. The bridge stays usable for the next
+    // turn — full `dispose()` is reserved for shutdown. (#1759 review)
+    permissionBridge.cancelPending("Turn cancelled by user");
     activeController?.abort();
   };
 
@@ -837,6 +841,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
+    // Cancel any pending permission prompts and dismiss the modal so a
+    // session reset (`agent:clear`, `session:new`, resume) doesn't leave
+    // the user stuck behind a stale 60-minute approval window. The bridge
+    // stays usable for the next turn. (#1759 review round 2)
+    permissionBridge.cancelPending("Session reset");
 
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.

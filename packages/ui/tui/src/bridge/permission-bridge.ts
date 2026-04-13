@@ -93,8 +93,19 @@ export interface PermissionBridge {
   readonly handler: ApprovalHandler;
   /** Respond to a permission prompt. Called by TUI components (y/n/a keys). */
   readonly respond: (requestId: string, decision: ApprovalDecision) => void;
-  /** Cleanup: deny all pending, clear timers. */
+  /** Terminal cleanup. Use only for shutdown — the handle should not be
+   *  reused afterwards. For transient aborts/session resets, use
+   *  `cancelPending` instead. */
   readonly dispose: () => void;
+  /**
+   * Deny every in-flight approval and dismiss the modal without tearing
+   * the bridge down. Safe to call between turns: subsequent
+   * `handleApproval` calls keep working normally. Wired into per-turn
+   * Ctrl+C, `agent:clear`, `session:new`, and session resume so users
+   * are not stuck behind a stale modal for the full 60-minute interactive
+   * approval window. (#1759 review round 2)
+   */
+  readonly cancelPending: (reason: string) => void;
   /** Number of pending (unresolved) approval requests. */
   readonly pendingCount: () => number;
 }
@@ -306,8 +317,19 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
     entry.resolve(decision);
   }
 
-  function dispose(): void {
-    // Deny all pending with cleanup reason
+  /**
+   * Deny every pending approval and dismiss the modal without tearing the
+   * bridge down. Use this for transient aborts where the bridge must keep
+   * accepting future prompts: per-turn Ctrl+C, `agent:clear`, `session:new`,
+   * session resume, etc. Distinct from `dispose()` (which is for terminal
+   * shutdown — the bridge handle should not be reused after that).
+   *
+   * Without this hook, a 60-minute interactive approval timeout combined
+   * with a session reset would leave the user staring at a stale modal for
+   * up to an hour after they tried to recover from a wedged turn. (#1759
+   * review round 2)
+   */
+  function cancelPending(reason: string): void {
     for (const entry of pending.values()) {
       if (entry.timer !== null) {
         clearTimeout(entry.timer);
@@ -315,20 +337,24 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
       if (entry.lifetimeTimer !== null) {
         clearTimeout(entry.lifetimeTimer);
       }
-      entry.resolve({ kind: "deny", reason: "Permission bridge disposed" });
+      entry.resolve({ kind: "deny", reason });
     }
     pending.clear();
     queue.length = 0;
-
     // Restore the modal that was active before the bridge took over (or null)
     store.dispatch({ kind: "set_modal", modal: savedModal });
     savedModal = null;
+  }
+
+  function dispose(): void {
+    cancelPending("Permission bridge disposed");
   }
 
   return {
     handler: handleApproval,
     respond,
     dispose,
+    cancelPending,
     pendingCount: () => pending.size,
   };
 }

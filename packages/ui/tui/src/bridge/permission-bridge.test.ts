@@ -378,6 +378,63 @@ describe("permission bridge — tool_execution_started dispatch", () => {
 });
 
 // ---------------------------------------------------------------------------
+// cancelPending — abort/reset cleanup without tearing down the bridge
+// (#1759 review round 2)
+// ---------------------------------------------------------------------------
+
+describe("permission bridge — cancelPending", () => {
+  test("denies all pending and dismisses the modal without disposing", async () => {
+    // Long timeout so nothing else cancels in the test window
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    const p1 = local.handler(makeRequest({ toolId: "Bash" }));
+    const p2 = local.handler(makeRequest({ toolId: "fs_write" }));
+    expect(local.pendingCount()).toBe(2);
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+
+    local.cancelPending("Turn cancelled by user");
+
+    // Both pending promises resolve to deny with the cancel reason
+    const [d1, d2] = await Promise.all([p1, p2]);
+    expect(d1).toEqual({ kind: "deny", reason: "Turn cancelled by user" });
+    expect(d2).toEqual({ kind: "deny", reason: "Turn cancelled by user" });
+
+    // Modal dismissed
+    expect(store.getState().modal).toBeNull();
+    expect(local.pendingCount()).toBe(0);
+
+    // Bridge is still usable — a new prompt after cancel works
+    const p3 = local.handler(makeRequest({ toolId: "Grep" }));
+    expect(local.pendingCount()).toBe(1);
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+    const newRequestId =
+      store.getState().modal?.kind === "permission-prompt"
+        ? (store.getState().modal as { prompt: { requestId: string } }).prompt.requestId
+        : "";
+    local.respond(newRequestId, { kind: "allow" });
+    const d3 = await p3;
+    expect(d3).toEqual({ kind: "allow" });
+
+    local.dispose();
+  });
+
+  test("dispose still works as terminal cleanup (delegates to cancelPending)", async () => {
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    const p = local.handler(makeRequest({ toolId: "Bash" }));
+    local.dispose();
+    const decision = await p;
+    expect(decision).toEqual({ kind: "deny", reason: "Permission bridge disposed" });
+    expect(store.getState().modal).toBeNull();
+  });
+
+  test("cancelPending on empty queue is a no-op", () => {
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    expect(() => local.cancelPending("nothing to cancel")).not.toThrow();
+    expect(local.pendingCount()).toBe(0);
+    local.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Negative / edge cases
 // ---------------------------------------------------------------------------
 
