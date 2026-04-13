@@ -104,7 +104,18 @@ export type GovernanceEvent =
    * opts in via `CreateKoiOptions.resetIterationBudgetPerRun` (#1742).
    * Hosts can also fire it manually.
    */
-  | { readonly kind: "iteration_reset" };
+  | { readonly kind: "iteration_reset" }
+  /**
+   * Reset per-session state — the rolling error-rate windows and the
+   * iteration counters cleared by `iteration_reset`. Fired by
+   * `@koi/engine` from `cycleSession()` so a host-driven conversation
+   * boundary (TUI `/clear`, `session:new`) doesn't carry tool-error
+   * history forward into the next conversation. Token usage, cost,
+   * and spawn counts remain CUMULATIVE across the runtime lifetime
+   * because they back process-level spend ceilings, not per-session
+   * limits. (#1742)
+   */
+  | { readonly kind: "session_reset" };
 
 // ---------------------------------------------------------------------------
 // GovernanceController — runtime interface (replaces GovernanceComponent)

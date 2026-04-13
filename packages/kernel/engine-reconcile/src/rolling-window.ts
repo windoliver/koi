@@ -18,6 +18,12 @@ export interface RollingWindow {
   readonly count: (now: number) => number;
   /** Compute rate: events in window / total. Clamped to 0-1. */
   readonly rate: (total: number, now: number) => number;
+  /**
+   * Drop all recorded entries so the next `count()` returns 0. Used at
+   * host-driven session boundaries (#1742) when the rolling history
+   * should not be carried into the next conversation.
+   */
+  readonly clear: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,5 +72,11 @@ export function createRollingWindow(
     return Math.min(1, c / total);
   }
 
-  return { record, count, rate };
+  function clear(): void {
+    cursor = 0;
+    filled = 0;
+    // No need to wipe buffer contents — `filled = 0` makes count() ignore them.
+  }
+
+  return { record, count, rate, clear };
 }

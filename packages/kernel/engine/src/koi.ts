@@ -213,17 +213,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   // #1742: bounded fallback for cycleSession()/dispose() so a
   // non-cooperative tool/stream that ignores abort can't deadlock the
-  // host. After the timeout we proceed with cleanup anyway and emit a
-  // warning. 5 seconds is generous for cooperative cleanup but short
-  // enough to keep the TUI responsive on /clear.
+  // host. After the timeout the runtime is marked POISONED — any
+  // future run() rejects with a clear error so the host knows to
+  // recreate the runtime instead of submitting another turn into a
+  // wedged session. 5 seconds is generous for cooperative cleanup but
+  // short enough to keep the TUI responsive on /clear.
   const LIFECYCLE_SETTLE_TIMEOUT_MS = 5000;
-  function lifecycleSettleTimeout(): Promise<void> {
-    return new Promise<void>((resolve) => {
+  // let justified: mutable poison flag set on settle timeout
+  let poisoned = false;
+  function lifecycleSettleTimeout(): Promise<"timeout"> {
+    return new Promise<"timeout">((resolve) => {
       const timer = setTimeout(() => {
+        poisoned = true;
         console.warn(
-          `[koi] lifecycle settle timeout (${LIFECYCLE_SETTLE_TIMEOUT_MS}ms) — proceeding without waiting for in-flight run; non-cooperative tool may have ignored abort`,
+          `[koi] lifecycle settle timeout (${LIFECYCLE_SETTLE_TIMEOUT_MS}ms) — runtime poisoned, an in-flight tool ignored abort. Caller must dispose and recreate the runtime before submitting another turn.`,
         );
-        resolve();
+        resolve("timeout");
       }, LIFECYCLE_SETTLE_TIMEOUT_MS);
       // Don't pin the event loop — if the run settles before the
       // timeout, the timer is GC'd anyway via the Promise.race winner.
@@ -266,6 +271,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable flags guarding one-shot lifecycle hook firing
   let lifecycleSessionStarted = false;
   let lifecycleSessionEnded = false;
+  // #1742: capture the EXACT SessionContext used at onSessionStart so the
+  // matching onSessionEnd carries the same identity (same runId in
+  // particular). Middleware that pairs start/end records by ctx.runId
+  // (e.g. @koi/middleware-report) breaks if the two halves don't agree.
+  // Reset to undefined on cycleSession so the next session captures fresh.
+  // let justified: mutable per-session ctx, captured in streamEvents
+  let activeSessionCtx: SessionContext | undefined;
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
@@ -405,6 +417,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       agent.transition({ kind: "start" });
       if (!lifecycleSessionStarted) {
         lifecycleSessionStarted = true;
+        // #1742: capture this run's sessionCtx so the matching
+        // onSessionEnd (fired from cycleSession or dispose) reuses the
+        // same identity — particularly the per-run runId — to keep
+        // start/end record pairing intact for middleware-report and
+        // friends. Cleared on cycleSession() re-arm.
+        activeSessionCtx = sessionCtx;
         await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
       }
 
@@ -1253,6 +1271,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     conflicts,
 
     run(input: EngineInput): AsyncIterable<EngineEvent> {
+      if (poisoned) {
+        // #1742: a previous cycleSession()/dispose() hit the lifecycle
+        // settle timeout — an in-flight tool ignored abort and the
+        // runtime is in an inconsistent state. Refuse new submits so
+        // the host swaps in a fresh runtime instead of layering work
+        // onto a wedged one.
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          "Runtime is poisoned: a prior cleanup timed out waiting for a non-cooperative tool. Dispose and recreate.",
+        );
+      }
       if (running) {
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
@@ -1287,12 +1316,26 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       }
       if (lifecycleSessionStarted && !lifecycleSessionEnded) {
         try {
-          await runSessionHooks(allMiddleware, "onSessionEnd", lifecycleSessionCtx);
+          await runSessionHooks(
+            allMiddleware,
+            "onSessionEnd",
+            activeSessionCtx ?? lifecycleSessionCtx,
+          );
         } catch (sessionEndError: unknown) {
           console.warn("[koi] onSessionEnd failed during cycleSession", {
             cause: sessionEndError,
           });
         }
+      }
+      // #1742: clear per-session governance state (rolling tool-error
+      // window, total-call window, iteration counters) so the next
+      // conversation isn't immediately blocked by error-rate history
+      // inherited from the previous one. Token usage, accumulated cost,
+      // and spawn counts remain CUMULATIVE so process-level safety/
+      // spend ceilings still hold across the runtime lifetime.
+      const govCtl = agent.component<GovernanceController>(GOVERNANCE);
+      if (govCtl !== undefined) {
+        await govCtl.record({ kind: "session_reset" });
       }
       // Reset the lifecycle flag so the NEXT run() fires onSessionStart again
       // with a fresh sessionCtx (its first turn's runId, like the original
@@ -1300,6 +1343,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // pre-session state — same as immediately after createKoi() returned.
       lifecycleSessionStarted = false;
       lifecycleSessionEnded = false;
+      activeSessionCtx = undefined;
     },
 
     dispose: async (): Promise<void> => {
@@ -1325,7 +1369,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (lifecycleSessionStarted && !lifecycleSessionEnded) {
         lifecycleSessionEnded = true;
         try {
-          await runSessionHooks(allMiddleware, "onSessionEnd", lifecycleSessionCtx);
+          await runSessionHooks(
+            allMiddleware,
+            "onSessionEnd",
+            activeSessionCtx ?? lifecycleSessionCtx,
+          );
         } catch (sessionEndError: unknown) {
           console.warn("[koi] onSessionEnd failed during dispose", { cause: sessionEndError });
         }

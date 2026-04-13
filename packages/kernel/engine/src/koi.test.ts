@@ -484,12 +484,13 @@ describe("createKoi middleware hooks", () => {
     expect(sessionEndFiredAfterAdapter).toBe(true);
   });
 
-  test("#1742: cycleSession does not deadlock when the in-flight run ignores abort", async () => {
+  test("#1742: cycleSession bounded by settle timeout poisons runtime when run ignores abort", async () => {
     // Non-cooperative tool path: the adapter never honors the abort
     // signal, so the run's finally never fires and currentRunSettled
     // never resolves. cycleSession must give up after the bounded
-    // lifecycle-settle timeout (5s in production) instead of hanging
-    // forever, so the host (TUI /clear) stays responsive.
+    // lifecycle-settle timeout (5s in production) AND poison the
+    // runtime so the host (TUI /clear) sees a clear error on the next
+    // submit instead of layering work onto a wedged session.
     const sessionEnd = mock(() => Promise.resolve());
     const adapter: EngineAdapter = {
       engineId: "noncooperative",
@@ -531,6 +532,13 @@ describe("createKoi middleware hooks", () => {
     // Should have waited at least the timeout, not returned immediately
     // (the run's finally never fired because the adapter is hung).
     expect(Date.now() - start).toBeGreaterThanOrEqual(4500);
+
+    // Runtime is now POISONED — submitting another run must fail loudly
+    // instead of either rejecting with the misleading "Agent is already
+    // running" or quietly accepting work onto a wedged session.
+    expect(() => {
+      runtime.run({ kind: "text", text: "another" });
+    }).toThrow(/poisoned/i);
   }, 10_000);
 
   test("#1742: cycleSession waits for an in-flight run to settle instead of throwing", async () => {

@@ -231,6 +231,48 @@ describe("createGovernanceController", () => {
     expect(r?.current).toBe(80);
   });
 
+  test("#1742: session_reset clears error-rate windows + iteration counters but preserves cumulative tokens/cost/spawns", async () => {
+    // Fired by createKoi.cycleSession() at host-driven session
+    // boundaries (TUI /clear, session:new). Must clear per-session
+    // state so a fresh conversation doesn't inherit tool-error history
+    // OR turn-count exhaustion from the previous conversation, while
+    // still preserving runtime-wide spend / fan-out ceilings.
+    const ctrl = createGovernanceController({
+      iteration: { maxTurns: 3, maxTokens: 1_000_000, maxDurationMs: 60_000 },
+      errorRate: { windowMs: 60_000, threshold: 0.5, minSampleSize: 2 },
+      cost: { maxCostUsd: 10, costPerInputToken: 0.000003, costPerOutputToken: 0.000015 },
+    });
+
+    // Burn through both per-iteration AND per-session state...
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "turn" });
+    ctrl.record({ kind: "tool_error", toolName: "t" });
+    ctrl.record({ kind: "tool_error", toolName: "t" });
+    ctrl.record({ kind: "tool_success", toolName: "t" });
+    // ...and accrue cumulative spend/spawn we want to keep.
+    ctrl.record({ kind: "token_usage", count: 50_000, inputTokens: 30_000, outputTokens: 20_000 });
+    ctrl.record({ kind: "spawn", depth: 1 });
+
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(false);
+    // 2 errors / 3 calls = 0.66 > 0.5 threshold (with 3 ≥ minSampleSize 2)
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE)).ok).toBe(false);
+
+    // Host-driven session boundary: TUI /clear → cycleSession → session_reset
+    ctrl.record({ kind: "session_reset" });
+
+    // Per-session state cleared — turn count + error rate windows:
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.TURN_COUNT)).ok).toBe(true);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TURN_COUNT)?.current).toBe(0);
+    expect((await ctrl.check(GOVERNANCE_VARIABLES.ERROR_RATE)).ok).toBe(true);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.ERROR_RATE)?.current).toBe(0);
+
+    // Cumulative spend/spawn PRESERVED — operators still get a runtime-wide
+    // ceiling regardless of how many user-driven session resets occur.
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(50_000);
+    expect(ctrl.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
+  });
+
   test("#1742: iteration_reset resets turn count + duration but preserves cumulative tokens/cost/spawns/error-window", async () => {
     // Tight per-iteration turn budget + a generous (cumulative) token
     // ceiling so we can verify that the reset re-opens the per-iteration

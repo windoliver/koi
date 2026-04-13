@@ -293,6 +293,19 @@ export function createGovernanceController(
         turnCount = 0;
         startedAt = Date.now();
         break;
+      case "session_reset":
+        // #1742: reset per-session state at a host-driven conversation
+        // boundary (TUI /clear, session:new). Clears iteration counters
+        // (turn count, duration) AND the rolling tool error / total-call
+        // windows so a fresh conversation isn't immediately blocked by
+        // error-rate state inherited from the previous one. Token usage,
+        // accumulated cost, and spawn counts remain CUMULATIVE so
+        // process-level spend / fan-out ceilings still hold.
+        turnCount = 0;
+        startedAt = Date.now();
+        errorWindow.clear();
+        totalCallsWindow.clear();
+        break;
     }
   }
 
