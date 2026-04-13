@@ -311,6 +311,74 @@ describe("runTurn", () => {
     }
   });
 
+  test("#1742: tool execution error feeds synthetic tool_result + re-prompts model", async () => {
+    // Regression for #1742: a throw from a tool call (or a wrapping
+    // security/permissions middleware) used to transition the turn to
+    // "error", killing the loop without letting the model explain what
+    // happened. Result: users saw a silent empty reply.
+    //
+    // New contract: the error is fed back as a synthetic tool_result and
+    // the model gets a follow-up turn to react. This test verifies both
+    // the tool_result event AND that the model was called a second time.
+    const modelCallRequests: ModelRequest[] = [];
+    // let justified: mutable counter so the mock cycles through streams
+    let streamCallIndex = 0;
+    const streams: Array<() => AsyncIterable<ModelChunk>> = [
+      createToolCallStream("failTool", "tc-err", '{"x":1}'),
+      createTextStream("Sorry, that command can't run here."),
+    ];
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+        modelCallRequests.push(request);
+        const factory = streams[streamCallIndex];
+        if (factory === undefined) {
+          throw new Error(`unexpected model call #${streamCallIndex}`);
+        }
+        streamCallIndex += 1;
+        return factory();
+      },
+      toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+        throw new Error("Tool blocked by security guard");
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+    // Model was called twice: once to emit the tool_use, once after the
+    // synthetic error result was fed back.
+    expect(modelCallRequests).toHaveLength(2);
+
+    // A synthetic tool_result was emitted for the failing call.
+    const toolResult = events.find((e) => e.kind === "tool_result") as
+      | { readonly kind: "tool_result"; readonly callId: string; readonly output: unknown }
+      | undefined;
+    expect(toolResult).toBeDefined();
+    expect(toolResult?.callId).toBe("tc-err");
+    expect(toolResult?.output).toMatchObject({
+      error: expect.stringContaining("Tool blocked by security guard") as unknown as string,
+      code: "TOOL_EXECUTION_ERROR",
+    });
+
+    // The second model call saw the blocked tool_result in its transcript
+    // — i.e. the tool result made it into the next model input.
+    const secondRequest = modelCallRequests[1];
+    const secondMessages = (secondRequest?.messages ?? []) as readonly {
+      readonly senderId: string;
+      readonly content: readonly { readonly kind: string; readonly text?: string }[];
+    }[];
+    const toolMsg = secondMessages.find((m) => m.senderId === "tool");
+    expect(toolMsg).toBeDefined();
+
+    // Turn ends with a real assistant text reply, not silent failure.
+    const textDelta = events.find(
+      (e) =>
+        e.kind === "text_delta" && (e as { readonly delta: string }).delta.includes("can't run"),
+    );
+    expect(textDelta).toBeDefined();
+  });
+
   test("usage metrics accumulate across turns", async () => {
     const handlers = createMockHandlers({
       modelStreams: [createToolCallStream("tool1", "tc-1", '{"a":1}'), createTextStream("final")],

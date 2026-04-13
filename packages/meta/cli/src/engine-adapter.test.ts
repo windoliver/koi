@@ -309,3 +309,69 @@ describe("createTranscriptAdapter — AbortSignal handling", () => {
     expect(transcript).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1742: silent-termination fallback — synthetic text_delta on non-completed
+// ---------------------------------------------------------------------------
+
+describe("createTranscriptAdapter — #1742 silent-termination fallback", () => {
+  let transcript: InboundMessage[];
+
+  beforeEach(() => {
+    transcript = [];
+  });
+
+  test("injects explanatory text_delta before done when turn errors with no text", async () => {
+    const collected = await collectEvents(transcript, [], "error", "");
+
+    // Must contain a text_delta ordered before the done event
+    const doneIdx = collected.findIndex((e) => e.kind === "done");
+    const deltaBeforeDone = collected
+      .slice(0, doneIdx)
+      .filter((e) => e.kind === "text_delta") as Array<{
+      readonly kind: "text_delta";
+      readonly delta: string;
+    }>;
+    expect(deltaBeforeDone.length).toBeGreaterThan(0);
+    // Error-case delta must be user-visible and mention the failure
+    expect(deltaBeforeDone.map((d) => d.delta).join("")).toMatch(/Turn failed/i);
+  });
+
+  test("injects explanation for max_turns termination with no text", async () => {
+    const collected = await collectEvents(transcript, [], "max_turns", "");
+    const doneIdx = collected.findIndex((e) => e.kind === "done");
+    const deltaBeforeDone = collected
+      .slice(0, doneIdx)
+      .filter((e) => e.kind === "text_delta") as Array<{
+      readonly kind: "text_delta";
+      readonly delta: string;
+    }>;
+    expect(deltaBeforeDone.map((d) => d.delta).join("")).toMatch(/max-turns/i);
+  });
+
+  test("does NOT inject synthetic delta when assistant text was already streamed", async () => {
+    // If the model streamed any text_delta before the non-completed done,
+    // the user already sees something — no synthetic fallback needed.
+    const collected = await collectEvents(
+      transcript,
+      [{ kind: "text_delta", delta: "partial reply" } as EngineEvent],
+      "error",
+      "",
+    );
+    const deltas = collected.filter((e) => e.kind === "text_delta") as Array<{
+      readonly kind: "text_delta";
+      readonly delta: string;
+    }>;
+    // Only the real streamed delta — no "[Turn failed]" synthetic addition.
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0]?.delta).toBe("partial reply");
+  });
+
+  test("does NOT inject synthetic delta on stopReason completed", async () => {
+    const collected = await collectEvents(transcript, [], "completed", "real reply");
+    const deltas = collected.filter((e) => e.kind === "text_delta");
+    // No synthetic fallback on the happy path; the runTurn mock doesn't emit
+    // text_delta itself (the reply is in done.output.content), so we expect 0.
+    expect(deltas).toHaveLength(0);
+  });
+});
