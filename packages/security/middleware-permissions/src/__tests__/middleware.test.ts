@@ -1706,46 +1706,15 @@ describe("createPermissionsMiddleware", () => {
   });
 
   // -------------------------------------------------------------------------
-  // policyMetadataOf — ephemeral fields stripped from policy/cache identity
-  // (#1759 review round). Repeated identical asks must coalesce/cache even
-  // when the turn-runner threads a per-call `metadata.callId` for the
-  // TUI-side timer reset.
+  // metadata.callId — visible to backend policy queries, stripped from
+  // cache/dedup keys. Repeated identical asks must coalesce in the
+  // approval cache even when the turn-runner threads a per-call
+  // `metadata.callId` for the TUI-side timer reset, but custom backends
+  // that look at `_request.callId` MUST keep seeing it. (#1759 review
+  // rounds 4 + 5)
   // -------------------------------------------------------------------------
-  describe("wrapToolCall — metadata.callId stripped from policy identity", () => {
-    test("backend sees identical query for repeated calls with different callIds", async () => {
-      const seenContexts: Array<JsonObject | undefined> = [];
-      const mw = createPermissionsMiddleware({
-        backend: {
-          check: (query: PermissionQuery) => {
-            seenContexts.push(query.context);
-            return { effect: "allow" };
-          },
-        },
-      });
-      const ctx = makeTurnContext();
-      const reqA: ToolRequest = {
-        toolId: "Bash",
-        input: { command: "echo a" },
-        metadata: { callId: "call-aaa" },
-      };
-      const reqB: ToolRequest = {
-        toolId: "Bash",
-        input: { command: "echo a" },
-        metadata: { callId: "call-bbb" },
-      };
-      await mw.wrapToolCall?.(ctx, reqA, noopToolHandler);
-      await mw.wrapToolCall?.(ctx, reqB, noopToolHandler);
-      expect(seenContexts).toHaveLength(2);
-      // Both calls must have produced an identical policy context — i.e.
-      // `_request` must be either undefined or NOT contain the callId.
-      const ctxAStr = JSON.stringify(seenContexts[0] ?? null);
-      const ctxBStr = JSON.stringify(seenContexts[1] ?? null);
-      expect(ctxAStr).toBe(ctxBStr);
-      expect(ctxAStr).not.toContain("call-aaa");
-      expect(ctxBStr).not.toContain("call-bbb");
-    });
-
-    test("non-callId metadata still flows into policy context", async () => {
+  describe("wrapToolCall — callId visible to backend, stripped from cache", () => {
+    test("backend sees full request.metadata including callId", async () => {
       const seenContexts: Array<JsonObject | undefined> = [];
       const mw = createPermissionsMiddleware({
         backend: {
@@ -1764,9 +1733,42 @@ describe("createPermissionsMiddleware", () => {
       await mw.wrapToolCall?.(ctx, req, noopToolHandler);
       expect(seenContexts).toHaveLength(1);
       const ctxStr = JSON.stringify(seenContexts[0] ?? null);
+      // Backend MUST see both fields — callId must NOT be silently
+      // stripped from the policy query (round-5 review fix).
       expect(ctxStr).toContain("origin");
       expect(ctxStr).toContain("agent-foo");
-      expect(ctxStr).not.toContain("call-xyz");
+      expect(ctxStr).toContain("callId");
+      expect(ctxStr).toContain("call-xyz");
+    });
+
+    test("approval cache reuses prior decision for repeated input even with different callId", async () => {
+      // Use askAll backend so the approval flow + cache path runs.
+      let approvalCount = 0;
+      const approvalHandler = async (_req: ApprovalRequest): Promise<ApprovalDecision> => {
+        approvalCount++;
+        return { kind: "allow" };
+      };
+      const mw = createPermissionsMiddleware({
+        backend: askAll(),
+        approvalCache: true,
+      });
+      const ctx = makeTurnContext({ requestApproval: approvalHandler });
+      const reqA: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-aaa" },
+      };
+      const reqB: ToolRequest = {
+        toolId: "Bash",
+        input: { command: "echo a" },
+        metadata: { callId: "call-bbb" },
+      };
+      await mw.wrapToolCall?.(ctx, reqA, noopToolHandler);
+      await mw.wrapToolCall?.(ctx, reqB, noopToolHandler);
+      // First call goes through the approval handler; second hits the
+      // cache because cacheMeta strips callId. Without the strip, each
+      // call would be a fresh cache entry and approvalCount would be 2.
+      expect(approvalCount).toBe(1);
     });
 
     test("approval handler still receives metadata.callId for bridge dispatch", async () => {

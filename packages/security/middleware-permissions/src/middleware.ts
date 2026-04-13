@@ -1133,11 +1133,13 @@ export function createPermissionsMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
-      // Strip ephemeral fields (callId) from the metadata used for policy
-      // evaluation so identical asks still share one cache/dedup identity.
-      // (#1759 review round)
-      const policyMeta = policyMetadataOf(request.metadata);
-      const query = queryForTool(ctx, request.toolId, policyMeta);
+      // Backend policy queries see the FULL request.metadata — including
+      // any callId — so custom backends keep their existing
+      // _request.callId visibility. The stripped form is reserved for
+      // approval cache + in-flight dedup keys, where per-invocation
+      // entropy would defeat coalescing. (#1759 review round 5)
+      const cacheMeta = policyMetadataOf(request.metadata);
+      const query = queryForTool(ctx, request.toolId, request.metadata);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;
@@ -1228,9 +1230,11 @@ export function createPermissionsMiddleware(
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
   ): Promise<ToolResponse> {
-    // Strip ephemeral fields (callId) from metadata before using it as a
-    // cache / dedup key — see policyMetadataOf doc + #1759 review round.
-    const policyMeta = policyMetadataOf(request.metadata);
+    // Strip ephemeral fields (callId) from metadata for cache / dedup key
+    // construction. The full unmodified metadata still flows into the
+    // backend policy query upstream — see policyMetadataOf doc and #1759
+    // review round 5.
+    const cacheMeta = policyMetadataOf(request.metadata);
     const approvalHandler: ApprovalHandler | undefined = ctx.requestApproval;
 
     if (approvalHandler === undefined) {
@@ -1333,7 +1337,7 @@ export function createPermissionsMiddleware(
         request.toolId,
         request.input,
         ctxStr,
-        policyMeta,
+        cacheMeta,
         decision.reason,
       );
 
@@ -1356,7 +1360,7 @@ export function createPermissionsMiddleware(
       request.toolId,
       request.input,
       dedupCtx,
-      policyMeta,
+      cacheMeta,
       decision.reason,
     );
 
@@ -1656,7 +1660,7 @@ export function createPermissionsMiddleware(
           request.toolId,
           request.input,
           ctxStr,
-          policyMeta,
+          cacheMeta,
           decision.reason,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
