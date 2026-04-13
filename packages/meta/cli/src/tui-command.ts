@@ -698,7 +698,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — replaced on each reset
   let resetBarrier: Promise<void> = Promise.resolve();
 
+  // Tracks whether the user has issued `agent:clear` or `session:new`
+  // since the runtime was assembled. The checkpoint package keeps its
+  // snapshot chain keyed on `runtime.sessionId` and has no public API
+  // for pruning the chain, so once a chain exists `/rewind` can still
+  // walk back into pre-clear snapshots and restore workspace state
+  // that predates the clear boundary — a privacy/context violation.
+  // Refusing `/rewind` once the flag is set is the minimal correct
+  // fence until the checkpoint API grows a `clear(sessionId)` method.
+  // let: justified — set once on first clear, never unset
+  let hasClearedSinceAssembly = false;
+
   const resetConversation = (): void => {
+    // Mark the session as cleared so `/rewind` refuses to walk back
+    // across the boundary — see `hasClearedSinceAssembly` declaration
+    // for the full rationale.
+    hasClearedSinceAssembly = true;
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
@@ -930,6 +945,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // Refuse rewind once `agent:clear` / `session:new` has
+            // rotated the session. The checkpoint chain is still
+            // physically reachable via runtime.sessionId, so a rewind
+            // would restore workspace state from before the clear —
+            // which the user explicitly asked us to drop. This is the
+            // fence the checkpoint package cannot currently enforce
+            // itself; see `hasClearedSinceAssembly` above.
+            if (hasClearedSinceAssembly) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_ACROSS_CLEAR_BOUNDARY",
+                message:
+                  "Rewind is disabled after /clear or /new — the rewind chain " +
+                  "would walk back across the cleared boundary and restore " +
+                  "file state the clear was meant to drop. Start a fresh " +
+                  "koi tui session to rewind earlier work.",
+              });
+              return;
+            }
 
             // Parse the rewind count: empty string defaults to 1, otherwise
             // require a positive integer. Reject anything else loudly so the
@@ -1100,6 +1134,31 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (runtimeHandle !== null) {
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
+            }
+          }
+          // The engine's session-transcript middleware continues routing
+          // writes to `tuiSessionId` (baked in as createKoi's sessionId
+          // override at runtime assembly and unchangeable mid-session).
+          // Copy the picker-selected transcript entries into the live
+          // tuiSessionId file — resetConversation() just truncated it —
+          // so new turns taken from this point append to a file that
+          // already contains the selected history. Future `--resume
+          // <tuiSessionId>` then sees the full conversation; the
+          // original `selectedId` file is left untouched as a read-only
+          // archive. Without this copy, the live file would drift from
+          // what the UI shows and the post-quit resume hint would
+          // point at a file missing the picker-loaded turns.
+          const rawLoad = await jsonlTranscript.load(sessionId(selectedId));
+          if (rawLoad.ok && rawLoad.value.entries.length > 0) {
+            const appendResult = await jsonlTranscript.append(tuiSessionId, rawLoad.value.entries);
+            if (!appendResult.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_COPY_FAILED",
+                message:
+                  "Loaded session into memory but failed to persist it under the live session id — " +
+                  `future resumes of ${String(tuiSessionId).slice(0, 8)} will only see post-pick turns. Cause: ${appendResult.error.message}`,
+              });
             }
           }
           // Replay messages into the TUI store so the user sees the prior
