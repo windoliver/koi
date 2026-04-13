@@ -1395,20 +1395,56 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       //    The new session has nothing in the map yet.
       permMw.clearSessionApprovals(priorSessionId);
 
-      // 7. Rotate task board — AWAITED so new-session submits can't hit the old board.
-      const newBoard = await createManagedTaskBoard({
-        store: createMemoryTaskBoardStore(),
-        resultsDir: TASK_RESULTS_DIR,
-      });
-      boardRef.current = newBoard;
+      // ─── ATOMIC COMMIT POINT ──────────────────────────────────────
+      // From here on, cycleSession() has already rotated the engine
+      // session AND the synchronous in-process cleanup (steps 3-6) has
+      // run. The reset is committed as far as the conversation context
+      // is concerned: the next run() will attach to a fresh session
+      // with no stale approvals, memory, cwd, or signal. Steps 7-8
+      // below are best-effort housekeeping (board rotation, trajectory
+      // prune). Their failures are non-fatal — they would only leak
+      // telemetry / leftover task records, NOT bleed prior-session
+      // context into the new conversation. We catch + log so the reset
+      // still resolves successfully and the TUI commits the visible
+      // clear. (#1742 loop-2 round 6 — atomic-after-cycle invariant.)
 
-      // 8. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      // 7. Rotate task board — best-effort. On failure, retain the old
+      //    board reference (its sessions point at the prior session,
+      //    which is now closed, so new submits will get a clean
+      //    rejection from the engine instead of mixing contexts).
+      try {
+        const newBoard = await createManagedTaskBoard({
+          store: createMemoryTaskBoardStore(),
+          resultsDir: TASK_RESULTS_DIR,
+        });
+        boardRef.current = newBoard;
+      } catch (boardErr) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[koi tui] task board rotation after /clear failed: ${
+            boardErr instanceof Error ? boardErr.message : String(boardErr)
+          }. Reset committed; old board retained.`,
+        );
+      }
+
+      // 8. Clear trajectory store — best-effort. On failure, old
+      //    trajectory entries remain visible in /trajectory until next
+      //    process restart but cannot bleed into model context.
       //
       // Skill descriptor listing and system prompt skill snapshot are still
       // static for the process lifetime: they were captured before createKoi
       // assembly, not stored as session-scoped middleware state. A full TUI
       // restart is still required to pick up new skill files.
-      await trajectoryStore.prune(Date.now() + 86_400_000);
+      try {
+        await trajectoryStore.prune(Date.now() + 86_400_000);
+      } catch (pruneErr) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[koi tui] trajectory prune after /clear failed: ${
+            pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
+          }. Reset committed; stale trajectory retained.`,
+        );
+      }
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
     shutdownBackgroundTasks: () => {
