@@ -432,6 +432,43 @@ describe("permission bridge — cancelPending", () => {
     expect(local.pendingCount()).toBe(0);
     local.dispose();
   });
+
+  test("cancelPending CLEARS modal (does NOT restore savedModal) — regression #1759 round 8", async () => {
+    // Simulate a session-reset scenario: command palette is open, then a
+    // permission prompt arrives, then user triggers session:new. The
+    // pre-prompt modal must NOT reappear after cancellation — it belongs
+    // to the prior session context.
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: "do" } });
+    expect(store.getState().modal?.kind).toBe("command-palette");
+
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    await new Promise<void>((r) => queueMicrotask(r));
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+
+    // Reset/abort path
+    local.cancelPending("Session reset");
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    // Modal must be cleared. The command palette must NOT be restored.
+    expect(store.getState().modal).toBeNull();
+    local.dispose();
+  });
+
+  test("dispose still restores savedModal (terminal cleanup contract preserved)", async () => {
+    // Confirms cancelPending and dispose have distinct modal semantics.
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: "do" } });
+
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    local.dispose();
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    // Dispose restores the pre-prompt modal — different from cancelPending.
+    expect(store.getState().modal?.kind).toBe("command-palette");
+  });
 });
 
 // ---------------------------------------------------------------------------

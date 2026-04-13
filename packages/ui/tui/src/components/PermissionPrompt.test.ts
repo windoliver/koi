@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatInputPreview, processPermissionKey, truncateReason } from "./PermissionPrompt.js";
+import { formatInputPreview, normalizeReason, processPermissionKey } from "./PermissionPrompt.js";
 
 // ---------------------------------------------------------------------------
 // processPermissionKey
@@ -68,30 +68,34 @@ describe("formatInputPreview", () => {
 });
 
 // ---------------------------------------------------------------------------
-// truncateReason — keeps the safety-relevant reason visible at the approval
-// boundary while bounding length so it doesn't crowd out the args block.
-// (#1759 review balance)
+// normalizeReason — preserves the FULL reason text at the approval boundary
+// while collapsing whitespace so the prompt UI can render it cleanly. No
+// truncation: long reasons must remain visible because the distinguishing
+// detail can be at the end of the string. (#1759 review round 8)
 // ---------------------------------------------------------------------------
 
-describe("truncateReason", () => {
+describe("normalizeReason", () => {
   test("returns short reasons unchanged", () => {
-    expect(truncateReason("No matching permission rule")).toBe("No matching permission rule");
+    expect(normalizeReason("No matching permission rule")).toBe("No matching permission rule");
   });
 
   test("collapses internal whitespace", () => {
-    expect(truncateReason("AST  walker\n  failed")).toBe("AST walker failed");
+    expect(normalizeReason("AST  walker\n  failed")).toBe("AST walker failed");
   });
 
-  test("truncates to maxLength with ellipsis", () => {
+  test("preserves the full reason text — does NOT truncate", () => {
     const long = "x".repeat(500);
-    const out = truncateReason(long, 50);
-    expect(out.length).toBe(50);
-    expect(out.endsWith("…")).toBe(true);
+    const out = normalizeReason(long);
+    expect(out.length).toBe(500);
+    expect(out).toBe(long);
   });
 
-  test("default maxLength is 120 chars", () => {
-    const long = "y".repeat(500);
-    const out = truncateReason(long);
-    expect(out.length).toBe(120);
+  test("preserves a long policy reason verbatim including the trailing detail", () => {
+    const reason =
+      "AST walker cannot safely analyse this command (declaration_command): unsupported statement: declare -i x=10";
+    const out = normalizeReason(reason);
+    // The distinguishing trailing detail must survive normalization.
+    expect(out).toContain("declare -i x=10");
+    expect(out.length).toBe(reason.length);
   });
 });

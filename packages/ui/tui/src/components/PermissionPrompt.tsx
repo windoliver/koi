@@ -79,17 +79,15 @@ export function formatInputPreview(input: Record<string, unknown>, maxLength = 2
 }
 
 /**
- * Compact, single-line truncation of the permission reason string. Kept
- * visible at the approval boundary as a safety signal but rendered tightly
- * so it doesn't crowd out the args block (#1759 review balance: original
- * removal hid load-bearing context, original two-line layout dominated the
- * prompt). 120 chars matches typical terminal half-width while still
- * carrying enough text for an operator to recognize the policy reason.
+ * Normalize whitespace in a permission reason string for display: collapse
+ * runs of whitespace to single spaces and trim leading/trailing whitespace.
+ * Does NOT truncate — the full text must be visible at the approval
+ * boundary (the distinguishing detail can be near the end of the string).
+ * The component's `<text>` element is responsible for line-wrapping.
+ * (#1759 review round 8)
  */
-export function truncateReason(reason: string, maxLength = 120): string {
-  const normalized = reason.replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) return normalized;
-  return normalized.slice(0, maxLength - 1) + "…";
+export function normalizeReason(reason: string): string {
+  return reason.replace(/\s+/g, " ").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -156,13 +154,16 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
         <text fg={COLORS.textMuted}>{`Arguments:\n${inputPreview()}`}</text>
       </box>
 
-      {/* Compact reason chip — kept visible at the approval boundary as a
-          safety signal (round-3 review of #1759). Rendered single-line in
-          dim text without a prominent "Reason:" label so it doesn't
-          dominate the prompt the way the original two-line layout did. */}
+      {/* Reason — kept visible at the approval boundary as a safety
+          signal (round-3 + round-8 reviews of #1759). Rendered in dim
+          text without a prominent "Reason:" label so it doesn't dominate
+          the prompt the way the original two-line layout did, but the
+          full text is preserved (no truncation) and wraps naturally so
+          the user can see the distinguishing detail at the END of long
+          policy explanations (path / rule / host that triggered the ask). */}
       <Show when={props.prompt.reason !== undefined && props.prompt.reason !== ""}>
         <box marginTop={1}>
-          <text fg={COLORS.textMuted}>{`↳ ${truncateReason(props.prompt.reason)}`}</text>
+          <text fg={COLORS.textMuted}>{`↳ ${normalizeReason(props.prompt.reason)}`}</text>
         </box>
       </Show>
 

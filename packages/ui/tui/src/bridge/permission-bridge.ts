@@ -317,18 +317,14 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
   }
 
   /**
-   * Deny every pending approval and dismiss the modal without tearing the
-   * bridge down. Use this for transient aborts where the bridge must keep
-   * accepting future prompts: per-turn Ctrl+C, `agent:clear`, `session:new`,
-   * session resume, etc. Distinct from `dispose()` (which is for terminal
-   * shutdown — the bridge handle should not be reused after that).
-   *
-   * Without this hook, a 60-minute interactive approval timeout combined
-   * with a session reset would leave the user staring at a stale modal for
-   * up to an hour after they tried to recover from a wedged turn. (#1759
-   * review round 2)
+   * Internal: deny every pending approval, clear the queue, and either
+   * restore the prior modal (`restoreSavedModal: true` — used by
+   * `dispose()` for terminal shutdown / unit-test teardown) or clear it
+   * outright (`restoreSavedModal: false` — used by `cancelPending()` for
+   * reset/abort flows where leaking a stale overlay into the new session
+   * would be wrong).
    */
-  function cancelPending(reason: string): void {
+  function denyAllPending(reason: string, restoreSavedModal: boolean): void {
     for (const entry of pending.values()) {
       if (entry.timer !== null) {
         clearTimeout(entry.timer);
@@ -340,13 +336,41 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
     }
     pending.clear();
     queue.length = 0;
-    // Restore the modal that was active before the bridge took over (or null)
-    store.dispatch({ kind: "set_modal", modal: savedModal });
+    store.dispatch({ kind: "set_modal", modal: restoreSavedModal ? savedModal : null });
     savedModal = null;
   }
 
+  /**
+   * Deny every pending approval and CLEAR the modal (does not restore
+   * `savedModal`) without tearing the bridge down. Use this for
+   * transient aborts where the bridge must keep accepting future
+   * prompts: per-turn Ctrl+C, `agent:clear`, `session:new`, session
+   * resume, etc.
+   *
+   * Modal handling: cancellation explicitly clears the modal to `null`
+   * rather than restoring `savedModal` (the overlay that was open when
+   * the bridge first took over, e.g. command palette, session picker).
+   * Restoring a pre-prompt overlay across a reset would leak stale UI
+   * state into a freshly cleared session and could steer the next user
+   * action at the wrong context. (#1759 review round 8)
+   *
+   * Without this hook, a 60-minute interactive approval timeout combined
+   * with a session reset would leave the user staring at a stale modal
+   * for up to an hour after they tried to recover from a wedged turn.
+   */
+  function cancelPending(reason: string): void {
+    denyAllPending(reason, /* restoreSavedModal */ false);
+  }
+
+  /**
+   * Terminal cleanup. Denies every pending approval and restores the
+   * modal that was active before the bridge took over (or null). The
+   * restore behavior exists so a transient bridge teardown — e.g.
+   * unit-test cleanup, hot reload — does not leave the UI stuck on a
+   * dispatched permission overlay. Real shutdowns don't care.
+   */
   function dispose(): void {
-    cancelPending("Permission bridge disposed");
+    denyAllPending("Permission bridge disposed", /* restoreSavedModal */ true);
   }
 
   return {
