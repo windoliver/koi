@@ -164,7 +164,24 @@ async function loadSessionList(
     files
       .filter((f) => f.endsWith(".jsonl"))
       .map(async (file): Promise<SessionSummary | null> => {
-        const id = file.slice(0, -".jsonl".length);
+        // Filenames on disk are `encodeURIComponent(sessionId).jsonl`
+        // so composite ids like `agent:<agentId>:<uuid>` live as
+        // `agent%3A<agentId>%3A<uuid>.jsonl`. Decode the basename
+        // back to the raw id before branding + loading — otherwise
+        // `transcript.load` re-encodes and looks up a file that
+        // does not exist (e.g. `agent%253A...` instead of
+        // `agent%3A...`), making legacy pre-branch transcripts
+        // invisible to the picker and unresumable via the list.
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(file.slice(0, -".jsonl".length));
+        } catch {
+          // Malformed percent-encoding — skip the file rather than
+          // crash the picker. The user can still pass the raw
+          // basename via `koi tui --resume` if they need to.
+          return null;
+        }
+        const id = decoded;
         const result = await transcript.load(sessionId(id));
         if (!result.ok || result.value.entries.length === 0) return null;
 
@@ -1351,6 +1368,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       //      memory and hydrate it from the validated target. The
       //      on-disk `<tuiSessionId>.jsonl` is intentionally left
       //      untouched — see the comment in phase 3 for rationale.
+      //
+      // Fast path: selecting the session the runtime is ALREADY
+      // bound to is a no-op refresh. Without this guard, the
+      // picker happily "switches" to the current session and
+      // latches `hasPickerLoadSinceAssembly`, permanently disabling
+      // submit / rewind / clear / new / fork for the rest of the
+      // process — a user-visible lockup triggered by a benign
+      // action. Just close the picker and leave everything alone.
+      if (selectedId === String(tuiSessionId)) {
+        store.dispatch({ kind: "set_view", view: "conversation" });
+        return;
+      }
       store.dispatch({ kind: "set_view", view: "conversation" });
 
       void (async (): Promise<void> => {
