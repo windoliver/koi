@@ -313,6 +313,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
   // --- 6. Async generator: produces EngineEvents for a single run() invocation ---
   async function* streamEvents(input: EngineInput): AsyncGenerator<EngineEvent> {
+    // #1742: initialize the settle promise here, NOT in run(). The
+    // generator only enters this body once the consumer calls next(),
+    // so an abandoned async iterable never creates the promise — and
+    // cycleSession()/dispose() correctly skip the wait because the
+    // resolver is undefined.
+    currentRunSettled = new Promise<void>((resolve) => {
+      currentRunResolveSettled = resolve;
+    });
     const sessionStartedAt = Date.now();
     // let justified: mutable turn counter incremented on turn_end
     let currentTurnIndex = 0;
@@ -448,14 +456,28 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // runtime-scoped ctx because dispose may happen long after any run.
       agent.transition({ kind: "start" });
       if (!lifecycleSessionStarted) {
-        lifecycleSessionStarted = true;
         // #1742: capture this run's sessionCtx so the matching
         // onSessionEnd (fired from cycleSession or dispose) reuses the
         // same identity — particularly the per-run runId — to keep
         // start/end record pairing intact for middleware-report and
         // friends. Cleared on cycleSession() re-arm.
-        activeSessionCtx = sessionCtx;
-        await runSessionHooks(allMiddleware, "onSessionStart", sessionCtx);
+        //
+        // Round 9 review: only mark the session as started AFTER the
+        // hooks succeed. Setting the flag before the await meant a
+        // throwing onSessionStart left the session permanently latched
+        // as "started" — subsequent retries skipped initialization and
+        // dispose() / cycleSession() fired onSessionEnd against a
+        // never-actually-started session. Roll back on throw so retries
+        // get a clean attempt.
+        const candidateCtx = sessionCtx;
+        try {
+          await runSessionHooks(allMiddleware, "onSessionStart", candidateCtx);
+          lifecycleSessionStarted = true;
+          activeSessionCtx = candidateCtx;
+        } catch (sessionStartError: unknown) {
+          // Leave lifecycleSessionStarted false / activeSessionCtx undef.
+          throw sessionStartError;
+        }
       }
 
       // #1742: per-run iteration budget reset. Opt-in via
@@ -1331,13 +1353,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
       running = true;
-      // #1742: track when this run's finally block has fully settled so
-      // cycleSession can wait for an aborted run to fully unwind before
-      // cycling middleware lifecycle. resolveSettled is called from the
-      // finally block in streamEvents.
-      currentRunSettled = new Promise<void>((resolve) => {
-        currentRunResolveSettled = resolve;
-      });
+      // #1742: currentRunSettled / currentRunResolveSettled are now
+      // initialized INSIDE streamEvents on its first iteration, not
+      // here. Round 9 review: setting them in run() synchronously meant
+      // an abandoned async iterable (caller called run() but never
+      // iterated) left a never-resolving promise behind, so the next
+      // cycleSession() / dispose() spent the full settle timeout
+      // waiting for a run that never started — and falsely poisoned
+      // the runtime.
       return { [Symbol.asyncIterator]: () => streamEvents(input) };
     },
 
@@ -1360,7 +1383,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // into freshly re-armed middleware state. Failing closed here forces
       // hosts to dispose and recreate the runtime when a tool ignores
       // abort.
-      if (running) {
+      // #1742: only wait when a run has actually entered streamEvents
+      // (`currentRunResolveSettled` becomes defined on first iteration).
+      // `running === true` alone doesn't imply the generator has begun:
+      // a caller can call run() and abandon the async iterable, in
+      // which case `running` is true but the generator's finally will
+      // never fire — waiting would falsely time out and poison the
+      // runtime.
+      if (running && currentRunResolveSettled !== undefined) {
         const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
           throw KoiRuntimeError.from(
@@ -1428,7 +1458,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // poisoned runtime warning makes the situation visible.
       // Caller is responsible for first aborting the run signal so
       // the stream actually terminates promptly.
-      if (running) {
+      // Same guard as cycleSession: only wait if the generator has
+      // actually entered streamEvents (currentRunResolveSettled set).
+      if (running && currentRunResolveSettled !== undefined) {
         const result = await awaitSettleOrTimeout();
         if (result === "timeout") {
           console.warn(

@@ -553,6 +553,82 @@ describe("createKoi middleware hooks", () => {
     await runtime.dispose();
   }, 12_000);
 
+  test("#1742: failing onSessionStart leaves session unstarted so retry can re-attempt the hook", async () => {
+    // Round 9 regression: lifecycleSessionStarted was being set BEFORE
+    // the hook awaited, so a throwing onSessionStart left the session
+    // permanently latched as "started". The retry skipped onSessionStart
+    // entirely, and dispose/cycleSession would later fire onSessionEnd
+    // for a never-started session.
+    // let justified: mutable counter for the throwing-then-succeeding hook
+    let attempt = 0;
+    const onSessionStart = mock(() => {
+      attempt += 1;
+      if (attempt === 1) {
+        throw new Error("first attempt fails");
+      }
+      return Promise.resolve();
+    });
+    const onSessionEnd = mock(() => Promise.resolve());
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      middleware: [
+        {
+          name: "flaky-start",
+          describeCapabilities: () => undefined,
+          onSessionStart,
+          onSessionEnd,
+        },
+      ],
+      loopDetection: false,
+    });
+
+    // First run: hook throws → run() rejects.
+    await expect(collectEvents(runtime.run({ kind: "text", text: "first" }))).rejects.toThrow(
+      /first attempt fails/,
+    );
+    expect(onSessionStart).toHaveBeenCalledTimes(1);
+
+    // Retry: lifecycleSessionStarted MUST still be false so onSessionStart
+    // gets a second attempt. Without the rollback, the retry would silently
+    // skip onSessionStart and the session would never be initialized.
+    await collectEvents(runtime.run({ kind: "text", text: "second" }));
+    expect(onSessionStart).toHaveBeenCalledTimes(2);
+
+    // dispose() fires onSessionEnd for the SUCCESSFUL session — and only
+    // for that one. The failed first attempt must not have left a phantom
+    // session for which onSessionEnd would also fire.
+    await runtime.dispose();
+    expect(onSessionEnd).toHaveBeenCalledTimes(1);
+  });
+
+  test("#1742: dispose/cycleSession do not falsely poison runtime when run() iterable is abandoned", async () => {
+    // Round 9 regression: run() used to set `running = true` AND create
+    // currentRunSettled synchronously, before the generator had a chance
+    // to start. If a caller called run() but never iterated the result,
+    // the generator's finally never fired — and a later dispose() /
+    // cycleSession() spent the full settle timeout waiting for a run
+    // that never started, then poisoned the runtime.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: mockAdapter([{ kind: "done", output: doneOutput() }]),
+      loopDetection: false,
+    });
+
+    // Create the iterable but never iterate it. This is a benign lazy
+    // pattern — the consumer can choose not to start streaming.
+    const _abandoned = runtime.run({ kind: "text", text: "abandoned" });
+    void _abandoned; // explicitly unused
+
+    // dispose() must complete promptly — not after waiting LIFECYCLE_SETTLE_TIMEOUT_MS.
+    const start = Date.now();
+    await runtime.dispose();
+    const elapsed = Date.now() - start;
+    // Generous bound: must NOT have waited the full 5s settle timeout.
+    expect(elapsed).toBeLessThan(2000);
+  }, 8_000);
+
   test("#1742: cycleSession rotates runtime.sessionId so per-session state is isolated", async () => {
     const runtime = await createKoi({
       manifest: testManifest(),
