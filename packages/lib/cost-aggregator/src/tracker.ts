@@ -185,10 +185,18 @@ function updateAgg(
  */
 export function createCostAggregator(config?: CostAggregatorConfig): CostAggregator {
   const sessions = new Map<string, SessionAgg>();
-  const ringBuffer: RingBuffer<CostEntry> = createRingBuffer(
-    config?.ringBufferCapacity ?? DEFAULT_CAPACITY,
-  );
+  const bufferCapacity = config?.ringBufferCapacity ?? DEFAULT_CAPACITY;
+  // Per-session ring buffers so entries(sessionId) returns only that session's data.
+  const sessionBuffers = new Map<string, RingBuffer<CostEntry>>();
   const thresholdTracker = config?.thresholdTracker;
+
+  function getOrCreateBuffer(sessionId: string): RingBuffer<CostEntry> {
+    const existing = sessionBuffers.get(sessionId);
+    if (existing !== undefined) return existing;
+    const fresh = createRingBuffer<CostEntry>(bufferCapacity);
+    sessionBuffers.set(sessionId, fresh);
+    return fresh;
+  }
 
   return {
     record(sessionId: string, entry: CostEntry): void {
@@ -254,8 +262,8 @@ export function createCostAggregator(config?: CostAggregatorConfig): CostAggrega
         }
       }
 
-      // Append to ring buffer
-      ringBuffer.push(entry);
+      // Append to per-session ring buffer
+      getOrCreateBuffer(sessionId).push(entry);
 
       // Check thresholds
       thresholdTracker?.check(sessionId, agg.totalCostUsd);
@@ -277,15 +285,20 @@ export function createCostAggregator(config?: CostAggregatorConfig): CostAggrega
     },
 
     entries(sessionId?: string): readonly CostEntry[] {
-      const all = ringBuffer.toArray();
-      if (sessionId === undefined) return all;
-      // Ring buffer doesn't track session — filter client-side.
-      // For most use cases the full buffer is returned (JSON export).
-      return all;
+      if (sessionId === undefined) {
+        // Return all entries across all sessions
+        const all: CostEntry[] = [];
+        for (const buf of sessionBuffers.values()) {
+          all.push(...buf.toArray());
+        }
+        return all;
+      }
+      return sessionBuffers.get(sessionId)?.toArray() ?? [];
     },
 
     clearSession(sessionId: string): void {
       sessions.delete(sessionId);
+      sessionBuffers.delete(sessionId);
       thresholdTracker?.clearSession(sessionId);
     },
   };

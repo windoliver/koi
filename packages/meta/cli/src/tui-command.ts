@@ -1673,14 +1673,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const deltaInput = cmAfter.inputTokens - inputBefore;
         const deltaOutput = cmAfter.outputTokens - outputBefore;
         if (deltaInput > 0 || deltaOutput > 0) {
-          const deltaCost =
-            cmAfter.costUsd !== null && costBefore !== null
-              ? cmAfter.costUsd - costBefore
-              : undefined;
+          // Compute per-turn cost delta from engine-reported costUsd.
+          // Handle null→number transition (first turn): costBefore is null,
+          // costAfter is the full cumulative — use it directly as the delta.
+          let deltaCost: number | undefined;
+          if (cmAfter.costUsd !== null) {
+            deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
+            if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
+          }
           costBridge.recordEngineDone({
             inputTokens: deltaInput,
             outputTokens: deltaOutput,
-            costUsd: deltaCost !== undefined && deltaCost > 0 ? deltaCost : undefined,
+            costUsd: deltaCost,
           });
         }
 

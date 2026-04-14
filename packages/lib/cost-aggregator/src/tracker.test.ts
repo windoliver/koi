@@ -231,7 +231,7 @@ describe("createCostAggregator", () => {
       agg.record("s1", makeEntry({ costUsd: 0.02, timestamp: 2 }));
       agg.record("s1", makeEntry({ costUsd: 0.03, timestamp: 3 }));
 
-      const entries = agg.entries();
+      const entries = agg.entries("s1");
       expect(entries).toHaveLength(3);
       expect(entries[0]?.costUsd).toBe(0.01);
       expect(entries[2]?.costUsd).toBe(0.03);
@@ -243,10 +243,39 @@ describe("createCostAggregator", () => {
       agg.record("s1", makeEntry({ costUsd: 0.02 }));
       agg.record("s1", makeEntry({ costUsd: 0.03 }));
 
-      const entries = agg.entries();
+      const entries = agg.entries("s1");
       expect(entries).toHaveLength(2);
       expect(entries[0]?.costUsd).toBe(0.02);
       expect(entries[1]?.costUsd).toBe(0.03);
+    });
+
+    test("entries(sessionId) returns only that session's data", () => {
+      const agg = createCostAggregator();
+      agg.record("s1", makeEntry({ costUsd: 0.01 }));
+      agg.record("s2", makeEntry({ costUsd: 0.05 }));
+      agg.record("s1", makeEntry({ costUsd: 0.02 }));
+
+      expect(agg.entries("s1")).toHaveLength(2);
+      expect(agg.entries("s2")).toHaveLength(1);
+      expect(agg.entries("s2")[0]?.costUsd).toBe(0.05);
+    });
+
+    test("entries() without sessionId returns all sessions", () => {
+      const agg = createCostAggregator();
+      agg.record("s1", makeEntry({ costUsd: 0.01 }));
+      agg.record("s2", makeEntry({ costUsd: 0.05 }));
+
+      expect(agg.entries()).toHaveLength(2);
+    });
+
+    test("clearSession purges entries for that session only", () => {
+      const agg = createCostAggregator();
+      agg.record("s1", makeEntry({ costUsd: 0.01 }));
+      agg.record("s2", makeEntry({ costUsd: 0.05 }));
+      agg.clearSession("s1");
+
+      expect(agg.entries("s1")).toHaveLength(0);
+      expect(agg.entries("s2")).toHaveLength(1);
     });
   });
 

@@ -694,6 +694,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         expandedBodyToolCallIds: new Set(),
         activeSpawns: new Map(),
         retryState: null,
+        // Reset cost dashboard state so new sessions start clean (#1636)
+        costBreakdown: null,
+        tokenRate: null,
       };
 
     case "permission_response": {
