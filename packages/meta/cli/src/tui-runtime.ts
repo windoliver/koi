@@ -988,8 +988,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // --- @koi/tools-web: web_fetch ---
   // HTTPS allowed: the TUI is a developer tool used on trusted networks.
   // Residual TOCTOU SSRF risk documented in WebExecutorConfig.allowHttps.
-  // 60s cache TTL so repeat fetches within a session don't re-hit the network.
-  const webExecutor = createWebExecutor({ allowHttps: true, cacheTtlMs: 60_000 });
+  const webExecutor = createWebExecutor({ allowHttps: true });
   const webProvider = createWebProvider({
     executor: webExecutor,
     policy: DEFAULT_UNSANDBOXED_POLICY,

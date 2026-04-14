@@ -338,8 +338,8 @@ describe("getResultDisplay — web_fetch result", () => {
         finalUrl: "https://example.com",
       }),
     );
-    // Chip order follows RESULT_CHIP_KEYS priority; truncated comes before format
-    expect(r.chips).toEqual(["status=200", "contentType=text/html", "truncated=false"]);
+    // truncated=false is suppressed (quiet falsy chip), format still surfaces
+    expect(r.chips).toEqual(["status=200", "contentType=text/html", "format=markdown"]);
     expect(r.body).toBe("Example Domain");
   });
 
@@ -362,7 +362,7 @@ describe("getResultDisplay — web_fetch result", () => {
     expect(r.chips).toContain("cached=true");
   });
 
-  test("exposes cached=false chip on fresh fetch", () => {
+  test("suppresses cached=false chip on fresh fetch", () => {
     const r = getResultDisplay(
       toolResult({
         status: 200,
@@ -372,7 +372,8 @@ describe("getResultDisplay — web_fetch result", () => {
         cached: false,
       }),
     );
-    expect(r.chips).toContain("cached=false");
+    expect(r.chips).not.toContain("cached=false");
+    expect(r.chips).not.toContain("truncated=false");
   });
 });
 

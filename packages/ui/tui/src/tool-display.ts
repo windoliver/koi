@@ -208,17 +208,20 @@ const RESULT_CHIP_KEYS = [
   "exitCode",
   "status",
   "contentType",
-  "cached",
   "durationMs",
   "bytesWritten",
   "modified",
   "truncated",
+  "cached",
   "timedOut",
   "total",
   "mode",
   "format",
   "code",
 ] as const;
+
+/** Boolean chip keys that are only shown when `true` — a `false` value is noise. */
+const RESULT_QUIET_FALSE_KEYS: ReadonlySet<string> = new Set(["truncated", "cached"]);
 
 /** Keys that are content bodies or metadata — never shown as generic chips. */
 const RESULT_CONSUMED_KEYS = new Set<string>([
@@ -251,6 +254,7 @@ function extractResultChips(obj: Readonly<Record<string, unknown>>): readonly st
     if (chips.length >= MAX_CHIPS) break;
     const value = obj[key];
     if (value === undefined || value === null) continue;
+    if (value === false && RESULT_QUIET_FALSE_KEYS.has(key)) continue;
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       chips.push(`${key}=${String(value)}`);
     }
