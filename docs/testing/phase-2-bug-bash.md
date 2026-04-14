@@ -67,6 +67,17 @@ cat > README.md <<'EOF'
 # Fixture Project
 A small TypeScript project used by the Phase 2 bug bash.
 EOF
+cat > CLAUDE.md <<'EOF'
+# Fixture Project Rules
+
+These rules MUST be surfaced by the rules-loader middleware. Q3 of S1
+verifies injection by asking the agent to name them.
+
+- Always use **Bun**, never npm or yarn.
+- Test runner is **bun:test**.
+- Magic phrase: `pineapple-rhubarb-42` (an unambiguous token so Q3 can
+  assert the rules block was injected, not hallucinated).
+EOF
 mkdir -p src test
 cat > src/math.ts <<'EOF'
 export function add(a: number, b: number): number { return a + b; }
@@ -123,7 +134,7 @@ Each query (Q) is a prompt sent via `tmux send-keys -t "$KOI_SESSION" '<prompt>'
 |---|--------|---------------|-------|---------------|
 | Q1 | `Hello, what can you do?` | none | reset | Text streams incrementally, no tool calls |
 | Q2 | `What runtime are you running on?` | none | same session as Q1 | Mentions Bun/TypeScript from system prompt |
-| Q3 | `What project rules apply to this repo?` | none | same session | Mentions rules from CLAUDE.md (verifies rules-loader MW injection) |
+| Q3 | `What project rules apply to this repo?` | none | same session | Mentions rules from CLAUDE.md — must include the magic phrase `pineapple-rhubarb-42` verbatim to prove rules-loader MW injection (not hallucination) |
 | Q4 | `What did we just talk about?` | none | kill TUI, `start --resume <id> --prompt "..."` | Resumes prior context; same JSONL file grows |
 | Q5 | `What did we just talk about?` | none | kill TUI, relaunch, use TUI session picker | Session picker shows prior session; context coherent |
 
