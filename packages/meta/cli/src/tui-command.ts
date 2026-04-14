@@ -66,7 +66,7 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
-import { createCostBridge } from "./cost-bridge.js";
+import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
@@ -863,7 +863,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let activeController: AbortController | null = null;
 
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
-  const costBridge = createCostBridge({
+  // Async: fetches live pricing from models.dev (5s timeout, disk cached).
+  const costBridge: CostBridge = await createCostBridge({
     store,
     sessionId: tuiSessionId as string,
     modelName,

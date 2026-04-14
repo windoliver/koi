@@ -11,25 +11,36 @@ import { DEFAULT_PRICING, type ModelPricing, resolvePricing } from "./pricing.js
 
 export interface CostCalculatorConfig {
   /**
-   * Custom pricing overrides — merged on top of DEFAULT_PRICING.
-   * Use for private/custom models not in the bundled table.
+   * Custom pricing overrides — highest priority, checked first.
+   * Use for private/custom models not in any registry.
    */
-  readonly pricingOverrides?: Readonly<Record<string, ModelPricing>>;
+  readonly pricingOverrides?: Readonly<Record<string, ModelPricing>> | undefined;
+  /**
+   * Live pricing table from models.dev — checked after overrides, before bundled.
+   * Populated by fetchModelPricing() at startup.
+   */
+  readonly livePricing?: Readonly<Record<string, ModelPricing>> | undefined;
 }
 
 /**
- * Create a cost calculator with bundled LiteLLM pricing + optional overrides.
+ * Create a cost calculator with tiered pricing lookup.
  *
  * Lookup priority:
- *   1. pricingOverrides (exact → date-suffix fallback)
- *   2. DEFAULT_PRICING (exact → date-suffix fallback)
- *   3. Returns 0 for unknown models (no error — missing pricing is not a crash)
+ *   1. pricingOverrides (user config)
+ *   2. livePricing (models.dev, refreshed at startup)
+ *   3. DEFAULT_PRICING (bundled snapshot, always available)
+ *   4. Returns 0 for unknown models (no error — missing pricing is not a crash)
  */
 export function createCostCalculator(config?: CostCalculatorConfig): CostCalculator {
   const overrides = config?.pricingOverrides ?? {};
+  const live = config?.livePricing ?? {};
 
   function resolve(model: string): ModelPricing | undefined {
-    return resolvePricing(model, overrides) ?? resolvePricing(model, DEFAULT_PRICING);
+    return (
+      resolvePricing(model, overrides) ??
+      resolvePricing(model, live) ??
+      resolvePricing(model, DEFAULT_PRICING)
+    );
   }
 
   function calculate(model: string, inputTokens: number, outputTokens: number): number {

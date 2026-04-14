@@ -21,6 +21,7 @@ import {
   createThresholdTracker,
   createTokenRateTracker,
   exportCostJson,
+  fetchModelPricing,
   type ThresholdAlert,
   type TokenRateTracker,
 } from "@koi/cost-aggregator";
@@ -71,9 +72,14 @@ const DEBOUNCE_MS = 200;
 
 /**
  * Create a cost bridge that wires the aggregator into the TUI lifecycle.
+ *
+ * Fetches live pricing from models.dev at startup (non-blocking, 5s timeout).
+ * Falls back to bundled pricing table if offline.
  */
-export function createCostBridge(config: CostBridgeConfig): CostBridge {
-  const calculator = createCostCalculator();
+export async function createCostBridge(config: CostBridgeConfig): Promise<CostBridge> {
+  // Fetch live pricing from models.dev (disk cached, 5-min TTL)
+  const livePricing = await fetchModelPricing();
+  const calculator = createCostCalculator({ livePricing });
 
   const thresholdTracker =
     config.budgetUsd !== undefined

@@ -19,6 +19,8 @@ export { createCostCalculator } from "./calculator.js";
 // --- JSON export ---
 export type { CostExportPayload } from "./export-json.js";
 export { exportCostJson } from "./export-json.js";
+// --- models.dev live pricing ---
+export { fetchModelPricing, parseModelsDevJson } from "./models-dev.js";
 // --- Pricing ---
 export type { ModelPricing } from "./pricing.js";
 export { DEFAULT_PRICING, resolvePricing } from "./pricing.js";
