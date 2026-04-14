@@ -480,8 +480,13 @@ export function wrapToolAsProvider(tool: Tool): ComponentProvider {
 export interface CoreProvidersConfig {
   /** Workspace root — threaded into filesystem-scoped builders (Glob, fs tools). */
   readonly cwd: string;
-  /** Host-provided bash tool (plain CLI or hooks-enabled TUI variant). */
-  readonly bashTool: Tool;
+  /**
+   * Host-provided bash tool. Normally supplied by the execution preset
+   * stack's `bashHandle.tool`. When `undefined` (execution stack
+   * disabled via `manifest.stacks`), the core set omits the `Bash`
+   * provider — the host runs without shell access.
+   */
+  readonly bashTool?: Tool | undefined;
   /**
    * When true, wire fs_read / fs_write / fs_edit via the local filesystem
    * backend with the unsandboxed policy. Defaults to `true` — a new host
@@ -550,7 +555,9 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     );
   }
 
-  providers.push(wrapToolAsProvider(bashTool));
+  if (bashTool !== undefined) {
+    providers.push(wrapToolAsProvider(bashTool));
+  }
 
   if (config.additional !== undefined) {
     providers.push(...config.additional);

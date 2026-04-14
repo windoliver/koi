@@ -24,24 +24,19 @@
 import type { KoiMiddleware } from "@koi/core";
 
 export interface MiddlewareCompositionInput {
-  // --- Always-on layers (outermost → innermost) ---
+  // --- Always-on core layers ---
+  // These are the middleware that ALL hosts run unconditionally,
+  // regardless of which preset stacks are active. Everything else —
+  // observability, checkpoint, memory extraction's upstream
+  // semanticRetry, etc. — lives in preset stacks and plugs in via
+  // `presetExtras`.
 
-  /** Observability: records model/tool I/O as ATIF trajectory steps. */
-  readonly eventTrace: KoiMiddleware;
   /** Hook dispatch: runs user-defined command/http hooks on lifecycle events. */
   readonly hook: KoiMiddleware;
-  /** Trace tap for the hook registry — records hook executions as ATIF steps. */
-  readonly hookObserver: KoiMiddleware;
   /** Permission backend gating: default-mode rules or auto-allow pattern. */
   readonly permissions: KoiMiddleware;
   /** Secret exfiltration guard: scans tool inputs and model outputs for leaks. */
   readonly exfiltrationGuard: KoiMiddleware;
-  /** Learning extraction: harvests structured takeaways from spawn tool results. */
-  readonly extraction: KoiMiddleware;
-  /** Semantic retry broker: retries model calls on transient errors. */
-  readonly semanticRetry: KoiMiddleware;
-  /** Checkpoint middleware: captures end-of-turn snapshots for /rewind. */
-  readonly checkpoint: KoiMiddleware;
 
   // --- Optional layers ---
 
@@ -53,8 +48,6 @@ export interface MiddlewareCompositionInput {
   readonly modelRouter?: KoiMiddleware | undefined;
   /** Goal reminder middleware — injected when the host supplies objectives. */
   readonly goal?: KoiMiddleware | undefined;
-  /** OpenTelemetry span emission — opt-in via KOI_OTEL_ENABLED or config.otel. */
-  readonly otel?: KoiMiddleware | undefined;
   /**
    * Preset / plugin middleware contributed by stack activation. Appended
    * after the checkpoint layer so presets can observe the core stack
@@ -77,13 +70,14 @@ export interface MiddlewareCompositionInput {
  * Compose the canonical middleware list in its production order.
  *
  * Order (outermost → innermost):
- *   eventTrace → hook → hookObserver → permissions →
- *   exfiltrationGuard → extraction → semanticRetry → modelRouter? →
- *   goal? → otel? → checkpoint → presetExtras... → systemPrompt? →
- *   sessionTranscript?
+ *   presetExtras[0..] (stacks contribute here) → hook →
+ *   permissions → exfiltrationGuard → extraction → modelRouter? →
+ *   goal? → systemPrompt? → sessionTranscript?
  *
- * Rules-loader (and other feature middleware like notebook tools) live
- * in `presetExtras` — contributed by preset stacks, not named here.
+ * Observability (event-trace, semantic-retry, hook-observer, OTel),
+ * checkpoint, and rules-loader live in preset stacks and flow in
+ * through `presetExtras` at the outermost layer so they wrap the
+ * entire core chain below them.
  *
  * The outermost layer wraps every inner layer, so event-trace sees
  * the entire middleware stack and session-transcript sees the
@@ -93,18 +87,14 @@ export function composeRuntimeMiddleware(
   input: MiddlewareCompositionInput,
 ): readonly KoiMiddleware[] {
   return [
-    input.eventTrace,
+    // Preset stacks contribute at the outermost layer so observability,
+    // checkpoint, rules-loader etc. wrap the entire core chain below.
+    ...(input.presetExtras ?? []),
     input.hook,
-    input.hookObserver,
     input.permissions,
     input.exfiltrationGuard,
-    input.extraction,
-    input.semanticRetry,
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.goal !== undefined ? [input.goal] : []),
-    ...(input.otel !== undefined ? [input.otel] : []),
-    input.checkpoint,
-    ...(input.presetExtras ?? []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];

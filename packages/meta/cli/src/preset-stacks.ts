@@ -26,8 +26,13 @@
  * — the plumbing lands here so each migration is a local change.
  */
 
-import type { ComponentProvider, KoiMiddleware } from "@koi/core";
+import type { ComponentProvider, KoiMiddleware, ModelAdapter, SessionTranscript } from "@koi/core";
+import type { CreateHookMiddlewareOptions } from "@koi/hooks";
+import { checkpointStack } from "./preset-stacks/checkpoint.js";
+import { executionStack } from "./preset-stacks/execution.js";
+import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
+import { observabilityStack } from "./preset-stacks/observability.js";
 import { rulesStack } from "./preset-stacks/rules.js";
 import { skillsStack } from "./preset-stacks/skills.js";
 
@@ -37,8 +42,8 @@ import { skillsStack } from "./preset-stacks/skills.js";
  * Additions to this interface should be backwards-compatible (optional
  * fields) so existing stacks don't break when the factory threads new
  * hooks through. Stacks that need host-specific state should read from
- * `host` (an opaque bag keyed by `hostId`) rather than widening this
- * interface.
+ * `host` (an opaque bag keyed by stack-chosen string keys) rather than
+ * widening this interface.
  */
 export interface StackActivationContext {
   /** Working directory — filesystem-scoped builders key off this. */
@@ -46,14 +51,34 @@ export interface StackActivationContext {
   /** Stable host identifier (e.g. "koi-tui", "koi-cli"). */
   readonly hostId: string;
   /**
+   * Model HTTP adapter — stacks that need to make single-shot model
+   * calls (e.g. prompt-hook verification, semantic retry checks) read
+   * this. Optional so lightweight unit tests can omit it.
+   */
+  readonly modelAdapter?: ModelAdapter | undefined;
+  /**
+   * Workspace-bound session transcript for stacks that need to persist
+   * derived data alongside the session log (e.g. checkpoint stack
+   * tracks rewind targets against the live transcript). `undefined`
+   * when the host opts out of persistence (loop mode).
+   */
+  readonly sessionTranscript?: SessionTranscript | undefined;
+  /**
    * Host-specific opaque context. Stacks that care about a particular
-   * host read a well-known key (`host["koi-tui:trajectoryStore"]`).
-   * Stacks that are host-neutral ignore this entirely.
+   * host state (skillsRuntime, approvalHandler, etc.) read a
+   * well-known string key defined next to the stack's source.
    */
   readonly host?: Readonly<Record<string, unknown>> | undefined;
 }
 
-/** The bundle a stack contributes to the runtime assembly. */
+/**
+ * The bundle a stack contributes to the runtime assembly.
+ *
+ * All fields beyond `middleware`/`providers` are optional — a pure
+ * tool bundle like `notebookStack` returns only those two and leaves
+ * the rest undefined. Stacks with cross-cutting state (observability,
+ * execution, memory) opt into the lifecycle / export fields.
+ */
 export interface StackContribution {
   /**
    * Middleware layers appended to the canonical compose order at the
@@ -65,6 +90,44 @@ export interface StackContribution {
   readonly middleware: readonly KoiMiddleware[];
   /** Component providers (tools, resolvers) registered with createKoi. */
   readonly providers: readonly ComponentProvider[];
+  /**
+   * Extras merged into the host-built `createHookMiddleware` options
+   * (e.g. an `onExecuted` observer tap that the observability stack
+   * registers so hook executions land in the trajectory store).
+   * Stack-contributed hookExtras are merged with the host's own
+   * extras — the host still owns the hook list itself.
+   */
+  readonly hookExtras?: Partial<Omit<CreateHookMiddlewareOptions, "hooks">> | undefined;
+  /**
+   * Typed exports keyed by well-known string keys. The factory reads
+   * these to populate the returned `KoiRuntimeHandle` (e.g. the
+   * checkpoint stack exports `checkpointHandle`, the observability
+   * stack exports `trajectoryStore` + `getTrajectorySteps`, the
+   * execution stack exports `bashHandle` for resetCwd). Each stack
+   * documents its export keys next to its source.
+   */
+  readonly exports?: Readonly<Record<string, unknown>> | undefined;
+  /**
+   * Hook fired inside `KoiRuntimeHandle.resetSessionState` after the
+   * caller aborts the active signal. Stacks clear their session-scoped
+   * state here (bash cwd, bg controller rotation, memory backend wipe,
+   * trajectory store prune, approval cache clear). Called sequentially
+   * in registration order.
+   */
+  readonly onResetSession?: ((signal: AbortSignal) => Promise<void> | void) | undefined;
+  /**
+   * Hook fired inside `KoiRuntimeHandle.shutdownBackgroundTasks`.
+   * Returns `true` if the stack had live work that needed aborting —
+   * the factory ORs the results so the caller knows whether to wait
+   * for the SIGKILL escalation window before exiting.
+   */
+  readonly onShutdown?: (() => boolean) | undefined;
+  /**
+   * Reports whether this stack currently has active background work
+   * (e.g. in-flight bash_background subprocesses). The factory ORs
+   * across all stacks to produce `hasActiveBackgroundTasks`.
+   */
+  readonly hasActiveWork?: (() => boolean) | undefined;
 }
 
 /** A preset stack definition. */
@@ -88,7 +151,52 @@ export interface PresetStack {
  * `{enabled: new Set(["notebook", "rules", ...])}`. Omitting the
  * `enabled` option activates every stack.
  */
-export const DEFAULT_STACKS: readonly PresetStack[] = [notebookStack, rulesStack, skillsStack];
+export const DEFAULT_STACKS: readonly PresetStack[] = [
+  // Observability first: its `onExecuted` tap must be collected before
+  // the factory builds the main hook middleware so hook executions
+  // land in the trajectory store from the first dispatch.
+  observabilityStack,
+  // Execution next: exports `bashHandle` which the factory reads to
+  // pass `bashTool` into `buildCoreProviders`. Activating this stack
+  // before the others keeps the factory's read-after-activate
+  // ordering trivial.
+  executionStack,
+  checkpointStack,
+  memoryStack,
+  notebookStack,
+  rulesStack,
+  skillsStack,
+];
+
+/**
+ * The aggregated output of `activateStacks`. All per-stack contributions
+ * are collected into sideband fields the factory reads for lifecycle
+ * orchestration and handle population.
+ */
+export interface ActivatedStacks {
+  readonly middleware: readonly KoiMiddleware[];
+  readonly providers: readonly ComponentProvider[];
+  /**
+   * Merged hookExtras — the factory folds these into its own
+   * `createHookMiddleware` options before building the hook middleware.
+   * Currently only `onExecuted` is composed (multiple observer taps
+   * become a single wrapping function).
+   */
+  readonly hookExtras: Partial<Omit<CreateHookMiddlewareOptions, "hooks">>;
+  /**
+   * Flat map of every stack export keyed by its well-known string key.
+   * Later stacks can overwrite earlier ones if they declare the same
+   * key — the `activateStacks` activation order (matching
+   * `DEFAULT_STACKS`) determines precedence.
+   */
+  readonly exports: Readonly<Record<string, unknown>>;
+  /** All `onResetSession` hooks in activation order. */
+  readonly resetSessionHooks: readonly ((signal: AbortSignal) => Promise<void> | void)[];
+  /** All `onShutdown` hooks in activation order. */
+  readonly shutdownHooks: readonly (() => boolean)[];
+  /** All `hasActiveWork` predicates in activation order. */
+  readonly activeWorkPredicates: readonly (() => boolean)[];
+}
 
 /**
  * Activate the selected stacks and return the aggregated contribution.
@@ -105,16 +213,66 @@ export async function activateStacks(
     readonly stacks?: readonly PresetStack[];
     readonly enabled?: ReadonlySet<string>;
   },
-): Promise<StackContribution> {
+): Promise<ActivatedStacks> {
   const stacks = options?.stacks ?? DEFAULT_STACKS;
   const enabled = options?.enabled;
   const middleware: KoiMiddleware[] = [];
   const providers: ComponentProvider[] = [];
+  const exports: Record<string, unknown> = {};
+  const resetSessionHooks: ((signal: AbortSignal) => Promise<void> | void)[] = [];
+  const shutdownHooks: (() => boolean)[] = [];
+  const activeWorkPredicates: (() => boolean)[] = [];
+  // Collected observer taps from stack hookExtras. Multiple observers
+  // are composed into one function so the host can pass a single
+  // `onExecuted` to `createHookMiddleware`.
+  const onExecutedTaps: NonNullable<CreateHookMiddlewareOptions["onExecuted"]>[] = [];
+
   for (const stack of stacks) {
     if (enabled !== undefined && !enabled.has(stack.id)) continue;
     const contribution = await stack.activate(ctx);
     middleware.push(...contribution.middleware);
     providers.push(...contribution.providers);
+    if (contribution.exports !== undefined) {
+      Object.assign(exports, contribution.exports);
+    }
+    if (contribution.onResetSession !== undefined) {
+      resetSessionHooks.push(contribution.onResetSession);
+    }
+    if (contribution.onShutdown !== undefined) {
+      shutdownHooks.push(contribution.onShutdown);
+    }
+    if (contribution.hasActiveWork !== undefined) {
+      activeWorkPredicates.push(contribution.hasActiveWork);
+    }
+    if (contribution.hookExtras?.onExecuted !== undefined) {
+      onExecutedTaps.push(contribution.hookExtras.onExecuted);
+    }
   }
-  return { middleware, providers };
+
+  // Compose multiple observer taps into one. Error isolation: one
+  // failing tap must not block the others.
+  const hookExtras: Partial<Omit<CreateHookMiddlewareOptions, "hooks">> =
+    onExecutedTaps.length === 0
+      ? {}
+      : {
+          onExecuted: (results, event) => {
+            for (const tap of onExecutedTaps) {
+              try {
+                tap(results, event);
+              } catch {
+                /* observer taps are fire-and-forget; swallow to protect siblings */
+              }
+            }
+          },
+        };
+
+  return {
+    middleware,
+    providers,
+    hookExtras,
+    exports,
+    resetSessionHooks,
+    shutdownHooks,
+    activeWorkPredicates,
+  };
 }

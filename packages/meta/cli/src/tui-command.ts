@@ -1665,6 +1665,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // keyed by ctx.session.sessionId which is the engine's
             // composite "agent:{agentId}:{instanceId}" ID — tuiSessionId
             // is a TUI-local UUID that never matches a captured chain.
+            if (runtimeHandle.checkpoint === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_DISABLED",
+                message:
+                  "Rewind is unavailable: the checkpoint preset stack is disabled in this runtime.",
+              });
+              return;
+            }
             const engineSessionId = sessionId(runtimeHandle.runtime.sessionId);
             const rewindStart = performance.now();
             const result = await runtimeHandle.checkpoint.rewind(engineSessionId, n);

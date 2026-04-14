@@ -27,56 +27,38 @@
  * and a getTrajectorySteps() accessor for the /trajectory TUI command.
  */
 
-import { createHash } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { appendFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createAgentResolver } from "@koi/agent-runtime";
-import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
+import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
   InboundMessage,
   KoiMiddleware,
-  ManagedTaskBoard,
-  MemoryRecord,
-  MemoryRecordInput,
   ModelAdapter,
   PermissionBackend,
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
 } from "@koi/core";
-import { createSingleToolProvider, agentId as makeAgentId, memoryRecordId } from "@koi/core";
+import { agentId as makeAgentId } from "@koi/core";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
-import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import type { PromptModelCaller } from "@koi/hook-prompt";
-import type { MemoryToolBackend } from "@koi/memory-tools";
-import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
-import { createExtractionMiddleware } from "@koi/middleware-extraction";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
-import { createOtelMiddleware } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
-import {
-  createRetrySignalBroker,
-  createSemanticRetryMiddleware,
-} from "@koi/middleware-semantic-retry";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { runTurn } from "@koi/query-engine";
-import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
-import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
+import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
-import { createTaskTools } from "@koi/task-tools";
-import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
 import { composeRuntimeMiddleware } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
@@ -95,11 +77,15 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Maximum trajectory steps retained in the in-memory store for /trajectory view. */
-export const MAX_TRAJECTORY_STEPS = 200;
+import { MAX_TRAJECTORY_STEPS } from "./preset-stacks/observability.js";
 
-/** Document ID used for TUI session trajectory storage. */
-const TUI_DOC_ID = "koi-tui-session";
+/**
+ * Maximum trajectory steps retained in the in-memory store for
+ * `/trajectory` view. Re-exported so host commands can import the cap
+ * alongside `createKoiRuntime`. Source of truth is the observability
+ * preset stack.
+ */
+export { MAX_TRAJECTORY_STEPS };
 
 /** Maximum model→tool→model turns per user submit in the TUI. */
 const DEFAULT_MAX_TURNS = 10;
@@ -109,103 +95,6 @@ const DEFAULT_MAX_TURNS = 10;
  * A lower cap (e.g. 20) causes the model to silently lose context
  * after ~10 exchanges with no compaction to preserve it. */
 const MAX_TRANSCRIPT_MESSAGES = 100;
-
-/**
- * Temp directory for task result storage. Enables `task_update(status="completed")`
- * by making `hasResultPersistence()` return true. Results survive the session but
- * not reboots — acceptable for interactive TUI sessions.
- */
-const TASK_RESULTS_DIR = join(tmpdir(), "koi-tui-task-results");
-
-// ---------------------------------------------------------------------------
-// In-memory memory backend (same pattern as record-cassettes.ts)
-// ---------------------------------------------------------------------------
-
-/** In-memory MemoryToolBackend with session-scoped clear(). */
-interface ClearableMemoryBackend extends MemoryToolBackend {
-  /** Clear all stored memories — called on session reset. */
-  readonly clear: () => void;
-}
-
-function createInMemoryMemoryBackend(): ClearableMemoryBackend {
-  const records = new Map<string, MemoryRecord>();
-  // let: mutable counter for ID generation
-  let counter = 0;
-
-  return {
-    store: (input: MemoryRecordInput) => {
-      counter += 1;
-      const id = memoryRecordId(`mem-${counter}`);
-      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
-      const now = Date.now();
-      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
-      records.set(id, record);
-      return { ok: true as const, value: record };
-    },
-    storeWithDedup: (input: MemoryRecordInput, opts: { readonly force: boolean }) => {
-      const match = [...records.values()].find(
-        (r) => r.name === input.name && r.type === input.type,
-      );
-      if (match !== undefined) {
-        if (!opts.force) {
-          return { ok: true as const, value: { action: "conflict" as const, existing: match } };
-        }
-        const updated = {
-          ...match,
-          description: input.description,
-          content: input.content,
-          updatedAt: Date.now(),
-        } as MemoryRecord;
-        records.set(match.id, updated);
-        return { ok: true as const, value: { action: "updated" as const, record: updated } };
-      }
-      counter += 1;
-      const id = memoryRecordId(`mem-${counter}`);
-      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
-      const now = Date.now();
-      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
-      records.set(id, record);
-      return { ok: true as const, value: { action: "created" as const, record } };
-    },
-    recall: (_query, _options) => {
-      return { ok: true as const, value: [...records.values()] };
-    },
-    search: (filter) => {
-      const all = [...records.values()];
-      const filtered = filter.type !== undefined ? all.filter((r) => r.type === filter.type) : all;
-      return { ok: true as const, value: filtered };
-    },
-    delete: (id) => {
-      const wasPresent = records.has(id);
-      records.delete(id);
-      return { ok: true as const, value: { wasPresent } };
-    },
-    findByName: (name, type) => {
-      const match = [...records.values()].find(
-        (r) => r.name === name && (type === undefined || r.type === type),
-      );
-      return { ok: true as const, value: match };
-    },
-    get: (id) => {
-      return { ok: true as const, value: records.get(id) };
-    },
-    update: (id, patch) => {
-      const existing = records.get(id);
-      if (existing === undefined)
-        return {
-          ok: false as const,
-          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
-        };
-      const updated = { ...existing, ...patch, updatedAt: Date.now() } as MemoryRecord;
-      records.set(id, updated);
-      return { ok: true as const, value: updated };
-    },
-    clear: () => {
-      records.clear();
-      counter = 0;
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Config & return types
@@ -348,7 +237,14 @@ export interface KoiRuntimeHandle {
    * blobs live in a flat tmp dir under `~/.koi/file-history`. The conversation
    * log is shared with the session transcript so /rewind truncates both halves.
    */
-  readonly checkpoint: Checkpoint;
+  /**
+   * Checkpoint handle for session-level rollback — populated when the
+   * `checkpoint` preset stack is active (default) and `undefined` when
+   * a host disables it via `manifest.stacks`. Hosts that consume this
+   * field guard with `?.rewind(...)` so a disabled stack degrades to
+   * "/rewind unsupported" rather than a crash.
+   */
+  readonly checkpoint: Checkpoint | undefined;
   /**
    * Mutable conversation transcript array — owned by the caller.
    * Splice to reset: `transcript.splice(0)` on agent:clear or session:new.
@@ -574,6 +470,12 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  */
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
+  // Stable host identifier — used as the persistentAgentId for permissions,
+  // the agentName in trajectory metadata, and the [koi/X] log prefix.
+  // Pulled up from below so preset stack activation (which runs early so
+  // stacks can contribute hookExtras before the hook middleware is built)
+  // can thread it into the StackActivationContext.
+  const hostId = config.hostId ?? "koi-tui";
 
   // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
   const configHotReload = await setupConfigHotReload();
@@ -611,51 +513,40 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Full fix requires doc-ID rotation which needs API changes to the trace
   // wrapper — tracked as a known limitation.
 
-  // --- Trajectory store (in-memory ATIF store — production-grade with mutex + eviction) ---
-  // Cap at MAX_TRAJECTORY_STEPS to match the /trajectory view cap — no point storing
-  // steps the user can never see. Using the event-trace store gains atomic step IDs,
-  // per-doc mutex, size enforcement, and idempotent appends for free.
-  const trajectoryStore = createInMemoryAtifDocumentStore({
-    agentName: "koi-tui",
-    agentVersion: "0.1.0",
-    maxSteps: MAX_TRAJECTORY_STEPS,
-  });
+  // --- Preset stack activation (v1 `activatePresetStacks` pattern) ---
+  // Activated early so observability / other stacks can contribute
+  // `hookExtras.onExecuted` observer taps BEFORE the main hook
+  // middleware is built. Stacks also export trajectoryStore,
+  // checkpoint handle, bash handle, etc. that the factory reads to
+  // populate the returned KoiRuntimeHandle.
+  //
+  // The execution stack needs a synthetic agent id for task assignment
+  // and a reference to the caller's approval handler for bash
+  // elicit. Both are passed via `ctx.host` — the stack reads
+  // well-known keys defined alongside its source.
+  const precomputedAgentId = makeAgentId(hostId);
+  const stackContribution = await activateStacks(
+    {
+      cwd,
+      hostId,
+      modelAdapter,
+      ...(config.session !== undefined ? { sessionTranscript: config.session.transcript } : {}),
+      host: {
+        ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+        ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
+        approvalHandler,
+        agentId: precomputedAgentId,
+      },
+    },
+    config.stacks !== undefined ? { enabled: new Set(config.stacks) } : undefined,
+  );
 
-  // --- @koi/middleware-semantic-retry: retry signal broker ---
-  // Created before event-trace so it can be wired as signalReader.
-  const retryBroker = createRetrySignalBroker();
-
-  // --- @koi/middleware-otel: optional OTel span emission ---
-  // Opt-in via config.otel (or KOI_OTEL_ENABLED env var in tui-command.ts).
-  // Requires an OTel SDK to be initialised before this factory is called.
-  const otelConfig: OtelMiddlewareConfig | undefined =
-    config.otel === true
-      ? {}
-      : config.otel !== undefined && config.otel !== false
-        ? config.otel
-        : undefined;
-  const otelHandle = otelConfig !== undefined ? createOtelMiddleware(otelConfig) : undefined;
-
-  // --- @koi/event-trace: record model/tool I/O for /trajectory view ---
-  const { middleware: eventTraceMw } = createEventTraceMiddleware({
-    store: trajectoryStore,
-    docId: TUI_DOC_ID,
-    agentName: "koi-tui",
-    agentVersion: "0.1.0",
-    signalReader: retryBroker,
-    ...(otelHandle !== undefined ? { onStep: otelHandle.onStep } : {}),
-  });
-  const { middleware: semanticRetryMw } = createSemanticRetryMiddleware({
-    signalWriter: retryBroker,
-  });
-
-  // --- Hook observer: records hook execution as ATIF trajectory steps ---
-  // Pure observer — subscribes to hook registry's onExecuted tap, does not dispatch.
-  // Same pattern as golden-query recording (record-cassettes.ts).
-  const { onExecuted: hookObserverTap, middleware: hookObserverMw } = createHookObserver({
-    store: trajectoryStore,
-    docId: TUI_DOC_ID,
-  });
+  // --- Read observability exports for trace wrapping + handle fields ---
+  const trajectoryStore = stackContribution.exports.trajectoryStore as
+    | import("@koi/core/rich-trajectory").TrajectoryDocumentStore
+    | undefined;
+  const trajectoryDocId =
+    (stackContribution.exports.trajectoryDocId as string | undefined) ?? "koi-session";
 
   // --- @koi/hooks: load hooks from ~/.koi/hooks.json + command hook dispatch ---
   // Same loader the CLI host uses, via ./shared-wiring.ts.
@@ -741,7 +632,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       mode: "default",
       rules: tuiAllowRules,
     });
-  const hostId = config.hostId ?? "koi-tui";
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
@@ -750,148 +640,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       : {}),
   });
 
-  // --- @koi/sandbox-os: OS sandbox adapter (injected into Bash, not a separate tool) ---
-  // When available (macOS seatbelt / Linux bubblewrap), all Bash commands run
-  // inside the OS sandbox automatically — no separate model-visible tool.
-  // Degrades gracefully: if the platform binary is unavailable, Bash falls back
-  // to the unsandboxed path with the @koi/bash-security denylist guard.
-  //
-  // Profile: restrictive base (credential paths denied) + network + write paths.
-  // The TUI is a developer tool — builds, installs, and file edits must be able
-  // to write to the workspace and standard temp/cache locations.
-  // Without allowWrite entries the sandbox would deny all file-write* operations,
-  // silently breaking `bun install`, artifact-emitting builds, and shell commands
-  // that create files.
-  const osSandboxResult = createOsAdapter();
-  const sandboxAdapter = osSandboxResult.ok ? osSandboxResult.value : undefined;
-  const sandboxProfile = osSandboxResult.ok
-    ? mergeProfile(restrictiveProfile(), {
-        network: { allow: true },
-        filesystem: {
-          allowWrite: [
-            cwd, // workspace root — builds, installs, file edits
-            "/tmp", // POSIX temp (seatbelt canonicalizes /tmp → /private/tmp on macOS)
-            "/var/folders", // macOS user cache area (Bun install temp, compiler cache)
-          ],
-        },
-      })
-    : undefined;
-
-  // --- Background task abort controller (mutable — rotated on session reset) ---
-  // Using `let` so resetSessionState() can abort the old controller (killing
-  // prior-session subprocesses) and create a fresh one for the next session.
-  // bash_background reads this via getSignal() at launch time, not at construction,
-  // so it always uses the current session's controller.
-  // eslint-disable-next-line prefer-const
-  let bgController = new AbortController();
-
-  // --- Live subprocess counter (authoritative count of in-flight runBackground goroutines) ---
-  // Incremented just before each subprocess launch via onSubprocessStart, decremented on exit.
-  // Task-board status is not a reliable proxy: task_stop can move a task to "killed" state
-  // while the OS subprocess is still running. This counter is used by hasActiveBackgroundTasks()
-  // to decide whether to wait for the SIGKILL escalation window on shutdown.
-  // let justified: mutable, incremented/decremented from async fire-and-forget completions.
-  let liveSubprocessCount = 0;
-
-  // --- @koi/tasks: in-memory task board for background bash job tracking ---
-  // Memory store only — background task results survive the session but not
-  // process restarts (acceptable for TUI interactive sessions).
-  //
-  // boardRef holds the active board instance; replaced on each session reset to
-  // isolate prior-session task output from the new session. The proxy below
-  // delegates all calls to boardRef.current, so the cached tool providers
-  // transparently switch boards without requiring provider recreation.
-  const boardRef: { current: ManagedTaskBoard } = {
-    current: await createManagedTaskBoard({
-      store: createMemoryTaskBoardStore(),
-      resultsDir: TASK_RESULTS_DIR,
-    }),
-  };
-
-  // Proxy transparently delegates all ManagedTaskBoard property access to
-  // boardRef.current. Replacing boardRef.current on session reset makes prior
-  // tasks invisible to the new session's task_list / task_get / task_output calls.
-  // Unlike a manual delegation object, this auto-forwards new interface methods
-  // without code changes.
-  const taskBoard = new Proxy({} as ManagedTaskBoard, {
-    get(_target, prop, receiver) {
-      const value = Reflect.get(boardRef.current, prop, receiver);
-      return typeof value === "function" ? value.bind(boardRef.current) : value;
-    },
-  });
-
-  // Synthetic agent ID for task assignment — background tasks are owned by the TUI agent.
-  const tuiAgentId = makeAgentId("koi-tui");
-
-  // --- @koi/tools-bash: Bash execution (auto-sandboxed when OS adapter available) ---
-  // createBashToolWithHooks exposes resetCwd() for session reset (agent:clear / session:new).
-  //
-  // elicit (#1634): when the bash-ast walker classifies a command as
-  // too-complex (non-hard-deny), the tool routes it through the same
-  // approvalHandler as the permissions middleware. The user sees a
-  // dialog asking whether to run the specific command. This closes
-  // the full fail-closed loop by replacing the transitional regex
-  // fallback with an explicit user decision.
-  const bashElicit = async (params: {
-    readonly command: string;
-    readonly reason: string;
-    readonly nodeType?: string;
-  }): Promise<boolean> => {
-    const reasonPrefix = params.nodeType !== undefined ? ` (${params.nodeType})` : "";
-    const decision = await approvalHandler({
-      toolId: "Bash",
-      input: { command: params.command },
-      reason: `AST walker cannot safely analyse this command${reasonPrefix}: ${params.reason}. Approval delegates to the regex TTP classifier for defense-in-depth.`,
-    });
-    return decision.kind === "allow" || decision.kind === "always-allow";
-  };
-  const bashHandle = createBashToolWithHooks({
-    workspaceRoot: cwd,
-    trackCwd: true,
-    elicit: bashElicit,
-    ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-      ? { sandboxAdapter, sandboxProfile }
-      : {}),
-  });
-
-  // --- bash_background: fire-and-forget bash via task board ---
-  // getSignal: () => bgController.signal — read at launch time, not at construction.
-  // This allows resetSessionState() to rotate bgController: the old signal is aborted
-  // (killing prior-session subprocesses) and new tasks get the fresh controller's signal.
-  const bashBackgroundProvider = createSingleToolProvider({
-    name: "bash-background",
-    toolName: "bash_background",
-    createTool: () =>
-      createBashBackgroundTool({
-        taskBoard,
-        getBoundBoard: () => boardRef.current,
-        agentId: tuiAgentId,
-        workspaceRoot: cwd,
-        getSignal: () => bgController.signal,
-        onSubprocessStart: () => {
-          liveSubprocessCount++;
-        },
-        onSubprocessEnd: () => {
-          liveSubprocessCount--;
-        },
-        elicit: bashElicit,
-        ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-          ? { sandboxAdapter, sandboxProfile }
-          : {}),
-      }),
-  });
-
-  // --- @koi/task-tools: task management tools (task_create, task_get, etc.) ---
-  const taskToolProviders = createTaskTools({
-    board: taskBoard,
-    agentId: tuiAgentId,
-  }).map((tool) =>
-    createSingleToolProvider({
-      name: `task-${tool.descriptor.name}`,
-      toolName: tool.descriptor.name,
-      createTool: () => tool,
-    }),
-  );
+  // --- Execution stack exports (bash handle + background task state) ---
+  // The execution preset stack owns OS sandbox, bash-with-hooks, the
+  // mutable bgController, the live subprocess counter, the task board
+  // proxy, and the bash_background / task_* tool providers. We just
+  // read the exports here for the fields that feed into buildCoreProviders
+  // (bashHandle.tool) and the returned KoiRuntimeHandle (sandboxActive,
+  // hasActiveBackgroundTasks, shutdownBackgroundTasks).
+  const bashHandle = stackContribution.exports.bashHandle as
+    | import("@koi/tools-bash").BashToolHandle
+    | undefined;
+  const sandboxActive = (stackContribution.exports.sandboxActive as boolean | undefined) ?? false;
+  const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
   // The shared `buildCoreProviders` helper wires the exact same base set
@@ -899,18 +659,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // TUI contributes its hooks-enabled Bash variant via the `bashTool` field.
   const coreProviders = buildCoreProviders({
     cwd,
-    bashTool: bashHandle.tool,
+    ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
   });
-
-  // --- @koi/memory-tools: in-memory memory backend ---
-  // Same pattern as golden-query recording: in-memory Map-based backend.
-  // Provides memory_store, memory_recall, memory_search, memory_delete tools.
-  const memoryBackend = createInMemoryMemoryBackend();
-  const memoryProviderResult = createMemoryToolProvider({
-    backend: memoryBackend,
-    memoryDir: join(tmpdir(), "koi-tui-memory"),
-  });
-  const memoryProvider = memoryProviderResult.ok ? memoryProviderResult.value : undefined;
 
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
   // Three-tier discovery: bundled → user (~/.claude/skills) → project (.claude/skills).
@@ -954,31 +704,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
 
-  // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
-  // Wraps the in-memory memory backend as a MemoryComponent for the extraction
-  // middleware. Extracted learnings are stored as standard MemoryRecord entries.
-  const extractionMw = createExtractionMiddleware({
-    memory: {
-      async recall() {
-        const result = await memoryBackend.recall("", undefined);
-        if (!result.ok) return [];
-        return result.value.map((r: MemoryRecord) => ({
-          content: r.content,
-          score: 1.0,
-          record: r,
-        }));
-      },
-      async store(content: string, options?: { readonly category?: string | undefined }) {
-        memoryBackend.store({
-          name: `extracted-${Date.now()}`,
-          description: options?.category ?? "extracted learning",
-          type: "feedback",
-          content,
-        });
-      },
-    },
-  });
-
   // --- Core middleware slots (shared with `koi start`) ---
   // `buildCoreMiddleware` is the single source of truth for the
   // permissions / hook / system-prompt / session-transcript factory
@@ -989,9 +714,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const coreSlots = buildCoreMiddleware({
     permissionsMiddleware: permMw,
     hooks: allHooks,
+    // Merge stack-contributed hookExtras (e.g. observability's
+    // onExecuted tap for trajectory recording) with host-specific
+    // extras (promptCallFn for prompt hooks).
     hookExtras: {
+      ...stackContribution.hookExtras,
       ...(hasPromptHooks ? { promptCallFn } : {}),
-      onExecuted: hookObserverTap,
     },
     forceHookSlot: true,
     ...(config.systemPrompt !== undefined ? { systemPrompt: config.systemPrompt } : {}),
@@ -1076,97 +804,48 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   });
 
-  // --- Checkpoint (#1625): always wired in the TUI ---
-  // Captures end-of-turn snapshots so /rewind can roll back the active session.
-  const koiHomeDir = join(homedir(), ".koi");
-  const snapshotDir = join(koiHomeDir, "snapshots");
-  mkdirSync(snapshotDir, { recursive: true });
-  const workspaceHash = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
-  const snapshotPath = join(snapshotDir, `${workspaceHash}.sqlite`);
-  // Path resolver — mirrors @koi/fs-local's lexicalCheck normalization so
-  // the checkpoint middleware reads pre/post images from the REAL filesystem
-  // path, not the virtual path the model sees. Without this, tool-input paths
-  // like "/workspace/foo.txt" would be read literally, find nothing, and
-  // silently no-op capture (the bug surfaced in #1625's E2E TUI validation).
-  const resolveCheckpointPath = (virtualPath: string): string => {
-    // Strip workspace root prefix if the path already matches it (absolute
-    // paths under cwd pass through unchanged).
-    if (virtualPath === cwd || virtualPath.startsWith(`${cwd}/`)) {
-      return virtualPath;
-    }
-    // Strip leading "/" and resolve against cwd, matching fs-local's
-    // "treat as workspace-relative" rule.
-    const stripped = virtualPath.startsWith("/") ? virtualPath.slice(1) : virtualPath;
-    return join(cwd, stripped);
-  };
-
-  const checkpointHandle = createCheckpoint({
-    store: createSnapshotStoreSqlite({ path: snapshotPath }),
-    config: {
-      blobDir: join(koiHomeDir, "file-history"),
-      driftDetector: null,
-      resolvePath: resolveCheckpointPath,
-      ...(config.session !== undefined ? { transcript: config.session.transcript } : {}),
-    },
-  });
-  const checkpointMw = checkpointHandle.middleware;
-
-  // --- Preset stack activation (v1 `activatePresetStacks` pattern) ---
-  // Each preset is a named bundle of middleware + providers. The
-  // registry lives in preset-stacks.ts. Host-specific state (e.g.
-  // skillsRuntime) flows through the `host` bag so stacks that need
-  // it can read a well-known key; stacks that are host-neutral
-  // ignore `host` entirely.
-  const stackContribution = await activateStacks(
-    {
-      cwd,
-      hostId,
-      host: {
-        ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
-      },
-    },
-    config.stacks !== undefined ? { enabled: new Set(config.stacks) } : undefined,
-  );
+  // --- Checkpoint handle exported by the checkpoint preset stack ---
+  // Read here for the returned KoiRuntimeHandle.checkpoint field.
+  const checkpointHandle = stackContribution.exports.checkpointHandle as
+    | import("@koi/checkpoint").Checkpoint
+    | undefined;
 
   // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
   // The ordering (outermost → innermost) is defined in one place —
-  // compose-middleware.ts — so both this factory and any future
-  // host-specific factory share the exact same canonical order. Adding
-  // a new core middleware layer = one edit to the compose function's
-  // `MiddlewareCompositionInput` interface + its ordered return list.
-  // Preset stacks plug in via `presetExtras`.
+  // compose-middleware.ts. Preset stacks (observability, checkpoint,
+  // memory, execution, etc.) plug in via `presetExtras`; the named
+  // slots here are the ALWAYS-ON core layers only.
   const allMiddleware = composeRuntimeMiddleware({
-    eventTrace: eventTraceMw,
     hook: hookMw,
-    hookObserver: hookObserverMw,
     permissions: permMw,
     exfiltrationGuard: exfiltrationGuardMw,
-    extraction: extractionMw,
-    semanticRetry: semanticRetryMw,
-    checkpoint: checkpointMw,
     ...(config.modelRouterMiddleware !== undefined
       ? { modelRouter: config.modelRouterMiddleware }
       : {}),
     ...(goalMw !== undefined ? { goal: goalMw } : {}),
-    ...(otelHandle !== undefined ? { otel: otelHandle.middleware } : {}),
     presetExtras: stackContribution.middleware,
     ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
     ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
   });
-  // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
-  // when multiple MW spans complete within the same Date.now() millisecond.
-  // The store's idempotent dedup uses stepIndex:timestamp as the batch token;
-  // all trace wrapper steps use stepIndex=0, so identical timestamps cause
-  // silent drops. A monotonic counter ensures unique tokens.
+  // Wrap every middleware with the trace wrapper when the observability
+  // stack is active (provides `trajectoryStore`). When the stack is
+  // disabled via `config.stacks` (e.g. a CI runner opting for a
+  // minimal assembly), trace wrapping is skipped — the middleware
+  // runs without per-span ATIF recording.
+  // Monotonic counter avoids Date.now() millisecond collisions on the
+  // trace store's idempotent dedup.
   // let: mutable — incremented on each trace step
   let traceCounter = Date.now();
-  const tracedMiddleware = allMiddleware.map((mw) =>
-    wrapMiddlewareWithTrace(mw, {
-      store: trajectoryStore,
-      docId: TUI_DOC_ID,
-      clock: () => traceCounter++,
-    }),
-  );
+  const tracedMiddleware =
+    trajectoryStore !== undefined
+      ? allMiddleware.map((mw) =>
+          wrapMiddlewareWithTrace(mw, {
+            store: trajectoryStore,
+            docId: trajectoryDocId,
+            clock: () => traceCounter++,
+          }),
+        )
+      : allMiddleware;
 
   // --- Assemble runtime via createKoi ---
   // When a session is configured, thread `config.session.sessionId` into
@@ -1182,9 +861,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.session !== undefined ? { sessionId: config.session.sessionId } : {}),
     providers: [
       ...coreProviders,
-      bashBackgroundProvider,
-      ...taskToolProviders,
-      ...(memoryProvider !== undefined ? [memoryProvider] : []),
       spawnToolProvider,
       ...stackContribution.providers,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
@@ -1228,24 +904,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     runtime,
     checkpoint: checkpointHandle,
     transcript,
-    sandboxActive: osSandboxResult.ok,
+    sandboxActive,
     createDecisionLedger: () =>
       createDecisionLedger({
-        // The TUI stores all trajectory data under a fixed doc ID
-        // ("koi-tui-session"), not per-session. Wrap the store so the
-        // ledger's getDocument(sessionId) reads from the correct key.
+        // The observability stack stores all trajectory data under a
+        // fixed doc ID. When the stack is disabled, the ledger gets a
+        // stub that reports empty — decision view shows nothing but
+        // nothing breaks.
         trajectoryStore: {
-          getDocument: () => trajectoryStore.getDocument(TUI_DOC_ID),
+          getDocument: () =>
+            trajectoryStore !== undefined
+              ? trajectoryStore.getDocument(trajectoryDocId)
+              : Promise.resolve([]),
         },
       }),
     getTrajectorySteps: async () => {
-      const steps = await trajectoryStore.getDocument(TUI_DOC_ID);
+      if (trajectoryStore === undefined) return [];
+      const steps = await trajectoryStore.getDocument(trajectoryDocId);
       // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
-      // Full trajectory is preserved in the store; only the view is capped.
       return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
     },
     appendTrajectoryStep: async (step: RichTrajectoryStep): Promise<void> => {
-      await trajectoryStore.append(TUI_DOC_ID, [step]);
+      if (trajectoryStore === undefined) return;
+      await trajectoryStore.append(trajectoryDocId, [step]);
     },
     resetSessionState: async (signal: AbortSignal) => {
       // C4-A: Fail fast if caller forgot to abort the active run first.
@@ -1256,133 +937,68 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         );
       }
 
-      // 1. PRE-CREATE the new task board BEFORE anything else commits.
-      //    Round 8: previously this happened post-cycleSession and was
-      //    catch-and-warn — but task tools (`task_list`, `task_get`,
-      //    `task_output`, `bash_background`) are backed by the
-      //    boardRef.current proxy, so retaining the old board after a
-      //    "successful" reset would let the next session see and
-      //    mutate prior-session tasks. createManagedTaskBoard does
-      //    async store + filesystem setup that can throw under
-      //    degraded disk/permission conditions. By creating it FIRST,
-      //    a failure aborts the reset cleanly with NO state mutated:
-      //    the user sees a RESET_FAILED toast and the old session
-      //    stays intact.
-      const newBoardCandidate = await createManagedTaskBoard({
-        store: createMemoryTaskBoardStore(),
-        resultsDir: TASK_RESULTS_DIR,
-      });
-
-      // 2. Cycle middleware session lifecycle. This awaits the in-flight
-      //    run's settle (bounded by ~5s in the engine). On success the
-      //    prior run is fully unwound and we know it can no longer
-      //    write into the shared state we're about to clear/rotate
-      //    below. On settle timeout / onSessionEnd failure cycleSession
-      //    throws — we propagate so the caller (resetConversation)
-      //    surfaces a "restart required" error and the prior session
-      //    stays inspectable. NO destructive cleanup has happened yet.
-      //
-      //    #1742 loop-2 round 10: bgController.abort() / wait used to
-      //    happen BEFORE cycleSession. That meant a failed cycleSession
-      //    left the user without their bash_background jobs even
-      //    though we were claiming the old session was preserved.
-      //    Background cleanup is now deferred to the post-cycle commit
-      //    block so failure leaves bg jobs alive too.
+      // 1. Cycle middleware session lifecycle BEFORE destructive cleanup.
+      //    This awaits the in-flight run's settle (bounded by ~5s in the
+      //    engine). On success the prior run is fully unwound. On settle
+      //    timeout / onSessionEnd failure cycleSession throws — we
+      //    propagate so callers surface a "restart required" error and
+      //    the prior session stays inspectable. NO destructive cleanup
+      //    has happened yet.
       //
       //    Capture the OLD sessionId before the cycle so we can clear
-      //    the prior session's permission state. cycleSession() rotates
-      //    `runtime.sessionId` to a fresh value; reading it after
-      //    rotation would target the empty new session and leave the
-      //    old approval entries leaking in the middleware's per-session
-      //    map.
+      //    the prior session's permission state below. cycleSession()
+      //    rotates `runtime.sessionId`; reading it after rotation would
+      //    target the empty new session and leak old approvals.
       const priorSessionId = runtime.sessionId;
       await runtime.cycleSession?.();
 
-      // ─── EVERYTHING BELOW THIS POINT IS POST-SETTLE ────────────────
-      // From here on the prior run is guaranteed dead (cycleSession
-      // failed closed if it wasn't). Destructive cleanup including
-      // background-subprocess termination is now safe and committed.
-
-      // 3. Abort prior-session background subprocesses (SIGTERM→SIGKILL).
-      //    Deferred until after cycleSession succeeds so a failed reset
-      //    doesn't kill bg jobs the user expected to keep. Wait the
-      //    SIGKILL escalation window so old jobs can't mutate the
-      //    workspace after reset completes (same pattern as shutdown).
-      const hadLiveProcesses = liveSubprocessCount > 0;
-      bgController.abort();
-      if (hadLiveProcesses) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      // 2. Fire stack-contributed reset hooks. Each preset stack clears
+      //    its own session-scoped state: observability prunes the
+      //    trajectory store, memory wipes the backend, execution aborts
+      //    the bgController, waits for subprocess drain, resets bash
+      //    CWD, rotates the controller, and atomically swaps the task
+      //    board. Run sequentially so failures stay isolated but
+      //    ordered; swallow individual errors so one wedged stack can't
+      //    block siblings.
+      for (const hook of stackContribution.resetSessionHooks) {
+        try {
+          await hook(signal);
+        } catch (hookErr) {
+          console.warn(
+            `[koi/${hostId}] preset stack onResetSession hook failed: ${
+              hookErr instanceof Error ? hookErr.message : String(hookErr)
+            }`,
+          );
+        }
       }
 
-      // 4. Reset Bash tracked cwd so the new session starts from workspaceRoot.
-      bashHandle.resetCwd();
-
-      // 5. Clear in-memory memory backend so prior-session memories
-      //    don't leak into the new session via memory_recall/memory_search.
-      memoryBackend.clear();
-
-      // 6. Rotate the background-process controller so new background
-      //    tasks use a fresh signal. The OLD controller already had
-      //    abort() called above; this just swaps in the new one for
-      //    future task launches.
-      bgController = new AbortController();
-
-      // 7. Clear the OLD session's approval state (always-allow, caches,
-      //    trackers). Safe to do now — no run is in flight, and the
-      //    map entry for `priorSessionId` is the one we want gone.
-      //    The new session has nothing in the map yet.
+      // 3. Clear the OLD session's approval state (always-allow, caches,
+      //    trackers). Not a stack concern — permissions is a core slot.
       permMw.clearSessionApprovals(priorSessionId);
-
-      // 8. Atomic swap to the pre-created new task board. createManagedTaskBoard
-      //    already ran successfully at step 1; this is a sync reference swap
-      //    so it cannot fail. After this point all task tools see the new,
-      //    empty board — prior-session tasks are no longer reachable via
-      //    task_list / task_get / task_output / bash_background.
-      boardRef.current = newBoardCandidate;
-
-      // ─── ATOMIC COMMIT POINT ──────────────────────────────────────
-      // From here on, cycleSession() has already rotated the engine
-      // session AND the synchronous in-process cleanup (steps 4-8) has
-      // run. The reset is fully committed: the next run() attaches to
-      // a fresh session with no stale approvals, memory, cwd, signal,
-      // or task board. Step 9 is best-effort housekeeping (trajectory
-      // prune). Its failure is non-fatal — it would only leave stale
-      // /trajectory entries visible, NOT bleed prior-session context
-      // into the new conversation.
-
-      // 9. Clear trajectory store — best-effort. On failure, old
-      //    trajectory entries remain visible in /trajectory until next
-      //    process restart but cannot bleed into model context.
-      //
-      // Skill descriptor listing and system prompt skill snapshot are still
-      // static for the process lifetime: they were captured before createKoi
-      // assembly, not stored as session-scoped middleware state. A full TUI
-      // restart is still required to pick up new skill files.
-      try {
-        await trajectoryStore.prune(Date.now() + 86_400_000);
-      } catch (pruneErr) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[koi tui] trajectory prune after /clear failed: ${
-            pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
-          }. Reset committed; stale trajectory retained.`,
-        );
-      }
     },
-    hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
+    hasActiveBackgroundTasks: () =>
+      stackContribution.activeWorkPredicates.some((predicate) => predicate()),
     shutdownBackgroundTasks: () => {
-      // Abort the current controller — triggers SIGTERM→SIGKILL for all
-      // in-flight bash_background subprocesses.
-      // Returns true if subprocesses were live so the caller can wait for the
-      // SIGKILL escalation window before process.exit().
-      // Uses the authoritative live-subprocess counter, not task-board state
-      // (task_stop can change board state without killing the OS process).
-      const hadTasks = liveSubprocessCount > 0;
-      bgController.abort();
+      // Fire every stack's onShutdown hook and OR their "had live
+      // work" return values. Execution stack aborts its bgController
+      // and returns true when bash_background subprocesses were live;
+      // other stacks currently contribute no shutdown hooks.
+      let hadWork = false;
+      for (const hook of stackContribution.shutdownHooks) {
+        try {
+          if (hook()) hadWork = true;
+        } catch (hookErr) {
+          console.warn(
+            `[koi/${hostId}] preset stack onShutdown hook failed: ${
+              hookErr instanceof Error ? hookErr.message : String(hookErr)
+            }`,
+          );
+        }
+      }
       mcpSetup?.dispose();
       pluginMcpSetup?.dispose();
       configHotReload?.dispose();
-      return hadTasks;
+      return hadWork;
     },
   };
 }
