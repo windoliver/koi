@@ -11,10 +11,10 @@
  * removed duplicated simulateTurn tests that re-implemented adapter logic).
  */
 
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { EngineEvent } from "@koi/core";
 import { createEventBatcher, createInitialState, createStore } from "@koi/tui";
-import { drainEngineStream } from "./tui-command.js";
+import { drainEngineStream, summarizeRunReport } from "./tui-command.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,12 +45,13 @@ describe("drainEngineStream — happy path", () => {
     expect(store.getState().connectionStatus).toBe("disconnected");
   });
 
-  test("enqueues events to the batcher", async () => {
+  test("text_delta events go directly to store.streamDelta, not batcher", async () => {
     const store = createStore(createInitialState());
     const flushed: EngineEvent[] = [];
     const batcher = createEventBatcher<EngineEvent>((batch) => {
       flushed.push(...batch);
     });
+    const streamDeltaSpy = spyOn(store, "streamDelta");
 
     const events: EngineEvent[] = [
       { kind: "text_delta", delta: "hello" },
@@ -59,8 +60,34 @@ describe("drainEngineStream — happy path", () => {
     await drainEngineStream(makeStream(events), store, batcher);
     batcher.flushSync();
 
+    // text_delta should NOT be in the batcher
+    expect(flushed.length).toBe(0);
+    // text_delta should have been dispatched via streamDelta
+    expect(streamDeltaSpy).toHaveBeenCalledTimes(2);
+    expect(streamDeltaSpy.mock.calls[0]).toEqual(["hello", "text"]);
+    expect(streamDeltaSpy.mock.calls[1]).toEqual([" world", "text"]);
+  });
+
+  test("tool lifecycle events go through the batcher", async () => {
+    const store = createStore(createInitialState());
+    const flushed: EngineEvent[] = [];
+    const batcher = createEventBatcher<EngineEvent>((batch) => {
+      flushed.push(...batch);
+    });
+
+    const events: EngineEvent[] = [
+      {
+        kind: "tool_call_start",
+        callId: "c1" as import("@koi/core").ToolCallId,
+        toolName: "Bash",
+      } as EngineEvent,
+      { kind: "tool_call_end", callId: "c1" as import("@koi/core").ToolCallId } as EngineEvent,
+    ];
+    await drainEngineStream(makeStream(events), store, batcher);
+    batcher.flushSync();
+
     expect(flushed.length).toBe(2);
-    expect(flushed[0]).toEqual({ kind: "text_delta", delta: "hello" });
+    expect((flushed[0] as { kind: string }).kind).toBe("tool_call_start");
   });
 });
 
@@ -99,33 +126,33 @@ describe("drainEngineStream — error path", () => {
 // ---------------------------------------------------------------------------
 
 describe("drainEngineStream — flush ordering", () => {
-  test("flushes events before setting disconnected", async () => {
+  test("lifecycle events are flushed separately via batcher", async () => {
     const store = createStore(createInitialState());
-    const flushed: EngineEvent[] = [];
+    const flushBatches: EngineEvent[][] = [];
     const batcher = createEventBatcher<EngineEvent>((batch) => {
-      flushed.push(...batch);
+      flushBatches.push([...batch]);
     });
 
-    let disconnectedAtFlushCount = -1;
-    const origDispatch = store.dispatch.bind(store);
-    const dispatchSpy = mock((action: Parameters<typeof store.dispatch>[0]) => {
-      if (
-        typeof action === "object" &&
-        action !== null &&
-        (action as { kind: string }).kind === "set_connection_status" &&
-        (action as { status: string }).status === "disconnected"
-      ) {
-        disconnectedAtFlushCount = flushed.length;
-      }
-      return origDispatch(action);
-    });
-    // @ts-expect-error — spy replaces dispatch for this test
-    store.dispatch = dispatchSpy;
-
-    const events: EngineEvent[] = [{ kind: "text_delta", delta: "x" }];
+    // turn_start and done should each be flushed as separate batches
+    const events: EngineEvent[] = [
+      { kind: "turn_start", turnIndex: 0 } as EngineEvent,
+      { kind: "text_delta", delta: "x" },
+      {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+        },
+      } as EngineEvent,
+    ];
     await drainEngineStream(makeStream(events), store, batcher);
 
-    expect(disconnectedAtFlushCount).toBeGreaterThan(0);
+    // turn_start and done should each be in their own flush batch
+    // text_delta bypasses the batcher entirely (goes to store.streamDelta)
+    const lifecycleKinds = flushBatches.map((b) => b.map((e) => e.kind));
+    expect(lifecycleKinds).toContainEqual(["turn_start"]);
+    expect(lifecycleKinds).toContainEqual(["done"]);
   });
 });
 
@@ -176,12 +203,10 @@ describe("drainEngineStream — abort handling", () => {
     expect(store.getState().connectionStatus).toBe("disconnected");
   });
 
-  test("flushes buffered events before handling abort", async () => {
+  test("streamDelta is called for text_delta before abort", async () => {
     const store = createStore(createInitialState());
-    const flushed: EngineEvent[] = [];
-    const batcher = createEventBatcher<EngineEvent>((batch) => {
-      flushed.push(...batch);
-    });
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const streamDeltaSpy = spyOn(store, "streamDelta");
 
     async function* abortAfterEvent(): AsyncGenerator<EngineEvent> {
       yield { kind: "text_delta", delta: "flushed" } as EngineEvent;
@@ -190,9 +215,9 @@ describe("drainEngineStream — abort handling", () => {
 
     await drainEngineStream(abortAfterEvent(), store, batcher);
 
-    // The event yielded before abort should still be flushed
-    expect(flushed.length).toBe(1);
-    expect(flushed[0]).toEqual({ kind: "text_delta", delta: "flushed" });
+    // The text_delta yielded before abort should have reached store.streamDelta
+    expect(streamDeltaSpy).toHaveBeenCalledTimes(1);
+    expect(streamDeltaSpy.mock.calls[0]).toEqual(["flushed", "text"]);
   });
 
   test("bails out when batcher is disposed mid-stream — #1742", async () => {
@@ -254,12 +279,13 @@ describe("drainEngineStream — abort handling", () => {
     expect(errorCalls.length).toBe(0);
   });
 
-  test("processes all events including tool lifecycle events", async () => {
+  test("routes text_delta to streamDelta and tool events to batcher", async () => {
     const store = createStore(createInitialState());
     const flushed: EngineEvent[] = [];
     const batcher = createEventBatcher<EngineEvent>((batch) => {
       flushed.push(...batch);
     });
+    const streamDeltaSpy = spyOn(store, "streamDelta");
 
     const events: EngineEvent[] = [
       { kind: "text_delta", delta: "I'll " } as EngineEvent,
@@ -274,7 +300,91 @@ describe("drainEngineStream — abort handling", () => {
     await drainEngineStream(makeStream(events), store, batcher);
     batcher.flushSync();
 
-    expect(flushed.length).toBe(4);
-    expect((flushed[1] as { kind: string }).kind).toBe("tool_call_start");
+    // text_delta → streamDelta (2 calls)
+    expect(streamDeltaSpy).toHaveBeenCalledTimes(2);
+    // tool events → batcher (2 events)
+    expect(flushed.length).toBe(2);
+    expect((flushed[0] as { kind: string }).kind).toBe("tool_call_start");
+    expect((flushed[1] as { kind: string }).kind).toBe("tool_call_end");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeRunReport — bounded TUI summary, no full JSON.stringify (#1764)
+// ---------------------------------------------------------------------------
+
+describe("summarizeRunReport", () => {
+  test("includes summary text and counts when present", () => {
+    const out = summarizeRunReport({
+      summary: "Finished refactor",
+      actions: { length: 3 },
+      artifacts: { length: 1 },
+      issues: { length: 0 },
+      recommendations: { length: 2 },
+      childReports: { length: 4 },
+      cost: { totalTokens: 1234 },
+    });
+    expect(out).toContain("Finished refactor");
+    expect(out).toContain("actions=3");
+    expect(out).toContain("artifacts=1");
+    expect(out).toContain("issues=0");
+    expect(out).toContain("recs=2");
+    expect(out).toContain("children=4");
+    expect(out).toContain("tokens=1234");
+  });
+
+  test("output is bounded regardless of summary text length", () => {
+    const longSummary = "x".repeat(10_000);
+    const out = summarizeRunReport({
+      summary: longSummary,
+      actions: { length: 1 },
+      artifacts: { length: 1 },
+      issues: { length: 1 },
+      recommendations: { length: 1 },
+      cost: { totalTokens: 99 },
+    });
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toContain("…");
+  });
+
+  test("output is bounded for deeply nested childReports without serializing", () => {
+    // Construct a deeply nested report. If the function ever regresses to
+    // JSON.stringify(runReport), this test would either OOM or take >>1 ms.
+    function nest(depth: number): {
+      readonly summary: string;
+      readonly actions: { length: number };
+      readonly artifacts: { length: number };
+      readonly issues: { length: number };
+      readonly recommendations: { length: number };
+      readonly childReports: { length: number };
+      readonly cost: { totalTokens: number };
+    } {
+      return {
+        summary: "child",
+        actions: { length: 1 },
+        artifacts: { length: 0 },
+        issues: { length: 0 },
+        recommendations: { length: 0 },
+        childReports: { length: depth },
+        cost: { totalTokens: depth },
+      };
+    }
+    const start = Date.now();
+    const out = summarizeRunReport(nest(50_000));
+    const ms = Date.now() - start;
+    expect(out.length).toBeLessThanOrEqual(300);
+    // Should be effectively instant — no full-tree serialization.
+    expect(ms).toBeLessThan(50);
+  });
+
+  test("works when no summary text is provided", () => {
+    const out = summarizeRunReport({
+      actions: { length: 0 },
+      artifacts: { length: 0 },
+      issues: { length: 0 },
+      recommendations: { length: 0 },
+      cost: { totalTokens: 0 },
+    });
+    expect(out).toBe("actions=0 artifacts=0 issues=0 recs=0 children=0 tokens=0");
   });
 });

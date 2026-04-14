@@ -57,6 +57,10 @@ function makeRequest(toolId: string, input: JsonObject): ToolRequest {
   return { toolId, input };
 }
 
+function makeRequestWithCallId(toolId: string, input: JsonObject, callId: string): ToolRequest {
+  return { toolId, input, callId };
+}
+
 const PASSTHROUGH_RESPONSE: ToolResponse = { output: { ok: true } };
 const passthroughHandler = async (_req: ToolRequest): Promise<ToolResponse> => PASSTHROUGH_RESPONSE;
 
@@ -183,6 +187,80 @@ describe("checkpoint middleware", () => {
       expect(op.path).toBe(target);
       expect(op.postContentHash).toMatch(/^[a-f0-9]{64}$/);
     }
+  });
+
+  test("fileOps record preserves ToolRequest.callId from the dedicated field (#1759)", async () => {
+    const session = makeSession();
+    const ctx = makeTurn(session);
+    const target = join(rig.workDir, "with-callid.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    await wrap(
+      ctx,
+      makeRequestWithCallId("fs_write", { path: target, content: "hi" }, "call-real-001"),
+      async () => {
+        writeFileSync(target, "hi");
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+    await onAfter(ctx);
+
+    const head = rig.store.head(chainId(String(session.sessionId)));
+    if (!head.ok || head.value === undefined) throw new Error("no head");
+    const op = head.value.data.fileOps[0];
+    expect(op).toBeDefined();
+    // The fileOp must carry the real callId from ToolRequest.callId,
+    // not a synthetic placeholder. Without the round-7 fix, callId
+    // would have been undefined → fall through to `synth-${uuid}`.
+    expect(op?.callId as string | undefined).toBe("call-real-001");
+  });
+
+  test("fileOps record falls back to metadata.callId for legacy callers", async () => {
+    const session = makeSession();
+    const ctx = makeTurn(session);
+    const target = join(rig.workDir, "legacy.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Older caller path: callId in metadata, no top-level callId field.
+    await wrap(
+      ctx,
+      {
+        toolId: "fs_write",
+        input: { path: target, content: "legacy" },
+        metadata: { callId: "call-legacy-001" },
+      },
+      async () => {
+        writeFileSync(target, "legacy");
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+    await onAfter(ctx);
+
+    const head = rig.store.head(chainId(String(session.sessionId)));
+    if (!head.ok || head.value === undefined) throw new Error("no head");
+    const op = head.value.data.fileOps[0];
+    expect(op?.callId as string | undefined).toBe("call-legacy-001");
+  });
+
+  test("fileOps record falls back to synthetic UUID when no callId is set", async () => {
+    const session = makeSession();
+    const ctx = makeTurn(session);
+    const target = join(rig.workDir, "no-callid.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    await wrap(ctx, makeRequest("fs_write", { path: target, content: "anon" }), async () => {
+      writeFileSync(target, "anon");
+      return PASSTHROUGH_RESPONSE;
+    });
+    await onAfter(ctx);
+
+    const head = rig.store.head(chainId(String(session.sessionId)));
+    if (!head.ok || head.value === undefined) throw new Error("no head");
+    const op = head.value.data.fileOps[0];
+    expect(op?.callId).toMatch(/^synth-/);
   });
 
   test("fs_edit that modifies content is captured as an edit record", async () => {

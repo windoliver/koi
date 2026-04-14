@@ -7,6 +7,7 @@ import type { ContentBlock } from "@koi/core/message";
 import type { Accessor, JSX } from "solid-js";
 import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
+import { useTuiStore } from "../store-context.js";
 import { ErrorBlock } from "./error-block.js";
 import { SpawnBlock } from "./SpawnBlock.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
@@ -35,6 +36,7 @@ function AssistantBlock(props: {
   readonly streaming?: boolean | undefined;
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
+  const showThinking = useTuiStore((s) => s.showThinking);
   return (
     <Switch>
       <Match when={props.block.kind === "text" ? (props.block as TextBlock_) : undefined}>
@@ -47,7 +49,15 @@ function AssistantBlock(props: {
         )}
       </Match>
       <Match when={props.block.kind === "thinking" ? (props.block as ThinkingBlock_) : undefined}>
-        {(b: Accessor<ThinkingBlock_>) => <ThinkingBlock text={b().text} />}
+        {(b: Accessor<ThinkingBlock_>) => (
+          <Show when={showThinking()}>
+            <ThinkingBlock
+              text={b().text}
+              streaming={props.streaming}
+              syntaxStyle={props.syntaxStyle}
+            />
+          </Show>
+        )}
       </Match>
       <Match when={props.block.kind === "tool_call" ? (props.block as ToolCallBlock_) : undefined}>
         {(b: Accessor<ToolCallBlock_>) => (
@@ -126,9 +136,15 @@ function AssistantMessage(props: {
   readonly treeSitterClient?: TreeSitterClient | undefined;
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
-  // Show thinking indicator while streaming with no content yet
-  const isThinking = () =>
-    props.message.streaming && props.message.blocks.length === 0;
+  const showThinking = useTuiStore((s) => s.showThinking);
+  // Show thinking indicator while streaming with no visible content yet.
+  // When showThinking is off, thinking blocks are hidden — count only
+  // visible blocks so the spinner shows during reasoning-only turns.
+  const hasVisibleBlocks = () => {
+    if (showThinking()) return props.message.blocks.length > 0;
+    return props.message.blocks.some((b) => b.kind !== "thinking");
+  };
+  const isThinking = () => props.message.streaming && !hasVisibleBlocks();
 
   // Track thinking duration (like Claude Code's "thought for 3s")
   // `let` justified: mutable timestamp for duration calculation
@@ -178,6 +194,20 @@ function AssistantMessage(props: {
           />
         )}
       </For>
+      {/* When thinking is hidden and it was the only content, show a
+          minimal placeholder so the transcript doesn't have an invisible row. */}
+      <Show
+        when={
+          !showThinking() &&
+          !props.message.streaming &&
+          props.message.blocks.length > 0 &&
+          !hasVisibleBlocks()
+        }
+      >
+        <text fg="gray">
+          <i>∴ (thinking hidden)</i>
+        </text>
+      </Show>
     </box>
   );
 }

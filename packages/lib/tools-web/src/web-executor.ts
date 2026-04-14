@@ -69,6 +69,8 @@ export interface WebFetchResult {
   readonly truncated: boolean;
   /** Final URL after redirects (may differ from requested URL). */
   readonly finalUrl: string;
+  /** True when this result was served from the in-memory LRU cache. */
+  readonly cached: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +182,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         (method === "GET" || method === "HEAD")
       ) {
         const cached = fetchCache.get(cacheKey);
-        if (cached !== undefined) return { ok: true, value: cached };
+        if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -243,6 +245,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           body,
           truncated,
           finalUrl: result.value.finalUrl,
+          cached: false,
         };
 
         if (

@@ -22,6 +22,7 @@ function successResponse(
       body,
       truncated: false,
       finalUrl: "https://example.com",
+      cached: false,
       ...extras,
     },
   };
@@ -248,6 +249,24 @@ describe("createWebFetchTool", () => {
         finalUrl: string;
       };
       expect(result.finalUrl).toBe("https://example.com/redirected");
+    });
+
+    test("propagates cached flag from executor", async () => {
+      const missTool = createWebFetchTool(
+        mockExecutor(successResponse("ok", "text/plain", { cached: false })),
+        "web",
+        POLICY,
+      );
+      const miss = (await missTool.execute({ url: "https://example.com" })) as { cached: boolean };
+      expect(miss.cached).toBe(false);
+
+      const hitTool = createWebFetchTool(
+        mockExecutor(successResponse("ok", "text/plain", { cached: true })),
+        "web",
+        POLICY,
+      );
+      const hit = (await hitTool.execute({ url: "https://example.com" })) as { cached: boolean };
+      expect(hit.cached).toBe(true);
     });
   });
 

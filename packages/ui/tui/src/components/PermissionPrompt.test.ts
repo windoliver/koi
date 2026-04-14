@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatInputPreview, processPermissionKey } from "./PermissionPrompt.js";
+import { formatInputPreview, normalizeReason, processPermissionKey } from "./PermissionPrompt.js";
 
 // ---------------------------------------------------------------------------
 // processPermissionKey
@@ -64,5 +64,38 @@ describe("formatInputPreview", () => {
     const result = formatInputPreview({ a: "b", c: "d" }, 10);
     expect(result.length).toBeLessThanOrEqual(16);
     expect(result).toContain("...");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeReason — preserves the FULL reason text at the approval boundary
+// while collapsing whitespace so the prompt UI can render it cleanly. No
+// truncation: long reasons must remain visible because the distinguishing
+// detail can be at the end of the string. (#1759 review round 8)
+// ---------------------------------------------------------------------------
+
+describe("normalizeReason", () => {
+  test("returns short reasons unchanged", () => {
+    expect(normalizeReason("No matching permission rule")).toBe("No matching permission rule");
+  });
+
+  test("collapses internal whitespace", () => {
+    expect(normalizeReason("AST  walker\n  failed")).toBe("AST walker failed");
+  });
+
+  test("preserves the full reason text — does NOT truncate", () => {
+    const long = "x".repeat(500);
+    const out = normalizeReason(long);
+    expect(out.length).toBe(500);
+    expect(out).toBe(long);
+  });
+
+  test("preserves a long policy reason verbatim including the trailing detail", () => {
+    const reason =
+      "AST walker cannot safely analyse this command (declaration_command): unsupported statement: declare -i x=10";
+    const out = normalizeReason(reason);
+    // The distinguishing trailing detail must survive normalization.
+    expect(out).toContain("declare -i x=10");
+    expect(out.length).toBe(reason.length);
   });
 });

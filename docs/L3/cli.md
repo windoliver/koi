@@ -129,10 +129,13 @@ session. Plugin middleware names are collected but not resolved (no factory regi
 Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
 conversation history, command palette (Ctrl+P), and view switching (sessions, doctor, help).
 
-**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with frame-rate-limited
-yielding (flush + yield every 16ms for text/thinking/tool events) so OpenTUI can paint intermediate
-frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store uses `reconcile()` for
-fine-grained signal updates.
+**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with render-aligned
+yielding (16ms, matching OpenTUI's frame cadence). Text/thinking deltas bypass the batcher and go
+directly to `store.streamDelta()` (O(1) `produce()`-based path setter), while lifecycle events
+(`turn_start`/`turn_end`/`done`) are flushed in isolation. Burst detection ensures at least one
+mid-stream paint per HTTP chunk. On OpenRouter, `reasoning: { effort }` is enabled so models
+that support extended thinking return reasoning tokens rendered as a ThinkingBlock (toggleable
+via `/thinking`).
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
 (session-scoped); PageUp/PageDown pauses auto-scroll. Ctrl+C copies selected text to clipboard
@@ -172,7 +175,7 @@ Engine adapter is wired directly from environment variables. Manifest-based
 - Runtime assembly is delegated to `createTuiRuntime()` (`tui-runtime.ts`), which wires the full L2 tool stack including memory-tools (in-memory backend), spawn-tools (stub spawn function), semantic-retry middleware, hook observer (ATIF recording of hook executions), and hooks loaded from `~/.koi/hooks.json`.
 - Submitting a message streams a real model response via `@koi/model-openai-compat` + `@koi/runtime`.
 - Tree-sitter client is initialized at startup (`getTreeSitterClient()` + `initialize()`), enabling `<markdown>` rendering with full prose, headings, code fences, and tables in assistant text blocks.
-- Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten) are extracted from JSON results via `getResultDisplay()`.
+- Tool call results are displayed with structured title/subtitle/chips (e.g., `✓ Read  package.json`, `✓ Shell  echo hello`) via `getToolDisplay()` mapper. Result metadata chips (exitCode, status, bytesWritten, cached) are extracted from JSON results via `getResultDisplay()`. Boolean chips `cached` and `truncated` are quiet-false: only rendered when `true`, so the default 3-chip budget still surfaces the meaningful signal for `web_fetch` results.
 - Engine events are batch-dispatched via `store.dispatchBatch()` — the EventBatcher flushes all events in one pass with a single store notification, avoiding N signal invalidations per 16ms window.
 - A system prompt middleware (`createSystemPromptMiddleware`) is injected that tells the model it has tool access and should use tools rather than answering from memory.
 - **Tools wired:** Glob, Grep, web_fetch, Bash, fs_read/write/edit (via `createRuntime`), task_create/get/update/list/stop/output/delegate (via `@koi/task-tools`), and **TodoWrite**.
@@ -359,7 +362,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/model-openai-compat` | L2 | OpenAI-compatible model adapter (OpenRouter) |
 | `@koi/query-engine` | L2 | `runTurn()` — model→tool→model agent loop, doom loop detection (#1593), tool arg type coercion (#1611) |
 | `@koi/tools-builtin` | L2 | Built-in tools: Glob, Grep, Read, ToolSearch |
-| `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider |
+| `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider. `task_update(completed)` defaults `output` when omitted (#1785) |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
 | `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
@@ -541,3 +544,17 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 >   - Shutdown wraps `runtime.dispose()` in a try/catch so the new fail-closed timeout path doesn't bypass `approvalStore.close()` / `process.exit()`. The 8s hard-exit failsafe is the ultimate backstop.
 >
 > The PR went through three full adversarial review loops (30 rounds, 30 commits) hardening race windows around `/clear`, dispose, and resume. See PR #1745 for the full review trail.
+
+> **TUI permission bridge lifecycle + 60-minute approval window (#1759):** `createPermissionBridge({ timeoutMs: 60 * 60 * 1000 })` — long enough that realistic user decisions never trigger the fail-closed path, but finite so a wedged renderer / stuck bridge eventually aborts the turn. The matching 60-minute engine-side `approvalTimeoutMs` is passed to `createPermissionsMiddleware` in `tui-runtime.ts` so both layers share the same deadline. `abortActiveStream` now calls `permissionBridge.cancelPending("Turn cancelled by user")` AFTER `activeController.abort()` so the middleware's signal race wins (produces `stopReason: "interrupted"` rather than a synthetic permission deny). `resetConversation` adds a matching `cancelPending("Session reset")` so `agent:clear` / `session:new` / resume cannot leave a stale 60-minute approval modal on screen. `ToolRequest.callId` is threaded through the turn-runner so the TUI can dispatch per-call `tool_execution_started` reducer actions on approval; the dedicated field keeps the identifier out of the approval cache and backend policy context. See `docs/L2/tui.md` and `docs/L2/middleware-permissions.md` for the full semantics.
+
+> **Trajectory session-leak guards + reset UX polish (#1764):**
+>
+> - **Session-validated `trajectoryStore` wrapper.** `createDecisionLedger()` in `tui-runtime.ts` now wraps the shared in-memory `trajectoryStore` so its `getDocument(docId)` compares `docId` against the live `runtime.sessionId` before returning data. The TUI stores all trajectory records under the fixed `TUI_DOC_ID` key ("koi-tui-session"), so a mismatch (stale/cross-session read after `session:new` or resume) would otherwise silently serve the global document and leak the prior session's steps into a freshly cleared lane. On mismatch, the wrapper returns `[]` so the caller's `set_trajectory_data` dispatch produces an empty lane instead of a leak.
+>
+> - **`trajectoryRefreshGen` stale-refresh guard.** Every call to `resetConversation()` bumps a monotonic `trajectoryRefreshGen` counter eagerly (before the async `cycleSession()` dispatches and before the post-settle store clears). Each fire-and-forget `refreshTrajectoryData(...)` call captures the generation at scheduling time and passes an `isStillCurrent()` closure into the refresh; the refresh skips its `set_trajectory_data` dispatch if the generation has advanced. Without this, a 500 ms post-turn refresh scheduled before `/clear` could race ahead of the reset and repopulate the just-cleared lanes with that turn's data. The bump fires immediately (not inside the success branch) so a refresh landing in the window between `/clear` invocation and `resetSessionState` resolution is still invalidated.
+>
+> - **`summarizeRunReport(runReport)`.** `refreshTrajectoryData` no longer calls `JSON.stringify(runReport).slice(0, 300)` for the `/trajectory` run-report lane. A delegated run with a deeply nested `childReports` tree could spike CPU/memory walking the tree on every refresh. The new helper picks high-level summary text (truncated to 180 chars), action / artifact / issue / recommendation counts, child-report count, and total token usage — bounded to 300 chars regardless of input depth. Unit-tested in `tui-command.test.ts` with a 50,000-deep synthetic report to assert output is still bounded and completes in <50 ms.
+>
+> - **`TrajectoryView` render hardening.** Fixed two compounding bugs that crashed `/trajectory` on first open (or nav-away-back to it): (1) the ledger-source `<Show>` re-read `ledgerSources()` inside its children closure and cast the result as `LedgerSources`, which NPE'd when the signal rotated null during a reset before Show unmounted — switched to the keyed form `when={ledgerSources()}` + accessor param so children only see the frozen non-null value; (2) OpenTUI rejects `<text>` nested inside `<text>` — the source-status row embedded styled child `<text>` elements inside an outer `<text>` and threw "only accepts strings, TextNodeRenderable instances, or StyledText instances" on render. Flattened into a `flexDirection="row"` box with sibling text elements, matching `TurnHeaderRow` / `StepRow`.
+>
+> - **`RESET_NOTICE` toast removed.** #1742's post-reset `add_error` dispatch warning about cumulative token spend was removed. `ErrorBlock` renders every `add_error` as red "Error: CODE" — mislabeled a successful `/clear` as a failure. If the runtime-wide spend cap is later exceeded, the budget-exceeded error itself surfaces the explanation. `/clear` is silent on success (matches Claude Code).

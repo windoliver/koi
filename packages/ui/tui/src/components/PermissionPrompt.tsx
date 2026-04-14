@@ -78,6 +78,18 @@ export function formatInputPreview(input: Record<string, unknown>, maxLength = 2
   return json.slice(0, maxLength) + "\n  ...";
 }
 
+/**
+ * Normalize whitespace in a permission reason string for display: collapse
+ * runs of whitespace to single spaces and trim leading/trailing whitespace.
+ * Does NOT truncate — the full text must be visible at the approval
+ * boundary (the distinguishing detail can be near the end of the string).
+ * The component's `<text>` element is responsible for line-wrapping.
+ * (#1759 review round 8)
+ */
+export function normalizeReason(reason: string): string {
+  return reason.replace(/\s+/g, " ").trim();
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -112,18 +124,48 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
       <box flexDirection="row" gap={1}>
         <text fg={COLORS.white}><b>{"Permission Required"}</b></text>
         <text fg={riskColor()}>{`[${riskLabel()}]`}</text>
+        {/* Counter hint — shows queue position when multiple prompts are
+            pending in the bridge queue, OR the monotonically incrementing
+            sequence number when prompts arrive one at a time (the common
+            engine-serialized case). Lets the user tell that the prompt
+            that appeared after pressing y is a NEW tool call, not a
+            re-render of the same one. (#1759) */}
+        <Show
+          when={(props.prompt.queueDepth ?? 0) > 1}
+          fallback={
+            <Show when={props.prompt.sequenceNumber !== undefined}>
+              <text fg={COLORS.amber}>{`#${props.prompt.sequenceNumber}`}</text>
+            </Show>
+          }
+        >
+          <text fg={COLORS.amber}>
+            {`(${props.prompt.queuePosition ?? 1} of ${props.prompt.queueDepth})`}
+          </text>
+        </Show>
       </box>
 
       {/* Tool info */}
       <box flexDirection="column" marginTop={1}>
         <text fg={COLORS.textSecondary}>{`Tool: `}<b>{props.prompt.toolId}</b></text>
-        <text fg={COLORS.textSecondary}>{`Reason: ${props.prompt.reason}`}</text>
       </box>
 
       {/* Args preview */}
       <box marginTop={1}>
         <text fg={COLORS.textMuted}>{`Arguments:\n${inputPreview()}`}</text>
       </box>
+
+      {/* Reason — kept visible at the approval boundary as a safety
+          signal (round-3 + round-8 reviews of #1759). Rendered in dim
+          text without a prominent "Reason:" label so it doesn't dominate
+          the prompt the way the original two-line layout did, but the
+          full text is preserved (no truncation) and wraps naturally so
+          the user can see the distinguishing detail at the END of long
+          policy explanations (path / rule / host that triggered the ask). */}
+      <Show when={props.prompt.reason !== undefined && props.prompt.reason !== ""}>
+        <box marginTop={1}>
+          <text fg={COLORS.textMuted}>{`↳ ${normalizeReason(props.prompt.reason)}`}</text>
+        </box>
+      </Show>
 
       {/* Key hints — always-allow copy explicitly names the tool and scope */}
       <Show when={props.focused}>

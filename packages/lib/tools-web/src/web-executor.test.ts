@@ -603,6 +603,20 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(1);
   });
 
+  test("marks cache hits with cached=true and misses with cached=false", async () => {
+    const fetchFn = mock(
+      async () => new Response("body", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const first = await executor.fetch("https://example.com");
+    const second = await executor.fetch("https://example.com");
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (first.ok) expect(first.value.cached).toBe(false);
+    if (second.ok) expect(second.value.cached).toBe(true);
+  });
+
   test("does not cache when cacheTtlMs is 0", async () => {
     let callCount = 0;
     const fetchFn = mock(async () => {

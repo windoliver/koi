@@ -44,5 +44,6 @@ export function createInitialState(): TuiState {
     auditEntries: [],
     ledgerSources: null,
     runReportSummary: null,
+    showThinking: true,
   };
 }

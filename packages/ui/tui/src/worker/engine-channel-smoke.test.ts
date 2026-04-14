@@ -21,6 +21,7 @@ const noopBridge: PermissionBridge = {
   handler: () => Promise.resolve({ kind: "allow" }),
   respond: () => {},
   dispose: () => {},
+  cancelPending: () => {},
   pendingCount: () => 0,
 };
 

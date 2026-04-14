@@ -52,6 +52,15 @@ export const DEFAULT_CACHE_CONFIG: Required<PermissionCacheConfig> = {
 export const DEFAULT_APPROVAL_CACHE_TTL_MS: number = 300_000;
 export const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number = 256;
 
+/**
+ * Default approval timeout — 30s fail-closed deny. Agent-to-agent callers
+ * and non-interactive flows use this default so a stuck/disconnected
+ * approval handler never wedges a turn indefinitely.
+ *
+ * Interactive TUIs that want unbounded user-decision time must opt in
+ * explicitly by passing `approvalTimeoutMs: Number.POSITIVE_INFINITY`
+ * (see `packages/meta/cli/src/tui-runtime.ts` for the TUI wiring). (#1759)
+ */
 export const DEFAULT_APPROVAL_TIMEOUT_MS: number = 30_000;
 
 export const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number = 3;

@@ -1,4 +1,5 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
+import type { EngineEvent } from "@koi/core/engine";
 import { createInitialState } from "./initial.js";
 import { createStore } from "./store.js";
 
@@ -206,5 +207,128 @@ describe("TuiStore — re-entrancy", () => {
     await flushMicrotasks();
     expect(store.getState().activeView).toBe("sessions");
     expect(store.getState().layoutTier).toBe("compact");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamDelta — fast-path streaming text updates
+// ---------------------------------------------------------------------------
+
+/** Dispatch a turn_start to create a streaming assistant message. */
+function startStreaming(store: ReturnType<typeof createStore>): void {
+  const turnStart: EngineEvent = { kind: "turn_start", turnIndex: 0 };
+  store.dispatch({ kind: "engine_event", event: turnStart });
+}
+
+describe("TuiStore — streamDelta", () => {
+  test("appends text to existing text block via fast path", () => {
+    const store = makeStore();
+    startStreaming(store);
+    // First delta creates the block (falls back to reconcile)
+    store.streamDelta("Hello", "text");
+    // Second delta uses fast path (produce)
+    store.streamDelta(" world", "text");
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.blocks.length).toBe(1);
+      expect(last.blocks[0]?.kind).toBe("text");
+      if (last.blocks[0]?.kind === "text") {
+        expect(last.blocks[0].text).toBe("Hello world");
+      }
+    }
+  });
+
+  test("appends thinking delta to existing thinking block", () => {
+    const store = makeStore();
+    startStreaming(store);
+    store.streamDelta("thinking...", "thinking");
+    store.streamDelta(" more", "thinking");
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    if (last?.kind === "assistant") {
+      expect(last.blocks[0]?.kind).toBe("thinking");
+      if (last.blocks[0]?.kind === "thinking") {
+        expect(last.blocks[0].text).toBe("thinking... more");
+      }
+    }
+  });
+
+  test("empty delta is a no-op", () => {
+    const store = makeStore();
+    startStreaming(store);
+    store.streamDelta("Hello", "text");
+    store.streamDelta("", "text");
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    if (last?.kind === "assistant") {
+      expect(last.blocks.length).toBe(1);
+      if (last.blocks[0]?.kind === "text") {
+        expect(last.blocks[0].text).toBe("Hello");
+      }
+    }
+  });
+
+  test("falls back to reconcile when block kind changes (text after thinking)", () => {
+    const store = makeStore();
+    startStreaming(store);
+    store.streamDelta("hmm", "thinking");
+    // Text after thinking — creates a new block (structural change → reconcile fallback)
+    store.streamDelta("answer", "text");
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    if (last?.kind === "assistant") {
+      expect(last.blocks.length).toBe(2);
+      expect(last.blocks[0]?.kind).toBe("thinking");
+      expect(last.blocks[1]?.kind).toBe("text");
+    }
+  });
+
+  test("falls back to reconcile when no assistant message exists", () => {
+    const store = makeStore();
+    // No turn_start — streamDelta creates an implicit assistant message via reducer
+    store.streamDelta("orphan", "text");
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    expect(last?.kind).toBe("assistant");
+    if (last?.kind === "assistant") {
+      expect(last.blocks[0]?.kind).toBe("text");
+      if (last.blocks[0]?.kind === "text") {
+        expect(last.blocks[0].text).toBe("orphan");
+      }
+    }
+  });
+
+  test("snapshot stays consistent after fast-path deltas", () => {
+    const store = makeStore();
+    startStreaming(store);
+    store.streamDelta("a", "text");
+    store.streamDelta("b", "text");
+    store.streamDelta("c", "text");
+    // Now dispatch a non-delta event — reconcile should not overwrite the text
+    const turnEnd: EngineEvent = { kind: "turn_end", turnIndex: 0 };
+    store.dispatch({ kind: "engine_event", event: turnEnd });
+    const messages = store.getState().messages;
+    const last = messages[messages.length - 1];
+    if (last?.kind === "assistant") {
+      expect(last.streaming).toBe(false);
+      if (last.blocks[0]?.kind === "text") {
+        expect(last.blocks[0].text).toBe("abc");
+      }
+    }
+  });
+
+  test("notifies subscribers after streamDelta", async () => {
+    const store = makeStore();
+    const listener = mock(() => {});
+    store.subscribe(listener);
+    startStreaming(store);
+    await flushMicrotasks();
+    listener.mockClear();
+
+    store.streamDelta("hi", "text");
+    await flushMicrotasks();
+    expect(listener).toHaveBeenCalled();
   });
 });

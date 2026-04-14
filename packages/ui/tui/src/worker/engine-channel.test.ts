@@ -68,6 +68,7 @@ function makePermissionBridge(decision: ApprovalDecision): PermissionBridge {
     handler: mock(() => Promise.resolve(decision)),
     respond: mock(() => {}),
     dispose: mock(() => {}),
+    cancelPending: mock(() => {}),
     pendingCount: mock(() => 0),
   };
 }
@@ -266,6 +267,7 @@ describe("EngineChannel — approvals", () => {
       handler: pendingHandler,
       respond: mock(() => {}),
       dispose: disposeMock,
+      cancelPending: mock(() => {}),
       pendingCount: mock(() => 0),
     };
 
@@ -309,6 +311,7 @@ describe("EngineChannel — approvals", () => {
       handler: mock(() => Promise.reject(new Error("bridge disposed"))),
       respond: mock(() => {}),
       dispose: mock(() => {}),
+      cancelPending: mock(() => {}),
       pendingCount: mock(() => 0),
     };
     const store = createStore(createInitialState());

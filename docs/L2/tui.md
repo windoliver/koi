@@ -32,6 +32,7 @@ EngineEvent (from @koi/core)
 │  - getState()        │     returns reactive proxy
 │  - dispatch(action)  │     reducer + reconcile() deep-diff
 │  - dispatchBatch()   │     reduces N actions, single reconcile
+│  - streamDelta()     │     O(1) produce()-based text append
 │  - subscribe(fn)     │     external listener (non-Solid consumers)
 └──────────────────────┘
            │
@@ -46,7 +47,8 @@ EngineEvent (from @koi/core)
 ### Streaming Features
 
 - **Thinking indicator**: animated `⠹ Thinking…` spinner while waiting for first token
-- **Progressive streaming**: frame-rate-limited flush+yield (16ms) for all streaming events
+- **Thinking block**: displays model reasoning with left border, toggleable via `/thinking`
+- **Progressive streaming**: text/thinking deltas bypass batcher via `streamDelta()` (O(1) produce()); lifecycle events flushed in isolation; render-aligned yields (16ms)
 - **Code block isolation**: splits at unclosed fence, memoizes stable head
 - **Markdown healing**: code-aware closer for unclosed formatting (width-aware fences)
 - **Accordion collapse**: tool results collapsed by default (Ctrl+E toggle-all)
@@ -317,7 +319,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 |-----------|---------|-------------|
 | `TextBlock` | Text/markdown | `<text>` baseline; `<markdown>` only when BOTH `syntaxStyle` AND `treeSitterClient` are provided. `<markdown>` without `treeSitterClient` blanks paragraph text — the guard prevents silent prose regression until tree-sitter is wired (#1542) |
 | `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
-| `ToolCallBlock` | Tool lifecycle | Structured title/subtitle/chips display on completion; raw toolName during streaming. Result chips extracted from JSON results. `HighlightedText` helper for syntax-highlighted fallback |
+| `ToolCallBlock` | Tool lifecycle | Structured title/subtitle/chips display on completion; raw toolName during streaming. Result chips extracted from JSON results (capped at 3; boolean keys `cached`/`truncated` are quiet-false — only rendered when `true` so they don't displace other chips). `HighlightedText` helper for syntax-highlighted fallback |
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
 | `MessageList` | Conversation | `<scrollbox stickyScroll stickyStart="bottom">` — new messages always scroll into view; `stickyStart="bottom"` sets `_stickyScrollBottom=true` on init so the scrollbox follows the bottom rather than the top |
@@ -553,3 +555,27 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > **Per-turn collapsible trajectory view (PR #1758):** `TrajectoryView` rewritten from a flat step list to a two-level collapsible tree grouped by user turn. `TrajectoryStepSummary` gains `readonly turnIndex: number` (0 = setup, 1+ = user turns). Turn headers show aggregate metrics (step count, duration, tokens in/out) and toggle expand/collapse with Enter. Steps render indented under their turn header with per-step detail expansion. `createEffect(on(turns, ...))` auto-expands each new turn as it appears during live sessions. Synthetic `koi:tui_turn_start` boundary steps (injected by the CLI before each `run()`) are filtered from the display. `createScrollableList` reused unchanged — it navigates the interleaved flat list of turn headers + step rows.
 
 > **`/clear` race + reset hardening (#1742):** `EventBatcher` gains a public `readonly isDisposed: boolean` getter so the host's `drainEngineStream` can detect mid-stream disposal and bail out cleanly instead of feeding events into a dead sink. The host (`packages/meta/cli/src/tui-command.ts`) consumes this signal to (1) finalize an abandoned stream with a synthetic `done` event so the reducer leaves "processing" state even when the batcher was disposed during a failed `/clear`, (2) defer destructive UI mutations (`clear_messages`, `set_trajectory_data`, transcript splice, turn counter reset) until the engine's `cycleSession()` actually committed — preserving visible history when the reset fails closed. No reducer or component changes; this is purely a TUI-layer integration of the engine-side `cycleSession()` / `rebindSessionId()` lifecycle work shipped in the same PR. See `docs/L3/cli.md` for the full host-side flow.
+
+> **Permission-approval timer semantics (#1759):**
+>
+> - **Elapsed counter hidden while any permission prompt is open.** `ToolCallBlock` reads `state.modal?.kind === "permission-prompt"` and passes `startedAt=undefined` into `StatusIndicator` for every `status === "running"` block whenever a prompt is visible. The turn-runner serializes tool execution, so while a single prompt blocks the whole turn is paused — all running blocks' wall-clock counters would lie about execution time if they kept ticking. The gate is intentionally broad (not per-tool) to cover the case where the model emitted multiple tool calls in one turn.
+>
+> - **Per-call `startedAt` reset on approval.** New `tool_execution_started { callId }` reducer action. Dispatched by the permission bridge from `respond()` when the user approves (`allow` / `always-allow` / `modify`). Locates the running tool block via `findToolBlock(callId)` and resets `startedAt = Date.now()` so the counter starts fresh from 0 when the prompt closes and execution actually begins. Keyed by `callId` (not tool name) so queued prompts for the same tool cannot cross-reset each other.
+>
+> - **`PermissionBridge.cancelPending(reason)`.** New method on the bridge: denies every pending approval, clears the modal to `null`, and keeps the bridge usable for subsequent prompts. Wired into per-turn Ctrl+C (`abortActiveStream`, AFTER the controller abort so the middleware's signal race produces `stopReason: "interrupted"` instead of a synthetic permission deny) and session reset (`resetConversation`). Distinct from `dispose()`, which is reserved for terminal shutdown and preserves the restore-`savedModal` contract for unit-test teardown.
+>
+> - **Prompt sequence counter.** `PermissionPromptData` carries a monotonic `sequenceNumber` (and optional `queuePosition` / `queueDepth` for the rare concurrent-queue case). `PermissionPrompt.tsx` renders it as `#N` in the title row so consecutive prompts visibly differ — the engine often serializes queued tool calls so the bridge sees them one at a time, and without a visible counter users read "second prompt popped up immediately" as "my first approval didn't take".
+>
+> - **Compact reason chip.** The prominent `Reason:` line was dropped from the prompt body and replaced with a dim single-section `↳ …` rendering below the args. `normalizeReason(reason)` collapses whitespace but does NOT truncate — the full policy reason wraps naturally because the distinguishing detail can be at the end of long strings (path / rule / host that triggered the ask).
+>
+> - **`callId` is UI-only.** Threaded through the dedicated `ToolRequest.callId` / `ApprovalRequest.callId` field rather than `metadata.callId`. The bridge reads `request.callId` directly for its `tool_execution_started` dispatch. See `docs/L2/middleware-permissions.md` for why the separation matters for approval-cache / in-flight-dedup identity.
+>
+> - **60-minute interactive approval timeout.** The TUI opts into `approvalTimeoutMs: 60 * 60 * 1000` when wiring the permissions middleware and the bridge. Long enough to be effectively unbounded for real users, but finite so a wedged renderer / stuck bridge eventually fails closed rather than hanging forever. Agent-to-agent callers keep the 30s engine default.
+
+> **Trajectory session leaks + render hardening (#1764):**
+>
+> - **`TrajectoryView` ledger-source Show is now keyed.** The previous inline pattern read the `ledgerSources` signal from inside Show's children closure and cast the result as `LedgerSources`. When `ledgerSources` rotated to `null` (for example after a session reset), Solid's children memo could execute one extra cycle against the stale `when` before unmounting — the cast passed and the dereference of `src.trajectory` crashed with a NullPointer. Switched to `<Show when={ledgerSources()}>` + accessor param so children only ever see the frozen non-null value; null rotation cleanly unmounts children with no race.
+>
+> - **Nested `<text>` flattened to a `flexDirection="row"` box.** OpenTUI's `TextNodeRenderable.add()` rejects element children ("only accepts strings, TextNodeRenderable instances, or StyledText instances") — the prior source-status row embedded three styled `<text>` children inside an outer `<text>`, which threw on first render. Replaced with a horizontal box containing sibling text elements, matching the existing `TurnHeaderRow` / `StepRow` pattern in the same file. Visual output is identical.
+>
+> - **`RESET_NOTICE` toast removed from `/clear`.** #1742 added a post-reset `add_error` dispatch to warn that cumulative token spend survives `/clear`. Rendering every `add_error` as "Error: CODE" mislabeled a successful reset as a failure. The notice is gone; if the cumulative runtime-wide spend cap is later exceeded, the budget-exceeded error itself carries the explanation. `/clear` is silent on success (matches Claude Code behavior).

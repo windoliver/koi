@@ -13,6 +13,8 @@ export interface ApiConfig {
   /** Base URL for the model provider. Undefined = use adapter's built-in default (OpenRouter). */
   readonly baseUrl: string | undefined;
   readonly model: string;
+  /** Resolved provider: "openrouter" when OPENROUTER_API_KEY is set, "openai" otherwise. */
+  readonly provider: "openrouter" | "openai";
   /**
    * Ordered fallback models. When non-empty, a model-router is installed with
    * `model` as the primary target and these as the fallback chain.
@@ -75,5 +77,6 @@ export function resolveApiConfig(
   const providerDefault = hasOpenRouter ? undefined : OPENAI_DEFAULT_BASE_URL;
   const baseUrl = validExplicit ?? providerDefault;
 
-  return { ok: true, value: { apiKey, baseUrl, model, fallbackModels } };
+  const provider = hasOpenRouter ? ("openrouter" as const) : ("openai" as const);
+  return { ok: true, value: { apiKey, baseUrl, model, provider, fallbackModels } };
 }

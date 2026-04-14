@@ -563,12 +563,19 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract a callId from a `ToolRequest`. The L0 ToolRequest doesn't carry one
- * directly; the L1 engine assigns it elsewhere. We synthesize a stable
- * placeholder so the FileOpRecord type is satisfied — restore correctness
- * does not depend on this value.
+ * Extract a callId from a `ToolRequest`. The turn-runner now sets the
+ * per-invocation id on the dedicated `ToolRequest.callId` field
+ * (#1759 round 6) so checkpoint snapshots can correlate file ops to the
+ * exact tool invocation that produced them. Falls back to
+ * `metadata.callId` for any older caller still using the legacy path,
+ * then to a synthetic UUID so FileOpRecord stays well-formed even when
+ * neither is set. Restore correctness does not depend on the value, but
+ * rewind / debug / audit workflows expect a stable real id.
  */
 function extractCallId(request: ToolRequest): ToolCallId {
+  if (typeof request.callId === "string") {
+    return request.callId as ToolCallId;
+  }
   const fromMetadata = request.metadata?.callId;
   if (typeof fromMetadata === "string") {
     return fromMetadata as ToolCallId;

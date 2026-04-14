@@ -212,19 +212,69 @@ function mapSourceState(status: { readonly state: string }): string {
 }
 
 /**
+ * Build a compact run-report summary string for the TUI's `/trajectory` view
+ * without serializing the full report tree. Avoids the avoidable
+ * `JSON.stringify` of nested `childReports` on every refresh, which can
+ * spike CPU/memory when a delegated run has a large nested report. (#1764)
+ *
+ * Picks: high-level summary text (truncated), action / artifact / issue /
+ * recommendation counts, child-report count, and total token usage. Output
+ * is deterministic and bounded by RUN_REPORT_SUMMARY_MAX_CHARS irrespective
+ * of report depth.
+ */
+const RUN_REPORT_SUMMARY_MAX_CHARS = 300;
+const RUN_REPORT_SUMMARY_TEXT_BUDGET = 180;
+/** @internal — exported for unit tests only. */
+export function summarizeRunReport(runReport: {
+  readonly summary?: string;
+  readonly actions?: { readonly length: number };
+  readonly artifacts?: { readonly length: number };
+  readonly issues?: { readonly length: number };
+  readonly recommendations?: { readonly length: number };
+  readonly childReports?: { readonly length: number } | undefined;
+  readonly cost?: { readonly totalTokens?: number };
+}): string {
+  const summaryText =
+    typeof runReport.summary === "string"
+      ? runReport.summary.length > RUN_REPORT_SUMMARY_TEXT_BUDGET
+        ? `${runReport.summary.slice(0, RUN_REPORT_SUMMARY_TEXT_BUDGET - 1)}…`
+        : runReport.summary
+      : "";
+  const actions = runReport.actions?.length ?? 0;
+  const artifacts = runReport.artifacts?.length ?? 0;
+  const issues = runReport.issues?.length ?? 0;
+  const recommendations = runReport.recommendations?.length ?? 0;
+  const children = runReport.childReports?.length ?? 0;
+  const totalTokens = runReport.cost?.totalTokens ?? 0;
+  const counts = `actions=${actions} artifacts=${artifacts} issues=${issues} recs=${recommendations} children=${children} tokens=${totalTokens}`;
+  const composed = summaryText !== "" ? `${summaryText} · ${counts}` : counts;
+  return composed.length > RUN_REPORT_SUMMARY_MAX_CHARS
+    ? composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1) + "…"
+    : composed;
+}
+
+/**
  * Refresh trajectory + ledger data and dispatch to the TUI store.
  *
  * Uses the decision ledger as the single data source for all three lanes
  * (trajectory, audit, report). Falls back to raw getTrajectorySteps()
  * if the ledger query fails.
+ *
+ * Stale-refresh guard (#1764): callers schedule this fire-and-forget on a
+ * 500 ms delay after the turn completes. If `resetConversation()` /
+ * `session:new` runs in that window, `isStillCurrent()` flips and the
+ * dispatch is skipped — otherwise the post-reset store would be
+ * repopulated with the prior session's trajectory.
  */
 async function refreshTrajectoryData(
   handle: KoiRuntimeHandle,
   store: TuiStore,
   currentSessionId: string,
+  isStillCurrent: () => boolean,
 ): Promise<void> {
   const reader = handle.createDecisionLedger();
   const result = await reader.getLedger(currentSessionId);
+  if (!isStillCurrent()) return;
   if (result.ok) {
     const ledger = result.value;
     store.dispatch({
@@ -237,11 +287,12 @@ async function refreshTrajectoryData(
         report: mapSourceState(ledger.sources.report),
       },
       runReportSummary:
-        ledger.runReport !== undefined ? JSON.stringify(ledger.runReport).slice(0, 300) : undefined,
+        ledger.runReport !== undefined ? summarizeRunReport(ledger.runReport) : undefined,
     });
   } else {
     // Fallback: raw trajectory steps without ledger enrichment
     const steps = await handle.getTrajectorySteps();
+    if (!isStillCurrent()) return;
     store.dispatch({ kind: "set_trajectory_data", steps: mapTrajectorySteps(steps) });
   }
 }
@@ -325,7 +376,43 @@ async function loadSessionList(
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimum milliseconds between event-loop yields during text/thinking streaming.
+ *
+ * OpenTUI's CliRenderer runs in on-demand mode (not a continuous render loop).
+ * After the first render frame, `requestRender()` schedules the next frame via
+ * `setTimeout(~16ms)` (matching `minTargetFrameTime = 1000/maxFps`). If we
+ * yield to the event loop sooner than 16ms, the render timer hasn't fired yet,
+ * so the yield is wasted — the loop resumes and processes more deltas without
+ * any visual update.
+ *
+ * By aligning yields with the render cadence (~16ms), each yield allows exactly
+ * one render frame to paint, producing smooth progressive streaming at ~60fps.
+ *
+ * The old approach (count-based every 3 deltas, yield via setTimeout(0)) caused
+ * all deltas to process within one render interval because setTimeout(0) only
+ * pauses for ~1ms, far shorter than the 16ms render frame timer. The result:
+ * "Thinking..." then the entire response appearing at once.
+ */
+const STREAM_YIELD_INTERVAL_MS = 16;
+
+/**
  * Drain an async engine event stream into the store via the batcher.
+ *
+ * Streaming strategy (inspired by OpenCode's event bus architecture):
+ *
+ * 1. **Lifecycle events flush immediately and separately.** `turn_start`,
+ *    `turn_end`, and `done` each get their own flush so the UI sees the
+ *    streaming indicator BEFORE any text arrives and the finalization
+ *    AFTER all text has rendered.
+ *
+ * 2. **Text/thinking deltas bypass the batcher.** They go directly to
+ *    `store.streamDelta()` which uses a produce()-based O(1) path update
+ *    instead of reconcile()'s O(state-tree) diff — enabling per-delta
+ *    rendering without performance penalty. Every N deltas the loop
+ *    yields to the event loop so the HTTP stream continues and OpenTUI
+ *    can paint.
+ *
+ * 3. **Tool lifecycle events use the batcher** at the normal 16ms cadence.
  *
  * Sets connection status to "connected" before streaming, "disconnected" after.
  * On stream failure: dispatches add_error + disconnected.
@@ -385,26 +472,37 @@ export async function drainEngineStream(
   let partialInputTokens = 0;
   let partialOutputTokens = 0;
   try {
-    // `let` justified: tracks last yield time for frame-rate-limited yielding
+    // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
+    // `let` justified: true after the first yield in a delta burst.
+    // Ensures at least one mid-stream paint per burst without sleeping
+    // on every subsequent delta. Reset by non-delta events (lifecycle, tool).
+    let burstYielded = false;
+
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
       // feeding events into a dead sink — they would silently vanish and
       // leave the UI with a half-rendered or missing reply. The drain exits
       // cleanly; the caller's finally block handles connection-status reset.
-      //
-      // #1742 loop-3 round 8: also dispatch a synthetic terminal `done`
-      // event directly to the store BEFORE returning, so the reducer
-      // closes any active assistant turn and clears running tool state.
-      // Without this, a failed `/clear` (history preserved) leaves the
-      // UI stuck in a "processing" state with no way to recover. In
-      // the success path the store has already been cleared by
-      // resetConversation's success branch, so the reducer's
-      // engine_event handler safely no-ops on an empty active turn.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
+
+      // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
+      // stderr doesn't interfere with the TUI (alternate screen buffer).
+      if (process.env.KOI_DEBUG_STREAM === "1") {
+        const elapsed = Date.now() - lastYieldAt;
+        const preview =
+          event.kind === "text_delta"
+            ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+            : event.kind === "thinking_delta"
+              ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+              : "";
+        process.stderr.write(`[stream] +${elapsed}ms ${event.kind}${preview}\n`);
+      }
+
+      // --- Usage tracking (unchanged) ---
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -414,36 +512,67 @@ export async function drainEngineStream(
           partialOutputTokens = usage.outputTokens;
         }
       }
+
+      // --- Lifecycle events: flush before AND after to isolate them ---
+      // This ensures turn_start creates the streaming message before any
+      // deltas arrive, and turn_end/done closes it only after all deltas
+      // have been rendered. Without this, they can land in the same batch
+      // and the UI never sees the intermediate streaming state.
+      if (event.kind === "turn_start" || event.kind === "turn_end" || event.kind === "done") {
+        batcher.flushSync();
+        batcher.enqueue(event);
+        batcher.flushSync();
+        await yieldForRenderFrame();
+        lastYieldAt = Date.now();
+        burstYielded = false;
+        continue;
+      }
+
+      // --- Text/thinking deltas: fast path via store.streamDelta() ---
+      // Flush any pending batcher events FIRST to preserve block ordering.
+      // Without this, a `tool_call_start` sitting in the batcher would be
+      // applied AFTER the text delta, corrupting assistant block order.
+      // Then apply the delta via the O(1) produce()-based path setter.
+      //
+      // Flush pending batcher events first to preserve block ordering —
+      // a tool_call_start in the batcher must land before a text_delta.
+      //
+      // Yield policy: on the first delta of a burst (!burstYielded), yield
+      // once so buffered responses get at least one mid-stream paint. After
+      // that, yield only when 16ms has elapsed (time-based). This avoids
+      // the per-delta sleep that would throttle large replies by seconds.
+      if (event.kind === "text_delta" || event.kind === "thinking_delta") {
+        batcher.flushSync();
+        const blockKind = event.kind === "text_delta" ? "text" : "thinking";
+        store.streamDelta(event.delta, blockKind);
+
+        const now = Date.now();
+        if (!burstYielded || now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
+          await yieldForRenderFrame();
+          lastYieldAt = Date.now();
+          burstYielded = true;
+        }
+        continue;
+      }
+
+      // --- All other events: batcher at normal cadence ---
       batcher.enqueue(event);
-      // #1742 loop-3 round 10: the batcher may have been disposed
-      // between the check above and this enqueue (resetConversation
-      // runs synchronously). enqueue is a no-op on a disposed
-      // batcher, so this event is already lost — finalize and
-      // return so a `done` lost in this race window doesn't leave
-      // the UI stuck "processing".
+      // #1742: batcher may have been disposed between the top-of-loop
+      // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
-      // Yield to the event loop at most once per frame (~16ms) during any
-      // consumer-visible streaming event so OpenTUI can paint progressively.
-      //
-      // Without yielding, HTTP response body chunks contain many SSE events
-      // which are all consumed synchronously, starving the render loop.
-      // This covers text_delta, thinking_delta, and tool_call lifecycle —
-      // not just text — so the thinking spinner and tool status animate
-      // during tool-first or reasoning-first turns.
       if (
-        event.kind === "text_delta" ||
-        event.kind === "thinking_delta" ||
         event.kind === "tool_call_start" ||
         event.kind === "tool_call_delta" ||
-        event.kind === "tool_call_end"
+        event.kind === "tool_call_end" ||
+        event.kind === "tool_result"
       ) {
         const now = Date.now();
-        if (now - lastYieldAt >= 16) {
+        if (now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
           batcher.flushSync();
-          await new Promise<void>((r) => setTimeout(r, 0));
+          await yieldForRenderFrame();
           lastYieldAt = Date.now();
         }
       }
@@ -515,6 +644,22 @@ export async function drainEngineStream(
   }
 }
 
+/**
+ * Yield for one render frame so OpenTUI actually paints to the terminal.
+ *
+ * OpenTUI's on-demand renderer schedules frames via `setTimeout(~16ms)`.
+ * A `setTimeout(0)` yield only pauses for ~1ms — the render timer hasn't
+ * fired yet, so no paint occurs. By waiting `STREAM_YIELD_INTERVAL_MS`
+ * (16ms), the pending render timer fires during the pause, producing a
+ * visible update before the stream loop resumes.
+ *
+ * This is the critical difference: `setTimeout(0)` = microtask-level yield
+ * (no paint); `setTimeout(16)` = frame-aligned yield (paint happens).
+ */
+function yieldForRenderFrame(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, STREAM_YIELD_INTERVAL_MS));
+}
+
 // ---------------------------------------------------------------------------
 // Command handler
 // ---------------------------------------------------------------------------
@@ -570,15 +715,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: envModelName, fallbackModels } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: envModelName, provider, fallbackModels } = apiConfigResult.value;
   // Manifest model name wins over the env default (same precedence
   // as `koi start --manifest`).
   const modelName = manifestModelName ?? envModelName;
 
+  // Enable reasoning for OpenRouter — it silently ignores the field for
+  // non-reasoning models. Other providers (OpenAI, custom proxies) may
+  // reject it with HTTP 400, so only opt in when we know we're on OpenRouter.
+  // Uses the resolved `provider` from env config, not baseUrl sniffing,
+  // so the default OPENROUTER_API_KEY path (no explicit baseUrl) works.
+  const reasoningCompat: { compat?: { readonly supportsReasoning: true } } =
+    provider === "openrouter" ? { compat: { supportsReasoning: true } as const } : {};
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
+    ...reasoningCompat,
   });
 
   // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the
@@ -597,6 +750,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 apiKey,
                 ...(baseUrl !== undefined ? { baseUrl } : {}),
                 model: m,
+                ...reasoningCompat,
               });
               return [
                 m,
@@ -648,6 +802,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const permissionBridge = createPermissionBridge({
     store,
     permanentAvailable: approvalStore !== undefined,
+    // #1759: interactive users get effectively unbounded decide-time on
+    // permission prompts (60 minutes). Much longer than any reasonable
+    // human decision window, but still finite so a wedged renderer /
+    // stuck input / detached terminal eventually fails closed instead
+    // of hanging forever. Aligned with the engine-side TUI_APPROVAL_TIMEOUT_MS
+    // in tui-runtime.ts so both layers share the same deadline.
+    timeoutMs: 60 * 60 * 1000,
   });
 
   // Flush callback: reduces entire batch in one pass, single notification.
@@ -712,20 +873,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   // Populate the status-bar session chip immediately so users see the
   // same identifier the post-quit resume hint will emit, instead of the
-  // placeholder "no session" label. Provider is a best-effort label
-  // derived from the resolved base URL (or "openrouter" when omitted,
-  // which matches resolveApiConfig's default).
-  const provider = ((): string => {
-    if (baseUrl === undefined) return "openrouter";
-    try {
-      const host = new URL(baseUrl).hostname;
-      if (host.includes("openrouter")) return "openrouter";
-      if (host.includes("openai.com")) return "openai";
-      return host;
-    } catch {
-      return "custom";
-    }
-  })();
+  // placeholder "no session" label. Provider was destructured from
+  // `resolveApiConfig` above (the canonical resolved value).
   store.dispatch({
     kind: "set_session_info",
     modelName,
@@ -877,8 +1026,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // earlier turns or permanently break MCP tools for the rest of the
   // session. Users who want to reset everything can use `/clear` or quit.
   const abortActiveStream = (): void => {
-    permissionBridge.dispose();
+    // Order matters here. The permissions middleware races the approval
+    // handler against `ctx.signal` (see handleAskDecision). If
+    // `cancelPending` runs first, the approval Promise settles with a
+    // synthetic `{kind:"deny"}` BEFORE the abort signal fires — the
+    // middleware then treats the turn as a normal permission denial
+    // and emits the wrong stopReason. Aborting the controller first
+    // means the signal is already raised when the deny resolves, so the
+    // middleware's signal-race branch wins and the turn ends as
+    // `stopReason: "interrupted"`. The cancelPending call still runs to
+    // dismiss the modal and keep the bridge usable for the next turn.
+    // (#1759 review round 5)
     activeController?.abort();
+    permissionBridge.cancelPending("Turn cancelled by user");
   };
 
   // TUI interrupt protocol (see docs/L2/interrupt.md, issue #1653):
@@ -984,6 +1144,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // group steps by user turn regardless of engine-internal ctx.turnIndex resets.
   // let: justified — incremented per user submission
   let tuiTurnCounter = 0;
+
+  // Generation token for asynchronous /trajectory refreshes (#1764). Each
+  // call to `resetConversation()` increments this; in-flight refreshes
+  // capture the value at scheduling time and skip their dispatch if the
+  // generation has advanced. Without this, a delayed refresh from turn N
+  // can repopulate the just-cleared store with that turn's stale data
+  // after a session:new / resume / agent:clear runs.
+  // let: justified — incremented per session reset
+  let trajectoryRefreshGen = 0;
 
   // Monotonic id for each `resetConversation()` invocation.
   // Bumped synchronously at the top of every call. Reset IIFEs
@@ -1177,6 +1346,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     activeController?.abort();
     activeController = null;
 
+    // Cancel any pending permission prompts and dismiss the modal so a
+    // session reset (`agent:clear`, `session:new`, resume) doesn't leave
+    // the user stuck behind a stale 60-minute approval window. The bridge
+    // stays usable for the next turn. (#1759 review round 2)
+    permissionBridge.cancelPending("Session reset");
+
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
@@ -1197,6 +1372,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // the privacy boundary. Clearing the prime array is synchronous
     // and safe regardless of runtime readiness.
     resumedMessagesToPrime = [];
+    // Invalidate any in-flight refreshTrajectoryData() scheduled before
+    // this reset (#1764). Bump synchronously so a late refresh cannot
+    // race ahead of the success branch below and repopulate stale lanes.
+    trajectoryRefreshGen += 1;
 
     // #1742 loop-2 round 5: do NOT clear the visible transcript or splice
     // runtimeHandle.transcript until resetSessionState() actually resolves.
@@ -1280,13 +1459,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
           }
         }
-        // #1742 loop-3 round 1: surface the cumulative-budget caveat.
-        store.dispatch({
-          kind: "add_error",
-          code: "RESET_NOTICE",
-          message:
-            "Conversation cleared. Note: cumulative token usage continues across /clear; restart koi tui to fully reset the runtime-wide spend cap.",
-        });
+        // /clear is silent on success — a freshly cleared conversation
+        // is its own acknowledgement. The cumulative runtime-wide spend
+        // cap survives /clear by design (iteration budget resets, token
+        // accounting does not); if the user later trips it, the
+        // budget-exceeded error itself surfaces the explanation. Post-
+        // reset toast removed per #1764 review (was originally added
+        // by #1742 as a RESET_NOTICE but mimicked an error).
         return true;
       })();
     } else {
@@ -1959,8 +2138,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             };
             await runtimeHandle.appendTrajectoryStep(rewindStep);
             // Refresh the trajectory + decision ledger view so the step
-            // shows up without waiting for the next turn.
-            void refreshTrajectoryData(runtimeHandle, store, runtimeHandle.runtime.sessionId);
+            // shows up without waiting for the next turn. Capture the
+            // current generation so a subsequent reset invalidates this
+            // refresh before it dispatches. (#1764)
+            const rewindGen = trajectoryRefreshGen;
+            void refreshTrajectoryData(
+              runtimeHandle,
+              store,
+              runtimeHandle.runtime.sessionId,
+              () => trajectoryRefreshGen === rewindGen,
+            );
 
             // Surface drift warnings — paths the rewind could not restore
             // because they were modified outside the tracked tool pipeline
@@ -2451,8 +2638,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // wrapMiddlewareWithTrace records MW spans asynchronously via
         // void store.append(...). Without the delay, getLedger() reads
         // before all spans are written.
+        //
+        // Capture trajectoryRefreshGen at scheduling time so a session
+        // reset that runs in the 500 ms window invalidates this refresh
+        // before it dispatches. Otherwise the post-reset store would be
+        // repopulated with this turn's stale trajectory. (#1764)
+        const submitGen = trajectoryRefreshGen;
         void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
-          refreshTrajectoryData(handle, store, handle.runtime.sessionId),
+          refreshTrajectoryData(
+            handle,
+            store,
+            handle.runtime.sessionId,
+            () => trajectoryRefreshGen === submitGen,
+          ),
         );
       } finally {
         // Guard against cross-run races: only clear activeController and

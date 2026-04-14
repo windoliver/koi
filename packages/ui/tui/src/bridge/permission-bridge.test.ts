@@ -290,6 +290,188 @@ describe("permission bridge — queued lifetime timer", () => {
 });
 
 // ---------------------------------------------------------------------------
+// tool_execution_started dispatch (#1759)
+// ---------------------------------------------------------------------------
+
+describe("permission bridge — tool_execution_started dispatch", () => {
+  test("respond with allow dispatches tool_execution_started with the callId from metadata", () => {
+    const captured: Array<{ readonly kind: string; readonly callId?: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string; readonly callId?: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    void local.handler(makeRequest({ toolId: "Bash", callId: "call-xyz" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "allow" });
+
+    const dispatched = captured.find((a) => a.kind === "tool_execution_started");
+    expect(dispatched).toBeDefined();
+    expect(dispatched?.callId).toBe("call-xyz");
+    local.dispose();
+  });
+
+  test("respond with allow WITHOUT callId in metadata does not dispatch (fallback path)", () => {
+    const captured: Array<{ readonly kind: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    // No metadata.callId — older caller path
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "allow" });
+
+    // Without a call-scoped id the bridge cannot safely target a specific
+    // running block, so the dispatch is intentionally skipped.
+    expect(captured.some((a) => a.kind === "tool_execution_started")).toBe(false);
+    local.dispose();
+  });
+
+  test("respond with deny does NOT dispatch tool_execution_started", () => {
+    const captured: Array<{ readonly kind: string }> = [];
+    const wrapped: TuiStore = {
+      ...store,
+      dispatch: (action) => {
+        captured.push(action as { readonly kind: string });
+        store.dispatch(action);
+      },
+    };
+    const local = createPermissionBridge({ store: wrapped, timeoutMs: 100 });
+    void local.handler(makeRequest({ toolId: "Bash", callId: "call-xyz" }));
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+
+    local.respond(requestId, { kind: "deny", reason: "nope" });
+
+    expect(captured.some((a) => a.kind === "tool_execution_started")).toBe(false);
+    local.dispose();
+  });
+
+  test("infinite timeout: handler never auto-denies, waits until respond is called", async () => {
+    const local = createPermissionBridge({ store, timeoutMs: Number.POSITIVE_INFINITY });
+    const promise = local.handler(makeRequest({ toolId: "Bash" }));
+    // Yield the event loop a few times — with a finite timer this would fire.
+    await new Promise<void>((r) => setTimeout(r, 20));
+    expect(local.pendingCount()).toBe(1);
+
+    const state = store.getState();
+    const requestId = state.modal?.kind === "permission-prompt" ? state.modal.prompt.requestId : "";
+    local.respond(requestId, { kind: "allow" });
+
+    const decision = await promise;
+    expect(decision).toEqual({ kind: "allow" });
+    expect(local.pendingCount()).toBe(0);
+    local.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cancelPending — abort/reset cleanup without tearing down the bridge
+// (#1759 review round 2)
+// ---------------------------------------------------------------------------
+
+describe("permission bridge — cancelPending", () => {
+  test("denies all pending and dismisses the modal without disposing", async () => {
+    // Long timeout so nothing else cancels in the test window
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    const p1 = local.handler(makeRequest({ toolId: "Bash" }));
+    const p2 = local.handler(makeRequest({ toolId: "fs_write" }));
+    expect(local.pendingCount()).toBe(2);
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+
+    local.cancelPending("Turn cancelled by user");
+
+    // Both pending promises resolve to deny with the cancel reason
+    const [d1, d2] = await Promise.all([p1, p2]);
+    expect(d1).toEqual({ kind: "deny", reason: "Turn cancelled by user" });
+    expect(d2).toEqual({ kind: "deny", reason: "Turn cancelled by user" });
+
+    // Modal dismissed
+    expect(store.getState().modal).toBeNull();
+    expect(local.pendingCount()).toBe(0);
+
+    // Bridge is still usable — a new prompt after cancel works
+    const p3 = local.handler(makeRequest({ toolId: "Grep" }));
+    expect(local.pendingCount()).toBe(1);
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+    const newRequestId =
+      store.getState().modal?.kind === "permission-prompt"
+        ? (store.getState().modal as { prompt: { requestId: string } }).prompt.requestId
+        : "";
+    local.respond(newRequestId, { kind: "allow" });
+    const d3 = await p3;
+    expect(d3).toEqual({ kind: "allow" });
+
+    local.dispose();
+  });
+
+  test("dispose still works as terminal cleanup (delegates to cancelPending)", async () => {
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    const p = local.handler(makeRequest({ toolId: "Bash" }));
+    local.dispose();
+    const decision = await p;
+    expect(decision).toEqual({ kind: "deny", reason: "Permission bridge disposed" });
+    expect(store.getState().modal).toBeNull();
+  });
+
+  test("cancelPending on empty queue is a no-op", () => {
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    expect(() => local.cancelPending("nothing to cancel")).not.toThrow();
+    expect(local.pendingCount()).toBe(0);
+    local.dispose();
+  });
+
+  test("cancelPending CLEARS modal (does NOT restore savedModal) — regression #1759 round 8", async () => {
+    // Simulate a session-reset scenario: command palette is open, then a
+    // permission prompt arrives, then user triggers session:new. The
+    // pre-prompt modal must NOT reappear after cancellation — it belongs
+    // to the prior session context.
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: "do" } });
+    expect(store.getState().modal?.kind).toBe("command-palette");
+
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    await new Promise<void>((r) => queueMicrotask(r));
+    expect(store.getState().modal?.kind).toBe("permission-prompt");
+
+    // Reset/abort path
+    local.cancelPending("Session reset");
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    // Modal must be cleared. The command palette must NOT be restored.
+    expect(store.getState().modal).toBeNull();
+    local.dispose();
+  });
+
+  test("dispose still restores savedModal (terminal cleanup contract preserved)", async () => {
+    // Confirms cancelPending and dispose have distinct modal semantics.
+    const local = createPermissionBridge({ store, timeoutMs: 60_000 });
+    store.dispatch({ kind: "set_modal", modal: { kind: "command-palette", query: "do" } });
+
+    void local.handler(makeRequest({ toolId: "Bash" }));
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    local.dispose();
+    await new Promise<void>((r) => queueMicrotask(r));
+
+    // Dispose restores the pre-prompt modal — different from cancelPending.
+    expect(store.getState().modal?.kind).toBe("command-palette");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Negative / edge cases
 // ---------------------------------------------------------------------------
 
