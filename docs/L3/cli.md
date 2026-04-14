@@ -129,10 +129,13 @@ session. Plugin middleware names are collected but not resolved (no factory regi
 Interactive terminal console. Opens a full-screen OpenTUI terminal UI with progressive model streaming,
 conversation history, command palette (Ctrl+P), and view switching (sessions, doctor, help).
 
-**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with frame-rate-limited
-yielding (flush + yield every 16ms for text/thinking/tool events) so OpenTUI can paint intermediate
-frames. The EventBatcher coalesces events into 16ms batches; the SolidJS store uses `reconcile()` for
-fine-grained signal updates.
+**Streaming pipeline:** `drainEngineStream` consumes the async engine stream with render-aligned
+yielding (16ms, matching OpenTUI's frame cadence). Text/thinking deltas bypass the batcher and go
+directly to `store.streamDelta()` (O(1) `produce()`-based path setter), while lifecycle events
+(`turn_start`/`turn_end`/`done`) are flushed in isolation. Burst detection ensures at least one
+mid-stream paint per HTTP chunk. On OpenRouter, `reasoning: { effort }` is enabled so models
+that support extended thinking return reasoning tokens rendered as a ThinkingBlock (toggleable
+via `/thinking`).
 
 **Keyboard shortcuts:** Ctrl+E toggles tool result expansion; arrow up/down navigates prompt history
 (session-scoped); PageUp/PageDown pauses auto-scroll. Ctrl+C copies selected text to clipboard

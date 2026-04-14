@@ -353,7 +353,43 @@ async function loadSessionList(
 // ---------------------------------------------------------------------------
 
 /**
+ * Minimum milliseconds between event-loop yields during text/thinking streaming.
+ *
+ * OpenTUI's CliRenderer runs in on-demand mode (not a continuous render loop).
+ * After the first render frame, `requestRender()` schedules the next frame via
+ * `setTimeout(~16ms)` (matching `minTargetFrameTime = 1000/maxFps`). If we
+ * yield to the event loop sooner than 16ms, the render timer hasn't fired yet,
+ * so the yield is wasted — the loop resumes and processes more deltas without
+ * any visual update.
+ *
+ * By aligning yields with the render cadence (~16ms), each yield allows exactly
+ * one render frame to paint, producing smooth progressive streaming at ~60fps.
+ *
+ * The old approach (count-based every 3 deltas, yield via setTimeout(0)) caused
+ * all deltas to process within one render interval because setTimeout(0) only
+ * pauses for ~1ms, far shorter than the 16ms render frame timer. The result:
+ * "Thinking..." then the entire response appearing at once.
+ */
+const STREAM_YIELD_INTERVAL_MS = 16;
+
+/**
  * Drain an async engine event stream into the store via the batcher.
+ *
+ * Streaming strategy (inspired by OpenCode's event bus architecture):
+ *
+ * 1. **Lifecycle events flush immediately and separately.** `turn_start`,
+ *    `turn_end`, and `done` each get their own flush so the UI sees the
+ *    streaming indicator BEFORE any text arrives and the finalization
+ *    AFTER all text has rendered.
+ *
+ * 2. **Text/thinking deltas bypass the batcher.** They go directly to
+ *    `store.streamDelta()` which uses a produce()-based O(1) path update
+ *    instead of reconcile()'s O(state-tree) diff — enabling per-delta
+ *    rendering without performance penalty. Every N deltas the loop
+ *    yields to the event loop so the HTTP stream continues and OpenTUI
+ *    can paint.
+ *
+ * 3. **Tool lifecycle events use the batcher** at the normal 16ms cadence.
  *
  * Sets connection status to "connected" before streaming, "disconnected" after.
  * On stream failure: dispatches add_error + disconnected.
@@ -413,26 +449,37 @@ export async function drainEngineStream(
   let partialInputTokens = 0;
   let partialOutputTokens = 0;
   try {
-    // `let` justified: tracks last yield time for frame-rate-limited yielding
+    // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
+    // `let` justified: true after the first yield in a delta burst.
+    // Ensures at least one mid-stream paint per burst without sleeping
+    // on every subsequent delta. Reset by non-delta events (lifecycle, tool).
+    let burstYielded = false;
+
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
       // feeding events into a dead sink — they would silently vanish and
       // leave the UI with a half-rendered or missing reply. The drain exits
       // cleanly; the caller's finally block handles connection-status reset.
-      //
-      // #1742 loop-3 round 8: also dispatch a synthetic terminal `done`
-      // event directly to the store BEFORE returning, so the reducer
-      // closes any active assistant turn and clears running tool state.
-      // Without this, a failed `/clear` (history preserved) leaves the
-      // UI stuck in a "processing" state with no way to recover. In
-      // the success path the store has already been cleared by
-      // resetConversation's success branch, so the reducer's
-      // engine_event handler safely no-ops on an empty active turn.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
+
+      // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
+      // stderr doesn't interfere with the TUI (alternate screen buffer).
+      if (process.env.KOI_DEBUG_STREAM === "1") {
+        const elapsed = Date.now() - lastYieldAt;
+        const preview =
+          event.kind === "text_delta"
+            ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+            : event.kind === "thinking_delta"
+              ? ` "${(event as { delta: string }).delta.slice(0, 30)}"`
+              : "";
+        process.stderr.write(`[stream] +${elapsed}ms ${event.kind}${preview}\n`);
+      }
+
+      // --- Usage tracking (unchanged) ---
       if (event.kind === "custom" && event.type === "usage") {
         const usage = event.data as { inputTokens?: number; outputTokens?: number };
         if (typeof usage.inputTokens === "number") {
@@ -442,36 +489,67 @@ export async function drainEngineStream(
           partialOutputTokens = usage.outputTokens;
         }
       }
+
+      // --- Lifecycle events: flush before AND after to isolate them ---
+      // This ensures turn_start creates the streaming message before any
+      // deltas arrive, and turn_end/done closes it only after all deltas
+      // have been rendered. Without this, they can land in the same batch
+      // and the UI never sees the intermediate streaming state.
+      if (event.kind === "turn_start" || event.kind === "turn_end" || event.kind === "done") {
+        batcher.flushSync();
+        batcher.enqueue(event);
+        batcher.flushSync();
+        await yieldForRenderFrame();
+        lastYieldAt = Date.now();
+        burstYielded = false;
+        continue;
+      }
+
+      // --- Text/thinking deltas: fast path via store.streamDelta() ---
+      // Flush any pending batcher events FIRST to preserve block ordering.
+      // Without this, a `tool_call_start` sitting in the batcher would be
+      // applied AFTER the text delta, corrupting assistant block order.
+      // Then apply the delta via the O(1) produce()-based path setter.
+      //
+      // Flush pending batcher events first to preserve block ordering —
+      // a tool_call_start in the batcher must land before a text_delta.
+      //
+      // Yield policy: on the first delta of a burst (!burstYielded), yield
+      // once so buffered responses get at least one mid-stream paint. After
+      // that, yield only when 16ms has elapsed (time-based). This avoids
+      // the per-delta sleep that would throttle large replies by seconds.
+      if (event.kind === "text_delta" || event.kind === "thinking_delta") {
+        batcher.flushSync();
+        const blockKind = event.kind === "text_delta" ? "text" : "thinking";
+        store.streamDelta(event.delta, blockKind);
+
+        const now = Date.now();
+        if (!burstYielded || now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
+          await yieldForRenderFrame();
+          lastYieldAt = Date.now();
+          burstYielded = true;
+        }
+        continue;
+      }
+
+      // --- All other events: batcher at normal cadence ---
       batcher.enqueue(event);
-      // #1742 loop-3 round 10: the batcher may have been disposed
-      // between the check above and this enqueue (resetConversation
-      // runs synchronously). enqueue is a no-op on a disposed
-      // batcher, so this event is already lost — finalize and
-      // return so a `done` lost in this race window doesn't leave
-      // the UI stuck "processing".
+      // #1742: batcher may have been disposed between the top-of-loop
+      // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
         return;
       }
-      // Yield to the event loop at most once per frame (~16ms) during any
-      // consumer-visible streaming event so OpenTUI can paint progressively.
-      //
-      // Without yielding, HTTP response body chunks contain many SSE events
-      // which are all consumed synchronously, starving the render loop.
-      // This covers text_delta, thinking_delta, and tool_call lifecycle —
-      // not just text — so the thinking spinner and tool status animate
-      // during tool-first or reasoning-first turns.
       if (
-        event.kind === "text_delta" ||
-        event.kind === "thinking_delta" ||
         event.kind === "tool_call_start" ||
         event.kind === "tool_call_delta" ||
-        event.kind === "tool_call_end"
+        event.kind === "tool_call_end" ||
+        event.kind === "tool_result"
       ) {
         const now = Date.now();
-        if (now - lastYieldAt >= 16) {
+        if (now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
           batcher.flushSync();
-          await new Promise<void>((r) => setTimeout(r, 0));
+          await yieldForRenderFrame();
           lastYieldAt = Date.now();
         }
       }
@@ -543,6 +621,22 @@ export async function drainEngineStream(
   }
 }
 
+/**
+ * Yield for one render frame so OpenTUI actually paints to the terminal.
+ *
+ * OpenTUI's on-demand renderer schedules frames via `setTimeout(~16ms)`.
+ * A `setTimeout(0)` yield only pauses for ~1ms — the render timer hasn't
+ * fired yet, so no paint occurs. By waiting `STREAM_YIELD_INTERVAL_MS`
+ * (16ms), the pending render timer fires during the pause, producing a
+ * visible update before the stream loop resumes.
+ *
+ * This is the critical difference: `setTimeout(0)` = microtask-level yield
+ * (no paint); `setTimeout(16)` = frame-aligned yield (paint happens).
+ */
+function yieldForRenderFrame(): Promise<void> {
+  return new Promise<void>((r) => setTimeout(r, STREAM_YIELD_INTERVAL_MS));
+}
+
 // ---------------------------------------------------------------------------
 // Command handler
 // ---------------------------------------------------------------------------
@@ -571,12 +665,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: modelName, fallbackModels } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: modelName, provider, fallbackModels } = apiConfigResult.value;
 
+  // Enable reasoning for OpenRouter — it silently ignores the field for
+  // non-reasoning models. Other providers (OpenAI, custom proxies) may
+  // reject it with HTTP 400, so only opt in when we know we're on OpenRouter.
+  // Uses the resolved `provider` from env config, not baseUrl sniffing,
+  // so the default OPENROUTER_API_KEY path (no explicit baseUrl) works.
+  const reasoningCompat = provider === "openrouter" ? { compat: { supportsReasoning: true } } : {};
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
+    ...reasoningCompat,
   });
 
   // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the
@@ -595,6 +696,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 apiKey,
                 ...(baseUrl !== undefined ? { baseUrl } : {}),
                 model: m,
+                ...reasoningCompat,
               });
               return [
                 m,

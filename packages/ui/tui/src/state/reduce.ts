@@ -864,6 +864,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "resume_follow":
       return { ...state, resumeFollowCounter: state.resumeFollowCounter + 1 };
 
+    case "toggle_thinking":
+      return { ...state, showThinking: !state.showThinking };
+
     case "load_history": {
       if (action.messages.length === 0) return state;
       const historical: TuiMessage[] = [];

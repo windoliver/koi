@@ -32,6 +32,7 @@ EngineEvent (from @koi/core)
 │  - getState()        │     returns reactive proxy
 │  - dispatch(action)  │     reducer + reconcile() deep-diff
 │  - dispatchBatch()   │     reduces N actions, single reconcile
+│  - streamDelta()     │     O(1) produce()-based text append
 │  - subscribe(fn)     │     external listener (non-Solid consumers)
 └──────────────────────┘
            │
@@ -46,7 +47,8 @@ EngineEvent (from @koi/core)
 ### Streaming Features
 
 - **Thinking indicator**: animated `⠹ Thinking…` spinner while waiting for first token
-- **Progressive streaming**: frame-rate-limited flush+yield (16ms) for all streaming events
+- **Thinking block**: displays model reasoning with left border, toggleable via `/thinking`
+- **Progressive streaming**: text/thinking deltas bypass batcher via `streamDelta()` (O(1) produce()); lifecycle events flushed in isolation; render-aligned yields (16ms)
 - **Code block isolation**: splits at unclosed fence, memoizes stable head
 - **Markdown healing**: code-aware closer for unclosed formatting (width-aware fences)
 - **Accordion collapse**: tool results collapsed by default (Ctrl+E toggle-all)
