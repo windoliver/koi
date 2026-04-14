@@ -591,6 +591,7 @@
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/cost-aggregator": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
