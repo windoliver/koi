@@ -176,6 +176,18 @@ const koi = createKoi({
 // Programmatic rewind (also exposed as the /rewind slash command)
 await koi.checkpoint.rewind(3);                    // rewind 3 turns
 await koi.checkpoint.rewindTo("snapshot-id-abc");  // rewind to a specific node
+
+// Wipe the chain on a destructive conversation boundary (#1749).
+// Hosts that reuse a session id across `/clear` / `/new` (e.g. `koi tui`,
+// where the session id is also the post-quit resume hint and the JSONL
+// filename) call this on every truncating reset so a later `/rewind`
+// after quit + resume cannot walk back into pre-clear snapshots.
+//
+// Routed through the same per-session serializer as `rewind`, so reset
+// is mutually exclusive with queued rewind work and in-flight tool
+// capture on the same session id. Throws on prune failure — callers
+// should treat the reset as unpersisted.
+await koi.checkpoint.resetSession(sessionId);
 ```
 
 ### Trajectory Visibility
