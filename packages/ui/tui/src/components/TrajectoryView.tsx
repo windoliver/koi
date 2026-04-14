@@ -464,27 +464,37 @@ export function TrajectoryView(): JSX.Element {
             + `${steps().filter((s) => s.kind === "tool_call").length} tool`}
         </text>
 
-        {/* Ledger source status */}
-        <Show when={ledgerSources() !== null}>
-          {(_src: () => unknown) => {
-            const src = ledgerSources() as LedgerSources;
-            return (
-              <text fg={COLORS.dim}>
-                {`  sources: `}
-                <text fg={sourceColor(src.trajectory)}>
-                  {formatSourceStatus("trajectory", src.trajectory)}
-                </text>
-                {` · `}
-                <text fg={sourceColor(src.audit)}>
-                  {formatSourceStatus("audit", src.audit)}
-                </text>
-                {` · `}
-                <text fg={sourceColor(src.report)}>
-                  {formatSourceStatus("report", src.report)}
-                </text>
+        {/* Ledger source status.
+            Two fixes vs the original inline pattern:
+            1. `when={ledgerSources()}` is keyed — Solid passes the truthy
+               value as an accessor, so children never re-read the live
+               signal. The prior `when={x !== null}` + `x as LedgerSources`
+               cast crashed with an NPE when the signal rotated null under
+               a session reset before Show unmounted children.
+            2. OpenTUI rejects `<text>` nested inside `<text>` — the parent
+               TextNodeRenderable throws "only accepts strings,
+               TextNodeRenderable instances, or StyledText instances" when
+               handed an element child. Flatten into a `flexDirection="row"`
+               box with sibling `<text>` elements, matching TurnHeaderRow /
+               StepRow. (#1764)
+         */}
+        <Show when={ledgerSources()}>
+          {(src: () => LedgerSources) => (
+            <box flexDirection="row">
+              <text fg={COLORS.dim}>{`  sources: `}</text>
+              <text fg={sourceColor(src().trajectory)}>
+                {formatSourceStatus("trajectory", src().trajectory)}
               </text>
-            );
-          }}
+              <text fg={COLORS.dim}>{` · `}</text>
+              <text fg={sourceColor(src().audit)}>
+                {formatSourceStatus("audit", src().audit)}
+              </text>
+              <text fg={COLORS.dim}>{` · `}</text>
+              <text fg={sourceColor(src().report)}>
+                {formatSourceStatus("report", src().report)}
+              </text>
+            </box>
+          )}
         </Show>
 
         {/* Audit entries */}
