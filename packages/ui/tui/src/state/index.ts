@@ -19,6 +19,8 @@ export type {
   ConnectionStatus,
   CumulativeMetrics,
   LayoutTier,
+  LedgerAuditEntry,
+  LedgerSources,
   PermissionPromptData,
   PermissionRiskLevel,
   PlanTask,

@@ -131,6 +131,10 @@ interface JsonlTranscriptConfig {
 }
 ```
 
+### Trajectory Visibility
+
+Reports `{action: "record", entries, toolCalls}` via `ctx.reportDecision()` on `wrapModelStream` when transcript entries are committed, and `{action: "record", toolId}` on `wrapToolCall`. Shows `[record:N]` in the TUI trajectory view.
+
 ## Testing
 
 Contract test factories live in `src/__tests__/contracts/`. Both implementations run the same suite:

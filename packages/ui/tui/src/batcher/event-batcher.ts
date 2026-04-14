@@ -41,6 +41,13 @@ export interface EventBatcher<T> {
   flushSync(): void;
   /** Cancel all pending timers and drop the buffer. No flush is performed. */
   dispose(): void;
+  /**
+   * True once dispose() has been called. External producers (e.g. an
+   * in-flight stream drain that was passed this batcher by reference) can
+   * poll this to detect that their sink was torn down — otherwise their
+   * enqueue/flushSync calls silently no-op and their output vanishes.
+   */
+  readonly isDisposed: boolean;
 }
 
 export interface EventBatcherOptions {
@@ -125,6 +132,10 @@ export function createEventBatcher<T>(
       }
       buffer = [];
       microtaskPending = false;
+    },
+
+    get isDisposed(): boolean {
+      return disposed;
     },
   };
 }

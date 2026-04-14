@@ -90,7 +90,32 @@ export type GovernanceEvent =
       readonly costUsd?: number | undefined;
     }
   | { readonly kind: "tool_error"; readonly toolName: string }
-  | { readonly kind: "tool_success"; readonly toolName: string };
+  | { readonly kind: "tool_success"; readonly toolName: string }
+  /**
+   * Reset per-iteration UX budgets — turn count and duration start —
+   * to give each `runtime.run()` invocation a fresh model-call window
+   * and wall-clock window. Token usage, accumulated cost, spawn counts
+   * and rolling error-rate windows are intentionally NOT reset because
+   * they back runtime-wide safety/spend tracking that operators rely on
+   * for runaway containment. The split lets interactive hosts (TUI)
+   * give each user submit its own turn/duration budget while preserving
+   * cumulative total-spend ceilings for the whole runtime lifetime.
+   * Fired by `@koi/engine` at the start of each `run()` when the host
+   * opts in via `CreateKoiOptions.resetIterationBudgetPerRun` (#1742).
+   * Hosts can also fire it manually.
+   */
+  | { readonly kind: "iteration_reset" }
+  /**
+   * Reset per-session state — the rolling error-rate windows and the
+   * iteration counters cleared by `iteration_reset`. Fired by
+   * `@koi/engine` from `cycleSession()` so a host-driven conversation
+   * boundary (TUI `/clear`, `session:new`) doesn't carry tool-error
+   * history forward into the next conversation. Token usage, cost,
+   * and spawn counts remain CUMULATIVE across the runtime lifetime
+   * because they back process-level spend ceilings, not per-session
+   * limits. (#1742)
+   */
+  | { readonly kind: "session_reset" };
 
 // ---------------------------------------------------------------------------
 // GovernanceController — runtime interface (replaces GovernanceComponent)

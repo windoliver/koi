@@ -1017,6 +1017,13 @@ export function createPermissionsMiddleware(
         filteredCount,
         filteredTools: filteredDetails,
       });
+    } else {
+      ctx.reportDecision?.({
+        phase: "filter",
+        totalTools: tools.length,
+        allowedCount: tools.length,
+        filteredCount: 0,
+      });
     }
     if (filtered.length === tools.length) return request;
     return { ...request, tools: filtered };

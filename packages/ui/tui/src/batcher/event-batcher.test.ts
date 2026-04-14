@@ -200,6 +200,19 @@ describe("EventBatcher — dispose", () => {
     batcher.dispose();
     expect(() => batcher.dispose()).not.toThrow();
   });
+
+  test("isDisposed reflects dispose() state — #1742", () => {
+    // An external producer (e.g. an in-flight stream drain passed this
+    // batcher by reference) must be able to detect tear-down. Without this
+    // probe, its enqueue()/flushSync() calls silently vanish after a
+    // resetConversation(), leaving the UI with a truncated or missing reply.
+    const batcher = createEventBatcher((_b: readonly string[]) => {});
+    expect(batcher.isDisposed).toBe(false);
+    batcher.dispose();
+    expect(batcher.isDisposed).toBe(true);
+    batcher.dispose(); // idempotent
+    expect(batcher.isDisposed).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

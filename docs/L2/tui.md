@@ -50,6 +50,7 @@ EngineEvent (from @koi/core)
 - **Code block isolation**: splits at unclosed fence, memoizes stable head
 - **Markdown healing**: code-aware closer for unclosed formatting (width-aware fences)
 - **Accordion collapse**: tool results collapsed by default (Ctrl+E toggle-all)
+- **Copy-on-select**: mouse-drag selection auto-copies to clipboard via OSC 52; Ctrl+C fallback
 - **Auto-scroll**: scroll-up pauses, selection preserves scroll, settle on stream end
 - **Prompt history**: arrow up/down (session-scoped, clears on reset)
 - **Diff display**: unified diffs for `_edit` tools (supports `edits[]` schema)
@@ -391,6 +392,8 @@ Phase 2j-5 adds the final assembly layer on top of the state + components built 
 
 **Two-layer keyboard (1A):** `TuiRoot` registers one `useKeyboard` for globals (Ctrl+P,
 Ctrl+C, Esc). Modals register their own `useKeyboard` and guard with `if (!focused) return`.
+Ctrl+C checks `renderer.getSelection()` first — if text is selected, it copies to clipboard
+via OSC 52 and clears the selection instead of interrupting.
 Esc priority: root checks `modal !== null` before calling `onDismissModal` vs `onBack`.
 
 **State-driven layout tier (2A):** `TuiRoot` reads `layoutTier` from store. `createTuiApp`
@@ -487,6 +490,10 @@ subscriptions.
 | `stop()` before `start()` | No-op (idempotent) |
 | `stop()` called twice | No-op (idempotent) |
 
+### Trajectory Visibility
+
+The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]`/`[Tool]`. Decision data flows through `TrajectoryMiddlewareSpan.decisions` and is rendered as compact suffixes (e.g., `[filter:26/26]`, `[clean:0]`, `[inject:1 files 6538tok]`). Expanded steps show full decision key-value detail. Ledger source status, audit entries, and run report are shown at the bottom when available.
+
 ## Layer Compliance
 
 - State layer imports only from `@koi/core` (EngineEvent, ContentBlock, ToolCallId)
@@ -539,4 +546,10 @@ subscriptions.
 
 > **Checkpoint rewind (`/rewind [n]` slash command):** Added `/rewind` slash command that rolls back conversation state to a prior checkpoint. `onSlashSelect` now passes args (the optional step count `n`) through to the host callback, enabling parameterized slash commands. `ConversationView` shows a checkpoint hint after each checkpoint-eligible turn so users know rewind is available. The `/rewind` command dispatches through the existing `onCommand` callback with the step count argument.
 
+> **Copy-on-select + Ctrl+C copy:** Text selection now auto-copies to clipboard via OSC 52 when the mouse drag finishes (same pattern as OpenCode). `MessageList.useSelectionHandler` extracts `selection.getSelectedText()`, calls `copyToClipboard()`, then `renderer.clearSelection()` + `onSelectionEnd()` to restore auto-follow. Ctrl+C fallback in `TuiRoot`: reads `renderer.getSelection()`, copies if non-empty, clears selection and dispatches `resume_follow` to re-enable auto-scroll (since `renderer.clearSelection()` does not emit a null selection event). If copy fails (non-TTY or payload exceeds `MAX_CLIPBOARD_BYTES`), Ctrl+C falls through to interrupt. New `resumeFollowCounter` state field bridges the Ctrl+C path to MessageList's scroll state. `<text>` elements in `message-row.tsx` and `text-block.tsx` set `selectable` explicitly; `<markdown>` elements use `ref={enableSelection}` to set `selectable = true` imperatively (MarkdownRenderable inherits `false` from Renderable and `MarkdownProps` doesn't expose the typed prop). `copyToClipboard()` now enforces `MAX_CLIPBOARD_BYTES` on the base64-encoded payload length before writing.
+>
 > **#1689 — Stdin-parser reset after permission prompt:** `createTuiApp` subscribes to the store after a successful `render()` and, on `permission-prompt → null` modal transitions, invokes `renderer.stdinParser?.reset?.()`. Root cause lives in `@opentui/core@0.1.96`'s stdin parser (`index-vy1rm1x3.js`): a permission-approval keystroke sequence can leave the parser's `paste` latch set or its pending ByteQueue armed with stale bytes, at which point `tryForceFlush` (L7240) short-circuits and Enter / Backspace / Esc / Tab bytes never reach `_keyHandler.processParsedKey`. Printable characters still arrive because they take a separate fast path in the state machine. Calling the parser's public `reset()` (L7251) clears `pending`, `pendingSinceMs`, `paste`, and the parser state back to `ground` — it is the only operation that explicitly drops the paste latch. The subscriber is wired inside `create-app.ts` rather than `TuiRoot` because the renderer handle lives at the mount layer and this is a transport concern, not a view concern. Scope is intentionally limited to `permission-prompt` transitions: no other modal has exhibited the same class of bug, and extending the reset to every modal close would hide future parser regressions behind a blanket workaround. If a second modal is reported dropping keys, add its `kind` to the transition guard in `create-app.ts` rather than resetting on every modal clear. The subscribe unsubscribe handle is captured into the mount cleanup closure so `stop()` drops the listener alongside `cleanupResize`. Unit-testable with an injected fake renderer exposing `{ stdinParser: { reset: mock() } }`; see `create-app.test.ts`.
+
+> **Per-turn collapsible trajectory view (PR #1758):** `TrajectoryView` rewritten from a flat step list to a two-level collapsible tree grouped by user turn. `TrajectoryStepSummary` gains `readonly turnIndex: number` (0 = setup, 1+ = user turns). Turn headers show aggregate metrics (step count, duration, tokens in/out) and toggle expand/collapse with Enter. Steps render indented under their turn header with per-step detail expansion. `createEffect(on(turns, ...))` auto-expands each new turn as it appears during live sessions. Synthetic `koi:tui_turn_start` boundary steps (injected by the CLI before each `run()`) are filtered from the display. `createScrollableList` reused unchanged — it navigates the interleaved flat list of turn headers + step rows.
+
+> **`/clear` race + reset hardening (#1742):** `EventBatcher` gains a public `readonly isDisposed: boolean` getter so the host's `drainEngineStream` can detect mid-stream disposal and bail out cleanly instead of feeding events into a dead sink. The host (`packages/meta/cli/src/tui-command.ts`) consumes this signal to (1) finalize an abandoned stream with a synthetic `done` event so the reducer leaves "processing" state even when the batcher was disposed during a failed `/clear`, (2) defer destructive UI mutations (`clear_messages`, `set_trajectory_data`, transcript splice, turn counter reset) until the engine's `cycleSession()` actually committed — preserving visible history when the reset fails closed. No reducer or component changes; this is purely a TUI-layer integration of the engine-side `cycleSession()` / `rebindSessionId()` lifecycle work shipped in the same PR. See `docs/L3/cli.md` for the full host-side flow.

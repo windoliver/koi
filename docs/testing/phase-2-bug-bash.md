@@ -369,6 +369,320 @@ bun test --filter=@koi/memory-team-sync
 | Q76 | Tool argument type coercion (#1611) | Send query that causes model to pass string where number expected | Args coerced correctly; tool executes; no crash |
 | Q77 | Startup latency (#1637) | `time bun run .../bin.ts tui` (measure cold start) | < 2s cold start budget (P1 gate) |
 
+### S17 — Agent Spawning
+
+> The TUI has `@koi/spawn-tools` **fully wired** (`tui-runtime.ts:1134–1199`).
+> The `Spawn` tool is always registered. Built-in agents: `researcher`, `coder`, `reviewer`, `coordinator`.
+> `allowDynamicAgents: true` — any unknown agent name creates an ad-hoc agent (read-only tools: Glob, Grep, fs_read, ToolSearch).
+> Max 5 concurrent child agents (`createInMemorySpawnLedger(5)`).
+> Children inherit security MW: permissions, exfiltration-guard, hooks, system-prompt.
+
+**Setup**: use standard fixture project (§1.4). No extra config needed — spawn is always wired.
+
+| Q | Prompt | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q102 | `Spawn a researcher agent to find all TODO comments in this project.` | Spawn (researcher) | Spawn tool called with `agentName=researcher`; child runs Grep/Glob; results returned to parent |
+| Q103 | `Use a coder agent to add an "isEven" function to src/math.ts with a test in test/math.test.ts.` | Spawn (coder) | Child agent edits files; `bun test` passes after; git diff shows changes |
+| Q104 | `Have a reviewer agent review the current state of src/math.ts and suggest improvements.` | Spawn (reviewer) | Child agent reads file; structured review returned (no file edits) |
+| Q105 | `Use the coordinator to: first research what functions exist in src/, then have a coder add missing test coverage for any untested function.` | Spawn (coordinator) → Spawn (researcher) + Spawn (coder) | Coordinator spawns ≥2 children; task delegation visible; results synthesized |
+| Q106 | `Spawn an agent named "custom-helper" to list all TypeScript files in this project.` | Spawn (dynamic) | Dynamic agent created (not a built-in name); ad-hoc agent runs with read-only tools (Glob/Grep/fs_read/ToolSearch); file list returned |
+| Q107 | Check `/agents` view during or after spawns | — | Agents view shows spawned agents with status (running/completed); agent names match |
+| Q108 | Ctrl+C during active spawn (send Q102, then Ctrl+C mid-execution) | — | Clean interrupt; no zombie child agents; spawn ledger cleared; TUI responsive |
+| Q109 | `Spawn 6 agents simultaneously to search for different keywords.` | Spawn ×6 | 5 succeed; 6th rejected by spawn ledger (max 5 concurrent); error message mentions limit |
+
+### S18 — Browser Automation
+
+> `@koi/tool-browser` is **NOT currently wired** into `tui-runtime.ts`.
+> Requires a `BrowserDriver` backend. A `createMockDriver()` exists for dev/test.
+> The v1 Playwright driver is archived at `archive/v1/packages/drivers/browser-playwright/`.
+>
+> **To wire**: add `createBrowserProvider({ backend: driver })` to the `providers` array in
+> `tui-runtime.ts`. The provider auto-registers 15 `browser_*` tools and injects `BROWSER_SKILL`.
+
+**Prerequisites**: wire `@koi/tool-browser` into `tui-runtime.ts` first (see wiring sketch below).
+
+```typescript
+// tui-runtime.ts wiring sketch (add after existing providers)
+import { createBrowserProvider } from "@koi/tool-browser";
+// Option A: mock driver for development testing
+import { createMockDriver } from "@koi/tool-browser/test-helpers";
+const browserProvider = createBrowserProvider({ backend: createMockDriver() });
+// Option B: real Playwright driver (requires promoting archive or new package)
+// import { createPlaywrightDriver } from "@koi/browser-playwright";
+// const browserProvider = createBrowserProvider({
+//   backend: await createPlaywrightDriver({ headless: true }),
+//   isUrlAllowed: (url) => !isPrivateIp(url),  // SSRF guard
+// });
+```
+
+**Setup**: standard fixture project. Ensure browser provider is wired.
+
+| Q | Prompt | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q110 | `Take a snapshot of the current browser page.` | browser_snapshot | Accessibility tree snapshot returned; `[ref=eN]` elements visible |
+| Q111 | `Navigate to https://example.com and tell me what's on the page.` | browser_navigate, browser_snapshot | Navigation succeeds; page content described from snapshot |
+| Q112 | `Click the element labeled "More information" on the page.` | browser_snapshot, browser_click | Agent reads snapshot, identifies ref, clicks; action result returned |
+| Q113 | `Type "koi framework" into the search field and press Enter.` | browser_type, browser_press | Input field targeted by ref; text typed; Enter pressed |
+| Q114 | `Fill in the login form with username "test" and password "pass123".` | browser_fill_form | Multiple fields filled in single tool call |
+| Q115 | `Open a new tab to https://example.com, then switch back to the first tab.` | browser_tab_new, browser_tab_focus | Tab created; focus switched; tab list shows 2 tabs |
+| Q116 | `Take a screenshot of the current page.` | browser_screenshot | Base64 PNG returned; image renderable |
+| Q117 | `Navigate to http://169.254.169.254/latest/meta-data/` | browser_navigate (blocked) | SSRF guard blocks private IP; no outbound request |
+
+### S19 — LSP Integration
+
+> `@koi/lsp` is **NOT currently wired** into `tui-runtime.ts`.
+> Requires LSP server binaries on PATH. `autoDetect: true` scans for: `typescript-language-server`,
+> `pyright`, `gopls`, `rust-analyzer`, `clangd`, `jdtls`, `lua-language-server`, `zls`, `ruby-lsp`.
+>
+> **To wire**: call `await createLspComponentProvider(config)` before `createKoi` and add the
+> provider to the `providers` array. Failed servers are non-fatal (partial success).
+
+**Prerequisites**: wire `@koi/lsp` into `tui-runtime.ts` first (see wiring sketch below).
+
+```typescript
+// tui-runtime.ts wiring sketch (add before createKoi call)
+import { createLspComponentProvider } from "@koi/lsp";
+const { provider: lspProvider, failures } = await createLspComponentProvider({
+  servers: [{
+    name: "typescript",
+    command: "typescript-language-server",
+    args: ["--stdio"],
+    rootUri: `file://${cwd}`,
+  }],
+  autoDetect: true,  // also picks up pyright, gopls, etc. from PATH
+});
+for (const f of failures) console.warn(`LSP ${f.serverName}: ${f.error.message}`);
+```
+
+**Setup**: standard fixture project. Ensure `typescript-language-server` is on PATH (`bun add -g typescript-language-server`). Wire LSP provider into TUI.
+
+| Q | Prompt | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q118 | `What LSP servers are available?` | none (or lsp discovery) | Lists connected servers (at minimum `typescript`); shows capabilities |
+| Q119 | `Show me hover information for the "add" function in src/math.ts at line 1.` | lsp__typescript__open_document, lsp__typescript__hover | Hover result shows function signature and type info |
+| Q120 | `Go to the definition of the "multiply" function used in test/math.test.ts.` | lsp__typescript__open_document, lsp__typescript__goto_definition | Returns `src/math.ts` with line/column; correct location |
+| Q121 | `Find all references to the "add" function across the project.` | lsp__typescript__find_references | Returns locations in `src/math.ts` (definition) and `test/math.test.ts` (usage) |
+| Q122 | `List all symbols in src/math.ts.` | lsp__typescript__document_symbols | Returns `add` and `multiply` function symbols with ranges |
+| Q123 | `Show me compiler diagnostics for src/math.ts.` | lsp__typescript__get_diagnostics | Returns diagnostics (clean file = empty list; or any real warnings) |
+| Q124 | `Search the workspace for symbols matching "math".` | lsp__typescript__workspace_symbols | Returns symbols from across the project matching query |
+| Q125 | (kill typescript-language-server process mid-session) `Show hover for "add" in src/math.ts.` | lsp__typescript__hover | Reconnect fires (max 2 attempts); either recovers or clean error; no hang |
+
+### S20 — Audit Stack
+
+> `@koi/middleware-audit` + `@koi/audit-sink-ndjson` + `@koi/audit-sink-sqlite` are **NOT currently wired** into `tui-runtime.ts`.
+> The audit MW intercepts 6 event categories: `model_call`, `tool_call`, `session_start`, `session_end`, `permission_decision`, `config_change`.
+> Entries are hash-chained (Ed25519 if `signing: true`), redacted, and drained into a bounded backpressure queue.
+>
+> **To wire**: add `KOI_AUDIT_ENABLED=true` env var check in `tui-command.ts` (following `KOI_OTEL_ENABLED` pattern),
+> construct sink + MW in `tui-runtime.ts`, add to `allMiddleware` after `exfiltrationGuardMw`.
+
+**Prerequisites**: wire audit stack into `tui-runtime.ts` first.
+
+```typescript
+// tui-runtime.ts wiring sketch
+import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
+
+// Choose one sink (or both with a tee):
+const auditSink = createSqliteAuditSink({
+  dbPath: join(homedir(), ".koi", "audit", `${workspaceHash}.sqlite`),
+});
+// OR: createNdjsonAuditSink({ filePath: join(homedir(), ".koi", "audit", `${workspaceHash}.ndjson`) });
+const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+
+// tui-command.ts activation:
+...(process.env.KOI_AUDIT_ENABLED === "true" ? { audit: true } : {}),
+```
+
+**Setup**: enable audit, launch TUI, then verify output files after session.
+```bash
+export KOI_AUDIT_ENABLED=true
+# Launch TUI normally (§1.5)
+```
+
+| Q | Prompt / Action | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q126 | `Read src/math.ts` | fs_read | After turn: audit DB/NDJSON contains `model_call` + `tool_call` + `permission_decision` entries |
+| Q127 | `Run bun test` | Bash | `tool_call` entry with `toolName=Bash`; `request` field contains command |
+| Q128 | (verify session lifecycle) Start TUI → send Q126 → quit TUI | — | `session_start` entry at start; `session_end` entry at quit; timestamps ordered |
+| Q129 | (verify hash chain) After ≥3 entries | — | Each entry's `prev_hash` matches prior entry's hash; chain unbroken |
+| Q130 | (verify redaction) `Write "api_key=sk-secret123" to /tmp/audit-test.txt` | fs_write | Audit entry for `tool_call` redacts `sk-secret123` from request body |
+| Q131 | (verify NDJSON sink) `cat ~/.koi/audit/<hash>.ndjson` | — | Valid NDJSON; one JSON object per line; all entries have `kind`, `timestamp`, `sessionId` |
+| Q132 | (verify SQLite sink) `sqlite3 ~/.koi/audit/<hash>.sqlite "SELECT kind, count(*) FROM audit_log GROUP BY kind"` | — | All 3+ kinds present; counts match NDJSON |
+| Q133 | (verify signing) Inspect `signature` field in audit entries | — | Non-null Ed25519 signatures on every entry (when `signing: true`) |
+
+### S21 — Goal Tracking & Run Report
+
+> `@koi/middleware-goal` is **already wired** via `--goal` CLI flag (`tui-command.ts`).
+> Injects `## Active Goals` message every N turns (adaptive interval: base=5, max=20).
+> Detects drift (objective keywords absent from last 3 messages) and completion (`[x]`, "done", "completed").
+>
+> `@koi/middleware-report` is **NOT currently wired**. Accumulates per-session activity data
+> and produces a `RunReport` at session end. Needs `createReportMiddleware` added to `allMiddleware`.
+
+**Prerequisites for report MW**: wire `@koi/middleware-report` into `tui-runtime.ts`.
+
+```typescript
+// tui-runtime.ts wiring sketch for report MW
+import { createReportMiddleware } from "@koi/middleware-report";
+const reportHandle = createReportMiddleware({
+  objective: config.goals?.join("; "),
+  onReport: (report, formatted) => console.log("[run-report]", formatted),
+});
+// Add reportHandle.middleware to allMiddleware (after otelHandle, before checkpointMw)
+```
+
+**Setup**: launch TUI with goals.
+```bash
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
+   --goal 'Write unit tests for the math module' \
+   --goal 'Ensure 100% test coverage'"
+```
+
+| Q | Prompt | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q134 | `What are my current goals?` | none | Agent mentions both goals (reads from injected `## Active Goals` block) |
+| Q135 | `Write a test for the add function in src/math.ts.` | fs_read, fs_write | Works toward goal; goal completion not triggered yet |
+| Q136 | `Tell me about the weather.` (repeat 5× across turns — deliberate drift) | none | After ~5 turns off-topic, goal re-injection fires (adaptive interval resets); agent re-states objectives |
+| Q137 | `I've finished writing all the tests. The test coverage goal is done.` | none | Completion detection fires for "Ensure 100% test coverage" goal; `[x]` shown on next injection |
+| Q138 | Check `/trajectory` after Q135-Q137 | — | `middleware:goal` steps visible; `reportDecision` shows `{ objectives, completedCount, totalCount }` |
+| Q139 | (report MW, if wired) Quit TUI after Q134-Q138 | — | `RunReport` printed: summary with turn count, action count, duration, token usage |
+| Q140 | (report MW, if wired) Verify `RunReport.actions` | — | Ring buffer contains model_call + tool_call entries matching session history |
+
+### S22 — Model Router & Failover
+
+> `@koi/model-router` is **already wired** via `KOI_FALLBACK_MODEL` env var (`tui-command.ts`).
+> Strategy: `"fallback"` (ordered). Circuit breaker: 5 failures → open, 60s cooldown → half-open probe.
+> Retries disabled in TUI wiring (`maxRetries: 0`). Routing decisions visible in `/trajectory`.
+
+**Setup**: launch TUI with fallback model.
+```bash
+export KOI_FALLBACK_MODEL="anthropic/claude-3-haiku"
+# OR multiple fallbacks:
+export KOI_FALLBACK_MODEL="anthropic/claude-3-haiku,google/gemini-2.0-flash"
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
+
+| Q | Prompt / Action | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q141 | `Hello, what model are you?` | none | Response arrives; `/model` shows primary model |
+| Q142 | Check `/trajectory` after Q141 | — | `middleware:model-router` step visible; `router.target.selected` shows primary; `router.fallback_occurred: false` |
+| Q143 | (failover test) Set `KOI_MODEL` to invalid model name, launch TUI, send `Hello` | none | Response still arrives via fallback model; no crash |
+| Q144 | Check `/trajectory` after Q143 | — | `router.fallback_occurred: true`; `router.target.attempted` shows both primary (failed) + fallback (succeeded) |
+| Q145 | (circuit breaker) Send 6+ queries with invalid primary model | none | After 5th failure on primary: CB opens; subsequent queries go directly to fallback (no primary attempt); visible in trajectory as `router.target.attempted` containing only fallback |
+| Q146 | (all-fail) Set both `KOI_MODEL` and `KOI_FALLBACK_MODEL` to invalid names, send `Hello` | none | Clear error: "All N targets failed"; TUI does not crash; retry prompt offered |
+
+### S23 — OpenTelemetry Observability
+
+> `@koi/middleware-otel` is **already wired** via `KOI_OTEL_ENABLED=true` env var (`tui-command.ts`).
+> Emits GenAI semantic convention spans: `invoke_agent` (root), `chat <model>` (per model call),
+> `execute_tool <toolName>` (per tool call). Requires OTel SDK provider registered globally.
+>
+> For local verification: use `ConsoleSpanExporter` (prints to stderr) or `InMemorySpanExporter`.
+> No external collector required.
+
+**Setup**: enable OTel, optionally with console exporter for visibility.
+```bash
+export KOI_OTEL_ENABLED=true
+# Optional: set OTEL_TRACES_EXPORTER=console for stderr output
+# Or configure OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 for Jaeger/Zipkin
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
+
+| Q | Prompt / Action | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q147 | `Hello, what can you do?` | none | OTel span emitted: `invoke_agent koi-tui` (root) + `chat <model>` (child) |
+| Q148 | `List all files in src/` | Glob | OTel spans: `chat <model>` + `execute_tool Glob` (parented to chat span) |
+| Q149 | Check `/trajectory` after Q148 | — | ATIF steps have `otel.traceId` and `otel.spanId` metadata populated |
+| Q150 | (multi-tool turn) `Search for "export" in src/ and read each matching file.` | Grep, fs_read ×N | Multiple `execute_tool` spans, all parented to the same `chat` span |
+| Q151 | (error span) Trigger a tool failure (e.g., read nonexistent file) | fs_read (error) | `execute_tool` span has `SpanStatusCode.ERROR`; error message in span attributes |
+| Q152 | (session end) Quit TUI | — | `invoke_agent` root span ends; `SpanStatusCode.OK`; duration covers full session |
+
+### S24 — Loop Mode (TUI)
+
+> `@koi/loop` is **already wired** into TUI via `--until-pass` flag (`tui-command.ts:1311–1433`).
+> The TUI renders each retry iteration live with `--- loop iteration N / M ---` banners.
+> Requires `--allow-side-effects` companion flag. Skips session persistence.
+
+**Setup**: create a deliberately failing test in the fixture project.
+```bash
+cat > "$FIXTURE/test/broken.test.ts" <<'EOF'
+import { expect, test } from "bun:test";
+test("broken", () => expect(1 + 1).toBe(3));
+EOF
+git -C "$FIXTURE" add -A && git -C "$FIXTURE" commit -q -m "add broken test"
+```
+
+```bash
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
+   --until-pass 'bun test' --max-iter 3 --allow-side-effects"
+```
+
+| Q | Prompt / Action | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q153 | `Fix the failing test in test/broken.test.ts` | fs_read, fs_edit, Bash | Agent iterates: read → edit → `bun test` → verify. Converges within max-iter. TUI shows `--- loop iteration N ---` banners |
+| Q154 | (max-iter bail) Use `--until-pass "false" --max-iter 2` with prompt `Make this pass` | Bash | Hits max-iter; exits cleanly with non-zero code; no hang; TUI shows both iterations |
+| Q155 | (verifier timeout) Use `--until-pass "sleep 60" --verifier-timeout 2000` | — | Verifier times out; clean error; TUI doesn't hang |
+
+### S25 — File-Based Memory Persistence
+
+> `@koi/memory-fs` is **NOT currently wired** into `tui-runtime.ts` (TUI uses `createInMemoryMemoryBackend()`).
+> `createMemoryStore(config)` stores each memory as a Markdown file with frontmatter,
+> maintains `MEMORY.md` index, uses Jaccard dedup, and supports file locking for concurrent access.
+>
+> **To wire**: add `KOI_MEMORY_DIR` env var in `tui-command.ts`; swap in `createMemoryStore` when set.
+
+**Prerequisites**: wire `@koi/memory-fs` into `tui-runtime.ts` first.
+
+```typescript
+// tui-runtime.ts wiring sketch
+import { createMemoryStore } from "@koi/memory-fs";
+const memoryBackend = process.env.KOI_MEMORY_DIR
+  ? createMemoryFsBackend(createMemoryStore({ dir: process.env.KOI_MEMORY_DIR }))
+  : createInMemoryMemoryBackend();
+```
+
+**Setup**: set memory directory, launch TUI.
+```bash
+export KOI_MEMORY_DIR="$KOI_HOME/.koi/memory"
+mkdir -p "$KOI_MEMORY_DIR"
+tmux new-session -d -s "$KOI_SESSION" \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+```
+
+| Q | Prompt / Action | Tools Expected | Pass Criteria |
+|---|--------|---------------|---------------|
+| Q156 | `Remember: this project uses Bun 1.3 as its runtime.` | memory_store | Memory file written to `$KOI_MEMORY_DIR/`; frontmatter has `type: project` |
+| Q157 | `Remember: always validate inputs at system boundaries.` | memory_store | Second `.md` file created; `MEMORY.md` index has 2 entries |
+| Q158 | `What do you remember about the runtime?` | memory_recall | Returns Bun 1.3 fact (read from filesystem, not in-memory map) |
+| Q159 | (cross-session persistence) Kill TUI, relaunch, `What do you remember?` | memory_recall | Both memories survive restart (persisted to disk); Bun 1.3 + input validation returned |
+| Q160 | `Remember: this project uses Bun 1.3 for all scripts.` (near-duplicate of Q156) | memory_store | Jaccard dedup detects similarity; conflict warning returned |
+| Q161 | `Delete the memory about input validation.` | memory_delete | File removed from `$KOI_MEMORY_DIR/`; `MEMORY.md` index updated to 1 entry |
+| Q162 | (concurrent safety) Rapidly send 3 `Remember: ...` prompts in sequence | memory_store ×3 | All 3 stored without corruption; `MEMORY.md` consistent; no lock contention errors |
+
+### Packages Not Testable via TUI (justified)
+
+The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun test --filter=@koi/runtime`) and package-level unit tests.
+
+| Package | Reason | Test Approach |
+|---------|--------|---------------|
+| `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun test --filter=@koi/dream`; golden query: `dream-consolidation` |
+| `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
+
+### Always-On Packages (implicitly tested by every TUI session)
+
+These packages run on every TUI query. They don't need dedicated scenarios — they are exercised across S1-S25.
+
+| Package | Role | Why always-on |
+|---------|------|--------------|
+| `@koi/model-openai-compat` | Default model HTTP transport | Every model call goes through `createOpenAICompatAdapter`. Retry, stream watchdog, TLS pre-warm all exercised. |
+| `@koi/decision-ledger` | Read-only trajectory+audit projection | `/trajectory` view calls `createDecisionLedger()` on every refresh. Trajectory lane always populated. |
+
 ### CLI-Only Scenarios (not TUI)
 
 | Q | Action | Command | Pass Criteria |
@@ -404,11 +718,20 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
 | **S12** | Resilience | Q66-Q77 | 1+ | 10MB file; sandbox profile (macOS); crash recovery |
+| **S17** | Agent Spawning | Q102-Q109 | 1 | none (spawn always wired) |
+| **S18** | Browser Automation | Q110-Q117 | 1 | Wire `@koi/tool-browser` into TUI first |
+| **S19** | LSP Integration | Q118-Q125 | 1 | Wire `@koi/lsp` into TUI; `typescript-language-server` on PATH |
+| **S20** | Audit Stack | Q126-Q133 | 1 | Wire audit MW + sinks; `KOI_AUDIT_ENABLED=true` |
+| **S21** | Goal Tracking & Report | Q134-Q140 | 1 | `--goal "..."` (already wired); report MW needs wiring |
+| **S22** | Model Router & Failover | Q141-Q146 | 2+ | `KOI_FALLBACK_MODEL=...` (already wired) |
+| **S23** | OTel Observability | Q147-Q152 | 1 | `KOI_OTEL_ENABLED=true` (already wired) |
+| **S24** | Loop Mode (TUI) | Q153-Q155 | 1 per query | `--until-pass <cmd> --allow-side-effects` (already wired) |
+| **S25** | Memory FS Persistence | Q156-Q162 | 2 (restart for Q159) | Wire `@koi/memory-fs`; `KOI_MEMORY_DIR=...` |
 
 **All scenarios run with the full TUI middleware stack:**
 event-trace → hooks → hook-observer → rules-loader → permissions → exfiltration-guard → extraction → semantic-retry → checkpoint → system-prompt → session-transcript
 
-Optional MW (model-router, goal, otel) require explicit config — tested via `bun test` only.
+Optional MW (model-router, goal, otel, audit, report) require explicit config — tested in S20-S23.
 
 ---
 
@@ -429,10 +752,10 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/middleware-extraction | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q36 | `*` | `*` | |
 | @koi/middleware-semantic-retry | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q58 | |
 | @koi/checkpoint | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | Q43 | `*` | |
-| @koi/middleware-audit | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/middleware-audit` |
-| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | not wired anywhere |
-| @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/middleware-goal` |
-| @koi/middleware-otel | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/middleware-otel` |
+| @koi/middleware-audit | — | — | — | — | — | — | — | — | — | — | — | — | **S20**: Q126-Q133 (wire first) |
+| @koi/middleware-report | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q139-Q140 (wire first) |
+| @koi/middleware-goal | — | — | — | — | — | — | — | — | — | — | — | — | **S21**: Q134-Q138 (`--goal` flag) |
+| @koi/middleware-otel | — | — | — | — | — | — | — | — | — | — | — | — | **S23**: Q147-Q152 (`KOI_OTEL_ENABLED`) |
 
 `*` = always-on middleware; fires on every query in that scenario. Bold Q = explicitly tests that package.
 
@@ -451,9 +774,9 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/memory-tools | — | — | — | — | — | — | — | — | — | Q46-Q48 | — | — | Q84-Q99 (S14) |
 | @koi/mcp | — | — | — | — | — | — | — | Q25-Q27 | — | — | — | — | |
 | @koi/plugins | — | — | — | — | — | — | — | — | Q41,Q42 | — | — | — | |
-| @koi/spawn-tools | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/spawn-tools` |
-| @koi/tool-browser | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/tool-browser` |
-| @koi/lsp | — | — | — | — | — | — | — | — | — | — | — | — | `bun test --filter=@koi/lsp` |
+| @koi/spawn-tools | — | — | — | — | — | — | — | — | — | — | Q107 | — | **S17**: Q102-Q109 |
+| @koi/tool-browser | — | — | — | — | — | — | — | — | — | — | — | — | **S18**: Q110-Q117 (wire first) |
+| @koi/lsp | — | — | — | — | — | — | — | — | — | — | — | — | **S19**: Q118-Q125 (wire first) |
 
 ### Infrastructure Packages
 
@@ -481,12 +804,12 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 
 | L2 Package | Scenario | Explicitly Tested By |
 |------------|----------|---------------------|
-| @koi/audit-sink-ndjson | T only | `bun test --filter=@koi/audit-sink-ndjson` |
-| @koi/audit-sink-sqlite | T only | `bun test --filter=@koi/audit-sink-sqlite` |
+| @koi/audit-sink-ndjson | **S20** | Q131 (NDJSON output verified) |
+| @koi/audit-sink-sqlite | **S20** | Q132 (SQLite output verified) |
 | @koi/checkpoint | S11 | Q53 (/rewind) |
-| @koi/loop | T only | `bun test --filter=@koi/loop` (CLI loop mode) |
+| @koi/loop | **S24** | Q153-Q155 (`--until-pass` in TUI) |
 | @koi/mcp | S8 | Q25-Q27 (MCP lifecycle) |
-| @koi/middleware-audit | T only | `bun test --filter=@koi/middleware-audit` |
+| @koi/middleware-audit | **S20** | Q126-Q133 (audit MW + sinks, wire first) |
 | @koi/plugins | S9 | Q41-Q42 |
 | @koi/sandbox-os | S4, S12 | Q15 (implicit), Q62-Q63 (explicit, macOS) |
 | @koi/session | S1, S11 | Q4-Q5 (resume), Q52 (export), Q63 (picker) |
@@ -496,31 +819,34 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/task-tools | S10 | Q43-Q45 |
 | @koi/tasks | S10 | Q43-Q45 |
 | @koi/tools-bash | S2,S4,S6,S7,S12 | Q9,Q13-Q15,Q19,Q24,Q66-Q67 |
+| @koi/spawn-tools | **S17** | Q102-Q109 (agent spawning — fully wired in TUI) |
+| @koi/tool-browser | **S18** | Q110-Q117 (wire `createBrowserProvider` into TUI first) |
+| @koi/lsp | **S19** | Q118-Q125 (wire `createLspComponentProvider` into TUI first) |
+| @koi/middleware-goal | **S21** | Q134-Q138 (`--goal` flag, already wired) |
+| @koi/middleware-report | **S21** | Q139-Q140 (wire `createReportMiddleware` first) |
+| @koi/model-router | **S22** | Q141-Q146 (`KOI_FALLBACK_MODEL`, already wired) |
+| @koi/middleware-otel | **S23** | Q147-Q152 (`KOI_OTEL_ENABLED`, already wired) |
+| @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
+| @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
+| @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
+| @koi/dream | non-TUI | `bun test --filter=@koi/dream` (offline batch job) |
+| @koi/mcp-server | non-TUI | `bun test --filter=@koi/mcp-server` (Koi-as-MCP-server) |
 
 ### Unlisted-but-Wired Packages — Summary
+
+> Packages that appear in `tui-runtime.ts` imports but are not in the Canonical L2 set from `scripts/layers.ts`.
 
 | Package | Scenario | Explicitly Tested By |
 |---------|----------|---------------------|
 | @koi/middleware-exfiltration-guard | S4 | Q16 (secret exfiltration blocked) |
 | @koi/middleware-extraction | S10, S14 | Q46, Q97-Q98 (marker + heuristic extraction) |
 | @koi/middleware-semantic-retry | S12 | Q68 (malformed args → retry) |
-| @koi/fs-nexus | S13 | Q28-Q37 (Python bridge, GWS mounts, inline OAuth) |
-| @koi/secure-storage | S8, S13 | Q28-Q35 (OAuth token persistence) |
 | @koi/middleware-permissions | S6 | Q19 (allow), Q20 (prompt) |
 | @koi/rules-loader | S1 | Q3 (CLAUDE.md injection verified) |
-| @koi/model-router | T only | `bun test --filter=@koi/model-router` (optional MW) |
-| @koi/middleware-goal | T only | `bun test --filter=@koi/middleware-goal` (optional MW) |
-| @koi/middleware-otel | T only | `bun test --filter=@koi/middleware-otel` (optional MW) |
-| @koi/dream | T only | `bun test --filter=@koi/dream` (not wired in TUI) |
-| @koi/memory-fs | T only | `bun test --filter=@koi/memory-fs` (TUI uses in-memory) |
+| @koi/fs-nexus | S13 | Q28-Q37 (Python bridge, GWS mounts, inline OAuth) |
+| @koi/secure-storage | S8, S13 | Q28-Q35 (OAuth token persistence) |
 | @koi/memory-team-sync | S10 | Q38 (redaction path) |
-| @koi/tool-browser | T only | `bun test --filter=@koi/tool-browser` (not wired in TUI) |
-| @koi/model-openai-compat | T only | `bun test --filter=@koi/model-openai-compat` (start.ts adapter) |
-| @koi/mcp-server | T only | `bun test --filter=@koi/mcp-server` (separate process) |
-| @koi/agent-runtime | T only | `bun test --filter=@koi/agent-runtime` (spawn stubbed in TUI) |
-| @koi/decision-ledger | T only | `bun test --filter=@koi/decision-ledger` (not wired in TUI) |
-| @koi/fs-nexus | S13 | Q28-Q37 (GWS connectors via Python bridge + inline OAuth) |
-| @koi/middleware-report | T only | `bun test --filter=@koi/middleware-report` (not wired anywhere) |
+| @koi/agent-runtime | **S17** | Q102-Q109 (fully wired via `createAgentResolver` + `createSpawnToolProvider`) |
 
 ---
 
@@ -611,7 +937,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | Tool result accordion | S11 | Q55 (Ctrl+E toggle) |
 | Tool result N-line truncation | S2 | Q8 (multi-tool workflow) |
 | Error block | S12 | Q68 (malformed args) |
-| Spawn block | — | test-suite only (spawn stubbed) |
+| Spawn block | S17 | Q102-Q106 (spawn fully wired) |
 | Auto-scroll + pause on scroll-up | S7 | Q23 (many turns) |
 | Markdown code fence healing | S2 | Q8 (JSDoc generation streams) |
 
@@ -680,20 +1006,23 @@ bun test --filter=@koi/model-openai-compat # adapter tested via provider selecti
 | T5 | S12 (Resilience), CLI-only (Q78-Q83) | `t5` |
 | T6 | S13 (Nexus GWS Connectors & OAuth) | `t6` |
 | T7 | S15 (Loop Mode), S16 (Golden Query Replay) | `t7` |
+| T8 | S17 (Agent Spawning), S18 (Browser), S19 (LSP) | `t8` |
+| T9 | S20 (Audit), S21 (Goal/Report), S22 (Model Router) | `t9` |
+| T10 | S23 (OTel), S24 (Loop TUI), S25 (Memory FS) | `t10` |
 
 ---
 
 ## 8. Exit Criteria
 
-1. All S1-S16 scenarios run at least once
-2. All Q1-Q101 queries executed with pass/fail recorded
+1. All S1-S25 scenarios run at least once (S18-S20, S25 after wiring; skip if not wired)
+2. All Q1-Q162 queries executed with pass/fail recorded
 3. All S16 golden queries pass (`bun test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
 5. TUI feature matrix (§5) shows every command/shortcut/view/modal exercised
 6. `bun test --filter=@koi/runtime` (golden replay) passes on candidate commit
 7. Written summary posted with:
-   - Queries run: N/101
+   - Queries run: N/162
    - Golden replay: all green / N failures
    - Bugs filed by severity
    - Unexercised packages + justification

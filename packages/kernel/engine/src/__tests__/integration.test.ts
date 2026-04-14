@@ -151,6 +151,9 @@ describe("full lifecycle integration", () => {
 
 describe("middleware observation integration", () => {
   test("middleware sees all lifecycle hooks in correct order", async () => {
+    // #1742: onSessionStart fires once on the first run(); onSessionEnd
+    // fires once on runtime.dispose. Per-run hooks (onAfterTurn) fire on
+    // each run in between.
     const hookOrder: string[] = [];
 
     const observer: KoiMiddleware = {
@@ -177,7 +180,9 @@ describe("middleware observation integration", () => {
     });
 
     await collectEvents(runtime.run({ kind: "text", text: "test" }));
+    expect(hookOrder).toEqual(["session_start", "after_turn"]);
 
+    await runtime.dispose();
     expect(hookOrder).toEqual(["session_start", "after_turn", "session_end"]);
   });
 
@@ -238,7 +243,11 @@ describe("error propagation integration", () => {
     expect(runtime.agent.state).toBe("terminated");
   });
 
-  test("onSessionEnd is called even when adapter crashes", async () => {
+  test("onSessionEnd fires on dispose even when adapter crashed mid-run", async () => {
+    // #1742: onSessionEnd is tied to runtime lifetime, not individual
+    // run() invocations. A failing run() must not nuke session-scoped
+    // middleware state (e.g. always-allow approvals in @koi/middleware-
+    // permissions). The hook still runs exactly once, at dispose.
     const onSessionEnd = mock(() => Promise.resolve());
 
     const runtime = await createKoi({
@@ -252,6 +261,9 @@ describe("error propagation integration", () => {
     } catch {
       // Expected to throw
     }
+    expect(onSessionEnd).toHaveBeenCalledTimes(0);
+
+    await runtime.dispose();
     expect(onSessionEnd).toHaveBeenCalledTimes(1);
   });
 });

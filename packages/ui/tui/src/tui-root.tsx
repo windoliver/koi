@@ -14,7 +14,7 @@
  */
 
 import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { Show, Switch, Match, createEffect, createMemo, on, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
@@ -35,6 +35,7 @@ import { StatusBar } from "./components/StatusBar.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
 import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
+import { copyToClipboard } from "./utils/clipboard.js";
 import {
   StoreContext,
   useTuiStore,
@@ -131,6 +132,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   if (store === null) {
     throw new Error("TuiRoot must be rendered inside <StoreContext.Provider>");
   }
+  const renderer = useRenderer();
 
   // Decision 13A: minimal selectors — only re-render on view/modal changes.
   // Zero re-renders during streaming text_delta events.
@@ -228,7 +230,25 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
               : { kind: "command-palette", query: "" },
         });
       },
-      onInterrupt: props.onInterrupt,
+      onInterrupt: () => {
+        // Ctrl+C with active selection → copy to clipboard (fallback for
+        // terminals where Ctrl+C reaches the app). Primary copy path is
+        // copy-on-select in MessageList.
+        const sel = renderer.getSelection();
+        const text = sel?.getSelectedText();
+        if (text && text.length > 0 && copyToClipboard(text)) {
+          renderer.clearSelection();
+          // clearSelection() doesn't emit a null selection event, so
+          // MessageList's onSelectionEnd never fires. Dispatch resume_follow
+          // to re-enable auto-scroll from the Ctrl+C path.
+          store.dispatch({ kind: "resume_follow" });
+        } else {
+          // Copy failed or no selection — interrupt as normal.
+          // Clear stale selection so next Ctrl+C doesn't re-enter copy path.
+          if (sel) renderer.clearSelection();
+          props.onInterrupt();
+        }
+      },
       onDismissModal: () => {
         const s = store.getState();
         if (s.modal?.kind === "permission-prompt") {

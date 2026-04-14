@@ -419,12 +419,33 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //    This ensures that handle.signal(TERM) → abortController.abort() reaches the
   //    engine loop's AbortSignal, enabling graceful in-flight shutdown during the
   //    grace period before force-termination.
+  //
+  //    #1742 loop-2 round 9: childRuntime.run() can now throw synchronously
+  //    (poisoned/disposed/lifecycleInFlight/already-running). Catch any
+  //    sync throw and convert it to a lazy-failure async iterable so
+  //    downstream consumers (delivery-policy, run-spawned-agent,
+  //    create-hook-spawn-fn) that still iterate via `for await` see the
+  //    error at first iteration where they already have try/catch coverage,
+  //    rather than at iterable-construction time.
   function wrappedRun(input: EngineInput): AsyncIterable<EngineEvent> {
     const composedSignal =
       input.signal !== undefined
         ? AbortSignal.any([input.signal, abortController.signal])
         : abortController.signal;
-    return childRuntime.run({ ...input, signal: composedSignal });
+    try {
+      return childRuntime.run({ ...input, signal: composedSignal });
+    } catch (syncErr) {
+      const failingIterable: AsyncIterable<EngineEvent> = {
+        [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
+          return {
+            next(): Promise<IteratorResult<EngineEvent>> {
+              return Promise.reject(syncErr);
+            },
+          };
+        },
+      };
+      return failingIterable;
+    }
   }
 
   // 8. Create child handle for lifecycle monitoring + determine dispose override

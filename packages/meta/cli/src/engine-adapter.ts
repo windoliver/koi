@@ -117,22 +117,25 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
 
         // let: accumulated across streaming chunks, read after loop completes
         let deltaText = "";
-
+        // #1742: when the turn terminates with a non-"completed" stop reason
+        // (tool error, max_turns, security block, etc.) AND no text reached
+        // the user, surface a synthetic explanation so the TUI never shows a
+        // silently empty reply. Pending events are queued until we know the
+        // terminal stopReason so the synthetic text_delta is injected BEFORE
+        // the terminal done event (reducer contract: done closes the active
+        // assistant block, so deltas that arrive after are never rendered).
         for await (const event of runTurn({
           callHandlers: handlers,
           messages: contextWindow,
           signal: input.signal,
           maxTurns,
         })) {
-          yield event;
           if (event.kind === "text_delta") {
             deltaText += event.delta;
           }
           if (event.kind === "done") {
-            // Only persist completed turns — interrupted/errored turns must not
-            // corrupt the transcript. Commit user + assistant atomically so a
-            // failed turn leaves no orphaned user prompt for the next turn.
-            if (event.output.stopReason === "completed") {
+            const stopReason = event.output.stopReason;
+            if (stopReason === "completed") {
               transcript.push(stagedUserMsg);
               // Preserve the full assistant content including tool_call and
               // tool_result blocks so follow-up turns see tool history.
@@ -151,12 +154,55 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
                   content: [{ kind: "text", text: deltaText }],
                 });
               }
+            } else if (deltaText.length === 0) {
+              // No assistant text reached the user AND the turn terminated
+              // non-completed. Inject a visible explanation before closing.
+              const synthetic = explainNonCompletedStop(stopReason, event.output.metadata);
+              yield { kind: "text_delta", delta: synthetic };
             }
           }
+          yield event;
         }
       })();
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic text for silent-termination cases (#1742)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a user-visible one-liner for a non-"completed" terminal stop reason.
+ *
+ * When the agent loop terminates without emitting assistant text — e.g. a tool
+ * threw in middleware, max_turns was reached before the model produced a final
+ * summary, or an exfiltration/security gate blocked the response — the TUI
+ * previously saw a `done` event with no preceding `text_delta` and rendered
+ * an empty bubble. Users on the Phase 2 bug bash experienced this as "no
+ * reply on the second turn".
+ *
+ * The message prefers `metadata.source` / `metadata.message` set by the
+ * turn-runner when available so users see *why* the turn died, not just a
+ * generic "turn failed" string.
+ */
+function explainNonCompletedStop(stopReason: string, metadata: unknown): string {
+  const meta =
+    (metadata as { readonly source?: string; readonly message?: string } | undefined) ?? undefined;
+  const detail = meta?.message !== undefined ? ` — ${meta.message}` : "";
+  const source = meta?.source !== undefined ? ` (${meta.source})` : "";
+  switch (stopReason) {
+    case "max_turns":
+      return `\n[Turn ended: model reached the max-turns budget without producing a final reply${detail}.]\n`;
+    case "interrupted":
+      return "\n[Turn interrupted before the model produced a reply.]\n";
+    case "hook_blocked":
+      return `\n[Turn blocked by a security gate${detail}.]\n`;
+    case "error":
+      return `\n[Turn failed${source}${detail}.]\n`;
+    default:
+      return `\n[Turn ended without a reply: ${stopReason}${detail}.]\n`;
+  }
 }
 
 // ---------------------------------------------------------------------------

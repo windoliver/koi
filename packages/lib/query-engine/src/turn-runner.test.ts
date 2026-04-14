@@ -311,6 +311,141 @@ describe("runTurn", () => {
     }
   });
 
+  test("#1742: aborting tool execution emits exactly one turn_end (no duplicate)", async () => {
+    // Regression for a hypothesized round-4 review concern: the catch
+    // block's `yield turn_end` followed by `break` must not also fall
+    // through to the trailing unconditional `yield turn_end` at the
+    // bottom of the while body. Verifies the abort path emits exactly
+    // one turn_end and exactly one done.
+    const controller = new AbortController();
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (): AsyncIterable<ModelChunk> =>
+        toolCallStreamGen("failTool", "tc-abort-once", '{"x":1}'),
+      toolCall: async (): Promise<ToolResponse> => {
+        controller.abort();
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(
+      runTurn({ callHandlers: handlers, messages: [], signal: controller.signal }),
+    );
+
+    const turnEnds = events.filter((e) => e.kind === "turn_end");
+    const dones = events.filter((e) => e.kind === "done");
+    expect(turnEnds).toHaveLength(1);
+    expect(dones).toHaveLength(1);
+  });
+
+  test("#1742: tool throw on aborted signal terminates as interrupted; no re-prompt", async () => {
+    // Cancellation must short-circuit the synthetic-recovery path so users
+    // who interrupt mid-tool don't get an extra model call after stop.
+    const modelCallRequests: ModelRequest[] = [];
+    const controller = new AbortController();
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (req: ModelRequest): AsyncIterable<ModelChunk> => {
+        modelCallRequests.push(req);
+        return toolCallStreamGen("failTool", "tc-abort", '{"x":1}');
+      },
+      toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+        // Simulate the tool observing the user's cancellation and throwing.
+        controller.abort();
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(
+      runTurn({ callHandlers: handlers, messages: [], signal: controller.signal }),
+    );
+
+    // Exactly ONE model call — the runner must not synthesize an error
+    // result and re-prompt after the user cancelled.
+    expect(modelCallRequests).toHaveLength(1);
+
+    // Final stop reason is interrupted, not error / completed.
+    const done = events.find((e) => e.kind === "done");
+    expect(done).toBeDefined();
+    if (done?.kind === "done") {
+      expect(done.output.stopReason).toBe("interrupted");
+    }
+  });
+
+  test("#1742: tool execution error feeds synthetic tool_result + re-prompts model", async () => {
+    // Regression for #1742: a throw from a tool call (or a wrapping
+    // security/permissions middleware) used to transition the turn to
+    // "error", killing the loop without letting the model explain what
+    // happened. Result: users saw a silent empty reply.
+    //
+    // New contract: the error is fed back as a synthetic tool_result and
+    // the model gets a follow-up turn to react. This test verifies both
+    // the tool_result event AND that the model was called a second time.
+    const modelCallRequests: ModelRequest[] = [];
+    // let justified: mutable counter so the mock cycles through streams
+    let streamCallIndex = 0;
+    const streams: Array<() => AsyncIterable<ModelChunk>> = [
+      createToolCallStream("failTool", "tc-err", '{"x":1}'),
+      createTextStream("Sorry, that command can't run here."),
+    ];
+    const handlers: ComposedCallHandlers = {
+      modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+      modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+        modelCallRequests.push(request);
+        const factory = streams[streamCallIndex];
+        if (factory === undefined) {
+          throw new Error(`unexpected model call #${streamCallIndex}`);
+        }
+        streamCallIndex += 1;
+        return factory();
+      },
+      toolCall: async (_request: ToolRequest): Promise<ToolResponse> => {
+        throw new Error("Tool blocked by security guard");
+      },
+      tools: [toolDesc("failTool")],
+    };
+
+    const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+    // Model was called twice: once to emit the tool_use, once after the
+    // synthetic error result was fed back.
+    expect(modelCallRequests).toHaveLength(2);
+
+    // A synthetic tool_result was emitted for the failing call.
+    const toolResult = events.find((e) => e.kind === "tool_result") as
+      | { readonly kind: "tool_result"; readonly callId: string; readonly output: unknown }
+      | undefined;
+    expect(toolResult).toBeDefined();
+    expect(toolResult?.callId).toBe("tc-err");
+    expect(toolResult?.output).toMatchObject({
+      error: expect.stringContaining("Tool blocked by security guard") as unknown as string,
+      code: "TOOL_EXECUTION_ERROR",
+    });
+
+    // The second model call saw the blocked tool_result in its transcript
+    // — i.e. the tool result made it into the next model input.
+    const secondRequest = modelCallRequests[1];
+    const secondMessages = (secondRequest?.messages ?? []) as readonly {
+      readonly senderId: string;
+      readonly content: readonly { readonly kind: string; readonly text?: string }[];
+    }[];
+    const toolMsg = secondMessages.find((m) => m.senderId === "tool");
+    expect(toolMsg).toBeDefined();
+
+    // Turn ends with a real assistant text reply, not silent failure.
+    const textDelta = events.find(
+      (e) =>
+        e.kind === "text_delta" && (e as { readonly delta: string }).delta.includes("can't run"),
+    );
+    expect(textDelta).toBeDefined();
+  });
+
   test("usage metrics accumulate across turns", async () => {
     const handlers = createMockHandlers({
       modelStreams: [createToolCallStream("tool1", "tc-1", '{"a":1}'), createTextStream("final")],

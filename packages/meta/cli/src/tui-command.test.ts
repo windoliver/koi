@@ -195,6 +195,65 @@ describe("drainEngineStream — abort handling", () => {
     expect(flushed[0]).toEqual({ kind: "text_delta", delta: "flushed" });
   });
 
+  test("bails out when batcher is disposed mid-stream — #1742", async () => {
+    // Regression for #1742: resetConversation() disposes the batcher while
+    // an in-flight drain still holds it by reference. Before the fix, the
+    // drain kept feeding text_delta events into the disposed batcher, which
+    // silently dropped them — producing missing or truncated replies on the
+    // next render. After the fix, the drain detects disposal and exits.
+    const store = createStore(createInitialState());
+    const flushed: EngineEvent[] = [];
+    const batcher = createEventBatcher<EngineEvent>((batch) => {
+      flushed.push(...batch);
+    });
+
+    // Dispose the batcher after it receives the first event. This simulates
+    // resetConversation() firing between events while the drain is running.
+    async function* slowStream(): AsyncGenerator<EngineEvent> {
+      yield { kind: "text_delta", delta: "before-dispose" } as EngineEvent;
+      batcher.dispose();
+      yield { kind: "text_delta", delta: "after-dispose" } as EngineEvent;
+      yield { kind: "text_delta", delta: "still-after" } as EngineEvent;
+    }
+
+    // Must not throw. Must not attempt to flush the disposed batcher.
+    await drainEngineStream(slowStream(), store, batcher);
+
+    // The drain is expected to stop enqueueing once it observes isDisposed.
+    // The event yielded before disposal may or may not have flushed (the
+    // batcher coalesces on a microtask), but none of the post-dispose events
+    // should be visible. The critical assertion is absence of leaks.
+    expect(flushed.some((e) => (e as { delta?: string }).delta === "after-dispose")).toBe(false);
+    expect(flushed.some((e) => (e as { delta?: string }).delta === "still-after")).toBe(false);
+    expect(store.getState().connectionStatus).toBe("disconnected");
+  });
+
+  test("does not dispatch ENGINE_ERROR when stream throws after disposal — #1742", async () => {
+    // When resetConversation() disposes the batcher and aborts the stream,
+    // the underlying engine stream will typically throw AbortError. That
+    // error must NOT surface as an ENGINE_ERROR toast — the session was
+    // reset deliberately and the store is already clean.
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const dispatchSpy = spyOn(store, "dispatch");
+
+    async function* disposeThenThrow(): AsyncGenerator<EngineEvent> {
+      yield* []; // satisfy useYield
+      batcher.dispose();
+      throw new Error("post-dispose crash");
+    }
+
+    await drainEngineStream(disposeThenThrow(), store, batcher);
+
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBe(0);
+  });
+
   test("processes all events including tool lifecycle events", async () => {
     const store = createStore(createInitialState());
     const flushed: EngineEvent[] = [];

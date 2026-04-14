@@ -52,6 +52,8 @@ import {
   agentId as makeAgentId,
   memoryRecordId,
 } from "@koi/core";
+import type { DecisionLedgerReader } from "@koi/decision-ledger";
+import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import {
   createInMemorySpawnLedger,
@@ -399,6 +401,12 @@ export interface TuiRuntimeHandle {
    * in the TUI so they are aware of the reduced isolation posture.
    */
   readonly sandboxActive: boolean;
+  /**
+   * Decision ledger factory — creates a per-session ledger reader backed by
+   * the in-memory trajectory store. Used by the /trajectory view to show
+   * audit entries and source status alongside trajectory steps.
+   */
+  readonly createDecisionLedger: () => DecisionLedgerReader;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -1221,6 +1229,35 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
+    // #1742: each user submit in the TUI is a logically fresh request,
+    // so opt in to per-iteration budget reset for turn count and
+    // duration. Token usage stays CUMULATIVE across the runtime
+    // lifetime so the process retains a hard ceiling on total spend.
+    //
+    // The cumulative token ceiling is raised from the 100k default to
+    // 1M — a 10x relaxation, not 50x — because 100k trips inside a
+    // single moderately-long TUI session but 1M still bounds runaway
+    // tool/model loops well before they become a real cost incident
+    // (~$3-15 worst case on Sonnet 4.6). The per-iteration maxTurns:25
+    // reset above is the primary loop guard; this token ceiling is the
+    // secondary "user keeps submitting expensive prompts" guard.
+    //
+    // Cost tracking (`maxCostUsd`) is left at the default-disabled
+    // value because costPerInputToken/costPerOutputToken default to 0
+    // and we don't have a model-aware pricing source wired in. When
+    // a host wires real token pricing, also set `cost.maxCostUsd` here
+    // for a stricter dollar-denominated cap.
+    resetIterationBudgetPerRun: true,
+    governance: {
+      iteration: {
+        // Per-iteration UX budgets (reset on every run via
+        // resetIterationBudgetPerRun above):
+        maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
+        maxDurationMs: 300_000, // 5 min per submit
+        // Cumulative spend ceiling (NOT reset by iteration_reset):
+        maxTokens: 1_000_000,
+      },
+    },
   });
 
   return {
@@ -1228,6 +1265,15 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     checkpoint: checkpointHandle,
     transcript,
     sandboxActive: osSandboxResult.ok,
+    createDecisionLedger: () =>
+      createDecisionLedger({
+        // The TUI stores all trajectory data under a fixed doc ID
+        // ("koi-tui-session"), not per-session. Wrap the store so the
+        // ledger's getDocument(sessionId) reads from the correct key.
+        trajectoryStore: {
+          getDocument: () => trajectoryStore.getDocument(TUI_DOC_ID),
+        },
+      }),
     getTrajectorySteps: async () => {
       const steps = await trajectoryStore.getDocument(TUI_DOC_ID);
       // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
@@ -1246,49 +1292,118 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
         );
       }
 
-      // 1. Reset Bash tracked cwd so the new session starts from workspaceRoot.
-      bashHandle.resetCwd();
+      // 1. PRE-CREATE the new task board BEFORE anything else commits.
+      //    Round 8: previously this happened post-cycleSession and was
+      //    catch-and-warn — but task tools (`task_list`, `task_get`,
+      //    `task_output`, `bash_background`) are backed by the
+      //    boardRef.current proxy, so retaining the old board after a
+      //    "successful" reset would let the next session see and
+      //    mutate prior-session tasks. createManagedTaskBoard does
+      //    async store + filesystem setup that can throw under
+      //    degraded disk/permission conditions. By creating it FIRST,
+      //    a failure aborts the reset cleanly with NO state mutated:
+      //    the user sees a RESET_FAILED toast and the old session
+      //    stays intact.
+      const newBoardCandidate = await createManagedTaskBoard({
+        store: createMemoryTaskBoardStore(),
+        resultsDir: TASK_RESULTS_DIR,
+      });
 
-      // 1b. Clear in-memory memory backend so prior-session memories
-      //     don't leak into the new session via memory_recall/memory_search.
-      memoryBackend.clear();
+      // 2. Cycle middleware session lifecycle. This awaits the in-flight
+      //    run's settle (bounded by ~5s in the engine). On success the
+      //    prior run is fully unwound and we know it can no longer
+      //    write into the shared state we're about to clear/rotate
+      //    below. On settle timeout / onSessionEnd failure cycleSession
+      //    throws — we propagate so the caller (resetConversation)
+      //    surfaces a "restart required" error and the prior session
+      //    stays inspectable. NO destructive cleanup has happened yet.
+      //
+      //    #1742 loop-2 round 10: bgController.abort() / wait used to
+      //    happen BEFORE cycleSession. That meant a failed cycleSession
+      //    left the user without their bash_background jobs even
+      //    though we were claiming the old session was preserved.
+      //    Background cleanup is now deferred to the post-cycle commit
+      //    block so failure leaves bg jobs alive too.
+      //
+      //    Capture the OLD sessionId before the cycle so we can clear
+      //    the prior session's permission state. cycleSession() rotates
+      //    `runtime.sessionId` to a fresh value; reading it after
+      //    rotation would target the empty new session and leave the
+      //    old approval entries leaking in the middleware's per-session
+      //    map.
+      const priorSessionId = runtime.sessionId;
+      await runtime.cycleSession?.();
 
-      // 2. Abort prior-session background subprocesses (SIGTERM→SIGKILL) and
-      //    rotate the controller so new background tasks use a fresh signal.
-      //    Wait for the SIGKILL escalation window so old jobs can't mutate
-      //    the workspace after reset completes (same pattern as shutdown).
+      // ─── EVERYTHING BELOW THIS POINT IS POST-SETTLE ────────────────
+      // From here on the prior run is guaranteed dead (cycleSession
+      // failed closed if it wasn't). Destructive cleanup including
+      // background-subprocess termination is now safe and committed.
+
+      // 3. Abort prior-session background subprocesses (SIGTERM→SIGKILL).
+      //    Deferred until after cycleSession succeeds so a failed reset
+      //    doesn't kill bg jobs the user expected to keep. Wait the
+      //    SIGKILL escalation window so old jobs can't mutate the
+      //    workspace after reset completes (same pattern as shutdown).
       const hadLiveProcesses = liveSubprocessCount > 0;
       bgController.abort();
-      bgController = new AbortController();
       if (hadLiveProcesses) {
         await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
       }
 
-      // 3. Clear session-scoped approval state (always-allow, caches, trackers).
-      permMw.clearSessionApprovals(runtime.sessionId);
+      // 4. Reset Bash tracked cwd so the new session starts from workspaceRoot.
+      bashHandle.resetCwd();
 
-      // 4. Rotate task board — AWAITED so new-session submits can't hit the old board.
-      const newBoard = await createManagedTaskBoard({
-        store: createMemoryTaskBoardStore(),
-        resultsDir: TASK_RESULTS_DIR,
-      });
-      boardRef.current = newBoard;
+      // 5. Clear in-memory memory backend so prior-session memories
+      //    don't leak into the new session via memory_recall/memory_search.
+      memoryBackend.clear();
 
-      // 5. Clear trajectory store — AWAITED so new-session steps can't be pruned.
+      // 6. Rotate the background-process controller so new background
+      //    tasks use a fresh signal. The OLD controller already had
+      //    abort() called above; this just swaps in the new one for
+      //    future task launches.
+      bgController = new AbortController();
+
+      // 7. Clear the OLD session's approval state (always-allow, caches,
+      //    trackers). Safe to do now — no run is in flight, and the
+      //    map entry for `priorSessionId` is the one we want gone.
+      //    The new session has nothing in the map yet.
+      permMw.clearSessionApprovals(priorSessionId);
+
+      // 8. Atomic swap to the pre-created new task board. createManagedTaskBoard
+      //    already ran successfully at step 1; this is a sync reference swap
+      //    so it cannot fail. After this point all task tools see the new,
+      //    empty board — prior-session tasks are no longer reachable via
+      //    task_list / task_get / task_output / bash_background.
+      boardRef.current = newBoardCandidate;
+
+      // ─── ATOMIC COMMIT POINT ──────────────────────────────────────
+      // From here on, cycleSession() has already rotated the engine
+      // session AND the synchronous in-process cleanup (steps 4-8) has
+      // run. The reset is fully committed: the next run() attaches to
+      // a fresh session with no stale approvals, memory, cwd, signal,
+      // or task board. Step 9 is best-effort housekeeping (trajectory
+      // prune). Its failure is non-fatal — it would only leave stale
+      // /trajectory entries visible, NOT bleed prior-session context
+      // into the new conversation.
+
+      // 9. Clear trajectory store — best-effort. On failure, old
+      //    trajectory entries remain visible in /trajectory until next
+      //    process restart but cannot bleed into model context.
       //
-      // Known limitation: goal middleware state and skill surfaces are NOT reset
-      // on session:new / agent:clear. Goal state (completed items, reminder
-      // backoff, drift) persists across TUI session resets. Skill descriptor
-      // listing and system prompt skill snapshot are static for the process
-      // lifetime. Both require a full TUI restart to refresh.
-      //
-      // Manual lifecycle hook cycling (onSessionEnd/onSessionStart) is unsafe
-      // here because the aborted run's engine finally block also calls
-      // onSessionEnd on the same sessionId, creating a race that can delete
-      // freshly-initialized goal state. Rebuilding the runtime on reset would
-      // fix both, but requires createKoi to support hot-swapping — tracked as
-      // a known limitation.
-      await trajectoryStore.prune(Date.now() + 86_400_000);
+      // Skill descriptor listing and system prompt skill snapshot are still
+      // static for the process lifetime: they were captured before createKoi
+      // assembly, not stored as session-scoped middleware state. A full TUI
+      // restart is still required to pick up new skill files.
+      try {
+        await trajectoryStore.prune(Date.now() + 86_400_000);
+      } catch (pruneErr) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[koi tui] trajectory prune after /clear failed: ${
+            pruneErr instanceof Error ? pruneErr.message : String(pruneErr)
+          }. Reset committed; stale trajectory retained.`,
+        );
+      }
     },
     hasActiveBackgroundTasks: () => liveSubprocessCount > 0,
     shutdownBackgroundTasks: () => {

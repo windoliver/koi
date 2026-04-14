@@ -98,6 +98,16 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   let doomLoopBlockedCalls: AccumulatedToolCall[] = [];
   const startTime = performance.now();
 
+  // #1742 loop-3 round 7: cap tool-error recovery to ONE extra turn.
+  // Without this, a deterministic tool failure (permission denial,
+  // policy block, broken tool) drives the outer loop until maxTurns
+  // — model retry, blocked tool, synthetic error, model retry, ...
+  // — burning tokens and stalling users. After one recovery turn,
+  // a second tool-execution failure transitions to error and breaks
+  // the loop instead of looping again.
+  // let justified: mutable per-run flag, set inside the catch path
+  let toolErrorRecoveryUsed = false;
+
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
   if (isAborted(signal)) {
@@ -662,8 +672,87 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       } catch (e: unknown) {
         if (state.phase !== "complete") {
           const msg = e instanceof Error ? e.message : String(e);
+          // #1742: cancellation must short-circuit before the recovery
+          // path. If the run signal is aborted (user pressed Ctrl+C, the
+          // host triggered /clear, etc.) OR the thrown error is an
+          // AbortError, the user already cancelled — do NOT synthesize
+          // tool results and re-prompt the model. That would cost extra
+          // provider calls AFTER the user said stop.
+          const isAbortError =
+            e instanceof Error &&
+            (e.name === "AbortError" || (e as { code?: unknown }).code === "ABORT_ERR");
+          if (isAborted(signal) || isAbortError) {
+            errorMetadata = { source: "tool_execution", message: msg };
+            state = transitionTurn(state, { kind: "abort" });
+            yield { kind: "turn_end", turnIndex: state.turnIndex };
+            break;
+          }
+          // Non-cancellation throw: a tool or its wrapping middleware (e.g.
+          // a security guard) crashed. Previously this transitioned the
+          // turn to "error" and killed the agent loop without giving the
+          // model a chance to react — the user saw a silent empty turn.
+          //
+          // Instead, synthesize a tool_result for every tool call in this
+          // batch that has not yet produced one and feed it back to the
+          // model. Every tool_call intent in the transcript must be paired
+          // with a tool_result (or the provider rejects the next request),
+          // so include the skipped duplicates too. The model then sees the
+          // error in the next turn and can explain it to the user or try
+          // a different approach. The "error" state is still recorded via
+          // errorMetadata so observability / stop reasons remain accurate.
+          //
+          // #1742 loop-3 round 7: cap recovery to ONE extra model turn.
+          // If a SECOND tool-execution failure happens after we already
+          // gave the model a recovery turn, the failure is effectively
+          // deterministic (permission denial, policy block, broken
+          // tool). Looping again would burn budget and stall the user —
+          // fail closed instead.
+          if (toolErrorRecoveryUsed) {
+            errorMetadata = { source: "tool_execution", message: msg };
+            state = transitionTurn(state, {
+              kind: "error",
+              message: `Tool execution failed again after recovery turn: ${msg}`,
+            });
+            yield { kind: "turn_end", turnIndex: state.turnIndex };
+            break;
+          }
+          toolErrorRecoveryUsed = true;
           errorMetadata = { source: "tool_execution", message: msg };
-          state = transitionTurn(state, { kind: "error", message: msg });
+          const syntheticOutput = {
+            error: `Tool execution failed: ${msg}`,
+            code: "TOOL_EXECUTION_ERROR",
+          } as const;
+          // Pair every emitted tool_call intent (deduped + within-turn
+          // duplicates) with an error result, but skip ones that already
+          // got a real result before the throw.
+          const alreadyResolved = new Set<string>();
+          for (const completed of dedupedToolCalls) {
+            if (transcriptHasToolResult(transcript, completed.callId)) {
+              alreadyResolved.add(completed.callId);
+            }
+          }
+          const allPendingCalls = [
+            ...dedupedToolCalls.filter((tc) => !alreadyResolved.has(tc.callId)),
+            ...skippedToolCalls.filter(
+              (tc) =>
+                !alreadyResolved.has(tc.callId) && !transcriptHasToolResult(transcript, tc.callId),
+            ),
+          ];
+          for (const tc of allPendingCalls) {
+            appendToolResult(transcript, {
+              callId: tc.callId,
+              toolName: tc.toolName,
+              output: syntheticOutput,
+            });
+            yield {
+              kind: "tool_result",
+              callId: tc.callId as ToolCallId,
+              output: syntheticOutput,
+            };
+          }
+          // Continue the loop so the model gets a chance to respond to the
+          // error. The turn budget still applies via maxTurns above.
+          state = transitionTurn(state, { kind: "tools_done" });
         }
       }
     } else if (turnText.length > 0) {
@@ -805,6 +894,22 @@ function appendToolResult(transcript: InboundMessage[], result: ToolResult): voi
     timestamp: Date.now(),
     metadata: { callId: result.callId, toolName: result.toolName },
   });
+}
+
+/**
+ * Check whether a tool result has already been appended to the transcript
+ * for the given callId. Used by the tool-execution error recovery path
+ * (#1742) to avoid double-appending results when some calls in a batch
+ * completed before a later one threw.
+ */
+function transcriptHasToolResult(transcript: readonly InboundMessage[], callId: string): boolean {
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const msg = transcript[i];
+    if (msg?.senderId !== "tool") continue;
+    const metaCallId = (msg.metadata as { readonly callId?: unknown } | undefined)?.callId;
+    if (metaCallId === callId) return true;
+  }
+  return false;
 }
 
 /**
