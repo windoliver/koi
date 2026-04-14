@@ -892,3 +892,19 @@ if (decision.effect === "ask") {
 ```
 
 **Coverage:** persistent always-allow, session always-allow, cache hit, coalesced inflight allow, fresh approval (allow/modify/always-allow), and all deny paths.
+
+---
+
+## UI-only `callId` channel (#1759)
+
+Per-invocation UI/observability identifiers travel on a **dedicated `ToolRequest.callId` field** (set by `@koi/query-engine`'s turn-runner) and are explicitly NOT part of `request.metadata`. Rationale:
+
+- **Backend policy query symmetry.** Custom backends still see `request.metadata` unchanged in `queryForTool(…)`. `callId` never enters the `_request` merge block, so backends cannot accidentally vary decisions on a value that is unique per invocation and thus unstable across retries.
+- **Approval cache + in-flight dedup coalescing.** `computeApprovalCacheKey(…)` uses `request.metadata` directly — no stripping needed — so two identical asks with distinct `callId`s still share one cache/dedup identity.
+- **Forwarded to the approval handler.** `handleAskDecision(…)` forwards `request.callId` onto the `ApprovalRequest` via a matching dedicated field (not metadata). The TUI permission bridge reads it directly to dispatch a per-call timer reset on approval.
+
+If `metadata.callId` were allowed to leak into policy-visible surfaces, either (a) repeated identical asks would no longer coalesce, or (b) backends that varied on `_request.callId` could be defeated by the cache. Keeping the UI identifier on its own channel avoids both failure modes.
+
+## Interactive approval timeout (#1759)
+
+`DEFAULT_APPROVAL_TIMEOUT_MS = 30_000` remains the engine-side fail-closed deadline for agent-to-agent / non-interactive callers. The interactive TUI opts into a longer 60-minute window by passing `approvalTimeoutMs: 60 * 60 * 1000` (see `@koi/tui` + `packages/meta/cli/src/tui-runtime.ts`). Long enough that no realistic human decision window triggers it, but still finite so a wedged renderer / stuck bridge eventually aborts the turn rather than hanging forever. `Number.POSITIVE_INFINITY` is accepted by `validatePermissionsConfig` for tests that need truly unbounded waits.

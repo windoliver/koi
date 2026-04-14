@@ -205,6 +205,10 @@ The crash-injection harness is the test that validates the entire ordered+idempo
 - Re-warming provider-side prompt cache — providers don't expose this
 - Cross-session restore — each session's chain is independent
 
+## `FileOpRecord.callId` correlation (#1759)
+
+Every tracked file op on a snapshot carries the `callId` of the tool invocation that produced it. `extractCallId(request)` prefers the dedicated `ToolRequest.callId` field (set by `@koi/query-engine`'s turn-runner from the LLM-generated tool-call id), falls back to `request.metadata?.callId` for older callers, and finally synthesizes a `synth-${uuid}` placeholder so the record stays well-formed when upstream didn't populate either. Restore correctness is independent of this value — it exists so rewind / debug / audit workflows can correlate snapshot fileOps back to the exact tool invocation.
+
 ## Layer
 
 L2 — depends on `@koi/core` (L0), `@koi/snapshot-store-sqlite` (L2 storage adapter), `@koi/hash` (L0u), `@koi/git-utils` (L0u), `@koi/errors` (L0u).
