@@ -663,6 +663,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
+    // Enable reasoning for the TUI's primary model. OpenRouter ignores the
+    // field for models without reasoning capability, so this is safe for all
+    // models. Not auto-detected at the compat level to avoid changing the
+    // wire contract for non-TUI callers (verifiers, helpers, etc.).
+    compat: { supportsReasoning: true },
   });
 
   // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the

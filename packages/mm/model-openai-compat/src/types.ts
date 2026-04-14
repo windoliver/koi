@@ -113,7 +113,10 @@ function detectCompat(baseUrl: string): ResolvedCompat {
     requiresThinkingAsText: isGroq || isDeepSeek,
     supportsStrictMode: isFullyCompatible,
     supportsPromptCaching: isOpenRouter,
-    supportsReasoning: isOpenRouter,
+    // Reasoning is NOT auto-detected — callers must opt in via ProviderCompat
+    // override. Auto-enabling for all OpenRouter traffic would change the wire
+    // contract for non-reasoning models, increase latency/cost, and risk 400s.
+    supportsReasoning: false,
     defaultReasoningEffort: "medium",
   };
 }

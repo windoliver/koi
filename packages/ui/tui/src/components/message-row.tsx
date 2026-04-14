@@ -194,6 +194,20 @@ function AssistantMessage(props: {
           />
         )}
       </For>
+      {/* When thinking is hidden and it was the only content, show a
+          minimal placeholder so the transcript doesn't have an invisible row. */}
+      <Show
+        when={
+          !showThinking() &&
+          !props.message.streaming &&
+          props.message.blocks.length > 0 &&
+          !hasVisibleBlocks()
+        }
+      >
+        <text fg="gray">
+          <i>∴ (thinking hidden)</i>
+        </text>
+      </Show>
     </box>
   );
 }
