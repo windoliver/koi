@@ -226,6 +226,28 @@ describe("koi_update_task ownership", () => {
     expect(callerArg).toBe(CALLER);
   });
 
+  test("complete without output defaults to task subject", async () => {
+    const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
+    const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
+
+    await updateTool.execute({ taskId: "t-1", action: "complete" });
+
+    expect(board.completeOwnedTask).toHaveBeenCalledTimes(1);
+    const [, , result] = (board.completeOwnedTask as ReturnType<typeof mock>).mock.calls[0]!;
+    expect((result as Record<string, unknown>).output).toBe("Completed: Task t-1");
+  });
+
+  test("complete rejects non-string output", async () => {
+    const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
+    const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });
+    const updateTool = tools.find((t) => t.descriptor.name === "koi_update_task")!;
+
+    await expect(
+      updateTool.execute({ taskId: "t-1", action: "complete", output: { bad: true } }),
+    ).rejects.toThrow("output must be a string");
+  });
+
   test("fail uses failOwnedTask with callerId", async () => {
     const board = mockTaskBoard([makeTask("t-1", "in_progress")]);
     const tools = createPlatformTools({ callerId: CALLER, taskBoard: board });

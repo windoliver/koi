@@ -179,3 +179,12 @@ No behavioral changes in this package. Two mock `TaskBoard` fixtures in
 `blockedBy(taskId)` method in `@koi/task-board` (review issue 14A) and these
 fixtures need to satisfy the new interface shape. No runtime logic or public
 surface touched.
+
+## Completion output defaulting (#1785)
+
+`koi_update_task(action: "complete")` now defaults `output` to
+`"Completed: <task.subject>"` when omitted, matching the `task_update` behavior in
+`@koi/task-tools`. Non-string `output` values (objects, numbers) are rejected with a
+type error before the default applies — only `undefined` or empty string triggers the
+fallback. This aligns both task-completion surfaces (library tools and MCP platform
+tools) so callers get consistent behavior regardless of entry point.

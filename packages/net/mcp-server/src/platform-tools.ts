@@ -288,7 +288,8 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
         },
         output: {
           type: "string",
-          description: "Required for 'complete' action — task output text",
+          description:
+            "Task output text for 'complete' action. Defaults to the task subject if omitted.",
         },
         error: {
           type: "string",
@@ -312,13 +313,21 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           if (!taskBoard.hasResultPersistence()) {
             throw new Error("Task completion requires durable result storage");
           }
-          const rawOutput = requireString(args.output, "output");
+          // Compute duration from task timestamps when available
+          const task = taskBoard.snapshot().get(id);
+          // Reject non-string, non-undefined output (caller bug)
+          if (args.output !== undefined && typeof args.output !== "string") {
+            throw new Error("output must be a string");
+          }
+          // Default output to task subject when omitted (#1785)
+          const rawOutput =
+            typeof args.output === "string" && args.output.trim() !== ""
+              ? args.output
+              : `Completed: ${task?.subject ?? String(id)}`;
           if (rawOutput.length > MAX_PAYLOAD_CHARS) {
             throw new Error(`Output exceeds maximum size (${MAX_PAYLOAD_CHARS} chars)`);
           }
           const output = rawOutput;
-          // Compute duration from task timestamps when available
-          const task = taskBoard.snapshot().get(id);
           const durationMs = task !== undefined ? Math.max(0, Date.now() - task.updatedAt) : 0;
           unwrapResult(
             await taskBoard.completeOwnedTask(id, callerId, {
