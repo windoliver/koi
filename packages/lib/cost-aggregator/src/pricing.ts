@@ -81,6 +81,22 @@ export function resolvePricing(
   const exact = table[model];
   if (exact !== undefined) return exact;
 
+  // Strip provider prefix: "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+  // OpenRouter and similar routers use "provider/model" format.
+  const slashIdx = model.indexOf("/");
+  if (slashIdx >= 0) {
+    const withoutPrefix = model.slice(slashIdx + 1);
+    const prefixed = table[withoutPrefix];
+    if (prefixed !== undefined) return prefixed;
+    // Also try date-suffix stripping on the prefix-stripped name
+    const dateSuffix = /-\d{8}$/.exec(withoutPrefix);
+    if (dateSuffix !== null) {
+      const base = withoutPrefix.slice(0, dateSuffix.index);
+      const aliased = table[base];
+      if (aliased !== undefined) return aliased;
+    }
+  }
+
   // Strip date suffix: model-YYYYMMDD → model
   const dateSuffixPattern = /-\d{8}$/;
   if (dateSuffixPattern.test(model)) {

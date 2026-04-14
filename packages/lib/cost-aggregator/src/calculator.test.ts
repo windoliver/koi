@@ -25,6 +25,18 @@ describe("resolvePricing", () => {
     expect(result).toBeUndefined();
   });
 
+  test("provider-prefixed model resolves (OpenRouter format)", () => {
+    const result = resolvePricing("anthropic/claude-sonnet-4-6", DEFAULT_PRICING);
+    expect(result).toBeDefined();
+    expect(result?.input).toBe(3e-6);
+  });
+
+  test("provider-prefixed + date-suffix resolves", () => {
+    const result = resolvePricing("anthropic/claude-sonnet-4-6-20260414", DEFAULT_PRICING);
+    expect(result).toBeDefined();
+    expect(result?.input).toBe(3e-6);
+  });
+
   test("exact match takes priority over alias", () => {
     const table = {
       "model-base": { input: 1e-6, output: 5e-6 },

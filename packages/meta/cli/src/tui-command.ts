@@ -865,7 +865,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
   const costBridge = createCostBridge({
     store,
-    sessionId: currentSessionId,
+    sessionId: tuiSessionId as string,
     modelName,
     provider,
   });
@@ -1027,7 +1027,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     permissionBridge.cancelPending("Session reset");
 
     // Clear cost aggregator state for the old session.
-    costBridge.aggregator.clearSession(currentSessionId);
+    costBridge.aggregator.clearSession(tuiSessionId as string);
 
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
@@ -1659,18 +1659,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           id: `user-${Date.now()}`,
           blocks: [{ kind: "text", text }, ...imageBlocks],
         });
-        // Snapshot cumulative metrics before the drain so we can compute the delta.
-        const metricsBefore = store.getState().cumulativeMetrics;
+        // Snapshot cumulative metrics BEFORE the drain — must copy values since
+        // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
+        const cm = store.getState().cumulativeMetrics;
+        const inputBefore = cm.inputTokens;
+        const outputBefore = cm.outputTokens;
+        const costBefore = cm.costUsd;
         await drainEngineStream(stream, store, batcher, controller.signal);
 
         // Feed the cost bridge with this turn's token delta.
-        const metricsAfter = store.getState().cumulativeMetrics;
-        const deltaInput = metricsAfter.inputTokens - metricsBefore.inputTokens;
-        const deltaOutput = metricsAfter.outputTokens - metricsBefore.outputTokens;
+        const cmAfter = store.getState().cumulativeMetrics;
+        const deltaInput = cmAfter.inputTokens - inputBefore;
+        const deltaOutput = cmAfter.outputTokens - outputBefore;
         if (deltaInput > 0 || deltaOutput > 0) {
           const deltaCost =
-            metricsAfter.costUsd !== null && metricsBefore.costUsd !== null
-              ? metricsAfter.costUsd - metricsBefore.costUsd
+            cmAfter.costUsd !== null && costBefore !== null
+              ? cmAfter.costUsd - costBefore
               : undefined;
           costBridge.recordEngineDone({
             inputTokens: deltaInput,
