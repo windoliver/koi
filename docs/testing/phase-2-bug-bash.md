@@ -58,31 +58,7 @@ MCP servers configured via `.mcp.json` at project root or `$KOI_HOME/.claude/.mc
 }
 ```
 
-### 1.4 Fixture Project (create before launching TUI)
-
-```bash
-rm -rf "$FIXTURE" && mkdir -p "$FIXTURE" && cd "$FIXTURE"
-git init -q
-cat > README.md <<'EOF'
-# Fixture Project
-A small TypeScript project used by the Phase 2 bug bash.
-EOF
-mkdir -p src test
-cat > src/math.ts <<'EOF'
-export function add(a: number, b: number): number { return a + b; }
-export function multiply(a: number, b: number): number { return a * b; }
-EOF
-cat > test/math.test.ts <<'EOF'
-import { expect, test } from "bun:test";
-import { add, multiply } from "../src/math.js";
-test("add", () => expect(add(2, 3)).toBe(5));
-test("multiply", () => expect(multiply(2, 3)).toBe(6));
-EOF
-git add -A && git commit -q -m "init"
-cd - >/dev/null
-```
-
-### 1.5 Launch TUI
+### 1.4 Launch TUI
 
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
@@ -91,7 +67,7 @@ sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
 
-### 1.6 Reset Between Scenarios
+### 1.5 Reset Between Scenarios
 
 ```bash
 tmux kill-session -t "$KOI_SESSION" 2>/dev/null
@@ -103,7 +79,7 @@ tmux new-session -d -s "$KOI_SESSION" \
 sleep 2
 ```
 
-### 1.7 Transcript Verification
+### 1.6 Transcript Verification
 
 ```bash
 SESSION_FILE=$(ls -t "$KOI_HOME/.koi/sessions"/*.jsonl 2>/dev/null | head -1)
@@ -129,10 +105,52 @@ Each query (Q) is a prompt sent via `tmux send-keys -t "$KOI_SESSION" '<prompt>'
 
 ### S2 — File I/O & Edit
 
+**Setup**: create fixture project before launching TUI for this scenario:
+
+```bash
+rm -rf "$FIXTURE" && mkdir -p "$FIXTURE" && cd "$FIXTURE"
+git init -q
+cat > README.md <<'EOF'
+# Fixture Project
+A small TypeScript project used by the Phase 2 bug bash.
+EOF
+mkdir -p src test
+cat > src/math.ts <<'EOF'
+export function add(a: number, b: number): number { return a + b; }
+export function multiply(a: number, b: number): number { return a * b; }
+EOF
+cat > test/math.test.ts <<'EOF'
+import { expect, test } from "bun:test";
+import { add, multiply } from "../src/math.js";
+test("add", () => expect(add(2, 3)).toBe(5));
+test("multiply", () => expect(multiply(2, 3)).toBe(6));
+EOF
+git add -A && git commit -q -m "init"
+cd - >/dev/null
+# For Q7e (out-of-workspace read):
+echo "outside workspace content" > /tmp/koi-test-outside.txt
+```
+
+**Workspace reads (auto-allowed)**
+
 | Q | Prompt | Tools Expected | Setup | Pass Criteria |
 |---|--------|---------------|-------|---------------|
-| Q6 | `Show me the contents of src/math.ts` | fs_read | reset | File content displayed; follow-up doesn't re-read |
-| Q7 | `What functions does it export?` | none | same session as Q6 | Answers `add`, `multiply` from context |
+| Q6 | `Show me the contents of src/math.ts` | fs_read | reset | File content displayed; no permission prompt |
+| Q7 | `What functions does it export?` | none | same session as Q6 | Answers `add`, `multiply` from context (transcript retention) |
+| Q7b | `Read /src/math.ts with limit=1` | fs_read | same session | Leading `/` treated as workspace-relative (heuristic: `/src` doesn't exist at fs root); auto-allowed, no prompt |
+
+**Out-of-workspace reads (permission-gated)**
+
+| Q | Prompt | Tools Expected | Setup | Pass Criteria |
+|---|--------|---------------|-------|---------------|
+| Q7c | `Read /etc/passwd with limit=1` | fs_read | reset | Permission prompt fires ("outside workspace — approve to read"); approve → file content shown |
+| Q7d | `Read /etc/passwd with limit=1` | fs_read | same session, deny | Press `n` → tool fails with ✗; model explains denial; no crash |
+| Q7e | `Read /tmp/koi-test-outside.txt` | fs_read | `echo "outside" > /tmp/koi-test-outside.txt` before test | Permission prompt; approve → shows "outside" |
+
+**Edits and writes**
+
+| Q | Prompt | Tools Expected | Setup | Pass Criteria |
+|---|--------|---------------|-------|---------------|
 | Q8 | `Find all TS files in src/ that export functions, add a JSDoc comment above each.` | Glob, Grep, fs_read, fs_edit | reset | `git diff` shows JSDoc added; `bun test` passes |
 | Q9 | `Run the tests to make sure nothing broke.` | Bash | same session as Q8 | Tests pass; bash output streams live |
 | Q10 | `Create a new file src/string-utils.ts that exports a camelCase function.` | fs_write | reset | File exists with valid code |
@@ -703,7 +721,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | Scenario | Name | Queries | Sessions | Special Setup |
 |----------|------|---------|----------|---------------|
 | **S1** | Onboarding & Resume | Q1-Q5 | 2 (reset + resume) | none |
-| **S2** | File I/O & Edit | Q6-Q10 | 1 | fixture project |
+| **S2** | File I/O & Edit | Q6-Q10 (+ Q7b-Q7e) | 1 | fixture project + `/tmp/koi-test-outside.txt` for Q7e |
 | **S3** | Notebook | Q11-Q12 | 1 | seed notebook.ipynb |
 | **S4** | Bash & Security | Q13-Q16 | 1 | deny rule; exfiltration target |
 | **S5** | Web & SSRF | Q17-Q18 | 1 | none |
@@ -794,7 +812,7 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/redaction | — | — | — | — | — | — | — | — | — | Q48 | — | — | |
 | @koi/skill-scanner | — | — | — | — | — | — | — | — | Q40 | — | — | — | |
 | @koi/model-registry | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | |
-| @koi/fs-local | — | Q6-Q10 | — | — | — | Q20-Q22 | — | — | — | — | Q53 | Q71 | |
+| @koi/fs-local | — | Q6-Q10,Q7b-Q7e | — | — | — | Q20-Q22 | — | — | — | — | Q53 | Q71 | |
 | @koi/channel-base | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | |
 | @koi/shutdown | — | — | — | Q15 | — | — | — | — | — | — | — | Q66,Q67 | |
 | @koi/session-repair | — | — | — | — | — | — | — | — | — | — | — | Q74 | |

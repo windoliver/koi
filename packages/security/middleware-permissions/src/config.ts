@@ -3,6 +3,7 @@
  */
 
 import type { AuditSink } from "@koi/core";
+import type { JsonObject } from "@koi/core/common";
 import type { KoiError, Result } from "@koi/core/errors";
 import type { PermissionBackend } from "@koi/core/permission-backend";
 import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
@@ -111,6 +112,20 @@ export interface PermissionsMiddlewareConfig {
    * durable identity managed externally).
    */
   readonly persistentAgentId?: string;
+  /**
+   * Optional path resolver for filesystem tools. When set, the middleware
+   * extracts the resolved absolute path from tool input and injects it as
+   * `context.path` in the PermissionQuery. This enables path-based rules:
+   *
+   *   { pattern: "fs_read", context: { path: "/Users/foo/project/**" }, effect: "allow" }
+   *
+   * The callback receives the tool ID and input object. Return the resolved
+   * absolute path for tools that have a path argument, or undefined for
+   * tools that don't (non-fs tools, missing path arg, etc.).
+   */
+  readonly resolveToolPath?:
+    | ((toolId: string, input: JsonObject) => string | undefined)
+    | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +277,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
     if (typeof config.persistentAgentId !== "string" || config.persistentAgentId.length === 0) {
       return fail("config.persistentAgentId must be a non-empty string");
     }
+  }
+
+  // resolveToolPath — function if set
+  if (config.resolveToolPath !== undefined && typeof config.resolveToolPath !== "function") {
+    return fail("config.resolveToolPath must be a function");
   }
 
   return { ok: true, value: config as unknown as PermissionsMiddlewareConfig };

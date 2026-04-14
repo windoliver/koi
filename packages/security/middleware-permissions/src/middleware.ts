@@ -559,6 +559,7 @@ export function createPermissionsMiddleware(
     ctx: TurnContext,
     resource: string,
     requestMetadata?: JsonObject,
+    resolvedPath?: string,
   ): PermissionQuery {
     // Build principal with user/session scope for tenant isolation.
     // Uses JSON array encoding to prevent separator collisions.
@@ -573,11 +574,13 @@ export function createPermissionsMiddleware(
     const hasSessionMeta = Object.keys(sessionMeta).length > 0;
     const hasTurnMeta = Object.keys(turnMeta).length > 0;
     const hasReqMeta = requestMetadata !== undefined && Object.keys(requestMetadata).length > 0;
-    if (hasSessionMeta || hasTurnMeta || hasReqMeta) {
+    const hasPath = resolvedPath !== undefined;
+    if (hasSessionMeta || hasTurnMeta || hasReqMeta || hasPath) {
       const merged = {
         ...(hasSessionMeta ? { _session: sessionMeta } : {}),
         ...(hasTurnMeta ? turnMeta : {}),
         ...(hasReqMeta ? { _request: requestMetadata } : {}),
+        ...(hasPath ? { path: resolvedPath } : {}),
       };
       return { principal, action: "invoke", resource, context: merged };
     }
@@ -1112,10 +1115,10 @@ export function createPermissionsMiddleware(
       // `callId` is a UI/observability identifier carried on a dedicated
       // ToolRequest.callId field (NOT inside `metadata`), so it never
       // enters the backend policy query, the approval cache key, or
-      // the in-flight dedup key. That keeps approval coalescing on
-      // identical inputs intact while preserving custom-backend
-      // visibility into request.metadata. (#1759 review round 6)
-      const query = queryForTool(ctx, request.toolId, request.metadata);
+      // the in-flight dedup key. (#1759 review round 6)
+      // Resolve file path for fs tools so permission rules can match on context.path.
+      const resolvedPath = config.resolveToolPath?.(request.toolId, request.input);
+      const query = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;

@@ -589,3 +589,8 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > - **Checkpoint chain pruned on truncating resets.** `resetSessionState(signal, { truncate: true })` threads the destructive intent through to `onResetSession` hooks; the checkpoint stack calls `Checkpoint.resetSession(currentSessionId)` ONLY when `truncate === true`, so picker session switches and post-rewind in-memory rebuilds preserve the chain (a successful `/rewind` would otherwise lose its landing target). The hook AggregateError propagates through `resetSessionState`, and the TUI flips `clearPersistFailed` to suppress the post-quit resume hint when a truncating clear could not durably commit.
 >
 > - **Pre-runtime-ready `/clear` fails closed.** A `/clear` issued during the `koi tui --resume <id>` startup window waits for `runtimeReady`, then runs the same `resetSessionState({ truncate: true })` pipeline. If the runtime never yields a handle the reset fails closed (regardless of `truncate`) — both visible history and the JSONL file are preserved, and `lastResetFailed` blocks downstream submit/fork paths until restart.
+
+
+## Changelog
+
+- **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
