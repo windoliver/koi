@@ -12,6 +12,14 @@ export interface TuiFlags extends BaseFlags {
    * appending to the same file. Mirrors `koi start --resume`.
    */
   readonly resume: string | undefined;
+  /**
+   * Path to an agent manifest (koi.yaml). When provided, the TUI
+   * picks up the manifest's `modelName`, `instructions` (system
+   * prompt), `stacks: [...]` opt-in, and `plugins: [...]` opt-in —
+   * exactly like `koi start --manifest`. Omit for the default
+   * "everything auto-discovered" behavior.
+   */
+  readonly manifest: string | undefined;
   readonly goal: readonly string[];
   // --- Convergence loop mode (#1624) ---
   /**
@@ -42,6 +50,7 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     readonly agent: string | undefined;
     readonly session: string | undefined;
     readonly resume: string | undefined;
+    readonly manifest: string | undefined;
     readonly goal: string[] | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
@@ -56,6 +65,7 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
         agent: { type: "string" },
         session: { type: "string" },
         resume: { type: "string" },
+        manifest: { type: "string" },
         goal: { type: "string", multiple: true },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
@@ -109,6 +119,7 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     agent: values.agent,
     session: values.session,
     resume: values.resume,
+    manifest: values.manifest,
     goal: values.goal ?? [],
     untilPass,
     maxIter: resolveMaxIter(values["max-iter"]),

@@ -70,6 +70,7 @@ import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
+import { loadManifestConfig } from "./manifest.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime } from "./runtime-factory.js";
@@ -534,6 +535,31 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
+  // 0. Manifest loading (optional — --manifest flag)
+  // ---------------------------------------------------------------------------
+  //
+  // Loaded BEFORE API config so manifest.modelName can override the
+  // KOI_MODEL env default. Mirrors `koi start --manifest` semantics:
+  // manifest.instructions replaces DEFAULT_SYSTEM_PROMPT (skills still
+  // prepend), and manifest.stacks / manifest.plugins flow into the
+  // stack activation filter.
+  let manifestModelName: string | undefined;
+  let manifestInstructions: string | undefined;
+  let manifestStacks: readonly string[] | undefined;
+  let manifestPlugins: readonly string[] | undefined;
+  if (flags.manifest !== undefined) {
+    const manifestResult = await loadManifestConfig(flags.manifest);
+    if (!manifestResult.ok) {
+      process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
+      process.exit(1);
+    }
+    manifestModelName = manifestResult.value.modelName;
+    manifestInstructions = manifestResult.value.instructions;
+    manifestStacks = manifestResult.value.stacks;
+    manifestPlugins = manifestResult.value.plugins;
+  }
+
+  // ---------------------------------------------------------------------------
   // 1. API configuration
   // ---------------------------------------------------------------------------
 
@@ -542,7 +568,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: modelName, fallbackModels } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: envModelName, fallbackModels } = apiConfigResult.value;
+  // Manifest model name wins over the env default (same precedence
+  // as `koi start --manifest`).
+  const modelName = manifestModelName ?? envModelName;
 
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
@@ -719,8 +748,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     return parts.sort().join("\n\n---\n\n");
   })();
+  // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
+  // mirrors `koi start --manifest` behavior. Skills still prepend
+  // because they're filesystem-discovered, not part of the manifest.
+  const baseSystemPrompt = manifestInstructions ?? DEFAULT_SYSTEM_PROMPT;
   const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+    skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt;
 
   // Loop mode (--until-pass): each user turn becomes a runUntilPass
   // invocation that iterates the agent against the verifier until
@@ -747,6 +780,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    // Manifest-driven opt-in for preset stacks + plugins. Omitted
+    // when the user didn't pass --manifest, in which case the
+    // factory defaults to activating every stack / every discovered
+    // plugin (v1's "wire everything" posture).
+    ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
+    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
     // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
     ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
