@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { CostCalculator, CostTokenBreakdown } from "@koi/core/cost-tracker";
 import { createCostCalculator } from "./calculator.js";
 import { DEFAULT_PRICING, resolvePricing } from "./pricing.js";
+
+/** Type-safe wrapper — createCostCalculator always provides calculateDetailed. */
+function detailed(calc: CostCalculator, model: string, breakdown: CostTokenBreakdown): number {
+  if (calc.calculateDetailed === undefined) throw new Error("calculateDetailed missing");
+  return calc.calculateDetailed(model, breakdown);
+}
 
 // ---------------------------------------------------------------------------
 // resolvePricing — model lookup with alias fallback
@@ -111,11 +118,11 @@ describe("createCostCalculator", () => {
     test("basic input/output matches simple calculate", () => {
       const calc = createCostCalculator();
       const simple = calc.calculate("gpt-4o", 1000, 500);
-      const detailed = calc.calculateDetailed?.("gpt-4o", {
+      const detailedCost = detailed(calc, "gpt-4o", {
         inputTokens: 1000,
         outputTokens: 500,
       });
-      expect(detailed).toBeCloseTo(simple, 10);
+      expect(detailedCost).toBeCloseTo(simple, 10);
     });
 
     // --- Cached input tokens ---
@@ -123,12 +130,12 @@ describe("createCostCalculator", () => {
     test("cached input tokens use discounted rate", () => {
       const calc = createCostCalculator();
       // claude-opus-4-6: input 15e-6, cachedInput 1.5e-6
-      const withCache = calc.calculateDetailed?.("claude-opus-4-6", {
+      const withCache = detailed(calc, "claude-opus-4-6", {
         inputTokens: 1000,
         outputTokens: 100,
         cachedInputTokens: 800,
       });
-      const withoutCache = calc.calculateDetailed?.("claude-opus-4-6", {
+      const withoutCache = detailed(calc, "claude-opus-4-6", {
         inputTokens: 1000,
         outputTokens: 100,
       });
@@ -139,7 +146,7 @@ describe("createCostCalculator", () => {
     test("cached tokens deducted from regular input", () => {
       const calc = createCostCalculator();
       // All input is cached: 1000 cached out of 1000 total
-      const cost = calc.calculateDetailed?.("claude-opus-4-6", {
+      const cost = detailed(calc, "claude-opus-4-6", {
         inputTokens: 1000,
         outputTokens: 0,
         cachedInputTokens: 1000,
@@ -153,7 +160,7 @@ describe("createCostCalculator", () => {
     test("cache creation tokens use premium rate", () => {
       const calc = createCostCalculator();
       // claude-opus-4-6: cacheCreation 18.75e-6 (1.25x of 15e-6)
-      const cost = calc.calculateDetailed?.("claude-opus-4-6", {
+      const cost = detailed(calc, "claude-opus-4-6", {
         inputTokens: 1000,
         outputTokens: 0,
         cacheCreationTokens: 1000,
@@ -166,7 +173,7 @@ describe("createCostCalculator", () => {
     test("reasoning tokens billed at output rate", () => {
       const calc = createCostCalculator();
       // gpt-4o: output 10e-6
-      const cost = calc.calculateDetailed?.("gpt-4o", {
+      const cost = detailed(calc, "gpt-4o", {
         inputTokens: 0,
         outputTokens: 500,
         reasoningTokens: 300,
@@ -178,7 +185,7 @@ describe("createCostCalculator", () => {
     test("reasoning tokens as hidden cost multiplier", () => {
       const calc = createCostCalculator();
       // 100 visible output + 10000 reasoning = 10100 output tokens billed
-      const cost = calc.calculateDetailed?.("gpt-4o", {
+      const cost = detailed(calc, "gpt-4o", {
         inputTokens: 100,
         outputTokens: 10100,
         reasoningTokens: 10000,
@@ -191,7 +198,7 @@ describe("createCostCalculator", () => {
 
     test("dated model resolves via alias fallback", () => {
       const calc = createCostCalculator();
-      const cost = calc.calculateDetailed?.("claude-sonnet-4-6-20260414", {
+      const cost = detailed(calc, "claude-sonnet-4-6-20260414", {
         inputTokens: 1000,
         outputTokens: 500,
       });
@@ -201,7 +208,7 @@ describe("createCostCalculator", () => {
 
     test("unknown model returns 0 in detailed mode", () => {
       const calc = createCostCalculator();
-      const cost = calc.calculateDetailed?.("unknown-model", {
+      const cost = detailed(calc, "unknown-model", {
         inputTokens: 1000,
         outputTokens: 500,
       });
@@ -212,7 +219,7 @@ describe("createCostCalculator", () => {
 
     test("zero tokens returns 0", () => {
       const calc = createCostCalculator();
-      const cost = calc.calculateDetailed?.("gpt-4o", {
+      const cost = detailed(calc, "gpt-4o", {
         inputTokens: 0,
         outputTokens: 0,
       });
@@ -221,7 +228,7 @@ describe("createCostCalculator", () => {
 
     test("all tokens cached returns only cached cost", () => {
       const calc = createCostCalculator();
-      const cost = calc.calculateDetailed?.("gpt-4o", {
+      const cost = detailed(calc, "gpt-4o", {
         inputTokens: 500,
         outputTokens: 0,
         cachedInputTokens: 500,
@@ -234,7 +241,7 @@ describe("createCostCalculator", () => {
 
     test("large token counts maintain precision", () => {
       const calc = createCostCalculator();
-      const cost = calc.calculateDetailed?.("gpt-4o", {
+      const cost = detailed(calc, "gpt-4o", {
         inputTokens: 1_000_000,
         outputTokens: 500_000,
       });
@@ -250,7 +257,7 @@ describe("createCostCalculator", () => {
           "no-cache-model": { input: 5e-6, output: 10e-6 },
         },
       });
-      const cost = calc.calculateDetailed?.("no-cache-model", {
+      const cost = detailed(calc, "no-cache-model", {
         inputTokens: 1000,
         outputTokens: 0,
         cachedInputTokens: 500,
