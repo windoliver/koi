@@ -208,6 +208,7 @@ const RESULT_CHIP_KEYS = [
   "exitCode",
   "status",
   "contentType",
+  "cached",
   "durationMs",
   "bytesWritten",
   "modified",

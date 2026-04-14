@@ -348,6 +348,32 @@ describe("getResultDisplay — web_fetch result", () => {
     expect(r.body).toBe("Connection refused");
     expect(r.chips).toEqual(["code=ECONNREFUSED"]);
   });
+
+  test("exposes cached=true chip on cache hit", () => {
+    const r = getResultDisplay(
+      toolResult({
+        status: 200,
+        contentType: "text/html",
+        body: "Example Domain",
+        truncated: false,
+        cached: true,
+      }),
+    );
+    expect(r.chips).toContain("cached=true");
+  });
+
+  test("exposes cached=false chip on fresh fetch", () => {
+    const r = getResultDisplay(
+      toolResult({
+        status: 200,
+        contentType: "text/html",
+        body: "Example Domain",
+        truncated: false,
+        cached: false,
+      }),
+    );
+    expect(r.chips).toContain("cached=false");
+  });
 });
 
 describe("getResultDisplay — Glob result", () => {
