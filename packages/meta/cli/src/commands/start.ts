@@ -2,7 +2,7 @@
  * `koi start` — run agent in interactive REPL or single-prompt mode.
  *
  * Shares one runtime factory with `koi tui`: both commands call
- * `createKoiRuntime` from `../tui-runtime.js` and differ only in
+ * `createKoiRuntime` from `../runtime-factory.js` and differ only in
  * their I/O loop (CLI uses `@koi/harness`'s plain-stdout channel;
  * TUI uses OpenTUI). Adding a new middleware, tool, or provider to
  * the factory automatically lands in both hosts.
@@ -24,9 +24,9 @@ import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
-import { createKoiRuntime } from "../tui-runtime.js";
 import { ExitCode } from "../types.js";
 
 /**

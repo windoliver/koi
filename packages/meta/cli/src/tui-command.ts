@@ -4,7 +4,7 @@
  * Wires the TUI application shell:
  *   store + permissionBridge + batcher → createTuiApp → handle.start()
  *
- * Runtime assembly is delegated to createTuiRuntime() (tui-runtime.ts) which
+ * Runtime assembly is delegated to createKoiRuntime() (tui-runtime.ts) which
  * wires the full L2 tool stack via createKoi. This command owns the TUI UX:
  * store, event batching, session management, signal handling.
  *
@@ -19,7 +19,7 @@
  * The session ID is generated once per TUI process launch; agent:clear / session:new
  * resets the conversation history but continues writing to the same transcript file.
  *
- * Tools wired (via createTuiRuntime):
+ * Tools wired (via createKoiRuntime):
  *   Glob, Grep, ToolSearch — codebase search (cwd-rooted)
  *   web_fetch              — HTTP fetch via @koi/tools-web
  *   Bash, bash_background  — shell execution via @koi/tools-bash
@@ -71,10 +71,10 @@ import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import type { KoiRuntimeHandle } from "./runtime-factory.js";
+import { createKoiRuntime } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
-import type { TuiRuntimeHandle } from "./tui-runtime.js";
-import { createTuiRuntime } from "./tui-runtime.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -218,7 +218,7 @@ function mapSourceState(status: { readonly state: string }): string {
  * if the ledger query fails.
  */
 async function refreshTrajectoryData(
-  handle: TuiRuntimeHandle,
+  handle: KoiRuntimeHandle,
   store: TuiStore,
   currentSessionId: string,
 ): Promise<void> {
@@ -522,7 +522,7 @@ export async function drainEngineStream(
  * `koi tui` — launch the full-screen TUI.
  *
  * Architecture: the TUI owns the full terminal UX (input box, store, events).
- * Runtime assembly (tools, middleware, providers) is delegated to createTuiRuntime().
+ * Runtime assembly (tools, middleware, providers) is delegated to createKoiRuntime().
  * The conversation loop is driven by KoiRuntime.run() from @koi/engine.
  */
 export async function runTuiCommand(flags: TuiFlags): Promise<void> {
@@ -704,7 +704,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   });
 
   // ---------------------------------------------------------------------------
-  // 3. Assemble runtime (A1-A: delegate to createTuiRuntime)
+  // 3. Assemble runtime (A1-A: delegate to createKoiRuntime)
   // ---------------------------------------------------------------------------
 
   // --- Load skills before runtime creation (same as koi start on main) ---
@@ -732,8 +732,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
-  let runtimeHandle: TuiRuntimeHandle | null = null;
-  const runtimeReady = createTuiRuntime({
+  let runtimeHandle: KoiRuntimeHandle | null = null;
+  const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
     approvalHandler: permissionBridge.handler,
@@ -1139,7 +1139,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     const inflightRun = activeRunPromise;
     const shouldTruncate = options.truncatePersistedTranscript;
     // A `/clear` / `/new` issued during the startup resume window
-    // (before createTuiRuntime has resolved) still has to honor
+    // (before createKoiRuntime has resolved) still has to honor
     // the privacy boundary. Clearing the prime array is synchronous
     // and safe regardless of runtime readiness.
     resumedMessagesToPrime = [];
@@ -1209,13 +1209,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       })();
     } else {
       // Pre-runtime-ready reset path — `resetConversation` was called
-      // before `createTuiRuntime` resolved. Schedule the runtime-scoped
+      // before `createKoiRuntime` resolved. Schedule the runtime-scoped
       // work behind `runtimeReady`.
       resetBarrier = (async (): Promise<boolean> => {
         await runtimeReady.catch(() => {
           /* runtime init errors reported upstream */
         });
-        const handleAfterReady = ((): TuiRuntimeHandle | null => runtimeHandle)();
+        const handleAfterReady = ((): KoiRuntimeHandle | null => runtimeHandle)();
         if (handleAfterReady !== null) {
           handleAfterReady.transcript.splice(0);
         }
@@ -2138,7 +2138,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
 
       // P2-A: block on runtime assembly if not yet ready.
-      // First submit waits for createTuiRuntime to complete; subsequent
+      // First submit waits for createKoiRuntime to complete; subsequent
       // submits use the cached runtimeHandle (already resolved).
       if (runtimeHandle === null) {
         try {
@@ -2389,7 +2389,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
  * formatted as plain text and treated as part of the assistant turn.
  */
 async function* runTuiLoopTurn(
-  runtime: TuiRuntimeHandle["runtime"],
+  runtime: KoiRuntimeHandle["runtime"],
   text: string,
   signal: AbortSignal,
   flags: TuiFlags,

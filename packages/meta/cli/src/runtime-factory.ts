@@ -85,8 +85,10 @@ import {
   createNotebookReplaceCellTool,
 } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
+import { composeRuntimeMiddleware } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
+import { activateStacks } from "./preset-stacks.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
@@ -1166,29 +1168,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   });
   const checkpointMw = checkpointHandle.middleware;
 
-  // --- Wrap middleware with trace for full ATIF instrumentation ---
-  // Same pattern as golden-query recording: each middleware hook invocation
-  // (wrapModelCall, wrapToolCall, wrapModelStream) is recorded as an ATIF step,
-  // showing MW:permissions, MW:hooks, MW:exfiltration-guard triggered events.
-  // Event-trace itself is excluded (TRACE_EXCLUDED set in trace-wrapper.ts).
-  const allMiddleware = [
-    eventTraceMw,
-    hookMw,
-    hookObserverMw,
-    rulesMw,
-    permMw,
-    exfiltrationGuardMw,
-    extractionMw,
-    semanticRetryMw,
-    // Model-router (innermost model call interceptor): routes after retry logic
-    // so each retry attempt benefits from provider failover independently.
-    ...(config.modelRouterMiddleware !== undefined ? [config.modelRouterMiddleware] : []),
-    ...(goalMw !== undefined ? [goalMw] : []),
-    ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
-    checkpointMw,
-    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
-    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
-  ];
+  // --- Preset stack activation (v1 `activatePresetStacks` pattern) ---
+  // Each preset is a named bundle of middleware + providers that
+  // contributes into the runtime. The registry is currently empty —
+  // all features still live inline in this factory — but the hook
+  // is wired so future features land as stack modules without
+  // touching the factory. See preset-stacks.ts for the contract.
+  const stackContribution = await activateStacks({
+    cwd,
+    hostId,
+  });
+
+  // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
+  // The ordering (outermost → innermost) is defined in one place —
+  // compose-middleware.ts — so both this factory and any future
+  // host-specific factory share the exact same canonical order. Adding
+  // a new core middleware layer = one edit to the compose function's
+  // `MiddlewareCompositionInput` interface + its ordered return list.
+  // Preset stacks plug in via `presetExtras`.
+  const allMiddleware = composeRuntimeMiddleware({
+    eventTrace: eventTraceMw,
+    hook: hookMw,
+    hookObserver: hookObserverMw,
+    rules: rulesMw,
+    permissions: permMw,
+    exfiltrationGuard: exfiltrationGuardMw,
+    extraction: extractionMw,
+    semanticRetry: semanticRetryMw,
+    checkpoint: checkpointMw,
+    ...(config.modelRouterMiddleware !== undefined
+      ? { modelRouter: config.modelRouterMiddleware }
+      : {}),
+    ...(goalMw !== undefined ? { goal: goalMw } : {}),
+    ...(otelHandle !== undefined ? { otel: otelHandle.middleware } : {}),
+    presetExtras: stackContribution.middleware,
+    ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+    ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
+  });
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
   // when multiple MW spans complete within the same Date.now() millisecond.
   // The store's idempotent dedup uses stepIndex:timestamp as the batch token;
@@ -1223,6 +1239,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       spawnToolProvider,
+      ...stackContribution.providers,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
       ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
       ...(skillProvider !== undefined ? [skillProvider] : []),
