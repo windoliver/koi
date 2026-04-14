@@ -70,20 +70,12 @@ import {
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { runTurn } from "@koi/query-engine";
-import { createRulesMiddleware } from "@koi/rules-loader";
 import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
-import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import {
-  createNotebookAddCellTool,
-  createNotebookDeleteCellTool,
-  createNotebookReadTool,
-  createNotebookReplaceCellTool,
-} from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
 import { composeRuntimeMiddleware } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
@@ -260,6 +252,15 @@ export interface KoiRuntimeConfig {
    * convergence-loop driver.
    */
   readonly getGeneration?: (() => number) | undefined;
+  /**
+   * Opt-in subset of preset stacks to activate. When `undefined`
+   * (default), every stack in `DEFAULT_STACKS` is activated —
+   * matching v1's "wire everything" posture. Hosts that need a
+   * stripped-down assembly (e.g. a CI runner without notebook
+   * tools) pass an explicit list. Manifest YAML surfaces this
+   * through a `stacks:` key; see `loadManifestConfig`.
+   */
+  readonly stacks?: readonly string[] | undefined;
   /**
    * Observer for spawn lifecycle events emitted by the Spawn tool executor.
    * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
@@ -901,35 +902,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     bashTool: bashHandle.tool,
   });
 
-  // --- @koi/tool-notebook: .ipynb read/add/replace/delete ---
-  const notebookConfig = { cwd };
-  const notebookReadTool = createNotebookReadTool(notebookConfig);
-  const notebookAddCellTool = createNotebookAddCellTool(notebookConfig);
-  const notebookReplaceCellTool = createNotebookReplaceCellTool(notebookConfig);
-  const notebookDeleteCellTool = createNotebookDeleteCellTool(notebookConfig);
-  const notebookProviders = [
-    createSingleToolProvider({
-      name: "notebook-read",
-      toolName: "notebook_read",
-      createTool: () => notebookReadTool,
-    }),
-    createSingleToolProvider({
-      name: "notebook-add-cell",
-      toolName: "notebook_add_cell",
-      createTool: () => notebookAddCellTool,
-    }),
-    createSingleToolProvider({
-      name: "notebook-replace-cell",
-      toolName: "notebook_replace_cell",
-      createTool: () => notebookReplaceCellTool,
-    }),
-    createSingleToolProvider({
-      name: "notebook-delete-cell",
-      toolName: "notebook_delete_cell",
-      createTool: () => notebookDeleteCellTool,
-    }),
-  ];
-
   // --- @koi/memory-tools: in-memory memory backend ---
   // Same pattern as golden-query recording: in-memory Map-based backend.
   // Provides memory_store, memory_recall, memory_search, memory_delete tools.
@@ -948,29 +920,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // time. After session reset, resolver.load() sees fresh files but the model still
   // sees the old descriptor listing. Full fix requires hot-swappable tool descriptors
   // in createKoi — tracked as a known limitation. The system prompt skill snapshot
-  // (built in tui-command.ts) is also static for the process lifetime.
-  // AbortController for skill loading — lives for the entire runtime lifetime.
-  // Not rotated on session reset (skill loading is stateless file reads).
-  const skillAbortController = new AbortController();
-  // skillsRuntime is provided by the caller (tui-command.ts) — reuse it for
-  // both MCP bridge wiring and the Skill meta-tool.
-  const skillToolResult =
-    skillsRuntime !== undefined
-      ? await createSkillTool({
-          resolver: skillsRuntime,
-          signal: skillAbortController.signal,
-          // No spawnFn — fork-mode skills via the legacy SpawnFn path are not supported.
-          // Real spawning happens via createSpawnToolProvider below (#1583).
-        })
-      : undefined;
-  const skillProvider = skillToolResult?.ok
-    ? createSingleToolProvider({
-        name: "skill",
-        toolName: "Skill",
-        createTool: () => skillToolResult.value,
-      })
-    : undefined;
-
   // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
   // Only installed when the caller provides objectives. Injects goal blocks
   // into model messages and tracks drift/completion across turns.
@@ -1004,12 +953,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Must be in the middleware stack to protect shell and web_fetch from leaking
   // workspace secrets — omitting it is a security regression.
   const exfiltrationGuardMw = createExfiltrationGuardMiddleware();
-
-  // --- @koi/rules-loader: discover and inject hierarchical project rules ---
-  // Walks from cwd to git root, merges CLAUDE.md / AGENTS.md / .koi/context.md
-  // into the system prompt on every model call. Uses process.cwd() by default
-  // so rules follow the workspace root.
-  const rulesMw = createRulesMiddleware({ cwd });
 
   // --- @koi/middleware-extraction: extract learnings from spawn tool outputs ---
   // Wraps the in-memory memory backend as a MemoryComponent for the extraction
@@ -1169,15 +1112,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const checkpointMw = checkpointHandle.middleware;
 
   // --- Preset stack activation (v1 `activatePresetStacks` pattern) ---
-  // Each preset is a named bundle of middleware + providers that
-  // contributes into the runtime. The registry is currently empty —
-  // all features still live inline in this factory — but the hook
-  // is wired so future features land as stack modules without
-  // touching the factory. See preset-stacks.ts for the contract.
-  const stackContribution = await activateStacks({
-    cwd,
-    hostId,
-  });
+  // Each preset is a named bundle of middleware + providers. The
+  // registry lives in preset-stacks.ts. Host-specific state (e.g.
+  // skillsRuntime) flows through the `host` bag so stacks that need
+  // it can read a well-known key; stacks that are host-neutral
+  // ignore `host` entirely.
+  const stackContribution = await activateStacks(
+    {
+      cwd,
+      hostId,
+      host: {
+        ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+      },
+    },
+    config.stacks !== undefined ? { enabled: new Set(config.stacks) } : undefined,
+  );
 
   // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
   // The ordering (outermost → innermost) is defined in one place —
@@ -1190,7 +1139,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     eventTrace: eventTraceMw,
     hook: hookMw,
     hookObserver: hookObserverMw,
-    rules: rulesMw,
     permissions: permMw,
     exfiltrationGuard: exfiltrationGuardMw,
     extraction: extractionMw,
@@ -1236,13 +1184,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ...coreProviders,
       bashBackgroundProvider,
       ...taskToolProviders,
-      ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       spawnToolProvider,
       ...stackContribution.providers,
       ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
       ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
-      ...(skillProvider !== undefined ? [skillProvider] : []),
     ],
     approvalHandler,
     userId: userInfo().username,

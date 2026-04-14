@@ -32,8 +32,6 @@ export interface MiddlewareCompositionInput {
   readonly hook: KoiMiddleware;
   /** Trace tap for the hook registry — records hook executions as ATIF steps. */
   readonly hookObserver: KoiMiddleware;
-  /** Hierarchical rule injection: CLAUDE.md / AGENTS.md / .koi/context.md. */
-  readonly rules: KoiMiddleware;
   /** Permission backend gating: default-mode rules or auto-allow pattern. */
   readonly permissions: KoiMiddleware;
   /** Secret exfiltration guard: scans tool inputs and model outputs for leaks. */
@@ -79,10 +77,13 @@ export interface MiddlewareCompositionInput {
  * Compose the canonical middleware list in its production order.
  *
  * Order (outermost → innermost):
- *   eventTrace → hook → hookObserver → rules → permissions →
+ *   eventTrace → hook → hookObserver → permissions →
  *   exfiltrationGuard → extraction → semanticRetry → modelRouter? →
  *   goal? → otel? → checkpoint → presetExtras... → systemPrompt? →
  *   sessionTranscript?
+ *
+ * Rules-loader (and other feature middleware like notebook tools) live
+ * in `presetExtras` — contributed by preset stacks, not named here.
  *
  * The outermost layer wraps every inner layer, so event-trace sees
  * the entire middleware stack and session-transcript sees the
@@ -95,7 +96,6 @@ export function composeRuntimeMiddleware(
     input.eventTrace,
     input.hook,
     input.hookObserver,
-    input.rules,
     input.permissions,
     input.exfiltrationGuard,
     input.extraction,

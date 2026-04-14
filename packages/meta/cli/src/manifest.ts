@@ -1,11 +1,11 @@
 /**
  * Minimal agent manifest loader for #1264.
  *
- * Loads a YAML manifest file and extracts the two fields needed for
- * basic agent customization: model name and behavioral instructions.
+ * Loads a YAML manifest file and extracts the fields needed for basic
+ * agent customization: model name, behavioral instructions, and the
+ * opt-in preset stack list.
  *
- * Intentionally minimal — tools, middleware, and full AgentManifest
- * assembly are out of scope for this PR.
+ * Intentionally minimal — full AgentManifest assembly is out of scope.
  *
  * Manifest format (koi.yaml):
  *   name: my-agent          # optional, informational
@@ -13,6 +13,10 @@
  *     name: google/gemini-2.0-flash-001
  *   instructions: |         # optional — injected as system prompt
  *     You are a helpful coding assistant.
+ *   stacks:                 # optional — opt into a subset of preset stacks
+ *     - notebook            #   (omit to activate every stack in DEFAULT_STACKS)
+ *     - rules
+ *     - skills
  */
 
 import { loadConfig } from "@koi/config";
@@ -20,6 +24,12 @@ import { loadConfig } from "@koi/config";
 export interface ManifestConfig {
   readonly modelName: string;
   readonly instructions: string | undefined;
+  /**
+   * Opt-in subset of preset stack ids. `undefined` means "activate every
+   * stack in `DEFAULT_STACKS`" (v1's default posture). An empty array
+   * means "deactivate every stack" (the host runs core middleware only).
+   */
+  readonly stacks: readonly string[] | undefined;
 }
 
 /**
@@ -68,11 +78,32 @@ export async function loadManifestConfig(
     };
   }
 
+  const stacksRaw = raw.stacks;
+  let stacks: readonly string[] | undefined;
+  if (stacksRaw === undefined) {
+    stacks = undefined;
+  } else if (!Array.isArray(stacksRaw)) {
+    return {
+      ok: false,
+      error: "manifest.stacks must be a list of stack ids, e.g. stacks: [notebook, rules, skills]",
+    };
+  } else {
+    const invalid = stacksRaw.find((s) => typeof s !== "string" || s.length === 0);
+    if (invalid !== undefined) {
+      return {
+        ok: false,
+        error: "manifest.stacks entries must all be non-empty strings",
+      };
+    }
+    stacks = stacksRaw as readonly string[];
+  }
+
   return {
     ok: true,
     value: {
       modelName: modelName.trim(),
       instructions: instructions as string | undefined,
+      stacks,
     },
   };
 }

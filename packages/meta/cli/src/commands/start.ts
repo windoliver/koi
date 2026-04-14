@@ -73,6 +73,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   let manifestModelName: string | undefined;
   let manifestInstructions: string | undefined;
+  let manifestStacks: readonly string[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -81,6 +82,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
     manifestModelName = manifestResult.value.modelName;
     manifestInstructions = manifestResult.value.instructions;
+    manifestStacks = manifestResult.value.stacks;
   }
 
   // ---------------------------------------------------------------------------
@@ -191,6 +193,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }),
     permissionsDescription: "koi start — auto-allow",
     ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+    ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
   });

@@ -27,6 +27,9 @@
  */
 
 import type { ComponentProvider, KoiMiddleware } from "@koi/core";
+import { notebookStack } from "./preset-stacks/notebook.js";
+import { rulesStack } from "./preset-stacks/rules.js";
+import { skillsStack } from "./preset-stacks/skills.js";
 
 /**
  * Runtime-neutral context passed to every preset stack during activation.
@@ -80,13 +83,12 @@ export interface PresetStack {
  * The default stack registry. New features register a `PresetStack`
  * here and both hosts pick it up without factory edits.
  *
- * Currently empty — the factory still wires observability, checkpoint,
- * spawn, memory, etc. inline. Follow-up PRs migrate each feature into
- * its own stack file and append here; the mechanism is already wired
- * through `createKoiRuntime` → `composeRuntimeMiddleware.presetExtras`
- * so each migration is a drop-in change.
+ * Each entry is a self-contained feature bundle that activates via
+ * `activateStacks`. Hosts opt into a subset by passing
+ * `{enabled: new Set(["notebook", "rules", ...])}`. Omitting the
+ * `enabled` option activates every stack.
  */
-export const DEFAULT_STACKS: readonly PresetStack[] = [];
+export const DEFAULT_STACKS: readonly PresetStack[] = [notebookStack, rulesStack, skillsStack];
 
 /**
  * Activate the selected stacks and return the aggregated contribution.
