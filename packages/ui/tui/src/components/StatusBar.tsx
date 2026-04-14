@@ -18,13 +18,25 @@ const STATUS_COLORS: Record<AgentStatus, string> = {
 };
 
 function ModelChip(props: { readonly info: SessionInfo | null }): JSX.Element {
-  if (!props.info) return <text fg={COLORS.textMuted}>{"no session"}</text>;
+  // Short prefix keeps the footer compact while staying unique enough
+  // for a human to correlate with the post-quit resume hint.
+  const shortId = (): string => {
+    const info = props.info;
+    return info ? info.sessionId.slice(0, 8) : "";
+  };
   return (
-    <box flexDirection="row">
-      <text fg={COLORS.textSecondary}>{props.info.modelName}</text>
-      <text fg={COLORS.textMuted}>{" · "}</text>
-      <text fg={COLORS.textSecondary}>{props.info.provider}</text>
-    </box>
+    <Show
+      when={props.info !== null}
+      fallback={<text fg={COLORS.textMuted}>{"no session"}</text>}
+    >
+      <box flexDirection="row">
+        <text fg={COLORS.textMuted}>{shortId()}</text>
+        <text fg={COLORS.textMuted}>{" · "}</text>
+        <text fg={COLORS.textSecondary}>{props.info?.modelName ?? ""}</text>
+        <text fg={COLORS.textMuted}>{" · "}</text>
+        <text fg={COLORS.textSecondary}>{props.info?.provider ?? ""}</text>
+      </box>
+    </Show>
   );
 }
 

@@ -7,7 +7,7 @@
 
 import type { JsonObject } from "@koi/core/common";
 import type { EngineEvent } from "@koi/core/engine";
-import type { ContentBlock } from "@koi/core/message";
+import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
 
 // ---------------------------------------------------------------------------
@@ -119,6 +119,13 @@ export interface SessionInfo {
   readonly modelName: string;
   readonly provider: string;
   readonly sessionName: string;
+  /**
+   * Stable identifier for the current TUI process's session.
+   * Used by the status bar (short prefix) and the post-quit resume
+   * hint so the user can pick the session back up with
+   * `koi start --resume <id>`.
+   */
+  readonly sessionId: string;
 }
 
 /** Summary of a saved session for the session picker. */
@@ -444,13 +451,25 @@ export type TuiAction =
       readonly callId: string;
     }
   | {
-      /** Set by the host on session start (model name, provider, session name). */
+      /** Set by the host on session start (model name, provider, session name, session id). */
       readonly kind: "set_session_info";
       readonly modelName: string;
       readonly provider: string;
       readonly sessionName: string;
+      readonly sessionId: string;
       /** Max context tokens for the model — used for context % indicator (#17). */
       readonly maxTokens?: number | undefined;
+    }
+  | {
+      /**
+       * Rehydrate the visible message list from a replayed session
+       * transcript. Dispatched once at TUI startup when the user passes
+       * `koi tui --resume <id>`. The reducer converts each InboundMessage
+       * to the TUI-local TuiMessage shape — conversion lives in the TUI
+       * package so InboundMessage never leaks into the reducer output.
+       */
+      readonly kind: "rehydrate_messages";
+      readonly messages: readonly InboundMessage[];
     }
   | {
       /** Injected by the host from persistence; TUI never performs I/O. */
@@ -525,11 +544,12 @@ export type TuiAction =
        * Replays loaded session history into the message list.
        * Injected by the host after resumeForSession; TUI never performs I/O.
        * Prepended before any live messages so the conversation reads top-to-bottom.
-       * Only user/assistant messages are shown; tool entries are skipped.
+       * Only user/assistant text messages are shown; tool entries,
+       * privileged system:* senders, metadata.toolCalls placeholders,
+       * and resumedSystemRole-tagged user entries are all filtered
+       * out — the reducer needs `metadata` visibility to apply those
+       * rules uniformly with `rehydrate_messages`.
        */
       readonly kind: "load_history";
-      readonly messages: readonly {
-        readonly senderId: string;
-        readonly content: readonly ContentBlock[];
-      }[];
+      readonly messages: readonly InboundMessage[];
     };

@@ -456,7 +456,67 @@ export function createSnapshotStoreSqlite<T>(
 
       let removedCount = 0;
 
+      // Plan the head mutation BEFORE the transaction so the
+      // in-memory `chainHeads` cache update can be deferred until
+      // after SQL commit. Mutating the JS Map inside the transaction
+      // body is unsafe: SQLite rolls back DB state on a thrown
+      // statement (e.g. transient write error mid-prune), but the
+      // Map mutation is not undoable. A subsequent `store.head()`
+      // would then serve a stale answer from the poisoned cache,
+      // and `createCheckpoint.getOrCreateSession()` would either
+      // bootstrap a fresh root or fork new snapshots from the wrong
+      // head — both silent data-integrity failures.
+      const willRemoveAll = toRemove.size === rows.length;
+      // let justified: planned mutation, applied post-commit
+      let plannedHeadOp: { kind: "delete" } | { kind: "set"; node_id: string } | undefined;
+      if (willRemoveAll) {
+        plannedHeadOp = { kind: "delete" };
+      } else if (toRemove.has(0)) {
+        // Head member is being removed but other members survive —
+        // repoint head at the newest survivor so the FK stays
+        // satisfied once the deletes below run. Pick from the
+        // in-memory `rows` array (newest-first) instead of querying
+        // the database: at this point no rows have been deleted,
+        // so a SELECT against `chain_members` would still return
+        // the about-to-be-deleted head and reintroduce the same FK
+        // failure this whole branch is trying to avoid.
+        // let justified: assigned in the survivor scan below
+        let newHeadNodeId: string | undefined;
+        for (let i = 0; i < rows.length; i++) {
+          if (!toRemove.has(i)) {
+            newHeadNodeId = rows[i]?.node_id;
+            break;
+          }
+        }
+        plannedHeadOp =
+          newHeadNodeId !== undefined
+            ? { kind: "set", node_id: newHeadNodeId }
+            : // Defensive: `willRemoveAll` was false but no survivor
+              // found — should be unreachable, but drop the head row
+              // rather than leave a dangling FK target.
+              { kind: "delete" };
+      }
+
       db.transaction(() => {
+        // Step 1: update or drop the chain head row BEFORE deleting any
+        // snapshot_nodes. `chain_heads.node_id` has a FOREIGN KEY into
+        // `snapshot_nodes(node_id)`, so deleting a node that the head
+        // still points at trips a FK constraint failure mid-transaction
+        // and the whole prune rejects. The previous ordering ran node
+        // deletes first and only fixed the head afterward — fine when
+        // `retainBranches: true` protects the head from removal, but
+        // broken on the `retainBranches: false` path used by
+        // `Checkpoint.resetSession()` to wipe a chain on `/clear`.
+        if (plannedHeadOp !== undefined) {
+          if (plannedHeadOp.kind === "delete") {
+            deleteHeadStmt.run(cid);
+          } else {
+            upsertHeadStmt.run({ $chain_id: cid, $node_id: plannedHeadOp.node_id });
+          }
+        }
+
+        // Step 2: now safe to delete chain_members rows and any
+        // snapshot_nodes whose last membership was just removed.
         for (const idx of toRemove) {
           const row = rows[idx];
           if (row === undefined) continue;
@@ -475,24 +535,20 @@ export function createSnapshotStoreSqlite<T>(
 
           removedCount += 1;
         }
-
-        // Update head pointer if it changed:
-        // - all members removed → drop head row
-        // - head member removed → point to newest survivor (or drop)
-        if (removedCount === rows.length) {
-          deleteHeadStmt.run(cid);
-          chainHeads.delete(cid);
-        } else if (toRemove.has(0)) {
-          const newHeadRow = selectNewestSurvivorStmt.get(cid);
-          if (newHeadRow !== null) {
-            upsertHeadStmt.run({ $chain_id: cid, $node_id: newHeadRow.node_id });
-            chainHeads.set(cid, newHeadRow.node_id);
-          } else {
-            deleteHeadStmt.run(cid);
-            chainHeads.delete(cid);
-          }
-        }
       })();
+
+      // Transaction committed successfully — NOW apply the in-memory
+      // cache mutation. If `db.transaction(...)()` had thrown above,
+      // execution would have unwound to the outer `catch (e)` and we
+      // would never reach this point, so the cache stays in sync with
+      // the rolled-back SQL state.
+      if (plannedHeadOp !== undefined) {
+        if (plannedHeadOp.kind === "delete") {
+          chainHeads.delete(cid);
+        } else {
+          chainHeads.set(cid, plannedHeadOp.node_id);
+        }
+      }
 
       // Mark-and-sweep blob GC. Runs OUTSIDE the transaction because
       // filesystem ops cannot be rolled back by SQL. Idempotent — a crash
