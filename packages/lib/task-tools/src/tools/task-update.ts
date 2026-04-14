@@ -34,7 +34,10 @@ const schema = z.object({
   output: z
     .string()
     .optional()
-    .describe("Required when status = 'completed'. Summary of what was accomplished."),
+    .describe(
+      "Summary of what was accomplished when status = 'completed'. " +
+        "Defaults to the task subject if omitted.",
+    ),
   results: z
     .record(z.string(), z.unknown())
     .optional()
@@ -142,14 +145,13 @@ async function handleComplete(
         "Create the ManagedTaskBoard with a resultsDir so completed outputs survive restarts.",
     );
   }
-  if (output === undefined || output.trim() === "") {
-    return errorResponse(
-      "status 'completed' requires a non-empty 'output' field summarizing what was accomplished",
-    );
-  }
+  // Default output to the task subject when omitted — avoids re-prompt friction
+  // (#1785) while still producing a meaningful result summary.
+  const resolvedOutput =
+    output !== undefined && output.trim() !== "" ? output : `Completed: ${task.subject}`;
   const taskResult: TaskResult = {
     taskId: id,
-    output,
+    output: resolvedOutput,
     durationMs: computeDurationMs(task),
     ...(results !== undefined ? { results } : {}),
   };
