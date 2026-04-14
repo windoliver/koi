@@ -87,11 +87,9 @@ import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-ba
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import {
+  buildCoreMiddleware,
   buildCoreProviders,
-  buildHookMw,
   buildPluginMcpSetup,
-  buildSessionTranscriptMw,
-  buildSystemPromptMw,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   type McpSetup,
@@ -662,15 +660,10 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   };
 
   const hasPromptHooks = allHooks.some((rh) => rh.hook.kind === "prompt");
-  // Shared factory wrapper — see `shared-wiring.ts#buildHookMw`. Any new
-  // option added to `createHookMiddleware` flows through there so both
-  // `koi start` and `koi tui` pick it up with one edit. TUI uses the
-  // always-present variant so the hook-observer tap still records trace
-  // spans even when no user hooks are registered.
-  const hookMw = buildHookMw(allHooks, {
-    ...(hasPromptHooks ? { promptCallFn } : {}),
-    onExecuted: hookObserverTap,
-  });
+  // Hook middleware is built below via `buildCoreMiddleware` (the
+  // shared slot factory). Declaring it here would duplicate the
+  // construction — the downstream `allMiddleware` array reads
+  // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
   // Default mode: read-only tools are pre-allowed; shell/network/write tools
@@ -994,20 +987,35 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   });
 
-  // --- System prompt + session transcript middleware ---
-  // Both wired via shared-wiring.ts so `koi start` and `koi tui` pick up
-  // any change to the factory signatures in one place.
-  //
-  // System prompt must be built before spawnToolProvider so children can
-  // inherit it. Session transcript is NOT inherited — it holds a mutable
-  // transcript array that must be isolated per-runtime; children should
-  // never write into the parent's transcript.
-  const systemPromptMw = buildSystemPromptMw(config.systemPrompt);
-  const sessionTranscriptMw = buildSessionTranscriptMw(config.session);
-  const optionalMiddleware = [
-    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
-    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
-  ];
+  // --- Core middleware slots (shared with `koi start`) ---
+  // `buildCoreMiddleware` is the single source of truth for the
+  // permissions / hook / system-prompt / session-transcript factory
+  // calls. Each host splices the slots into its own middleware order
+  // below. System prompt must be built before spawnToolProvider so
+  // children can inherit it; session transcript is NOT inherited
+  // (per-runtime mutable state).
+  const coreSlots = buildCoreMiddleware({
+    permissionsMiddleware: permMw,
+    hooks: allHooks,
+    hookExtras: {
+      ...(hasPromptHooks ? { promptCallFn } : {}),
+      onExecuted: hookObserverTap,
+    },
+    forceHookSlot: true,
+    ...(config.systemPrompt !== undefined ? { systemPrompt: config.systemPrompt } : {}),
+    ...(config.session !== undefined ? { session: config.session } : {}),
+  });
+  // Local aliases kept so the downstream trace-wrap array literal and
+  // spawn `inheritedMiddleware` array read the same as before.
+  // `forceHookSlot: true` above makes `coreSlots.hook` guaranteed
+  // non-undefined; the runtime check preserves that invariant without
+  // a non-null assertion (banned by CLAUDE.md).
+  if (coreSlots.hook === undefined) {
+    throw new Error("tui-runtime: coreSlots.hook is undefined despite forceHookSlot:true");
+  }
+  const hookMw = coreSlots.hook;
+  const systemPromptMw = coreSlots.systemPrompt;
+  const sessionTranscriptMw = coreSlots.sessionTranscript;
 
   // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
   // Uses createAgentResolver (built-in + project/user definitions) + createSpawnToolProvider.
@@ -1131,7 +1139,8 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     ...(goalMw !== undefined ? [goalMw] : []),
     ...(otelHandle !== undefined ? [otelHandle.middleware] : []),
     checkpointMw,
-    ...optionalMiddleware,
+    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
+    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
   ];
   // Monotonic counter for trace timestamps — avoids ATIF store batch dedup
   // when multiple MW spans complete within the same Date.now() millisecond.

@@ -47,11 +47,9 @@ import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
 import { loadPluginComponents } from "../plugin-activation.js";
 import {
+  buildCoreMiddleware,
   buildCoreProviders,
-  buildHookMwOrUndefined,
   buildPluginMcpSetup,
-  buildSessionTranscriptMw,
-  buildSystemPromptMw,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   type McpSetup,
@@ -301,17 +299,19 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // entry to the JSONL session log, so a later `koi start --resume <id>`
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
-  const sessionTranscriptMiddleware = isLoopMode
-    ? undefined
-    : buildSessionTranscriptMw({ transcript: jsonlTranscript, sessionId: sid });
-  const hookMiddleware = buildHookMwOrUndefined(allHooks);
-  const systemPromptMiddleware = buildSystemPromptMw(manifestInstructions);
-
+  const slots = buildCoreMiddleware({
+    permissionsMiddleware: buildPermissionsMiddleware(),
+    hooks: allHooks,
+    systemPrompt: manifestInstructions,
+    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+  });
+  // CLI middleware order (outermost → innermost):
+  //   session-transcript → permissions → hook → system-prompt
   const middleware: KoiMiddleware[] = [
-    ...(sessionTranscriptMiddleware !== undefined ? [sessionTranscriptMiddleware] : []),
-    buildPermissionsMiddleware(),
-    ...(hookMiddleware !== undefined ? [hookMiddleware] : []),
-    ...(systemPromptMiddleware !== undefined ? [systemPromptMiddleware] : []),
+    ...(slots.sessionTranscript !== undefined ? [slots.sessionTranscript] : []),
+    slots.permissions,
+    ...(slots.hook !== undefined ? [slots.hook] : []),
+    ...(slots.systemPrompt !== undefined ? [slots.systemPrompt] : []),
   ];
 
   // ---------------------------------------------------------------------------

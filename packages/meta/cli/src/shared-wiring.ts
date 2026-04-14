@@ -381,6 +381,77 @@ export function buildHookMwOrUndefined(
 }
 
 // ---------------------------------------------------------------------------
+// Shared core KoiMiddleware slots
+//
+// Both hosts need permissions + hook + system-prompt + session-transcript
+// middleware, but they splice them into different positions in their
+// full middleware array:
+//   CLI:  [sessionTranscript, perm, hook, systemPrompt]         (perm → hook)
+//   TUI:  [eventTrace, hook, hookObserver, rules, perm, exfil,  (hook → perm)
+//          extract, semanticRetry, ..., systemPrompt, sessionTranscript]
+//
+// Rather than emit one ordered array that fits neither, this helper
+// returns a tagged record of the slots. Each host composes the slots
+// into its own middleware order. Adding a new core middleware type =
+// one new slot on this record + one splice point in each host (still
+// two edits, but the factory construction lives in one file).
+// ---------------------------------------------------------------------------
+
+export interface CoreMiddlewareConfig {
+  /**
+   * Permissions middleware — callers construct it with their own
+   * PermissionBackend (CLI: auto-allow pattern backend; TUI: default
+   * mode with tiered allow rules) because the backend shape drifts
+   * too far to share.
+   */
+  readonly permissionsMiddleware: KoiMiddleware;
+  /** Already-merged hook list (user + plugin, tier-tagged). */
+  readonly hooks: readonly RegisteredHook[];
+  /** Host-specific extras for `createHookMiddleware` (promptCallFn, onExecuted). */
+  readonly hookExtras?: Omit<CreateHookMiddlewareOptions, "hooks"> | undefined;
+  /**
+   * When true, always install a hook-middleware slot even for empty
+   * hook sets. Hosts with an observer tap (TUI records trace spans
+   * through `onExecuted`) need the slot to stay; plain CLI omits it.
+   */
+  readonly forceHookSlot?: boolean;
+  /** Optional system prompt; omitted → no system-prompt middleware. */
+  readonly systemPrompt?: string | undefined;
+  /** Optional session transcript; omitted → no session-transcript middleware. */
+  readonly session?:
+    | { readonly transcript: SessionTranscript; readonly sessionId: SessionId }
+    | undefined;
+}
+
+/** Tagged slot record — each slot is `undefined` when its config opts out. */
+export interface CoreMiddlewareSlots {
+  readonly permissions: KoiMiddleware;
+  readonly hook: KoiMiddleware | undefined;
+  readonly systemPrompt: KoiMiddleware | undefined;
+  readonly sessionTranscript: KoiMiddleware | undefined;
+}
+
+/**
+ * Build the core middleware slots both hosts consume. The caller
+ * composes these into its own middleware array in whatever order it
+ * needs (CLI: outermost → innermost; TUI: wrapped in event-trace /
+ * checkpoint / etc). A new core middleware type lands here as a new
+ * slot and gains one-place maintenance.
+ */
+export function buildCoreMiddleware(config: CoreMiddlewareConfig): CoreMiddlewareSlots {
+  const hookMw =
+    config.forceHookSlot === true
+      ? buildHookMw(config.hooks, config.hookExtras)
+      : buildHookMwOrUndefined(config.hooks, config.hookExtras);
+  return {
+    permissions: config.permissionsMiddleware,
+    hook: hookMw,
+    systemPrompt: buildSystemPromptMw(config.systemPrompt),
+    sessionTranscript: buildSessionTranscriptMw(config.session),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Shared core ComponentProviders
 //
 // The "core" set is the provider stack both `koi start` and `koi tui` should
