@@ -382,6 +382,10 @@ web_search returns:
   ]
 ```
 
+`web_fetch` tool results also include a `cached: boolean` field so callers
+(and TUI chips) can distinguish a network fetch from an LRU cache hit
+without inferring it from latency.
+
 ---
 
 ## Error Handling

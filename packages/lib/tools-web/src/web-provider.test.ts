@@ -25,6 +25,7 @@ function createMockExecutor(): WebExecutor {
         body: "ok",
         truncated: false,
         finalUrl: "https://example.com",
+        cached: false,
       },
     }),
     search: async (): Promise<Result<readonly WebSearchResult[], KoiError>> => ({
