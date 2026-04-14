@@ -30,11 +30,13 @@ import type { ComponentProvider, KoiMiddleware, ModelAdapter, SessionTranscript 
 import type { CreateHookMiddlewareOptions } from "@koi/hooks";
 import { checkpointStack } from "./preset-stacks/checkpoint.js";
 import { executionStack } from "./preset-stacks/execution.js";
+import { mcpStack } from "./preset-stacks/mcp.js";
 import { memoryStack } from "./preset-stacks/memory.js";
 import { notebookStack } from "./preset-stacks/notebook.js";
 import { observabilityStack } from "./preset-stacks/observability.js";
 import { rulesStack } from "./preset-stacks/rules.js";
 import { skillsStack } from "./preset-stacks/skills.js";
+import { spawnStack } from "./preset-stacks/spawn.js";
 
 /**
  * Runtime-neutral context passed to every preset stack during activation.
@@ -130,17 +132,48 @@ export interface StackContribution {
   readonly hasActiveWork?: (() => boolean) | undefined;
 }
 
+/**
+ * Activation phase for a preset stack.
+ *
+ * - `"early"` (default) — runs BEFORE the factory builds its core
+ *   middleware (permissions, hook, system-prompt, session-transcript).
+ *   Early stacks can contribute `hookExtras` (e.g. observability's
+ *   observer tap) and export state the factory reads (trajectoryStore,
+ *   bashHandle, checkpointHandle).
+ * - `"late"` — runs AFTER the core middleware is assembled. Late
+ *   stacks read the already-built middleware from the context's
+ *   `host` bag under the `LATE_PHASE_HOST_KEYS` names, so features
+ *   that need cross-cutting references (spawn's `inheritedMiddleware`
+ *   for child agent policy propagation) can compose cleanly.
+ */
+export type StackPhase = "early" | "late";
+
 /** A preset stack definition. */
 export interface PresetStack {
   /** Stable stack id — used for opt-out config and trace labelling. */
   readonly id: string;
   /** Short human description — shown in `--debug` runtime dumps. */
   readonly description: string;
+  /**
+   * Activation phase. Omit or set to `"early"` for the default pass.
+   * Late-phase stacks need references to already-composed middleware.
+   */
+  readonly phase?: StackPhase | undefined;
   /** Assemble this stack's contribution for the given context. */
   readonly activate: (
     ctx: StackActivationContext,
   ) => Promise<StackContribution> | StackContribution;
 }
+
+/**
+ * Well-known keys used by late-phase stacks to read built middleware
+ * from `ctx.host`. The factory populates these after running the
+ * early-phase activation and building its core middleware.
+ */
+export const LATE_PHASE_HOST_KEYS = {
+  /** The already-composed inherited middleware for spawn child agents. */
+  inheritedMiddleware: "inheritedMiddleware",
+} as const;
 
 /**
  * The default stack registry. New features register a `PresetStack`
@@ -163,10 +196,43 @@ export const DEFAULT_STACKS: readonly PresetStack[] = [
   executionStack,
   checkpointStack,
   memoryStack,
+  mcpStack,
   notebookStack,
   rulesStack,
   skillsStack,
+  // Late-phase: spawn needs already-composed middleware for child
+  // inheritance. The factory runs two `activateStacks` passes —
+  // early (everything above) then late (spawn) — populating
+  // `ctx.host[LATE_PHASE_HOST_KEYS.inheritedMiddleware]` in between.
+  spawnStack,
 ];
+
+/**
+ * Merge two `ActivatedStacks` aggregates (early + late phase) into one.
+ *
+ * Ordering: early contributions come first within each list, late
+ * second. Exports are merged with late keys overriding early keys on
+ * conflict (late phase sees the fully-assembled runtime so its view
+ * is canonical if a key collides). Observability's `onExecuted` tap
+ * is always early-phase, so the late-phase `hookExtras` contribution
+ * is ignored here — merging observer taps across phases would
+ * require rebuilding the hook middleware, which defeats the point
+ * of a late phase.
+ */
+export function mergeStackContributions(
+  early: ActivatedStacks,
+  late: ActivatedStacks,
+): ActivatedStacks {
+  return {
+    middleware: [...early.middleware, ...late.middleware],
+    providers: [...early.providers, ...late.providers],
+    hookExtras: early.hookExtras,
+    exports: { ...early.exports, ...late.exports },
+    resetSessionHooks: [...early.resetSessionHooks, ...late.resetSessionHooks],
+    shutdownHooks: [...early.shutdownHooks, ...late.shutdownHooks],
+    activeWorkPredicates: [...early.activeWorkPredicates, ...late.activeWorkPredicates],
+  };
+}
 
 /**
  * The aggregated output of `activateStacks`. All per-stack contributions
@@ -203,19 +269,26 @@ export interface ActivatedStacks {
  *
  * `enabled` filters by stack id — callers pass `undefined` (default)
  * to activate every stack in the registry, or a set of ids to opt
- * into a subset. Stacks are activated sequentially so activation
- * side effects (filesystem creation, resolver registration) happen
- * in a deterministic order.
+ * into a subset. `phase` filters by stack phase; omitting it activates
+ * every phase. Stacks are activated sequentially so activation side
+ * effects (filesystem creation, resolver registration) happen in a
+ * deterministic order.
+ *
+ * Callers that split activation across phases pass the same `enabled`
+ * set on every call so a user's `manifest.stacks: [foo, bar]` opt-in
+ * applies consistently regardless of which phase a stack lives in.
  */
 export async function activateStacks(
   ctx: StackActivationContext,
   options?: {
     readonly stacks?: readonly PresetStack[];
     readonly enabled?: ReadonlySet<string>;
+    readonly phase?: StackPhase | undefined;
   },
 ): Promise<ActivatedStacks> {
   const stacks = options?.stacks ?? DEFAULT_STACKS;
   const enabled = options?.enabled;
+  const phase = options?.phase;
   const middleware: KoiMiddleware[] = [];
   const providers: ComponentProvider[] = [];
   const exports: Record<string, unknown> = {};
@@ -229,6 +302,8 @@ export async function activateStacks(
 
   for (const stack of stacks) {
     if (enabled !== undefined && !enabled.has(stack.id)) continue;
+    const stackPhase: StackPhase = stack.phase ?? "early";
+    if (phase !== undefined && stackPhase !== phase) continue;
     const contribution = await stack.activate(ctx);
     middleware.push(...contribution.middleware);
     providers.push(...contribution.providers);

@@ -30,7 +30,6 @@
 import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
-import { createAgentResolver } from "@koi/agent-runtime";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
@@ -47,7 +46,7 @@ import { agentId as makeAgentId } from "@koi/core";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
-import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
+import { createKoi } from "@koi/engine";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createGoalMiddleware } from "@koi/middleware-goal";
@@ -56,20 +55,16 @@ import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
-import { runTurn } from "@koi/query-engine";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { composeRuntimeMiddleware } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
-import { activateStacks } from "./preset-stacks.js";
+import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
-  buildPluginMcpSetup,
-  loadUserMcpSetup,
   loadUserRegisteredHooks,
-  type McpSetup,
   mergeUserAndPluginHooks,
 } from "./shared-wiring.js";
 
@@ -480,20 +475,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
   const configHotReload = await setupConfigHotReload();
 
-  // --- MCP setup (optional, from .mcp.json) ---
-  const mcpSetup = await loadUserMcpSetup(cwd, skillsRuntime);
-
   // --- Plugin activation: load enabled plugins' hooks, MCP, skills ---
+  // Stays inline because it feeds BOTH the pre-stack hook merge AND
+  // the MCP stack's server list — it's host bootstrap, not a
+  // feature bundle. The MCP preset stack consumes its outputs via
+  // `ctx.host[PLUGIN_MCP_SERVERS_HOST_KEY]`.
   const pluginUserRoot = join(homedir(), ".koi", "plugins");
   const pluginComponents = await loadPluginComponents(pluginUserRoot);
   if (pluginComponents.errors.length > 0) {
     for (const err of pluginComponents.errors) {
-      console.warn(`[koi tui] plugin "${err.plugin}": ${err.error}`);
+      console.warn(`[koi/${hostId}] plugin "${err.plugin}": ${err.error}`);
     }
   }
   if (pluginComponents.middlewareNames.length > 0) {
     console.warn(
-      `[koi tui] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+      `[koi/${hostId}] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
     );
   }
 
@@ -501,8 +497,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   if (skillsRuntime !== undefined && pluginComponents.skillMetadata.length > 0) {
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
-
-  const pluginMcpSetup: McpSetup | undefined = buildPluginMcpSetup(pluginComponents.mcpServers);
 
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
@@ -514,39 +508,56 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // wrapper — tracked as a known limitation.
 
   // --- Preset stack activation (v1 `activatePresetStacks` pattern) ---
-  // Activated early so observability / other stacks can contribute
-  // `hookExtras.onExecuted` observer taps BEFORE the main hook
-  // middleware is built. Stacks also export trajectoryStore,
-  // checkpoint handle, bash handle, etc. that the factory reads to
-  // populate the returned KoiRuntimeHandle.
+  // Two-phase activation so feature stacks with cross-cutting
+  // dependencies (spawn needs already-composed middleware for child
+  // inheritance) can compose cleanly:
   //
-  // The execution stack needs a synthetic agent id for task assignment
-  // and a reference to the caller's approval handler for bash
-  // elicit. Both are passed via `ctx.host` — the stack reads
-  // well-known keys defined alongside its source.
+  //   Phase 1 (early, default) — runs BEFORE the core middleware is
+  //     built. Early stacks can contribute `hookExtras.onExecuted`
+  //     observer taps (observability) and export state the factory
+  //     reads (bashHandle, trajectoryStore, checkpointHandle, etc.).
+  //
+  //   Phase 2 (late) — runs AFTER the core middleware is assembled.
+  //     Late stacks read already-built middleware from `ctx.host`
+  //     under `LATE_PHASE_HOST_KEYS`. Spawn is currently the only
+  //     late-phase consumer — it needs permissions/hook/exfil/
+  //     system-prompt for the child inheritance list.
+  //
+  // The execution stack needs a synthetic agent id for task
+  // assignment and a reference to the caller's approval handler for
+  // bash elicit. Both are passed via `ctx.host`.
   const precomputedAgentId = makeAgentId(hostId);
-  const stackContribution = await activateStacks(
-    {
-      cwd,
-      hostId,
-      modelAdapter,
-      ...(config.session !== undefined ? { sessionTranscript: config.session.transcript } : {}),
-      host: {
-        ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
-        ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
-        approvalHandler,
-        agentId: precomputedAgentId,
-      },
-    },
-    config.stacks !== undefined ? { enabled: new Set(config.stacks) } : undefined,
-  );
+  const enabledStackIds = config.stacks !== undefined ? new Set(config.stacks) : undefined;
+  const earlyContextHost: Record<string, unknown> = {
+    ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
+    ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
+    approvalHandler,
+    agentId: precomputedAgentId,
+    modelName,
+    pluginMcpServers: pluginComponents.mcpServers,
+    ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
+  };
+  const earlyContext: import("./preset-stacks.js").StackActivationContext = {
+    cwd,
+    hostId,
+    modelAdapter,
+    ...(config.session !== undefined ? { sessionTranscript: config.session.transcript } : {}),
+    host: earlyContextHost,
+  };
+  const earlyContribution = await activateStacks(earlyContext, {
+    phase: "early",
+    ...(enabledStackIds !== undefined ? { enabled: enabledStackIds } : {}),
+  });
 
   // --- Read observability exports for trace wrapping + handle fields ---
-  const trajectoryStore = stackContribution.exports.trajectoryStore as
+  // Reads from `earlyContribution` because the late phase hasn't run
+  // yet — the late-phase merged `stackContribution` is built further
+  // below, after the core middleware is assembled.
+  const trajectoryStore = earlyContribution.exports.trajectoryStore as
     | import("@koi/core/rich-trajectory").TrajectoryDocumentStore
     | undefined;
   const trajectoryDocId =
-    (stackContribution.exports.trajectoryDocId as string | undefined) ?? "koi-session";
+    (earlyContribution.exports.trajectoryDocId as string | undefined) ?? "koi-session";
 
   // --- @koi/hooks: load hooks from ~/.koi/hooks.json + command hook dispatch ---
   // Same loader the CLI host uses, via ./shared-wiring.ts.
@@ -647,10 +658,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // read the exports here for the fields that feed into buildCoreProviders
   // (bashHandle.tool) and the returned KoiRuntimeHandle (sandboxActive,
   // hasActiveBackgroundTasks, shutdownBackgroundTasks).
-  const bashHandle = stackContribution.exports.bashHandle as
+  const bashHandle = earlyContribution.exports.bashHandle as
     | import("@koi/tools-bash").BashToolHandle
     | undefined;
-  const sandboxActive = (stackContribution.exports.sandboxActive as boolean | undefined) ?? false;
+  const sandboxActive = (earlyContribution.exports.sandboxActive as boolean | undefined) ?? false;
   const _tuiAgentId = precomputedAgentId;
 
   // --- Core providers (search + fs + web + bash) via shared-wiring ---
@@ -718,7 +729,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // onExecuted tap for trajectory recording) with host-specific
     // extras (promptCallFn for prompt hooks).
     hookExtras: {
-      ...stackContribution.hookExtras,
+      ...earlyContribution.hookExtras,
       ...(hasPromptHooks ? { promptCallFn } : {}),
     },
     forceHookSlot: true,
@@ -737,72 +748,29 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const systemPromptMw = coreSlots.systemPrompt;
   const sessionTranscriptMw = coreSlots.sessionTranscript;
 
-  // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
-  // Uses createAgentResolver (built-in + project/user definitions) + createSpawnToolProvider.
-  // The child adapter creates a fresh context per stream() call (no shared transcript)
-  // so siblings cannot see each other's history. Security middleware (permissions,
-  // exfiltration guard, hooks) is inherited so children have the same policy as the parent.
-  const { resolver: spawnResolver, warnings: spawnWarnings } = createAgentResolver({
-    projectDir: config.cwd ?? process.cwd(),
-    userDir: homedir(),
-  });
-  // Surface agent load warnings so users know about broken .koi/agents/ definitions.
-  for (const w of spawnWarnings) {
-    console.warn(`[koi/tui] agent load warning: ${w.filePath}: ${w.error.message}`);
-  }
-  const childAdapter: import("@koi/core").EngineAdapter = {
-    engineId: "koi-tui-child",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: { modelCall: modelAdapter.complete, modelStream: modelAdapter.stream },
-    stream(input) {
-      const handlers = input.callHandlers;
-      if (handlers === undefined) {
-        return (async function* () {
-          yield {
-            kind: "done" as const,
-            output: {
-              content: [],
-              stopReason: "error" as const,
-              metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
-              metadata: { error: "No callHandlers on child agent input" },
-            },
-          };
-        })();
-      }
-      const text = input.kind === "text" ? input.text : "";
-      const messages = [
-        { senderId: "user", timestamp: Date.now(), content: [{ kind: "text" as const, text }] },
-      ];
-      return runTurn({
-        callHandlers: handlers,
-        messages,
-        signal: input.signal,
-        maxTurns: DEFAULT_MAX_TURNS,
-      });
+  // --- Late-phase stack activation (spawn + any future late stacks) ---
+  // Now that the core middleware is built, publish the child-
+  // inheritance list into the late context's `host` bag and fire the
+  // late pass. Spawn reads `LATE_PHASE_HOST_KEYS.inheritedMiddleware`
+  // and composes its child adapter around it.
+  const inheritedMiddlewareForChildren: readonly KoiMiddleware[] = [
+    permMw,
+    exfiltrationGuardMw,
+    hookMw,
+    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
+  ];
+  const lateContext: import("./preset-stacks.js").StackActivationContext = {
+    ...earlyContext,
+    host: {
+      ...earlyContextHost,
+      [LATE_PHASE_HOST_KEYS.inheritedMiddleware]: inheritedMiddlewareForChildren,
     },
   };
-  const spawnToolProvider = createSpawnToolProvider({
-    resolver: spawnResolver,
-    spawnLedger: createInMemorySpawnLedger(5),
-    adapter: childAdapter,
-    manifestTemplate: {
-      name: "spawned-agent",
-      version: "0.0.0",
-      description: "Spawned sub-agent",
-      model: { name: config.modelName },
-      selfCeiling: {
-        tools: ["Glob", "Grep", "fs_read", "ToolSearch"],
-      },
-    },
-    inheritedMiddleware: [
-      permMw,
-      exfiltrationGuardMw,
-      hookMw,
-      ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
-    ],
-    allowDynamicAgents: true,
-    ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
+  const lateContribution = await activateStacks(lateContext, {
+    phase: "late",
+    ...(enabledStackIds !== undefined ? { enabled: enabledStackIds } : {}),
   });
+  const stackContribution = mergeStackContributions(earlyContribution, lateContribution);
 
   // --- Checkpoint handle exported by the checkpoint preset stack ---
   // Read here for the returned KoiRuntimeHandle.checkpoint field.
@@ -859,13 +827,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     adapter: engineAdapter,
     middleware: tracedMiddleware,
     ...(config.session !== undefined ? { sessionId: config.session.sessionId } : {}),
-    providers: [
-      ...coreProviders,
-      spawnToolProvider,
-      ...stackContribution.providers,
-      ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
-      ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
-    ],
+    providers: [...coreProviders, ...stackContribution.providers],
     approvalHandler,
     userId: userInfo().username,
     loopDetection: false,
@@ -995,8 +957,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           );
         }
       }
-      mcpSetup?.dispose();
-      pluginMcpSetup?.dispose();
+      // configHotReload is factory-bootstrap, not a stack feature —
+      // dispose directly.
       configHotReload?.dispose();
       return hadWork;
     },
