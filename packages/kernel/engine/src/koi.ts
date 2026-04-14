@@ -322,11 +322,38 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // #1742: rotated by `cycleSession()` so a host-driven conversation
   // boundary mints a fresh identity. checkpoint chains and other
   // session-keyed durable state are then isolated across /clear.
+  //
+  // `rotateSessionId` lets hosts that supplied their own `sessionId`
+  // format keep ownership of the id lifecycle. When provided, the
+  // callback is invoked on every `cycleSession()` and must return the
+  // next id (stable across rotations is acceptable — e.g. `koi tui`
+  // returns the same user-facing UUID so `/clear` wipes and rewrites
+  // the same JSONL file, keeping the post-quit resume hint valid).
+  // When absent, rotation falls back to minting a fresh composite id
+  // in the default format, matching pre-override behavior.
   // let justified: mutable so cycleSession can rotate the identity
   let factorySessionId: SessionId =
     options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
-  function rotateFactorySessionId(): void {
-    factorySessionId = sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  /**
+   * Eagerly compute the next session id under the host-configured
+   * rotation strategy. Called at the top of `cycleSession()` BEFORE
+   * any destructive lifecycle step so a throwing `rotateSessionId`
+   * callback fails fast and the runtime stays in its pre-cycle
+   * state (as opposed to leaving the onSessionEnd path unwound
+   * with no new id committed). Returns the computed id or throws.
+   */
+  function computeNextFactorySessionId(): SessionId {
+    if (options.rotateSessionId === undefined) {
+      return sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+    }
+    const next = options.rotateSessionId();
+    if (typeof next !== "string" || next.length === 0) {
+      throw new Error("options.rotateSessionId() must return a non-empty SessionId string");
+    }
+    return next;
+  }
+  function commitFactorySessionId(next: SessionId): void {
+    factorySessionId = next;
   }
 
   // --- Session lifecycle (runtime-scoped, NOT per-run) ---
@@ -1553,6 +1580,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         await lifecycleInFlight;
         return;
       }
+      // Pre-compute the next session id BEFORE any destructive step
+      // — including the sessionEpoch bump below. Host `rotateSessionId`
+      // callbacks run arbitrary code; a throw here must NOT leave the
+      // runtime half-cycled (epoch already mutated, in-flight iterables
+      // invalidated, lifecycle flags untouched). Failing here keeps
+      // the runtime in its pre-cycle state — the caller catches the
+      // throw, surfaces "reset failed", and the existing session
+      // remains inspectable AND callable (`run()` keeps working).
+      // The subsequent commit step below can never throw because it
+      // is a plain field assignment.
+      // let justified: captured out of scope for the commit step below
+      let nextFactorySessionId: SessionId;
+      try {
+        nextFactorySessionId = computeNextFactorySessionId();
+      } catch (rotateErr: unknown) {
+        throw KoiRuntimeError.from(
+          "VALIDATION",
+          `cycleSession failed: options.rotateSessionId threw (${
+            rotateErr instanceof Error ? rotateErr.message : String(rotateErr)
+          }). Runtime state unchanged.`,
+          { cause: rotateErr },
+        );
+      }
       // #1742 loop-2 round 7: bump sessionEpoch SYNCHRONOUSLY, before
       // we yield to any await below. This invalidates every iterable
       // created before this point — including any whose first .next()
@@ -1679,7 +1729,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           // `runtime.sessionId` is now a getter, so every caller — including
           // the host's `permMw.clearSessionApprovals(runtime.sessionId)` —
           // automatically picks up the new ID after this point.
-          rotateFactorySessionId();
+          //
+          // #1749: `nextFactorySessionId` was pre-computed above via
+          // `computeNextFactorySessionId()` under the caller's rotation
+          // strategy. Committing here is a plain assignment and cannot
+          // throw, so the onSessionEnd + govCtl teardown above is never
+          // stranded in a half-cycled state.
+          commitFactorySessionId(nextFactorySessionId);
           // #1742 loop-2 round 7: sessionEpoch was already bumped at
           // the synchronous IIFE entry above so stale iterables get
           // rejected as early as possible. No second bump needed here.

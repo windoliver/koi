@@ -495,11 +495,66 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     return state.parentNodeId;
   };
 
+  /**
+   * Reset checkpoint state for a session — evicts the in-memory
+   * `SessionState` and prunes every node in the chain from the
+   * backing store so a subsequent capture bootstraps a fresh chain.
+   *
+   * Intended for hosts that reuse a session id across explicit
+   * conversation boundaries (e.g. `koi tui`'s `/clear` keeps the
+   * session id stable so the JSONL filename and the post-quit
+   * resume hint stay valid, but wants true checkpoint isolation
+   * so `/rewind` after quit + resume cannot walk back into pre-
+   * clear snapshots).
+   *
+   * Safe to call even when no chain exists yet. Pruning errors are
+   * surfaced as a rejected promise so callers can fail-closed
+   * (hosts typically flag the reset as unpersisted and suppress
+   * the resume hint rather than silently advertising a chain that
+   * may still contain pre-clear history).
+   */
+  const resetSession = (sessionId: SessionId): Promise<void> =>
+    // Route through the same per-session serializer rewind uses so
+    // a `/clear` on a reused session id cannot interleave with a
+    // queued or in-flight rewind. Without this gate, an old rewind
+    // could run AFTER the prune (against a freshly bootstrapped
+    // chain) or race the prune mid-transaction — either case
+    // resurrects pre-clear file/snapshot state and breaks the
+    // isolation contract this method exists to enforce. The
+    // serializer also waits for any active tool call via the
+    // shared in-flight tracker, so capture and reset are mutually
+    // exclusive on the same session.
+    serializer.schedule(sessionId, async () => {
+      sessions.delete(sessionId);
+      const cid = chainId(sessionId as unknown as string);
+      // retainCount: 0 + retainBranches: false removes every node,
+      // including the head — the sqlite backend drops the head row
+      // and the in-memory head cache when the last member goes,
+      // leaving the chain empty. The next getOrCreateSession call
+      // will re-bootstrap a fresh root snapshot.
+      const pruneResult = await store.prune(cid, {
+        retainCount: 0,
+        retainBranches: false,
+      });
+      if (!pruneResult.ok) {
+        const cause = pruneResult.error.cause;
+        const causeMsg =
+          cause instanceof Error ? cause.message : cause !== undefined ? String(cause) : undefined;
+        throw new Error(
+          `checkpoint.resetSession(${sessionId}) failed: ${pruneResult.error.message}${
+            causeMsg !== undefined ? ` — ${causeMsg}` : ""
+          }`,
+          { cause: pruneResult.error },
+        );
+      }
+    });
+
   return {
     middleware,
     rewind,
     rewindTo,
     currentHead,
+    resetSession,
   };
 }
 

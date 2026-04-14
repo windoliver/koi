@@ -1220,7 +1220,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
         try {
-          await runtimeHandle?.resetSessionState(idleController.signal);
+          await runtimeHandle?.resetSessionState(idleController.signal, {
+            truncate: shouldTruncate,
+          });
         } catch (resetError: unknown) {
           const message = resetError instanceof Error ? resetError.message : String(resetError);
           store.dispatch({
@@ -1230,6 +1232,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           });
           if (myGeneration === resetGeneration) {
             lastResetFailed = true;
+            // Only mark the persisted clear as failed when this
+            // reset was actually trying to truncate durable state
+            // (`shouldTruncate === true` means /clear or /new with
+            // truncatePersistedTranscript). For non-truncating
+            // resets — picker session switches and rewind reloads
+            // — the JSONL file is intentionally left intact, so a
+            // mid-flight failure has nothing to do with persisted-
+            // clear semantics. Latching `clearPersistFailed` there
+            // would strand a healthy session: subsequent shutdowns
+            // would suppress the resume hint and downstream guards
+            // would block normal submit/fork paths. `lastResetFailed`
+            // above is the right latch for in-memory recovery; it
+            // gates the next reset attempt without poisoning the
+            // file-state contract.
+            //
+            // When this WAS a truncating reset, a hook failure
+            // (AggregateError from the factory) means session-keyed
+            // durable state may be partially intact — e.g. the
+            // checkpoint stack's onResetSession failing to prune
+            // the old chain means `/rewind` after quit+resume
+            // could walk back into pre-clear snapshots. The flag
+            // ensures the post-quit hint is suppressed and the
+            // user is steered toward a fresh restart.
+            if (shouldTruncate) {
+              clearPersistFailed = true;
+            }
           }
           return false;
         }
@@ -1264,13 +1292,64 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     } else {
       // Pre-runtime-ready reset path — `resetConversation` was called
       // before `createKoiRuntime` resolved. Schedule the runtime-scoped
-      // work behind `runtimeReady`.
+      // work behind `runtimeReady` so the same destructive cleanup
+      // pipeline runs as in the post-ready branch above. Without this,
+      // a `koi tui --resume <id>` startup-window `/clear` would
+      // truncate the JSONL but leave the session-keyed checkpoint
+      // chain intact — a later quit + resume could still `/rewind`
+      // into pre-clear snapshots, defeating the isolation contract.
       resetBarrier = (async (): Promise<boolean> => {
         await runtimeReady.catch(() => {
           /* runtime init errors reported upstream */
         });
         const handleAfterReady = ((): KoiRuntimeHandle | null => runtimeHandle)();
-        if (handleAfterReady !== null) {
+        // Fail closed when the runtime never initialized, regardless
+        // of `shouldTruncate`. A non-truncating reset (picker load
+        // or post-rewind in-memory rebuild) on a dead runtime would
+        // otherwise clear visible UI state and report success even
+        // though there's no engine behind the reset — downstream
+        // submits would land on a stale runtime handle, and the
+        // shutdown hint would advertise a session id whose backing
+        // state was never actually rebuilt.
+        if (handleAfterReady === null) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_FAILED",
+            message:
+              "Session reset failed: runtime did not initialize. " +
+              "Visible history preserved. Please restart koi tui to recover.",
+          });
+          if (myGeneration === resetGeneration) {
+            lastResetFailed = true;
+            if (shouldTruncate) clearPersistFailed = true;
+          }
+          return false;
+        }
+        // Runtime is available — run the destructive stack cleanup
+        // (checkpoint chain prune, etc.) for truncating resets.
+        // Non-truncating resets still call resetSessionState so the
+        // engine cycles cleanly; checkpoint hook gates internally
+        // on `truncate: false` to skip pruning.
+        {
+          const idleController = new AbortController();
+          idleController.abort();
+          try {
+            await handleAfterReady.resetSessionState(idleController.signal, {
+              truncate: shouldTruncate,
+            });
+          } catch (resetError: unknown) {
+            const message = resetError instanceof Error ? resetError.message : String(resetError);
+            store.dispatch({
+              kind: "add_error",
+              code: "RESET_FAILED",
+              message: `Session reset failed: ${message}. Visible history preserved. Please restart koi tui to recover.`,
+            });
+            if (myGeneration === resetGeneration) {
+              lastResetFailed = true;
+              if (shouldTruncate) clearPersistFailed = true;
+            }
+            return false;
+          }
           handleAfterReady.transcript.splice(0);
         }
         store.dispatch({ kind: "clear_messages" });

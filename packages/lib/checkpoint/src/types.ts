@@ -240,4 +240,17 @@ export interface Checkpoint {
    * "you are at snapshot X of N."
    */
   readonly currentHead: (sessionId: SessionId) => Promise<NodeId | undefined>;
+  /**
+   * Reset checkpoint state for a session — evicts in-memory state and
+   * prunes every node in the chain from the backing store so a
+   * subsequent capture bootstraps a fresh chain.
+   *
+   * Intended for hosts that reuse a session id across explicit
+   * conversation boundaries (e.g. `koi tui`'s `/clear`) and need
+   * true checkpoint isolation so `/rewind` after quit + resume
+   * cannot walk back into pre-clear snapshots. Rejects if pruning
+   * fails; callers should surface the failure and avoid advertising
+   * the session as cleanly cleared.
+   */
+  readonly resetSession: (sessionId: SessionId) => Promise<void>;
 }

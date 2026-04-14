@@ -26,7 +26,13 @@
  * — the plumbing lands here so each migration is a local change.
  */
 
-import type { ComponentProvider, KoiMiddleware, ModelAdapter, SessionTranscript } from "@koi/core";
+import type {
+  ComponentProvider,
+  KoiMiddleware,
+  ModelAdapter,
+  SessionId,
+  SessionTranscript,
+} from "@koi/core";
 import type { CreateHookMiddlewareOptions } from "@koi/hooks";
 import { checkpointStack } from "./preset-stacks/checkpoint.js";
 import { executionStack } from "./preset-stacks/execution.js";
@@ -115,8 +121,29 @@ export interface StackContribution {
    * state here (bash cwd, bg controller rotation, memory backend wipe,
    * trajectory store prune, approval cache clear). Called sequentially
    * in registration order.
+   *
+   * `resetContext.sessionId` is the CURRENT runtime session id, read
+   * at hook-call time — not a snapshot from stack activation. Stacks
+   * that reset per-session state (checkpoint prunes the chain keyed
+   * on this id) MUST read it from the parameter, because hosts can
+   * call `runtime.rebindSessionId(...)` between activation and
+   * reset (e.g. `koi tui` does this after `/rewind`). A snapshot
+   * captured during activation would target a stale id and leave
+   * the live session's state intact.
+   *
+   * Thrown errors propagate out of `resetSessionState` as an
+   * `AggregateError` after all siblings have had a chance to run —
+   * `/clear` fails closed and surfaces the error to the caller.
    */
-  readonly onResetSession?: ((signal: AbortSignal) => Promise<void> | void) | undefined;
+  readonly onResetSession?:
+    | ((
+        signal: AbortSignal,
+        resetContext: {
+          readonly sessionId: SessionId;
+          readonly truncate: boolean;
+        },
+      ) => Promise<void> | void)
+    | undefined;
   /**
    * Hook fired inside `KoiRuntimeHandle.shutdownBackgroundTasks`.
    * Returns `true` if the stack had live work that needed aborting —
@@ -257,7 +284,13 @@ export interface ActivatedStacks {
    */
   readonly exports: Readonly<Record<string, unknown>>;
   /** All `onResetSession` hooks in activation order. */
-  readonly resetSessionHooks: readonly ((signal: AbortSignal) => Promise<void> | void)[];
+  readonly resetSessionHooks: readonly ((
+    signal: AbortSignal,
+    resetContext: {
+      readonly sessionId: SessionId;
+      readonly truncate: boolean;
+    },
+  ) => Promise<void> | void)[];
   /** All `onShutdown` hooks in activation order. */
   readonly shutdownHooks: readonly (() => boolean)[];
   /** All `hasActiveWork` predicates in activation order. */
@@ -292,7 +325,13 @@ export async function activateStacks(
   const middleware: KoiMiddleware[] = [];
   const providers: ComponentProvider[] = [];
   const exports: Record<string, unknown> = {};
-  const resetSessionHooks: ((signal: AbortSignal) => Promise<void> | void)[] = [];
+  const resetSessionHooks: ((
+    signal: AbortSignal,
+    resetContext: {
+      readonly sessionId: SessionId;
+      readonly truncate: boolean;
+    },
+  ) => Promise<void> | void)[] = [];
   const shutdownHooks: (() => boolean)[] = [];
   const activeWorkPredicates: (() => boolean)[] = [];
   // Collected observer taps from stack hookExtras. Multiple observers

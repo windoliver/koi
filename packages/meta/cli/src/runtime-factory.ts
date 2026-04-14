@@ -324,7 +324,10 @@ export interface KoiRuntimeHandle {
    *    trackers) so prior-session approvals do not silently carry into the new session.
    * 5. Clears the in-memory trajectory store for the new session.
    */
-  readonly resetSessionState: (signal: AbortSignal) => Promise<void>;
+  readonly resetSessionState: (
+    signal: AbortSignal,
+    options?: { readonly truncate?: boolean },
+  ) => Promise<void>;
   /**
    * Abort all in-flight bash_background subprocesses (SIGTERM → SIGKILL).
    *
@@ -936,11 +939,52 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // typable UUID the host minted — rather than the default verbose
   // `agent:{agentId}:{uuid}` form. This is what makes the post-quit resume
   // hint short and copy-pasteable.
+  //
+  // Also pass `rotateSessionId` so `cycleSession()` (fired by
+  // `resetSessionState` on `/clear`/`/new`) preserves the host's
+  // id format. Without this, the engine would mint a default
+  // `agent:{agentId}:{uuid}` on every rotation — the host-owned
+  // JSONL file name, post-quit resume hint, and everything else
+  // keyed off the stable id would silently diverge from where the
+  // session-transcript middleware actually writes subsequent
+  // turns (see `session-transcript.ts` — routing reads
+  // `ctx.session.sessionId`, which is the engine's rotated id).
+  // The rotation callback reads from a mutable ref that tracks
+  // the LIVE session id rather than capturing the construction-
+  // time `sess.sessionId` value. Hosts may call
+  // `runtime.rebindSessionId(...)` between construction and a
+  // later `cycleSession()` (e.g. `koi tui` rebinds after a
+  // successful `/rewind` so future writes land on the rewound
+  // session). With a snapshotted callback, the next `/clear`
+  // would snap the engine back to the original startup id —
+  // checkpoint reset would prune the wrong chain and the live
+  // session's pre-clear snapshots would survive the boundary.
+  // The runtime ref is assigned immediately after `createKoi`
+  // returns; the engine never invokes `rotateSessionId` during
+  // construction, only during a later `cycleSession()`, so the
+  // ref is always populated by the time the callback fires.
+  // let justified: assigned on the line below
+  let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
   const runtime = await createKoi({
     manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
     adapter: engineAdapter,
     middleware: tracedMiddleware,
-    ...(config.session !== undefined ? { sessionId: config.session.sessionId } : {}),
+    ...((): { sessionId: SessionId; rotateSessionId: () => SessionId } | Record<string, never> => {
+      const sess = config.session;
+      if (sess === undefined) return {};
+      return {
+        sessionId: sess.sessionId,
+        rotateSessionId: (): SessionId => {
+          // Read from the live runtime so a prior `rebindSessionId`
+          // is honored. If somehow the callback fires before the
+          // assignment below (it shouldn't — the engine only calls
+          // it from `cycleSession()`, which can't run during
+          // construction), fall back to the construction id.
+          const liveId = runtimeForRotation?.sessionId;
+          return (liveId ?? sess.sessionId) as SessionId;
+        },
+      };
+    })(),
     providers: [...coreProviders, ...stackContribution.providers],
     approvalHandler,
     userId: userInfo().username,
@@ -984,6 +1028,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       },
     },
   });
+  // Hand the live runtime to the rotation closure above. The
+  // engine never invokes `rotateSessionId` during construction
+  // (only from a later `cycleSession()`), so this assignment
+  // happens before any rotation can fire.
+  runtimeForRotation = runtime;
 
   return {
     runtime,
@@ -1013,7 +1062,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       if (trajectoryStore === undefined) return;
       await trajectoryStore.append(trajectoryDocId, [step]);
     },
-    resetSessionState: async (signal: AbortSignal) => {
+    resetSessionState: async (signal: AbortSignal, options?: { readonly truncate?: boolean }) => {
+      // `truncate` signals the host's intent: `true` for destructive
+      // boundaries like `/clear` or `/new` that wipe persisted state,
+      // `false` (or omitted) for non-destructive resets like a picker
+      // session switch or a post-rewind in-memory rebuild. Stacks
+      // that hold per-session durable state (checkpoint chains)
+      // gate destructive cleanup on this flag — pruning the chain
+      // on a picker load or a successful rewind would silently
+      // erase history the user explicitly opted to keep.
+      const truncate = options?.truncate === true;
       // C4-A: Fail fast if caller forgot to abort the active run first.
       if (!signal.aborted) {
         throw new Error(
@@ -1043,23 +1101,62 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       //    the bgController, waits for subprocess drain, resets bash
       //    CWD, rotates the controller, and atomically swaps the task
       //    board. Run sequentially so failures stay isolated but
-      //    ordered; swallow individual errors so one wedged stack can't
-      //    block siblings.
+      //    ordered.
+      //
+      //    Collect errors from each hook instead of swallowing them.
+      //    Every sibling still gets a chance to run (one wedged stack
+      //    must not block the others) but a non-empty error list makes
+      //    this function fail closed — the host catches the throw,
+      //    flags the reset as unpersisted, and suppresses downstream
+      //    affordances like the post-quit resume hint. Load-bearing
+      //    for stacks whose state carries cross-boundary invariants:
+      //    e.g. the checkpoint stack prunes the on-disk chain so
+      //    `/rewind` after quit+resume cannot walk back into pre-
+      //    clear snapshots; a swallowed prune failure would report
+      //    `/clear` as successful while leaving the snapshots intact.
+      //
+      //    `resetContext.sessionId` is the LIVE runtime session id
+      //    read at hook-call time. Callers may have invoked
+      //    `runtime.rebindSessionId` between stack activation and
+      //    reset (e.g. `koi tui` rebinds after `/rewind`), so a
+      //    snapshot captured during activation is not safe here.
+      const resetContext = {
+        sessionId: runtime.sessionId as SessionId,
+        truncate,
+      } as const;
+      const hookErrors: unknown[] = [];
       for (const hook of stackContribution.resetSessionHooks) {
         try {
-          await hook(signal);
+          await hook(signal, resetContext);
         } catch (hookErr) {
           console.warn(
             `[koi/${hostId}] preset stack onResetSession hook failed: ${
               hookErr instanceof Error ? hookErr.message : String(hookErr)
             }`,
           );
+          hookErrors.push(hookErr);
         }
       }
 
       // 3. Clear the OLD session's approval state (always-allow, caches,
       //    trackers). Not a stack concern — permissions is a core slot.
+      //    Always runs even if a hook failed — approval state is cheap
+      //    to clear and leaving it stale after a partial reset would
+      //    leak cross-session grants.
       permMw.clearSessionApprovals(priorSessionId);
+
+      // 4. If any hook failed, fail closed. `AggregateError` is the
+      //    standard JS primitive for "multiple errors from sibling
+      //    operations". The host's reset barrier catches this and
+      //    flips `clearPersistFailed` so the post-quit resume hint
+      //    is suppressed / the UI surfaces "reset may be incomplete".
+      if (hookErrors.length > 0) {
+        throw new AggregateError(
+          hookErrors,
+          `resetSessionState: ${hookErrors.length} preset stack reset hook(s) failed. ` +
+            "Runtime state may be partially cleaned — host should flag this reset as unpersisted.",
+        );
+      }
     },
     hasActiveBackgroundTasks: () =>
       stackContribution.activeWorkPredicates.some((predicate) => predicate()),

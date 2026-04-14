@@ -171,6 +171,26 @@ export interface CreateKoiOptions {
    * works on top of this knob).
    */
   readonly sessionId?: SessionId;
+  /**
+   * Optional host-controlled session-id rotation strategy.
+   *
+   * `cycleSession()` (invoked by hosts on conversation boundaries
+   * like `koi tui`'s `/clear`) rotates the factory-scoped session id
+   * so checkpoint chains and other session-keyed durable state are
+   * isolated across resets. By default, rotation mints a fresh
+   * composite id in the `agent:{agentId}:{uuid}` format.
+   *
+   * Hosts that supplied their own `sessionId` via the option above
+   * usually want to keep that format alive across rotations — e.g.
+   * `koi tui` prints the session id in its post-quit resume hint
+   * and keys its JSONL file on it. They pass a callback that returns
+   * the next id (stable across calls is fine: returning the same
+   * host-owned UUID each time makes `/clear` wipe-and-rewrite the
+   * same file, preserving the resume contract).
+   *
+   * When absent, rotation falls back to the default composite form.
+   */
+  readonly rotateSessionId?: () => SessionId;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
