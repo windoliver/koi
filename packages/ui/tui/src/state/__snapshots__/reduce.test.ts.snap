@@ -45,6 +45,7 @@ exports[`createInitialState initial state shape 1`] = `
   "runningToolCount": 0,
   "sessionInfo": null,
   "sessions": [],
+  "showThinking": true,
   "siblingInfo": null,
   "slashQuery": null,
   "toolsExpanded": false,
