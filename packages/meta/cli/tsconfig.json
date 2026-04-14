@@ -18,6 +18,8 @@
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../runtime" },
+    { "path": "../../security/middleware-audit" },
+    { "path": "../../security/audit-sink-ndjson" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/context-manager" },
     { "path": "../../mm/token-estimator" }

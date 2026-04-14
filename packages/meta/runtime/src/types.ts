@@ -8,6 +8,7 @@ import type {
   AgentResolver,
   ApprovalHandler,
   AuditSink,
+  BrowserDriver,
   ChannelAdapter,
   ChannelCapabilities,
   ComponentProvider,
@@ -21,12 +22,16 @@ import type {
   RichTrajectoryStep,
   SpawnLedger,
   ToolDescriptor,
+  ToolPolicy,
   TrajectoryDocumentStore,
 } from "@koi/core";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import type { SpawnPolicy } from "@koi/engine-compose";
+import type { LspClient, LspProviderConfig, LspServerFailure } from "@koi/lsp";
+import type { MemoryStore, MemoryStoreConfig } from "@koi/memory-fs";
 import type { ExfiltrationGuardConfig } from "@koi/middleware-exfiltration-guard";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
+import type { BrowserOperation } from "@koi/tool-browser";
 
 // ---------------------------------------------------------------------------
 // Runtime configuration
@@ -337,6 +342,80 @@ export interface RuntimeConfig {
    * Ignored if a middleware named "model-router" is already in `middleware`.
    */
   readonly modelRouterMiddleware?: KoiMiddleware | undefined;
+
+  /**
+   * Audit middleware configuration. When provided, wires `@koi/middleware-audit`
+   * with the selected sink into the middleware chain (observe phase).
+   *
+   * `sink` accepts:
+   *   - `{ kind: "ndjson", filePath, ... }` — construct an NDJSON file sink
+   *     via `@koi/audit-sink-ndjson`.
+   *   - `{ kind: "sqlite", dbPath, ... }` — construct a SQLite sink via
+   *     `@koi/audit-sink-sqlite`.
+   *   - A pre-built `AuditSink` — use directly (caller owns lifecycle).
+   *
+   * When omitted, no audit middleware is installed.
+   */
+  readonly audit?:
+    | {
+        readonly sink:
+          | {
+              readonly kind: "ndjson";
+              readonly filePath: string;
+              readonly flushIntervalMs?: number | undefined;
+            }
+          | {
+              readonly kind: "sqlite";
+              readonly dbPath: string;
+              readonly flushIntervalMs?: number | undefined;
+              readonly maxBufferSize?: number | undefined;
+            }
+          | AuditSink;
+        readonly maxQueueDepth?: number | undefined;
+        readonly signing?: boolean | undefined;
+        readonly redactRequestBodies?: boolean | undefined;
+      }
+    | undefined;
+
+  /**
+   * Browser tool provider configuration. When provided, wires `@koi/tool-browser`
+   * and exposes the resulting `ComponentProvider` on `RuntimeHandle.browserProvider`
+   * so callers can pass it to `createKoi({ providers })`.
+   *
+   * `backend` must be unshared per runtime: `@koi/tool-browser`'s provider
+   * disposes the backend when its internal ref-count reaches zero during
+   * `createKoi().dispose()`. A driver passed to two runtimes would be torn
+   * down the first time either one detaches. Construct a fresh
+   * `BrowserDriver` via `@koi/browser-playwright` (or equivalent) per
+   * runtime instance.
+   */
+  readonly browser?:
+    | {
+        readonly backend: BrowserDriver;
+        readonly operations?: readonly BrowserOperation[] | undefined;
+        readonly prefix?: string | undefined;
+        readonly policy?: ToolPolicy | undefined;
+        readonly isUrlAllowed?: ((url: string) => boolean | Promise<boolean>) | undefined;
+      }
+    | undefined;
+
+  /**
+   * LSP tool provider configuration. When provided, `@koi/lsp`'s
+   * `createLspComponentProvider` is invoked asynchronously. The resulting promise
+   * is exposed on `RuntimeHandle.lspProvider` — callers `await` it before passing
+   * `.provider` to `createKoi({ providers })`, and inspect `.failures` for any
+   * servers that failed to start.
+   */
+  readonly lsp?: LspProviderConfig | undefined;
+
+  /**
+   * File-based memory store configuration. When provided, `@koi/memory-fs`'s
+   * `createMemoryStore` is invoked and the resulting `MemoryStore` is exposed on
+   * `RuntimeHandle.memoryStore`. A `MemoryToolBackend` adapter that plugs this
+   * store into `@koi/memory-tools` is tracked as follow-up work; for now callers
+   * wanting memory tools can use the in-memory preset or provide their own adapter.
+   */
+  readonly memoryFs?: MemoryStoreConfig | undefined;
 }
 
 /** Default stream timeout: 2 minutes for live API calls. */
@@ -463,6 +542,45 @@ export interface RuntimeHandle {
         readonly reportStore?: ReportStore | undefined;
       }) => DecisionLedgerReader)
     | undefined;
+
+  /**
+   * Browser tool ComponentProvider. Only populated when `config.browser` is
+   * provided. Pass to `createKoi({ providers: [handle.browserProvider] })` to
+   * register browser tools (snapshot, navigate, click, etc.) on the agent.
+   *
+   * Declared optional so downstream mocks / test harnesses built against
+   * older `RuntimeHandle` definitions keep compiling without requiring a
+   * coordinated update to every mock.
+   */
+  readonly browserProvider?: ComponentProvider | undefined;
+
+  /**
+   * LSP tool provider thunk. Only populated when `config.lsp` is provided.
+   *
+   * Call it to start language-server subprocesses on demand and await the
+   * returned promise before passing `.provider` to `createKoi({ providers })`.
+   * The returned value also exposes `.failures` (servers that failed to
+   * start) and `.clients` (underlying LspClient[] for advanced lifecycle
+   * management — usually `runtime.dispose()` handles cleanup).
+   *
+   * Startup is lazy so a runtime created and disposed without ever asking
+   * for LSP tools does not spawn subprocesses that outlive `dispose()`.
+   * Repeated calls return the same cached promise.
+   */
+  readonly lspProvider?:
+    | (() => Promise<{
+        readonly provider: ComponentProvider;
+        readonly clients: readonly LspClient[];
+        readonly failures: readonly LspServerFailure[];
+      }>)
+    | undefined;
+
+  /**
+   * File-based memory store. Only populated when `config.memoryFs` is provided.
+   * Exposes the raw `MemoryStore` CRUD surface; a `MemoryToolBackend` adapter
+   * for `@koi/memory-tools` is tracked as follow-up work.
+   */
+  readonly memoryStore?: MemoryStore | undefined;
 
   /** Dispose all resources. */
   readonly dispose: () => Promise<void>;

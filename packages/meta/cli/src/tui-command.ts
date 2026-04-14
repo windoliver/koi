@@ -954,6 +954,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
     // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
     ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
+    // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
+    // every model/tool call is recorded as a hash-chained NDJSON entry.
+    ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
+      ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+      : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

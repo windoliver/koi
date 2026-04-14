@@ -1,8 +1,12 @@
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import { type Checkpoint, createCheckpoint } from "@koi/checkpoint";
 import type {
   ApprovalHandler,
+  AuditSink,
   ChannelAdapter,
+  ComponentProvider,
   ComposedCallHandlers,
   EngineAdapter,
   EngineEvent,
@@ -27,6 +31,10 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import { createInMemorySpawnLedger, createSpawnToolProvider } from "@koi/engine";
 import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
+import { createLspComponentProvider } from "@koi/lsp";
+import { createMemoryStore, type MemoryStore } from "@koi/memory-fs";
+import { createAuditMiddleware } from "@koi/middleware-audit";
+import { createBrowserProvider } from "@koi/tool-browser";
 
 // Process-wide shared spawn ledger — all runtimes on this process account against
 // the same cap when no explicit shared ledger is provided via RuntimeConfig.spawnLedger.
@@ -162,329 +170,652 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       : undefined;
   const checkpointMw = checkpointHandle?.middleware;
 
-  const baseMiddleware: readonly KoiMiddleware[] = [
-    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
-    ...(checkpointMw !== undefined ? [checkpointMw] : []),
-    ...resolvedMiddleware,
-  ];
-
-  // Install exfiltration guard by default when: (1) not explicitly disabled,
-  // (2) not already provided, and (3) the adapter has terminals so the intercept
-  // phase won't be silently bypassed. Stub adapters have no terminals.
-  const providedNames = new Set(baseMiddleware.map((mw) => mw.name));
-  const exfiltrationRequested =
-    config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
-  const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
-  // Fail closed when the user explicitly requested the guard but the adapter can't support it.
-  // The implicit default (config.exfiltrationGuard === undefined) on stub adapters is fine —
-  // that's the normal test/default path and silently skips installation.
-  if (
-    exfiltrationRequested &&
-    !canInstallExfiltrationGuard &&
-    config.exfiltrationGuard !== undefined
-  ) {
-    throw new Error(
-      "Exfiltration guard explicitly requested but adapter has no terminals — " +
-        "intercept-phase middleware cannot be composed. Use an adapter with terminals " +
-        "or pass exfiltrationGuard: false to disable.",
-    );
-  }
-  const afterExfiltration: readonly KoiMiddleware[] =
-    exfiltrationRequested && canInstallExfiltrationGuard
-      ? [
-          ...baseMiddleware,
-          createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
-        ]
-      : baseMiddleware;
-
-  // Append model-router as the innermost model-call interceptor (after exfiltration
-  // guard and semantic-retry) so each retry attempt independently benefits from
-  // provider failover. Skip when already provided in config.middleware by name.
-  const hasModelRouter = new Set(afterExfiltration.map((mw) => mw.name)).has("model-router");
-  const middleware: readonly KoiMiddleware[] =
-    config.modelRouterMiddleware !== undefined && !hasModelRouter
-      ? [...afterExfiltration, config.modelRouterMiddleware]
-      : afterExfiltration;
-
-  const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
-  // Filesystem: strict host opt-in only.
-  // config.filesystem === false is a kill switch; undefined means no filesystem.
-  // Manifest.filesystem exists in L0 for the full createKoi() assembly path
-  // but is NOT honored here — createRuntime() requires explicit host config.
+  // Audit middleware (@koi/middleware-audit). When config.audit is provided,
+  // construct the selected sink and install the middleware in the observe phase.
+  // Skipped if a middleware named "audit" is already supplied by the caller.
+  // The returned handle is retained so dispose() can flush pending entries
+  // and close runtime-owned sink resources.
   //
-  // Accepts either a FileSystemConfig (resolved here) or a pre-created
-  // FileSystemBackend (used when the caller needs async setup, e.g. local
-  // bridge transport with auth notification wiring via resolveFileSystemAsync).
-  //
-  // Reuse `filesystemBackendForResolve` from earlier — the checkpoint block
-  // already needed the backend for its `resolvePath` method, so resolving
-  // twice would be wasteful and could construct two independent backend
-  // instances pointing at the same root.
-  const filesystemBackend = filesystemBackendForResolve;
-  // Extract operations from FileSystemConfig when present; fall back to
-  // config.filesystemOperations for pre-created backends (e.g. from resolveFileSystemAsync).
-  // Without this, pre-created backends default to read-only, silently dropping write/edit tools.
-  const filesystemOperations =
-    config.filesystem !== false &&
-    config.filesystem !== undefined &&
-    !isFileSystemBackend(config.filesystem)
-      ? config.filesystem.operations
-      : config.filesystemOperations;
-  // Credential path guard: enabled by default, blocks access to ~/.ssh, ~/.aws, etc.
-  // Constructed once and shared between the provider path and the dispatch path.
-  const fsToolOptions: FsToolOptions | undefined =
-    filesystemBackend !== undefined && config.credentialPathGuard !== false
-      ? { pathGuard: createCredentialPathGuard() }
+  // The handle is constructed NOW so it can be woven into `baseMiddleware`
+  // in-order, but createRuntime has several fail-closed validations further
+  // down (exfiltration-guard, permissions) that can throw synchronously.
+  // Any throw between here and the final `return` would leak the runtime-
+  // owned sink (open file/db handle, timer) — so every subsequent section
+  // runs inside a try/catch that closes the handle on failure before
+  // rethrowing. dispose() also calls close() on the success path.
+  const hasAuditProvided = new Set(resolvedMiddleware.map((mw) => mw.name)).has("audit");
+  const auditHandle: BuiltAudit | undefined =
+    config.audit !== undefined && !hasAuditProvided
+      ? buildAuditMiddleware(config.audit)
       : undefined;
 
-  const filesystemProvider =
-    filesystemBackend !== undefined
-      ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
-      : undefined;
+  // Per-resource latches so repeated dispose() calls (the existing
+  // retryable-shutdown pattern) do not re-close already-released runtime-
+  // owned resources. If the first dispose() succeeds for audit/browser/lsp
+  // but fails for some other leg (channel/adapter), the caller can retry —
+  // and the retry must skip the already-closed resources.
+  // let: flips to true once each owned resource has been released.
+  let auditCleanedUp = false;
+  let browserCleanedUp = false;
+  let lspCleanedUp = false;
 
-  // Fail closed: if a real (non-stub) "permissions" middleware is installed
-  // without an approval handler, the runtime cannot safely gate tool execution.
-  const hasRealPermissions = middleware.some(
-    (mw) => mw.name === "permissions" && !stubInstances.has(mw),
-  );
-  if (hasRealPermissions && config.requestApproval === undefined) {
-    throw new Error(
-      "Runtime has real permissions middleware but no requestApproval handler — " +
-        "provide config.requestApproval or use a stub permissions middleware",
-    );
-  }
+  try {
+    const baseMiddleware: readonly KoiMiddleware[] = [
+      ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
+      ...(checkpointMw !== undefined ? [checkpointMw] : []),
+      ...(auditHandle !== undefined ? [auditHandle.middleware] : []),
+      ...resolvedMiddleware,
+    ];
 
-  // Create trajectory store (filesystem or Nexus-backed)
-  const trajectoryResolution = resolveTrajectoryStore(config);
-  const trajectoryStore = trajectoryResolution?.store;
-  const trajectoryTransport = trajectoryResolution?.transport;
+    // Install exfiltration guard by default when: (1) not explicitly disabled,
+    // (2) not already provided, and (3) the adapter has terminals so the intercept
+    // phase won't be silently bypassed. Stub adapters have no terminals.
+    const providedNames = new Set(baseMiddleware.map((mw) => mw.name));
+    const exfiltrationRequested =
+      config.exfiltrationGuard !== false && !providedNames.has("exfiltration-guard");
+    const canInstallExfiltrationGuard = rawAdapter.terminals !== undefined;
+    // Fail closed when the user explicitly requested the guard but the adapter can't support it.
+    // The implicit default (config.exfiltrationGuard === undefined) on stub adapters is fine —
+    // that's the normal test/default path and silently skips installation.
+    if (
+      exfiltrationRequested &&
+      !canInstallExfiltrationGuard &&
+      config.exfiltrationGuard !== undefined
+    ) {
+      throw new Error(
+        "Exfiltration guard explicitly requested but adapter has no terminals — " +
+          "intercept-phase middleware cannot be composed. Use an adapter with terminals " +
+          "or pass exfiltrationGuard: false to disable.",
+      );
+    }
+    const afterExfiltration: readonly KoiMiddleware[] =
+      exfiltrationRequested && canInstallExfiltrationGuard
+        ? [
+            ...baseMiddleware,
+            createExfiltrationGuardMiddleware(config.exfiltrationGuard ?? undefined),
+          ]
+        : baseMiddleware;
 
-  // Create outcome store when Nexus trajectory transport is available (#1465).
-  // Shares the same transport. Scoped under the same namespace as trajectories
-  // to preserve tenant isolation: {trajectoryBasePath}/outcomes/
-  const trajectoryBasePath = config.trajectoryNexus?.basePath ?? "trajectories";
-  const outcomeStore =
-    trajectoryTransport !== undefined
-      ? createNexusOutcomeDelegate({
-          transport: trajectoryTransport,
-          basePath: `${trajectoryBasePath}/outcomes`,
-        })
-      : undefined;
+    // Append model-router as the innermost model-call interceptor (after exfiltration
+    // guard and semantic-retry) so each retry attempt independently benefits from
+    // provider failover. Skip when already provided in config.middleware by name.
+    const hasModelRouter = new Set(afterExfiltration.map((mw) => mw.name)).has("model-router");
+    const middleware: readonly KoiMiddleware[] =
+      config.modelRouterMiddleware !== undefined && !hasModelRouter
+        ? [...afterExfiltration, config.modelRouterMiddleware]
+        : afterExfiltration;
 
-  // Track active stream flush promises so dispose() can drain before closing transport.
-  const activeFlushes = new Set<Promise<void>>();
-  // Track active stream finalizations (the full finally block, not just flush).
-  // dispose() awaits these so transport is not closed under a stream still flushing.
-  const activeStreamFinalizations = new Set<Promise<void>>();
-
-  // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
-  // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
-  const approvalDispatch = new Map<string, (sessionId: string, step: RichTrajectoryStep) => void>();
-  const unsubApprovalSink =
-    config.approvalStepHandle !== undefined
-      ? config.approvalStepHandle.setApprovalStepSink(
-          (sid: string, step: RichTrajectoryStep): void => {
-            approvalDispatch.get(sid)?.(sid, step);
-          },
-        )
-      : undefined;
-
-  // Create debug instrumentation when debug is enabled
-  const instrumentation =
-    config.debug === true ? createDebugInstrumentation({ enabled: true }) : undefined;
-
-  // Only advertise and wire fs tools when filesystem is explicitly enabled.
-  // Host-provided tools take precedence — if a host already provides fs_read
-  // (e.g., with custom sandboxing), the generated fs tool is excluded.
-  const fsTools =
-    filesystemBackend !== undefined
-      ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
-      : undefined;
-  const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
-  const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter((d) => !hostToolIds.has(d.name));
-  const dedupedFsToolMap =
-    fsTools !== undefined
-      ? new Map([...fsTools.tools].filter(([name]) => !hostToolIds.has(name)))
-      : undefined;
-  const allToolDescriptors = [...dedupedFsDescriptors, ...(config.toolDescriptors ?? [])];
-
-  // Inject filesystem tool handlers into the adapter's toolCall terminal.
-  // Only inject when filesystem is enabled AND adapter has terminals.
-  const adapterWithFsTools: EngineAdapter =
-    dedupedFsToolMap !== undefined &&
-    dedupedFsToolMap.size > 0 &&
-    rawAdapter.terminals !== undefined
-      ? {
-          ...rawAdapter,
-          terminals: {
-            ...rawAdapter.terminals,
-            toolCall: createToolDispatcher(dedupedFsToolMap, rawAdapter.terminals.toolCall),
-          },
-        }
-      : rawAdapter;
-
-  // Resolve OTel config: `true` uses all defaults, object passes config through, falsy disables.
-  const otelConfig: OtelMiddlewareConfig | undefined =
-    config.otel === true
-      ? {}
-      : config.otel !== undefined && config.otel !== false
-        ? config.otel
+    const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+    // Filesystem: strict host opt-in only.
+    // config.filesystem === false is a kill switch; undefined means no filesystem.
+    // Manifest.filesystem exists in L0 for the full createKoi() assembly path
+    // but is NOT honored here — createRuntime() requires explicit host config.
+    //
+    // Accepts either a FileSystemConfig (resolved here) or a pre-created
+    // FileSystemBackend (used when the caller needs async setup, e.g. local
+    // bridge transport with auth notification wiring via resolveFileSystemAsync).
+    //
+    // Reuse `filesystemBackendForResolve` from earlier — the checkpoint block
+    // already needed the backend for its `resolvePath` method, so resolving
+    // twice would be wasteful and could construct two independent backend
+    // instances pointing at the same root.
+    const filesystemBackend = filesystemBackendForResolve;
+    // Extract operations from FileSystemConfig when present; fall back to
+    // config.filesystemOperations for pre-created backends (e.g. from resolveFileSystemAsync).
+    // Without this, pre-created backends default to read-only, silently dropping write/edit tools.
+    const filesystemOperations =
+      config.filesystem !== false &&
+      config.filesystem !== undefined &&
+      !isFileSystemBackend(config.filesystem)
+        ? config.filesystem.operations
+        : config.filesystemOperations;
+    // Credential path guard: enabled by default, blocks access to ~/.ssh, ~/.aws, etc.
+    // Constructed once and shared between the provider path and the dispatch path.
+    const fsToolOptions: FsToolOptions | undefined =
+      filesystemBackend !== undefined && config.credentialPathGuard !== false
+        ? { pathGuard: createCredentialPathGuard() }
         : undefined;
 
-  // Compose middleware around adapter terminals, then apply timeout
-  const composedAdapter = composeMiddlewareIntoAdapter(
-    adapterWithFsTools,
-    middleware,
-    instrumentation,
-    trajectoryStore,
-    approvalDispatch,
-    config.requestApproval,
-    config.userId,
-    config.channelId,
-    allToolDescriptors,
-    config.retrySignalReader,
-    config.agentName ?? DEFAULT_AGENT_NAME,
-    createClock,
-    config.onTrajectoryFlushError,
-    activeFlushes,
-    activeStreamFinalizations,
-    otelConfig,
-  );
-  const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
+    const filesystemProvider =
+      filesystemBackend !== undefined
+        ? createFileSystemProvider(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
+        : undefined;
 
-  const debugInfo =
-    config.debug === true
-      ? collectDebugInfo(middleware, adapter, channel, stubInstances)
-      : undefined;
-
-  // Create spawn provider when a resolver is provided. Callers pass the provider
-  // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
-  // Resolve effective policy first so the fallback ledger uses the same capacity as
-  // the policy — a custom spawnPolicy.maxTotalProcesses without an explicit ledger
-  // would otherwise be silently ignored by the process-wide default ledger.
-  const effectiveSpawnPolicy = config.spawnPolicy ?? DEFAULT_SPAWN_POLICY;
-  const effectiveSpawnLedger =
-    config.spawnLedger ??
-    // Only reuse the shared default when the policy cap matches; otherwise allocate
-    // a fresh ledger with the correct capacity so the configured limit is honoured.
-    (effectiveSpawnPolicy.maxTotalProcesses === DEFAULT_SPAWN_POLICY.maxTotalProcesses
-      ? DEFAULT_PROCESS_SPAWN_LEDGER
-      : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
-
-  // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
-  // Collect warnings/conflicts so they can be returned on RuntimeHandle for caller inspection.
-  let agentWarnings: import("@koi/agent-runtime").AgentLoadWarning[] = [];
-  let agentConflicts: import("@koi/agent-runtime").RegistryConflictWarning[] = [];
-  const effectiveResolver = (() => {
-    if (config.resolver !== undefined) return config.resolver;
-    if (config.agentDirs !== undefined) {
-      const result = createAgentResolver(config.agentDirs);
-      agentWarnings = [...result.warnings];
-      agentConflicts = [...result.conflicts];
-      for (const w of agentWarnings) {
-        console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
-      }
-      for (const c of agentConflicts) {
-        console.warn(
-          `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
-        );
-      }
-      return result.resolver;
+    // Fail closed: if a real (non-stub) "permissions" middleware is installed
+    // without an approval handler, the runtime cannot safely gate tool execution.
+    const hasRealPermissions = middleware.some(
+      (mw) => mw.name === "permissions" && !stubInstances.has(mw),
+    );
+    if (hasRealPermissions && config.requestApproval === undefined) {
+      throw new Error(
+        "Runtime has real permissions middleware but no requestApproval handler — " +
+          "provide config.requestApproval or use a stub permissions middleware",
+      );
     }
-    return undefined;
-  })();
 
-  // Resolver already returns NOT_FOUND for poisoned agent types (parse failures block
-  // both the custom and built-in slots via failedTypes). Healthy agent types remain
-  // reachable regardless of warnings. Suppressing the entire provider on any warning
-  // would be over-broad: one bad custom-only file would disable all built-in delegation.
-  // Callers should inspect handle.agentWarnings and fail or log at their policy boundary.
-  const spawnProvider =
-    effectiveResolver !== undefined
-      ? createSpawnToolProvider({
-          resolver: effectiveResolver,
-          spawnLedger: effectiveSpawnLedger,
-          adapter,
-          manifestTemplate: {
-            name: "spawned-agent",
-            version: "0.0.0",
-            description: "Spawned sub-agent",
-            model: { name: "sonnet" },
-          },
-          spawnPolicy: effectiveSpawnPolicy,
-          ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
-        })
-      : undefined;
+    // Create trajectory store (filesystem or Nexus-backed)
+    const trajectoryResolution = resolveTrajectoryStore(config);
+    const trajectoryStore = trajectoryResolution?.store;
+    const trajectoryTransport = trajectoryResolution?.transport;
 
-  // Decision-ledger factory — present only when the runtime has a
-  // trajectoryStore to anchor the join. The returned reader wires
-  // the live trajectoryStore plus the runtime's configured reportStore
-  // (if any). Incident tooling can pass overrides to inject ad-hoc
-  // audit or report sinks without rebuilding the runtime.
-  const decisionLedgerFactory =
-    trajectoryStore !== undefined
-      ? (
-          overrides?: Parameters<NonNullable<RuntimeHandle["createDecisionLedger"]>>[0],
-        ): DecisionLedgerReader => {
-          const auditSink = overrides?.auditSink;
-          const reportStore = overrides?.reportStore ?? config.reportStore;
-          return createDecisionLedger({
-            trajectoryStore,
-            ...(auditSink !== undefined ? { auditSink } : {}),
-            ...(reportStore !== undefined ? { reportStore } : {}),
+    // Create outcome store when Nexus trajectory transport is available (#1465).
+    // Shares the same transport. Scoped under the same namespace as trajectories
+    // to preserve tenant isolation: {trajectoryBasePath}/outcomes/
+    const trajectoryBasePath = config.trajectoryNexus?.basePath ?? "trajectories";
+    const outcomeStore =
+      trajectoryTransport !== undefined
+        ? createNexusOutcomeDelegate({
+            transport: trajectoryTransport,
+            basePath: `${trajectoryBasePath}/outcomes`,
+          })
+        : undefined;
+
+    // Track active stream flush promises so dispose() can drain before closing transport.
+    const activeFlushes = new Set<Promise<void>>();
+    // Track active stream finalizations (the full finally block, not just flush).
+    // dispose() awaits these so transport is not closed under a stream still flushing.
+    const activeStreamFinalizations = new Set<Promise<void>>();
+
+    // Approval-step dispatch relay: routes onApprovalStep(sessionId, step) to the
+    // correct per-stream EventTraceHandle.emitExternalStep by sessionId.
+    const approvalDispatch = new Map<
+      string,
+      (sessionId: string, step: RichTrajectoryStep) => void
+    >();
+    const unsubApprovalSink =
+      config.approvalStepHandle !== undefined
+        ? config.approvalStepHandle.setApprovalStepSink(
+            (sid: string, step: RichTrajectoryStep): void => {
+              approvalDispatch.get(sid)?.(sid, step);
+            },
+          )
+        : undefined;
+
+    // Create debug instrumentation when debug is enabled
+    const instrumentation =
+      config.debug === true ? createDebugInstrumentation({ enabled: true }) : undefined;
+
+    // Only advertise and wire fs tools when filesystem is explicitly enabled.
+    // Host-provided tools take precedence — if a host already provides fs_read
+    // (e.g., with custom sandboxing), the generated fs tool is excluded.
+    const fsTools =
+      filesystemBackend !== undefined
+        ? createFileSystemTools(filesystemBackend, "fs", filesystemOperations, fsToolOptions)
+        : undefined;
+    const hostToolIds = new Set((config.toolDescriptors ?? []).map((d) => d.name));
+    const dedupedFsDescriptors = (fsTools?.descriptors ?? []).filter(
+      (d) => !hostToolIds.has(d.name),
+    );
+    const dedupedFsToolMap =
+      fsTools !== undefined
+        ? new Map([...fsTools.tools].filter(([name]) => !hostToolIds.has(name)))
+        : undefined;
+    const allToolDescriptors = [...dedupedFsDescriptors, ...(config.toolDescriptors ?? [])];
+
+    // Inject filesystem tool handlers into the adapter's toolCall terminal.
+    // Only inject when filesystem is enabled AND adapter has terminals.
+    const adapterWithFsTools: EngineAdapter =
+      dedupedFsToolMap !== undefined &&
+      dedupedFsToolMap.size > 0 &&
+      rawAdapter.terminals !== undefined
+        ? {
+            ...rawAdapter,
+            terminals: {
+              ...rawAdapter.terminals,
+              toolCall: createToolDispatcher(dedupedFsToolMap, rawAdapter.terminals.toolCall),
+            },
+          }
+        : rawAdapter;
+
+    // Resolve OTel config: `true` uses all defaults, object passes config through, falsy disables.
+    const otelConfig: OtelMiddlewareConfig | undefined =
+      config.otel === true
+        ? {}
+        : config.otel !== undefined && config.otel !== false
+          ? config.otel
+          : undefined;
+
+    // Compose middleware around adapter terminals, then apply timeout
+    const composedAdapter = composeMiddlewareIntoAdapter(
+      adapterWithFsTools,
+      middleware,
+      instrumentation,
+      trajectoryStore,
+      approvalDispatch,
+      config.requestApproval,
+      config.userId,
+      config.channelId,
+      allToolDescriptors,
+      config.retrySignalReader,
+      config.agentName ?? DEFAULT_AGENT_NAME,
+      createClock,
+      config.onTrajectoryFlushError,
+      activeFlushes,
+      activeStreamFinalizations,
+      otelConfig,
+    );
+    const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
+
+    const debugInfo =
+      config.debug === true
+        ? collectDebugInfo(middleware, adapter, channel, stubInstances)
+        : undefined;
+
+    // Create spawn provider when a resolver is provided. Callers pass the provider
+    // to createKoi({ providers: [handle.spawnProvider] }) to register the Spawn tool.
+    // Resolve effective policy first so the fallback ledger uses the same capacity as
+    // the policy — a custom spawnPolicy.maxTotalProcesses without an explicit ledger
+    // would otherwise be silently ignored by the process-wide default ledger.
+    const effectiveSpawnPolicy = config.spawnPolicy ?? DEFAULT_SPAWN_POLICY;
+    const effectiveSpawnLedger =
+      config.spawnLedger ??
+      // Only reuse the shared default when the policy cap matches; otherwise allocate
+      // a fresh ledger with the correct capacity so the configured limit is honoured.
+      (effectiveSpawnPolicy.maxTotalProcesses === DEFAULT_SPAWN_POLICY.maxTotalProcesses
+        ? DEFAULT_PROCESS_SPAWN_LEDGER
+        : createInMemorySpawnLedger(effectiveSpawnPolicy.maxTotalProcesses));
+
+    // Resolve the effective agent resolver: explicit > agentDirs shortcut > none.
+    // Collect warnings/conflicts so they can be returned on RuntimeHandle for caller inspection.
+    let agentWarnings: import("@koi/agent-runtime").AgentLoadWarning[] = [];
+    let agentConflicts: import("@koi/agent-runtime").RegistryConflictWarning[] = [];
+    const effectiveResolver = (() => {
+      if (config.resolver !== undefined) return config.resolver;
+      if (config.agentDirs !== undefined) {
+        const result = createAgentResolver(config.agentDirs);
+        agentWarnings = [...result.warnings];
+        agentConflicts = [...result.conflicts];
+        for (const w of agentWarnings) {
+          console.warn(`[koi/runtime] agent load warning: ${w.error.message} (${w.filePath})`);
+        }
+        for (const c of agentConflicts) {
+          console.warn(
+            `[koi/runtime] agent conflict: "${c.agentType}" defined in multiple files — using first`,
+          );
+        }
+        return result.resolver;
+      }
+      return undefined;
+    })();
+
+    // Resolver already returns NOT_FOUND for poisoned agent types (parse failures block
+    // both the custom and built-in slots via failedTypes). Healthy agent types remain
+    // reachable regardless of warnings. Suppressing the entire provider on any warning
+    // would be over-broad: one bad custom-only file would disable all built-in delegation.
+    // Callers should inspect handle.agentWarnings and fail or log at their policy boundary.
+    const spawnProvider =
+      effectiveResolver !== undefined
+        ? createSpawnToolProvider({
+            resolver: effectiveResolver,
+            spawnLedger: effectiveSpawnLedger,
+            adapter,
+            manifestTemplate: {
+              name: "spawned-agent",
+              version: "0.0.0",
+              description: "Spawned sub-agent",
+              model: { name: "sonnet" },
+            },
+            spawnPolicy: effectiveSpawnPolicy,
+            ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
+          })
+        : undefined;
+
+    // Browser tool provider (@koi/tool-browser) — construct a ComponentProvider
+    // from a caller-supplied BrowserDriver.
+    //
+    // Ownership: `backend` must be unshared per runtime (enforced by docs on
+    // RuntimeConfig.browser). The inner provider disposes the backend on its
+    // ref-count → 0 transition during createKoi detach. If the caller never
+    // goes through that path (error/abort, or runtime created but never
+    // wired into createKoi), the runtime owns cleanup and invokes
+    // `backend.dispose?.()` from `runtime.dispose()` — guarded by an
+    // attach/detach counter mirror so a completed createKoi lifecycle does
+    // not cause a double-dispose. Counters only advance after the inner
+    // call resolves so a single-agent attach rejection cannot falsely mark
+    // the provider as attached, and detach uses a finally block so a
+    // partial-detach rejection still records the attempt (the inner
+    // provider has already decremented its own refcount at that point).
+    // let: runtime-side mirror of inner provider's ref-count.
+    let browserAttachCount = 0;
+    let browserDetachCount = 0;
+    const browserBackend = config.browser?.backend;
+    const browserProvider: ComponentProvider | undefined = (() => {
+      if (config.browser === undefined) return undefined;
+      const inner = createBrowserProvider({
+        backend: config.browser.backend,
+        ...(config.browser.operations !== undefined
+          ? { operations: config.browser.operations }
+          : {}),
+        ...(config.browser.prefix !== undefined ? { prefix: config.browser.prefix } : {}),
+        ...(config.browser.policy !== undefined ? { policy: config.browser.policy } : {}),
+        ...(config.browser.isUrlAllowed !== undefined
+          ? { isUrlAllowed: config.browser.isUrlAllowed }
+          : {}),
+      });
+      const innerAttach = inner.attach;
+      const innerDetach = inner.detach;
+      return {
+        ...inner,
+        attach: async (agent) => {
+          if (innerAttach === undefined) {
+            browserAttachCount += 1;
+            return new Map();
+          }
+          const result = await innerAttach.call(inner, agent);
+          browserAttachCount += 1;
+          return result;
+        },
+        detach: async (agent) => {
+          // Advance only after success. If inner detach throws partway,
+          // some resources may already be released and some may not;
+          // leaving the counter low lets runtime.dispose() run a
+          // best-effort fallback for whatever is still live. The inner
+          // provider's detach is the single source of truth, not the
+          // runtime mirror.
+          if (innerDetach !== undefined) {
+            await innerDetach.call(inner, agent);
+          }
+          browserDetachCount += 1;
+        },
+      };
+    })();
+
+    // LSP tool provider (@koi/lsp) — lazy: LSP startup spawns language-server
+    // subprocesses and negotiates capabilities over JSON-RPC. Starting those
+    // eagerly in createRuntime() (a sync factory) means a runtime that is
+    // created and disposed before the caller ever wants LSP tools would still
+    // leave subprocess/fd leaks outliving dispose().
+    //
+    // Instead expose a thunk the caller invokes on demand. First call spawns
+    // servers and caches the promise; subsequent calls share it. dispose()
+    // inspects the cache — if LSP was never requested, nothing to clean up.
+    //
+    // Lifecycle bookkeeping: the underlying LSP provider is ref-counted; its
+    // pool.release()/client.close() path only runs when the refcount hits
+    // zero. A single boolean "detach ran once" is not enough — if the caller
+    // attaches twice and only detaches once, the provider is still holding
+    // clients, so dispose() must step in. Mirror the provider's ref-count
+    // on the runtime side (attach/detach counters) and only treat cleanup
+    // as "already done" when detachCount >= attachCount && attachCount > 0.
+    const lspConfig = config.lsp;
+    // let: cache for the lazily-started provider promise. Assigned on first
+    // call to `lspProvider()` so dispose() can observe whether LSP started.
+    let lspProviderCache:
+      | Promise<{
+          readonly provider: ComponentProvider;
+          readonly clients: readonly import("@koi/lsp").LspClient[];
+          readonly failures: readonly import("@koi/lsp").LspServerFailure[];
+        }>
+      | undefined;
+    // let: ref-count mirror so dispose() can tell whether the inner provider
+    // has released its clients (attachCount > 0 && detachCount >= attachCount).
+    let lspAttachCount = 0;
+    let lspDetachCount = 0;
+    const lspProvider =
+      lspConfig !== undefined
+        ? () => {
+            if (lspProviderCache === undefined) {
+              lspProviderCache = createLspComponentProvider(lspConfig).then((inner) => {
+                // Wrap attach/detach to mirror the provider's ref-count. Only
+                // increment after the inner call succeeds — the tool-browser /
+                // LSP single-agent guard throws on duplicate attach, and
+                // counting a failed attach as a live attachment would make
+                // dispose() run cleanup twice.
+                const innerAttach = inner.provider.attach;
+                const innerDetach = inner.provider.detach;
+                const wrapped: ComponentProvider = {
+                  ...inner.provider,
+                  attach: async (agent) => {
+                    if (innerAttach === undefined) {
+                      lspAttachCount += 1;
+                      return new Map();
+                    }
+                    const result = await innerAttach.call(inner.provider, agent);
+                    lspAttachCount += 1;
+                    return result;
+                  },
+                  detach: async (agent) => {
+                    // Advance only after success. A partial detach failure
+                    // leaves the counter low so runtime.dispose() runs a
+                    // best-effort fallback against whatever is still live.
+                    // Double-release risk against the part that WAS
+                    // released is the lesser hazard — the pool's
+                    // release() is trivially idempotent (set-key
+                    // overwrite) and LspClient.close() is safe to call
+                    // twice.
+                    if (innerDetach !== undefined) {
+                      await innerDetach.call(inner.provider, agent);
+                    }
+                    lspDetachCount += 1;
+                  },
+                };
+                return { ...inner, provider: wrapped };
+              });
+            }
+            return lspProviderCache;
+          }
+        : undefined;
+
+    // File-based memory store (@koi/memory-fs) — exposed as-is on the handle.
+    // A MemoryToolBackend adapter for @koi/memory-tools is tracked as follow-up.
+    const memoryStore: MemoryStore | undefined =
+      config.memoryFs !== undefined ? createMemoryStore(config.memoryFs) : undefined;
+
+    // Decision-ledger factory — present only when the runtime has a
+    // trajectoryStore to anchor the join. The returned reader wires
+    // the live trajectoryStore plus the runtime's configured reportStore
+    // (if any). Incident tooling can pass overrides to inject ad-hoc
+    // audit or report sinks without rebuilding the runtime.
+    const decisionLedgerFactory =
+      trajectoryStore !== undefined
+        ? (
+            overrides?: Parameters<NonNullable<RuntimeHandle["createDecisionLedger"]>>[0],
+          ): DecisionLedgerReader => {
+            const auditSink = overrides?.auditSink;
+            const reportStore = overrides?.reportStore ?? config.reportStore;
+            return createDecisionLedger({
+              trajectoryStore,
+              ...(auditSink !== undefined ? { auditSink } : {}),
+              ...(reportStore !== undefined ? { reportStore } : {}),
+            });
+          }
+        : undefined;
+
+    return {
+      adapter,
+      channel,
+      middleware,
+      debugInfo,
+      trajectoryStore,
+      outcomeStore,
+      spawnProvider,
+      agentWarnings,
+      agentConflicts,
+      checkpoint: checkpointHandle,
+      filesystemBackend,
+      filesystemProvider,
+      browserProvider,
+      lspProvider,
+      memoryStore,
+      createDecisionLedger: decisionLedgerFactory,
+      dispose: async () => {
+        // Unsubscribe approval sink to prevent leak on long-lived permission handles
+        unsubApprovalSink?.();
+        // Step 1: Dispose adapter first — this terminates active model streams,
+        // which triggers their finally blocks (where flush + afterFlush run).
+        // Without this, awaiting stream finalizations would deadlock because
+        // only adapter disposal can abort a live model stream.
+        const results = await Promise.allSettled([
+          channel.disconnect(),
+          rawAdapter.dispose?.() ?? Promise.resolve(),
+          filesystemBackend?.dispose?.() ?? Promise.resolve(),
+        ]);
+        // Step 2: Drain stream finalizations (flush + afterFlush) with a bounded
+        // timeout. Adapters without dispose() or that don't cancel streams would
+        // cause an indefinite hang without this bound. 5s is generous for I/O.
+        const DRAIN_TIMEOUT_MS = 5000;
+        const drainWithTimeout = (promises: Set<Promise<void>>): Promise<unknown> => {
+          if (promises.size === 0) return Promise.resolve();
+          return Promise.race([
+            Promise.allSettled([...promises]),
+            new Promise<void>((r) => setTimeout(r, DRAIN_TIMEOUT_MS)),
+          ]);
+        };
+        await drainWithTimeout(activeStreamFinalizations);
+        await drainWithTimeout(activeFlushes);
+        // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
+        trajectoryTransport?.close();
+        // Step 4: Release runtime-owned L2 resources wired from config.
+        //
+        // LSP: startup is lazy — `lspProvider()` is a thunk that only spawns
+        // servers on first call. If the caller never invoked it, there is
+        // nothing to clean up (the cache is still undefined). If they did,
+        // dispose awaits the cached startup promise to COMPLETION before
+        // releasing clients. The inner LSP client enforces its own
+        // `connectTimeoutMs` (default 30s) plus retry budget, so this
+        // settles in bounded time and produces a deterministic list of
+        // clients to close/release. Racing a separate timeout here would
+        // leave a resolved-but-orphaned promise that spawns subprocesses
+        // no one ever closes.
+        //
+        // When `config.lsp.pool` is set, pool-acquired (and freshly-created
+        // fallback) clients are released back to the pool; otherwise they are
+        // closed directly. If the inner provider.detach already ran
+        // (lspDetachCount >= lspAttachCount && lspAttachCount > 0), cleanup
+        // has already happened and dispose must skip to avoid double-release.
+        //
+        // Audit: when the runtime constructed the sink from a discriminated-
+        // union config, it also owns the file/db handles and timer. Flush the
+        // middleware queue first so queued entries hit the sink, then close.
+        const lspPool = lspConfig?.pool;
+        const extraShutdown = await Promise.allSettled([
+          lspProviderCache !== undefined && !lspCleanedUp
+            ? (async () => {
+                // Startup errors surface to the caller via handle.lspProvider();
+                // dispose just needs to release whatever did start successfully.
+                const settled = await lspProviderCache.then(
+                  (r) => ({ ok: true as const, result: r }),
+                  () => ({ ok: false as const }),
+                );
+                if (!settled.ok) return;
+                const cleanupDone = lspAttachCount > 0 && lspDetachCount >= lspAttachCount;
+                if (cleanupDone) {
+                  lspCleanedUp = true;
+                  return;
+                }
+                if (lspPool !== undefined) {
+                  // Fail closed: if pool.release throws (pool closed, unknown
+                  // client, misbehaving impl) fall back to close() so the
+                  // client process does not silently leak. Propagate the
+                  // underlying error via Promise.reject so the aggregated
+                  // dispose failure surfaces it instead of swallowing it.
+                  const releaseResults = await Promise.allSettled(
+                    settled.result.clients.map(async (client) => {
+                      try {
+                        lspPool.release(client.serverName(), client);
+                      } catch (releaseErr) {
+                        try {
+                          await client.close();
+                        } catch (closeErr) {
+                          throw new Error(
+                            `LSP pool release failed and fallback close also failed: ${String(releaseErr)}; ${String(closeErr)}`,
+                          );
+                        }
+                        throw releaseErr instanceof Error
+                          ? releaseErr
+                          : new Error(String(releaseErr));
+                      }
+                    }),
+                  );
+                  const failed = releaseResults.filter(
+                    (r): r is PromiseRejectedResult => r.status === "rejected",
+                  );
+                  if (failed.length > 0) {
+                    throw new Error(
+                      `LSP pool release failures: ${failed.map((f) => String(f.reason)).join("; ")}`,
+                    );
+                  }
+                  lspCleanedUp = true;
+                  return;
+                }
+                // Non-pool path: collect and surface any close() failures so
+                // orphaned language-server processes do not hide behind a
+                // green shutdown. Mirrors the pool-release branch.
+                const closeResults = await Promise.allSettled(
+                  settled.result.clients.map((c) => c.close()),
+                );
+                const closeFailed = closeResults.filter(
+                  (r): r is PromiseRejectedResult => r.status === "rejected",
+                );
+                if (closeFailed.length > 0) {
+                  throw new Error(
+                    `LSP client close failures: ${closeFailed.map((f) => String(f.reason)).join("; ")}`,
+                  );
+                }
+                lspCleanedUp = true;
+              })()
+            : Promise.resolve(),
+          auditHandle !== undefined && !auditCleanedUp
+            ? (async () => {
+                await auditHandle.close();
+                auditCleanedUp = true;
+              })()
+            : Promise.resolve(),
+          // Browser backend: fall back to backend.dispose() when the
+          // inner provider has not fully detached. The unshared-per-
+          // runtime contract makes this safe — no other consumer can be
+          // holding the same BrowserDriver. The counter guard prevents
+          // double dispose when createKoi already released it, and the
+          // latch prevents repeated dispose() from re-calling dispose().
+          browserBackend !== undefined &&
+          !browserCleanedUp &&
+          !(browserAttachCount > 0 && browserDetachCount >= browserAttachCount) &&
+          browserBackend.dispose !== undefined
+            ? (async () => {
+                await browserBackend.dispose?.();
+                browserCleanedUp = true;
+              })()
+            : Promise.resolve(),
+        ]);
+        const allFailures = [
+          ...results.filter((r): r is PromiseRejectedResult => r.status === "rejected"),
+          ...extraShutdown.filter((r): r is PromiseRejectedResult => r.status === "rejected"),
+        ];
+        if (allFailures.length > 0) {
+          throw new Error(
+            `Runtime dispose failed: ${allFailures.map((f) => (f.reason instanceof Error ? f.reason.message : String(f.reason))).join("; ")}`,
+          );
+        }
+      },
+    };
+  } catch (err) {
+    // Close runtime-owned resources before rethrowing so a constructor-time
+    // throw cannot leak file/db handles, timers, or browser subprocesses.
+    // Fire-and-forget because createRuntime is sync; swallow any close error
+    // since the original throw is what the caller cares about.
+    if (auditHandle !== undefined) {
+      auditHandle.close().catch(() => {
+        // best-effort cleanup during createRuntime error path
+      });
+    }
+    // Browser backend: unshared-per-runtime contract means nothing else
+    // holds the driver, so disposing here cannot interfere with peers.
+    // The caller never receives a RuntimeHandle so runtime.dispose() will
+    // never run — this is the only chance to release the backend.
+    if (config.browser?.backend?.dispose !== undefined) {
+      try {
+        const result = config.browser.backend.dispose();
+        if (result instanceof Promise) {
+          result.catch(() => {
+            // best-effort cleanup during createRuntime error path
           });
         }
-      : undefined;
-
-  return {
-    adapter,
-    channel,
-    middleware,
-    debugInfo,
-    trajectoryStore,
-    outcomeStore,
-    spawnProvider,
-    agentWarnings,
-    agentConflicts,
-    checkpoint: checkpointHandle,
-    filesystemBackend,
-    filesystemProvider,
-    createDecisionLedger: decisionLedgerFactory,
-    dispose: async () => {
-      // Unsubscribe approval sink to prevent leak on long-lived permission handles
-      unsubApprovalSink?.();
-      // Step 1: Dispose adapter first — this terminates active model streams,
-      // which triggers their finally blocks (where flush + afterFlush run).
-      // Without this, awaiting stream finalizations would deadlock because
-      // only adapter disposal can abort a live model stream.
-      const results = await Promise.allSettled([
-        channel.disconnect(),
-        rawAdapter.dispose?.() ?? Promise.resolve(),
-        filesystemBackend?.dispose?.() ?? Promise.resolve(),
-      ]);
-      // Step 2: Drain stream finalizations (flush + afterFlush) with a bounded
-      // timeout. Adapters without dispose() or that don't cancel streams would
-      // cause an indefinite hang without this bound. 5s is generous for I/O.
-      const DRAIN_TIMEOUT_MS = 5000;
-      const drainWithTimeout = (promises: Set<Promise<void>>): Promise<unknown> => {
-        if (promises.size === 0) return Promise.resolve();
-        return Promise.race([
-          Promise.allSettled([...promises]),
-          new Promise<void>((r) => setTimeout(r, DRAIN_TIMEOUT_MS)),
-        ]);
-      };
-      await drainWithTimeout(activeStreamFinalizations);
-      await drainWithTimeout(activeFlushes);
-      // Step 3: Close trajectory Nexus transport AFTER all flushes complete.
-      trajectoryTransport?.close();
-      const failures = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
-      if (failures.length > 0) {
-        throw new Error(
-          `Runtime dispose failed: ${failures.map((f) => (f.reason instanceof Error ? f.reason.message : String(f.reason))).join("; ")}`,
-        );
+      } catch {
+        // best-effort cleanup during createRuntime error path
       }
-    },
-  };
+    }
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -503,6 +834,115 @@ function resolveChannel(input: RuntimeConfig["channel"]): ChannelAdapter {
     return createStubChannel();
   }
   return input;
+}
+
+/**
+ * Result of constructing audit middleware — middleware plus a close callback
+ * that dispose() calls to flush pending entries and release runtime-owned
+ * sink resources (file/db handles, timers). When the caller passes in their
+ * own `AuditSink` instance, the close callback only flushes the middleware —
+ * sink lifecycle stays with the caller.
+ */
+interface BuiltAudit {
+  readonly middleware: KoiMiddleware;
+  readonly close: () => Promise<void>;
+}
+
+/**
+ * Construct audit middleware from `RuntimeConfig.audit`. The sink is either
+ * pre-built (pass-through, caller-owned) or resolved here from a
+ * discriminated-union config via `@koi/audit-sink-ndjson` /
+ * `@koi/audit-sink-sqlite` (runtime-owned, closed in dispose()).
+ */
+/**
+ * Test whether the caller passed a pre-built `AuditSink` (which must expose
+ * a `log` function per the L0 contract) vs a config object for the
+ * discriminated union. Testing for `log` is nominal: config objects have no
+ * runtime behavior, only data. This prevents a caller sink that happens to
+ * carry `{ kind: "ndjson", filePath: ... }` as metadata from being
+ * misclassified as a config and replaced with a fresh file sink.
+ */
+function isAuditSink(v: object): v is AuditSink {
+  return typeof (v as { readonly log?: unknown }).log === "function";
+}
+
+function buildAuditMiddleware(audit: NonNullable<RuntimeConfig["audit"]>): BuiltAudit {
+  const sinkInput = audit.sink;
+  // Closer for runtime-owned sinks only; undefined when caller supplies an AuditSink.
+  let ownedSinkClose: (() => Promise<void>) | undefined;
+  let sink: AuditSink;
+
+  if (isAuditSink(sinkInput)) {
+    sink = sinkInput;
+  } else if (sinkInput.kind === "ndjson") {
+    const built = createNdjsonAuditSink({
+      filePath: sinkInput.filePath,
+      ...(sinkInput.flushIntervalMs !== undefined
+        ? { flushIntervalMs: sinkInput.flushIntervalMs }
+        : {}),
+    });
+    sink = built;
+    ownedSinkClose = async () => {
+      await built.close();
+    };
+  } else if (sinkInput.kind === "sqlite") {
+    const built = createSqliteAuditSink({
+      dbPath: sinkInput.dbPath,
+      ...(sinkInput.flushIntervalMs !== undefined
+        ? { flushIntervalMs: sinkInput.flushIntervalMs }
+        : {}),
+      ...(sinkInput.maxBufferSize !== undefined ? { maxBufferSize: sinkInput.maxBufferSize } : {}),
+    });
+    sink = built;
+    ownedSinkClose = async () => {
+      built.close();
+    };
+  } else {
+    throw new Error(
+      `Unsupported audit sink config: expected AuditSink with log(), or { kind: "ndjson" | "sqlite" }`,
+    );
+  }
+
+  const mw = createAuditMiddleware({
+    sink,
+    ...(audit.maxQueueDepth !== undefined ? { maxQueueDepth: audit.maxQueueDepth } : {}),
+    ...(audit.signing !== undefined ? { signing: audit.signing } : {}),
+    ...(audit.redactRequestBodies !== undefined
+      ? { redactRequestBodies: audit.redactRequestBodies }
+      : {}),
+  });
+
+  return {
+    middleware: mw,
+    close: async () => {
+      // Best-effort: drain queued entries first, but ALWAYS release the
+      // runtime-owned sink resources (file/db handle, timer) — even if
+      // flush rejects due to an I/O or DB error. Otherwise a failing
+      // flush would leak the underlying descriptor on repeated
+      // startup/shutdown attempts. If both throw, aggregate.
+      let flushErr: unknown;
+      try {
+        await mw.flush();
+      } catch (err) {
+        flushErr = err;
+      }
+      let closeErr: unknown;
+      if (ownedSinkClose !== undefined) {
+        try {
+          await ownedSinkClose();
+        } catch (err) {
+          closeErr = err;
+        }
+      }
+      if (flushErr !== undefined && closeErr !== undefined) {
+        throw new Error(
+          `Audit flush and sink close both failed: ${String(flushErr)}; ${String(closeErr)}`,
+        );
+      }
+      if (flushErr !== undefined) throw flushErr;
+      if (closeErr !== undefined) throw closeErr;
+    },
+  };
 }
 
 function resolveMiddleware(provided: readonly KoiMiddleware[] | undefined): {
