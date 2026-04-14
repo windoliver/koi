@@ -315,6 +315,10 @@ function createUpdateTaskTool(callerId: AgentId, taskBoard: ManagedTaskBoard): T
           }
           // Compute duration from task timestamps when available
           const task = taskBoard.snapshot().get(id);
+          // Reject non-string, non-undefined output (caller bug)
+          if (args.output !== undefined && typeof args.output !== "string") {
+            throw new Error("output must be a string");
+          }
           // Default output to task subject when omitted (#1785)
           const rawOutput =
             typeof args.output === "string" && args.output.trim() !== ""
