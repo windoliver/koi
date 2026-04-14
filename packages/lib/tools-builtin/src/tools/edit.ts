@@ -151,6 +151,12 @@ export function createFsEditTool(
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }
+      if (result.value.resolvedPath !== undefined) {
+        return {
+          ...result.value,
+          note: `Path coerced to workspace-relative: "${result.value.resolvedPath}". Editing file in workspace, not at the absolute host path "${pathResult.value}".`,
+        };
+      }
       return result.value;
     },
   };

@@ -46,6 +46,13 @@ export interface InputAreaProps {
   /** Called when slash command prefix is detected. Null = no overlay. */
   readonly onSlashDetected: (query: string | null) => void;
   /**
+   * Called when the user presses Enter while a slash command is in the input.
+   * InputArea handles this directly instead of relying on SlashOverlay's
+   * useKeyboard handler, because OpenTUI's preventDefault() stops event
+   * propagation to sibling component handlers.
+   */
+  readonly onSlashSubmit?: ((text: string) => void) | undefined;
+  /**
    * Called when the user navigates prompt history (arrow up/down).
    * Receives the current textarea text so the draft can be saved/restored.
    */
@@ -151,15 +158,14 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     switch (result.kind) {
       case "submit": {
         key.preventDefault();
-        // When the text is a slash command prefix, the SlashOverlay owns
-        // this Enter keystroke — its own useKeyboard handler calls
-        // handleSlashSelect which dispatches the command and then clears
-        // the textarea via the clearTrigger effect. If we clear + dismiss
-        // here too, we tear the overlay down before its handler fires
-        // and the dispatch is lost. Exit early and let the overlay handle
-        // everything (preventDefault has already blocked the textarea's
-        // own Enter handling).
+        // When the text starts with "/", dispatch as a slash command.
+        // Previously this relied on SlashOverlay's useKeyboard catching
+        // Enter, but OpenTUI's preventDefault() stops propagation to
+        // sibling handlers. Handle it directly here instead.
         if (result.text.trim() !== "" && detectSlashPrefix(result.text) !== null) {
+          props.onSlashSubmit?.(result.text);
+          safeSetText("");
+          props.onSlashDetected(null);
           break;
         }
         if (result.text.trim() !== "") {
@@ -189,7 +195,8 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         // replace this with an onInput/onChange callback on <textarea> instead.
         queueMicrotask(() => {
           const text = safeText();
-          props.onSlashDetected(detectSlashPrefix(text));
+          const slash = detectSlashPrefix(text);
+          props.onSlashDetected(slash);
           props.onAtDetected?.(detectAtPrefix(text));
         });
         break;
@@ -236,7 +243,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
   // Register global keyboard handler (OpenTUI pattern: intercepts before textarea)
 
   return (
-    <box flexDirection="column">
+    <box flexDirection="column" flexShrink={0}>
       {/* #11: image attachment indicator */}
       <Show when={attachedImages().length > 0}>
         <box flexDirection="row" paddingLeft={1} gap={1}>
