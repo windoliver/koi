@@ -243,7 +243,7 @@ export function summarizeRunReport(runReport: {
   const counts = `actions=${actions} artifacts=${artifacts} issues=${issues} recs=${recommendations} children=${children} tokens=${totalTokens}`;
   const composed = summaryText !== "" ? `${summaryText} · ${counts}` : counts;
   return composed.length > RUN_REPORT_SUMMARY_MAX_CHARS
-    ? composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1) + "…"
+    ? `${composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1)}…`
     : composed;
 }
 

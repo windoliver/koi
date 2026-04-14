@@ -312,7 +312,7 @@ describe("createExfiltrationGuardMiddleware — wrapModelStream", () => {
     const textChunks = chunks.filter((c) => c.kind === "text_delta");
     const allText = textChunks.map((c) => (c as { readonly delta: string }).delta).join("");
     // Total text should be the buffer content + overflow chunk + tail — exactly once
-    expect(allText).toBe("a".repeat(25) + "tail");
+    expect(allText).toBe(`${"a".repeat(25)}tail`);
     // done chunk should still be present
     expect(chunks.filter((c) => c.kind === "done")).toHaveLength(1);
   });

@@ -108,10 +108,10 @@ function parseMergeResponse(response: string): MergeResult | undefined {
     if (parsed === null || typeof parsed !== "object") return undefined;
 
     const obj = parsed as Record<string, unknown>;
-    const name = typeof obj["name"] === "string" ? obj["name"].trim() : "";
-    const description = typeof obj["description"] === "string" ? obj["description"].trim() : "";
-    const type = typeof obj["type"] === "string" ? obj["type"].trim() : "";
-    const content = typeof obj["content"] === "string" ? obj["content"].trim() : "";
+    const name = typeof obj.name === "string" ? obj.name.trim() : "";
+    const description = typeof obj.description === "string" ? obj.description.trim() : "";
+    const type = typeof obj.type === "string" ? obj.type.trim() : "";
+    const content = typeof obj.content === "string" ? obj.content.trim() : "";
 
     if (name.length === 0 || content.length === 0) return undefined;
 

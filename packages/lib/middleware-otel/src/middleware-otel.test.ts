@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { RichTrajectoryStep } from "@koi/core/rich-trajectory";
+import type { Histogram, Meter, MetricAttributes, MetricOptions } from "@opentelemetry/api";
 import { SpanStatusCode, trace } from "@opentelemetry/api";
 import {
   BasicTracerProvider,
@@ -584,6 +585,138 @@ describe("with OTel provider registered", () => {
         durationMs: 0,
       });
       expect(result).toBeUndefined();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cost histogram — Issue 8A coverage (Decision 9A pre-work)
+  // -------------------------------------------------------------------------
+
+  describe("cost histogram", () => {
+    /** Record call captured by the mock histogram. */
+    interface HistogramRecord {
+      readonly value: number;
+      readonly attributes: MetricAttributes | undefined;
+    }
+
+    /** Creates a mock Meter that captures histogram.record() calls. */
+    function createMockMeter(): {
+      readonly meter: Meter;
+      readonly records: HistogramRecord[];
+    } {
+      const records: HistogramRecord[] = [];
+      const mockHistogram: Histogram = {
+        record(value: number, attributes?: MetricAttributes): void {
+          records.push({ value, attributes });
+        },
+      };
+      const meter: Meter = {
+        createHistogram(_name: string, _options?: MetricOptions): Histogram {
+          return mockHistogram;
+        },
+        createCounter: () => ({ add() {} }) as never,
+        createUpDownCounter: () => ({ add() {} }) as never,
+        createObservableGauge: () => ({ addCallback() {}, removeCallback() {} }) as never,
+        createObservableCounter: () => ({ addCallback() {}, removeCallback() {} }) as never,
+        createObservableUpDownCounter: () => ({ addCallback() {}, removeCallback() {} }) as never,
+        createGauge: () => ({ record() {} }) as never,
+      };
+      return { meter, records };
+    }
+
+    test("records cost when meter configured and costUsd present", async () => {
+      const { meter, records } = createMockMeter();
+      const otel = createOtelMiddleware({ meter });
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      otel.onStep(
+        SESSION_ID,
+        makeModelStep({ metrics: { promptTokens: 100, completionTokens: 200, costUsd: 0.0042 } }),
+      );
+      await otel.middleware.onSessionEnd?.(ctx as never);
+
+      expect(records).toHaveLength(1);
+      const [rec] = records;
+      if (rec === undefined) throw new Error("record should be defined");
+      expect(rec.value).toBe(0.0042);
+    });
+
+    test("histogram attributes include step outcome and span attrs", async () => {
+      const { meter, records } = createMockMeter();
+      const otel = createOtelMiddleware({ meter });
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      otel.onStep(
+        SESSION_ID,
+        makeModelStep({ metrics: { promptTokens: 50, completionTokens: 100, costUsd: 0.01 } }),
+      );
+      await otel.middleware.onSessionEnd?.(ctx as never);
+
+      expect(records).toHaveLength(1);
+      const attrs = records[0]?.attributes;
+      expect(attrs?.[ATTR_KOI_STEP_OUTCOME]).toBe("success");
+      expect(attrs?.[ATTR_GEN_AI_OPERATION_NAME]).toBe("chat");
+      expect(attrs?.[ATTR_KOI_SESSION_ID]).toBe(SESSION_ID);
+    });
+
+    test("does not record when costUsd is undefined", async () => {
+      const { meter, records } = createMockMeter();
+      const otel = createOtelMiddleware({ meter });
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      // Default makeModelStep has no costUsd
+      otel.onStep(SESSION_ID, makeModelStep());
+      await otel.middleware.onSessionEnd?.(ctx as never);
+
+      expect(records).toHaveLength(0);
+    });
+
+    test("does not record when no meter configured", async () => {
+      // No meter → no histogram → no recording
+      const otel = createOtelMiddleware();
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      // Step with costUsd but no meter — should be a no-op
+      otel.onStep(
+        SESSION_ID,
+        makeModelStep({ metrics: { promptTokens: 10, completionTokens: 20, costUsd: 1.5 } }),
+      );
+      await otel.middleware.onSessionEnd?.(ctx as never);
+
+      // No way to observe, but it must not throw
+      // (the default makeModelStep path without meter is already tested above;
+      // this test verifies the costUsd path doesn't throw when histogram is undefined)
+    });
+
+    test("records cost for each model step independently", async () => {
+      const { meter, records } = createMockMeter();
+      const otel = createOtelMiddleware({ meter });
+      const ctx = makeSessionCtx();
+      await otel.middleware.onSessionStart?.(ctx as never);
+
+      otel.onStep(
+        SESSION_ID,
+        makeModelStep({
+          stepIndex: 0,
+          metrics: { promptTokens: 50, completionTokens: 100, costUsd: 0.003 },
+        }),
+      );
+      otel.onStep(
+        SESSION_ID,
+        makeModelStep({
+          stepIndex: 1,
+          metrics: { promptTokens: 200, completionTokens: 500, costUsd: 0.015 },
+        }),
+      );
+      await otel.middleware.onSessionEnd?.(ctx as never);
+
+      expect(records).toHaveLength(2);
+      expect(records[0]?.value).toBe(0.003);
+      expect(records[1]?.value).toBe(0.015);
     });
   });
 });

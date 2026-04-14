@@ -10,6 +10,7 @@ exports[`createInitialState initial state shape 1`] = `
   "atResults": [],
   "auditEntries": [],
   "connectionStatus": "disconnected",
+  "costBreakdown": null,
   "cumulativeMetrics": {
     "costUsd": null,
     "engineTurns": 0,

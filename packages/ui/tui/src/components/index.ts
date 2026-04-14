@@ -7,6 +7,7 @@ export { AskUserDialog, type AskUserDialogProps } from "./AskUserDialog.js";
 // Phase 2j-4: Status bar + command palette + session picker
 export { CommandPalette, type CommandPaletteProps } from "./CommandPalette.js";
 export { ConfirmDialog, type ConfirmDialogProps, processConfirmKey } from "./ConfirmDialog.js";
+export { CostDashboardView } from "./CostDashboardView.js";
 // Message rendering components
 export { ErrorBlock } from "./error-block.js";
 export { InputArea, type InputAreaProps } from "./InputArea.js";

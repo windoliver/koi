@@ -135,6 +135,13 @@
         "@koi/token-estimator": "workspace:*",
       },
     },
+    "packages/lib/cost-aggregator": {
+      "name": "@koi/cost-aggregator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/decision-ledger": {
       "name": "@koi/decision-ledger",
       "version": "0.0.0",
@@ -1093,6 +1100,8 @@
     "@koi/context-manager": ["@koi/context-manager@workspace:packages/lib/context-manager"],
 
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
+
+    "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
 
     "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 

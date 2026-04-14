@@ -901,6 +901,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
     }
 
+    case "set_cost_breakdown":
+      return { ...state, costBreakdown: action.breakdown };
+
     default:
       return state;
   }

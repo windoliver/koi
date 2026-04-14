@@ -14,7 +14,7 @@ export { BashArgMatcher, BashRulePattern } from './bash-rule-HASH.js';
 export { ChannelAdapter, ChannelCapabilities, ChannelInheritMode, ChannelStatus, ChannelStatusKind, DEFAULT_SPAWN_CHANNEL_POLICY, MessageHandler, SpawnChannelPolicy } from './channel.js';
 export { ConfigListener, ConfigSource, ConfigStore, ConfigUnsubscribe, FeatureFlags, ForgeConfigSection, KoiConfig, LimitsConfig, LogLevel, LoopDetectionConfigSection, ModelRouterConfigSection, ModelTargetConfigEntry, SpawnConfig, TelemetryConfig } from './config.js';
 export { CompactionResult, ContextCompactor, TokenEstimator } from './context.js';
-export { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo } from './cost-HASH.js';
+export { AgentCostBreakdown, BudgetTracker, CostBreakdown, CostCalculator, CostEntry, CostTokenBreakdown, ModelCostBreakdown, ProviderCostBreakdown, ToolCostBreakdown, UsageInfo, formatCost, formatTokens } from './cost-HASH.js';
 export { Breakpoint, BreakpointId, BreakpointOptions, BreakpointPredicate, ComponentMetadata, ComponentSnapshot, DEFAULT_DEBUG_BUFFER_SIZE, DEFAULT_INSPECT_LIMIT, DebugEvent, DebugObserver, DebugSession, DebugSessionId, DebugSnapshot, DebugState, InspectComponentOptions, StepOptions, breakpointId, debugSessionId } from './debug.js';
 export { ElicitationOption, ElicitationQuestion, ElicitationResult } from './elicitation.js';
 export { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle } from './event-HASH.js';
@@ -5171,9 +5171,29 @@ exports[`@koi/core API surface ./cost-tracker has stable type surface 1`] = `
 "/**
  * Cost tracking contracts — per-session, per-tool, per-model cost transparency.
  *
- * Pure types only. No runtime code, no imports from other packages.
  * Defines the canonical cost tracking interfaces shared across L0, L1, and L2.
+ * Types are interface-only; formatting helpers are pure functions (L0 exception).
  */
+/**
+ * Detailed token breakdown for accurate cost calculation.
+ *
+ * Modern LLM providers use tiered pricing:
+ * - Cached input tokens: Anthropic 10% of base, OpenAI 50%
+ * - Cache creation tokens: Anthropic 1.25x (5-min) or 2x (1-hr extended)
+ * - Reasoning/thinking tokens: billed as output, invisible to user
+ *
+ * All fields optional — callers provide what the provider reports.
+ */
+interface CostTokenBreakdown {
+    readonly inputTokens: number;
+    readonly outputTokens: number;
+    /** Tokens read from provider cache (discounted rate). */
+    readonly cachedInputTokens?: number | undefined;
+    /** Tokens written to provider cache (premium rate). */
+    readonly cacheCreationTokens?: number | undefined;
+    /** Reasoning/thinking tokens — billed as output but not shown to user. */
+    readonly reasoningTokens?: number | undefined;
+}
 /** A single cost event recorded during a model call. */
 interface CostEntry {
     readonly inputTokens: number;
@@ -5183,6 +5203,12 @@ interface CostEntry {
     readonly timestamp: number;
     /** Optional tool attribution — set when the model call was on behalf of a tool. */
     readonly toolName?: string | undefined;
+    /** Provider identifier for per-provider aggregation (e.g. "openai", "anthropic"). */
+    readonly provider?: string | undefined;
+    /** Agent identifier for per-agent aggregation in multi-agent sessions. */
+    readonly agentId?: string | undefined;
+    /** Detailed token breakdown for tiered pricing — present when provider reports it. */
+    readonly tokenBreakdown?: CostTokenBreakdown | undefined;
 }
 /** Aggregated cost for a single model within a session. */
 interface ModelCostBreakdown {
@@ -5198,11 +5224,31 @@ interface ToolCostBreakdown {
     readonly totalCostUsd: number;
     readonly callCount: number;
 }
-/** Full cost breakdown for a session — total + per-model + per-tool. */
+/** Aggregated cost for a single agent within a session. */
+interface AgentCostBreakdown {
+    readonly agentId: string;
+    readonly totalCostUsd: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly callCount: number;
+}
+/** Aggregated cost for a single provider within a session. */
+interface ProviderCostBreakdown {
+    readonly provider: string;
+    readonly totalCostUsd: number;
+    readonly totalInputTokens: number;
+    readonly totalOutputTokens: number;
+    readonly callCount: number;
+}
+/** Full cost breakdown for a session — total + per-model + per-tool + per-agent + per-provider. */
 interface CostBreakdown {
     readonly totalCostUsd: number;
     readonly byModel: readonly ModelCostBreakdown[];
     readonly byTool: readonly ToolCostBreakdown[];
+    /** Per-agent breakdown — present when entries include agentId. */
+    readonly byAgent?: readonly AgentCostBreakdown[] | undefined;
+    /** Per-provider breakdown — present when entries include provider. */
+    readonly byProvider?: readonly ProviderCostBreakdown[] | undefined;
 }
 /**
  * Calculates the USD cost of a model call from token counts.
@@ -5210,7 +5256,13 @@ interface CostBreakdown {
  * Implementations may use static rate tables or dynamic pricing APIs.
  */
 interface CostCalculator {
+    /** Simple calculation from flat input/output token counts. */
     readonly calculate: (model: string, inputTokens: number, outputTokens: number) => number;
+    /**
+     * Detailed calculation with tiered pricing (cached tokens, reasoning tokens, etc.).
+     * Falls back to \`calculate()\` when not implemented.
+     */
+    readonly calculateDetailed?: (model: string, breakdown: CostTokenBreakdown) => number;
 }
 /**
  * Session-scoped budget tracker with breakdown queries.
@@ -5231,8 +5283,18 @@ interface UsageInfo {
     readonly remaining: number;
     readonly breakdown: CostBreakdown;
 }
+/** Format a token count for human display (e.g. 1500 → "1.5k", 2500000 → "2.5M"). */
+declare function formatTokens(n: number): string;
+/**
+ * Format a USD cost for human display.
+ *
+ * - \`null\` → em-dash (no data)
+ * - < $0.01 → 4 decimal places (e.g. "$0.0050")
+ * - ≥ $0.01 → 2 decimal places (e.g. "$1.23")
+ */
+declare function formatCost(costUsd: number | null): string;
 
-export type { BudgetTracker, CostBreakdown, CostCalculator, CostEntry, ModelCostBreakdown, ToolCostBreakdown, UsageInfo };
+export { type AgentCostBreakdown, type BudgetTracker, type CostBreakdown, type CostCalculator, type CostEntry, type CostTokenBreakdown, type ModelCostBreakdown, type ProviderCostBreakdown, type ToolCostBreakdown, type UsageInfo, formatCost, formatTokens };
 "
 `;
 
