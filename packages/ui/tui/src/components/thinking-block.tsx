@@ -1,11 +1,10 @@
 /**
  * ThinkingBlock — renders the model's thinking/reasoning content.
  *
- * Behavior (matches opencode's ReasoningPart pattern):
- * - **During streaming**: expanded, shows thinking content as it arrives
- *   with left border + gray styling
- * - **After streaming**: collapsed to a single summary line showing
- *   character count — saves vertical space for the actual response
+ * Always visible with left border + dimmed styling (like opencode's
+ * ReasoningPart with showThinking=true). Content streams in during
+ * generation and remains visible after completion so the user can
+ * review the model's reasoning.
  */
 
 import type { SyntaxStyle } from "@opentui/core";
@@ -20,39 +19,29 @@ interface ThinkingBlockProps {
 }
 
 export function ThinkingBlock(props: ThinkingBlockProps): JSX.Element {
-  const healed = () => (props.streaming ? healMarkdown(props.text) : props.text);
-  const charCount = () => props.text.length;
+  const content = () => (props.streaming ? healMarkdown(props.text) : props.text);
 
   return (
     <box flexDirection="column" paddingLeft={1} border={["left"]} borderColor="gray">
+      <text fg="gray">
+        <i>Thinking:</i>
+      </text>
       <Show
-        when={props.streaming}
+        when={props.syntaxStyle}
         fallback={
-          <text fg="gray">
-            <i>∴ Thinking ({charCount()} chars) ▸</i>
+          <text fg="gray" selectable>
+            <i>{content()}</i>
           </text>
         }
       >
-        <text fg="gray">
-          <i>Thinking:</i>
-        </text>
-        <Show
-          when={props.syntaxStyle}
-          fallback={
-            <text fg="gray" selectable>
-              <i>{healed()}</i>
-            </text>
-          }
-        >
-          {(style: () => SyntaxStyle) => (
-            <markdown
-              content={healed()}
-              syntaxStyle={style()}
-              streaming={true}
-              fg="gray"
-            />
-          )}
-        </Show>
+        {(style: () => SyntaxStyle) => (
+          <markdown
+            content={content()}
+            syntaxStyle={style()}
+            streaming={props.streaming ?? false}
+            fg="gray"
+          />
+        )}
       </Show>
     </box>
   );
