@@ -6,6 +6,7 @@
  */
 
 import type { EngineEvent } from "@koi/core/engine";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import type {
   CumulativeMetrics,
   PlanTask,
@@ -51,6 +52,49 @@ function findLastAssistant(messages: readonly TuiMessage[]): FoundAssistant | un
 /** Replace a single element in a readonly array by index. */
 function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
   return arr.with(idx, value);
+}
+
+/**
+ * Convert a replayed `InboundMessage`-shaped list into the TUI's
+ * internal `TuiMessage` shape. Shared by `rehydrate_messages` and
+ * `load_history` so every replay entrypoint — `--resume` at startup,
+ * session picker, rewind, reload — renders identical visible history.
+ *
+ * Filtering rules live in `@koi/core/message#filterResumedMessagesForDisplay`
+ * so CLI stdout (`koi start --resume`) and TUI rendering stay in lockstep.
+ *
+ * Non-text content blocks on assistant messages are preserved as
+ * `[<kind>]` text placeholders so image/file-only turns still show
+ * up in the transcript view.
+ */
+export function convertResumedMessagesToTui(
+  messages: readonly import("@koi/core/message").InboundMessage[],
+  idPrefix: string,
+): readonly TuiMessage[] {
+  const filtered = filterResumedMessagesForDisplay(messages);
+  const out: TuiMessage[] = [];
+  for (const [idx, msg] of filtered.entries()) {
+    if (msg.role === "user") {
+      out.push({
+        kind: "user",
+        id: `${idPrefix}-user-${idx}`,
+        blocks: msg.content,
+      });
+      continue;
+    }
+    const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
+      block.kind === "text"
+        ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
+        : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
+    );
+    out.push({
+      kind: "assistant",
+      id: `${idPrefix}-assistant-${idx}`,
+      blocks: assistantBlocks,
+      streaming: false,
+    });
+  }
+  return out;
 }
 
 /** Update the last assistant message in the messages array. */
@@ -738,10 +782,21 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         modelName: action.modelName,
         provider: action.provider,
         sessionName: action.sessionName,
+        sessionId: action.sessionId,
       };
       const maxContextTokens =
         action.maxTokens !== undefined ? action.maxTokens : state.maxContextTokens;
       return { ...state, sessionInfo, maxContextTokens };
+    }
+
+    case "rehydrate_messages": {
+      // Replaces the visible message list wholesale — callers are
+      // responsible for dispatching this exactly once at startup when
+      // `--resume` is set. Filtering + shape-conversion lives in
+      // `convertResumedMessagesToTui` so every replay surface
+      // (`--resume`, picker, rewind, reload) shows identical history.
+      const rehydrated = convertResumedMessagesToTui(action.messages, "resumed");
+      return { ...state, messages: rehydrated };
     }
 
     case "set_session_list": {
@@ -871,34 +926,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, showThinking: !state.showThinking };
 
     case "load_history": {
+      // Shares the same filtering rules as `rehydrate_messages` via
+      // `convertResumedMessagesToTui`, so `--resume`, picker load,
+      // rewind, and reload all surface identical visible history.
+      // Non-text assistant blocks are preserved as `[kind]`
+      // placeholders (matching rehydrate), rather than stripped.
       if (action.messages.length === 0) return state;
-      const historical: TuiMessage[] = [];
-      let assistantIdx = 0;
-      let userIdx = 0;
-      for (const msg of action.messages) {
-        if (msg.senderId === "user") {
-          historical.push({
-            kind: "user",
-            id: `history-user-${userIdx++}`,
-            blocks: msg.content,
-          });
-        } else if (msg.senderId === "assistant") {
-          const text = msg.content
-            .filter((b) => b.kind === "text")
-            .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-            .join("");
-          if (text.length > 0) {
-            historical.push({
-              kind: "assistant",
-              id: `history-assistant-${assistantIdx++}`,
-              blocks: [{ kind: "text", text }],
-              streaming: false,
-            });
-          }
-        }
-        // tool entries are skipped — they're in conversationHistory for model context
-        // but not needed in the display (no tool_call/tool_result rendering in replay)
-      }
+      const historical = convertResumedMessagesToTui(action.messages, "history");
       if (historical.length === 0) return state;
       // Prepend history before any live messages accumulated since load_history was queued.
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };

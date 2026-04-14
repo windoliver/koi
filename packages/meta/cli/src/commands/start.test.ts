@@ -97,7 +97,9 @@ mock.module("../manifest.js", () => ({
   loadManifestConfig: mockLoadManifest,
 }));
 
-// Mock @koi/session so tests don't touch the filesystem
+// Mock @koi/session so tests don't touch the filesystem. We
+// retain a mock for the raw `resumeForSession` API so other
+// codepaths that call it directly still work.
 type ResumeSessionResult =
   | {
       readonly ok: true;
@@ -121,6 +123,42 @@ mock.module("@koi/session", () => ({
   createJsonlTranscript: mock(() => ({})),
   createSessionTranscriptMiddleware: mock(() => ({})),
   resumeForSession: mockResumeForSession,
+}));
+
+// Mock the shared-wiring helper `resumeSessionFromJsonl` so
+// start.ts's resume flow is testable without touching the real
+// `~/.koi/sessions` directory. The real helper probes
+// `Bun.file(...).exists()` before reading the transcript, and
+// hand-crafting real JSONL files just to satisfy the existence
+// probe in a unit test would be wasteful and brittle — routing
+// through a module mock lets each test shape the resume outcome
+// directly.
+type ResumeSessionFromJsonlResult =
+  | {
+      readonly ok: true;
+      readonly value: {
+        readonly sid: unknown;
+        readonly messages: readonly unknown[];
+        readonly issueCount: number;
+      };
+    }
+  | { readonly ok: false; readonly error: string };
+const mockResumeSessionFromJsonl = mock(
+  async (
+    _rawId: string,
+    _transcript: unknown,
+    _dir: string,
+  ): Promise<ResumeSessionFromJsonlResult> => ({
+    ok: true,
+    value: { sid: "mock-sid", messages: [], issueCount: 0 },
+  }),
+);
+mock.module("../shared-wiring.js", () => ({
+  buildPluginMcpSetup: mock(() => undefined),
+  loadUserMcpSetup: mock(async () => undefined),
+  loadUserRegisteredHooks: mock(async () => []),
+  mergeUserAndPluginHooks: mock((u: unknown[], _p: unknown[]) => u),
+  resumeSessionFromJsonl: mockResumeSessionFromJsonl,
 }));
 
 // ---------------------------------------------------------------------------
@@ -287,29 +325,53 @@ describe("run() — manifest loading", () => {
 describe("run() — session resume", () => {
   beforeEach(() => {
     process.env.OPENROUTER_API_KEY = "sk-or-test";
-    mockResumeForSession.mockReset();
+    mockResumeSessionFromJsonl.mockReset();
     mockRunInteractive.mockReset();
   });
   afterEach(() => {
     delete process.env.OPENROUTER_API_KEY;
   });
 
-  test("resumes session and returns OK when resumeForSession succeeds", async () => {
-    mockResumeForSession.mockImplementation(async () => ({
+  test("resumes session and returns OK when the resume helper succeeds", async () => {
+    mockResumeSessionFromJsonl.mockImplementation(async () => ({
       ok: true as const,
-      value: { messages: [], issues: [] },
+      value: {
+        sid: "ses_abc",
+        messages: [
+          {
+            senderId: "user",
+            timestamp: 1,
+            content: [{ kind: "text", text: "hi" }],
+          },
+        ],
+        issueCount: 0,
+      },
     }));
     mockRunInteractive.mockImplementation(async () => {});
     const { run } = await import("./start.js");
     const result = await run(makeFlags({ resume: "ses_abc" }));
     expect(result).toBe(ExitCode.OK);
-    expect(mockResumeForSession).toHaveBeenCalledTimes(1);
+    expect(mockResumeSessionFromJsonl).toHaveBeenCalledTimes(1);
   });
 
-  test("returns FAILURE when resumeForSession fails", async () => {
-    mockResumeForSession.mockImplementation(async () => ({
+  test("returns FAILURE when the resume helper reports missing transcript", async () => {
+    // The helper fails closed for nonexistent files (based on
+    // Bun.file(...).exists() in shared-wiring). Start.ts surfaces
+    // that as an explicit failure so the user doesn't fork into a
+    // blank session under a typoed id.
+    mockResumeSessionFromJsonl.mockImplementation(async () => ({
       ok: false as const,
-      error: { message: "session not found", code: "NOT_FOUND", retryable: false },
+      error: 'no transcript found for session id "ses_typo"',
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ resume: "ses_typo" }));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("returns FAILURE when the resume helper errors", async () => {
+    mockResumeSessionFromJsonl.mockImplementation(async () => ({
+      ok: false as const,
+      error: "session not found",
     }));
     const { run } = await import("./start.js");
     const result = await run(makeFlags({ resume: "ses_missing" }));

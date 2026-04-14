@@ -46,6 +46,7 @@ interface Violation {
  * Adding a new file here requires PR review to confirm it meets L0 criteria.
  */
 export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
+  "message.ts",
   "ecs.ts",
   "error-factories.ts",
   "validation-utils.ts",

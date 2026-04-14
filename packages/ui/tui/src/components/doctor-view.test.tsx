@@ -65,7 +65,12 @@ describe("DoctorView", () => {
   });
 
   test("shows model name when session is active", async () => {
-    const sessionInfo: SessionInfo = { modelName: "claude-opus-4-6", provider: "anthropic", sessionName: "test" };
+    const sessionInfo: SessionInfo = {
+      modelName: "claude-opus-4-6",
+      provider: "anthropic",
+      sessionName: "test",
+      sessionId: "test-sid",
+    };
     const { captureCharFrame, renderer } = await renderDoctorView({ sessionInfo });
     const frame = captureCharFrame();
     expect(frame).toContain("claude-opus-4-6");

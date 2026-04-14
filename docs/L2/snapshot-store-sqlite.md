@@ -154,7 +154,7 @@ Per #1625 design review issue 9, the package ships a crash-injection test harnes
 | Scenario | Behavior |
 |---|---|
 | Crash mid-`put` | SQLite transaction rolls back; chain head unchanged |
-| Crash mid-`prune` (chain step) | Transaction rolls back; nothing deleted |
+| Crash mid-`prune` (chain step) | Transaction rolls back; nothing deleted. The in-memory `chainHeads` cache mutation is deferred until AFTER the SQL transaction commits (#1749), so a rolled-back prune cannot poison the cache and serve stale heads to `getOrCreateSession`. |
 | Crash mid-blob-sweep | Some orphan blobs may persist; next prune cleans them up |
 | Corrupt SQLite (torn header) | Fail-closed at startup with explicit error |
 | Missing blob referenced by snapshot | Restore fails gracefully with `BLOB_MISSING` error, never silently corrupts state |
@@ -221,6 +221,15 @@ const ancestors = store.ancestors({
 });
 
 store.prune(chainId("session-abc"), { retainCount: 500 });
+
+// Wipe a chain entirely (used by `Checkpoint.resetSession` on /clear).
+// `retainBranches: false` removes the head row too — the prune logic
+// updates `chain_heads` BEFORE deleting any `snapshot_nodes` so the
+// FK from `chain_heads.node_id` into `snapshot_nodes(node_id)` stays
+// satisfied through the transaction (#1749). The replacement head
+// (when not removing all rows) is picked from the in-memory survivor
+// set, not a SELECT against the still-pre-delete table state.
+store.prune(chainId("session-abc"), { retainCount: 0, retainBranches: false });
 store.close();
 ```
 

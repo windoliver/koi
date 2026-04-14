@@ -4,7 +4,7 @@
  * Wires the TUI application shell:
  *   store + permissionBridge + batcher → createTuiApp → handle.start()
  *
- * Runtime assembly is delegated to createTuiRuntime() (tui-runtime.ts) which
+ * Runtime assembly is delegated to createKoiRuntime() (tui-runtime.ts) which
  * wires the full L2 tool stack via createKoi. This command owns the TUI UX:
  * store, event batching, session management, signal handling.
  *
@@ -19,7 +19,7 @@
  * The session ID is generated once per TUI process launch; agent:clear / session:new
  * resets the conversation history but continues writing to the same transcript file.
  *
- * Tools wired (via createTuiRuntime):
+ * Tools wired (via createKoiRuntime):
  *   Glob, Grep, ToolSearch — codebase search (cwd-rooted)
  *   web_fetch              — HTTP fetch via @koi/tools-web
  *   Bash, bash_background  — shell execution via @koi/tools-bash
@@ -28,14 +28,17 @@
  *   agent_spawn — real spawning via createSpawnToolProvider (#1582 wired)
  */
 
+import { writeSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   AuditEntry,
   EngineEvent,
+  InboundMessage,
   JsonObject,
   RichTrajectoryStep,
+  SessionId,
   SessionTranscript,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
@@ -68,9 +71,12 @@ import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
+import { loadManifestConfig } from "./manifest.js";
+import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import type { KoiRuntimeHandle } from "./runtime-factory.js";
+import { createKoiRuntime } from "./runtime-factory.js";
+import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
-import type { TuiRuntimeHandle } from "./tui-runtime.js";
-import { createTuiRuntime } from "./tui-runtime.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -262,7 +268,7 @@ export function summarizeRunReport(runReport: {
  * repopulated with the prior session's trajectory.
  */
 async function refreshTrajectoryData(
-  handle: TuiRuntimeHandle,
+  handle: KoiRuntimeHandle,
   store: TuiStore,
   currentSessionId: string,
   isStillCurrent: () => boolean,
@@ -319,7 +325,24 @@ async function loadSessionList(
     files
       .filter((f) => f.endsWith(".jsonl"))
       .map(async (file): Promise<SessionSummary | null> => {
-        const id = file.slice(0, -".jsonl".length);
+        // Filenames on disk are `encodeURIComponent(sessionId).jsonl`
+        // so composite ids like `agent:<agentId>:<uuid>` live as
+        // `agent%3A<agentId>%3A<uuid>.jsonl`. Decode the basename
+        // back to the raw id before branding + loading — otherwise
+        // `transcript.load` re-encodes and looks up a file that
+        // does not exist (e.g. `agent%253A...` instead of
+        // `agent%3A...`), making legacy pre-branch transcripts
+        // invisible to the picker and unresumable via the list.
+        let decoded: string;
+        try {
+          decoded = decodeURIComponent(file.slice(0, -".jsonl".length));
+        } catch {
+          // Malformed percent-encoding — skip the file rather than
+          // crash the picker. The user can still pass the raw
+          // basename via `koi tui --resume` if they need to.
+          return null;
+        }
+        const id = decoded;
         const result = await transcript.load(sessionId(id));
         if (!result.ok || result.value.entries.length === 0) return null;
 
@@ -646,7 +669,7 @@ function yieldForRenderFrame(): Promise<void> {
  * `koi tui` — launch the full-screen TUI.
  *
  * Architecture: the TUI owns the full terminal UX (input box, store, events).
- * Runtime assembly (tools, middleware, providers) is delegated to createTuiRuntime().
+ * Runtime assembly (tools, middleware, providers) is delegated to createKoiRuntime().
  * The conversation loop is driven by KoiRuntime.run() from @koi/engine.
  */
 export async function runTuiCommand(flags: TuiFlags): Promise<void> {
@@ -658,6 +681,33 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   }
 
   // ---------------------------------------------------------------------------
+  // 0. Manifest loading (optional — --manifest flag)
+  // ---------------------------------------------------------------------------
+  //
+  // Loaded BEFORE API config so manifest.modelName can override the
+  // KOI_MODEL env default. Mirrors `koi start --manifest` semantics:
+  // manifest.instructions replaces DEFAULT_SYSTEM_PROMPT (skills still
+  // prepend), and manifest.stacks / manifest.plugins flow into the
+  // stack activation filter.
+  let manifestModelName: string | undefined;
+  let manifestInstructions: string | undefined;
+  let manifestStacks: readonly string[] | undefined;
+  let manifestPlugins: readonly string[] | undefined;
+  let manifestBackgroundSubprocesses: boolean | undefined;
+  if (flags.manifest !== undefined) {
+    const manifestResult = await loadManifestConfig(flags.manifest);
+    if (!manifestResult.ok) {
+      process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
+      process.exit(1);
+    }
+    manifestModelName = manifestResult.value.modelName;
+    manifestInstructions = manifestResult.value.instructions;
+    manifestStacks = manifestResult.value.stacks;
+    manifestPlugins = manifestResult.value.plugins;
+    manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
+  }
+
+  // ---------------------------------------------------------------------------
   // 1. API configuration
   // ---------------------------------------------------------------------------
 
@@ -666,14 +716,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: modelName, provider, fallbackModels } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: envModelName, provider, fallbackModels } = apiConfigResult.value;
+  // Manifest model name wins over the env default (same precedence
+  // as `koi start --manifest`).
+  const modelName = manifestModelName ?? envModelName;
 
   // Enable reasoning for OpenRouter — it silently ignores the field for
   // non-reasoning models. Other providers (OpenAI, custom proxies) may
   // reject it with HTTP 400, so only opt in when we know we're on OpenRouter.
   // Uses the resolved `provider` from env config, not baseUrl sniffing,
   // so the default OPENROUTER_API_KEY path (no explicit baseUrl) works.
-  const reasoningCompat = provider === "openrouter" ? { compat: { supportsReasoning: true } } : {};
+  const reasoningCompat: { compat?: { readonly supportsReasoning: true } } =
+    provider === "openrouter" ? { compat: { supportsReasoning: true } as const } : {};
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
@@ -769,14 +823,69 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — recreated on resetConversation() to drop stale pre-clear events
   let batcher = createEventBatcher<EngineEvent>(dispatchBatch);
 
-  // One session ID per TUI process launch. agent:clear / session:new reset the
-  // conversation history but continue writing to the same transcript file — the
-  // JSONL is a journal of everything that happened in this TUI invocation.
-  const tuiSessionId = sessionId(crypto.randomUUID());
+  // Mint a plain UUID for this TUI session. This is passed through to
+  // `createKoi` via the `sessionId` override, so the engine uses it as
+  // `runtime.sessionId` and as `ctx.session.sessionId` — which is what
+  // the session-transcript middleware routes on. The post-quit resume
+  // hint prints this exact id, and the `~/.koi/sessions/<id>.jsonl`
+  // file is keyed on it, so copy-pasting the hint into
+  // `koi tui --resume` or `koi start --resume` Just Works.
+  // let: justified — reassigned on successful --resume so new writes
+  // append to the existing JSONL instead of forking.
+  let tuiSessionId = sessionId(crypto.randomUUID());
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
+  // --- Session resume (optional, --resume <id>) ---
+  // Loads the historical message list from the JSONL transcript and
+  // dispatches `rehydrate_messages` so the TUI renders the previous
+  // conversation on mount. The resumed id then becomes `tuiSessionId`
+  // and is passed through to `createKoi` as the `sessionId` override,
+  // so new turns append to the same JSONL file instead of forking to
+  // a fresh one.
+  // let: justified — the resumed message list must be spliced into the
+  // runtime's mutable transcript array after assembly, because the
+  // model's context window is built from that array on every turn.
+  // Dispatching `rehydrate_messages` alone only updates the UI — the
+  // model would still see an empty history and treat the resumed
+  // session as a fresh conversation.
+  let resumedMessagesToPrime: readonly InboundMessage[] = [];
+  if (flags.resume !== undefined) {
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
+    if (!resumeResult.ok) {
+      process.stderr.write(
+        `koi tui: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
+      );
+      process.exit(1);
+    }
+    tuiSessionId = resumeResult.value.sid;
+    store.dispatch({
+      kind: "rehydrate_messages",
+      messages: resumeResult.value.messages,
+    });
+    resumedMessagesToPrime = resumeResult.value.messages;
+    if (resumeResult.value.issueCount > 0) {
+      // Non-fatal: surface once via stderr (visible before alt-screen
+      // engages) so the operator knows the transcript needed repair.
+      process.stderr.write(
+        `koi tui: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
+      );
+    }
+  }
+
+  // Populate the status-bar session chip immediately so users see the
+  // same identifier the post-quit resume hint will emit, instead of the
+  // placeholder "no session" label. Provider was destructured from
+  // `resolveApiConfig` above (the canonical resolved value).
+  store.dispatch({
+    kind: "set_session_info",
+    modelName,
+    provider,
+    sessionName: "",
+    sessionId: tuiSessionId,
+  });
+
   // ---------------------------------------------------------------------------
-  // 3. Assemble runtime (A1-A: delegate to createTuiRuntime)
+  // 3. Assemble runtime (A1-A: delegate to createKoiRuntime)
   // ---------------------------------------------------------------------------
 
   // --- Load skills before runtime creation (same as koi start on main) ---
@@ -791,8 +900,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     return parts.sort().join("\n\n---\n\n");
   })();
+  // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
+  // mirrors `koi start --manifest` behavior. Skills still prepend
+  // because they're filesystem-discovered, not part of the manifest.
+  const baseSystemPrompt = manifestInstructions ?? DEFAULT_SYSTEM_PROMPT;
   const systemPrompt =
-    skillContent.length > 0 ? `${skillContent}\n\n${DEFAULT_SYSTEM_PROMPT}` : DEFAULT_SYSTEM_PROMPT;
+    skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt;
 
   // Loop mode (--until-pass): each user turn becomes a runUntilPass
   // invocation that iterates the agent against the verifier until
@@ -804,14 +917,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
-  let runtimeHandle: TuiRuntimeHandle | null = null;
-  const runtimeReady = createTuiRuntime({
+  let runtimeHandle: KoiRuntimeHandle | null = null;
+  const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
     approvalHandler: permissionBridge.handler,
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
+    // TUI opts out of engine loop detection explicitly: the
+    // per-submit iteration budget reset + governance caps below
+    // already bound spirals, and false-positive trips during an
+    // interactive session are expensive (they abort mid-turn with a
+    // confusing error). `koi start`'s auto-allow backend leaves
+    // this at the engine default (enabled) — see `runtime-factory.ts`.
+    loopDetection: false,
     // In loop mode, session persistence is intentionally omitted so
     // failed iterations don't pollute the resumable JSONL transcript.
     // Loop mode is a self-correcting execution, not a conversation.
@@ -819,6 +939,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    // Manifest-driven opt-in for preset stacks + plugins. Omitted
+    // when the user didn't pass --manifest, in which case the
+    // factory defaults to activating every stack / every discovered
+    // plugin (v1's "wire everything" posture).
+    ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
+    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    // TUI defaults `backgroundSubprocesses` to `true` (the factory
+    // default) because its interactive surface makes long-running
+    // jobs observable. A manifest setting wins if provided.
+    ...(manifestBackgroundSubprocesses !== undefined
+      ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
+      : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
     // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
     ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
@@ -854,6 +986,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
   }).then((handle) => {
     runtimeHandle = handle;
+    // Prime the runtime's in-memory transcript with the resumed
+    // messages. The runtime's context-window builder reads from this
+    // array on every turn, so without this push the model would see
+    // an empty history and treat the first post-resume turn as a
+    // fresh conversation. Dispatching `rehydrate_messages` only
+    // updates the UI; this line makes the agent remember.
+    if (resumedMessagesToPrime.length > 0) {
+      handle.transcript.push(...resumedMessagesToPrime);
+      resumedMessagesToPrime = [];
+    }
     return handle;
   });
 
@@ -861,6 +1003,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
+  // let: promise tracking the in-flight `drainEngineStream` call.
+  // `resetConversation()` must await this before truncating or
+  // overwriting the session file, otherwise the session-transcript
+  // middleware's finally-block append (which runs on turns that
+  // already observed a `done` chunk before the caller aborted) can
+  // land AFTER the truncate and silently resurrect pre-clear history.
+  let activeRunPromise: Promise<void> | null = null;
 
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
   // Async: fetches live pricing from models.dev (5s timeout, disk cached).
@@ -1015,7 +1164,193 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — incremented per session reset
   let trajectoryRefreshGen = 0;
 
-  const resetConversation = (): void => {
+  // Monotonic id for each `resetConversation()` invocation.
+  // Bumped synchronously at the top of every call. Reset IIFEs
+  // capture the value at start, and the catch / truncate-failure
+  // paths consult `resetGeneration` before mutating the
+  // `clearPersistFailed` / `lastResetFailed` latches — older
+  // completions ignore their state and only the most recent
+  // reset can publish results. Without this, a `/clear` followed
+  // quickly by another reset path could let the older truncate
+  // failure overwrite the newer reset's success state.
+  // let: justified — incremented per reset attempt.
+  let resetGeneration = 0;
+
+  // Reflects the most recent `jsonlTranscript.truncate()` outcome
+  // during a clear/new reset. Shutdown checks this flag (not
+  // resetBarrier rejection) to suppress the post-quit resume hint:
+  // advertising a session as resumable when its durable clear
+  // didn't land would silently re-expose the pre-clear history on
+  // the next `koi tui --resume`. Using a flag instead of a
+  // rejected promise lets `onSubmit` and other `await resetBarrier`
+  // sites proceed cleanly after a failed clear; the visible error
+  // is still surfaced via
+  // `store.dispatch({ code: "SESSION_CLEAR_PERSIST_FAILED" })`.
+  //
+  // Reset at the top of each truncating `resetConversation()` call
+  // so a subsequent successful clear re-enables the hint. A sticky
+  // process-wide flag would permanently strand the user if a
+  // transient I/O blip during one clear happened to precede hours
+  // of later work — the shutdown hint would be withheld even
+  // though the final session state is perfectly resumable.
+  // Non-truncating resets (picker / rewind) preserve the latch.
+  // let: justified — toggled per truncating-clear attempt.
+  let clearPersistFailed = false;
+
+  // Reflects the most recent `resetConversation()` IIFE outcome.
+  // Set to `true` whenever the reset body's `catch` runs (a
+  // `resetSessionState()` throw, a runtime-handle disposal
+  // failure, etc.). Used by picker hydration and rewind replay
+  // to refuse to proceed onto contaminated runtime state — if
+  // the task board / approval store / trajectory prune partially
+  // failed, the next picker load or rewind would otherwise
+  // hydrate fresh history onto stale middleware state. Reset at
+  // the top of each `resetConversation()` call so each new reset
+  // attempt can succeed independently.
+  // let: justified — toggled per reset attempt.
+  let lastResetFailed = false;
+
+  // Rewind-boundary tracking: `rewindBoundaryActive` is true
+  // whenever `/rewind` must refuse to walk past some boundary
+  // earlier in the persistent checkpoint chain. Two conditions
+  // flip it:
+  //   1. The user issued `agent:clear` or `session:new` in this
+  //      process — pre-clear snapshots still exist in the chain
+  //      and rewinding past them would restore file state the
+  //      user explicitly asked to drop.
+  //   2. The TUI was launched with `--resume` — the prior
+  //      process may have issued a clear we cannot see from
+  //      here, and the chain still contains whatever snapshots
+  //      it ever held. The safe default is to treat the resume
+  //      point itself as a boundary until the user takes new
+  //      turns in this process.
+  // Rewind is then bounded to `postClearTurnCount`, which counts
+  // only turns whose snapshots were definitely added by this
+  // process, so we can't accidentally cross into territory we
+  // don't own.
+  // let: justified — may be flipped by subsequent in-process clears
+  let rewindBoundaryActive = flags.resume !== undefined;
+
+  // Clear-only tracking: `clearedThisProcess` is `true` only
+  // when the user EXPLICITLY issued `/clear` or `/new` in the
+  // current process. Shutdown uses this (NOT the rewind flag
+  // above) to decide whether to suppress the resume hint for a
+  // cleared-and-untouched session. Reusing the rewind flag
+  // would misclassify a plain `--resume` + quit as "cleared"
+  // and strand inspection-only opens without a hint to relaunch.
+  // let: justified — set on explicit /clear or /new, never on resume
+  let clearedThisProcess = false;
+
+  // Counts user turns taken AFTER the most recent rewind
+  // boundary (either an explicit `/clear`/`/new` OR the resume
+  // point at launch when `--resume` was used). Reset to 0 each
+  // time the boundary shifts and incremented in `onSubmit` after
+  // each turn settles. `/rewind n` rejects when
+  // `n > postClearTurnCount`, so a rewind can never cross the
+  // boundary while still letting users roll back mistakes made
+  // in the current session. When `rewindBoundaryActive` is
+  // false the counter is effectively unused because the guard
+  // skips the check entirely.
+  // let: justified — incremented per turn, reset on each boundary shift.
+  let postClearTurnCount = 0;
+
+  // The session id the user is currently VIEWING. Starts as
+  // `tuiSessionId` (the startup session), gets rotated to the
+  // picked session id after a successful `onSessionSelect`, and
+  // rotates BACK to `tuiSessionId` when the user selects the
+  // startup session from the picker. The post-quit resume hint,
+  // the status-bar chip, and the operator-facing "relaunch with
+  // --resume" guidance all use this id so the user is always
+  // pointed at the file that matches what they just saw on
+  // screen. This stays decoupled from `tuiSessionId` (the
+  // runtime's durable routing key) because the runtime cannot be
+  // rebound mid-session.
+  //
+  // Picker read-only mode is DERIVED from the comparison
+  // `viewedSessionId !== tuiSessionId` rather than a one-way
+  // latch. A user who opens an archive, then returns to the
+  // startup session via the picker, regains full submit / clear /
+  // rewind / fork capability the moment the two ids converge
+  // again — matches the pre-branch behavior of the picker flow.
+  // let: justified — rotated on every successful picker load
+  let viewedSessionId: SessionId = tuiSessionId;
+
+  // Latches to `true` for the duration of an in-flight
+  // `onSessionSelect` async flow, so the picker-mode guards fire
+  // the instant the user clicks a session even though
+  // `viewedSessionId` is only rotated after the async
+  // load/validate/reset work settles. Without this, a fast submit
+  // (or slash command) in the window between "user picked" and
+  // "async flow completed" would still run against the startup
+  // session, silently mutating the wrong transcript. Cleared in
+  // the `onSessionSelect` finally block regardless of outcome.
+  // let: justified — toggled per picker-select invocation.
+  let pendingSessionSwitch = false;
+  const isInPickerMode = (): boolean => pendingSessionSwitch || viewedSessionId !== tuiSessionId;
+
+  // Monotonic id for each `onSessionSelect` invocation. Bumped
+  // synchronously at the top of the handler, captured by the
+  // async flow, and consulted at every state-publication point
+  // (clearing `pendingSessionSwitch`, mutating `viewedSessionId`,
+  // hydrating `runtimeHandle.transcript`, dispatching
+  // `set_session_info` / `load_history`). Stale completions —
+  // selections superseded by a later click — exit without side
+  // effects. Without this, rapid A→B clicks let whichever load
+  // finishes last "win" regardless of the user's intent, and
+  // the first completion can flip `pendingSessionSwitch = false`
+  // while the second is still in flight, briefly re-enabling
+  // submit / clear / new / rewind on the wrong session.
+  // let: justified — incremented per picker-select.
+  let pickerGeneration = 0;
+
+  // Shared reset primitive. Callers that represent a true privacy /
+  // rollback boundary (agent:clear, session:new) must additionally
+  // flip `rewindBoundaryActive` and `clearedThisProcess` themselves
+  // — session-switch via the picker intentionally does NOT flip
+  // them, because the post-switch turns establish a usable rewind
+  // chain of their own.
+  //
+  // `truncatePersistedTranscript` controls whether the on-disk
+  // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
+  // state. agent:clear / session:new pass `true` because the
+  // durable transcript is exactly what the user wants erased.
+  // Session switching must NOT pass `true` — the live JSONL
+  // belongs to the startup session id and must survive the switch,
+  // otherwise any work done before the pick is destroyed and the
+  // post-quit resume hint points at a file whose identity no
+  // longer matches that work.
+  const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
+    // Bump the reset generation BEFORE any other state changes
+    // so older async reset IIFEs can detect that they've been
+    // superseded and abort their state-publication side effects.
+    resetGeneration += 1;
+    const myGeneration = resetGeneration;
+    // Clear any stale flag from a PREVIOUS clear — if the current
+    // reset is going to re-truncate the transcript, shutdown's
+    // hint suppression should not fire on the basis of an earlier
+    // transient failure. The new truncate path below will re-set
+    // the flag if and only if THIS reset's durable clear fails.
+    //
+    // Critically, we only clear the flag when `truncatePersistedTranscript`
+    // is true. Non-destructive resets (session picker load,
+    // rewind post-restore) must NOT clear it — if a prior
+    // `/clear` or `/new` failed to truncate, the pre-clear
+    // content is still on disk, and a later picker/rewind
+    // reset must not silently re-enable writes. The sticky-
+    // across-non-truncating-resets semantics close the earlier
+    // bypass where a failed clear followed by a picker switch
+    // could silently resume writing to the old transcript.
+    if (options.truncatePersistedTranscript) {
+      clearPersistFailed = false;
+    }
+    // `lastResetFailed` IS reset on every attempt (including
+    // non-truncating ones) because each reset attempt is an
+    // independent operation: a transient failure during one
+    // picker switch should not block a successful subsequent
+    // reset. The flag latches if the IIFE body throws below,
+    // and downstream callers (picker hydration, rewind replay,
+    // submit) check it before proceeding.
+    lastResetFailed = false;
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
@@ -1035,64 +1370,199 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
 
-    // Invalidate any in-flight refreshTrajectoryData() that was scheduled
-    // before this reset — its captured gen will no longer match. The
-    // destructive store clearing (clear_messages, set_trajectory_data,
-    // tuiTurnCounter) is deferred to the resetSessionState success branch
-    // per the #1742 fail-closed contract, but the generation bump must
-    // fire IMMEDIATELY so a late refresh cannot race ahead of that branch
-    // and repopulate stale lanes in the window between here and the
-    // success callback. The counter is local state, not store state, so
-    // it's safe to bump eagerly. (#1764)
+    // Snapshot the in-flight run promise BEFORE scheduling any
+    // asynchronous reset work. `drainEngineStream` may still be
+    // running against the now-aborted controller, and the session-
+    // transcript middleware commits turn entries in a `finally` block
+    // whenever it already observed a `done` chunk. If we truncated
+    // before that append resolved, the committed entries would land
+    // on the freshly-emptied file and silently resurrect pre-clear
+    // history. Await the drain first, then truncate.
+    const inflightRun = activeRunPromise;
+    const shouldTruncate = options.truncatePersistedTranscript;
+    // A `/clear` / `/new` issued during the startup resume window
+    // (before createKoiRuntime has resolved) still has to honor
+    // the privacy boundary. Clearing the prime array is synchronous
+    // and safe regardless of runtime readiness.
+    resumedMessagesToPrime = [];
+    // Invalidate any in-flight refreshTrajectoryData() scheduled before
+    // this reset (#1764). Bump synchronously so a late refresh cannot
+    // race ahead of the success branch below and repopulate stale lanes.
     trajectoryRefreshGen += 1;
 
     // #1742 loop-2 round 5: do NOT clear the visible transcript or splice
     // runtimeHandle.transcript until resetSessionState() actually resolves.
     // resetSessionState fails closed on cycleSession TIMEOUT — if we wiped
     // the screen first, the user would lose all visible history while
-    // approvals/memory/etc were still in the wedged old session. The user
-    // is then debugging blind. Defer destructive cleanup to the success
-    // branch; on failure leave the screen intact and surface an error
-    // banner so the operator can inspect what wedged.
+    // approvals/memory/etc were still in the wedged old session. Defer
+    // destructive cleanup to the success branch; on failure leave the
+    // screen intact and surface an error banner.
     if (runtimeHandle !== null) {
       const idleController = new AbortController();
       idleController.abort();
-      resetBarrier = runtimeHandle
-        .resetSessionState(idleController.signal)
-        .then((): boolean => {
-          // Only NOW that the engine confirmed the session was rotated
-          // do we wipe visible state. Order: store messages, trajectory
-          // + audit ledger, runtime transcript, TUI turn counter.
-          store.dispatch({ kind: "clear_messages" });
-          store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
-          // Clear cost aggregator only after successful reset — fail-closed contract.
-          costBridge.aggregator.clearSession(tuiSessionId as string);
-          costBridge.tokenRate.clear();
-          runtimeHandle?.transcript.splice(0);
-          tuiTurnCounter = 0;
-          // /clear is silent on success — a freshly cleared conversation
-          // is its own acknowledgement. If the user later hits the
-          // cumulative runtime-wide spend cap (which survives /clear by
-          // design — iteration budget resets, token accounting does not),
-          // the budget-exceeded error itself surfaces the explanation.
-          // Post-reset toast removed per #1764 review (was originally
-          // added by #1742 as a RESET_NOTICE but mimicked an error).
-          return true;
-        })
-        .catch((resetError: unknown): boolean => {
+      resetBarrier = (async (): Promise<boolean> => {
+        // Drain any in-flight run to its settled state so late
+        // middleware-finally appends from the aborted turn cannot
+        // land after the truncate below.
+        if (inflightRun !== null) {
+          try {
+            await inflightRun;
+          } catch {
+            /* already reported upstream via add_error */
+          }
+        }
+        try {
+          await runtimeHandle?.resetSessionState(idleController.signal, {
+            truncate: shouldTruncate,
+          });
+        } catch (resetError: unknown) {
           const message = resetError instanceof Error ? resetError.message : String(resetError);
           store.dispatch({
             kind: "add_error",
             code: "RESET_FAILED",
             message: `Session reset failed: ${message}. Visible history preserved. Please restart koi tui to recover.`,
           });
-          // Leave store messages, trajectory, and runtime transcript
-          // intact so the operator still has the conversation context
-          // to inspect / decide how to recover. Resolve the barrier
-          // with `false` so callers (onSessionSelect, /rewind) know
-          // not to hydrate history into a still-stale runtime.
+          if (myGeneration === resetGeneration) {
+            lastResetFailed = true;
+            // Only mark the persisted clear as failed when this
+            // reset was actually trying to truncate durable state
+            // (`shouldTruncate === true` means /clear or /new with
+            // truncatePersistedTranscript). For non-truncating
+            // resets — picker session switches and rewind reloads
+            // — the JSONL file is intentionally left intact, so a
+            // mid-flight failure has nothing to do with persisted-
+            // clear semantics. Latching `clearPersistFailed` there
+            // would strand a healthy session: subsequent shutdowns
+            // would suppress the resume hint and downstream guards
+            // would block normal submit/fork paths. `lastResetFailed`
+            // above is the right latch for in-memory recovery; it
+            // gates the next reset attempt without poisoning the
+            // file-state contract.
+            //
+            // When this WAS a truncating reset, a hook failure
+            // (AggregateError from the factory) means session-keyed
+            // durable state may be partially intact — e.g. the
+            // checkpoint stack's onResetSession failing to prune
+            // the old chain means `/rewind` after quit+resume
+            // could walk back into pre-clear snapshots. The flag
+            // ensures the post-quit hint is suppressed and the
+            // user is steered toward a fresh restart.
+            if (shouldTruncate) {
+              clearPersistFailed = true;
+            }
+          }
           return false;
+        }
+        // Only NOW that the engine confirmed the session was rotated
+        // do we wipe visible state.
+        store.dispatch({ kind: "clear_messages" });
+        store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
+        // Clear cost aggregator only after successful reset — fail-closed contract.
+        costBridge.aggregator.clearSession(tuiSessionId as string);
+        costBridge.tokenRate.clear();
+        runtimeHandle?.transcript.splice(0);
+        tuiTurnCounter = 0;
+        if (shouldTruncate) {
+          // Truncate the on-disk JSONL so a subsequent `--resume`
+          // cannot resurrect pre-clear conversation.
+          const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+          if (!truncateResult.ok && myGeneration === resetGeneration) {
+            clearPersistFailed = true;
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_CLEAR_PERSIST_FAILED",
+              message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+            });
+          }
+        }
+        // /clear is silent on success — a freshly cleared conversation
+        // is its own acknowledgement. The cumulative runtime-wide spend
+        // cap survives /clear by design (iteration budget resets, token
+        // accounting does not); if the user later trips it, the
+        // budget-exceeded error itself surfaces the explanation. Post-
+        // reset toast removed per #1764 review (was originally added
+        // by #1742 as a RESET_NOTICE but mimicked an error).
+        return true;
+      })();
+    } else {
+      // Pre-runtime-ready reset path — `resetConversation` was called
+      // before `createKoiRuntime` resolved. Schedule the runtime-scoped
+      // work behind `runtimeReady` so the same destructive cleanup
+      // pipeline runs as in the post-ready branch above. Without this,
+      // a `koi tui --resume <id>` startup-window `/clear` would
+      // truncate the JSONL but leave the session-keyed checkpoint
+      // chain intact — a later quit + resume could still `/rewind`
+      // into pre-clear snapshots, defeating the isolation contract.
+      resetBarrier = (async (): Promise<boolean> => {
+        await runtimeReady.catch(() => {
+          /* runtime init errors reported upstream */
         });
+        const handleAfterReady = ((): KoiRuntimeHandle | null => runtimeHandle)();
+        // Fail closed when the runtime never initialized, regardless
+        // of `shouldTruncate`. A non-truncating reset (picker load
+        // or post-rewind in-memory rebuild) on a dead runtime would
+        // otherwise clear visible UI state and report success even
+        // though there's no engine behind the reset — downstream
+        // submits would land on a stale runtime handle, and the
+        // shutdown hint would advertise a session id whose backing
+        // state was never actually rebuilt.
+        if (handleAfterReady === null) {
+          store.dispatch({
+            kind: "add_error",
+            code: "RESET_FAILED",
+            message:
+              "Session reset failed: runtime did not initialize. " +
+              "Visible history preserved. Please restart koi tui to recover.",
+          });
+          if (myGeneration === resetGeneration) {
+            lastResetFailed = true;
+            if (shouldTruncate) clearPersistFailed = true;
+          }
+          return false;
+        }
+        // Runtime is available — run the destructive stack cleanup
+        // (checkpoint chain prune, etc.) for truncating resets.
+        // Non-truncating resets still call resetSessionState so the
+        // engine cycles cleanly; checkpoint hook gates internally
+        // on `truncate: false` to skip pruning.
+        {
+          const idleController = new AbortController();
+          idleController.abort();
+          try {
+            await handleAfterReady.resetSessionState(idleController.signal, {
+              truncate: shouldTruncate,
+            });
+          } catch (resetError: unknown) {
+            const message = resetError instanceof Error ? resetError.message : String(resetError);
+            store.dispatch({
+              kind: "add_error",
+              code: "RESET_FAILED",
+              message: `Session reset failed: ${message}. Visible history preserved. Please restart koi tui to recover.`,
+            });
+            if (myGeneration === resetGeneration) {
+              lastResetFailed = true;
+              if (shouldTruncate) clearPersistFailed = true;
+            }
+            return false;
+          }
+          handleAfterReady.transcript.splice(0);
+        }
+        store.dispatch({ kind: "clear_messages" });
+        store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
+        tuiTurnCounter = 0;
+        if (shouldTruncate) {
+          const truncateResult = await jsonlTranscript.truncate(tuiSessionId, 0);
+          if (!truncateResult.ok && myGeneration === resetGeneration) {
+            clearPersistFailed = true;
+            store.dispatch({
+              kind: "add_error",
+              code: "SESSION_CLEAR_PERSIST_FAILED",
+              message: `Failed to clear persisted transcript — ${truncateResult.error.message}`,
+            });
+          }
+        }
+        return true;
+      })();
     }
   };
 
@@ -1134,8 +1604,95 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
       (hardExit as { unref: () => void }).unref();
     }
+    // Keep-alive for the shutdown phase. `appHandle.stop()` clears
+    // OpenTUI's internal keepAliveTimer, and once the final await
+    // (`resetBarrier`, `runtime.dispose()`) queues its continuation,
+    // the event loop has no ref'd handles left — bun promptly
+    // exits with no more work to do, SKIPPING everything after the
+    // first await in this function (including the writeSync for
+    // the resume hint and the explicit `process.exit(exitCode)`
+    // in the finally block).
+    //
+    // A ref'd setInterval keeps the loop alive for the duration of
+    // cooperative shutdown. It's cleared in the outer finally so
+    // the hard-exit failsafe can still fire if something wedges,
+    // and so the process exits cleanly via `process.exit` after
+    // the hint + runtime.dispose paths complete.
+    const shutdownKeepAlive = setInterval(() => {
+      /* keep-alive only — no side effect */
+    }, 1000);
+
+    // Wait for any in-flight clear/reset barrier to land BEFORE
+    // tearing down the renderer. Doing this BEFORE `appHandle.stop()`
+    // is load-bearing: OpenTUI's stop() clears its internal
+    // keepAliveTimer and the subsequent native destroyRenderer call
+    // causes bun's event loop to exit on the next empty tick.
+    // Anything awaited after stop() never resumes — even with our
+    // own ref'd setInterval keepalive in place (bun drops pending
+    // microtasks when the last "real" handle goes away). Awaiting
+    // the reset barrier here, BEFORE stop(), keeps us inside the
+    // renderer-live window where the event loop stays alive naturally.
+    try {
+      await resetBarrier;
+    } catch {
+      // Defensive: resetConversation now only resolves its barrier,
+      // but if a future change accidentally reintroduces a rejection
+      // path we still want shutdown to suppress the resume hint
+      // rather than propagate an unhandled rejection.
+      clearPersistFailed = true;
+    }
     try {
       await appHandle?.stop();
+      // Print the resume hint here — after the TUI renderer has
+      // released the alt screen and the reset barrier has settled
+      // but before any potentially-slow runtime teardown — so the
+      // user always sees it, even if a later teardown step hangs
+      // and the hard-exit failsafe fires from outside this
+      // try/finally. Loop mode (--until-pass) intentionally skips
+      // transcript persistence, so there is nothing to resume from.
+      // writeSync on fd 1 is used because the eventual process.exit()
+      // aborts before async stdout flushes, which would otherwise
+      // swallow the hint entirely.
+      if (!isLoopMode) {
+        try {
+          // A cleared-and-untouched session is intentionally
+          // unresumable: `/clear` / `/new` truncated the JSONL to
+          // zero entries, and `resumeSessionFromJsonl` rejects
+          // empty transcripts as "not found" to catch typos.
+          // Printing a resume hint in that case would advertise
+          // an id that the next launch will reject. Suppress the
+          // hint instead — the user explicitly asked to drop
+          // this session, so offering to restore it is pointless.
+          // Suppress the hint ONLY on an explicit /clear or /new
+          // that left the session empty. `rewindBoundaryActive`
+          // also flips on `--resume`, which must still print a
+          // hint for inspection-only opens.
+          const sessionIsEmpty = clearedThisProcess && postClearTurnCount === 0;
+          if (clearPersistFailed) {
+            writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
+          } else if (sessionIsEmpty) {
+            writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
+          } else if (tuiSessionId === viewedSessionId) {
+            // Non-picker (or picker-of-self) case: both ids agree.
+            // Print the single normal hint.
+            writeSync(1, formatResumeHint(tuiSessionId));
+          } else {
+            // Picker mode: `tuiSessionId` is the writable startup
+            // session where any work done this process landed on
+            // disk; `viewedSessionId` is the read-only archive the
+            // user was inspecting when they quit. Print BOTH so
+            // the user can choose — otherwise the hint would
+            // strand one handle. Without this, a user who did
+            // work in the startup session, opened the picker to
+            // inspect an older archive, and quit would only see
+            // the archive id and might conclude their recent
+            // work is lost.
+            writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+          }
+        } catch {
+          // stdout may be closed during abnormal teardown — swallow.
+        }
+      }
       batcher.dispose();
       if (runtimeHandle !== null) {
         // Only pay the SIGTERM→SIGKILL escalation wait when we actually
@@ -1160,6 +1717,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       approvalStore?.close();
     } finally {
+      clearInterval(shutdownKeepAlive);
       process.exit(exitCode);
     }
   };
@@ -1200,6 +1758,84 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           kind: "add_error",
           code: "FORK_NOT_READY",
           message: "Cannot fork: runtime not yet initialized.",
+        });
+        return;
+      }
+      // Block fork after a failed durable clear. The on-disk
+      // transcript still contains the pre-clear conversation
+      // the user explicitly asked to drop, and `handleFork`
+      // clones THAT file into a new session id — duplicating
+      // the sensitive data into a fresh resumable copy. This
+      // mirrors the SUBMIT_AFTER_FAILED_CLEAR guard in
+      // onSubmit; both paths must refuse to operate on the
+      // stale transcript.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_CLEAR",
+          message:
+            "Fork is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. The current file still " +
+            "contains pre-clear content that the fork would copy into a new " +
+            "session id. Quit and relaunch, or resolve the underlying I/O " +
+            "issue and retry /clear before forking.",
+        });
+        return;
+      }
+      // Block fork in picker mode. `handleFork()` clones by
+      // `runtime.sessionId`, which in picker mode is still the
+      // startup session — not the conversation the user is viewing.
+      // Forking here would silently clone the wrong transcript and
+      // report success, which is a real wrong-target mutation.
+      if (isInPickerMode()) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_PICKER_LOAD",
+          message:
+            "Fork is disabled after loading a saved session via the picker — " +
+            "the command would clone this process's original session, not the " +
+            "one you are viewing. Quit and relaunch with " +
+            "`koi tui --resume <id>` to fork from a runtime bound to the " +
+            "loaded session.",
+        });
+        return;
+      }
+
+      // Wait for any in-flight clear/reset barrier to settle
+      // before reading the source transcript. Without this,
+      // `/clear` followed immediately by `/fork` has a race
+      // window where `clearPersistFailed` is still `false`
+      // (the reset IIFE only sets it inside the async truncate
+      // path) but the truncate is in progress — handleFork
+      // would happily load the pre-clear content and clone it
+      // into a new session id, duplicating data the user just
+      // asked to drop. After the await, re-check both latches:
+      // if the clear actually failed, `clearPersistFailed` is
+      // now true and we block; if an unrelated reset step
+      // threw, `lastResetFailed` is true and we also block so
+      // fork can't operate on contaminated in-memory state.
+      await resetBarrier;
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_CLEAR",
+          message:
+            "Fork is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. The current file still " +
+            "contains pre-clear content that the fork would copy into a new " +
+            "session id. Quit and relaunch, or resolve the underlying I/O " +
+            "issue and retry /clear before forking.",
+        });
+        return;
+      }
+      if (lastResetFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_RESET",
+          message:
+            "Fork is disabled because the most recent session reset failed. " +
+            "The runtime may still hold stale state. Quit and relaunch with " +
+            "`koi tui --resume <id>` to fork from a clean runtime.",
         });
         return;
       }
@@ -1263,7 +1899,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           onInterrupt();
           break;
         case "agent:clear":
-          resetConversation();
+          // Block `/clear` in picker mode: `tuiSessionId` is still
+          // bound to the startup session, so a truncate would delete
+          // the unrelated startup archive instead of clearing the
+          // visible (picker-loaded) session. That is destructive
+          // data loss AND a privacy failure for the picked session,
+          // which stays intact on disk.
+          if (isInPickerMode()) {
+            store.dispatch({
+              kind: "add_error",
+              code: "CLEAR_AFTER_PICKER_LOAD",
+              message:
+                "/clear is disabled after loading a saved session via the picker — " +
+                "the command would erase this process's original session, not the " +
+                "one you are viewing. Quit and relaunch with " +
+                "`koi tui --resume <id>` if you want to continue the loaded session " +
+                "with full clear/rewind support.",
+            });
+            break;
+          }
+          rewindBoundaryActive = true;
+          clearedThisProcess = true;
+          postClearTurnCount = 0;
+          resetConversation({ truncatePersistedTranscript: true });
           break;
         case "agent:rewind":
           // /rewind <n> rolls back N turns (file edits + conversation) via
@@ -1277,6 +1935,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 kind: "add_error",
                 code: "REWIND_RUNTIME_NOT_READY",
                 message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            // Refuse rewind in picker mode. The checkpoint chain
+            // is keyed on the startup session id and was built
+            // from the original session's turns, so rewinding
+            // would walk back into snapshots that belong to a
+            // different conversation than the one the user is
+            // currently viewing. See `isInPickerMode` above.
+            if (isInPickerMode()) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_AFTER_PICKER_LOAD",
+                message:
+                  "Rewind is disabled after loading a saved session via the picker — " +
+                  "the rewind chain belongs to this process's original session, not the " +
+                  "loaded one. Quit and relaunch with `koi tui --resume <id>` to get a " +
+                  "fresh rewind chain for the loaded session.",
               });
               return;
             }
@@ -1299,11 +1975,53 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               n = parsed;
             }
 
+            // Bound rewind to turns taken AFTER the most recent
+            // boundary — either an explicit `/clear` / `/new` in
+            // this process, OR the resume point itself when the
+            // TUI was launched with `--resume`. The checkpoint
+            // chain is still physically reachable via
+            // `runtime.sessionId` and may contain pre-boundary
+            // snapshots (from a prior process, or from before
+            // `/clear`), so an unbounded rewind would restore
+            // workspace state the user explicitly asked to drop.
+            // Letting rewind walk back up to `postClearTurnCount`
+            // keeps the rollback-safety affordance for mistakes
+            // made in the current session while still enforcing
+            // the privacy/context fence.
+            if (rewindBoundaryActive && n > postClearTurnCount) {
+              const boundaryLabel =
+                flags.resume !== undefined && postClearTurnCount === 0
+                  ? "resume point"
+                  : "most recent /clear or /new boundary";
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_ACROSS_CLEAR_BOUNDARY",
+                message:
+                  `Rewind depth ${n} would cross the ${boundaryLabel} ` +
+                  `(${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"} ` +
+                  "since that boundary). Rewinding past it would restore file " +
+                  "state from before the boundary, which may belong to a prior " +
+                  "process or a cleared conversation. Rewind at most " +
+                  `${postClearTurnCount} turn${postClearTurnCount === 1 ? "" : "s"}, or ` +
+                  "start a fresh koi tui session to rewind earlier work.",
+              });
+              return;
+            }
+
             // Use the ENGINE session ID (from @koi/engine's createKoi),
             // not tuiSessionId. The checkpoint middleware captures chains
             // keyed by ctx.session.sessionId which is the engine's
             // composite "agent:{agentId}:{instanceId}" ID — tuiSessionId
             // is a TUI-local UUID that never matches a captured chain.
+            if (runtimeHandle.checkpoint === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_DISABLED",
+                message:
+                  "Rewind is unavailable: the checkpoint preset stack is disabled in this runtime.",
+              });
+              return;
+            }
             const engineSessionId = sessionId(runtimeHandle.runtime.sessionId);
             const rewindStart = performance.now();
             const result = await runtimeHandle.checkpoint.rewind(engineSessionId, n);
@@ -1316,6 +2034,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // Shrink the post-clear rewind budget to match the
+            // number of turns actually rolled back. Without this,
+            // chained rewinds would cumulatively cross the clear
+            // boundary: `/clear`, 3 turns, `/rewind 2` (allowed),
+            // `/rewind 2` again (previously allowed because the
+            // counter still said 3 — but only 1 post-clear turn
+            // remained, so the second rewind would walk back
+            // through the clear boundary and restore pre-clear
+            // state). Clamp to 0 so an over-rewind doesn't
+            // accidentally permit negative-budget rewinds.
+            if (rewindBoundaryActive) {
+              postClearTurnCount = Math.max(0, postClearTurnCount - result.turnsRewound);
+            }
 
             // After a successful rewind the restore protocol has already
             // truncated the JSONL transcript to the target turn's entry
@@ -1325,14 +2056,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // the async reset is complete before we push the retained
             // entries back in. Without the reset, the next user submit
             // runs against a stale engine state and produces no output.
-            resetConversation();
+            // `truncatePersistedTranscript: false` because the restore
+            // protocol has already shrunk the JSONL to the target turn
+            // count — an extra truncate would wipe the kept prefix.
+            resetConversation({ truncatePersistedTranscript: false });
             // #1742 loop-3 round 4: do NOT hydrate history if the reset
-            // failed-closed (cycleSession TIMEOUT, onSessionEnd poison,
-            // pre-flight error). The engine session never rotated, so
+            // failed-closed. The engine session never rotated, so
             // loading the rewound transcript on top would mix old
-            // approvals/memory/board state with the new history.
+            // approvals/memory/board state with new history.
             const rewindResetOk = await resetBarrier;
-            if (!rewindResetOk) {
+            if (!rewindResetOk || lastResetFailed) {
               store.dispatch({
                 kind: "add_error",
                 code: "REWIND_ABORTED",
@@ -1341,11 +2074,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // #1742 loop-3 round 5: load and validate the transcript
-            // BEFORE rebinding the runtime. If the JSONL is missing or
-            // corrupt, surface the error and leave the runtime on the
-            // freshly-rotated post-reset session id rather than
-            // adopting an id the host could not actually load.
+            // Load and validate transcript BEFORE rebinding runtime.
             const resumeResult = await resumeForSession(engineSessionId, jsonlTranscript);
             if (resumeResult.ok) {
               // Rebind the engine sessionId BACK to the rewound
@@ -1373,6 +2102,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               store.dispatch({
                 kind: "load_history",
                 messages: resumeResult.value.messages,
+              });
+            } else {
+              // Replay of the kept transcript prefix failed after a
+              // successful file-state restore. The workspace is at the
+              // rewound snapshot, but the runtime's in-memory transcript
+              // has been spliced to empty and the UI is blank. Surface
+              // this loudly — silently proceeding would let the next
+              // submit run as if the session had no prior context, which
+              // is a hard-to-detect correctness regression. The user
+              // should quit and relaunch with `--resume <id>` to reload
+              // from disk under a clean path.
+              store.dispatch({
+                kind: "add_error",
+                code: "REWIND_REPLAY_FAILED",
+                message:
+                  "Rewind restored the workspace to the target snapshot, but " +
+                  "replaying the kept transcript prefix failed: " +
+                  `${resumeResult.error.message}. The file state is at the target, ` +
+                  "but the in-memory conversation is now empty. Quit and relaunch " +
+                  "with `koi tui --resume <id>` to reload the session cleanly.",
               });
             }
 
@@ -1450,7 +2199,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           void shutdown();
           break;
         case "session:new":
-          resetConversation();
+          // Same guard as agent:clear — see the comment there for
+          // the data-loss rationale.
+          if (isInPickerMode()) {
+            store.dispatch({
+              kind: "add_error",
+              code: "NEW_AFTER_PICKER_LOAD",
+              message:
+                "/new is disabled after loading a saved session via the picker — " +
+                "the command would erase this process's original session, not the " +
+                "one you are viewing. Quit and relaunch with " +
+                "`koi tui --resume <id>` if you want to continue the loaded session.",
+            });
+            break;
+          }
+          rewindBoundaryActive = true;
+          clearedThisProcess = true;
+          postClearTurnCount = 0;
+          resetConversation({ truncatePersistedTranscript: true });
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
@@ -1463,24 +2229,75 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
     onSessionSelect: (selectedId: string): void => {
-      // Abort any in-flight stream, clear the display, and wipe history so no
-      // stale context leaks into the resumed session.
-      resetConversation();
+      // Atomic session-switch flow, in three phases:
+      //   1. Abort + drain the current in-flight run IMMEDIATELY so
+      //      no long-running tool or side-effecting turn can keep
+      //      mutating workspace / remote / transcript state while
+      //      we're loading the target session.
+      //   2. Non-destructively validate/load the target session.
+      //      If the target is missing or corrupt, surface an error
+      //      without touching the live JSONL file.
+      //   3. On success, non-destructively reset the UI/runtime
+      //      memory and hydrate it from the validated target. The
+      //      on-disk `<tuiSessionId>.jsonl` is intentionally left
+      //      untouched — see the comment in phase 3 for rationale.
+      //
       store.dispatch({ kind: "set_view", view: "conversation" });
+
+      // Always bump the picker generation, EVEN for the
+      // same-session fast path below. An in-flight A→B load can
+      // only be cancelled by a generation bump — without one,
+      // the older async flow would still complete and force-
+      // switch to B, ignoring the user's latest "stay on
+      // current" click. Any stale async task checking
+      // `myPickerGeneration !== pickerGeneration` exits
+      // without publishing state.
+      pickerGeneration += 1;
+      const myPickerGeneration = pickerGeneration;
+
+      // Fast path: selecting the session the user is ALREADY
+      // viewing is a no-op refresh. Two sub-cases, both handled
+      // here:
+      //   1. No switch in flight — just close the picker.
+      //   2. Switch IS in flight (user is cancelling an A→B
+      //      load by re-clicking A). The generation bump above
+      //      invalidated the older task, but its finally block
+      //      is gated on `myPickerGeneration === pickerGeneration`
+      //      and therefore won't clear `pendingSessionSwitch`
+      //      when it finally returns. We must clear the latch
+      //      here ourselves so the TUI guards re-enable after
+      //      the user's "stay on current" click.
+      // Comparing against `viewedSessionId` (not `tuiSessionId`)
+      // is important: after a picker load the two diverge, and
+      // selecting the originally-viewed conversation from the
+      // picker should still be a valid "stay here" click.
+      if (selectedId === String(viewedSessionId)) {
+        if (pendingSessionSwitch) {
+          pendingSessionSwitch = false;
+          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        }
+        return;
+      }
+
+      // Latch `pendingSessionSwitch` BEFORE any await so every
+      // picker-mode guard (submit/clear/new/rewind/fork) fires
+      // during the async load window. Without this, a fast submit
+      // in the window between click and hydration would hit the
+      // startup session and silently mutate the wrong transcript.
+      // Cleared in the finally below, regardless of whether the
+      // load succeeded or failed.
+      pendingSessionSwitch = true;
 
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
         try {
-          // Ensure runtime is ready AND prior reset is complete before hydrating.
-          // Without awaiting resetBarrier, the async transcript.splice(0) from
-          // resetConversation() can wipe the just-loaded history.
+          // Runtime must be ready so we have a handle to prime after
+          // the reset. Any prior reset barrier must also settle first.
           if (runtimeHandle === null) {
             await runtimeReady;
           }
           // #1742 loop-3 round 4: abort the resume if the reset
-          // failed-closed. Hydrating into a runtime whose engine
-          // session never rotated would mix stale state with the
-          // new history.
+          // failed-closed.
           const resumeResetOk = await resetBarrier;
           if (!resumeResetOk) {
             store.dispatch({
@@ -1491,61 +2308,189 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             return;
           }
-          // #1742 loop-3 round 5: load and validate the session FIRST,
-          // then rebind only after we know the transcript is good.
-          // Round 4 had this in the wrong order — a missing/corrupt
-          // session file would leave the runtime adopted to the
-          // selected id even though no history was loaded, so the
-          // next submit would write into the wrong chain.
-          const resumeResult = await resumeForSession(sessionId(selectedId), jsonlTranscript);
+
+          // Phase 1: abort the active turn and wait for the drain
+          // to settle before we even LOOK at the target file.
+          activeController?.abort();
+          activeController = null;
+          const inflightRun = activeRunPromise;
+          if (inflightRun !== null) {
+            try {
+              await inflightRun;
+            } catch {
+              /* already reported upstream via add_error */
+            }
+          }
+
+          // Phase 2: non-destructive validate/load of the target.
+          // `resumeSessionFromJsonl` probes filesystem existence and
+          // tries both raw and decoded candidate paths, so legacy
+          // `agent:<pid>:<uuid>` ids copied from `koi sessions list`
+          // work alongside plain UUIDs minted by this branch.
+          const targetSid = sessionId(selectedId);
+          const resumeResult = await resumeSessionFromJsonl(
+            selectedId,
+            jsonlTranscript,
+            SESSIONS_DIR,
+          );
           if (!resumeResult.ok) {
+            // Stale completions stay quiet — the newer click is
+            // already in flight and will surface its own error.
+            if (myPickerGeneration === pickerGeneration) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SESSION_RESUME_ERROR",
+                message: `Could not load session: ${resumeResult.error}`,
+              });
+            }
+            return;
+          }
+
+          // If a newer picker click superseded us during the
+          // load, abort silently — the newer flow owns the
+          // state-publication side effects.
+          if (myPickerGeneration !== pickerGeneration) {
+            return;
+          }
+
+          // Phase 3: target is valid. Reset the live session NON-
+          // DESTRUCTIVELY — clear the UI and rebuild in-memory
+          // state — but LEAVE the on-disk `<tuiSessionId>.jsonl`
+          // untouched. The live file belongs to the startup
+          // session id and must survive the switch; overwriting it
+          // destroys any work done before the pick and leaves the
+          // post-quit resume hint pointing at a file whose
+          // identity no longer matches that work. The abort in
+          // phase 1 already took care of stopping the outgoing
+          // stream, so resetConversation's internal abort is a
+          // no-op here.
+          resetConversation({ truncatePersistedTranscript: false });
+          await resetBarrier;
+
+          // After awaiting the reset barrier, re-check that
+          // we're still the authoritative selection — a newer
+          // click could have arrived while the reset was
+          // settling, and proceeding here would publish stale
+          // hydration on top of the newer load.
+          if (myPickerGeneration !== pickerGeneration) {
+            return;
+          }
+
+          // Refuse to hydrate onto contaminated state if the
+          // reset itself failed — the task board, approval
+          // store, or trajectory store may be in a stale
+          // half-state and replaying picker-loaded turns into
+          // them would mask the failure with apparently-normal
+          // operation. The reset error is already surfaced via
+          // store.dispatch from the catch block above.
+          if (lastResetFailed) {
             store.dispatch({
               kind: "add_error",
-              code: "SESSION_RESUME_ERROR",
-              message: `Could not load session: ${resumeResult.error.message}`,
+              code: "PICKER_LOAD_BLOCKED",
+              message:
+                "Cannot load the selected session because the in-memory reset " +
+                "failed. Quit and relaunch with `koi tui --resume <id>` to load " +
+                "the session into a clean runtime.",
             });
             return;
           }
-          // Transcript loaded successfully — now rebind the engine
-          // sessionId to the user-selected one. cycleSession (called
-          // via resetConversation above) rotated to a fresh UUID;
-          // without rebinding, future turns persist under the new id
-          // and orphan the resumed session — so checkpoints, /rewind,
-          // and fork all break for the resumed conversation.
-          if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
-            try {
-              runtimeHandle.runtime.rebindSessionId(selectedId);
-            } catch (rebindErr) {
-              store.dispatch({
-                kind: "add_error",
-                code: "SESSION_RESUME_ABORTED",
-                message: `Cannot rebind runtime to session ${selectedId}: ${
-                  rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
-                }`,
-              });
-              return;
-            }
-          }
-          // Pre-populate conversation history so the AI has full context.
+
+          // Step 3: hydrate memory + UI from the validated target.
+          // The picked session is loaded into the runtime's
+          // in-memory transcript (read-only preview mode); the JSONL
+          // is NOT copied on disk. To durably continue the picked
+          // session, quit and relaunch with `koi tui --resume <id>`.
           if (runtimeHandle !== null) {
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
             }
           }
-          // Replay messages into the TUI store so the user sees the prior
-          // conversation. Tool entries are skipped (display-only limitation).
           store.dispatch({
             kind: "load_history",
             messages: resumeResult.value.messages,
           });
+          // Lock the session into read-only picker mode. Subsequent
+          // submissions and `/rewind` are refused because the runtime
+          // still routes writes to the startup session id and the
+          // checkpoint chain still belongs to that session — allowing
+          // mutation would silently mix the picked conversation with
+          // the startup archive and let `/rewind` walk across the
+          // pick boundary. The user is pointed at
+          // `koi tui --resume <pickedId>` as the correct way to
+          // durably continue the picked session.
+          //
+          // Rotate the VIEWED session id so the status-bar chip,
+          // the post-quit resume hint, and every picker-mode
+          // guard all use the conversation on screen. The runtime
+          // routing key stays `tuiSessionId`. Because
+          // `isInPickerMode()` is derived from
+          // `viewedSessionId !== tuiSessionId`, the read-only
+          // guards auto-enable here AND auto-disable again the
+          // moment the user picks the startup session back.
+          viewedSessionId = targetSid;
+          store.dispatch({
+            kind: "set_session_info",
+            modelName,
+            provider,
+            sessionName: "",
+            sessionId: targetSid,
+          });
         } finally {
-          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+          // Release the pre-await latch so picker-mode guards go
+          // back to being derived purely from
+          // `viewedSessionId !== tuiSessionId`. ONLY clear the
+          // latch if we're still the authoritative selection —
+          // a newer click is still in flight and needs the
+          // latch held until ITS finally runs. Without this
+          // guard, a stale completion finishing late could
+          // briefly re-enable submit/clear/new/rewind on the
+          // wrong session while the user's intended switch is
+          // still loading.
+          if (myPickerGeneration === pickerGeneration) {
+            pendingSessionSwitch = false;
+            store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+          }
         }
       })();
     },
     syntaxStyle: SyntaxStyle.create(),
     treeSitterClient,
     onSubmit: async (text: string): Promise<void> => {
+      // Fail closed after a durable clear failure. If the last
+      // `/clear` or `/new` could not truncate the JSONL, the
+      // file still contains pre-clear content the user asked to
+      // drop. Accepting new turns would mix them into that
+      // unwanted history and a later `--resume` would replay the
+      // combined conversation. Block submits until the user
+      // resolves the underlying I/O issue and quits/relaunches.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_CLEAR",
+          message:
+            "Submit is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. New turns would append to " +
+            "the pre-clear content and a later `--resume` would resurrect it. " +
+            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        });
+        return;
+      }
+      // Picker-loaded sessions are read-only: the runtime is still
+      // bound to the startup session id, so submitting would mix
+      // the picked conversation into the startup archive. See
+      // `isInPickerMode` above. The moment the user switches back
+      // to the startup session via the picker this check fails
+      // and submit re-enables.
+      if (isInPickerMode()) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_PICKER_LOAD",
+          message:
+            "This TUI process loaded a saved session via the picker, which is read-only. " +
+            "Quit and relaunch with `koi tui --resume <id>` to durably continue the loaded session.",
+        });
+        return;
+      }
       // Guard against overlapping submits: reject while a stream is in flight.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
       if (activeController !== null) {
@@ -1558,7 +2503,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
 
       // P2-A: block on runtime assembly if not yet ready.
-      // First submit waits for createTuiRuntime to complete; subsequent
+      // First submit waits for createKoiRuntime to complete; subsequent
       // submits use the cached runtimeHandle (already resolved).
       if (runtimeHandle === null) {
         try {
@@ -1581,6 +2526,49 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Wait for any pending session reset to complete before submitting.
       // Prevents hitting stale task board or trajectory state.
       await resetBarrier;
+
+      // Re-check `clearPersistFailed` after the barrier settles.
+      // The early guard above could pass even though a `/clear`
+      // was in flight: the reset IIFE only flips the flag INSIDE
+      // the async truncate path, so a submit dispatched before
+      // `onCommand: agent:clear` scheduled its truncate would
+      // see `clearPersistFailed === false`, await the barrier,
+      // and then (without this second check) proceed to append
+      // new turns onto an un-truncated transcript. Re-reading
+      // the flag here is cheap and closes the race cleanly.
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_CLEAR",
+          message:
+            "Submit is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. New turns would append to " +
+            "the pre-clear content and a later `--resume` would resurrect it. " +
+            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+        });
+        return;
+      }
+      // Also re-check `lastResetFailed` — the in-memory reset
+      // (resetSessionState, transcript splice, batcher rotate)
+      // can fail independently of the durable truncate. If it
+      // threw before `runtimeHandle.transcript.splice(0)` ran,
+      // the UI has been cleared but the runtime transcript still
+      // contains pre-clear messages, and the next submit would
+      // run against stale history while the operator believes
+      // the session was wiped. Mirror the picker / rewind block
+      // logic and refuse here.
+      if (lastResetFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_AFTER_FAILED_RESET",
+          message:
+            "Submit is disabled because the most recent session reset failed. " +
+            "The runtime may still hold stale conversation context. " +
+            "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
+            "clean state.",
+        });
+        return;
+      }
 
       // #11: include any pending clipboard images as image ContentBlocks
       // alongside the text. Bridge clears pendingImages after dispatch so the
@@ -1620,19 +2608,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
-        // run() can throw synchronously when the engine rejects the request
-        // (poisoned runtime after a settle timeout, lifecycleInFlight during
-        // cycleSession/dispose, disposed runtime, or already-running latch).
-        // Catch those here so the user sees a recoverable error toast instead
-        // of an unhandled rejection bubbling out of onSubmit.
-        //
-        // #1742 loop-3 round 3: construct the stream FIRST, dispatch the
-        // user message only AFTER stream construction succeeds. Otherwise
-        // a synchronous rejection leaves a phantom user message in the
-        // visible UI even though no engine stream ever started — the
-        // next successful turn would run without that prompt in model
-        // context, so users could believe the agent saw a message it
-        // never actually received.
+        // #1742 loop-3 round 3: construct the stream FIRST, dispatch
+        // the user message only AFTER stream construction succeeds.
+        // Otherwise a synchronous rejection (poisoned runtime, disposed,
+        // lifecycleInFlight) leaves a phantom user message in the UI
+        // with no corresponding engine stream.
         let stream: AsyncIterable<EngineEvent>;
         try {
           stream = isLoopMode
@@ -1648,15 +2628,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             code: "RUNTIME_REJECTED",
             message: err instanceof Error ? err.message : String(err),
           });
-          // Reset pendingImages — they were never sent, but they were
-          // collected for THIS submit. Don't leak them into the next.
           pendingImages = [];
           return;
         }
-        // Stream construction succeeded — now stage the visible user
-        // message. The prompt will reach the engine through the stream
-        // we just created (which already received the text in run()'s
-        // input) so the visible UI and engine transcript stay in sync.
         pendingImages = [];
         store.dispatch({
           kind: "add_user_message",
@@ -1669,7 +2643,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const inputBefore = cm.inputTokens;
         const outputBefore = cm.outputTokens;
         const costBefore = cm.costUsd;
-        await drainEngineStream(stream, store, batcher, controller.signal);
+        const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
+        activeRunPromise = drainPromise;
+        await drainPromise;
+
+        // Count the turn for rewind boundary enforcement, but ONLY when
+        // the turn completed uninterrupted. Checkpoint capture only
+        // runs on real engine-complete turns; counting an aborted turn
+        // would let `/rewind 1` walk past the clear boundary.
+        if (rewindBoundaryActive && !controller.signal.aborted) {
+          postClearTurnCount += 1;
+        }
 
         // Feed the cost bridge with this turn's token delta.
         const cmAfter = store.getState().cumulativeMetrics;
@@ -1719,6 +2703,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const isStillActive = activeController === controller;
         if (isStillActive) {
           activeController = null;
+          activeRunPromise = null;
         }
         // The active run has settled. Reset the double-tap window so a
         // later Ctrl+C is treated as a fresh first tap rather than a
@@ -1806,7 +2791,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
  * formatted as plain text and treated as part of the assistant turn.
  */
 async function* runTuiLoopTurn(
-  runtime: TuiRuntimeHandle["runtime"],
+  runtime: KoiRuntimeHandle["runtime"],
   text: string,
   signal: AbortSignal,
   flags: TuiFlags,

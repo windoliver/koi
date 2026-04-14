@@ -1,18 +1,11 @@
 /**
  * `koi start` — run agent in interactive REPL or single-prompt mode.
  *
- * Wires @koi/harness → @koi/engine (createKoi) → @koi/model-openai-compat
- * with @koi/channel-cli for I/O. Sessions are persisted to JSONL transcripts
- * at ~/.koi/sessions/<sessionId>.jsonl and can be resumed with --resume.
- *
- * Tools wired by default (all from ~/.koi/ or cwd):
- *   Glob, Grep           — @koi/tools-builtin (builtin-search provider)
- *   web_fetch            — @koi/tools-web (requires network)
- *   Bash                 — @koi/tools-bash (workspace-rooted)
- *   fs_read/write/edit   — @koi/tools-builtin + @koi/runtime (filesystem provider)
- *   MCP tools            — .mcp.json in cwd (optional, skipped if absent)
- *   Hooks                — ~/.koi/hooks.json (optional, skipped if absent)
- *   Permissions          — auto-allow (allow:['*']); gates can be tightened later
+ * Shares one runtime factory with `koi tui`: both commands call
+ * `createKoiRuntime` from `../runtime-factory.js` and differ only in
+ * their I/O loop (CLI uses `@koi/harness`'s plain-stdout channel;
+ * TUI uses OpenTUI). Adding a new middleware, tool, or provider to
+ * the factory automatically lands in both hosts.
  *
  * API key resolution: OPENROUTER_API_KEY or OPENAI_API_KEY (see env.ts).
  */
@@ -20,46 +13,23 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import { enforceBudget } from "@koi/context-manager";
-
-import type {
-  ComponentProvider,
-  EngineAdapter,
-  EngineEvent,
-  EngineInput,
-  InboundMessage,
-  KoiMiddleware,
-} from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
-import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
+import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
+import { sessionId } from "@koi/core";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
-import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
-import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
-import {
-  createPatternPermissionBackend,
-  createPermissionsMiddleware,
-} from "@koi/middleware-permissions";
+import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
-import { runTurn } from "@koi/query-engine";
-import {
-  createJsonlTranscript,
-  createSessionTranscriptMiddleware,
-  resumeForSession,
-} from "@koi/session";
-import { createBashTool } from "@koi/tools-bash";
-import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
-import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
-import { budgetConfigForModel } from "../engine-adapter.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
-import { createOAuthAwareMcpConnection } from "../mcp-connection-factory.js";
-import { loadPluginComponents } from "../plugin-activation.js";
+import { DEFAULT_STACKS } from "../preset-stacks.js";
+import { createKoiRuntime } from "../runtime-factory.js";
+import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
 
-const DEFAULT_MAX_TURNS = 10;
 /**
  * Hard cap on interactive session turns.
  * Limits transcript growth and prevents unbounded context-window expansion.
@@ -67,110 +37,44 @@ const DEFAULT_MAX_TURNS = 10;
 const MAX_INTERACTIVE_TURNS = 50;
 /** JSONL transcript files are stored at ~/.koi/sessions/<sessionId>.jsonl */
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
-/** Optional hooks config path — loaded if present, silently skipped otherwise. */
-const HOOKS_CONFIG_PATH = join(homedir(), ".koi", "hooks.json");
-
-// ---------------------------------------------------------------------------
-// Tool / middleware builders
-// ---------------------------------------------------------------------------
-
-/**
- * Wrap a single Tool as a ComponentProvider so it can be passed to createKoi.
- * The provider name matches the tool name for debug clarity.
- */
-function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
-  const name = tool.descriptor.name;
-  return {
-    name,
-    attach: async (): Promise<ReadonlyMap<string, unknown>> =>
-      new Map([[toolToken(name) as unknown as string, tool]]),
-  };
-}
-
-/**
- * Build the static ComponentProviders wired into every session:
- *   - builtin search (Glob, Grep)
- *   - web_fetch
- *   - Bash
- *   - TodoWrite (task list tracker — no permission gating needed)
- *
- * NOTE: EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally
- * NOT wired here. Plan-mode requires a permission backend that can enforce
- * the read-only gate (deny Write/Edit/Bash until the plan is approved).
- * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading —
- * the mode flag would flip but no permissions would actually be restricted.
- * The TUI harness wires the full interaction provider (including plan-mode)
- * because it has a real permission backend. `koi start` uses TodoWrite only.
- */
-async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
-  const searchProvider = createBuiltinSearchProvider({ cwd });
-  const webExecutor = createWebExecutor({ allowHttps: true });
-  const webProvider = createWebProvider({
-    executor: webExecutor,
-    policy: DEFAULT_UNSANDBOXED_POLICY,
-    operations: ["fetch"],
-  });
-  const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
-
-  // let: mutable todo list, replaced atomically on each write
-  let todoItems: readonly TodoItem[] = [];
-  const todoTool = createTodoTool({
-    getItems: () => todoItems,
-    setItems: (items) => {
-      todoItems = items;
-    },
-  });
-  const todoProvider = wrapToolAsProvider(todoTool);
-
-  return [searchProvider, webProvider, bashProvider, todoProvider];
-}
-
-/**
- * Load an optional MCP ComponentProvider from `.mcp.json` in `cwd`.
- * Returns undefined (no error) when the file is absent or unreadable.
- */
-async function loadMcpProvider(cwd: string): Promise<ComponentProvider | undefined> {
-  const mcpConfigPath = join(cwd, ".mcp.json");
-  const result = await loadMcpJsonFile(mcpConfigPath);
-  if (!result.ok) return undefined; // absent or unreadable — silently skip
-  if (result.value.servers.length === 0) return undefined;
-
-  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
-  const resolver = createMcpResolver(connections);
-  return createMcpComponentProvider({ resolver });
-}
-
-/**
- * Load an optional hooks middleware from `~/.koi/hooks.json`.
- * Returns undefined when absent, invalid, or empty.
- */
-async function loadHookMiddleware(): Promise<KoiMiddleware | undefined> {
-  let raw: unknown;
-  try {
-    raw = await Bun.file(HOOKS_CONFIG_PATH).json();
-  } catch {
-    return undefined;
-  }
-  const result = loadRegisteredHooks(raw, "user");
-  if (!result.ok || result.value.length === 0) return undefined;
-  return createHookMiddleware({ hooks: result.value });
-}
-
-/**
- * Build permissions middleware with auto-allow rules (allow everything by default).
- * This wires the permissions infrastructure without blocking any tools.
- * Users can tighten rules by providing a manifest or custom backend.
- */
-function buildPermissionsMiddleware(): KoiMiddleware {
-  const backend = createPatternPermissionBackend({
-    rules: { allow: ["*"], deny: [], ask: [] },
-  });
-  return createPermissionsMiddleware({ backend });
-}
 
 // ---------------------------------------------------------------------------
 // Command entry point
 // ---------------------------------------------------------------------------
+
+/**
+ * Non-interactive auto-approve handler. `koi start` pairs this with the
+ * auto-allow permission backend so the runtime never actually blocks on
+ * an approval — the backend allows everything up front, so this handler
+ * is only called if something bypasses the backend gate. Returning
+ * `always-allow` matches the old CLI posture.
+ */
+const autoApproveHandler: ApprovalHandler = async () => ({
+  kind: "always-allow",
+  scope: "session",
+});
+
+/**
+ * Default preset-stack set for `koi start`: every stack except
+ * `spawn`. Removing the spawn stack eliminates the coordinator
+ * pattern from the CLI, which removes the `task_output` polling
+ * flow that would otherwise trip the default loop detector's
+ * 3-in-8 threshold. Matches main's pre-refactor capability
+ * surface: no sub-agents, no polling, no detector false positives.
+ *
+ * Users who really want coordinator workflows under `koi start`
+ * opt back in via an explicit `manifest.stacks` list that includes
+ * "spawn" — at which point they're acknowledging the loop-detector
+ * false-positive risk themselves.
+ *
+ * Computed lazily from `DEFAULT_STACKS` so any new stack added to
+ * the registry appears here automatically (stacks default to
+ * on-for-start unless they explicitly exclude themselves the way
+ * spawn does here).
+ */
+const DEFAULT_STACKS_WITHOUT_SPAWN: readonly string[] = DEFAULT_STACKS.filter(
+  (stack) => stack.id !== "spawn",
+).map((stack) => stack.id);
 
 export async function run(flags: StartFlags): Promise<ExitCode> {
   // Dry-run not yet implemented — fail closed so no live API calls are made.
@@ -192,6 +96,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   let manifestModelName: string | undefined;
   let manifestInstructions: string | undefined;
+  let manifestStacks: readonly string[] | undefined;
+  let manifestPlugins: readonly string[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -200,6 +106,46 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
     manifestModelName = manifestResult.value.modelName;
     manifestInstructions = manifestResult.value.instructions;
+    manifestStacks = manifestResult.value.stacks;
+    manifestPlugins = manifestResult.value.plugins;
+
+    // Fail fast on settings that `koi start` cannot honor, rather
+    // than silently discarding them. A shared manifest that targets
+    // both `koi tui` and `koi start` should omit these fields (or
+    // split into host-specific manifests) — accepting valid syntax
+    // and then silently overriding it is more user-hostile than a
+    // clear error at launch.
+
+    if (manifestResult.value.backgroundSubprocesses === true) {
+      process.stderr.write(
+        "koi start: manifest.backgroundSubprocesses: true is not supported on this host.\n" +
+          "  The engine's default loop detector hard-fails legitimate task_output polling\n" +
+          "  of long-running background subprocesses (3-in-8 threshold). Until the\n" +
+          "  detector gains per-tool exemptions, koi start cannot enable bash_background\n" +
+          "  without reintroducing the polling failure mode.\n" +
+          "  Remove `backgroundSubprocesses: true` from the manifest to run under koi\n" +
+          "  start, or use `koi tui` — the same manifest works there without modification\n" +
+          "  once this field is removed.\n",
+      );
+      return ExitCode.FAILURE;
+    }
+
+    if (
+      manifestResult.value.stacks !== undefined &&
+      manifestResult.value.stacks.includes("spawn")
+    ) {
+      process.stderr.write(
+        'koi start: manifest.stacks including "spawn" is not supported on this host.\n' +
+          "  Spawn enables coordinator workflows that poll task_output while waiting on\n" +
+          "  sub-agents, which hard-fails under koi start's default loop detector. The\n" +
+          "  spawn stack is automatically excluded from the koi start default stack set\n" +
+          "  for this reason; an explicit stacks list that re-adds it would reintroduce\n" +
+          "  the failure mode.\n" +
+          '  Remove "spawn" from manifest.stacks to run under koi start, or use `koi tui`\n' +
+          "  for coordinator workflows.\n",
+      );
+      return ExitCode.FAILURE;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -228,257 +174,215 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
-  // Mutable transcript shared across all stream() calls.
-  // Pre-populated on resume; grows across interactive turns.
-  // let: justified — grows across turns, never replaced
-  const transcript: InboundMessage[] = [];
-
   // Generation counter for the transcript, incremented whenever loop mode
   // truncates the transcript back to its baseline between iterations. Each
   // stream() invocation captures the current generation at start time; its
   // final transcript.push() compares against the live generation and skips
   // the write if it has advanced. This fences off orphaned iteration
   // streams whose model call completes in the background AFTER the next
-  // loop iteration has already started — without that guard, late pushes
-  // from a timed-out iteration would pollute iteration N+2's context
-  // window. Generation bumps happen via incrementTranscriptGeneration()
-  // from runConvergenceLoop's resetTranscript callback.
+  // loop iteration has already started.
   // let: mutable — bumped on every loop reset
   let transcriptGeneration = 0;
   const incrementTranscriptGeneration = (): void => {
     transcriptGeneration += 1;
   };
 
+  // let: justified — reassigned once on successful --resume
   let sid = sessionId(crypto.randomUUID());
 
+  // Messages loaded from a resumed session; pushed into the runtime's
+  // in-memory transcript AFTER the factory call returns (the factory
+  // owns the transcript array and exposes it via `handle.transcript`).
+  let resumedMessages: readonly InboundMessage[] = [];
+
   if (flags.resume !== undefined) {
-    const resumeSid = sessionId(flags.resume);
-    const resumeResult = await resumeForSession(resumeSid, jsonlTranscript);
+    const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
     if (!resumeResult.ok) {
       process.stderr.write(
-        `koi start: cannot resume session "${flags.resume}" — ${resumeResult.error.message}\n`,
+        `koi start: cannot resume session "${flags.resume}" — ${resumeResult.error}\n`,
       );
       return ExitCode.FAILURE;
     }
-    // Pre-populate transcript with the loaded session history.
-    for (const msg of resumeResult.value.messages) {
-      transcript.push(msg);
-    }
-    sid = resumeSid;
-    if (flags.verbose && resumeResult.value.issues.length > 0) {
+    resumedMessages = resumeResult.value.messages;
+    sid = resumeResult.value.sid;
+    if (flags.verbose && resumeResult.value.issueCount > 0) {
       process.stderr.write(
-        `koi start: resumed with ${resumeResult.value.issues.length} repair issue(s)\n`,
+        `koi start: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // 4. Engine adapter — model→tool→model loop via runTurn
-  // ---------------------------------------------------------------------------
-
-  // Wrap ModelAdapter in an EngineAdapter so createKoi can compose middleware.
-  // terminals expose modelCall/modelStream so middleware (event-trace, etc.) can intercept.
-  // stream() drives the full model→tool→model agent loop via runTurn.
-  const engineAdapter: EngineAdapter = {
-    engineId: "koi-cli",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: {
-      modelCall: modelAdapter.complete,
-      modelStream: modelAdapter.stream,
-    },
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const handlers = input.callHandlers;
-      if (handlers === undefined) {
-        throw new Error("callHandlers required — createKoi must inject them");
-      }
-      const text = input.kind === "text" ? input.text : "";
-      // Stage user message — only committed to transcript after a completed turn.
-      const stagedUserMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
-
-      // let: accumulated across streaming chunks, read after loop completes
-      let deltaText = "";
-      let doneContentText = "";
-      // Snapshot the generation at stream-start time. The final push()
-      // below runs only if the generation has not advanced — so an
-      // orphaned iteration that finally produces its done event after
-      // loop mode has moved on cannot pollute the next iteration's
-      // context window. (#1624 loop-mode orphan fence.)
-      const streamStartGeneration = transcriptGeneration;
-
-      return (async function* (): AsyncIterable<EngineEvent> {
-        // Token-aware compaction — replaces naive message-count slice.
-        // budgetConfigForModel resolves context window from @koi/model-registry
-        // (e.g. claude-opus-4-6 → 1M, gpt-4o → 128K, unknown → 200K default).
-        const budgetResult = await enforceBudget(
-          [...transcript],
-          undefined,
-          budgetConfigForModel(model),
-        );
-        if (budgetResult.compaction !== "noop") {
-          transcript.splice(0, transcript.length, ...budgetResult.messages);
-        }
-        const contextWindow = [...budgetResult.messages, stagedUserMsg];
-
-        for await (const event of runTurn({
-          callHandlers: handlers,
-          messages: contextWindow,
-          signal: input.signal,
-          maxTurns: DEFAULT_MAX_TURNS,
-        })) {
-          yield event;
-          if (event.kind === "text_delta") {
-            deltaText += event.delta;
-          }
-          if (event.kind === "done") {
-            doneContentText = event.output.content
-              .filter((b) => b.kind === "text")
-              .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-              .join("");
-            if (event.output.stopReason === "completed") {
-              // Orphan fence: skip the transcript append if loop mode
-              // has bumped the generation since this stream started.
-              if (transcriptGeneration !== streamStartGeneration) {
-                return;
-              }
-              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
-              transcript.push(stagedUserMsg);
-              if (assistantText.length > 0) {
-                transcript.push({
-                  senderId: "assistant",
-                  timestamp: Date.now(),
-                  content: [{ kind: "text", text: assistantText }],
-                });
-              }
-            }
-          }
-        }
-      })();
-    },
-  };
-
-  // ---------------------------------------------------------------------------
-  // 5. Tool and middleware assembly (parallel async loading)
-  // ---------------------------------------------------------------------------
-
-  const cwd = process.cwd();
-  const pluginUserRoot = join(homedir(), ".koi", "plugins");
-  const [mcpProvider, hookMiddleware, staticProviders, pluginComponents] = await Promise.all([
-    loadMcpProvider(cwd),
-    loadHookMiddleware(),
-    buildStaticProviders(cwd),
-    loadPluginComponents(pluginUserRoot),
-  ]);
-
-  // Log plugin activation errors (non-fatal)
-  for (const err of pluginComponents.errors) {
-    console.warn(`[koi start] plugin "${err.plugin}": ${err.error}`);
-  }
-  if (pluginComponents.middlewareNames.length > 0) {
-    console.warn(
-      `[koi start] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+    // Render the loaded history to stdout so the user sees the prior
+    // conversation before the next prompt. Filter rules live in
+    // `@koi/core/message#filterResumedMessagesForDisplay` so CLI and TUI
+    // stay in lockstep.
+    const displayable = filterResumedMessagesForDisplay(resumedMessages);
+    process.stdout.write(
+      `\n── Resumed session ${String(sid)} (${String(displayable.length)} message(s)) ──\n\n`,
     );
-  }
-
-  // Plugin MCP provider (additional MCP servers from installed plugins)
-  let pluginMcpProvider: ComponentProvider | undefined;
-  if (pluginComponents.mcpServers.length > 0) {
-    const connections = pluginComponents.mcpServers.map((server) =>
-      createOAuthAwareMcpConnection(server),
-    );
-    const resolver = createMcpResolver(connections);
-    pluginMcpProvider = createMcpComponentProvider({ resolver });
-  }
-
-  // Plugin hooks merged into hook middleware with tier tagging:
-  // user hooks = "user" tier, plugin hooks = "session" tier.
-  let mergedHookMiddleware = hookMiddleware;
-  if (pluginComponents.hooks.length > 0) {
-    const pluginRegistered = createRegisteredHooks(pluginComponents.hooks, "session");
-    if (hookMiddleware !== undefined) {
-      // Rebuild with merged hooks (user hooks loaded via loadHookMiddleware don't
-      // expose the underlying array, so re-load user hooks and merge)
-      const userHooksPath = join(homedir(), ".koi", "hooks.json");
-      let userRegistered: readonly import("@koi/hooks").RegisteredHook[] = [];
-      try {
-        const raw: unknown = await Bun.file(userHooksPath).json();
-        const result = loadRegisteredHooks(raw, "user");
-        if (result.ok) userRegistered = result.value;
-      } catch {
-        // Already loaded above — fallback to empty
-      }
-      mergedHookMiddleware = createHookMiddleware({
-        hooks: [...userRegistered, ...pluginRegistered],
-      });
-    } else {
-      mergedHookMiddleware = createHookMiddleware({ hooks: pluginRegistered });
+    for (const msg of displayable) {
+      const text = msg.content.map((b) => (b.kind === "text" ? b.text : `[${b.kind}]`)).join("");
+      if (text.length === 0) continue;
+      const label = msg.role === "user" ? "You" : "Assistant";
+      process.stdout.write(`${label}: ${text}\n\n`);
     }
+    process.stdout.write("── End of history ──\n\n");
   }
 
-  const providers: ComponentProvider[] = [
-    ...staticProviders,
-    ...(mcpProvider !== undefined ? [mcpProvider] : []),
-    ...(pluginMcpProvider !== undefined ? [pluginMcpProvider] : []),
-  ];
-
+  // ---------------------------------------------------------------------------
+  // 4. Runtime assembly via shared factory
+  // ---------------------------------------------------------------------------
+  //
+  // `createKoiRuntime` is the same factory `koi tui` uses. `koi start`
+  // differs only in the permission backend (auto-allow — the plain REPL
+  // has no interactive approval UI), the hostId/engineId labels, and
+  // the loop-mode generation fence. Everything else — MCP loading,
+  // hook loading, plugin activation, middleware composition, provider
+  // set, createKoi call — lives in the factory so a feature added
+  // there lands in both hosts automatically.
+  //
   // In loop mode (--until-pass), session-transcript persistence is
   // intentionally disabled. Every iteration would otherwise write a new
   // entry to the JSONL session log, so a later `koi start --resume <id>`
-  // would replay all failed attempts as part of the user context. Loop
-  // mode is a one-shot self-correcting execution, not a resumable
-  // conversation — persisting only the final converged turn would require
-  // a separate mechanism, so Phase A opts out of persistence entirely.
+  // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
-  const sessionTranscriptMiddleware = isLoopMode
-    ? undefined
-    : createSessionTranscriptMiddleware({
-        transcript: jsonlTranscript,
-        sessionId: sid,
-      });
-
-  const middleware: KoiMiddleware[] = [
-    ...(sessionTranscriptMiddleware !== undefined ? [sessionTranscriptMiddleware] : []),
-    buildPermissionsMiddleware(),
-    ...(mergedHookMiddleware !== undefined ? [mergedHookMiddleware] : []),
-    ...(manifestInstructions !== undefined
-      ? [createSystemPromptMiddleware(manifestInstructions)]
-      : []),
-  ];
-
-  // ---------------------------------------------------------------------------
-  // 6. Runtime assembly
-  // ---------------------------------------------------------------------------
-
-  // Engine loop detection is LEFT ON in loop mode.
-  //
-  // Round 33 (this review session) speculated that the engine-level
-  // loop detector would accumulate state across retries and cause
-  // false positives. Round 34 flipped and argued that disabling it
-  // leaves each individual iteration unbounded — a single bad
-  // iteration could hammer tools until the 10-minute iteration
-  // timeout fired.
-  //
-  // Reverting to the default (enabled) because:
-  //   1. Loop detection is per-runTurn, not per-runtime. Each
-  //      iteration calls runtime.run() which triggers a fresh
-  //      runTurn invocation, and the detector's state is scoped to
-  //      that invocation. No cross-iteration state leak in practice.
-  //   2. The round 34 concern is more specific and more expensive
-  //      to get wrong: an iteration that enters a tool-calling
-  //      spiral would burn tokens and potentially side-effecting
-  //      tool calls until iterationTimeoutMs fires.
-  //   3. If the round 33 concern materializes, users can disable
-  //      it explicitly by building their own runtime; the default
-  //      stays safe.
-  const runtime = await createKoi({
-    manifest: { name: "koi", version: "0.0.1", model: { name: model } },
-    adapter: engineAdapter,
-    middleware,
-    providers,
+  const runtimeHandle = await createKoiRuntime({
+    modelAdapter,
+    modelName: model,
+    approvalHandler: autoApproveHandler,
+    cwd: process.cwd(),
+    engineId: "koi-cli",
+    hostId: "koi-cli",
+    permissionBackend: createPatternPermissionBackend({
+      rules: { allow: ["*"], deny: [], ask: [] },
+    }),
+    permissionsDescription: "koi start — auto-allow",
+    // `koi start` runs without `bash_background` because main's
+    // pre-refactor `koi start` never exposed that tool. The shared
+    // execution stack wires it by default for TUI, so we explicitly
+    // opt out here.
+    //
+    // `loopDetection` is left at the engine default (undefined →
+    // detector enabled) because the auto-allow permission backend
+    // makes the detector the only narrow guard against runaway
+    // mutating calls before governance caps trip.
+    //
+    // The full `task_*` tool set stays wired regardless, but the
+    // `spawn` stack is filtered out below — without sub-agents to
+    // orchestrate, `task_output` polling has no reason to fire and
+    // can't trip the detector's 3-in-8 threshold. This matches
+    // main's pre-refactor `koi start` capability surface (no
+    // Spawn, no bash_background, no coordinator workflows).
+    backgroundSubprocesses: false,
+    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+    // When the user passes an explicit manifest.stacks, we honor
+    // it verbatim (including re-enabling `spawn` if they really
+    // want coordinator flows under `koi start`). When they don't,
+    // we filter `spawn` out of the default set so the detector
+    // stays compatible with the remaining tool surface.
+    ...(manifestStacks !== undefined
+      ? { stacks: manifestStacks }
+      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
+    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+    getGeneration: () => transcriptGeneration,
   });
+  const runtime = runtimeHandle.runtime;
+  const transcript = runtimeHandle.transcript;
+
+  /**
+   * Wrapper passed to `createCliHarness` so the harness's internal
+   * `runtime.dispose()` call in its `finally` block is a no-op. The
+   * real shutdown sequence (stack onShutdown → drain → dispose)
+   * runs in `shutdownRuntime()` below, which is invoked AFTER the
+   * harness returns. Without this wrapper, the harness would
+   * dispose the runtime before the stack `onShutdown` hooks get a
+   * chance to fire — MCP connections, the execution stack's
+   * bgController, and other cleanup would run against an already-
+   * disposed engine and either no-op silently or error.
+   */
+  const harnessRuntime: typeof runtime = {
+    ...runtime,
+    dispose: async () => {
+      /* no-op: real dispose in shutdownRuntime() */
+    },
+  };
+
+  // Shutdown failure flag — set by `shutdownRuntime()` when
+  // teardown (stack onShutdown hooks, bg controller abort, or
+  // `runtime.dispose()`) reports a failure. `run()` reads this
+  // after each exit path's `finally` completes and returns
+  // `ExitCode.FAILURE` when set, so automation sees a non-zero
+  // exit when transcript flush, session-end hooks, or MCP
+  // disposers fail even though the command body completed
+  // successfully.
+  // let: mutable — set from within shutdownRuntime on teardown failure
+  let shutdownFailed = false;
+
+  /**
+   * Shared shutdown sequence — MUST run after the harness returns
+   * and before any `process.exit()` path. Order matches the TUI
+   * invariant:
+   *
+   *   1. Fire stack `onShutdown` hooks via `shutdownBackgroundTasks`
+   *      (MCP disposers, execution stack's bgController abort for
+   *      hosts that enabled background subprocesses).
+   *   2. If any stack reported live work, wait out the SIGTERM→
+   *      SIGKILL escalation window so subprocesses can't keep
+   *      mutating the workspace past CLI exit.
+   *   3. Dispose the runtime (engine teardown, session-end hooks
+   *      including transcript flush).
+   *
+   * The harness's own `runtime.dispose()` is a no-op thanks to
+   * `harnessRuntime` wrapping above, so this is the only place
+   * `runtime.dispose()` actually runs.
+   *
+   * Called from `finally` blocks after the surrounding `catch`
+   * has already run, so any exception escaping this helper would
+   * bypass the command's normal error path and surface as an
+   * unhandled rejection. Each step is wrapped in its own
+   * try/catch so a wedged dispose timeout, a failing stack
+   * onShutdown hook, or a broken MCP disposer surfaces as a
+   * controlled stderr log AND flips `shutdownFailed` so `run()`
+   * propagates the failure as `ExitCode.FAILURE`.
+   */
+  const shutdownRuntime = async (): Promise<void> => {
+    try {
+      const hadLiveWork = runtimeHandle.shutdownBackgroundTasks();
+      if (hadLiveWork) {
+        // Matches the execution stack's internal SUBPROCESS_DRAIN_MS
+        // (3500ms) plus a 200ms safety margin.
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_700));
+      }
+    } catch (shutdownErr) {
+      shutdownFailed = true;
+      process.stderr.write(
+        `koi: shutdownBackgroundTasks failed — ${
+          shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)
+        }\n`,
+      );
+    }
+    try {
+      await runtime.dispose?.();
+    } catch (disposeErr) {
+      // `runtime.dispose()` can throw on settle timeout when a
+      // tool is wedged in the active run, and its session-end
+      // hooks run the transcript flush — a failure here means
+      // the user-visible session may be incomplete on disk.
+      // Flip `shutdownFailed` so the command returns a non-zero
+      // exit code instead of reporting success after teardown
+      // actually failed.
+      shutdownFailed = true;
+      process.stderr.write(
+        `koi: runtime.dispose failed — ${
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+        }\n`,
+      );
+    }
+  };
+  // Pre-populate the runtime's in-memory transcript with the resumed
+  // messages so the model sees prior context on the first turn.
+  if (resumedMessages.length > 0) {
+    transcript.push(...resumedMessages);
+  }
 
   const channel = createCliChannel({ theme: "default" });
 
@@ -517,7 +421,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   process.on("SIGINT", onSigint);
 
   const harness = createCliHarness({
-    runtime,
+    // `harnessRuntime` has a no-op `dispose`; the real shutdown
+    // sequence (stack onShutdown → drain → dispose) fires from
+    // `shutdownRuntime()` in each exit path's `finally`. Passing
+    // the raw `runtime` here would let the harness's internal
+    // `finally` call `runtime.dispose()` before stack shutdown
+    // hooks can run, leaking MCP / bg subprocesses.
+    runtime: harnessRuntime,
     channel,
     tui: null,
     signal: controller.signal,
@@ -539,7 +449,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           process.stderr.write(`koi: ${msg}\n`);
           return ExitCode.FAILURE;
         } finally {
-          await runtime.dispose?.();
+          await shutdownRuntime();
         }
         break;
       }
@@ -606,7 +516,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             process.stderr.write(`koi: ${msg}\n`);
             return ExitCode.FAILURE;
           } finally {
-            await runtime.dispose?.();
+            await shutdownRuntime();
           }
           break;
         }
@@ -618,6 +528,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           const msg = err instanceof Error ? err.message : String(err);
           process.stderr.write(`koi: ${msg}\n`);
           return ExitCode.FAILURE;
+        } finally {
+          // Single-shot prompt mode also needs the shared shutdown
+          // path — otherwise a model that launches `bash_background`
+          // and then completes the turn leaves the subprocess
+          // orphaned past CLI exit (the harness's own dispose only
+          // calls `runtime.dispose`, not the stack onShutdown hooks).
+          await shutdownRuntime();
         }
         if (result.stopReason !== "completed") {
           return ExitCode.FAILURE;
@@ -629,6 +546,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // Non-zero exit for user-cancelled sessions so scripts/automation can
     // distinguish cancellation (SIGINT) from successful completion.
     if (controller.signal.aborted) {
+      return ExitCode.FAILURE;
+    }
+
+    // Non-zero exit when shutdown/teardown reported a failure
+    // (wedged dispose, failing MCP disposer, transcript flush
+    // error). `shutdownRuntime()` logs the specific error to
+    // stderr and sets this flag; automation sees a non-zero exit
+    // code so it doesn't believe the run completed cleanly when
+    // persistence or cleanup actually failed.
+    if (shutdownFailed) {
       return ExitCode.FAILURE;
     }
 

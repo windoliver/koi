@@ -26,6 +26,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
+  SessionId,
   SpawnInheritanceConfig,
   SpawnLedger,
   StoreChangeEvent,
@@ -153,6 +154,43 @@ export interface CreateKoiOptions {
   readonly channelId?: string;
   /** Stable conversation ID that spans multiple runtime.run() calls. Injected into SessionContext. */
   readonly conversationId?: string;
+  /**
+   * Optional override for the factory-level session id.
+   *
+   * By default, `createKoi` mints a composite id of the form
+   * `agent:{agentId}:{uuid}` at factory-construction time. Hosts that
+   * need a user-facing, human-typable session id (e.g. `koi tui` for
+   * its post-quit resume hint) can pass a pre-branded `SessionId`
+   * here; the factory will use that value verbatim for both
+   * `runtime.sessionId` and `ctx.session.sessionId`, which is what
+   * the session-transcript middleware routes on.
+   *
+   * Callers are responsible for uniqueness — the factory trusts the
+   * override. Collisions in the session-transcript directory result
+   * in appends to an existing JSONL file (which is how `--resume`
+   * works on top of this knob).
+   */
+  readonly sessionId?: SessionId;
+  /**
+   * Optional host-controlled session-id rotation strategy.
+   *
+   * `cycleSession()` (invoked by hosts on conversation boundaries
+   * like `koi tui`'s `/clear`) rotates the factory-scoped session id
+   * so checkpoint chains and other session-keyed durable state are
+   * isolated across resets. By default, rotation mints a fresh
+   * composite id in the `agent:{agentId}:{uuid}` format.
+   *
+   * Hosts that supplied their own `sessionId` via the option above
+   * usually want to keep that format alive across rotations — e.g.
+   * `koi tui` prints the session id in its post-quit resume hint
+   * and keys its JSONL file on it. They pass a callback that returns
+   * the next id (stable across calls is fine: returning the same
+   * host-owned UUID each time makes `/clear` wipe-and-rewrite the
+   * same file, preserving the resume contract).
+   *
+   * When absent, rotation falls back to the default composite form.
+   */
+  readonly rotateSessionId?: () => SessionId;
   /** Process group to assign this agent to. Recorded in the registry entry and ProcessId. */
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */

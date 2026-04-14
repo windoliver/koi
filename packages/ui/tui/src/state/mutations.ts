@@ -7,6 +7,7 @@
  */
 
 import type { EngineEvent } from "@koi/core/engine";
+import { convertResumedMessagesToTui } from "./reduce.js";
 import type {
   CumulativeMetrics,
   PlanTask,
@@ -588,10 +589,24 @@ export function mutate(state: Draft, action: TuiAction): void {
         modelName: action.modelName,
         provider: action.provider,
         sessionName: action.sessionName,
+        sessionId: action.sessionId,
       };
       if (action.maxTokens !== undefined) {
         (state as { maxContextTokens: number }).maxContextTokens = action.maxTokens;
       }
+      break;
+    }
+
+    case "rehydrate_messages": {
+      // Mirrors the pure-reducer case in reduce.ts — wholesale
+      // replace of the visible message list at TUI startup when
+      // `--resume` is set. Filtering/shape conversion is delegated
+      // to `convertResumedMessagesToTui` so this path and the pure
+      // reducer + `load_history` path all render identical history.
+      (state as { messages: readonly TuiMessage[] }).messages = convertResumedMessagesToTui(
+        action.messages,
+        "resumed",
+      );
       break;
     }
 

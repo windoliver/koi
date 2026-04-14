@@ -327,15 +327,16 @@ describe("task_update", () => {
     expect(result.durationMs as number).toBeGreaterThanOrEqual(30);
   });
 
-  test("status completed without output returns error", async () => {
+  test("status completed without output defaults to task subject", async () => {
     const { create, update } = await setup();
     const r1 = await exec(create, { subject: "Auth", description: "Do auth" });
     const id = (r1.task as Record<string, unknown>).id as string;
     await exec(update, { task_id: id, status: "in_progress" });
 
     const r2 = await exec(update, { task_id: id, status: "completed" });
-    expect(r2.ok).toBe(false);
-    expect(r2.error as string).toContain("output");
+    expect(r2.ok).toBe(true);
+    const result = (r2 as Record<string, unknown>).result as Record<string, unknown>;
+    expect(result.output).toBe("Completed: Auth");
   });
 
   test("status failed with reason marks task failed", async () => {

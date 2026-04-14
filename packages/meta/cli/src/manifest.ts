@@ -1,11 +1,11 @@
 /**
  * Minimal agent manifest loader for #1264.
  *
- * Loads a YAML manifest file and extracts the two fields needed for
- * basic agent customization: model name and behavioral instructions.
+ * Loads a YAML manifest file and extracts the fields needed for basic
+ * agent customization: model name, behavioral instructions, opt-in
+ * preset stacks, and opt-in plugins.
  *
- * Intentionally minimal — tools, middleware, and full AgentManifest
- * assembly are out of scope for this PR.
+ * Intentionally minimal — full AgentManifest assembly is out of scope.
  *
  * Manifest format (koi.yaml):
  *   name: my-agent          # optional, informational
@@ -13,6 +13,29 @@
  *     name: google/gemini-2.0-flash-001
  *   instructions: |         # optional — injected as system prompt
  *     You are a helpful coding assistant.
+ *   stacks:                 # optional — opt into a subset of preset stacks
+ *     - notebook            #   (omit to activate every stack in DEFAULT_STACKS)
+ *     - rules
+ *     - skills
+ *   plugins:                # optional — opt into a subset of discovered plugins
+ *     - my-hook-bundle      #   (omit to activate every plugin in ~/.koi/plugins/)
+ *     - my-mcp-server       #   (empty array disables every plugin)
+ *   backgroundSubprocesses: true   # TUI ONLY — controls whether the execution
+ *                                  #   stack exposes the `bash_background` tool
+ *                                  #   (detached shell subprocess launch). The
+ *                                  #   `task_*` coordinator tools are gated
+ *                                  #   separately on whether the `spawn` preset
+ *                                  #   stack is active — see the comment on
+ *                                  #   `ManifestConfig.backgroundSubprocesses`
+ *                                  #   below for the full contract. `koi tui`
+ *                                  #   honors this field (default true).
+ *                                  #   `koi start` REJECTS manifests that set
+ *                                  #   it to `true` because the CLI's default
+ *                                  #   loop detector hard-fails legitimate
+ *                                  #   `task_output` polling of background
+ *                                  #   jobs. Shared manifests that target both
+ *                                  #   hosts must omit this field or split
+ *                                  #   per-host.
  */
 
 import { loadConfig } from "@koi/config";
@@ -20,6 +43,48 @@ import { loadConfig } from "@koi/config";
 export interface ManifestConfig {
   readonly modelName: string;
   readonly instructions: string | undefined;
+  /**
+   * Opt-in subset of preset stack ids. `undefined` means "activate every
+   * stack in `DEFAULT_STACKS`" (v1's default posture). An empty array
+   * means "deactivate every stack" (the host runs core middleware only).
+   */
+  readonly stacks: readonly string[] | undefined;
+  /**
+   * Opt-in subset of discovered plugin names. `undefined` means
+   * "activate every plugin found in `~/.koi/plugins/`" — matches the
+   * prior filesystem-scan auto-discovery behavior for hosts without a
+   * `plugins:` field. An empty array means "deactivate every plugin"
+   * — useful for reproducible CI assemblies.
+   */
+  readonly plugins: readonly string[] | undefined;
+  /**
+   * Whether the execution preset stack contributes the
+   * `bash_background` tool (detached shell subprocess launch).
+   *
+   * This field controls ONLY `bash_background`. The `task_*`
+   * coordinator tools (`task_create`, `task_list`, `task_output`,
+   * `task_delegate`, `task_stop`, `task_update`, `task_get`) are
+   * gated independently on whether the `spawn` preset stack is
+   * active, because the task board is coordinator infrastructure —
+   * sub-agent fan-out flows need `task_create` + `task_delegate`
+   * and polling for results needs `task_output`. Hosts that
+   * exclude `spawn` from their stack list (e.g. `koi start` via
+   * `DEFAULT_STACKS_WITHOUT_SPAWN`) lose the `task_*` surface
+   * regardless of this field's value.
+   *
+   * **TUI only.** `koi tui` defaults to `true` and honors explicit
+   * settings. `koi start` REJECTS any manifest that sets this to
+   * `true`, because the CLI's default loop detector hard-fails
+   * legitimate `task_output` polling. Shared manifests that
+   * target both hosts must omit this field (or split per-host).
+   *
+   * Invariant enforcement: because `bash_background` relies on
+   * the task board for status/output observability, the factory
+   * force-overrides this to `false` and emits a warning if the
+   * caller requested `true` but `spawn` is excluded (task_* would
+   * otherwise be missing). See `runtime-factory.ts`.
+   */
+  readonly backgroundSubprocesses: boolean | undefined;
 }
 
 /**
@@ -68,11 +133,69 @@ export async function loadManifestConfig(
     };
   }
 
+  const stacksRaw = raw.stacks;
+  let stacks: readonly string[] | undefined;
+  if (stacksRaw === undefined) {
+    stacks = undefined;
+  } else if (!Array.isArray(stacksRaw)) {
+    return {
+      ok: false,
+      error: "manifest.stacks must be a list of stack ids, e.g. stacks: [notebook, rules, skills]",
+    };
+  } else {
+    const invalid = stacksRaw.find((s) => typeof s !== "string" || s.length === 0);
+    if (invalid !== undefined) {
+      return {
+        ok: false,
+        error: "manifest.stacks entries must all be non-empty strings",
+      };
+    }
+    stacks = stacksRaw as readonly string[];
+  }
+
+  const pluginsRaw = raw.plugins;
+  let plugins: readonly string[] | undefined;
+  if (pluginsRaw === undefined) {
+    plugins = undefined;
+  } else if (!Array.isArray(pluginsRaw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.plugins must be a list of plugin names, e.g. plugins: [my-hook-bundle, my-mcp-server]",
+    };
+  } else {
+    const invalid = pluginsRaw.find((s) => typeof s !== "string" || s.length === 0);
+    if (invalid !== undefined) {
+      return {
+        ok: false,
+        error: "manifest.plugins entries must all be non-empty strings",
+      };
+    }
+    plugins = pluginsRaw as readonly string[];
+  }
+
+  const bgSubsRaw = raw.backgroundSubprocesses;
+  let backgroundSubprocesses: boolean | undefined;
+  if (bgSubsRaw === undefined) {
+    backgroundSubprocesses = undefined;
+  } else if (typeof bgSubsRaw !== "boolean") {
+    return {
+      ok: false,
+      error:
+        "manifest.backgroundSubprocesses must be a boolean (e.g. backgroundSubprocesses: true)",
+    };
+  } else {
+    backgroundSubprocesses = bgSubsRaw;
+  }
+
   return {
     ok: true,
     value: {
       modelName: modelName.trim(),
       instructions: instructions as string | undefined,
+      stacks,
+      plugins,
+      backgroundSubprocesses,
     },
   };
 }

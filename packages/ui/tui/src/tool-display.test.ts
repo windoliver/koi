@@ -338,8 +338,8 @@ describe("getResultDisplay — web_fetch result", () => {
         finalUrl: "https://example.com",
       }),
     );
-    // Chip order follows RESULT_CHIP_KEYS priority; truncated comes before format
-    expect(r.chips).toEqual(["status=200", "contentType=text/html", "truncated=false"]);
+    // truncated=false is suppressed (quiet falsy chip), format still surfaces
+    expect(r.chips).toEqual(["status=200", "contentType=text/html", "format=markdown"]);
     expect(r.body).toBe("Example Domain");
   });
 
@@ -347,6 +347,33 @@ describe("getResultDisplay — web_fetch result", () => {
     const r = getResultDisplay(toolResult({ error: "Connection refused", code: "ECONNREFUSED" }));
     expect(r.body).toBe("Connection refused");
     expect(r.chips).toEqual(["code=ECONNREFUSED"]);
+  });
+
+  test("exposes cached=true chip on cache hit", () => {
+    const r = getResultDisplay(
+      toolResult({
+        status: 200,
+        contentType: "text/html",
+        body: "Example Domain",
+        truncated: false,
+        cached: true,
+      }),
+    );
+    expect(r.chips).toContain("cached=true");
+  });
+
+  test("suppresses cached=false chip on fresh fetch", () => {
+    const r = getResultDisplay(
+      toolResult({
+        status: 200,
+        contentType: "text/html",
+        body: "Example Domain",
+        truncated: false,
+        cached: false,
+      }),
+    );
+    expect(r.chips).not.toContain("cached=false");
+    expect(r.chips).not.toContain("truncated=false");
   });
 });
 

@@ -75,6 +75,14 @@ permanently lost after a restart, leaving tasks as `completed` with no retrievab
 This prevents the silent data-loss path rather than handling it with a `completed_no_result`
 fallback.
 
+### Completion output defaulting (#1785)
+
+When `output` is omitted or blank on `task_update(status: "completed")`, the tool
+auto-defaults to `"Completed: <task.subject>"` instead of returning an error. This avoids
+LLM re-prompt friction where the model had to ask the user for a summary. The Zod schema
+still type-validates `output` as `string | undefined` — non-string values are rejected at
+the schema level. Explicit `output` values are always preferred and passed through unchanged.
+
 ### Read authorization
 
 `task_output` and `task_stop` reject access when `task.assignedTo` is set to a different
@@ -178,7 +186,7 @@ fails. The `result` is still returned in full — the error is advisory.
 |------|-----------|-------|
 | `task_create` | — | Generates ID via `board.nextId()`. Accepts optional `metadata` (e.g. `{ kind: "research" }`). |
 | `task_get` | — | Returns full `Task` including metadata and timestamps. |
-| `task_update` | `in_progress`, `completed`, `failed`, `killed` | `completed` requires `output`. Accepts optional `results: JsonObject`. Single-in-progress guard. |
+| `task_update` | `in_progress`, `completed`, `failed`, `killed` | `completed` accepts optional `output`; defaults to `"Completed: <subject>"` when omitted (#1785). Accepts optional `results: JsonObject`. Single-in-progress guard. |
 | `task_list` | — | Filters by `status`, `assigned_to`, `updated_since`. Returns `TaskSummary[]`, ordered in_progress → pending → terminal. |
 | `task_stop` | — | Kills an `in_progress` task owned by the calling agent. Rejects pending and cross-agent. |
 | `task_output` | — | Returns `TaskOutputResponse`. Validates `results` against registered schema if configured. |

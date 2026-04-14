@@ -5,6 +5,21 @@ export interface TuiFlags extends BaseFlags {
   readonly command: "tui";
   readonly agent: string | undefined;
   readonly session: string | undefined;
+  /**
+   * Session id to resume. Loads the JSONL transcript from
+   * `~/.koi/sessions/<id>.jsonl` before starting the TUI so the
+   * historical messages render on mount and new writes continue
+   * appending to the same file. Mirrors `koi start --resume`.
+   */
+  readonly resume: string | undefined;
+  /**
+   * Path to an agent manifest (koi.yaml). When provided, the TUI
+   * picks up the manifest's `modelName`, `instructions` (system
+   * prompt), `stacks: [...]` opt-in, and `plugins: [...]` opt-in —
+   * exactly like `koi start --manifest`. Omit for the default
+   * "everything auto-discovered" behavior.
+   */
+  readonly manifest: string | undefined;
   readonly goal: readonly string[];
   // --- Convergence loop mode (#1624) ---
   /**
@@ -34,6 +49,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
   type V = {
     readonly agent: string | undefined;
     readonly session: string | undefined;
+    readonly resume: string | undefined;
+    readonly manifest: string | undefined;
     readonly goal: string[] | undefined;
     readonly "until-pass": string[] | undefined;
     readonly "max-iter": string | undefined;
@@ -47,6 +64,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
       options: {
         agent: { type: "string" },
         session: { type: "string" },
+        resume: { type: "string" },
+        manifest: { type: "string" },
         goal: { type: "string", multiple: true },
         "until-pass": { type: "string", multiple: true },
         "max-iter": { type: "string" },
@@ -86,6 +105,11 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
         "--until-pass cannot be combined with --session: loop mode disables session transcript persistence, so resuming a loop run would silently drop its history. Start a fresh TUI session or omit --session",
       );
     }
+    if (values.resume !== undefined) {
+      throw new ParseError(
+        "--until-pass cannot be combined with --resume: loop mode disables session transcript persistence, so the resumed JSONL would never see new iterations. Start a fresh TUI session or omit --resume",
+      );
+    }
   }
 
   return {
@@ -94,6 +118,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     help: g.help,
     agent: values.agent,
     session: values.session,
+    resume: values.resume,
+    manifest: values.manifest,
     goal: values.goal ?? [],
     untilPass,
     maxIter: resolveMaxIter(values["max-iter"]),
