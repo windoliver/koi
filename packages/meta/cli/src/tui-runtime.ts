@@ -46,18 +46,12 @@ import type {
   SessionId,
   SessionTranscript,
 } from "@koi/core";
-import {
-  createSingleToolProvider,
-  DEFAULT_UNSANDBOXED_POLICY,
-  agentId as makeAgentId,
-  memoryRecordId,
-} from "@koi/core";
+import { createSingleToolProvider, agentId as makeAgentId, memoryRecordId } from "@koi/core";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
-import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
@@ -90,16 +84,10 @@ import {
   createNotebookReplaceCellTool,
 } from "@koi/tool-notebook";
 import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
-import {
-  createBuiltinSearchProvider,
-  createFsEditTool,
-  createFsReadTool,
-  createFsWriteTool,
-} from "@koi/tools-builtin";
-import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import {
+  buildCoreProviders,
   buildHookMw,
   buildPluginMcpSetup,
   buildSessionTranscriptMw,
@@ -720,31 +708,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       : {}),
   });
 
-  // --- @koi/fs-local: local filesystem backend ---
-  const localFs = createLocalFileSystem(cwd);
-
-  // --- @koi/tools-builtin: Glob, Grep, ToolSearch search provider ---
-  // Also provides fs_read, fs_write, fs_edit via individual providers below.
-  const builtinSearchProvider = createBuiltinSearchProvider({ cwd });
-
-  // Filesystem read/write/edit tools backed by the local filesystem backend.
-  // Each tool is wrapped in a single-tool provider for createKoi assembly.
-  const fsReadProvider = createSingleToolProvider({
-    name: "fs-read",
-    toolName: "fs_read",
-    createTool: () => createFsReadTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-  });
-  const fsWriteProvider = createSingleToolProvider({
-    name: "fs-write",
-    toolName: "fs_write",
-    createTool: () => createFsWriteTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-  });
-  const fsEditProvider = createSingleToolProvider({
-    name: "fs-edit",
-    toolName: "fs_edit",
-    createTool: () => createFsEditTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-  });
-
   // --- @koi/sandbox-os: OS sandbox adapter (injected into Bash, not a separate tool) ---
   // When available (macOS seatbelt / Linux bubblewrap), all Bash commands run
   // inside the OS sandbox automatically — no separate model-visible tool.
@@ -848,11 +811,6 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       ? { sandboxAdapter, sandboxProfile }
       : {}),
   });
-  const bashProvider = createSingleToolProvider({
-    name: "bash",
-    toolName: "Bash",
-    createTool: () => bashHandle.tool,
-  });
 
   // --- bash_background: fire-and-forget bash via task board ---
   // getSignal: () => bgController.signal — read at launch time, not at construction.
@@ -893,15 +851,13 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     }),
   );
 
-  // --- @koi/tools-web: web_fetch ---
-  // HTTPS allowed: the TUI is a developer tool used on trusted networks.
-  // Residual TOCTOU SSRF risk documented in WebExecutorConfig.allowHttps.
-  const webExecutor = createWebExecutor({ allowHttps: true });
-  const webProvider = createWebProvider({
-    executor: webExecutor,
-    policy: DEFAULT_UNSANDBOXED_POLICY,
-    // Fetch only — no search provider configured (no API key at this layer)
-    operations: ["fetch"],
+  // --- Core providers (search + fs + web + bash) via shared-wiring ---
+  // The shared `buildCoreProviders` helper wires the exact same base set
+  // that `koi start` gets, so adding a new "both hosts" tool = one edit.
+  // TUI contributes its hooks-enabled Bash variant via the `bashTool` field.
+  const coreProviders = buildCoreProviders({
+    cwd,
+    bashTool: bashHandle.tool,
   });
 
   // --- @koi/tool-notebook: .ipynb read/add/replace/delete ---
@@ -1205,14 +1161,9 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     middleware: tracedMiddleware,
     ...(config.session !== undefined ? { sessionId: config.session.sessionId } : {}),
     providers: [
-      builtinSearchProvider,
-      fsReadProvider,
-      fsWriteProvider,
-      fsEditProvider,
-      bashProvider,
+      ...coreProviders,
       bashBackgroundProvider,
       ...taskToolProviders,
-      webProvider,
       ...notebookProviders,
       ...(memoryProvider !== undefined ? [memoryProvider] : []),
       spawnToolProvider,

@@ -20,17 +20,15 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import { enforceBudget } from "@koi/context-manager";
 
 import type {
   ComponentProvider,
-  EngineAdapter,
   EngineEvent,
   EngineInput,
   InboundMessage,
   KoiMiddleware,
 } from "@koi/core";
-import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
+import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createKoi } from "@koi/engine";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
@@ -40,17 +38,16 @@ import {
   createPermissionsMiddleware,
 } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
-import { runTurn } from "@koi/query-engine";
 import { createJsonlTranscript } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
-import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
-import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import { createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import type { StartFlags } from "../args/start.js";
-import { budgetConfigForModel } from "../engine-adapter.js";
+import { budgetConfigForModel, createTranscriptAdapter } from "../engine-adapter.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
 import { loadPluginComponents } from "../plugin-activation.js";
 import {
+  buildCoreProviders,
   buildHookMwOrUndefined,
   buildPluginMcpSetup,
   buildSessionTranscriptMw,
@@ -60,6 +57,7 @@ import {
   type McpSetup,
   mergeUserAndPluginHooks,
   resumeSessionFromJsonl,
+  wrapToolAsProvider,
 } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
 import { ExitCode } from "../types.js";
@@ -78,43 +76,18 @@ const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 // ---------------------------------------------------------------------------
 
 /**
- * Wrap a single Tool as a ComponentProvider so it can be passed to createKoi.
- * The provider name matches the tool name for debug clarity.
- */
-function wrapToolAsProvider(tool: import("@koi/core").Tool): ComponentProvider {
-  const name = tool.descriptor.name;
-  return {
-    name,
-    attach: async (): Promise<ReadonlyMap<string, unknown>> =>
-      new Map([[toolToken(name) as unknown as string, tool]]),
-  };
-}
-
-/**
- * Build the static ComponentProviders wired into every session:
- *   - builtin search (Glob, Grep)
- *   - web_fetch
- *   - Bash
- *   - TodoWrite (task list tracker — no permission gating needed)
+ * Build the ComponentProviders for `koi start` — the shared core (builtin
+ * search + filesystem + web + bash from `buildCoreProviders`) plus the
+ * CLI-only TodoWrite tracker.
  *
  * NOTE: EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally
  * NOT wired here. Plan-mode requires a permission backend that can enforce
  * the read-only gate (deny Write/Edit/Bash until the plan is approved).
- * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading —
- * the mode flag would flip but no permissions would actually be restricted.
- * The TUI harness wires the full interaction provider (including plan-mode)
- * because it has a real permission backend. `koi start` uses TodoWrite only.
+ * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading.
+ * The TUI wires the full interaction provider (including plan-mode)
+ * because it has a real permission backend.
  */
-async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
-  const searchProvider = createBuiltinSearchProvider({ cwd });
-  const webExecutor = createWebExecutor({ allowHttps: true });
-  const webProvider = createWebProvider({
-    executor: webExecutor,
-    policy: DEFAULT_UNSANDBOXED_POLICY,
-    operations: ["fetch"],
-  });
-  const bashProvider = wrapToolAsProvider(createBashTool({ workspaceRoot: cwd }));
-
+function buildCliProviders(cwd: string): ComponentProvider[] {
   // let: mutable todo list, replaced atomically on each write
   let todoItems: readonly TodoItem[] = [];
   const todoTool = createTodoTool({
@@ -123,9 +96,12 @@ async function buildStaticProviders(cwd: string): Promise<ComponentProvider[]> {
       todoItems = items;
     },
   });
-  const todoProvider = wrapToolAsProvider(todoTool);
 
-  return [searchProvider, webProvider, bashProvider, todoProvider];
+  return buildCoreProviders({
+    cwd,
+    bashTool: createBashTool({ workspaceRoot: cwd }),
+    additional: [wrapToolAsProvider(todoTool)],
+  });
 }
 
 /**
@@ -261,92 +237,24 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Engine adapter — model→tool→model loop via runTurn
+  // 4. Engine adapter — shared `createTranscriptAdapter` factory
   // ---------------------------------------------------------------------------
-
-  // Wrap ModelAdapter in an EngineAdapter so createKoi can compose middleware.
-  // terminals expose modelCall/modelStream so middleware (event-trace, etc.) can intercept.
-  // stream() drives the full model→tool→model agent loop via runTurn.
-  const engineAdapter: EngineAdapter = {
+  //
+  // Uses the same transcript-backed EngineAdapter as `koi tui`, so both hosts
+  // share: message staging, token-aware budget enforcement (enforceBudget +
+  // in-place splice), commit-on-done, and the synthetic-explain path for
+  // non-"completed" stop reasons. The loop-mode generation fence (#1624) is
+  // threaded in as a `getGeneration` callback — the adapter short-circuits
+  // the commit if the outer convergence loop has already moved on.
+  const engineAdapter = createTranscriptAdapter({
     engineId: "koi-cli",
-    capabilities: { text: true, images: false, files: false, audio: false },
-    terminals: {
-      modelCall: modelAdapter.complete,
-      modelStream: modelAdapter.stream,
-    },
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const handlers = input.callHandlers;
-      if (handlers === undefined) {
-        throw new Error("callHandlers required — createKoi must inject them");
-      }
-      const text = input.kind === "text" ? input.text : "";
-      // Stage user message — only committed to transcript after a completed turn.
-      const stagedUserMsg: InboundMessage = {
-        senderId: "user",
-        timestamp: Date.now(),
-        content: [{ kind: "text", text }],
-      };
-
-      // let: accumulated across streaming chunks, read after loop completes
-      let deltaText = "";
-      let doneContentText = "";
-      // Snapshot the generation at stream-start time. The final push()
-      // below runs only if the generation has not advanced — so an
-      // orphaned iteration that finally produces its done event after
-      // loop mode has moved on cannot pollute the next iteration's
-      // context window. (#1624 loop-mode orphan fence.)
-      const streamStartGeneration = transcriptGeneration;
-
-      return (async function* (): AsyncIterable<EngineEvent> {
-        // Token-aware compaction — replaces naive message-count slice.
-        // budgetConfigForModel resolves context window from @koi/model-registry
-        // (e.g. claude-opus-4-6 → 1M, gpt-4o → 128K, unknown → 200K default).
-        const budgetResult = await enforceBudget(
-          [...transcript],
-          undefined,
-          budgetConfigForModel(model),
-        );
-        if (budgetResult.compaction !== "noop") {
-          transcript.splice(0, transcript.length, ...budgetResult.messages);
-        }
-        const contextWindow = [...budgetResult.messages, stagedUserMsg];
-
-        for await (const event of runTurn({
-          callHandlers: handlers,
-          messages: contextWindow,
-          signal: input.signal,
-          maxTurns: DEFAULT_MAX_TURNS,
-        })) {
-          yield event;
-          if (event.kind === "text_delta") {
-            deltaText += event.delta;
-          }
-          if (event.kind === "done") {
-            doneContentText = event.output.content
-              .filter((b) => b.kind === "text")
-              .map((b) => (b as { readonly kind: "text"; readonly text: string }).text)
-              .join("");
-            if (event.output.stopReason === "completed") {
-              // Orphan fence: skip the transcript append if loop mode
-              // has bumped the generation since this stream started.
-              if (transcriptGeneration !== streamStartGeneration) {
-                return;
-              }
-              const assistantText = doneContentText.length > 0 ? doneContentText : deltaText;
-              transcript.push(stagedUserMsg);
-              if (assistantText.length > 0) {
-                transcript.push({
-                  senderId: "assistant",
-                  timestamp: Date.now(),
-                  content: [{ kind: "text", text: assistantText }],
-                });
-              }
-            }
-          }
-        }
-      })();
-    },
-  };
+    modelAdapter,
+    transcript,
+    maxTranscriptMessages: 100,
+    maxTurns: DEFAULT_MAX_TURNS,
+    budgetConfig: budgetConfigForModel(model),
+    getGeneration: () => transcriptGeneration,
+  });
 
   // ---------------------------------------------------------------------------
   // 5. Tool and middleware assembly (parallel async loading)
@@ -357,12 +265,12 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // `koi start` does not pass a SkillsRuntime, so MCP tools stay in the
   // MCP provider and are never bridged into the skills registry — matches
   // the prior loadMcpProvider() behavior verbatim.
-  const [mcpSetup, userHooks, staticProviders, pluginComponents] = await Promise.all([
+  const [mcpSetup, userHooks, pluginComponents] = await Promise.all([
     loadUserMcpSetup(cwd, undefined),
     loadUserRegisteredHooks({ filterAgentHooks: false }),
-    buildStaticProviders(cwd),
     loadPluginComponents(pluginUserRoot),
   ]);
+  const staticProviders = buildCliProviders(cwd);
 
   // Log plugin activation errors (non-fatal)
   for (const err of pluginComponents.errors) {

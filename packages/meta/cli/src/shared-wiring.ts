@@ -31,9 +31,16 @@ import type {
   KoiMiddleware,
   SessionId,
   SessionTranscript,
+  Tool,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import {
+  createSingleToolProvider,
+  DEFAULT_UNSANDBOXED_POLICY,
+  sessionId,
+  toolToken,
+} from "@koi/core";
 import { createSystemPromptMiddleware } from "@koi/engine";
+import { createLocalFileSystem } from "@koi/fs-local";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
 import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver, McpServerConfig } from "@koi/mcp";
@@ -42,6 +49,13 @@ import type { SkillsMcpBridge } from "@koi/runtime";
 import { createSkillsMcpBridge } from "@koi/runtime";
 import { createSessionTranscriptMiddleware, resumeForSession } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import {
+  createBuiltinSearchProvider,
+  createFsEditTool,
+  createFsReadTool,
+  createFsWriteTool,
+} from "@koi/tools-builtin";
+import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 
 /** Common shape for an assembled MCP setup — user config or plugin-provided. */
@@ -364,4 +378,112 @@ export function buildHookMwOrUndefined(
 ): KoiMiddleware | undefined {
   if (hooks.length === 0 && extras?.onExecuted === undefined) return undefined;
   return buildHookMw(hooks, extras);
+}
+
+// ---------------------------------------------------------------------------
+// Shared core ComponentProviders
+//
+// The "core" set is the provider stack both `koi start` and `koi tui` should
+// wire out of the box: filesystem read/write/edit, workspace search
+// (Glob/Grep/ToolSearch), web_fetch, and shell. Adding a new tool to this
+// builder lands in both hosts with one edit — the exact property the user
+// asked for ("add a feature in one place, works for both").
+//
+// The bash tool is passed in as an opaque `Tool` rather than built here so
+// the TUI can supply its fancier `createBashToolWithHooks` variant (CWD
+// tracking, bash-AST elicit, hook integration) while `koi start` passes a
+// plain `createBashTool`. Any other surface differences (Plan Mode,
+// `AskUserQuestion`) are handled via the `additional` config field.
+// ---------------------------------------------------------------------------
+
+/** Wraps a single `Tool` as a named `ComponentProvider` for createKoi. */
+export function wrapToolAsProvider(tool: Tool): ComponentProvider {
+  const name = tool.descriptor.name;
+  return {
+    name,
+    attach: async (): Promise<ReadonlyMap<string, unknown>> =>
+      new Map([[toolToken(name) as unknown as string, tool]]),
+  };
+}
+
+export interface CoreProvidersConfig {
+  /** Workspace root — threaded into filesystem-scoped builders (Glob, fs tools). */
+  readonly cwd: string;
+  /** Host-provided bash tool (plain CLI or hooks-enabled TUI variant). */
+  readonly bashTool: Tool;
+  /**
+   * When true, wire fs_read / fs_write / fs_edit via the local filesystem
+   * backend with the unsandboxed policy. Defaults to `true` — a new host
+   * opts out only when it runs against a remote/virtual filesystem and
+   * wants its own backend bound here.
+   */
+  readonly includeFilesystemTools?: boolean;
+  /**
+   * When true, wire the web_fetch tool. Defaults to `true` — hosts that
+   * run in airgapped environments can pass `false` to strip network access.
+   */
+  readonly includeWebFetch?: boolean;
+  /**
+   * Host-specific extra providers appended after the core set (e.g. TUI's
+   * bash_background, task tools, memory, notebook, spawn). Added here
+   * rather than by the caller splicing arrays so the assembly order is
+   * always `[core..., extras...]` and reviewers can spot-check the spread.
+   */
+  readonly additional?: readonly ComponentProvider[];
+}
+
+/**
+ * Build the core `ComponentProvider[]` both hosts consume.
+ *
+ * Order matters for debug/telemetry grouping, not for runtime semantics —
+ * createKoi treats providers as an unordered set. The order here is
+ * search → filesystem → web → shell so a human reading a trace spots
+ * read-before-mutate tools first.
+ */
+export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvider[] {
+  const { cwd, bashTool } = config;
+  const includeFs = config.includeFilesystemTools ?? true;
+  const includeWeb = config.includeWebFetch ?? true;
+
+  const providers: ComponentProvider[] = [createBuiltinSearchProvider({ cwd })];
+
+  if (includeFs) {
+    const localFs = createLocalFileSystem(cwd);
+    providers.push(
+      createSingleToolProvider({
+        name: "fs-read",
+        toolName: "fs_read",
+        createTool: () => createFsReadTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+      }),
+      createSingleToolProvider({
+        name: "fs-write",
+        toolName: "fs_write",
+        createTool: () => createFsWriteTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+      }),
+      createSingleToolProvider({
+        name: "fs-edit",
+        toolName: "fs_edit",
+        createTool: () => createFsEditTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+      }),
+    );
+  }
+
+  if (includeWeb) {
+    const webExecutor = createWebExecutor({ allowHttps: true });
+    providers.push(
+      createWebProvider({
+        executor: webExecutor,
+        policy: DEFAULT_UNSANDBOXED_POLICY,
+        operations: ["fetch"],
+      }),
+    );
+  }
+
+  providers.push(wrapToolAsProvider(bashTool));
+
+  if (config.additional !== undefined) {
+    providers.push(...config.additional);
+  }
+
+  return providers;
 }

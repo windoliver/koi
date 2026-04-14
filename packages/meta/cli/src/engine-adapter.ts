@@ -57,6 +57,21 @@ export interface TranscriptAdapterConfig {
    * Set contextWindowSize or modelId so the registry can calibrate thresholds.
    */
   readonly budgetConfig?: BudgetConfig;
+  /**
+   * Optional generation fence for `koi start --until-pass` loop mode.
+   *
+   * Each stream() invocation snapshots `getGeneration()` at start time and
+   * compares again before committing to the transcript on `stopReason ===
+   * "completed"`. If the generation has advanced — meaning the outer
+   * convergence loop has already rolled the transcript back to a new
+   * baseline and started the next iteration — the adapter skips the final
+   * push so a late-settling orphan stream cannot pollute iteration N+2's
+   * context window. (#1624 loop-mode orphan fence.)
+   *
+   * Omit in interactive hosts (TUI, plain CLI REPL) where there is only
+   * one in-flight stream at a time.
+   */
+  readonly getGeneration?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,8 +86,15 @@ export interface TranscriptAdapterConfig {
  * hooks, permissions) can intercept model and tool calls.
  */
 export function createTranscriptAdapter(config: TranscriptAdapterConfig): EngineAdapter {
-  const { engineId, modelAdapter, transcript, maxTranscriptMessages, maxTurns, budgetConfig } =
-    config;
+  const {
+    engineId,
+    modelAdapter,
+    transcript,
+    maxTranscriptMessages,
+    maxTurns,
+    budgetConfig,
+    getGeneration,
+  } = config;
 
   return {
     engineId,
@@ -98,6 +120,10 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
         timestamp: Date.now(),
         content: [{ kind: "text", text }],
       };
+
+      // Snapshot the loop-mode generation at stream-start time so the
+      // commit-on-done path below can fence off orphan streams.
+      const streamStartGeneration = getGeneration?.();
 
       return (async function* (): AsyncIterable<EngineEvent> {
         // Build context window: token-aware compaction when budgetConfig is set,
@@ -136,6 +162,19 @@ export function createTranscriptAdapter(config: TranscriptAdapterConfig): Engine
           if (event.kind === "done") {
             const stopReason = event.output.stopReason;
             if (stopReason === "completed") {
+              // Loop-mode orphan fence (#1624): skip the commit if the
+              // outer convergence loop has already advanced to the next
+              // iteration. Without this, a late-settling orphan stream
+              // would push stale history onto a transcript the loop
+              // already reset to a new baseline.
+              if (
+                streamStartGeneration !== undefined &&
+                getGeneration !== undefined &&
+                getGeneration() !== streamStartGeneration
+              ) {
+                yield event;
+                continue;
+              }
               transcript.push(stagedUserMsg);
               // Preserve the full assistant content including tool_call and
               // tool_result blocks so follow-up turns see tool history.
