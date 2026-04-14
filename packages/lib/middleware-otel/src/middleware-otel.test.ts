@@ -620,6 +620,8 @@ describe("with OTel provider registered", () => {
         createObservableCounter: () => ({ addCallback() {}, removeCallback() {} }) as never,
         createObservableUpDownCounter: () => ({ addCallback() {}, removeCallback() {} }) as never,
         createGauge: () => ({ record() {} }) as never,
+        addBatchObservableCallback: () => {},
+        removeBatchObservableCallback: () => {},
       };
       return { meter, records };
     }
