@@ -83,6 +83,25 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 
 > **L0u packages also wired:** `@koi/tools-core` (`buildTool()` factory), `@koi/validation`, `@koi/task-board`, `@koi/rules-loader` (hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt), `@koi/context-manager` (`enforceBudget()` — token-aware transcript compaction with micro/full cascade; `resolveConfig()` + `budgetConfigFromResolved()` for per-model window resolution; golden tests in `golden-queries.test.ts` cover micro-compaction and model-registry window lookup, #1623), `@koi/replay` (VCR cassette replay — `loadCassette`, `createReplayAdapter`, `createReplayContext`, `createCassetteRecorder`, `createRegistry`; re-exported from `@koi/runtime` for downstream test suites; cassette format `cassette-v1` with volatile field stripping, #1629) are L0u (utility) packages depended on by `@koi/runtime` but not subject to the L2 doc/golden-query gates — their docs live under `docs/L0u/` or `docs/L2/`.
 
+### Phase-2 runtime-level L2 wiring (#1778)
+
+Four L2 packages are now composed directly into `createRuntime()` via opt-in config fields (default behavior is unchanged when the config is absent):
+
+| Config field | Package(s) | Exposed as |
+|---|---|---|
+| `config.audit: { sink: { kind: "ndjson" \| "sqlite", ... } \| AuditSink, signing?, ... }` | `@koi/middleware-audit` + `@koi/audit-sink-ndjson` \| `@koi/audit-sink-sqlite` | Middleware installed in the observe phase; runtime-owned sinks are flushed and closed on `dispose()`. Discriminated via a nominal `isAuditSink()` check (`typeof v.log === "function"`) so a caller sink carrying `kind` as metadata is not misclassified as a config. |
+| `config.browser: { backend: BrowserDriver, operations?, isUrlAllowed?, ... }` | `@koi/tool-browser` | `handle.browserProvider` (ComponentProvider). The `backend` must be unshared per runtime — the inner provider disposes it on its detach ref-count → 0 transition, and sharing across runtimes would steal tabs/cookies on first detach. |
+| `config.lsp: LspProviderConfig` | `@koi/lsp` | `handle.lspProvider: () => Promise<{ provider, clients, failures }>` (lazy thunk). Startup is deferred until the caller invokes the thunk — a runtime disposed without ever asking for LSP spawns no subprocesses. `dispose()` releases pooled clients (fail-closed fallback to `close()` on pool error) or closes them directly, mirroring a runtime-side attach/detach counter so a completed createKoi lifecycle is not re-cleaned. |
+| `config.memoryFs: MemoryStoreConfig` | `@koi/memory-fs` | `handle.memoryStore: MemoryStore`. A `MemoryToolBackend` adapter for `@koi/memory-tools` is deferred to a follow-up. |
+
+Dispose hardening:
+- Per-resource latches (`auditCleanedUp` / `lspCleanedUp`) make repeated `dispose()` calls idempotent so the existing retryable-shutdown pattern still works when an unrelated leg (channel/adapter) fails.
+- `BuiltAudit.close()` runs `mw.flush()` + sink `close()` in a best-effort aggregate — a failing flush cannot leak sink resources.
+- Constructor-time throws (e.g. `createMemoryStore` rejecting an invalid `memoryFs`) close any runtime-owned audit sink and dispose caller-supplied browser backends via fire-and-forget before rethrowing.
+- LSP attach/detach wrappers advance counters only after the inner call resolves so a single-agent attach rejection (`@koi/tool-browser` / `@koi/lsp` throw when a second agent attaches) does not falsely mark the provider as attached.
+
+All four L2 packages already had pre-existing golden query coverage (`Golden: @koi/memory-fs`, `Golden: @koi/tool-browser`, `Golden: @koi/lsp`, `audit-log` trajectory for middleware-audit + sinks) before this wiring; no new fixtures were recorded.
+
 ### Spawn Inheritance Coverage (#1425)
 
 The spawn path has three golden trajectories proving narrowing at the `ModelRequest.tools` boundary:
