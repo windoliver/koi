@@ -24,6 +24,7 @@ const ROOT = new URL("../", import.meta.url).pathname;
 /** L2 packages exempt from golden query requirements (infrastructure, not user-facing). */
 const GOLDEN_QUERY_EXEMPT: ReadonlySet<string> = new Set([
   "@koi/query-engine", // Internal stream consumer, tested via other packages' golden queries
+  "@koi/cost-aggregator", // Infrastructure: cost tracking runs outside the agent loop, no tool surface
 ]);
 
 /** Files that count as golden query test files. */
