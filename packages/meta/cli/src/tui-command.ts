@@ -353,13 +353,6 @@ async function loadSessionList(
 // ---------------------------------------------------------------------------
 
 /**
- * Number of text/thinking deltas to accumulate before yielding to the render
- * loop. Lower values = smoother streaming; higher values = less overhead.
- * 3 is the sweet spot: ~12 chars per flush at typical token sizes.
- */
-const STREAM_FLUSH_EVERY_N = 3;
-
-/**
  * Minimum milliseconds between event-loop yields during text/thinking streaming.
  *
  * OpenTUI's CliRenderer runs in on-demand mode (not a continuous render loop).
@@ -458,8 +451,6 @@ export async function drainEngineStream(
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
-    // `let` justified: counts deltas since last yield for burst detection
-    let deltasSinceYield = 0;
 
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
@@ -506,35 +497,29 @@ export async function drainEngineStream(
         batcher.flushSync();
         await yieldForRenderFrame();
         lastYieldAt = Date.now();
-        deltasSinceYield = 0;
         continue;
       }
 
       // --- Text/thinking deltas: fast path via store.streamDelta() ---
-      // Bypasses the batcher entirely. Each delta fires a surgical O(1)
-      // store update (produce-based path setter), rendering immediately.
+      // Flush any pending batcher events FIRST to preserve block ordering.
+      // Without this, a `tool_call_start` sitting in the batcher would be
+      // applied AFTER the text delta, corrupting assistant block order.
+      // Then apply the delta via the O(1) produce()-based path setter.
       //
-      // Hybrid yielding: yield on EITHER count (N deltas) OR time (16ms),
-      // whichever comes first. The count trigger catches burst-delivered
-      // chunks that process faster than Date.now() resolution. The time
-      // trigger aligns with OpenTUI's render cadence.
-      //
-      // Critically, yieldForRenderFrame() waits ~16ms (not 0ms) so the
-      // OpenTUI render timer actually fires during the pause, producing
-      // a visible paint before the loop resumes.
+      // Yield only when 16ms has elapsed since the last yield (time-based,
+      // not count-based). This avoids adding fixed latency per N deltas —
+      // burst-delivered chunks process as fast as they arrive, and we only
+      // pause when a full render frame has elapsed. OpenTUI's on-demand
+      // renderer needs ~16ms between requestRender() calls to actually paint.
       if (event.kind === "text_delta" || event.kind === "thinking_delta") {
+        batcher.flushSync();
         const blockKind = event.kind === "text_delta" ? "text" : "thinking";
         store.streamDelta(event.delta, blockKind);
-        deltasSinceYield++;
 
         const now = Date.now();
-        if (
-          deltasSinceYield >= STREAM_FLUSH_EVERY_N ||
-          now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS
-        ) {
+        if (now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
           await yieldForRenderFrame();
           lastYieldAt = Date.now();
-          deltasSinceYield = 0;
         }
         continue;
       }
@@ -558,7 +543,6 @@ export async function drainEngineStream(
           batcher.flushSync();
           await yieldForRenderFrame();
           lastYieldAt = Date.now();
-          deltasSinceYield = 0;
         }
       }
     }

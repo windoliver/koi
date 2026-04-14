@@ -136,9 +136,15 @@ function AssistantMessage(props: {
   readonly treeSitterClient?: TreeSitterClient | undefined;
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
-  // Show thinking indicator while streaming with no content yet
-  const isThinking = () =>
-    props.message.streaming && props.message.blocks.length === 0;
+  const showThinking = useTuiStore((s) => s.showThinking);
+  // Show thinking indicator while streaming with no visible content yet.
+  // When showThinking is off, thinking blocks are hidden — count only
+  // visible blocks so the spinner shows during reasoning-only turns.
+  const hasVisibleBlocks = () => {
+    if (showThinking()) return props.message.blocks.length > 0;
+    return props.message.blocks.some((b) => b.kind !== "thinking");
+  };
+  const isThinking = () => props.message.streaming && !hasVisibleBlocks();
 
   // Track thinking duration (like Claude Code's "thought for 3s")
   // `let` justified: mutable timestamp for duration calculation
