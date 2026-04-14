@@ -1,18 +1,11 @@
 /**
  * `koi start` — run agent in interactive REPL or single-prompt mode.
  *
- * Wires @koi/harness → @koi/engine (createKoi) → @koi/model-openai-compat
- * with @koi/channel-cli for I/O. Sessions are persisted to JSONL transcripts
- * at ~/.koi/sessions/<sessionId>.jsonl and can be resumed with --resume.
- *
- * Tools wired by default (all from ~/.koi/ or cwd):
- *   Glob, Grep           — @koi/tools-builtin (builtin-search provider)
- *   web_fetch            — @koi/tools-web (requires network)
- *   Bash                 — @koi/tools-bash (workspace-rooted)
- *   fs_read/write/edit   — @koi/tools-builtin + @koi/runtime (filesystem provider)
- *   MCP tools            — .mcp.json in cwd (optional, skipped if absent)
- *   Hooks                — ~/.koi/hooks.json (optional, skipped if absent)
- *   Permissions          — auto-allow (allow:['*']); gates can be tightened later
+ * Shares one runtime factory with `koi tui`: both commands call
+ * `createKoiRuntime` from `../tui-runtime.js` and differ only in
+ * their I/O loop (CLI uses `@koi/harness`'s plain-stdout channel;
+ * TUI uses OpenTUI). Adding a new middleware, tool, or provider to
+ * the factory automatically lands in both hosts.
  *
  * API key resolution: OPENROUTER_API_KEY or OPENAI_API_KEY (see env.ts).
  */
@@ -20,47 +13,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-
-import type {
-  ComponentProvider,
-  EngineEvent,
-  EngineInput,
-  InboundMessage,
-  KoiMiddleware,
-} from "@koi/core";
+import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
-import { createKoi } from "@koi/engine";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
-import {
-  createPatternPermissionBackend,
-  createPermissionsMiddleware,
-} from "@koi/middleware-permissions";
+import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { createJsonlTranscript } from "@koi/session";
-import { createBashTool } from "@koi/tools-bash";
-import { createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import type { StartFlags } from "../args/start.js";
-import { budgetConfigForModel, createTranscriptAdapter } from "../engine-adapter.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
-import { loadPluginComponents } from "../plugin-activation.js";
-import {
-  buildCoreMiddleware,
-  buildCoreProviders,
-  buildPluginMcpSetup,
-  loadUserMcpSetup,
-  loadUserRegisteredHooks,
-  type McpSetup,
-  mergeUserAndPluginHooks,
-  resumeSessionFromJsonl,
-  wrapToolAsProvider,
-} from "../shared-wiring.js";
+import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
+import { createKoiRuntime } from "../tui-runtime.js";
 import { ExitCode } from "../types.js";
 
-const DEFAULT_MAX_TURNS = 10;
 /**
  * Hard cap on interactive session turns.
  * Limits transcript growth and prevents unbounded context-window expansion.
@@ -70,53 +38,20 @@ const MAX_INTERACTIVE_TURNS = 50;
 const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 
 // ---------------------------------------------------------------------------
-// Tool / middleware builders
-// ---------------------------------------------------------------------------
-
-/**
- * Build the ComponentProviders for `koi start` — the shared core (builtin
- * search + filesystem + web + bash from `buildCoreProviders`) plus the
- * CLI-only TodoWrite tracker.
- *
- * NOTE: EnterPlanMode, ExitPlanMode, and AskUserQuestion are intentionally
- * NOT wired here. Plan-mode requires a permission backend that can enforce
- * the read-only gate (deny Write/Edit/Bash until the plan is approved).
- * Without that gate, exposing EnterPlanMode/ExitPlanMode is misleading.
- * The TUI wires the full interaction provider (including plan-mode)
- * because it has a real permission backend.
- */
-function buildCliProviders(cwd: string): ComponentProvider[] {
-  // let: mutable todo list, replaced atomically on each write
-  let todoItems: readonly TodoItem[] = [];
-  const todoTool = createTodoTool({
-    getItems: () => todoItems,
-    setItems: (items) => {
-      todoItems = items;
-    },
-  });
-
-  return buildCoreProviders({
-    cwd,
-    bashTool: createBashTool({ workspaceRoot: cwd }),
-    additional: [wrapToolAsProvider(todoTool)],
-  });
-}
-
-/**
- * Build permissions middleware with auto-allow rules (allow everything by default).
- * This wires the permissions infrastructure without blocking any tools.
- * Users can tighten rules by providing a manifest or custom backend.
- */
-function buildPermissionsMiddleware(): KoiMiddleware {
-  const backend = createPatternPermissionBackend({
-    rules: { allow: ["*"], deny: [], ask: [] },
-  });
-  return createPermissionsMiddleware({ backend });
-}
-
-// ---------------------------------------------------------------------------
 // Command entry point
 // ---------------------------------------------------------------------------
+
+/**
+ * Non-interactive auto-approve handler. `koi start` pairs this with the
+ * auto-allow permission backend so the runtime never actually blocks on
+ * an approval — the backend allows everything up front, so this handler
+ * is only called if something bypasses the backend gate. Returning
+ * `always-allow` matches the old CLI posture.
+ */
+const autoApproveHandler: ApprovalHandler = async () => ({
+  kind: "always-allow",
+  scope: "session",
+});
 
 export async function run(flags: StartFlags): Promise<ExitCode> {
   // Dry-run not yet implemented — fail closed so no live API calls are made.
@@ -174,21 +109,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
   const jsonlTranscript = createJsonlTranscript({ baseDir: SESSIONS_DIR });
 
-  // Mutable transcript shared across all stream() calls.
-  // Pre-populated on resume; grows across interactive turns.
-  // let: justified — grows across turns, never replaced
-  const transcript: InboundMessage[] = [];
-
   // Generation counter for the transcript, incremented whenever loop mode
   // truncates the transcript back to its baseline between iterations. Each
   // stream() invocation captures the current generation at start time; its
   // final transcript.push() compares against the live generation and skips
   // the write if it has advanced. This fences off orphaned iteration
   // streams whose model call completes in the background AFTER the next
-  // loop iteration has already started — without that guard, late pushes
-  // from a timed-out iteration would pollute iteration N+2's context
-  // window. Generation bumps happen via incrementTranscriptGeneration()
-  // from runConvergenceLoop's resetTranscript callback.
+  // loop iteration has already started.
   // let: mutable — bumped on every loop reset
   let transcriptGeneration = 0;
   const incrementTranscriptGeneration = (): void => {
@@ -198,6 +125,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // let: justified — reassigned once on successful --resume
   let sid = sessionId(crypto.randomUUID());
 
+  // Messages loaded from a resumed session; pushed into the runtime's
+  // in-memory transcript AFTER the factory call returns (the factory
+  // owns the transcript array and exposes it via `handle.transcript`).
+  let resumedMessages: readonly InboundMessage[] = [];
+
   if (flags.resume !== undefined) {
     const resumeResult = await resumeSessionFromJsonl(flags.resume, jsonlTranscript, SESSIONS_DIR);
     if (!resumeResult.ok) {
@@ -206,10 +138,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       );
       return ExitCode.FAILURE;
     }
-    // Pre-populate transcript with the loaded session history.
-    for (const msg of resumeResult.value.messages) {
-      transcript.push(msg);
-    }
+    resumedMessages = resumeResult.value.messages;
     sid = resumeResult.value.sid;
     if (flags.verbose && resumeResult.value.issueCount > 0) {
       process.stderr.write(
@@ -219,9 +148,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // Render the loaded history to stdout so the user sees the prior
     // conversation before the next prompt. Filter rules live in
     // `@koi/core/message#filterResumedMessagesForDisplay` so CLI and TUI
-    // stay in lockstep — adding a new rule in that one helper updates
-    // both hosts at once.
-    const displayable = filterResumedMessagesForDisplay(resumeResult.value.messages);
+    // stay in lockstep.
+    const displayable = filterResumedMessagesForDisplay(resumedMessages);
     process.stdout.write(
       `\n── Resumed session ${String(sid)} (${String(displayable.length)} message(s)) ──\n\n`,
     );
@@ -235,126 +163,44 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Engine adapter — shared `createTranscriptAdapter` factory
+  // 4. Runtime assembly via shared factory
   // ---------------------------------------------------------------------------
   //
-  // Uses the same transcript-backed EngineAdapter as `koi tui`, so both hosts
-  // share: message staging, token-aware budget enforcement (enforceBudget +
-  // in-place splice), commit-on-done, and the synthetic-explain path for
-  // non-"completed" stop reasons. The loop-mode generation fence (#1624) is
-  // threaded in as a `getGeneration` callback — the adapter short-circuits
-  // the commit if the outer convergence loop has already moved on.
-  const engineAdapter = createTranscriptAdapter({
-    engineId: "koi-cli",
-    modelAdapter,
-    transcript,
-    maxTranscriptMessages: 100,
-    maxTurns: DEFAULT_MAX_TURNS,
-    budgetConfig: budgetConfigForModel(model),
-    getGeneration: () => transcriptGeneration,
-  });
-
-  // ---------------------------------------------------------------------------
-  // 5. Tool and middleware assembly (parallel async loading)
-  // ---------------------------------------------------------------------------
-
-  const cwd = process.cwd();
-  const pluginUserRoot = join(homedir(), ".koi", "plugins");
-  // `koi start` does not pass a SkillsRuntime, so MCP tools stay in the
-  // MCP provider and are never bridged into the skills registry — matches
-  // the prior loadMcpProvider() behavior verbatim.
-  const [mcpSetup, userHooks, pluginComponents] = await Promise.all([
-    loadUserMcpSetup(cwd, undefined),
-    loadUserRegisteredHooks({ filterAgentHooks: false }),
-    loadPluginComponents(pluginUserRoot),
-  ]);
-  const staticProviders = buildCliProviders(cwd);
-
-  // Log plugin activation errors (non-fatal)
-  for (const err of pluginComponents.errors) {
-    console.warn(`[koi start] plugin "${err.plugin}": ${err.error}`);
-  }
-  if (pluginComponents.middlewareNames.length > 0) {
-    console.warn(
-      `[koi start] ${String(pluginComponents.middlewareNames.length)} plugin middleware name(s) skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
-    );
-  }
-
-  const pluginMcpSetup: McpSetup | undefined = buildPluginMcpSetup(pluginComponents.mcpServers);
-
-  // User hooks (user tier) come first; plugin hooks (session tier) are
-  // appended — same merge order the old inline block produced.
-  const allHooks = mergeUserAndPluginHooks(userHooks, pluginComponents.hooks, {
-    filterAgentHooks: false,
-  });
-
-  const providers: ComponentProvider[] = [
-    ...staticProviders,
-    ...(mcpSetup !== undefined ? [mcpSetup.provider] : []),
-    ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
-  ];
-
+  // `createKoiRuntime` is the same factory `koi tui` uses. `koi start`
+  // differs only in the permission backend (auto-allow — the plain REPL
+  // has no interactive approval UI), the hostId/engineId labels, and
+  // the loop-mode generation fence. Everything else — MCP loading,
+  // hook loading, plugin activation, middleware composition, provider
+  // set, createKoi call — lives in the factory so a feature added
+  // there lands in both hosts automatically.
+  //
   // In loop mode (--until-pass), session-transcript persistence is
   // intentionally disabled. Every iteration would otherwise write a new
   // entry to the JSONL session log, so a later `koi start --resume <id>`
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
-  const slots = buildCoreMiddleware({
-    permissionsMiddleware: buildPermissionsMiddleware(),
-    hooks: allHooks,
-    systemPrompt: manifestInstructions,
+  const runtimeHandle = await createKoiRuntime({
+    modelAdapter,
+    modelName: model,
+    approvalHandler: autoApproveHandler,
+    cwd: process.cwd(),
+    engineId: "koi-cli",
+    hostId: "koi-cli",
+    permissionBackend: createPatternPermissionBackend({
+      rules: { allow: ["*"], deny: [], ask: [] },
+    }),
+    permissionsDescription: "koi start — auto-allow",
+    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+    getGeneration: () => transcriptGeneration,
   });
-  // CLI middleware order (outermost → innermost):
-  //   session-transcript → permissions → hook → system-prompt
-  const middleware: KoiMiddleware[] = [
-    ...(slots.sessionTranscript !== undefined ? [slots.sessionTranscript] : []),
-    slots.permissions,
-    ...(slots.hook !== undefined ? [slots.hook] : []),
-    ...(slots.systemPrompt !== undefined ? [slots.systemPrompt] : []),
-  ];
-
-  // ---------------------------------------------------------------------------
-  // 6. Runtime assembly
-  // ---------------------------------------------------------------------------
-
-  // Engine loop detection is LEFT ON in loop mode.
-  //
-  // Round 33 (this review session) speculated that the engine-level
-  // loop detector would accumulate state across retries and cause
-  // false positives. Round 34 flipped and argued that disabling it
-  // leaves each individual iteration unbounded — a single bad
-  // iteration could hammer tools until the 10-minute iteration
-  // timeout fired.
-  //
-  // Reverting to the default (enabled) because:
-  //   1. Loop detection is per-runTurn, not per-runtime. Each
-  //      iteration calls runtime.run() which triggers a fresh
-  //      runTurn invocation, and the detector's state is scoped to
-  //      that invocation. No cross-iteration state leak in practice.
-  //   2. The round 34 concern is more specific and more expensive
-  //      to get wrong: an iteration that enters a tool-calling
-  //      spiral would burn tokens and potentially side-effecting
-  //      tool calls until iterationTimeoutMs fires.
-  //   3. If the round 33 concern materializes, users can disable
-  //      it explicitly by building their own runtime; the default
-  //      stays safe.
-  // Thread the resolved session id (`sid`) into createKoi as the
-  // factory-level override so the engine routes the session-transcript
-  // middleware to the SAME JSONL file we already pre-populated with
-  // the resumed messages. Without this, the runtime mints a fresh
-  // `agent:{agentId}:{uuid}` internally and new turns get written to
-  // a different file — the printed `--resume` command then resumes a
-  // partial session that is missing everything after the fork point.
-  // Skipped in loop mode because loop mode intentionally disables
-  // session-transcript persistence entirely (see isLoopMode above).
-  const runtime = await createKoi({
-    manifest: { name: "koi", version: "0.0.1", model: { name: model } },
-    adapter: engineAdapter,
-    middleware,
-    providers,
-    ...(isLoopMode ? {} : { sessionId: sid }),
-  });
+  const runtime = runtimeHandle.runtime;
+  const transcript = runtimeHandle.transcript;
+  // Pre-populate the runtime's in-memory transcript with the resumed
+  // messages so the model sees prior context on the first turn.
+  if (resumedMessages.length > 0) {
+    transcript.push(...resumedMessages);
+  }
 
   const channel = createCliChannel({ theme: "default" });
 

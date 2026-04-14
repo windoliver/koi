@@ -42,6 +42,7 @@ import type {
   MemoryRecord,
   MemoryRecordInput,
   ModelAdapter,
+  PermissionBackend,
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
@@ -216,13 +217,47 @@ function createInMemoryMemoryBackend(): ClearableMemoryBackend {
 // Config & return types
 // ---------------------------------------------------------------------------
 
-export interface TuiRuntimeConfig {
+export interface KoiRuntimeConfig {
   /** Model HTTP adapter — its complete/stream terminals are exposed to middleware. */
   readonly modelAdapter: ModelAdapter;
   /** Model name for ATIF metadata. */
   readonly modelName: string;
   /** Approval handler for permission prompts — should be permissionBridge.handler. */
   readonly approvalHandler: ApprovalHandler;
+  /**
+   * Override the built-in permission backend. When omitted, the factory
+   * uses `default`-mode with the TUI's tiered allow rules (pre-allowed
+   * read-only tools, everything else falls through to "ask"). Hosts that
+   * need a different posture (e.g. `koi start` auto-allows everything
+   * because the plain REPL has no interactive approval UI) pass their
+   * own backend here.
+   */
+  readonly permissionBackend?: PermissionBackend | undefined;
+  /**
+   * Description label for the permissions middleware — shown in error
+   * messages and trace steps. Defaults to "koi tui — default permission
+   * mode". `koi start` passes "koi start — auto-allow".
+   */
+  readonly permissionsDescription?: string | undefined;
+  /**
+   * Stable identifier used as the `hostId` on spawn events, decision-
+   * ledger lookups, and permission persistentAgentId. Defaults to
+   * "koi-tui" for backward compatibility. `koi start` passes "koi-cli".
+   */
+  readonly hostId?: string | undefined;
+  /**
+   * EngineAdapter `engineId` — surfaced in error messages and trace
+   * metadata. Defaults to "koi-tui". `koi start` passes "koi-cli".
+   */
+  readonly engineId?: string | undefined;
+  /**
+   * Optional loop-mode generation fence for `koi start --until-pass`.
+   * When set, the transcript adapter snapshots this at stream-start
+   * and skips the commit-on-done path if the generation has advanced
+   * (orphan fence, #1624). The TUI never sets this because it has no
+   * convergence-loop driver.
+   */
+  readonly getGeneration?: (() => number) | undefined;
   /**
    * Observer for spawn lifecycle events emitted by the Spawn tool executor.
    * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
@@ -298,7 +333,7 @@ export interface TuiRuntimeConfig {
   readonly otel?: OtelMiddlewareConfig | true | false | undefined;
 }
 
-export interface TuiRuntimeHandle {
+export interface KoiRuntimeHandle {
   /** The assembled KoiRuntime — call runtime.run(input) to stream a turn. */
   readonly runtime: KoiRuntime;
   /**
@@ -523,13 +558,18 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
 }
 
 /**
- * Assemble the full L2 tool stack for `koi tui` via createKoi.
+ * Assemble the full L2 tool stack via createKoi. This is the shared
+ * runtime factory for every host — `koi tui`, `koi start`, and any
+ * future frontend. Hosts differ only in their I/O loop and a handful
+ * of config knobs (permission backend, approval handler, spawn event
+ * hook, persistent approvals). The runtime, middleware stack, and
+ * provider set are all identical across hosts so adding a feature in
+ * one place lands in every frontend automatically.
  *
  * Blueprint: record-cassettes.ts — this is the same composition used in
- * golden query recording, simplified to the TUI's surface (no ATIF file writes,
- * no hook agent executor). MCP loaded from .mcp.json when present.
+ * golden query recording. MCP loaded from .mcp.json when present.
  */
-export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRuntimeHandle> {
+export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
 
   // --- Optional config hot-reload (log-only; guarded by KOI_CONFIG_PATH) ---
@@ -689,15 +729,21 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
   ] as const;
-  const permBackend = createPermissionBackend({
-    mode: "default",
-    rules: tuiAllowRules,
-  });
+  // Permission backend: caller may override (koi start passes an
+  // auto-allow pattern backend). Default to the TUI's tiered default
+  // mode so existing TUI behavior is preserved.
+  const permBackend =
+    config.permissionBackend ??
+    createPermissionBackend({
+      mode: "default",
+      rules: tuiAllowRules,
+    });
+  const hostId = config.hostId ?? "koi-tui";
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
-    description: "koi tui — default permission mode",
+    description: config.permissionsDescription ?? "koi tui — default permission mode",
     ...(config.persistentApprovals !== undefined
-      ? { persistentApprovals: config.persistentApprovals, persistentAgentId: "koi-tui" }
+      ? { persistentApprovals: config.persistentApprovals, persistentAgentId: hostId }
       : {}),
   });
 
@@ -934,11 +980,12 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
   const engineAdapter = createTranscriptAdapter({
-    engineId: "koi-tui",
+    engineId: config.engineId ?? "koi-tui",
     modelAdapter,
     transcript,
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
+    ...(config.getGeneration !== undefined ? { getGeneration: config.getGeneration } : {}),
     budgetConfig: budgetConfigForModel(
       modelName,
       // KOI_COMPACTION_WINDOW: override context window size for testing compaction
@@ -1376,3 +1423,18 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Backward-compat aliases
+//
+// `tui-command.ts` imports `createTuiRuntime`, `TuiRuntimeConfig`, and
+// `TuiRuntimeHandle`. The factory was renamed to `createKoiRuntime` /
+// `KoiRuntimeConfig` / `KoiRuntimeHandle` because it now serves every
+// host. These aliases keep the old names live.
+// ---------------------------------------------------------------------------
+
+export type TuiRuntimeConfig = KoiRuntimeConfig;
+export type TuiRuntimeHandle = KoiRuntimeHandle;
+/** @deprecated Use `createKoiRuntime` — kept for tui-command.ts compat. */
+export const createTuiRuntime: (config: KoiRuntimeConfig) => Promise<KoiRuntimeHandle> =
+  createKoiRuntime;
