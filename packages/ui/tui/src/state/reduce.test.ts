@@ -1045,6 +1045,45 @@ describe("reduce — set_slash_query", () => {
 });
 
 // ---------------------------------------------------------------------------
+// set_at_query / set_at_results (#10)
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_at_query", () => {
+  test("sets atQuery to a string", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_at_query", query: "src/m" });
+    expect(next.atQuery).toBe("src/m");
+  });
+
+  test("sets atQuery to null", () => {
+    const state = { ...createInitialState(), atQuery: "src/m" as string | null };
+    const next = reduce(state, { kind: "set_at_query", query: null });
+    expect(next.atQuery).toBeNull();
+  });
+
+  test("returns same reference when query unchanged", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "set_at_query", query: null });
+    expect(next).toBe(state);
+  });
+});
+
+describe("reduce — set_at_results", () => {
+  test("sets atResults to file paths", () => {
+    const state = createInitialState();
+    const results = ["src/math.ts", "src/main.ts"];
+    const next = reduce(state, { kind: "set_at_results", results });
+    expect(next.atResults).toEqual(results);
+  });
+
+  test("sets atResults to empty array", () => {
+    const state = { ...createInitialState(), atResults: ["src/math.ts"] };
+    const next = reduce(state, { kind: "set_at_results", results: [] });
+    expect(next.atResults).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // set_view
 // ---------------------------------------------------------------------------
 

@@ -65,8 +65,10 @@ import {
 } from "@koi/tui";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
+import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { resolveApiConfig } from "./env.js";
+import { createFileCompletionHandler } from "./file-completions.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
 import { createTuiRuntime } from "./tui-runtime.js";
@@ -1238,6 +1240,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     })();
   };
 
+  // #10: @-mention file completion handler — scans cwd via git ls-files,
+  // caches file list with 5s TTL, fuzzy-filters, and dispatches results.
+  const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
+    store.dispatch({ kind: "set_at_results", results }),
+  );
+
   const result = createTuiApp({
     store,
     permissionBridge,
@@ -1617,13 +1625,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // next successful turn would run without that prompt in model
         // context, so users could believe the agent saw a message it
         // never actually received.
+        // #10: resolve @-mention file references before sending to the engine.
+        // Parses @path and @path#L10-20, reads files, injects content so the
+        // model sees the file directly without needing to call Glob/fs_read.
+        const resolved = resolveAtReferences(text, process.cwd());
+        const modelText =
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
         let stream: AsyncIterable<EngineEvent>;
         try {
           stream = isLoopMode
-            ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
+            ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
             : handle.runtime.run({
                 kind: "text",
-                text,
+                text: modelText,
                 signal: controller.signal,
               });
         } catch (err) {
@@ -1641,6 +1656,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // message. The prompt will reach the engine through the stream
         // we just created (which already received the text in run()'s
         // input) so the visible UI and engine transcript stay in sync.
+        // The TUI shows the original text (with @refs), not the expanded version.
         pendingImages = [];
         store.dispatch({
           kind: "add_user_message",
@@ -1698,6 +1714,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     // #16: turn-complete notification
     onTurnComplete: handleTurnComplete,
+    // #10: @-mention file completion
+    onAtQuery: handleAtQuery,
   });
 
   if (!result.ok) {
