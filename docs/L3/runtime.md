@@ -224,6 +224,8 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 > **Stable session-id rotation + checkpoint reset on /clear (#1749):** `@koi/checkpoint` gained a `Checkpoint.resetSession(sessionId)` method that prunes the on-disk chain via the same per-session serializer as `rewind`, mutually exclusive with queued rewind work. `@koi/snapshot-store-sqlite`'s `prune` learned to handle `retainBranches: false` cleanly: head-row updates run BEFORE node deletes (FK ordering), the replacement head is selected from in-memory survivor rows (not a SELECT against still-pre-delete table state), and the in-memory `chainHeads` Map mutation is deferred until AFTER the SQL transaction commits so a rolled-back prune cannot poison the cache. No `@koi/runtime` wiring change — both packages stay in their existing checkpoint stack slot. The new method is consumed by `@koi-agent/cli`'s checkpoint preset stack `onResetSession` hook (gated on `resetContext.truncate === true`); see `docs/L2/checkpoint.md` and `docs/L2/snapshot-store-sqlite.md` for the full contract.
 
 
+> **`@koi/cost-aggregator` wired as runtime dependency (#1636):** Added as a dependency for the orphan-check gate. The cost aggregator itself runs in the CLI host layer (not middleware), but the runtime declares the dependency so golden-query infrastructure can cover it. Exempt from golden queries (infrastructure, no tool surface).
+
 ## Changelog
 
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

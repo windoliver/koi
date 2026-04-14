@@ -574,4 +574,5 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 
 ## Changelog
 
+- **Cost attribution dashboard (#1636)** — `@koi/cost-aggregator` wired via `CostBridge` in tui-command.ts. Tracks per-model/provider cost from engine done events, computes pricing via models.dev live table, pushes breakdown to TUI `CostDashboardView` with 200ms debounce. Accessible via Ctrl+P → "Cost Dashboard".
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

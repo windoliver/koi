@@ -594,3 +594,5 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 ## Changelog
 
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
+
+> **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
