@@ -34,8 +34,8 @@ export const SPAWN_EVENT_CALLBACK_HOST_KEY = "onSpawnEvent";
 /** Key under `ctx.host` for the host's model name (used in manifest template). */
 export const MODEL_NAME_HOST_KEY = "modelName";
 
-/** Child agent `DEFAULT_MAX_TURNS` — matches parent factory. */
-const CHILD_MAX_TURNS = 10;
+/** Child agent `DEFAULT_MAX_TURNS` — matches parent factory (`runtime-factory.ts`). */
+const CHILD_MAX_TURNS = 25;
 
 type SpawnEventCallback = (event: {
   readonly kind: "spawn_requested" | "agent_status_changed";
