@@ -138,6 +138,14 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     minSessionCount: 3,
   },
 
+  // ---- Display ----
+  {
+    id: "display:thinking",
+    label: "Toggle thinking",
+    description: "Show or hide model reasoning blocks",
+    category: "system",
+  },
+
   // ---- System ----
   {
     id: "system:model",

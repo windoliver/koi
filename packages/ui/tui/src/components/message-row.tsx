@@ -7,6 +7,7 @@ import type { ContentBlock } from "@koi/core/message";
 import type { Accessor, JSX } from "solid-js";
 import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-js";
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
+import { useTuiStore } from "../store-context.js";
 import { ErrorBlock } from "./error-block.js";
 import { SpawnBlock } from "./SpawnBlock.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
@@ -35,6 +36,7 @@ function AssistantBlock(props: {
   readonly streaming?: boolean | undefined;
   readonly spinnerFrame: Accessor<number>;
 }): JSX.Element {
+  const showThinking = useTuiStore((s) => s.showThinking);
   return (
     <Switch>
       <Match when={props.block.kind === "text" ? (props.block as TextBlock_) : undefined}>
@@ -48,11 +50,13 @@ function AssistantBlock(props: {
       </Match>
       <Match when={props.block.kind === "thinking" ? (props.block as ThinkingBlock_) : undefined}>
         {(b: Accessor<ThinkingBlock_>) => (
-          <ThinkingBlock
-            text={b().text}
-            streaming={props.streaming}
-            syntaxStyle={props.syntaxStyle}
-          />
+          <Show when={showThinking()}>
+            <ThinkingBlock
+              text={b().text}
+              streaming={props.streaming}
+              syntaxStyle={props.syntaxStyle}
+            />
+          </Show>
         )}
       </Match>
       <Match when={props.block.kind === "tool_call" ? (props.block as ToolCallBlock_) : undefined}>

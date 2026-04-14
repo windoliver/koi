@@ -299,6 +299,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       props.onFork?.();
       return;
     }
+    if (cmd.id === "display:thinking") {
+      store.dispatch({ kind: "toggle_thinking" });
+      return;
+    }
     props.onCommand(cmd.id, args);
   };
 

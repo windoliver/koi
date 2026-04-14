@@ -335,6 +335,8 @@ export interface TuiState {
   readonly ledgerSources: LedgerSources | null;
   /** One-line run report summary, when a ReportStore is configured. */
   readonly runReportSummary: string | null;
+  /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
+  readonly showThinking: boolean;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -509,6 +511,7 @@ export type TuiAction =
   | { readonly kind: "set_at_query"; readonly query: string | null }
   | { readonly kind: "set_at_results"; readonly results: readonly string[] }
   | { readonly kind: "resume_follow" }
+  | { readonly kind: "toggle_thinking" }
   | {
       /** Injected by the host with trajectory + ledger data for /trajectory view. */
       readonly kind: "set_trajectory_data";
