@@ -125,6 +125,13 @@ import { add, multiply } from "../src/math.js";
 test("add", () => expect(add(2, 3)).toBe(5));
 test("multiply", () => expect(multiply(2, 3)).toBe(6));
 EOF
+cat > package.json <<'EOF'
+{
+  "name": "koi-bugbash-fixture",
+  "type": "module",
+  "private": true
+}
+EOF
 git add -A && git commit -q -m "init"
 cd - >/dev/null
 # For Q7e (out-of-workspace read):
