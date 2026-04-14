@@ -107,6 +107,12 @@ export interface CreateTuiAppConfig {
    * <markdown> with full prose/heading/code-fence support. See #1542.
    */
   readonly treeSitterClient?: TreeSitterClient | undefined;
+  /**
+   * Called when the @-mention query changes in the input area (#10).
+   * The host uses this to run file completion (e.g., git ls-files + fuzzy filter)
+   * and dispatch set_at_results back to the store. Null = overlay dismissed.
+   */
+  readonly onAtQuery?: ((query: string | null) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +216,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     footerHeight,
     syntaxStyle,
     treeSitterClient,
+    onAtQuery,
   } = config;
 
   let started = false;
@@ -374,6 +381,7 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     onPermissionRespond: wrappedPermissionRespond,
                     syntaxStyle,
                     treeSitterClient,
+                    onAtQuery,
                   });
                 },
               }),

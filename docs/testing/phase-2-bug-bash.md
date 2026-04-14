@@ -125,6 +125,13 @@ import { add, multiply } from "../src/math.js";
 test("add", () => expect(add(2, 3)).toBe(5));
 test("multiply", () => expect(multiply(2, 3)).toBe(6));
 EOF
+cat > package.json <<'EOF'
+{
+  "name": "koi-bugbash-fixture",
+  "type": "module",
+  "private": true
+}
+EOF
 git add -A && git commit -q -m "init"
 cd - >/dev/null
 # For Q7e (out-of-workspace read):
@@ -187,13 +194,13 @@ EOF
 
 ### S6 — Permissions & Hooks
 
-**Setup for Q19**: config with `tools.bash.allow: ["bun test", "bun run build"]`
+**Setup for Q19**: none (in-session grant exercises the same code path). The TUI has no user config file for pre-allowing tools — by design, it is configured via environment variables and CLI flags only. The `[a] Always allow <tool> this session` keystroke on the first approval modal is the mechanism for tool-granularity pre-approval within a session. See #1780 for the architectural rationale.
 **Setup for Q21**: `$KOI_HOME/.koi/hooks.json` with pre-tool-use command hook writing to `$HOOK_LOG`
-**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it
+**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); see `packages/lib/hooks/src/hook-validation.ts`.
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q19 | `Run the tests.` | Bash | No approval prompt (allow-list match) |
+| Q19 | Turn 1: `Run the tests.` → approve modal with `[a] Always allow Bash this session`. Turn 2: `Run the tests again.` | Bash | First turn renders the Bash approval modal; after pressing `a`, the second turn's Bash call runs with **no re-prompt** (session-wide grant holds for subsequent identical-tool calls). |
 | Q20 | `Fix the typo in README.md (change 'Fixture' to 'Fixtures').` | fs_edit | TUI permission prompt renders; edit completes after approval |
 | Q21 | `Read src/math.ts and write a summary to summary.txt.` | fs_read, fs_write | `$HOOK_LOG` shows 2+ entries with tool names |
 | Q22 | `Read README.md` | fs_read | `$HOOK_LOG` shows POST with JSON event body |
