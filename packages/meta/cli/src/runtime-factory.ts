@@ -155,6 +155,41 @@ export interface KoiRuntimeConfig {
    */
   readonly plugins?: readonly string[] | undefined;
   /**
+   * Engine loop-detection override. Passed verbatim to `createKoi`.
+   *
+   * - `undefined` (default) → the engine's default detector runs,
+   *   bounding runaway tool-call spirals per `runTurn` invocation.
+   *   This is the correct posture for `koi start` where the auto-
+   *   allow permission backend doesn't gate repeated side-effecting
+   *   retries interactively.
+   * - `false` → disables detection entirely. `koi tui` opts in
+   *   because its per-submit iteration budget reset
+   *   (`resetIterationBudgetPerRun: true` below, combined with the
+   *   governance caps) already bounds spirals and false positives
+   *   are expensive inside an interactive session.
+   * - `Partial<LoopDetectionConfig>` → custom thresholds for hosts
+   *   that need finer-grained tuning.
+   */
+  readonly loopDetection?: false | Partial<import("@koi/engine").LoopDetectionConfig> | undefined;
+  /**
+   * When `false`, the execution preset stack skips the
+   * `bash_background` provider (detached shell subprocesses). The
+   * core `Bash` tool and the full `task_*` tool set (task_create,
+   * task_list, task_delegate, task_output, task_stop) stay wired
+   * regardless, because spawned coordinator agents depend on
+   * task-board orchestration for fan-out/result-collection flows
+   * that don't involve background shell subprocesses.
+   *
+   * `koi start` passes `false` because its auto-allow permission
+   * backend + the engine's default loop detector trip on legitimate
+   * `task_output` polling of long-running `bash_background` jobs,
+   * and the cleanest resolution is to not expose detached
+   * subprocesses on the CLI at all. `koi tui` leaves this at the
+   * default (true) because its interactive surface makes
+   * long-running background work observable. Defaults to `true`.
+   */
+  readonly backgroundSubprocesses?: boolean | undefined;
+  /**
    * Observer for spawn lifecycle events emitted by the Spawn tool executor.
    * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
    * EngineEvents into the store so /agents and inline spawn_call blocks update.
@@ -471,6 +506,28 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  *
  * Blueprint: record-cassettes.ts — this is the same composition used in
  * golden query recording. MCP loaded from .mcp.json when present.
+ *
+ * **IMPORTANT — default behavior for optional fields (read before
+ * calling this from a new host):**
+ *
+ * - `loopDetection` — when omitted, the engine's default detector is
+ *   enabled. This is a semantic change from the pre-refactor behavior
+ *   where the factory hard-disabled loop detection unconditionally.
+ *   Hosts that rely on detection being OFF (e.g. `koi tui` where
+ *   interactive false-positives are expensive) MUST pass
+ *   `loopDetection: false` explicitly.
+ * - `backgroundSubprocesses` — when omitted, defaults to `true`
+ *   (execution stack contributes the `bash_background` tool). Hosts
+ *   that want a narrower tool surface (e.g. `koi start` with auto-
+ *   allow permissions) MUST pass `backgroundSubprocesses: false`
+ *   explicitly. The `task_*` tool set stays wired regardless.
+ *
+ * Both known call sites (`koi start` in `commands/start.ts` and
+ * `koi tui` in `tui-command.ts`) pass explicit values for these two
+ * fields. The test harness in `runtime-factory.test.ts` exercises
+ * the factory via mock adapters and does not rely on the defaults.
+ * If you add a new caller, pass both fields explicitly and document
+ * the chosen posture.
  */
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
@@ -540,6 +597,40 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // bash elicit. Both are passed via `ctx.host`.
   const precomputedAgentId = makeAgentId(hostId);
   const enabledStackIds = config.stacks !== undefined ? new Set(config.stacks) : undefined;
+  // Determine whether the spawn preset stack is in the active set
+  // for this host. When no explicit `config.stacks` list was given,
+  // the factory activates every stack in `DEFAULT_STACKS` — so
+  // spawn is on by default. When an explicit list IS given (e.g.
+  // `koi start` passes `DEFAULT_STACKS_WITHOUT_SPAWN`), we check
+  // for membership directly. The derived flag flows through into
+  // the execution stack so task_* tools get wired IFF spawn is
+  // active (coordinator surface is consistent with sub-agent
+  // capability).
+  const spawnStackActive = enabledStackIds === undefined || enabledStackIds.has("spawn");
+
+  // `bash_background` depends on the task-board surface for job
+  // status / output inspection. If the caller requested
+  // `backgroundSubprocesses: true` but the spawn stack (which
+  // gates task_*) is excluded, we have an incoherent
+  // combination: the model could launch detached work but have
+  // no supported way to read its output or detect completion.
+  // Force-override to `false` and warn the operator so the
+  // runtime assembles cleanly instead of booting into a broken
+  // state. `koi start` rejects this combo earlier at manifest
+  // validation, so only TUI manifests with a custom `stacks`
+  // list hit this branch.
+  const rawBackgroundSubprocesses = config.backgroundSubprocesses ?? true;
+  const effectiveBackgroundSubprocesses = rawBackgroundSubprocesses && spawnStackActive;
+  if (rawBackgroundSubprocesses && !spawnStackActive) {
+    console.warn(
+      `[koi/${hostId}] backgroundSubprocesses=true requires the spawn preset stack ` +
+        "(for task_create / task_output / task_stop observability). spawn is not in " +
+        "the active stack set — bash_background is being disabled automatically. " +
+        "Either add 'spawn' to manifest.stacks or explicitly set " +
+        "backgroundSubprocesses: false to silence this warning.",
+    );
+  }
+
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
@@ -547,6 +638,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     agentId: precomputedAgentId,
     modelName,
     pluginMcpServers: pluginComponents.mcpServers,
+    // Effective flag: caller-requested AND spawn stack active. The
+    // invariant is "bash_background requires the task-board
+    // surface" and the factory enforces it here rather than
+    // letting the execution stack assemble an unmanageable
+    // background-job surface.
+    backgroundSubprocesses: effectiveBackgroundSubprocesses,
+    // Task-board tool surface tracks spawn-stack enablement: with
+    // spawn active, coordinator flows need task_* wired; without,
+    // the task surface is vestigial and would only create
+    // detector false-positive exposure.
+    taskBoardTools: spawnStackActive,
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   };
   const earlyContext: import("./preset-stacks.js").StackActivationContext = {
@@ -842,7 +944,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     providers: [...coreProviders, ...stackContribution.providers],
     approvalHandler,
     userId: userInfo().username,
-    loopDetection: false,
+    // Loop detection defaults to ENABLED (createKoi's default).
+    // Callers explicitly opt out: `koi tui` passes `false` because its
+    // per-submit iteration budget reset + governance caps already
+    // bound spirals, and the interactive surface makes false
+    // positives expensive. `koi start` omits this field so the
+    // default stays on — the auto-allow permission backend means a
+    // bad iteration would otherwise hammer tools until the broader
+    // caps trip, which is exactly what the detector exists to
+    // prevent.
+    ...(config.loopDetection !== undefined ? { loopDetection: config.loopDetection } : {}),
     // #1742: each user submit in the TUI is a logically fresh request,
     // so opt in to per-iteration budget reset for turn count and
     // duration. Token usage stays CUMULATIVE across the runtime

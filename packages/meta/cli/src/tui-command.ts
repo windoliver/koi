@@ -547,6 +547,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
+  let manifestBackgroundSubprocesses: boolean | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -557,6 +558,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+    manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
   }
 
   // ---------------------------------------------------------------------------
@@ -773,6 +775,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
+    // TUI opts out of engine loop detection explicitly: the
+    // per-submit iteration budget reset + governance caps below
+    // already bound spirals, and false-positive trips during an
+    // interactive session are expensive (they abort mid-turn with a
+    // confusing error). `koi start`'s auto-allow backend leaves
+    // this at the engine default (enabled) — see `runtime-factory.ts`.
+    loopDetection: false,
     // In loop mode, session persistence is intentionally omitted so
     // failed iterations don't pollute the resumable JSONL transcript.
     // Loop mode is a self-correcting execution, not a conversation.
@@ -786,6 +795,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // plugin (v1's "wire everything" posture).
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    // TUI defaults `backgroundSubprocesses` to `true` (the factory
+    // default) because its interactive surface makes long-running
+    // jobs observable. A manifest setting wins if provided.
+    ...(manifestBackgroundSubprocesses !== undefined
+      ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
+      : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
     // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
     ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
@@ -1315,26 +1330,45 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
       (hardExit as { unref: () => void }).unref();
     }
+    // Keep-alive for the shutdown phase. `appHandle.stop()` clears
+    // OpenTUI's internal keepAliveTimer, and once the final await
+    // (`resetBarrier`, `runtime.dispose()`) queues its continuation,
+    // the event loop has no ref'd handles left — bun promptly
+    // exits with no more work to do, SKIPPING everything after the
+    // first await in this function (including the writeSync for
+    // the resume hint and the explicit `process.exit(exitCode)`
+    // in the finally block).
+    //
+    // A ref'd setInterval keeps the loop alive for the duration of
+    // cooperative shutdown. It's cleared in the outer finally so
+    // the hard-exit failsafe can still fire if something wedges,
+    // and so the process exits cleanly via `process.exit` after
+    // the hint + runtime.dispose paths complete.
+    const shutdownKeepAlive = setInterval(() => {
+      /* keep-alive only — no side effect */
+    }, 1000);
+
+    // Wait for any in-flight clear/reset barrier to land BEFORE
+    // tearing down the renderer. Doing this BEFORE `appHandle.stop()`
+    // is load-bearing: OpenTUI's stop() clears its internal
+    // keepAliveTimer and the subsequent native destroyRenderer call
+    // causes bun's event loop to exit on the next empty tick.
+    // Anything awaited after stop() never resumes — even with our
+    // own ref'd setInterval keepalive in place (bun drops pending
+    // microtasks when the last "real" handle goes away). Awaiting
+    // the reset barrier here, BEFORE stop(), keeps us inside the
+    // renderer-live window where the event loop stays alive naturally.
+    try {
+      await resetBarrier;
+    } catch {
+      // Defensive: resetConversation now only resolves its barrier,
+      // but if a future change accidentally reintroduces a rejection
+      // path we still want shutdown to suppress the resume hint
+      // rather than propagate an unhandled rejection.
+      clearPersistFailed = true;
+    }
     try {
       await appHandle?.stop();
-      // Wait for any in-flight clear/reset barrier to land BEFORE
-      // emitting the resume hint. Without this, `/clear` followed by
-      // an immediate `/quit` can race: the hint may print and
-      // `process.exit` fire while `jsonlTranscript.truncate()` is
-      // still in flight, leaving the old JSONL on disk and allowing
-      // a later `--resume` to resurrect the supposedly-cleared
-      // history. The barrier is bounded by `SHUTDOWN_HARD_EXIT_MS`
-      // via the failsafe timer above, so a wedged reset cannot
-      // block exit indefinitely.
-      try {
-        await resetBarrier;
-      } catch {
-        // Defensive: resetConversation now only resolves its
-        // barrier, but if a future change accidentally reintroduces
-        // a rejection path we still want shutdown to suppress the
-        // resume hint rather than propagate an unhandled rejection.
-        clearPersistFailed = true;
-      }
       // Print the resume hint here — after the TUI renderer has
       // released the alt screen and the reset barrier has settled
       // but before any potentially-slow runtime teardown — so the
@@ -1409,6 +1443,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
       approvalStore?.close();
     } finally {
+      clearInterval(shutdownKeepAlive);
       process.exit(exitCode);
     }
   };

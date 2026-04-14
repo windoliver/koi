@@ -24,6 +24,7 @@ import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
 import { createSigintHandler, createUnrefTimer } from "../sigint-handler.js";
@@ -52,6 +53,28 @@ const autoApproveHandler: ApprovalHandler = async () => ({
   kind: "always-allow",
   scope: "session",
 });
+
+/**
+ * Default preset-stack set for `koi start`: every stack except
+ * `spawn`. Removing the spawn stack eliminates the coordinator
+ * pattern from the CLI, which removes the `task_output` polling
+ * flow that would otherwise trip the default loop detector's
+ * 3-in-8 threshold. Matches main's pre-refactor capability
+ * surface: no sub-agents, no polling, no detector false positives.
+ *
+ * Users who really want coordinator workflows under `koi start`
+ * opt back in via an explicit `manifest.stacks` list that includes
+ * "spawn" — at which point they're acknowledging the loop-detector
+ * false-positive risk themselves.
+ *
+ * Computed lazily from `DEFAULT_STACKS` so any new stack added to
+ * the registry appears here automatically (stacks default to
+ * on-for-start unless they explicitly exclude themselves the way
+ * spawn does here).
+ */
+const DEFAULT_STACKS_WITHOUT_SPAWN: readonly string[] = DEFAULT_STACKS.filter(
+  (stack) => stack.id !== "spawn",
+).map((stack) => stack.id);
 
 export async function run(flags: StartFlags): Promise<ExitCode> {
   // Dry-run not yet implemented — fail closed so no live API calls are made.
@@ -85,6 +108,44 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+
+    // Fail fast on settings that `koi start` cannot honor, rather
+    // than silently discarding them. A shared manifest that targets
+    // both `koi tui` and `koi start` should omit these fields (or
+    // split into host-specific manifests) — accepting valid syntax
+    // and then silently overriding it is more user-hostile than a
+    // clear error at launch.
+
+    if (manifestResult.value.backgroundSubprocesses === true) {
+      process.stderr.write(
+        "koi start: manifest.backgroundSubprocesses: true is not supported on this host.\n" +
+          "  The engine's default loop detector hard-fails legitimate task_output polling\n" +
+          "  of long-running background subprocesses (3-in-8 threshold). Until the\n" +
+          "  detector gains per-tool exemptions, koi start cannot enable bash_background\n" +
+          "  without reintroducing the polling failure mode.\n" +
+          "  Remove `backgroundSubprocesses: true` from the manifest to run under koi\n" +
+          "  start, or use `koi tui` — the same manifest works there without modification\n" +
+          "  once this field is removed.\n",
+      );
+      return ExitCode.FAILURE;
+    }
+
+    if (
+      manifestResult.value.stacks !== undefined &&
+      manifestResult.value.stacks.includes("spawn")
+    ) {
+      process.stderr.write(
+        'koi start: manifest.stacks including "spawn" is not supported on this host.\n' +
+          "  Spawn enables coordinator workflows that poll task_output while waiting on\n" +
+          "  sub-agents, which hard-fails under koi start's default loop detector. The\n" +
+          "  spawn stack is automatically excluded from the koi start default stack set\n" +
+          "  for this reason; an explicit stacks list that re-adds it would reintroduce\n" +
+          "  the failure mode.\n" +
+          '  Remove "spawn" from manifest.stacks to run under koi start, or use `koi tui`\n' +
+          "  for coordinator workflows.\n",
+      );
+      return ExitCode.FAILURE;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -194,14 +255,129 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       rules: { allow: ["*"], deny: [], ask: [] },
     }),
     permissionsDescription: "koi start — auto-allow",
+    // `koi start` runs without `bash_background` because main's
+    // pre-refactor `koi start` never exposed that tool. The shared
+    // execution stack wires it by default for TUI, so we explicitly
+    // opt out here.
+    //
+    // `loopDetection` is left at the engine default (undefined →
+    // detector enabled) because the auto-allow permission backend
+    // makes the detector the only narrow guard against runaway
+    // mutating calls before governance caps trip.
+    //
+    // The full `task_*` tool set stays wired regardless, but the
+    // `spawn` stack is filtered out below — without sub-agents to
+    // orchestrate, `task_output` polling has no reason to fire and
+    // can't trip the detector's 3-in-8 threshold. This matches
+    // main's pre-refactor `koi start` capability surface (no
+    // Spawn, no bash_background, no coordinator workflows).
+    backgroundSubprocesses: false,
     ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
-    ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
+    // When the user passes an explicit manifest.stacks, we honor
+    // it verbatim (including re-enabling `spawn` if they really
+    // want coordinator flows under `koi start`). When they don't,
+    // we filter `spawn` out of the default set so the detector
+    // stays compatible with the remaining tool surface.
+    ...(manifestStacks !== undefined
+      ? { stacks: manifestStacks }
+      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
   });
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
+
+  /**
+   * Wrapper passed to `createCliHarness` so the harness's internal
+   * `runtime.dispose()` call in its `finally` block is a no-op. The
+   * real shutdown sequence (stack onShutdown → drain → dispose)
+   * runs in `shutdownRuntime()` below, which is invoked AFTER the
+   * harness returns. Without this wrapper, the harness would
+   * dispose the runtime before the stack `onShutdown` hooks get a
+   * chance to fire — MCP connections, the execution stack's
+   * bgController, and other cleanup would run against an already-
+   * disposed engine and either no-op silently or error.
+   */
+  const harnessRuntime: typeof runtime = {
+    ...runtime,
+    dispose: async () => {
+      /* no-op: real dispose in shutdownRuntime() */
+    },
+  };
+
+  // Shutdown failure flag — set by `shutdownRuntime()` when
+  // teardown (stack onShutdown hooks, bg controller abort, or
+  // `runtime.dispose()`) reports a failure. `run()` reads this
+  // after each exit path's `finally` completes and returns
+  // `ExitCode.FAILURE` when set, so automation sees a non-zero
+  // exit when transcript flush, session-end hooks, or MCP
+  // disposers fail even though the command body completed
+  // successfully.
+  // let: mutable — set from within shutdownRuntime on teardown failure
+  let shutdownFailed = false;
+
+  /**
+   * Shared shutdown sequence — MUST run after the harness returns
+   * and before any `process.exit()` path. Order matches the TUI
+   * invariant:
+   *
+   *   1. Fire stack `onShutdown` hooks via `shutdownBackgroundTasks`
+   *      (MCP disposers, execution stack's bgController abort for
+   *      hosts that enabled background subprocesses).
+   *   2. If any stack reported live work, wait out the SIGTERM→
+   *      SIGKILL escalation window so subprocesses can't keep
+   *      mutating the workspace past CLI exit.
+   *   3. Dispose the runtime (engine teardown, session-end hooks
+   *      including transcript flush).
+   *
+   * The harness's own `runtime.dispose()` is a no-op thanks to
+   * `harnessRuntime` wrapping above, so this is the only place
+   * `runtime.dispose()` actually runs.
+   *
+   * Called from `finally` blocks after the surrounding `catch`
+   * has already run, so any exception escaping this helper would
+   * bypass the command's normal error path and surface as an
+   * unhandled rejection. Each step is wrapped in its own
+   * try/catch so a wedged dispose timeout, a failing stack
+   * onShutdown hook, or a broken MCP disposer surfaces as a
+   * controlled stderr log AND flips `shutdownFailed` so `run()`
+   * propagates the failure as `ExitCode.FAILURE`.
+   */
+  const shutdownRuntime = async (): Promise<void> => {
+    try {
+      const hadLiveWork = runtimeHandle.shutdownBackgroundTasks();
+      if (hadLiveWork) {
+        // Matches the execution stack's internal SUBPROCESS_DRAIN_MS
+        // (3500ms) plus a 200ms safety margin.
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_700));
+      }
+    } catch (shutdownErr) {
+      shutdownFailed = true;
+      process.stderr.write(
+        `koi: shutdownBackgroundTasks failed — ${
+          shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)
+        }\n`,
+      );
+    }
+    try {
+      await runtime.dispose?.();
+    } catch (disposeErr) {
+      // `runtime.dispose()` can throw on settle timeout when a
+      // tool is wedged in the active run, and its session-end
+      // hooks run the transcript flush — a failure here means
+      // the user-visible session may be incomplete on disk.
+      // Flip `shutdownFailed` so the command returns a non-zero
+      // exit code instead of reporting success after teardown
+      // actually failed.
+      shutdownFailed = true;
+      process.stderr.write(
+        `koi: runtime.dispose failed — ${
+          disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+        }\n`,
+      );
+    }
+  };
   // Pre-populate the runtime's in-memory transcript with the resumed
   // messages so the model sees prior context on the first turn.
   if (resumedMessages.length > 0) {
@@ -245,7 +421,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   process.on("SIGINT", onSigint);
 
   const harness = createCliHarness({
-    runtime,
+    // `harnessRuntime` has a no-op `dispose`; the real shutdown
+    // sequence (stack onShutdown → drain → dispose) fires from
+    // `shutdownRuntime()` in each exit path's `finally`. Passing
+    // the raw `runtime` here would let the harness's internal
+    // `finally` call `runtime.dispose()` before stack shutdown
+    // hooks can run, leaking MCP / bg subprocesses.
+    runtime: harnessRuntime,
     channel,
     tui: null,
     signal: controller.signal,
@@ -267,7 +449,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           process.stderr.write(`koi: ${msg}\n`);
           return ExitCode.FAILURE;
         } finally {
-          await runtime.dispose?.();
+          await shutdownRuntime();
         }
         break;
       }
@@ -334,7 +516,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             process.stderr.write(`koi: ${msg}\n`);
             return ExitCode.FAILURE;
           } finally {
-            await runtime.dispose?.();
+            await shutdownRuntime();
           }
           break;
         }
@@ -346,6 +528,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           const msg = err instanceof Error ? err.message : String(err);
           process.stderr.write(`koi: ${msg}\n`);
           return ExitCode.FAILURE;
+        } finally {
+          // Single-shot prompt mode also needs the shared shutdown
+          // path — otherwise a model that launches `bash_background`
+          // and then completes the turn leaves the subprocess
+          // orphaned past CLI exit (the harness's own dispose only
+          // calls `runtime.dispose`, not the stack onShutdown hooks).
+          await shutdownRuntime();
         }
         if (result.stopReason !== "completed") {
           return ExitCode.FAILURE;
@@ -357,6 +546,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // Non-zero exit for user-cancelled sessions so scripts/automation can
     // distinguish cancellation (SIGINT) from successful completion.
     if (controller.signal.aborted) {
+      return ExitCode.FAILURE;
+    }
+
+    // Non-zero exit when shutdown/teardown reported a failure
+    // (wedged dispose, failing MCP disposer, transcript flush
+    // error). `shutdownRuntime()` logs the specific error to
+    // stderr and sets this flag; automation sees a non-zero exit
+    // code so it doesn't believe the run completed cleanly when
+    // persistence or cleanup actually failed.
+    if (shutdownFailed) {
       return ExitCode.FAILURE;
     }
 

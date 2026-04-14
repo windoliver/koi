@@ -20,6 +20,22 @@
  *   plugins:                # optional — opt into a subset of discovered plugins
  *     - my-hook-bundle      #   (omit to activate every plugin in ~/.koi/plugins/)
  *     - my-mcp-server       #   (empty array disables every plugin)
+ *   backgroundSubprocesses: true   # TUI ONLY — controls whether the execution
+ *                                  #   stack exposes the `bash_background` tool
+ *                                  #   (detached shell subprocess launch). The
+ *                                  #   `task_*` coordinator tools are gated
+ *                                  #   separately on whether the `spawn` preset
+ *                                  #   stack is active — see the comment on
+ *                                  #   `ManifestConfig.backgroundSubprocesses`
+ *                                  #   below for the full contract. `koi tui`
+ *                                  #   honors this field (default true).
+ *                                  #   `koi start` REJECTS manifests that set
+ *                                  #   it to `true` because the CLI's default
+ *                                  #   loop detector hard-fails legitimate
+ *                                  #   `task_output` polling of background
+ *                                  #   jobs. Shared manifests that target both
+ *                                  #   hosts must omit this field or split
+ *                                  #   per-host.
  */
 
 import { loadConfig } from "@koi/config";
@@ -41,6 +57,34 @@ export interface ManifestConfig {
    * — useful for reproducible CI assemblies.
    */
   readonly plugins: readonly string[] | undefined;
+  /**
+   * Whether the execution preset stack contributes the
+   * `bash_background` tool (detached shell subprocess launch).
+   *
+   * This field controls ONLY `bash_background`. The `task_*`
+   * coordinator tools (`task_create`, `task_list`, `task_output`,
+   * `task_delegate`, `task_stop`, `task_update`, `task_get`) are
+   * gated independently on whether the `spawn` preset stack is
+   * active, because the task board is coordinator infrastructure —
+   * sub-agent fan-out flows need `task_create` + `task_delegate`
+   * and polling for results needs `task_output`. Hosts that
+   * exclude `spawn` from their stack list (e.g. `koi start` via
+   * `DEFAULT_STACKS_WITHOUT_SPAWN`) lose the `task_*` surface
+   * regardless of this field's value.
+   *
+   * **TUI only.** `koi tui` defaults to `true` and honors explicit
+   * settings. `koi start` REJECTS any manifest that sets this to
+   * `true`, because the CLI's default loop detector hard-fails
+   * legitimate `task_output` polling. Shared manifests that
+   * target both hosts must omit this field (or split per-host).
+   *
+   * Invariant enforcement: because `bash_background` relies on
+   * the task board for status/output observability, the factory
+   * force-overrides this to `false` and emits a warning if the
+   * caller requested `true` but `spawn` is excluded (task_* would
+   * otherwise be missing). See `runtime-factory.ts`.
+   */
+  readonly backgroundSubprocesses: boolean | undefined;
 }
 
 /**
@@ -130,6 +174,20 @@ export async function loadManifestConfig(
     plugins = pluginsRaw as readonly string[];
   }
 
+  const bgSubsRaw = raw.backgroundSubprocesses;
+  let backgroundSubprocesses: boolean | undefined;
+  if (bgSubsRaw === undefined) {
+    backgroundSubprocesses = undefined;
+  } else if (typeof bgSubsRaw !== "boolean") {
+    return {
+      ok: false,
+      error:
+        "manifest.backgroundSubprocesses must be a boolean (e.g. backgroundSubprocesses: true)",
+    };
+  } else {
+    backgroundSubprocesses = bgSubsRaw;
+  }
+
   return {
     ok: true,
     value: {
@@ -137,6 +195,7 @@ export async function loadManifestConfig(
       instructions: instructions as string | undefined,
       stacks,
       plugins,
+      backgroundSubprocesses,
     },
   };
 }
