@@ -1309,6 +1309,45 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         return;
       }
 
+      // Wait for any in-flight clear/reset barrier to settle
+      // before reading the source transcript. Without this,
+      // `/clear` followed immediately by `/fork` has a race
+      // window where `clearPersistFailed` is still `false`
+      // (the reset IIFE only sets it inside the async truncate
+      // path) but the truncate is in progress — handleFork
+      // would happily load the pre-clear content and clone it
+      // into a new session id, duplicating data the user just
+      // asked to drop. After the await, re-check both latches:
+      // if the clear actually failed, `clearPersistFailed` is
+      // now true and we block; if an unrelated reset step
+      // threw, `lastResetFailed` is true and we also block so
+      // fork can't operate on contaminated in-memory state.
+      await resetBarrier;
+      if (clearPersistFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_CLEAR",
+          message:
+            "Fork is disabled because the most recent /clear or /new could not " +
+            "durably truncate this session's transcript. The current file still " +
+            "contains pre-clear content that the fork would copy into a new " +
+            "session id. Quit and relaunch, or resolve the underlying I/O " +
+            "issue and retry /clear before forking.",
+        });
+        return;
+      }
+      if (lastResetFailed) {
+        store.dispatch({
+          kind: "add_error",
+          code: "FORK_AFTER_FAILED_RESET",
+          message:
+            "Fork is disabled because the most recent session reset failed. " +
+            "The runtime may still hold stale state. Quit and relaunch with " +
+            "`koi tui --resume <id>` to fork from a clean runtime.",
+        });
+        return;
+      }
+
       // Snapshot the current transcript as TranscriptEntry list. The runtime's
       // `transcript` array holds InboundMessage[] (the live context window);
       // we load the durable entries from the JSONL file for a complete copy.
@@ -1684,22 +1723,42 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       //      on-disk `<tuiSessionId>.jsonl` is intentionally left
       //      untouched — see the comment in phase 3 for rationale.
       //
+      store.dispatch({ kind: "set_view", view: "conversation" });
+
+      // Always bump the picker generation, EVEN for the
+      // same-session fast path below. An in-flight A→B load can
+      // only be cancelled by a generation bump — without one,
+      // the older async flow would still complete and force-
+      // switch to B, ignoring the user's latest "stay on
+      // current" click. Any stale async task checking
+      // `myPickerGeneration !== pickerGeneration` exits
+      // without publishing state.
+      pickerGeneration += 1;
+      const myPickerGeneration = pickerGeneration;
+
       // Fast path: selecting the session the user is ALREADY
-      // viewing is a no-op refresh — just close the picker and
-      // leave everything alone. Comparing against
-      // `viewedSessionId` (not `tuiSessionId`) is important: after
-      // a picker load the two diverge, and selecting the
-      // originally-viewed conversation from the picker should
-      // still reload it so the user can get back to the startup
-      // session after inspecting an archive. The earlier version
-      // of this guard compared to `tuiSessionId`, which meant
-      // picking the original session after an archive load was
-      // silently ignored and stranded the user in the archive.
+      // viewing is a no-op refresh. Two sub-cases, both handled
+      // here:
+      //   1. No switch in flight — just close the picker.
+      //   2. Switch IS in flight (user is cancelling an A→B
+      //      load by re-clicking A). The generation bump above
+      //      invalidated the older task, but its finally block
+      //      is gated on `myPickerGeneration === pickerGeneration`
+      //      and therefore won't clear `pendingSessionSwitch`
+      //      when it finally returns. We must clear the latch
+      //      here ourselves so the TUI guards re-enable after
+      //      the user's "stay on current" click.
+      // Comparing against `viewedSessionId` (not `tuiSessionId`)
+      // is important: after a picker load the two diverge, and
+      // selecting the originally-viewed conversation from the
+      // picker should still be a valid "stay here" click.
       if (selectedId === String(viewedSessionId)) {
-        store.dispatch({ kind: "set_view", view: "conversation" });
+        if (pendingSessionSwitch) {
+          pendingSessionSwitch = false;
+          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        }
         return;
       }
-      store.dispatch({ kind: "set_view", view: "conversation" });
 
       // Latch `pendingSessionSwitch` BEFORE any await so every
       // picker-mode guard (submit/clear/new/rewind/fork) fires
@@ -1709,12 +1768,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Cleared in the finally below, regardless of whether the
       // load succeeded or failed.
       pendingSessionSwitch = true;
-      // Stamp this selection with a monotonic id. Stale
-      // completions (a click superseded by a later click)
-      // detect via `myPickerGeneration !== pickerGeneration`
-      // and exit without mutating shared state.
-      pickerGeneration += 1;
-      const myPickerGeneration = pickerGeneration;
 
       void (async (): Promise<void> => {
         store.dispatch({ kind: "set_connection_status", status: "connected" });
