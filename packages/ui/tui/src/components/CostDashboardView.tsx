@@ -55,16 +55,27 @@ function SectionHeader(props: { readonly title: string }): JSX.Element {
 
 export function CostDashboardView(): JSX.Element {
   const costBreakdown = useTuiStore((s) => s.costBreakdown);
-  const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
   const tokenRate = useTuiStore((s) => s.tokenRate);
 
-  const totalCost = createMemo(() => {
-    const bd = costBreakdown();
-    if (bd !== null) return bd.totalCostUsd;
-    return cumulativeMetrics().costUsd ?? 0;
-  });
-
+  const totalCost = createMemo(() => costBreakdown()?.totalCostUsd ?? 0);
   const hasBreakdown = createMemo(() => costBreakdown() !== null);
+
+  // Token totals from breakdown (session-scoped) — NOT from cumulativeMetrics
+  // which survives session clears and would show stale data.
+  const totalInputTokens = createMemo(() => {
+    const bd = costBreakdown();
+    if (bd === null) return 0;
+    let sum = 0;
+    for (const m of bd.byModel) sum += m.totalInputTokens;
+    return sum;
+  });
+  const totalOutputTokens = createMemo(() => {
+    const bd = costBreakdown();
+    if (bd === null) return 0;
+    let sum = 0;
+    for (const m of bd.byModel) sum += m.totalOutputTokens;
+    return sum;
+  });
 
   return (
     <box flexDirection="column" flexGrow={1} paddingLeft={2} paddingRight={2} paddingTop={1}>
@@ -77,7 +88,7 @@ export function CostDashboardView(): JSX.Element {
         <text fg={COLORS.textMuted}>{"Total spend:"}</text>
         <text fg={COLORS.green}>{formatCost(totalCost())}</text>
         <text fg={COLORS.dim}>
-          {`(${formatTokens(cumulativeMetrics().inputTokens)} in / ${formatTokens(cumulativeMetrics().outputTokens)} out)`}
+          {`(${formatTokens(totalInputTokens())} in / ${formatTokens(totalOutputTokens())} out)`}
         </text>
       </box>
 

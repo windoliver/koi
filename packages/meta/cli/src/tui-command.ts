@@ -1027,8 +1027,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // stays usable for the next turn. (#1759 review round 2)
     permissionBridge.cancelPending("Session reset");
 
-    // Clear cost aggregator state for the old session.
-    costBridge.aggregator.clearSession(tuiSessionId as string);
+    // Cost aggregator clear is deferred to the success branch below —
+    // same fail-closed contract as transcript/messages (#1742).
 
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
@@ -1065,6 +1065,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // + audit ledger, runtime transcript, TUI turn counter.
           store.dispatch({ kind: "clear_messages" });
           store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
+          // Clear cost aggregator only after successful reset — fail-closed contract.
+          costBridge.aggregator.clearSession(tuiSessionId as string);
+          costBridge.tokenRate.clear();
           runtimeHandle?.transcript.splice(0);
           tuiTurnCounter = 0;
           // /clear is silent on success — a freshly cleared conversation
