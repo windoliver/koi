@@ -47,6 +47,7 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
+import { resolveFsPath } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createGoalMiddleware } from "@koi/middleware-goal";
@@ -738,11 +739,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   //
   // Bash, bash_background, web_fetch, fs_write, fs_edit are intentionally not listed
   // so they fall to "ask" — the mode-default fallback for unmatched tools.
+  // fs_read path rules: workspace paths are auto-allowed, out-of-workspace
+  // paths trigger an "ask" prompt. The permission middleware injects
+  // context.path via resolveToolPath, and the rule evaluator matches
+  // glob patterns on it. Rules evaluated in order — first match wins.
   const tuiAllowRules: readonly SourcedRule[] = [
     { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "fs_read", action: "invoke", effect: "allow", source: "policy" },
+    {
+      pattern: "fs_read",
+      action: "invoke",
+      effect: "allow",
+      source: "policy",
+      context: { path: `${cwd}/**` },
+    },
+    {
+      pattern: "fs_read",
+      action: "invoke",
+      effect: "ask",
+      source: "policy",
+      reason: "File is outside the workspace — approve to read",
+    },
     { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
@@ -760,9 +778,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       mode: "default",
       rules: tuiAllowRules,
     });
+  const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
+
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
+    resolveToolPath: (
+      toolId: string,
+      input: import("@koi/core").JsonObject,
+    ): string | undefined => {
+      if (!FS_PATH_TOOLS.has(toolId)) return undefined;
+      const raw = input.path;
+      if (typeof raw !== "string") return undefined;
+      return resolveFsPath(raw, cwd);
+    },
     ...(config.persistentApprovals !== undefined
       ? { persistentApprovals: config.persistentApprovals, persistentAgentId: hostId }
       : {}),

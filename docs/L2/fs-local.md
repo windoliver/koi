@@ -55,3 +55,8 @@ await backend.rename("old.ts", "new.ts");
 - **Layer**: L2
 - **Imports from**: `@koi/core` (L0) only
 - **Runtime dependency**: Bun (uses `Bun.file()`, `Bun.write()`, `Bun.Glob`)
+
+
+## Changelog
+
+- **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

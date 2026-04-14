@@ -570,3 +570,8 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 > - **Pre-runtime-ready `/clear` fails closed.** A `/clear` issued during the `koi tui --resume <id>` startup window waits for `runtimeReady`, then runs the same `resetSessionState({ truncate: true })` pipeline. If the runtime never yields a handle the reset fails closed (regardless of `truncate`) — both visible history and the JSONL file are preserved.
 >
 > - **Engine: `CreateKoiOptions.rotateSessionId` callback.** New L0/L1 surface so hosts that own the session-id format keep ownership across `cycleSession()` rotations. Pre-computed at the top of `cycleSession()` BEFORE any destructive lifecycle step (sessionEpoch bump, onSessionEnd, governance reset), so a throwing host callback leaves the runtime entirely pre-cycle — no half-cycled state, no stale-iterable lockup.
+
+
+## Changelog
+
+- **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

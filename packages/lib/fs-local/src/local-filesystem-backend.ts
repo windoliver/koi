@@ -1,7 +1,9 @@
 /**
  * Local filesystem backend — uses Bun.file/node:fs for file operations.
  *
- * Scoped to a root directory with path traversal prevention.
+ * Security boundary is the permission middleware, NOT this backend.
+ * The backend is pure I/O — it reads/writes any path it receives.
+ * Symlink hardening is applied as defense-in-depth for workspace paths.
  * Implements the L0 FileSystemBackend contract.
  */
 
@@ -28,6 +30,7 @@ import type {
   KoiErrorCode,
   Result,
 } from "@koi/core";
+import { resolveFsPath, resolveFsPathWithCoercion } from "./path-resolution.js";
 
 function err(code: KoiErrorCode, message: string, cause?: unknown): KoiError {
   return {
@@ -57,8 +60,20 @@ function toApiPath(p: string): string {
   return sep === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
+export interface LocalFileSystemOptions {
+  /**
+   * When true, absolute paths outside the workspace root are allowed.
+   * Security boundary shifts to the permission middleware.
+   * Default: false (workspace-only — all paths resolved under root).
+   */
+  readonly allowExternalPaths?: boolean;
+}
+
 /** Create a local filesystem backend rooted at `rootPath`. */
-export function createLocalFileSystem(rootPath: string): FileSystemBackend {
+export function createLocalFileSystem(
+  rootPath: string,
+  options?: LocalFileSystemOptions,
+): FileSystemBackend {
   // Resolve the root with realpath so symlinked roots are handled correctly.
   // Uses sync because this runs once at construction time.
   const root = realpathSync(resolve(rootPath));
@@ -67,69 +82,74 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   const rootPrefix = root.endsWith(sep) ? root : `${root}${sep}`;
 
   /**
-   * Lexical path check — prevents ".." traversal.
-   *
-   * Path convention: All paths are workspace-relative per the FileSystemBackend
-   * contract. Leading "/" is stripped (e.g., "/src/index.ts" → "src/index.ts").
-   * Absolute paths that match the workspace root prefix are also accepted and
-   * stripped (e.g., "/Users/foo/workspace/src/index.ts" → "src/index.ts").
-   *
-   * The symlink containment check in safePath() prevents actual filesystem
-   * escape regardless of the input path.
+   * Resolve a user path to an absolute filesystem path.
+   * Delegates to the shared resolveFsPath utility.
    */
-  function lexicalCheck(path: string): Result<string, KoiError> {
-    // Strip workspace root prefix from absolute paths that include it
-    // (models sometimes send full absolute paths).
-    // For all other paths, strip leading "/" to treat as workspace-relative
-    // (the FileSystemBackend contract convention).
-    const stripped = path.startsWith(rootPrefix)
-      ? path.slice(rootPrefix.length)
-      : path.startsWith(`${root}/`)
-        ? path.slice(root.length + 1)
-        : path.startsWith("/")
-          ? path.slice(1)
-          : path;
-    const resolved = resolve(root, stripped);
-    // Allow exact root or any child path (prefix includes trailing slash)
-    if (resolved !== root && !resolved.startsWith(rootPrefix)) {
-      return { ok: false, error: err("PERMISSION", `Path outside workspace: ${path}`) };
-    }
-    return { ok: true, value: resolved };
+  function resolveLocal(path: string): string {
+    return resolveFsPath(path, root);
   }
 
   /**
-   * Full path check — lexical check + symlink containment.
+   * Resolve with coercion tracking — returns both the absolute path and
+   * optional resolvedPath when leading "/" was coerced to workspace-relative.
+   */
+  function resolveLocalWithCoercion(path: string): {
+    readonly absolute: string;
+    readonly resolvedPath: string | undefined;
+  } {
+    return resolveFsPathWithCoercion(path, root);
+  }
+
+  /**
+   * Check if an absolute path is under the workspace root.
+   */
+  function isUnderRoot(resolved: string): boolean {
+    return resolved === root || resolved.startsWith(rootPrefix);
+  }
+
+  const allowExternal = options?.allowExternalPaths === true;
+
+  /**
+   * Resolve path + containment check + symlink hardening.
    *
-   * After the lexical check passes, walks up from the resolved path to find
-   * the nearest existing ancestor, resolves it with realpath, and verifies
-   * the real path is still under the workspace root. This prevents symlinks
-   * inside the workspace from escaping the sandbox.
+   * Default mode (allowExternalPaths=false): blocks paths outside workspace.
+   * External mode (allowExternalPaths=true): allows out-of-workspace paths
+   * (security boundary shifts to the permission middleware).
+   *
+   * Symlink containment is checked for workspace paths in both modes, and
+   * for external paths in external mode (resolves symlink target before I/O).
    */
   async function safePath(path: string): Promise<Result<string, KoiError>> {
-    const lexical = lexicalCheck(path);
-    if (!lexical.ok) return lexical;
-    const resolved = lexical.value;
+    const resolved = resolveLocal(path);
 
-    // Walk up to find the nearest existing path component, then realpath it.
-    // This handles both existing files and not-yet-created paths (write/rename).
-    // let: mutable — walks up the directory tree
-    let check = resolved;
-    for (;;) {
-      try {
-        const real = await realpath(check);
-        // Verify the real path is still under the workspace root
-        if (real !== root && !real.startsWith(rootPrefix)) {
-          return {
-            ok: false,
-            error: err("PERMISSION", `Path escapes workspace via symlink: ${path}`),
-          };
+    // Block external paths when not explicitly allowed.
+    if (!allowExternal && !isUnderRoot(resolved)) {
+      return { ok: false, error: err("PERMISSION", `Path outside workspace: ${path}`) };
+    }
+
+    // Symlink hardening for workspace paths.
+    if (isUnderRoot(resolved)) {
+      // Walk up to find the nearest existing path component, then realpath it.
+      // This handles both existing files and not-yet-created paths (write/rename).
+      // let: mutable — walks up the directory tree
+      let check = resolved;
+      for (;;) {
+        try {
+          const real = await realpath(check);
+          // Verify the real path is still under the workspace root
+          if (real !== root && !real.startsWith(rootPrefix)) {
+            return {
+              ok: false,
+              error: err("PERMISSION", `Path escapes workspace via symlink: ${path}`),
+            };
+          }
+          break;
+        } catch {
+          // Path doesn't exist yet — check its parent
+          const parent = dirname(check);
+          if (parent === check) break; // Reached filesystem root
+          check = parent;
         }
-        break;
-      } catch {
-        // Path doesn't exist yet — check its parent
-        const parent = dirname(check);
-        if (parent === check) break; // Reached filesystem root
-        check = parent;
       }
     }
 
@@ -139,7 +159,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
   /**
    * Check if an absolute path is contained within the workspace root
    * after resolving symlinks. Used by search() and list() for glob results
-   * that bypass the normal safePath() flow.
+   * to catch in-workspace symlinks that escape to external locations.
+   *
+   * Only relevant when the list/search target is itself under the workspace
+   * root — out-of-workspace targets skip this check entirely (permission-gated).
    */
   async function isContained(absolutePath: string): Promise<boolean> {
     try {
@@ -158,6 +181,9 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
    * operations to shrink the TOCTOU window between safePath validation and
    * the filesystem call.
    *
+   * Only checked for paths under the workspace root (defense-in-depth).
+   * Out-of-workspace paths skip this check — permission middleware gates them.
+   *
    * Symlinks that resolve inside the workspace are allowed — repos commonly
    * use in-workspace symlinks. Only symlinks that escape are rejected.
    */
@@ -165,6 +191,27 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     absolutePath: string,
     apiPath: string,
   ): Promise<Result<void, KoiError>> {
+    // External paths: check if the leaf itself is a symlink to a different
+    // file. Parent-directory symlinks (like macOS /etc → /private/etc) are
+    // allowed — they're system-level mounts, not attack vectors. Only the
+    // leaf-level redirect is blocked.
+    if (!isUnderRoot(absolutePath)) {
+      try {
+        const s = await lstat(absolutePath);
+        if (s.isSymbolicLink()) {
+          return {
+            ok: false,
+            error: err(
+              "PERMISSION",
+              `External symlink rejected: ${apiPath} is a symlink (approved path must not be a symlink)`,
+            ),
+          };
+        }
+      } catch {
+        // Path doesn't exist yet (write/rename dest) — not a symlink, OK
+      }
+      return { ok: true, value: undefined };
+    }
     try {
       const s = await lstat(absolutePath);
       if (s.isSymbolicLink()) {
@@ -184,6 +231,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     name: "local",
 
     async read(path: string, options?: FileReadOptions): Promise<Result<FileReadResult, KoiError>> {
+      const coercion = resolveLocalWithCoercion(path);
       const p = await safePath(path);
       if (!p.ok) return p;
       const symCheck = await rejectEscapingSymlink(p.value, path);
@@ -201,7 +249,15 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
         const limit = options?.limit ?? lines.length;
         const content = lines.slice(offset, offset + limit).join("\n");
 
-        return { ok: true, value: { content, path, size: file.size } };
+        return {
+          ok: true,
+          value: {
+            content,
+            path,
+            size: file.size,
+            ...(coercion.resolvedPath !== undefined ? { resolvedPath: coercion.resolvedPath } : {}),
+          },
+        };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to read: ${path}`, e) };
       }
@@ -212,26 +268,26 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       content: string,
       options?: FileWriteOptions,
     ): Promise<Result<FileWriteResult, KoiError>> {
+      const coercion = resolveLocalWithCoercion(path);
+      const coercionField =
+        coercion.resolvedPath !== undefined ? { resolvedPath: coercion.resolvedPath } : {};
       const p = await safePath(path);
       if (!p.ok) return p;
       const symCheck = await rejectEscapingSymlink(p.value, path);
       if (!symCheck.ok) return symCheck;
 
       try {
-        // Always ensure parent directories exist — matches Nexus behavior
-        // where writes implicitly create the path. createDirectories option
-        // is kept for API compatibility but defaults to true.
         if (options?.createDirectories !== false) {
           await mkdir(dirname(p.value), { recursive: true });
         }
 
         if (options?.overwrite === false) {
-          // Atomic exclusive create — prevents TOCTOU race between existence
-          // check and write. The 'wx' flag fails with EEXIST if the file
-          // already exists, making conflict detection and write a single op.
           try {
             await writeFile(p.value, content, { flag: "wx" });
-            return { ok: true, value: { path, bytesWritten: Buffer.byteLength(content) } };
+            return {
+              ok: true,
+              value: { path, bytesWritten: Buffer.byteLength(content), ...coercionField },
+            };
           } catch (wxErr: unknown) {
             if (wxErr instanceof Error && "code" in wxErr && wxErr.code === "EEXIST") {
               return { ok: false, error: err("CONFLICT", `File already exists: ${path}`) };
@@ -241,7 +297,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
         }
 
         const bytes = await Bun.write(p.value, content);
-        return { ok: true, value: { path, bytesWritten: bytes } };
+        return { ok: true, value: { path, bytesWritten: bytes, ...coercionField } };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to write: ${path}`, e) };
       }
@@ -252,6 +308,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       edits: readonly FileEdit[],
       options?: FileEditOptions,
     ): Promise<Result<FileEditResult, KoiError>> {
+      const coercion = resolveLocalWithCoercion(path);
       const p = await safePath(path);
       if (!p.ok) return p;
       const symCheck = await rejectEscapingSymlink(p.value, path);
@@ -263,7 +320,6 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           return { ok: false, error: err("NOT_FOUND", `File not found: ${path}`) };
         }
 
-        // Capture mtime before read for optimistic concurrency check
         const preStat = await stat(p.value);
         const preMs = preStat.mtimeMs;
 
@@ -279,8 +335,6 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
         }
 
         if (options?.dryRun !== true) {
-          // Verify file hasn't been modified between read and write (OCC guard).
-          // Matches the ETag-based guard in @koi/fs-nexus's composite edit.
           const postStat = await stat(p.value);
           if (postStat.mtimeMs !== preMs) {
             return {
@@ -288,14 +342,19 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
               error: err("CONFLICT", `File modified during edit: ${path}`),
             };
           }
-          // Write to temp file then rename for atomicity — prevents partial
-          // writes from corrupting the file if the process crashes mid-write.
           const tmpPath = `${p.value}.koi-edit-${crypto.randomUUID()}`;
           await Bun.write(tmpPath, text);
           await rename(tmpPath, p.value);
         }
 
-        return { ok: true, value: { path, hunksApplied: applied } };
+        return {
+          ok: true,
+          value: {
+            path,
+            hunksApplied: applied,
+            ...(coercion.resolvedPath !== undefined ? { resolvedPath: coercion.resolvedPath } : {}),
+          },
+        };
       } catch (e: unknown) {
         return { ok: false, error: err("INTERNAL", `Failed to edit: ${path}`, e) };
       }
@@ -305,6 +364,10 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
       const p = await safePath(path);
       if (!p.ok) return p;
 
+      // Skip symlink containment checks when listing outside the workspace.
+      // Permission middleware already approved the target directory.
+      const targetInWorkspace = isUnderRoot(p.value);
+
       try {
         if (options?.recursive) {
           const rawGlob = options.glob ?? "**/*";
@@ -313,8 +376,9 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           for await (const match of glob.scan({ cwd: p.value, dot: false })) {
             const fullPath = join(p.value, match);
             try {
-              // Skip symlinks that escape the workspace root
-              if (!(await isContained(fullPath))) continue;
+              // Skip symlinks that escape the workspace root (defense-in-depth).
+              // Only applies when listing inside the workspace.
+              if (targetInWorkspace && !(await isContained(fullPath))) continue;
               const s = await stat(fullPath);
               entries.push({
                 path: toApiPath(join(path, match)),
@@ -335,9 +399,9 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
           if (entry.name.startsWith(".")) continue;
           const fullPath = join(p.value, entry.name);
 
-          // Skip symlinks that escape the workspace — use lstat to avoid
-          // following the link, then check containment if it's a symlink.
-          if (entry.isSymbolicLink()) {
+          // Skip symlinks that escape the workspace (defense-in-depth).
+          // Only applies when listing inside the workspace.
+          if (targetInWorkspace && entry.isSymbolicLink()) {
             if (!(await isContained(fullPath))) continue;
           }
 
@@ -421,6 +485,7 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     },
 
     async delete(path: string): Promise<Result<FileDeleteResult, KoiError>> {
+      const coercion = resolveLocalWithCoercion(path);
       const p = await safePath(path);
       if (!p.ok) return p;
       const symCheck = await rejectEscapingSymlink(p.value, path);
@@ -428,7 +493,13 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
 
       try {
         await unlink(p.value);
-        return { ok: true, value: { path } };
+        return {
+          ok: true,
+          value: {
+            path,
+            ...(coercion.resolvedPath !== undefined ? { resolvedPath: coercion.resolvedPath } : {}),
+          },
+        };
       } catch (e: unknown) {
         return { ok: false, error: mapFsError(e, path) };
       }
@@ -456,39 +527,22 @@ export function createLocalFileSystem(rootPath: string): FileSystemBackend {
     },
 
     /**
-     * Lexical path resolution with containment check — mirrors
-     * `lexicalCheck()` above and includes the same "path escapes workspace"
-     * rejection. This method is advertised to cross-cutting subsystems (e.g.
-     * @koi/checkpoint) that need to hash blobs against the same absolute
-     * path the backend writes to, and those subsystems observe the path
-     * BEFORE the backend's own read/write/edit gauntlet runs, so this
-     * method MUST NOT trust inputs that would escape the workspace.
+     * Resolve a user-provided path to an absolute filesystem path.
      *
-     * Returns `undefined` when the input resolves outside the workspace
-     * root (via `../` segments, non-matching absolute paths, Windows drive
-     * letters, etc.). The caller MUST treat undefined as "skip this op."
+     * Used by cross-cutting subsystems (e.g. @koi/checkpoint) to hash
+     * blobs against the same path the backend writes to.
      *
-     * Still lexical: no I/O, no symlink resolution. An input that passes
-     * this check can still escape at call time via an in-workspace symlink
-     * whose target is outside the workspace. Symlink escape is only caught
-     * by `safePath()` + `rejectEscapingSymlink()` on the actual operation,
-     * not here. This method is necessary but not sufficient.
+     * Returns `undefined` for empty paths AND for out-of-workspace paths
+     * so checkpoint never captures/restores external host files. This
+     * prevents a single approved external write from expanding into
+     * persistent retention + /rewind replay of host files.
      */
     resolvePath(path: string): string | undefined {
-      const stripped = path.startsWith(rootPrefix)
-        ? path.slice(rootPrefix.length)
-        : path.startsWith(`${root}/`)
-          ? path.slice(root.length + 1)
-          : path.startsWith("/")
-            ? path.slice(1)
-            : path;
-      const resolved = resolve(root, stripped);
-      // Containment check — reject anything that would escape the workspace.
-      // Matches the lexicalCheck() behavior above so the two code paths
-      // cannot diverge.
-      if (resolved !== root && !resolved.startsWith(rootPrefix)) {
-        return undefined;
-      }
+      if (path.length === 0) return undefined;
+      const resolved = resolveLocal(path);
+      // Never expose out-of-workspace paths to checkpoint — prevents
+      // external file retention and /rewind replay beyond the approval scope.
+      if (!isUnderRoot(resolved)) return undefined;
       return resolved;
     },
 

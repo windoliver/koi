@@ -159,3 +159,8 @@ Omit from the tool set entirely (don't call the factory) when `elicit` is not av
 - No imports from `@koi/engine` (L1) or peer L2 packages
 - All tool properties are `readonly`
 - Origin: `"primordial"` for all built-in tools
+
+
+## Changelog
+
+- **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

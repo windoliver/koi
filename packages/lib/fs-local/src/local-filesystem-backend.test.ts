@@ -42,19 +42,35 @@ describe("LocalFileSystemBackend (local-specific)", () => {
     testDir = mkdtempSync(join(tmpBase, "local-"));
   });
 
-  test("rejects path traversal with ..", async () => {
+  test("blocks ../../ paths by default (workspace-only mode)", async () => {
     const backend = createLocalFileSystem(testDir);
     const result = await backend.read("../../etc/passwd");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("PERMISSION");
   });
 
-  test("treats /etc/passwd as workspace-relative (contract convention)", async () => {
+  test("blocks /etc/passwd by default (workspace-only mode)", async () => {
     const backend = createLocalFileSystem(testDir);
-    // FileSystemBackend contract: leading "/" is stripped, path is workspace-relative.
-    // /etc/passwd → <workspace>/etc/passwd → NOT_FOUND (doesn't exist in workspace).
-    // Actual filesystem escape is prevented by the symlink containment check.
     const result = await backend.read("/etc/passwd");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("allows /etc/passwd with allowExternalPaths", async () => {
+    const backend = createLocalFileSystem(testDir, { allowExternalPaths: true });
+    const result = await backend.read("/etc/passwd");
+    expect(result.ok).toBe(true);
+  });
+
+  test("allows ../../ paths with allowExternalPaths", async () => {
+    const backend = createLocalFileSystem(testDir, { allowExternalPaths: true });
+    const result = await backend.read("../../etc/passwd");
+    if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+
+  test("treats leading / as workspace-relative when root dir doesn't exist", async () => {
+    const backend = createLocalFileSystem(testDir);
+    const result = await backend.read("/nonexistent/file.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
@@ -106,16 +122,16 @@ describe("LocalFileSystemBackend (local-specific)", () => {
     if (read.ok) expect(read.value.content).toBe("nested");
   });
 
-  test("rename rejects path traversal on source", async () => {
+  test("rename blocks ../../ source path by default", async () => {
     const backend = createLocalFileSystem(testDir);
-    const result = await backend.rename?.("../../etc/passwd", "stolen.txt");
+    const result = await backend.rename?.("../../nonexistent.txt", "stolen.txt");
     expect(result).toBeDefined();
     if (result === undefined) return;
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("PERMISSION");
   });
 
-  test("rename rejects path traversal on destination", async () => {
+  test("rename blocks ../../ destination path by default", async () => {
     const backend = createLocalFileSystem(testDir);
     await backend.write("legit.txt", "data");
     const result = await backend.rename?.("legit.txt", "../../escaped.txt");
@@ -145,7 +161,7 @@ describe("LocalFileSystemBackend (local-specific)", () => {
     if (!result.ok) expect(result.error.code).toBe("CONFLICT");
   });
 
-  test("delete rejects path traversal", async () => {
+  test("delete blocks ../../ paths by default", async () => {
     const backend = createLocalFileSystem(testDir);
     const result = await backend.delete?.("../../etc/important");
     expect(result).toBeDefined();
@@ -308,11 +324,14 @@ describe("resolvePath", () => {
     expect(out).toEndWith(`${sep}src${sep}foo.ts`);
   });
 
-  test("strips leading slash and resolves relative to workspace root", () => {
+  test("treats leading / as workspace-relative when root dir doesn't exist", () => {
     const backend = createLocalFileSystem(testDir);
+    // /src doesn't exist at filesystem root → workspace-relative convention.
     const out = backend.resolvePath?.("/src/foo.ts");
     expect(out).toBeDefined();
     expect(out).toEndWith(`${sep}src${sep}foo.ts`);
+    // Should be under the workspace root
+    expect(out).toStartWith(realpathSync(testDir));
   });
 
   test("passes through absolute path when it's already under the workspace", () => {
@@ -322,29 +341,26 @@ describe("resolvePath", () => {
     expect(out).toBe(abs);
   });
 
-  test("returns undefined for `../` traversal that escapes the workspace", () => {
+  test("returns undefined for ../ traversal (prevents checkpoint capture)", () => {
     const backend = createLocalFileSystem(testDir);
     expect(backend.resolvePath?.("../secret.txt")).toBeUndefined();
-    expect(backend.resolvePath?.("../../etc/passwd")).toBeUndefined();
-    expect(backend.resolvePath?.("src/../../escape")).toBeUndefined();
   });
 
-  test("treats leading `/path` as workspace-relative (not absolute host path)", () => {
-    // `/etc/passwd` does NOT escape — the leading slash is stripped and the
-    // path is resolved relative to the workspace root, yielding
-    // `<workspace>/etc/passwd`. This is a legitimate workspace-relative
-    // path (a file named `passwd` under `<workspace>/etc/`). It is NOT an
-    // access to the host `/etc/passwd`.
+  test("returns undefined for /etc/passwd (prevents checkpoint capture)", () => {
     const backend = createLocalFileSystem(testDir);
-    const resolved = backend.resolvePath?.("/etc/passwd");
-    expect(resolved).toBeDefined();
-    expect(resolved).toStartWith(realpathSync(testDir));
-    expect(resolved).toEndWith(`${sep}etc${sep}passwd`);
+    expect(backend.resolvePath?.("/etc/passwd")).toBeUndefined();
   });
 
-  test("returns the workspace root for empty path (container root)", () => {
+  test("returns undefined for empty path", () => {
     const backend = createLocalFileSystem(testDir);
     const out = backend.resolvePath?.("");
-    expect(out).toBe(realpathSync(testDir));
+    expect(out).toBeUndefined();
+  });
+
+  test("returns undefined for out-of-workspace absolute path (prevents checkpoint)", () => {
+    const backend = createLocalFileSystem(testDir);
+    // Use /tmp which exists on both macOS and Linux, so the statSync
+    // heuristic treats it as a real absolute path (not workspace-relative).
+    expect(backend.resolvePath?.("/tmp/outside-file.md")).toBeUndefined();
   });
 });

@@ -524,7 +524,9 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   const providers: ComponentProvider[] = [createBuiltinSearchProvider({ cwd })];
 
   if (includeFs) {
-    const localFs = createLocalFileSystem(cwd);
+    // allowExternalPaths: the runtime has a real permission middleware
+    // (path-aware rules + approval handler) that gates out-of-workspace access.
+    const localFs = createLocalFileSystem(cwd, { allowExternalPaths: true });
     providers.push(
       createSingleToolProvider({
         name: "fs-read",

@@ -34,7 +34,8 @@ export function createFsReadTool(
         properties: {
           path: {
             type: "string",
-            description: "Path to the file (relative to workspace root, e.g. 'src/index.ts')",
+            description:
+              "File path. Relative paths resolve against workspace root (e.g. 'src/index.ts'). Absolute paths (e.g. '/etc/hosts') read from the host filesystem and may require permission approval.",
           },
           offset: { type: "number", description: "Line offset to start reading from" },
           limit: { type: "number", description: "Maximum number of lines to read" },
@@ -78,6 +79,12 @@ export function createFsReadTool(
       }
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
+      }
+      if (result.value.resolvedPath !== undefined) {
+        return {
+          ...result.value,
+          note: `Path coerced to workspace-relative: "${result.value.resolvedPath}". Reading from workspace, not the absolute host path "${pathResult.value}".`,
+        };
       }
       return result.value;
     },
