@@ -83,6 +83,8 @@ Pattern categories (`ThreatCategory`):
 - `privilege-escalation` — sudo, su, chmod setuid, /etc/passwd
 - `persistence` — crontab, authorized_keys, /etc/cron
 - `recon` — whoami, uname -a, netstat
+- `data-exfiltration` — scp, sftp, rsync to remote, curl --upload-file/POST, wget POST
+- `destructive` — `rm -rf` on system paths, mkfs, `dd of=/dev/*`, fork bombs, `chmod -R 777 /`, shutdown/reboot. These are enforced even after a user approves the Bash call (defense-in-depth) so that "approve Bash once" is not license to run `rm -rf /`.
 
 ## Bypass Hardening
 
