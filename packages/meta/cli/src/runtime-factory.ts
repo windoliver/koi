@@ -146,6 +146,15 @@ export interface KoiRuntimeConfig {
    */
   readonly stacks?: readonly string[] | undefined;
   /**
+   * Opt-in allowlist of plugin names to activate. When `undefined`
+   * (default), every plugin discovered in `~/.koi/plugins/` is
+   * activated — matches the prior filesystem-scan behavior. An
+   * empty array disables every plugin (useful for reproducible CI
+   * assemblies). Manifest YAML surfaces this through a `plugins:`
+   * key; see `loadManifestConfig`.
+   */
+  readonly plugins?: readonly string[] | undefined;
+  /**
    * Observer for spawn lifecycle events emitted by the Spawn tool executor.
    * The TUI bridge hooks this to dispatch spawn_requested and agent_status_changed
    * EngineEvents into the store so /agents and inline spawn_call blocks update.
@@ -481,7 +490,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // feature bundle. The MCP preset stack consumes its outputs via
   // `ctx.host[PLUGIN_MCP_SERVERS_HOST_KEY]`.
   const pluginUserRoot = join(homedir(), ".koi", "plugins");
-  const pluginComponents = await loadPluginComponents(pluginUserRoot);
+  const pluginComponents = await loadPluginComponents(
+    pluginUserRoot,
+    config.plugins !== undefined ? { allowlist: new Set(config.plugins) } : undefined,
+  );
   if (pluginComponents.errors.length > 0) {
     for (const err of pluginComponents.errors) {
       console.warn(`[koi/${hostId}] plugin "${err.plugin}": ${err.error}`);

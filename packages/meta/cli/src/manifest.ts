@@ -2,8 +2,8 @@
  * Minimal agent manifest loader for #1264.
  *
  * Loads a YAML manifest file and extracts the fields needed for basic
- * agent customization: model name, behavioral instructions, and the
- * opt-in preset stack list.
+ * agent customization: model name, behavioral instructions, opt-in
+ * preset stacks, and opt-in plugins.
  *
  * Intentionally minimal — full AgentManifest assembly is out of scope.
  *
@@ -17,6 +17,9 @@
  *     - notebook            #   (omit to activate every stack in DEFAULT_STACKS)
  *     - rules
  *     - skills
+ *   plugins:                # optional — opt into a subset of discovered plugins
+ *     - my-hook-bundle      #   (omit to activate every plugin in ~/.koi/plugins/)
+ *     - my-mcp-server       #   (empty array disables every plugin)
  */
 
 import { loadConfig } from "@koi/config";
@@ -30,6 +33,14 @@ export interface ManifestConfig {
    * means "deactivate every stack" (the host runs core middleware only).
    */
   readonly stacks: readonly string[] | undefined;
+  /**
+   * Opt-in subset of discovered plugin names. `undefined` means
+   * "activate every plugin found in `~/.koi/plugins/`" — matches the
+   * prior filesystem-scan auto-discovery behavior for hosts without a
+   * `plugins:` field. An empty array means "deactivate every plugin"
+   * — useful for reproducible CI assemblies.
+   */
+  readonly plugins: readonly string[] | undefined;
 }
 
 /**
@@ -98,12 +109,34 @@ export async function loadManifestConfig(
     stacks = stacksRaw as readonly string[];
   }
 
+  const pluginsRaw = raw.plugins;
+  let plugins: readonly string[] | undefined;
+  if (pluginsRaw === undefined) {
+    plugins = undefined;
+  } else if (!Array.isArray(pluginsRaw)) {
+    return {
+      ok: false,
+      error:
+        "manifest.plugins must be a list of plugin names, e.g. plugins: [my-hook-bundle, my-mcp-server]",
+    };
+  } else {
+    const invalid = pluginsRaw.find((s) => typeof s !== "string" || s.length === 0);
+    if (invalid !== undefined) {
+      return {
+        ok: false,
+        error: "manifest.plugins entries must all be non-empty strings",
+      };
+    }
+    plugins = pluginsRaw as readonly string[];
+  }
+
   return {
     ok: true,
     value: {
       modelName: modelName.trim(),
       instructions: instructions as string | undefined,
       stacks,
+      plugins,
     },
   };
 }
