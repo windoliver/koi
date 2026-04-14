@@ -6,6 +6,7 @@
  */
 
 import type { JsonObject } from "@koi/core/common";
+import type { CostBreakdown } from "@koi/core/cost-tracker";
 import type { EngineEvent } from "@koi/core/engine";
 import type { ContentBlock, InboundMessage } from "@koi/core/message";
 import type { ApprovalDecision } from "@koi/core/middleware";
@@ -34,7 +35,14 @@ export const MAX_SESSIONS = 50;
 // ---------------------------------------------------------------------------
 
 /** Screen-level views — one active at a time. */
-export type TuiView = "conversation" | "sessions" | "doctor" | "help" | "agents" | "trajectory";
+export type TuiView =
+  | "conversation"
+  | "sessions"
+  | "doctor"
+  | "help"
+  | "agents"
+  | "trajectory"
+  | "cost";
 
 /** Risk level for permission prompts — computed by permissions middleware. */
 export type PermissionRiskLevel = "low" | "medium" | "high";
@@ -344,6 +352,10 @@ export interface TuiState {
   readonly runReportSummary: string | null;
   /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
   readonly showThinking: boolean;
+  /** Cost breakdown injected by host — null before first cost data push. */
+  readonly costBreakdown: CostBreakdown | null;
+  /** Token throughput rate (tokens/sec) — null before first data push. */
+  readonly tokenRate: { readonly inputPerSecond: number; readonly outputPerSecond: number } | null;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -552,4 +564,12 @@ export type TuiAction =
        */
       readonly kind: "load_history";
       readonly messages: readonly InboundMessage[];
+    }
+  | {
+      /** Injected by the host with cost breakdown data for the cost dashboard view. */
+      readonly kind: "set_cost_breakdown";
+      readonly breakdown: CostBreakdown;
+      readonly tokenRate?:
+        | { readonly inputPerSecond: number; readonly outputPerSecond: number }
+        | undefined;
     };

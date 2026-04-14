@@ -45,5 +45,7 @@ export function createInitialState(): TuiState {
     ledgerSources: null,
     runReportSummary: null,
     showThinking: true,
+    costBreakdown: null,
+    tokenRate: null,
   };
 }

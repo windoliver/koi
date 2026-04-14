@@ -91,6 +91,10 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   // outcome-linkage.ts: decisionCorrelationId() is a branded type constructor
   // (identity cast) — same category as agentId(), sessionId() in ecs.ts.
   "outcome-linkage.ts",
+  // cost-tracker.ts: formatCost() and formatTokens() are pure formatting
+  // functions shared by TUI and cost-aggregator (L2 packages can't import
+  // from each other, so shared code lives in L0).
+  "cost-tracker.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

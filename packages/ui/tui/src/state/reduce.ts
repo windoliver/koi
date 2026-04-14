@@ -738,6 +738,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         expandedBodyToolCallIds: new Set(),
         activeSpawns: new Map(),
         retryState: null,
+        // Reset cost dashboard state so new sessions start clean (#1636)
+        costBreakdown: null,
+        tokenRate: null,
       };
 
     case "permission_response": {
@@ -934,6 +937,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       // Prepend history before any live messages accumulated since load_history was queued.
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
     }
+
+    case "set_cost_breakdown":
+      return {
+        ...state,
+        costBreakdown: action.breakdown,
+        tokenRate: action.tokenRate ?? state.tokenRate,
+      };
 
     default:
       return state;

@@ -69,6 +69,7 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
+import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { loadManifestConfig } from "./manifest.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
@@ -249,7 +250,7 @@ export function summarizeRunReport(runReport: {
   const counts = `actions=${actions} artifacts=${artifacts} issues=${issues} recs=${recommendations} children=${children} tokens=${totalTokens}`;
   const composed = summaryText !== "" ? `${summaryText} · ${counts}` : counts;
   return composed.length > RUN_REPORT_SUMMARY_MAX_CHARS
-    ? composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1) + "…"
+    ? `${composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1)}…`
     : composed;
 }
 
@@ -1010,6 +1011,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // land AFTER the truncate and silently resurrect pre-clear history.
   let activeRunPromise: Promise<void> | null = null;
 
+  // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
+  // Async: fetches live pricing from models.dev (5s timeout, disk cached).
+  const costBridge: CostBridge = await createCostBridge({
+    store,
+    sessionId: tuiSessionId as string,
+    modelName,
+    provider,
+  });
+
   // ---------------------------------------------------------------------------
   // 4. Helpers
   // ---------------------------------------------------------------------------
@@ -1352,6 +1362,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // stays usable for the next turn. (#1759 review round 2)
     permissionBridge.cancelPending("Session reset");
 
+    // Cost aggregator clear is deferred to the success branch below —
+    // same fail-closed contract as transcript/messages (#1742).
+
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
@@ -1444,6 +1457,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // do we wipe visible state.
         store.dispatch({ kind: "clear_messages" });
         store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
+        // Clear cost aggregator only after successful reset — fail-closed contract.
+        costBridge.aggregator.clearSession(tuiSessionId as string);
+        costBridge.tokenRate.clear();
         runtimeHandle?.transcript.splice(0);
         tuiTurnCounter = 0;
         if (shouldTruncate) {
@@ -2621,6 +2637,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           id: `user-${Date.now()}`,
           blocks: [{ kind: "text", text }, ...imageBlocks],
         });
+        // Snapshot cumulative metrics BEFORE the drain — must copy values since
+        // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
+        const cm = store.getState().cumulativeMetrics;
+        const inputBefore = cm.inputTokens;
+        const outputBefore = cm.outputTokens;
+        const costBefore = cm.costUsd;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
         await drainPromise;
@@ -2631,6 +2653,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // would let `/rewind 1` walk past the clear boundary.
         if (rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
+        }
+
+        // Feed the cost bridge with this turn's token delta.
+        const cmAfter = store.getState().cumulativeMetrics;
+        const deltaInput = cmAfter.inputTokens - inputBefore;
+        const deltaOutput = cmAfter.outputTokens - outputBefore;
+        if (deltaInput > 0 || deltaOutput > 0) {
+          // Compute per-turn cost delta from engine-reported costUsd.
+          // Handle null→number transition (first turn): costBefore is null,
+          // costAfter is the full cumulative — use it directly as the delta.
+          let deltaCost: number | undefined;
+          if (cmAfter.costUsd !== null) {
+            deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
+            if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
+          }
+          costBridge.recordEngineDone({
+            inputTokens: deltaInput,
+            outputTokens: deltaOutput,
+            costUsd: deltaCost,
+          });
         }
 
         // Refresh trajectory + decision ledger data after each turn.

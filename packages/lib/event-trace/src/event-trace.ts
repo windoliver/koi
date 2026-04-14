@@ -162,7 +162,7 @@ export interface EventTraceConfig {
    * swallowed to preserve the observer-never-throws invariant.
    * Do NOT perform I/O or return a Promise — this fires in the hot recording path.
    */
-  readonly onStep?: (sessionId: string, step: RichTrajectoryStep) => JsonObject | void;
+  readonly onStep?: (sessionId: string, step: RichTrajectoryStep) => JsonObject | undefined;
 }
 
 // ---------------------------------------------------------------------------

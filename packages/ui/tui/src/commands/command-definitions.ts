@@ -70,6 +70,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "View active spawned sub-agents",
     category: "navigation",
   },
+  {
+    id: "nav:cost",
+    label: "Cost Dashboard",
+    description: "View real-time cost breakdown per model, agent, and provider",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {

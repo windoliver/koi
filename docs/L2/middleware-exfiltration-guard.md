@@ -260,3 +260,5 @@ Reports `{location: "tool", toolId, action: "clean", matchCount: 0}` via `ctx.re
 - `onDetection` callback fires with correct event shape and `"tool-output"` location
 - Clean inputs/outputs pass through unchanged
 - Trajectory fixture validates ATIF v1.6 with blocking semantics (nextCalled=false, no tool steps)
+
+> **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.

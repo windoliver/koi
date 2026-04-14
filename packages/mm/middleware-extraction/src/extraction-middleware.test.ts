@@ -336,7 +336,7 @@ describe("createExtractionMiddleware", () => {
         messages: [],
         metadata: {},
       };
-      const turnB: TurnContext = {
+      const _turnB: TurnContext = {
         session: sessB,
         turnIndex: 0,
         turnId: "turn-b" as never,

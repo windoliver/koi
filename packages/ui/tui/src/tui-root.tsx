@@ -30,6 +30,7 @@ import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
 import { SessionRename } from "./components/SessionRename.js";
 import { SessionsView } from "./components/SessionsView.js";
+import { CostDashboardView } from "./components/CostDashboardView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { handleGlobalKey } from "./keyboard.js";
@@ -57,6 +58,7 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:help": "help",
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
+  "nav:cost": "cost",
 };
 
 /**
@@ -374,6 +376,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         </Match>
         <Match when={viewSignal() === "trajectory"}>
           <TrajectoryView />
+        </Match>
+        <Match when={viewSignal() === "cost"}>
+          <CostDashboardView />
         </Match>
       </Switch>
 
