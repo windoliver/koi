@@ -451,6 +451,10 @@ export async function drainEngineStream(
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
+    // `let` justified: counts deltas since last yield — forces a yield on
+    // the first delta of each burst so buffered responses always get at
+    // least one mid-stream paint instead of dumping everything at once.
+    let deltasSinceYield = 0;
 
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
@@ -497,6 +501,7 @@ export async function drainEngineStream(
         batcher.flushSync();
         await yieldForRenderFrame();
         lastYieldAt = Date.now();
+        deltasSinceYield = 0;
         continue;
       }
 
@@ -506,20 +511,25 @@ export async function drainEngineStream(
       // applied AFTER the text delta, corrupting assistant block order.
       // Then apply the delta via the O(1) produce()-based path setter.
       //
-      // Yield only when 16ms has elapsed since the last yield (time-based,
-      // not count-based). This avoids adding fixed latency per N deltas —
-      // burst-delivered chunks process as fast as they arrive, and we only
-      // pause when a full render frame has elapsed. OpenTUI's on-demand
-      // renderer needs ~16ms between requestRender() calls to actually paint.
+      // Hybrid yield policy for text/thinking deltas:
+      // - First delta after a yield always triggers a yield (catches fully
+      //   buffered bursts where time never advances past the 16ms threshold)
+      // - Subsequent deltas yield only when 16ms has elapsed (time-based,
+      //   avoids fixed per-batch latency on long streams)
+      //
+      // Flush pending batcher events first to preserve block ordering —
+      // a tool_call_start in the batcher must land before a text_delta.
       if (event.kind === "text_delta" || event.kind === "thinking_delta") {
         batcher.flushSync();
         const blockKind = event.kind === "text_delta" ? "text" : "thinking";
         store.streamDelta(event.delta, blockKind);
+        deltasSinceYield++;
 
         const now = Date.now();
-        if (now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
+        if (deltasSinceYield === 1 || now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
           await yieldForRenderFrame();
           lastYieldAt = Date.now();
+          deltasSinceYield = 0;
         }
         continue;
       }
@@ -659,15 +669,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   }
   const { apiKey, baseUrl, model: modelName, fallbackModels } = apiConfigResult.value;
 
+  // Only enable reasoning for OpenRouter — other providers (OpenAI, custom
+  // proxies) may reject the `reasoning` field with HTTP 400. OpenRouter
+  // silently ignores it for non-reasoning models, so it's safe there.
+  const isOpenRouter = (baseUrl ?? "").includes("openrouter.ai");
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
-    // Enable reasoning for the TUI's primary model. OpenRouter ignores the
-    // field for models without reasoning capability, so this is safe for all
-    // models. Not auto-detected at the compat level to avoid changing the
-    // wire contract for non-TUI callers (verifiers, helpers, etc.).
-    compat: { supportsReasoning: true },
+    ...(isOpenRouter ? { compat: { supportsReasoning: true } } : {}),
   });
 
   // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the
