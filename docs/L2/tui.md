@@ -319,7 +319,7 @@ Eighteen components built on OpenTUI + SolidJS primitives:
 |-----------|---------|-------------|
 | `TextBlock` | Text/markdown | `<text>` baseline; `<markdown>` only when BOTH `syntaxStyle` AND `treeSitterClient` are provided. `<markdown>` without `treeSitterClient` blanks paragraph text — the guard prevents silent prose regression until tree-sitter is wired (#1542) |
 | `ThinkingBlock` | Reasoning display | Dimmed/italic styling |
-| `ToolCallBlock` | Tool lifecycle | Structured title/subtitle/chips display on completion; raw toolName during streaming. Result chips extracted from JSON results. `HighlightedText` helper for syntax-highlighted fallback |
+| `ToolCallBlock` | Tool lifecycle | Structured title/subtitle/chips display on completion; raw toolName during streaming. Result chips extracted from JSON results (capped at 3; boolean keys `cached`/`truncated` are quiet-false — only rendered when `true` so they don't displace other chips). `HighlightedText` helper for syntax-highlighted fallback |
 | `ErrorBlock` | Error display | Red border, code + message |
 | `MessageRow` | Turn router | `<Switch><Match>` for kind routing; no React.memo |
 | `MessageList` | Conversation | `<scrollbox stickyScroll stickyStart="bottom">` — new messages always scroll into view; `stickyStart="bottom"` sets `_stickyScrollBottom=true` on init so the scrollbox follows the bottom rather than the top |
