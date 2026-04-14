@@ -15,7 +15,7 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { isCtrlC, isCtrlP, isEscape } from "./key-event.js";
+import { isCtrlC, isCtrlN, isCtrlP, isEscape } from "./key-event.js";
 import type { TuiStore } from "./state/store.js";
 import type { TuiState } from "./state/types.js";
 
@@ -33,6 +33,8 @@ export interface GlobalKeyCallbacks {
   readonly onDismissModal: () => void;
   /** Navigate back — called when Esc fires with no modal open. */
   readonly onBack: () => void;
+  /** Start a new session (Ctrl+N). */
+  readonly onNewSession: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +44,7 @@ export interface GlobalKeyCallbacks {
 /**
  * Handle a global key event given current TUI state and callbacks.
  *
- * Priority order: Ctrl+P > Ctrl+C > Esc.
+ * Priority order: Ctrl+P > Ctrl+N (guarded) > Ctrl+C > Esc.
  *
  * @returns `true` if the key was consumed, `false` if unhandled (pass-through).
  */
@@ -54,6 +56,13 @@ export function handleGlobalKey(
   // Ctrl+P — toggle command palette
   if (isCtrlP(event)) {
     callbacks.onTogglePalette();
+    return true;
+  }
+
+  // Ctrl+N — new session (only on conversation view with no modal open;
+  // select overlays and TrajectoryView use Ctrl+N as down-arrow locally)
+  if (isCtrlN(event) && state.modal === null && state.activeView === "conversation") {
+    callbacks.onNewSession();
     return true;
   }
 

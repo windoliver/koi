@@ -42,6 +42,7 @@ function makeCallbacks(): GlobalKeyCallbacks {
     onInterrupt: mock(() => {}),
     onDismissModal: mock(() => {}),
     onBack: mock(() => {}),
+    onNewSession: mock(() => {}),
   };
 }
 
@@ -70,6 +71,35 @@ describe("handleGlobalKey — Ctrl+P", () => {
     const cbs = makeCallbacks();
     handleGlobalKey(key("p", { ctrl: true }), stateWithModal, cbs);
     expect(cbs.onTogglePalette).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGlobalKey — Ctrl+N
+// ---------------------------------------------------------------------------
+
+describe("handleGlobalKey — Ctrl+N", () => {
+  test("calls onNewSession on conversation view with no modal", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("n", { ctrl: true }), stateNoModal, cbs);
+    expect(result).toBe(true);
+    expect(cbs.onNewSession).toHaveBeenCalledTimes(1);
+    expect(cbs.onTogglePalette).not.toHaveBeenCalled();
+  });
+
+  test("ignored when a modal is open (select overlay uses Ctrl+N as down)", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("n", { ctrl: true }), stateWithModal, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onNewSession).not.toHaveBeenCalled();
+  });
+
+  test("ignored on non-conversation views (TrajectoryView uses Ctrl+N as down)", () => {
+    const state: TuiState = { ...createInitialState(), activeView: "trajectory" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("n", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onNewSession).not.toHaveBeenCalled();
   });
 });
 

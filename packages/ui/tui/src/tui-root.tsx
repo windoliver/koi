@@ -2,7 +2,7 @@
  * TuiRoot — top-level TUI component composing views, modals, and the status bar.
  *
  * Architecture decisions implemented:
- * - 1A  Two-layer keyboard: root owns Ctrl+P / Ctrl+C / Esc globally.
+ * - 1A  Two-layer keyboard: root owns Ctrl+P / Ctrl+N / Ctrl+C / Esc globally.
  *       Modals receive focused={true} and own their internal keys via useKeyboard.
  * - 2A  layoutTier is read from store state (set by createTuiApp resize listener).
  * - 3A  Single modal slot (TuiModal | null). One modal at a time.
@@ -287,6 +287,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           store.dispatch({ kind: "set_view", view: "conversation" });
           setViewSignal("conversation");
         }
+      },
+      onNewSession: () => {
+        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:new");
+        if (cmd !== undefined) handleCommandSelect(cmd);
       },
     });
   });
