@@ -140,9 +140,9 @@ const EMPTY_BREAKDOWN: CostBreakdown = { totalCostUsd: 0, byModel: [], byTool: [
 
 export interface CostAggregatorConfig {
   /** Ring buffer capacity for raw entry audit trail. Default: 10,000. */
-  readonly ringBufferCapacity?: number;
+  readonly ringBufferCapacity?: number | undefined;
   /** Optional threshold tracker for soft budget warnings. */
-  readonly thresholdTracker?: ThresholdTracker;
+  readonly thresholdTracker?: ThresholdTracker | undefined;
 }
 
 /**

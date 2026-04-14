@@ -66,6 +66,7 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
+import { createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
 import type { TuiRuntimeHandle } from "./tui-runtime.js";
@@ -861,6 +862,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: per-submit abort controller, replaced on each new stream
   let activeController: AbortController | null = null;
 
+  // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
+  const costBridge = createCostBridge({
+    store,
+    sessionId: currentSessionId,
+    modelName,
+    provider,
+  });
+
   // ---------------------------------------------------------------------------
   // 4. Helpers
   // ---------------------------------------------------------------------------
@@ -1016,6 +1025,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // the user stuck behind a stale 60-minute approval window. The bridge
     // stays usable for the next turn. (#1759 review round 2)
     permissionBridge.cancelPending("Session reset");
+
+    // Clear cost aggregator state for the old session.
+    costBridge.aggregator.clearSession(currentSessionId);
 
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
@@ -1647,7 +1659,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           id: `user-${Date.now()}`,
           blocks: [{ kind: "text", text }, ...imageBlocks],
         });
+        // Snapshot cumulative metrics before the drain so we can compute the delta.
+        const metricsBefore = store.getState().cumulativeMetrics;
         await drainEngineStream(stream, store, batcher, controller.signal);
+
+        // Feed the cost bridge with this turn's token delta.
+        const metricsAfter = store.getState().cumulativeMetrics;
+        const deltaInput = metricsAfter.inputTokens - metricsBefore.inputTokens;
+        const deltaOutput = metricsAfter.outputTokens - metricsBefore.outputTokens;
+        if (deltaInput > 0 || deltaOutput > 0) {
+          const deltaCost =
+            metricsAfter.costUsd !== null && metricsBefore.costUsd !== null
+              ? metricsAfter.costUsd - metricsBefore.costUsd
+              : undefined;
+          costBridge.recordEngineDone({
+            inputTokens: deltaInput,
+            outputTokens: deltaOutput,
+            costUsd: deltaCost !== undefined && deltaCost > 0 ? deltaCost : undefined,
+          });
+        }
 
         // Refresh trajectory + decision ledger data after each turn.
         // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
