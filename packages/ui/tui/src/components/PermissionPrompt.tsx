@@ -101,12 +101,18 @@ export function PermissionPrompt(props: PermissionPromptProps): JSX.Element {
 
   const permanentAvailable = createMemo(() => props.prompt.permanentAvailable === true);
 
-  // Register keyboard handler — without this, y/n/a keys are never received
+  // Register keyboard handler — without this, y/n/a keys are never received.
+  // #1730: always preventDefault while this prompt is focused so non-matching
+  // keys (letters from a mis-timed tmux send-keys, paste bursts, etc.) cannot
+  // fall through to the textarea behind the modal and resurface as a ghost
+  // user turn after the prompt is dismissed. The comment on
+  // processPermissionKey's default case ("swallow — focus trap") already
+  // reflects this intent; the handler now enforces it.
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
+    key.preventDefault();
     const decision = processPermissionKey(key.name, permanentAvailable());
     if (decision !== null) {
-      key.preventDefault();
       props.onRespond(props.prompt.requestId, decision);
     }
   });

@@ -251,7 +251,11 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         }}
         height={3}
         focused={props.focused && !(props.disabled ?? false)}
-        placeholder={props.disabled ?? false ? "" : "Type a message... (/ for commands)"}
+        placeholder={
+          props.disabled ?? false
+            ? "Response streaming — press Ctrl+C to interrupt"
+            : "Type a message... (/ for commands)"
+        }
       />
     </box>
   );

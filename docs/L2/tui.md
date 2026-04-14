@@ -226,6 +226,7 @@ dispatch skips notification entirely.
 | `task_progress` event | Patches matching task in `planTasks`; no-op if `planTasks` is null |
 | `set_trajectory_data` with steps | Replaces `trajectorySteps` with new data |
 | Keypress drains after `EditBuffer` destroy on quit (#1744) | `InputArea` reads/writes go through `safeText`/`safeSetText`; `disposed` flag set on `onCleanup` short-circuits the `useKeyboard` callback so a stale `textareaRef` cannot throw `EditBuffer is destroyed` through the global `KeyHandler`. |
+| Keystrokes typed while a turn is streaming (#1730) | `ConversationView` passes `disabled={agentStatus === "processing"}` to `InputArea`. The underlying `<textarea>` renders with `focused=false` and `InputArea`'s `useKeyboard` handler bails on `disabledRef`, so nothing reaches the `EditBuffer` or `onSubmit`. Late-arriving permission responses (`y`/`n`/`a`) that would otherwise fall through to the input and submit as ghost user turns are dropped. The placeholder flips to `"Response streaming — press Ctrl+C to interrupt"` so the user sees a clear rejection indicator. `PermissionPrompt.useKeyboard` now `preventDefault`s every key while focused — including non-matching keys — so dismiss-mid-keystroke cannot leak characters to the input behind the modal. |
 
 ## Phase 2k: SolidJS Migration + Worker Infrastructure
 

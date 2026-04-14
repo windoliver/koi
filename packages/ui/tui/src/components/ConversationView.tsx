@@ -54,6 +54,12 @@ function detectAtPrefix(text: string): string | null {
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
   const atQuery = useTuiStore((s) => s.atQuery);
+  // #1730: disable the textarea while a turn is streaming so the renderer
+  // drops keystrokes instead of buffering them into the EditBuffer. Without
+  // this gate, late-arriving permission responses (y/n/a) and ordinary
+  // typing during a streaming turn survive in the buffer and submit as a
+  // ghost user turn the next time the user presses Enter.
+  const isStreaming = useTuiStore((s) => s.agentStatus === "processing");
   const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
@@ -206,11 +212,11 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         onAtDetected={handleAtDetected}
         onImageAttach={props.onImageAttach}
         focused={props.focused}
-        // `disabled` is intentionally omitted here: InputArea's submit handler
-        // already guards against slash-prefixed text synchronously via
-        // detectSlashPrefix(), so the overlay can remain open while the user
-        // continues typing to filter commands. Disabling the input would freeze
-        // the query at the first "/" and break slash-command filtering.
+        // #1730: only disabled while a turn is actively streaming. Slash
+        // filtering remains live when idle (the user types "/ping", the
+        // overlay narrows, and Enter submits) because `disabled` flips back
+        // to false as soon as agentStatus returns to idle.
+        disabled={isStreaming()}
         clearTrigger={clearTrigger()}
       />
       {/* SlashOverlay is rendered after InputArea with position="absolute" so it

@@ -34,6 +34,36 @@ function findEditBufferRenderable(node: RenderableLike): RenderableLike | null {
   return null;
 }
 
+describe("InputArea — streaming input gate (#1730)", () => {
+  test("disabled=true blocks Enter from reaching onSubmit", async () => {
+    // Repro: during streaming, ConversationView passes disabled=true so
+    // the input stops accepting keys. InputArea's own useKeyboard handler
+    // must bail via disabledRef before dispatching onSubmit, otherwise
+    // late-arriving permission keystrokes (y/n/a) and ordinary typing
+    // accumulate and surface as ghost user turns when the user next
+    // presses Enter (#1730).
+    const store = createStore(createInitialState());
+    const onSubmit = mock((_text: string) => {});
+    const { renderer, mockInput } = await testRender(
+      () => (
+        <StoreContext.Provider value={store}>
+          <InputArea
+            onSubmit={onSubmit}
+            onSlashDetected={() => {}}
+            focused={true}
+            disabled={true}
+          />
+        </StoreContext.Provider>
+      ),
+      OPTS,
+    );
+    mockInput.pressKey("y");
+    mockInput.pressEnter();
+    expect(onSubmit).not.toHaveBeenCalled();
+    renderer.destroy();
+  });
+});
+
 describe("InputArea — destroyed EditBuffer guard (#1744)", () => {
   let errorSpy: ReturnType<typeof spyOn>;
 
