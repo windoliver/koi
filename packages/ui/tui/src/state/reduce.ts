@@ -6,6 +6,7 @@
  */
 
 import type { EngineEvent } from "@koi/core/engine";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import type {
   CumulativeMetrics,
   PlanTask,
@@ -59,56 +60,31 @@ function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
  * `load_history` so every replay entrypoint — `--resume` at startup,
  * session picker, rewind, reload — renders identical visible history.
  *
- * Filtering rules:
- *   - `senderId === "tool"` messages are dropped (raw tool-result
- *     JSON — not user-visible chat)
- *   - Assistant messages with `metadata.toolCalls` set are dropped
- *     (tool_call transcript entries whose `content` is the raw call
- *     UUID; the real payload lives in metadata)
- *   - `senderId.startsWith("system:")` messages are dropped
- *     (privileged engine-injected control/system text)
- *   - User messages with `metadata.resumedSystemRole === true` are
- *     dropped (plain `role: "system"` transcript entries rewritten
- *     by `resumeFromTranscript` to replay without privilege
- *     escalation — internal feedback, not user speech)
+ * Filtering rules live in `@koi/core/message#filterResumedMessagesForDisplay`
+ * so CLI stdout (`koi start --resume`) and TUI rendering stay in lockstep.
  *
  * Non-text content blocks on assistant messages are preserved as
  * `[<kind>]` text placeholders so image/file-only turns still show
- * up in the transcript view. Assistant messages whose entire
- * content folds to empty text are kept (empty blocks array) to
- * preserve turn structure.
+ * up in the transcript view.
  */
 export function convertResumedMessagesToTui(
-  messages: readonly {
-    readonly senderId: string;
-    readonly content: readonly {
-      readonly kind: string;
-      readonly text?: string;
-    }[];
-    readonly metadata?: Readonly<Record<string, unknown>> | undefined;
-  }[],
+  messages: readonly import("@koi/core/message").InboundMessage[],
   idPrefix: string,
 ): readonly TuiMessage[] {
+  const filtered = filterResumedMessagesForDisplay(messages);
   const out: TuiMessage[] = [];
-  for (const [idx, msg] of messages.entries()) {
-    if (msg.senderId === "user") {
-      const resumedSystem = msg.metadata !== undefined && msg.metadata.resumedSystemRole === true;
-      if (resumedSystem) continue;
+  for (const [idx, msg] of filtered.entries()) {
+    if (msg.role === "user") {
       out.push({
         kind: "user",
         id: `${idPrefix}-user-${idx}`,
-        blocks: msg.content as readonly import("@koi/core/message").ContentBlock[],
+        blocks: msg.content,
       });
       continue;
     }
-    if (msg.senderId === "tool") continue;
-    if (msg.senderId.startsWith("system:")) continue;
-    if (msg.senderId !== "assistant") continue;
-    const hasToolCalls = msg.metadata !== undefined && Array.isArray(msg.metadata.toolCalls);
-    if (hasToolCalls) continue;
     const assistantBlocks: TuiAssistantBlock[] = msg.content.map((block) =>
       block.kind === "text"
-        ? ({ kind: "text", text: block.text ?? "" } satisfies TuiAssistantBlock)
+        ? ({ kind: "text", text: block.text } satisfies TuiAssistantBlock)
         : ({ kind: "text", text: `[${block.kind}]` } satisfies TuiAssistantBlock),
     );
     out.push({

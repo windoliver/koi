@@ -28,17 +28,19 @@ import type {
   ComponentProvider,
   HookConfig,
   InboundMessage,
+  KoiMiddleware,
   SessionId,
   SessionTranscript,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
-import type { RegisteredHook } from "@koi/hooks";
-import { createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
+import { createSystemPromptMiddleware } from "@koi/engine";
+import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
+import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
 import type { McpResolver, McpServerConfig } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createSkillsMcpBridge } from "@koi/runtime";
-import { resumeForSession } from "@koi/session";
+import { createSessionTranscriptMiddleware, resumeForSession } from "@koi/session";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 
@@ -288,4 +290,78 @@ export async function resumeSessionFromJsonl(
       issueCount: result.value.issues.length,
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Shared middleware factory wrappers
+//
+// These are the middleware types that both `koi start` and `koi tui` wire
+// with IDENTICAL factory calls — only the position in the per-host stack
+// differs. Each wrapper returns `undefined` when the input opts out so
+// call sites can conditionally splice the result into their middleware
+// array with a single `...(x !== undefined ? [x] : [])` spread.
+//
+// Rule: any middleware added here should be opt-in via a config field so
+// a new host (CI runner, daemon, etc.) can wire only the pieces it wants.
+// Host-specific middleware (event-trace, exfiltration-guard, etc.) stays
+// in the host file — these wrappers are only for the overlap.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the optional session-transcript middleware. Returns `undefined`
+ * when no session is configured (e.g. `koi start --until-pass` loop mode
+ * disables persistence because intermediate iterations are not resumable).
+ */
+export function buildSessionTranscriptMw(
+  session: { readonly transcript: SessionTranscript; readonly sessionId: SessionId } | undefined,
+): KoiMiddleware | undefined {
+  if (session === undefined) return undefined;
+  return createSessionTranscriptMiddleware({
+    transcript: session.transcript,
+    sessionId: session.sessionId,
+  });
+}
+
+/**
+ * Build the optional system-prompt middleware. Returns `undefined` when
+ * the caller has no system prompt to inject (rare — both hosts currently
+ * always supply one, but the config field is optional and this preserves
+ * that shape).
+ */
+export function buildSystemPromptMw(prompt: string | undefined): KoiMiddleware | undefined {
+  if (prompt === undefined || prompt.length === 0) return undefined;
+  return createSystemPromptMiddleware(prompt);
+}
+
+/**
+ * Build a hook middleware unconditionally from an already-merged
+ * `RegisteredHook[]` plus host-specific extras. Used by hosts that need
+ * the middleware slot populated even when no user hooks are registered
+ * (e.g. the TUI's hook-observer tap, which still records trace spans).
+ *
+ * `extras` forwards host-specific options: the TUI passes `promptCallFn`
+ * (for prompt-hook verification against its model adapter) and
+ * `onExecuted` (for the hook-observer ATIF tap); `koi start` passes
+ * neither. Any new option added to `CreateHookMiddlewareOptions` lands
+ * here automatically.
+ */
+export function buildHookMw(
+  hooks: readonly RegisteredHook[],
+  extras?: Omit<CreateHookMiddlewareOptions, "hooks"> | undefined,
+): KoiMiddleware {
+  return createHookMiddleware({ hooks, ...(extras ?? {}) });
+}
+
+/**
+ * Like `buildHookMw` but returns `undefined` when there are no hooks and
+ * no `onExecuted` tap to record, so the caller can skip the middleware
+ * slot entirely for a cleaner trace stack. `koi start` uses this variant
+ * because it has no hook-observer tap to preserve.
+ */
+export function buildHookMwOrUndefined(
+  hooks: readonly RegisteredHook[],
+  extras?: Omit<CreateHookMiddlewareOptions, "hooks"> | undefined,
+): KoiMiddleware | undefined {
+  if (hooks.length === 0 && extras?.onExecuted === undefined) return undefined;
+  return buildHookMw(hooks, extras);
 }

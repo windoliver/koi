@@ -31,9 +31,9 @@ import type {
   KoiMiddleware,
 } from "@koi/core";
 import { DEFAULT_UNSANDBOXED_POLICY, sessionId, toolToken } from "@koi/core";
-import { createKoi, createSystemPromptMiddleware } from "@koi/engine";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import { createKoi } from "@koi/engine";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
-import { createHookMiddleware } from "@koi/hooks";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import {
   createPatternPermissionBackend,
@@ -41,7 +41,7 @@ import {
 } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import { runTurn } from "@koi/query-engine";
-import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
+import { createJsonlTranscript } from "@koi/session";
 import { createBashTool } from "@koi/tools-bash";
 import { createBuiltinSearchProvider, createTodoTool, type TodoItem } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
@@ -51,7 +51,10 @@ import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
 import { loadPluginComponents } from "../plugin-activation.js";
 import {
+  buildHookMwOrUndefined,
   buildPluginMcpSetup,
+  buildSessionTranscriptMw,
+  buildSystemPromptMw,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   type McpSetup,
@@ -239,6 +242,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         `koi start: resumed with ${resumeResult.value.issueCount} repair issue(s)\n`,
       );
     }
+    // Render the loaded history to stdout so the user sees the prior
+    // conversation before the next prompt. Filter rules live in
+    // `@koi/core/message#filterResumedMessagesForDisplay` so CLI and TUI
+    // stay in lockstep — adding a new rule in that one helper updates
+    // both hosts at once.
+    const displayable = filterResumedMessagesForDisplay(resumeResult.value.messages);
+    process.stdout.write(
+      `\n── Resumed session ${String(sid)} (${String(displayable.length)} message(s)) ──\n\n`,
+    );
+    for (const msg of displayable) {
+      const text = msg.content.map((b) => (b.kind === "text" ? b.text : `[${b.kind}]`)).join("");
+      if (text.length === 0) continue;
+      const label = msg.role === "user" ? "You" : "Assistant";
+      process.stdout.write(`${label}: ${text}\n\n`);
+    }
+    process.stdout.write("── End of history ──\n\n");
   }
 
   // ---------------------------------------------------------------------------
@@ -362,8 +381,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   const allHooks = mergeUserAndPluginHooks(userHooks, pluginComponents.hooks, {
     filterAgentHooks: false,
   });
-  const mergedHookMiddleware: KoiMiddleware | undefined =
-    allHooks.length > 0 ? createHookMiddleware({ hooks: allHooks }) : undefined;
 
   const providers: ComponentProvider[] = [
     ...staticProviders,
@@ -374,25 +391,19 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // In loop mode (--until-pass), session-transcript persistence is
   // intentionally disabled. Every iteration would otherwise write a new
   // entry to the JSONL session log, so a later `koi start --resume <id>`
-  // would replay all failed attempts as part of the user context. Loop
-  // mode is a one-shot self-correcting execution, not a resumable
-  // conversation — persisting only the final converged turn would require
-  // a separate mechanism, so Phase A opts out of persistence entirely.
+  // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
   const sessionTranscriptMiddleware = isLoopMode
     ? undefined
-    : createSessionTranscriptMiddleware({
-        transcript: jsonlTranscript,
-        sessionId: sid,
-      });
+    : buildSessionTranscriptMw({ transcript: jsonlTranscript, sessionId: sid });
+  const hookMiddleware = buildHookMwOrUndefined(allHooks);
+  const systemPromptMiddleware = buildSystemPromptMw(manifestInstructions);
 
   const middleware: KoiMiddleware[] = [
     ...(sessionTranscriptMiddleware !== undefined ? [sessionTranscriptMiddleware] : []),
     buildPermissionsMiddleware(),
-    ...(mergedHookMiddleware !== undefined ? [mergedHookMiddleware] : []),
-    ...(manifestInstructions !== undefined
-      ? [createSystemPromptMiddleware(manifestInstructions)]
-      : []),
+    ...(hookMiddleware !== undefined ? [hookMiddleware] : []),
+    ...(systemPromptMiddleware !== undefined ? [systemPromptMiddleware] : []),
   ];
 
   // ---------------------------------------------------------------------------

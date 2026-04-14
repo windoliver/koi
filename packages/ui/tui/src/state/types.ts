@@ -512,9 +512,5 @@ export type TuiAction =
        * rules uniformly with `rehydrate_messages`.
        */
       readonly kind: "load_history";
-      readonly messages: readonly {
-        readonly senderId: string;
-        readonly content: readonly ContentBlock[];
-        readonly metadata?: JsonObject | undefined;
-      }[];
+      readonly messages: readonly InboundMessage[];
     };

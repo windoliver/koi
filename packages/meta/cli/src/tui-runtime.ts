@@ -55,16 +55,10 @@ import {
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
-import {
-  createInMemorySpawnLedger,
-  createKoi,
-  createSpawnToolProvider,
-  createSystemPromptMiddleware,
-} from "@koi/engine";
+import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createInMemoryAtifDocumentStore } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
-import { createHookMiddleware } from "@koi/hooks";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -84,7 +78,6 @@ import { runTurn } from "@koi/query-engine";
 import { createRulesMiddleware } from "@koi/rules-loader";
 import { createHookObserver, wrapMiddlewareWithTrace } from "@koi/runtime";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
-import { createSessionTranscriptMiddleware } from "@koi/session";
 import { createSkillTool } from "@koi/skill-tool";
 import type { SkillsRuntime } from "@koi/skills-runtime";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
@@ -107,7 +100,10 @@ import { createWebExecutor, createWebProvider } from "@koi/tools-web";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import {
+  buildHookMw,
   buildPluginMcpSetup,
+  buildSessionTranscriptMw,
+  buildSystemPromptMw,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   type McpSetup,
@@ -678,9 +674,13 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
   };
 
   const hasPromptHooks = allHooks.some((rh) => rh.hook.kind === "prompt");
-  const hookMw = createHookMiddleware({
-    hooks: allHooks,
-    promptCallFn: hasPromptHooks ? promptCallFn : undefined,
+  // Shared factory wrapper — see `shared-wiring.ts#buildHookMw`. Any new
+  // option added to `createHookMiddleware` flows through there so both
+  // `koi start` and `koi tui` pick it up with one edit. TUI uses the
+  // always-present variant so the hook-observer tap still records trace
+  // spans even when no user hooks are registered.
+  const hookMw = buildHookMw(allHooks, {
+    ...(hasPromptHooks ? { promptCallFn } : {}),
     onExecuted: hookObserverTap,
   });
 
@@ -1038,25 +1038,19 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
     },
   });
 
-  // --- System prompt middleware (C3-A) ---
-  // Built before spawnToolProvider so children can inherit it. The system
-  // prompt tells the model about tools and behavioral guidelines; without it
-  // children fall back to raw completion without tool-usage guidance.
-  // NOTE: Session transcript middleware is NOT inherited — it holds a mutable
-  // transcript array that must be isolated per-runtime. Children should never
-  // write into the parent's transcript.
-  const systemPromptMw =
-    config.systemPrompt !== undefined ? createSystemPromptMiddleware(config.systemPrompt) : null;
+  // --- System prompt + session transcript middleware ---
+  // Both wired via shared-wiring.ts so `koi start` and `koi tui` pick up
+  // any change to the factory signatures in one place.
+  //
+  // System prompt must be built before spawnToolProvider so children can
+  // inherit it. Session transcript is NOT inherited — it holds a mutable
+  // transcript array that must be isolated per-runtime; children should
+  // never write into the parent's transcript.
+  const systemPromptMw = buildSystemPromptMw(config.systemPrompt);
+  const sessionTranscriptMw = buildSessionTranscriptMw(config.session);
   const optionalMiddleware = [
-    ...(systemPromptMw !== null ? [systemPromptMw] : []),
-    ...(config.session !== undefined
-      ? [
-          createSessionTranscriptMiddleware({
-            transcript: config.session.transcript,
-            sessionId: config.session.sessionId,
-          }),
-        ]
-      : []),
+    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
+    ...(sessionTranscriptMw !== undefined ? [sessionTranscriptMw] : []),
   ];
 
   // --- @koi/spawn-tools: real spawning via createSpawnToolProvider ---
@@ -1120,7 +1114,7 @@ export async function createTuiRuntime(config: TuiRuntimeConfig): Promise<TuiRun
       permMw,
       exfiltrationGuardMw,
       hookMw,
-      ...(systemPromptMw !== null ? [systemPromptMw] : []),
+      ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
     ],
     allowDynamicAgents: true,
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),

@@ -508,6 +508,7 @@
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/decision-ledger": "workspace:*",
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
