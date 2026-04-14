@@ -451,10 +451,10 @@ export async function drainEngineStream(
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
-    // `let` justified: counts deltas since last yield — forces a yield on
-    // the first delta of each burst so buffered responses always get at
-    // least one mid-stream paint instead of dumping everything at once.
-    let deltasSinceYield = 0;
+    // `let` justified: true after the first yield in a delta burst.
+    // Ensures at least one mid-stream paint per burst without sleeping
+    // on every subsequent delta. Reset by non-delta events (lifecycle, tool).
+    let burstYielded = false;
 
     for await (const event of stream) {
       // #1742: if resetConversation() disposed our batcher mid-stream, stop
@@ -501,7 +501,7 @@ export async function drainEngineStream(
         batcher.flushSync();
         await yieldForRenderFrame();
         lastYieldAt = Date.now();
-        deltasSinceYield = 0;
+        burstYielded = false;
         continue;
       }
 
@@ -511,25 +511,23 @@ export async function drainEngineStream(
       // applied AFTER the text delta, corrupting assistant block order.
       // Then apply the delta via the O(1) produce()-based path setter.
       //
-      // Hybrid yield policy for text/thinking deltas:
-      // - First delta after a yield always triggers a yield (catches fully
-      //   buffered bursts where time never advances past the 16ms threshold)
-      // - Subsequent deltas yield only when 16ms has elapsed (time-based,
-      //   avoids fixed per-batch latency on long streams)
-      //
       // Flush pending batcher events first to preserve block ordering —
       // a tool_call_start in the batcher must land before a text_delta.
+      //
+      // Yield policy: on the first delta of a burst (!burstYielded), yield
+      // once so buffered responses get at least one mid-stream paint. After
+      // that, yield only when 16ms has elapsed (time-based). This avoids
+      // the per-delta sleep that would throttle large replies by seconds.
       if (event.kind === "text_delta" || event.kind === "thinking_delta") {
         batcher.flushSync();
         const blockKind = event.kind === "text_delta" ? "text" : "thinking";
         store.streamDelta(event.delta, blockKind);
-        deltasSinceYield++;
 
         const now = Date.now();
-        if (deltasSinceYield === 1 || now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
+        if (!burstYielded || now - lastYieldAt >= STREAM_YIELD_INTERVAL_MS) {
           await yieldForRenderFrame();
           lastYieldAt = Date.now();
-          deltasSinceYield = 0;
+          burstYielded = true;
         }
         continue;
       }
@@ -667,17 +665,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.stderr.write(`error: koi tui requires an API key.\n  ${apiConfigResult.error}\n`);
     process.exit(1);
   }
-  const { apiKey, baseUrl, model: modelName, fallbackModels } = apiConfigResult.value;
+  const { apiKey, baseUrl, model: modelName, provider, fallbackModels } = apiConfigResult.value;
 
-  // Only enable reasoning for OpenRouter — other providers (OpenAI, custom
-  // proxies) may reject the `reasoning` field with HTTP 400. OpenRouter
-  // silently ignores it for non-reasoning models, so it's safe there.
-  const isOpenRouter = (baseUrl ?? "").includes("openrouter.ai");
+  // Enable reasoning for OpenRouter — it silently ignores the field for
+  // non-reasoning models. Other providers (OpenAI, custom proxies) may
+  // reject it with HTTP 400, so only opt in when we know we're on OpenRouter.
+  // Uses the resolved `provider` from env config, not baseUrl sniffing,
+  // so the default OPENROUTER_API_KEY path (no explicit baseUrl) works.
+  const reasoningCompat = provider === "openrouter" ? { compat: { supportsReasoning: true } } : {};
   const modelAdapter = createOpenAICompatAdapter({
     apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     model: modelName,
-    ...(isOpenRouter ? { compat: { supportsReasoning: true } } : {}),
+    ...reasoningCompat,
   });
 
   // Build model-router when KOI_FALLBACK_MODEL is set. All targets share the
@@ -696,6 +696,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 apiKey,
                 ...(baseUrl !== undefined ? { baseUrl } : {}),
                 model: m,
+                ...reasoningCompat,
               });
               return [
                 m,
