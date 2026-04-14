@@ -94,10 +94,6 @@ export async function recoverOrphanedTasks(
     if (result.ok) {
       requeued.push(orphan.id);
     } else if (TASK_RACE_CODES.has(result.error.code)) {
-      // Task changed state concurrently (completed/failed/vanished during recovery).
-      // This is normal — a surviving worker may have finished its work.
-      // Skip this orphan and continue recovering the rest.
-      continue;
     } else {
       // Store-layer error (EXTERNAL/INTERNAL) — stop to avoid further ops
       // on a potentially degraded store. Caller should retry on next restart.
@@ -222,8 +218,6 @@ export async function recoverStaleDelegations(
     if (result.ok) {
       cleared.push(task.id);
     } else if (TASK_RACE_CODES.has(result.error.code)) {
-      // Benign per-task race — task completed/disappeared between snapshot and patch.
-      continue;
     } else {
       // Store-layer error — stop to avoid further ops on a degraded store.
       failed.push(task.id);

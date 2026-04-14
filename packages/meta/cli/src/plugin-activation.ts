@@ -116,8 +116,29 @@ async function loadSkillsFromRoot(rootPath: string): Promise<readonly SkillMetad
 /**
  * Discovers enabled plugins and aggregates their components for session wiring.
  * Errors are collected per-plugin and never thrown.
+ *
+ * When `options.allowlist` is supplied, only plugins whose name appears in
+ * the set are activated — everything else discovered in `userRoot` is
+ * skipped silently. Manifest-driven opt-in uses this to let operators
+ * declare exactly which plugins their `koi.yaml` pulls in:
+ *
+ *   # koi.yaml
+ *   plugins:
+ *     - my-hook-bundle
+ *     - my-mcp-server
+ *
+ * When `allowlist` is omitted (default), all discovered plugins are
+ * activated — matching the prior filesystem-scan auto-discovery
+ * behavior so existing hosts without a `plugins:` field keep working.
+ *
+ * Passing `allowlist: new Set()` explicitly deactivates every plugin —
+ * useful for CI runs that want a reproducible minimal assembly.
  */
-export async function loadPluginComponents(userRoot: string): Promise<PluginComponents> {
+export async function loadPluginComponents(
+  userRoot: string,
+  options?: { readonly allowlist?: ReadonlySet<string> | undefined },
+): Promise<PluginComponents> {
+  const allowlist = options?.allowlist;
   const hooks: HookConfig[] = [];
   const mcpServers: McpServerConfig[] = [];
   const skillMetadata: SkillMetadata[] = [];
@@ -128,6 +149,7 @@ export async function loadPluginComponents(userRoot: string): Promise<PluginComp
   const plugins = await registry.discover();
 
   for (const pluginMeta of plugins) {
+    if (allowlist !== undefined && !allowlist.has(pluginMeta.name)) continue;
     const loadResult = await registry.load(pluginMeta.name);
     if (!loadResult.ok) {
       errors.push({ plugin: pluginMeta.name, error: loadResult.error.message });

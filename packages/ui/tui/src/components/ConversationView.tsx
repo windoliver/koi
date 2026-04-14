@@ -12,7 +12,7 @@ import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, on, Show, useContext } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
-import { parseSlashCommand, type SlashCommand } from "../commands/slash-detection.js";
+import { matchCommands, parseSlashCommand, type SlashCommand } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
 import { StoreContext, useTuiStore } from "../store-context.js";
 import { COLORS } from "../theme.js";
@@ -120,9 +120,25 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     const parsed = query !== null ? parseSlashCommand(`/${query}`) : null;
     const args = parsed?.args ?? "";
 
+    process.stderr.write(`[slash-select] command=${command.name} args="${args}" hasOnSlashSelect=${props.onSlashSelect !== undefined}\n`);
     props.onSlashDetected(null);
     setClearTrigger((n: number) => n + 1);
     props.onSlashSelect?.(command, args);
+  };
+
+  /**
+   * Handle slash command submitted directly from InputArea (Enter on "/cmd").
+   * Parses the command name, finds the matching SlashCommand, and dispatches.
+   * This replaces the old flow where SlashOverlay's useKeyboard caught Enter.
+   */
+  const handleSlashSubmit = (text: string): void => {
+    const parsed = parseSlashCommand(text);
+    if (parsed === null) return;
+    const cmdMatches = matchCommands(SLASH_COMMANDS, parsed.command);
+    const match = cmdMatches[0];
+    if (match !== undefined) {
+      handleSlashSelect(match.command);
+    }
   };
 
   const handleSubmit = (text: string): void => {
@@ -187,13 +203,14 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
           conversation stays clean. One line tall = one extra row of vertical
           space when active. */}
       <Show when={hasCapturedTurn()}>
-        <box paddingLeft={1}>
+        <box paddingLeft={1} flexShrink={0}>
           <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
         </box>
       </Show>
       <InputArea
         onSubmit={handleSubmit}
         onSlashDetected={props.onSlashDetected}
+        onSlashSubmit={handleSlashSubmit}
         onHistoryNav={handleHistoryNav}
         onAtDetected={handleAtDetected}
         onImageAttach={props.onImageAttach}

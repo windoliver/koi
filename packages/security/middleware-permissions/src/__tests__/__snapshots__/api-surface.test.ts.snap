@@ -5,6 +5,7 @@ exports[`@koi/middleware-permissions API surface . has stable type surface 1`] =
 export { PermissionBackend, PermissionDecision, PermissionQuery } from '@koi/core/permission-backend';
 import { ApprovalRequest, ApprovalDecision, KoiMiddleware } from '@koi/core/middleware';
 import { AuditSink } from '@koi/core';
+import { JsonObject } from '@koi/core/common';
 import { Result } from '@koi/core/errors';
 import { RichTrajectoryStep } from '@koi/core/rich-trajectory';
 import { CircuitBreakerConfig } from '@koi/errors';
@@ -160,6 +161,18 @@ interface PermissionsMiddlewareConfig {
      * durable identity managed externally).
      */
     readonly persistentAgentId?: string;
+    /**
+     * Optional path resolver for filesystem tools. When set, the middleware
+     * extracts the resolved absolute path from tool input and injects it as
+     * \`context.path\` in the PermissionQuery. This enables path-based rules:
+     *
+     *   { pattern: "fs_read", context: { path: "/Users/foo/project/**" }, effect: "allow" }
+     *
+     * The callback receives the tool ID and input object. Return the resolved
+     * absolute path for tools that have a path argument, or undefined for
+     * tools that don't (non-fs tools, missing path arg, etc.).
+     */
+    readonly resolveToolPath?: ((toolId: string, input: JsonObject) => string | undefined) | undefined;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 

@@ -16,7 +16,7 @@
 import type { KeyEvent, SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { Show, Switch, Match, createEffect, createMemo, on, useContext } from "solid-js";
+import { Show, Switch, Match, createEffect, createMemo, createSignal, on, useContext } from "solid-js";
 import type { Accessor } from "solid-js";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
@@ -30,6 +30,7 @@ import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
 import { SessionRename } from "./components/SessionRename.js";
 import { SessionsView } from "./components/SessionsView.js";
+import { CostDashboardView } from "./components/CostDashboardView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { handleGlobalKey } from "./keyboard.js";
@@ -57,6 +58,7 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:help": "help",
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
+  "nav:cost": "cost",
 };
 
 /**
@@ -183,6 +185,15 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   // Terminal width for StatusBar compact mode (read-only hook, not state I/O)
   const terminalDimensions = useTerminalDimensions();
 
+  // Workaround: reconcile() doesn't reliably trigger SolidJS reactivity for
+  // primitive property changes in large state objects. Use a dedicated signal
+  // that's explicitly updated via store subscription.
+  const [viewSignal, setViewSignal] = createSignal(activeView());
+  store.subscribe(() => {
+    const current = store.getState().activeView;
+    setViewSignal((prev) => (prev === current ? prev : current));
+  });
+
   const hasModal = () => modal() !== null;
 
   // Narrows the modal to a permission-prompt for type-safe child access.
@@ -274,6 +285,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       onBack: () => {
         if (store.getState().activeView !== "conversation") {
           store.dispatch({ kind: "set_view", view: "conversation" });
+          setViewSignal("conversation");
         }
       },
     });
@@ -287,10 +299,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
     store.dispatch({ kind: "set_modal", modal: null });
-    // Navigation commands are handled here — no CLI callback needed.
     const navView = resolveNavCommand(cmd.id);
     if (navView !== null) {
       store.dispatch({ kind: "set_view", view: navView });
+      setViewSignal(navView);
       return;
     }
     // session:resume opens the session picker modal inline — host is not involved.
@@ -329,8 +341,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   };
 
   const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
+    process.stderr.write(`[tui-slash-select] cmd.name=${cmd.name} args="${args}"\n`);
     store.dispatch({ kind: "set_slash_query", query: null });
     const commandDef = findCommandBySlashName(cmd.name);
+    process.stderr.write(`[tui-slash-select] commandDef=${commandDef?.id ?? "NOT FOUND"}\n`);
     if (commandDef !== undefined) {
       handleCommandSelect(commandDef, args);
     }
@@ -343,8 +357,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       <StatusBar width={terminalDimensions().width} />
 
       {/* View layer — one active at a time */}
-      <Switch>
-        <Match when={activeView() === "conversation"}>
+      <Switch fallback={<box />}>
+        <Match when={viewSignal() === "conversation"}>
           <ConversationView
             onSubmit={props.onSubmit}
             onSlashDetected={handleSlashDetected}
@@ -356,20 +370,23 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             treeSitterClient={props.treeSitterClient}
           />
         </Match>
-        <Match when={activeView() === "sessions"}>
+        <Match when={viewSignal() === "sessions"}>
           <SessionsView />
         </Match>
-        <Match when={activeView() === "doctor"}>
+        <Match when={viewSignal() === "doctor"}>
           <DoctorView />
         </Match>
-        <Match when={activeView() === "help"}>
+        <Match when={viewSignal() === "help"}>
           <HelpView />
         </Match>
-        <Match when={activeView() === "agents"}>
+        <Match when={viewSignal() === "agents"}>
           <AgentsView />
         </Match>
-        <Match when={activeView() === "trajectory"}>
+        <Match when={viewSignal() === "trajectory"}>
           <TrajectoryView />
+        </Match>
+        <Match when={viewSignal() === "cost"}>
+          <CostDashboardView />
         </Match>
       </Switch>
 

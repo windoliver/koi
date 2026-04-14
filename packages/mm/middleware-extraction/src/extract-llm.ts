@@ -91,11 +91,10 @@ export function parseExtractionResponse(response: string): readonly ExtractionCa
       if (raw === null || typeof raw !== "object") continue;
 
       const entry = raw as Record<string, unknown>;
-      const content = typeof entry["content"] === "string" ? entry["content"].trim() : "";
+      const content = typeof entry.content === "string" ? entry.content.trim() : "";
       if (content.length === 0) continue;
 
-      const rawCategory =
-        typeof entry["category"] === "string" ? entry["category"].toLowerCase() : "";
+      const rawCategory = typeof entry.category === "string" ? entry.category.toLowerCase() : "";
       const category: CollectiveMemoryCategory = isValidCategory(rawCategory)
         ? rawCategory
         : "context";

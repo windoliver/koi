@@ -908,3 +908,8 @@ If `metadata.callId` were allowed to leak into policy-visible surfaces, either (
 ## Interactive approval timeout (#1759)
 
 `DEFAULT_APPROVAL_TIMEOUT_MS = 30_000` remains the engine-side fail-closed deadline for agent-to-agent / non-interactive callers. The interactive TUI opts into a longer 60-minute window by passing `approvalTimeoutMs: 60 * 60 * 1000` (see `@koi/tui` + `packages/meta/cli/src/tui-runtime.ts`). Long enough that no realistic human decision window triggers it, but still finite so a wedged renderer / stuck bridge eventually aborts the turn rather than hanging forever. `Number.POSITIVE_INFINITY` is accepted by `validatePermissionsConfig` for tests that need truly unbounded waits.
+
+
+## Changelog
+
+- **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

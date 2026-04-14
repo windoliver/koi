@@ -1,0 +1,23 @@
+{
+  "name": "@koi/cost-aggregator",
+  "description": "Real-time cost aggregation with per-model/tool/agent/provider breakdowns and budget thresholds",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --vcs-enabled=false src/",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@koi/core": "workspace:*"
+  },
+  "koi": {}
+}

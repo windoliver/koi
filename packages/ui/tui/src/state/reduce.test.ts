@@ -1653,28 +1653,37 @@ describe("reduce — set_session_info", () => {
       modelName: "claude-opus-4-6",
       provider: "anthropic",
       sessionName: "my-session",
+      sessionId: "sid-123",
     });
     expect(next.sessionInfo).toEqual({
       modelName: "claude-opus-4-6",
       provider: "anthropic",
       sessionName: "my-session",
+      sessionId: "sid-123",
     });
   });
 
   test("overwrites existing sessionInfo (idempotent overwrite)", () => {
     const state = stateWith({
-      sessionInfo: { modelName: "old-model", provider: "old-provider", sessionName: "old-session" },
+      sessionInfo: {
+        modelName: "old-model",
+        provider: "old-provider",
+        sessionName: "old-session",
+        sessionId: "old-sid",
+      },
     });
     const next = reduce(state, {
       kind: "set_session_info",
       modelName: "new-model",
       provider: "openrouter",
       sessionName: "new-session",
+      sessionId: "new-sid",
     });
     expect(next.sessionInfo).toEqual({
       modelName: "new-model",
       provider: "openrouter",
       sessionName: "new-session",
+      sessionId: "new-sid",
     });
   });
 
@@ -1685,10 +1694,160 @@ describe("reduce — set_session_info", () => {
       modelName: "m",
       provider: "p",
       sessionName: "s",
+      sessionId: "x",
     });
     expect(next.activeView).toBe("sessions");
     expect(next.connectionStatus).toBe("connected");
     expect(next.messages).toEqual(state.messages);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rehydrate_messages
+// ---------------------------------------------------------------------------
+
+describe("reduce — rehydrate_messages", () => {
+  test("replaces the message list wholesale on resume", () => {
+    const state = stateWith({
+      messages: [{ kind: "user", id: "pre-1", blocks: [{ kind: "text", text: "stale" }] }],
+    });
+    const next = reduce(state, {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hi" }],
+        },
+        {
+          senderId: "assistant",
+          timestamp: 2,
+          content: [{ kind: "text", text: "hello" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(2);
+    expect(next.messages[0]?.kind).toBe("user");
+    expect(next.messages[1]?.kind).toBe("assistant");
+  });
+
+  test("converts assistant text blocks to TuiAssistantBlock text", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hello" }],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect(msg.blocks[0]).toEqual({ kind: "text", text: "hello" });
+    expect(msg.streaming).toBe(false);
+  });
+
+  test("folds non-text blocks into a placeholder for assistants", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          content: [{ kind: "image", url: "https://example.com/x.png" }],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect(msg.blocks[0]).toEqual({ kind: "text", text: "[image]" });
+  });
+
+  test("preserves user content blocks verbatim (no mapping)", () => {
+    const block = { kind: "text" as const, text: "verbatim" };
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [block],
+        },
+      ],
+    });
+    const msg = next.messages[0];
+    if (msg?.kind !== "user") throw new Error("expected user");
+    expect(msg.blocks).toEqual([block]);
+  });
+
+  test("empty rehydrate clears the message list", () => {
+    const state = stateWith({
+      messages: [{ kind: "user", id: "old", blocks: [{ kind: "text", text: "old" }] }],
+    });
+    const next = reduce(state, { kind: "rehydrate_messages", messages: [] });
+    expect(next.messages).toEqual([]);
+  });
+
+  test("skips tool_result (senderId: tool) messages", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "user",
+          timestamp: 1,
+          content: [{ kind: "text", text: "hi" }],
+        },
+        {
+          senderId: "tool",
+          timestamp: 2,
+          content: [{ kind: "text", text: '{"toolId":"memory_store","output":{"stored":true}}' }],
+          metadata: { callId: "c1", toolCallId: "c1", toolName: "memory_store" },
+        },
+        {
+          senderId: "assistant",
+          timestamp: 3,
+          content: [{ kind: "text", text: "done" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(2);
+    expect(next.messages[0]?.kind).toBe("user");
+    expect(next.messages[1]?.kind).toBe("assistant");
+  });
+
+  test("skips assistant messages that carry a metadata.toolCalls placeholder", () => {
+    const next = reduce(createInitialState(), {
+      kind: "rehydrate_messages",
+      messages: [
+        {
+          senderId: "assistant",
+          timestamp: 1,
+          // resumeFromTranscript stores the first call's UUID here and
+          // hides the real payload in metadata.toolCalls — the UI
+          // should not render the UUID verbatim.
+          content: [{ kind: "text", text: "toolu_vrtx_01V7jrJFaYL5rMqaR5tZtdhQ" }],
+          metadata: {
+            toolCalls: [
+              {
+                id: "toolu_vrtx_01V7jrJFaYL5rMqaR5tZtdhQ",
+                type: "function",
+                function: { name: "memory_store", arguments: "{}" },
+              },
+            ],
+          },
+        },
+        {
+          senderId: "assistant",
+          timestamp: 2,
+          content: [{ kind: "text", text: "Nice to meet you, Jane!" }],
+        },
+      ],
+    });
+    expect(next.messages).toHaveLength(1);
+    const msg = next.messages[0];
+    if (msg?.kind !== "assistant") throw new Error("expected assistant");
+    expect((msg.blocks[0] as { kind: string; text: string }).text).toBe("Nice to meet you, Jane!");
   });
 });
 

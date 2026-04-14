@@ -1,8 +1,8 @@
 /**
- * tui-runtime tests — verifies the full L2 tool stack wiring.
+ * runtime-factory tests — verifies the full L2 tool stack wiring.
  *
  * These tests verify:
- *   - createTuiRuntime assembles without errors
+ *   - createKoiRuntime assembles without errors
  *   - transcript is exposed and mutable (splice works)
  *   - getTrajectorySteps() returns empty initially
  *   - getTrajectorySteps() caps at MAX_TRAJECTORY_STEPS
@@ -15,7 +15,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { ApprovalHandler, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
-import { createTuiRuntime, MAX_TRAJECTORY_STEPS } from "./tui-runtime.js";
+import { createKoiRuntime, MAX_TRAJECTORY_STEPS } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,7 +58,7 @@ function makeConfig() {
 // Tests
 // ---------------------------------------------------------------------------
 
-let runtimeHandle: Awaited<ReturnType<typeof createTuiRuntime>> | null = null;
+let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>> | null = null;
 
 afterEach(async () => {
   if (runtimeHandle !== null) {
@@ -67,21 +67,21 @@ afterEach(async () => {
   }
 });
 
-describe("createTuiRuntime — assembly", () => {
+describe("createKoiRuntime — assembly", () => {
   test("assembles without errors", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     expect(runtimeHandle.runtime).toBeDefined();
   });
 
   test("returns a mutable transcript array", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;
     expect(Array.isArray(transcript)).toBe(true);
     expect(transcript).toHaveLength(0);
   });
 
   test("transcript can be spliced (session reset)", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;
 
     // Push a fake message
@@ -98,15 +98,15 @@ describe("createTuiRuntime — assembly", () => {
   });
 
   test("runtime has a sessionId", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     expect(typeof runtimeHandle.runtime.sessionId).toBe("string");
     expect(runtimeHandle.runtime.sessionId.length).toBeGreaterThan(0);
   });
 });
 
-describe("createTuiRuntime — trajectory steps", () => {
+describe("createKoiRuntime — trajectory steps", () => {
   test("getTrajectorySteps() returns empty array initially", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const steps = await runtimeHandle.getTrajectorySteps();
     expect(steps).toHaveLength(0);
   });
@@ -117,17 +117,17 @@ describe("createTuiRuntime — trajectory steps", () => {
   });
 });
 
-describe("createTuiRuntime — runtime.run signature", () => {
+describe("createKoiRuntime — runtime.run signature", () => {
   test("runtime.run is callable", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     // run() returns an AsyncIterable — verify it exists without actually calling it
     expect(typeof runtimeHandle.runtime.run).toBe("function");
   });
 });
 
-describe("createTuiRuntime — cwd defaults", () => {
+describe("createKoiRuntime — cwd defaults", () => {
   test("defaults cwd to process.cwd() when not provided", async () => {
-    runtimeHandle = await createTuiRuntime({
+    runtimeHandle = await createKoiRuntime({
       modelAdapter: makeModelAdapter(),
       modelName: "stub",
       approvalHandler: stubApprovalHandler,
@@ -141,8 +141,8 @@ describe("createTuiRuntime — cwd defaults", () => {
 // T2-A: Tool inventory snapshot — verifies all expected tools are wired
 // ---------------------------------------------------------------------------
 
-describe("createTuiRuntime — tool inventory", () => {
-  /** Expected tool names that must be registered after createTuiRuntime(). */
+describe("createKoiRuntime — tool inventory", () => {
+  /** Expected tool names that must be registered after createKoiRuntime(). */
   const EXPECTED_TOOLS = [
     "Glob",
     "Grep",
@@ -162,7 +162,7 @@ describe("createTuiRuntime — tool inventory", () => {
   ] as const;
 
   test("all expected tools are registered as agent components", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const { agent } = runtimeHandle.runtime;
 
     const missing: string[] = [];
@@ -176,7 +176,7 @@ describe("createTuiRuntime — tool inventory", () => {
   });
 
   test("expected tool count matches snapshot", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const { agent } = runtimeHandle.runtime;
 
     // Count how many expected tools are present (should be all of them)
@@ -189,9 +189,9 @@ describe("createTuiRuntime — tool inventory", () => {
 // T1-A: resetSessionState — full test suite
 // ---------------------------------------------------------------------------
 
-describe("createTuiRuntime — resetSessionState", () => {
+describe("createKoiRuntime — resetSessionState", () => {
   test("throws when signal is not aborted (C4-A)", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const controller = new AbortController();
     // Signal not aborted — must throw
     await expect(runtimeHandle?.resetSessionState(controller.signal)).rejects.toThrow(
@@ -200,7 +200,7 @@ describe("createTuiRuntime — resetSessionState", () => {
   });
 
   test("succeeds when signal is aborted", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const controller = new AbortController();
     controller.abort();
     // Should not throw
@@ -208,7 +208,7 @@ describe("createTuiRuntime — resetSessionState", () => {
   });
 
   test("clears transcript on reset (caller responsibility)", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     const { transcript } = runtimeHandle;
 
     // Simulate session with messages
@@ -230,7 +230,7 @@ describe("createTuiRuntime — resetSessionState", () => {
   });
 
   test("multiple resets in sequence do not throw", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
 
     // First reset
     const c1 = new AbortController();
@@ -244,17 +244,17 @@ describe("createTuiRuntime — resetSessionState", () => {
   });
 
   test("hasActiveBackgroundTasks returns false initially", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     expect(runtimeHandle.hasActiveBackgroundTasks()).toBe(false);
   });
 
   test("shutdownBackgroundTasks returns false when no tasks active", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     expect(runtimeHandle.shutdownBackgroundTasks()).toBe(false);
   });
 
   test("sandboxActive reflects OS adapter availability", async () => {
-    runtimeHandle = await createTuiRuntime(makeConfig());
+    runtimeHandle = await createKoiRuntime(makeConfig());
     // sandboxActive depends on whether seatbelt/bwrap is available on this machine.
     // We just verify it's a boolean — the actual value depends on the test environment.
     expect(typeof runtimeHandle.sandboxActive).toBe("boolean");

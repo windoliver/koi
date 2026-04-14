@@ -253,11 +253,16 @@ export type { CompactionResult, ContextCompactor, TokenEstimator } from "./conte
 export type { CorrelationIds } from "./correlation.js";
 // cost tracker — per-session, per-tool, per-model cost transparency
 export type {
+  AgentCostBreakdown,
   BudgetTracker,
   CostBreakdown,
   CostCalculator,
   CostEntry,
+  CostTokenBreakdown,
+  formatCost,
+  formatTokens,
   ModelCostBreakdown,
+  ProviderCostBreakdown,
   ToolCostBreakdown,
   UsageInfo,
 } from "./cost-tracker.js";

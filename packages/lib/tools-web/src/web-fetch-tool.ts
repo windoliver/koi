@@ -108,6 +108,7 @@ export function createWebFetchTool(
         format: isHtml ? format : "raw",
         truncated: result.value.truncated,
         finalUrl: result.value.finalUrl,
+        cached: result.value.cached,
       };
     },
   };

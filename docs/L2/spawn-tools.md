@@ -173,3 +173,5 @@ documented in the `stripDelegatedTo` helper in `@koi/task-board`.
 - `archive/v1/packages/sched/long-running/src/delegation-bridge.ts` — v1 dispatch loop
   (scan → claim → spawn → cascade → retry). v2 separates concerns: `task_delegate` handles
   board-level assignment, `agent_spawn` handles spawning, `TaskCascade` handles cascade logic.
+
+> **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.

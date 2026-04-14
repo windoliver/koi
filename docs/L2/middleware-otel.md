@@ -215,3 +215,5 @@ Span attribute `koi.session.id` lets you filter to a single Koi session in any b
   `scheduledDelayMillis` (default: 5000ms) for your volume.
 - **If the OTLP endpoint is unreachable**, spans queue up to `maxQueueSize` then are
   dropped silently. The agent continues normally — the middleware never throws.
+
+> **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.

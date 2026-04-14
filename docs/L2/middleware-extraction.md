@@ -49,3 +49,5 @@ const mw = createExtractionMiddleware({
 - `@koi/core` (L0)
 - `@koi/token-estimator` (L0u)
 - `@koi/redaction` (L0u)
+
+> **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
