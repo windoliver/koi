@@ -1,14 +1,11 @@
 /**
- * ThinkingBlock — renders the model's thinking/reasoning text.
+ * ThinkingBlock — renders the model's thinking/reasoning content.
  *
- * Displayed with a left border and dimmed styling (like opencode's
- * ReasoningPart) to visually distinguish reasoning from the assistant's
- * direct response. Supports streaming — content grows incrementally as
- * thinking_delta events arrive.
- *
- * The `streaming` prop tells the markdown renderer that content is
- * incomplete, enabling markdown healing (closing unclosed fences, bold,
- * etc.) so partial reasoning renders correctly mid-stream.
+ * Behavior (matches opencode's ReasoningPart pattern):
+ * - **During streaming**: expanded, shows thinking content as it arrives
+ *   with left border + gray styling
+ * - **After streaming**: collapsed to a single summary line showing
+ *   character count — saves vertical space for the actual response
  */
 
 import type { SyntaxStyle } from "@opentui/core";
@@ -24,33 +21,38 @@ interface ThinkingBlockProps {
 
 export function ThinkingBlock(props: ThinkingBlockProps): JSX.Element {
   const healed = () => (props.streaming ? healMarkdown(props.text) : props.text);
+  const charCount = () => props.text.length;
 
   return (
-    <box
-      flexDirection="column"
-      paddingLeft={1}
-      border={["left"]}
-      borderColor="gray"
-    >
-      <text fg="gray">
-        <i>Thinking:</i>
-      </text>
+    <box flexDirection="column" paddingLeft={1} border={["left"]} borderColor="gray">
       <Show
-        when={props.syntaxStyle}
+        when={props.streaming}
         fallback={
-          <text fg="gray" selectable>
-            <i>{healed()}</i>
+          <text fg="gray">
+            <i>∴ Thinking ({charCount()} chars) ▸</i>
           </text>
         }
       >
-        {(style: () => SyntaxStyle) => (
-          <markdown
-            content={healed()}
-            syntaxStyle={style()}
-            streaming={props.streaming ?? false}
-            fg="gray"
-          />
-        )}
+        <text fg="gray">
+          <i>Thinking:</i>
+        </text>
+        <Show
+          when={props.syntaxStyle}
+          fallback={
+            <text fg="gray" selectable>
+              <i>{healed()}</i>
+            </text>
+          }
+        >
+          {(style: () => SyntaxStyle) => (
+            <markdown
+              content={healed()}
+              syntaxStyle={style()}
+              streaming={true}
+              fg="gray"
+            />
+          )}
+        </Show>
       </Show>
     </box>
   );
