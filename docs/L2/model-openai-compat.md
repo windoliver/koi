@@ -28,6 +28,18 @@ createOpenAI-compatibleAdapter(config: OpenAI-compatibleAdapterConfig): ModelAda
 | `capabilities` | `Partial<ModelCapabilities>` | auto-detected | Override capability flags |
 | `headers` | `Record<string, string>` | — | Additional HTTP headers |
 | `provider` | `string` | `openai-compat` | Provider name for telemetry |
+| `compat` | `Partial<ProviderCompat>` | auto-detected | Override compatibility flags |
+
+### Reasoning / Extended Thinking
+
+When `compat.supportsReasoning` is true, `buildRequestBody` includes
+`reasoning: { effort }` in the request body. Models that support extended
+thinking (e.g., Claude via OpenRouter) return reasoning tokens as
+`reasoning_content` in the SSE stream, which the stream parser emits as
+`thinking_delta` chunks.
+
+`supportsReasoning` defaults to `false` — callers must opt in explicitly.
+OpenRouter silently ignores the field for non-reasoning models.
 
 ## Streaming
 
