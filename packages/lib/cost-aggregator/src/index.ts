@@ -16,18 +16,21 @@
 // --- Calculator ---
 export type { CostCalculatorConfig } from "./calculator.js";
 export { createCostCalculator } from "./calculator.js";
-
+// --- JSON export ---
+export type { CostExportPayload } from "./export-json.js";
+export { exportCostJson } from "./export-json.js";
 // --- Pricing ---
 export type { ModelPricing } from "./pricing.js";
 export { DEFAULT_PRICING, resolvePricing } from "./pricing.js";
-
 // --- Ring buffer ---
 export type { RingBuffer } from "./ring-buffer.js";
 export { createRingBuffer, DEFAULT_CAPACITY } from "./ring-buffer.js";
-
 // --- Thresholds ---
 export type { ThresholdAlert, ThresholdConfig, ThresholdTracker } from "./thresholds.js";
 export { createThresholdTracker, DEFAULT_THRESHOLDS } from "./thresholds.js";
+// --- Token rate ---
+export type { TokenRateTracker } from "./token-rate.js";
+export { createTokenRateTracker } from "./token-rate.js";
 
 // --- Tracker (main aggregator) ---
 export type { CostAggregator, CostAggregatorConfig } from "./tracker.js";

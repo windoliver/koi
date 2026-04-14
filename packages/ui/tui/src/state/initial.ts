@@ -46,5 +46,6 @@ export function createInitialState(): TuiState {
     runReportSummary: null,
     showThinking: true,
     costBreakdown: null,
+    tokenRate: null,
   };
 }

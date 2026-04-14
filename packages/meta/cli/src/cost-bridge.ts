@@ -15,10 +15,14 @@
 import type { CostBreakdown, CostEntry } from "@koi/core/cost-tracker";
 import {
   type CostAggregator,
+  type CostExportPayload,
   createCostAggregator,
   createCostCalculator,
   createThresholdTracker,
+  createTokenRateTracker,
+  exportCostJson,
   type ThresholdAlert,
+  type TokenRateTracker,
 } from "@koi/cost-aggregator";
 import type { TuiStore } from "@koi/tui";
 
@@ -50,8 +54,12 @@ export interface CostBridge {
   }) => void;
   /** Force-push the current breakdown to the TUI store (skips debounce). */
   readonly flushBreakdown: () => void;
-  /** Access the underlying aggregator for JSON export. */
+  /** Access the underlying aggregator. */
   readonly aggregator: CostAggregator;
+  /** Access the token rate tracker. */
+  readonly tokenRate: TokenRateTracker;
+  /** Export current cost state as JSON (for external dashboards). */
+  readonly exportJson: () => CostExportPayload;
   /** Update session context (e.g. after session reset). */
   readonly setSession: (sessionId: string, modelName: string, provider: string) => void;
   /** Stop the debounce timer. Call on shutdown. */
@@ -76,6 +84,7 @@ export function createCostBridge(config: CostBridgeConfig): CostBridge {
       : undefined;
 
   const aggregator = createCostAggregator({ thresholdTracker });
+  const tokenRate = createTokenRateTracker();
 
   // Mutable session context — updated on session reset
   // let: justified — mutated by setSession()
@@ -90,7 +99,14 @@ export function createCostBridge(config: CostBridgeConfig): CostBridge {
   function pushBreakdown(): void {
     const breakdown: CostBreakdown = aggregator.breakdown(sessionId);
     if (breakdown.totalCostUsd > 0) {
-      config.store.dispatch({ kind: "set_cost_breakdown", breakdown });
+      config.store.dispatch({
+        kind: "set_cost_breakdown",
+        breakdown,
+        tokenRate: {
+          inputPerSecond: tokenRate.inputPerSecond(),
+          outputPerSecond: tokenRate.outputPerSecond(),
+        },
+      });
     }
   }
 
@@ -123,6 +139,7 @@ export function createCostBridge(config: CostBridgeConfig): CostBridge {
       };
 
       aggregator.record(sessionId, entry);
+      tokenRate.record(metrics.inputTokens, metrics.outputTokens);
       schedulePush();
     },
 
@@ -135,6 +152,11 @@ export function createCostBridge(config: CostBridgeConfig): CostBridge {
     },
 
     aggregator,
+    tokenRate,
+
+    exportJson(): CostExportPayload {
+      return exportCostJson(aggregator, sessionId, tokenRate);
+    },
 
     setSession(newSessionId: string, newModelName: string, newProvider: string): void {
       sessionId = newSessionId;

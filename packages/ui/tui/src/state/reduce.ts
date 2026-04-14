@@ -902,7 +902,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "set_cost_breakdown":
-      return { ...state, costBreakdown: action.breakdown };
+      return {
+        ...state,
+        costBreakdown: action.breakdown,
+        tokenRate: action.tokenRate ?? state.tokenRate,
+      };
 
     default:
       return state;

@@ -56,6 +56,7 @@ function SectionHeader(props: { readonly title: string }): JSX.Element {
 export function CostDashboardView(): JSX.Element {
   const costBreakdown = useTuiStore((s) => s.costBreakdown);
   const cumulativeMetrics = useTuiStore((s) => s.cumulativeMetrics);
+  const tokenRate = useTuiStore((s) => s.tokenRate);
 
   const totalCost = createMemo(() => {
     const bd = costBreakdown();
@@ -79,6 +80,16 @@ export function CostDashboardView(): JSX.Element {
           {`(${formatTokens(cumulativeMetrics().inputTokens)} in / ${formatTokens(cumulativeMetrics().outputTokens)} out)`}
         </text>
       </box>
+
+      {/* Token rate */}
+      <Show when={tokenRate() !== null}>
+        <box flexDirection="row" gap={2}>
+          <text fg={COLORS.textMuted}>{"Token rate:"}</text>
+          <text fg={COLORS.textSecondary}>
+            {`${formatTokens(Math.round(tokenRate()?.inputPerSecond ?? 0))}/s in · ${formatTokens(Math.round(tokenRate()?.outputPerSecond ?? 0))}/s out`}
+          </text>
+        </box>
+      </Show>
 
       <Show
         when={hasBreakdown()}

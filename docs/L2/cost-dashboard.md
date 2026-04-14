@@ -141,13 +141,44 @@ Without tiered pricing, cost attribution is systematically wrong on every call t
 
 ---
 
+## JSON Export
+
+`exportCostJson()` produces a JSON-serializable snapshot for external dashboards:
+
+```typescript
+import { exportCostJson } from "@koi/cost-aggregator";
+
+const payload = exportCostJson(aggregator, "session-1", tokenRateTracker);
+// payload.breakdown — full CostBreakdown
+// payload.entries — raw CostEntry audit trail from ring buffer
+// payload.formattedTotal — human-readable "$1.23"
+// payload.tokenRate — { inputPerSecond, outputPerSecond }
+// payload.exportedAt — ISO 8601 timestamp
+```
+
+## Token Rate Tracking
+
+`createTokenRateTracker()` provides sliding-window tokens-per-second:
+
+```typescript
+import { createTokenRateTracker } from "@koi/cost-aggregator";
+
+const rate = createTokenRateTracker(30_000); // 30s window
+rate.record(inputTokens, outputTokens);
+console.log(rate.inputPerSecond()); // e.g. 42.5
+```
+
+---
+
 ## Test Coverage
 
-68 tests across 4 files:
+80 tests across 6 files:
 
 | File | Tests | Coverage |
 |------|-------|----------|
 | `ring-buffer.test.ts` | 8 | Wrap, clear, capacity edge cases |
-| `calculator.test.ts` | 20 | All 6 pricing edge cases (cached, reasoning, aliasing, zero, float) |
+| `calculator.test.ts` | 23 | All 6 pricing edge cases (cached, reasoning, aliasing, zero, float) |
 | `thresholds.test.ts` | 14 | Exactly-once, skip-over, re-crossing, per-session isolation |
-| `tracker.test.ts` | 26 | All 4 dimensions, cross-session, ring buffer integration, threshold wiring |
+| `tracker.test.ts` | 23 | All 4 dimensions, cross-session, ring buffer integration, threshold wiring |
+| `token-rate.test.ts` | 7 | Sliding window, pruning, clear/re-record |
+| `export-json.test.ts` | 5 | Empty state, active session, token rate, serialization |

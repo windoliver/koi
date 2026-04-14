@@ -347,6 +347,8 @@ export interface TuiState {
   readonly showThinking: boolean;
   /** Cost breakdown injected by host — null before first cost data push. */
   readonly costBreakdown: CostBreakdown | null;
+  /** Token throughput rate (tokens/sec) — null before first data push. */
+  readonly tokenRate: { readonly inputPerSecond: number; readonly outputPerSecond: number } | null;
 }
 
 /** Summary of a trajectory step for display in the TUI /trajectory view. */
@@ -547,4 +549,7 @@ export type TuiAction =
       /** Injected by the host with cost breakdown data for the cost dashboard view. */
       readonly kind: "set_cost_breakdown";
       readonly breakdown: CostBreakdown;
+      readonly tokenRate?:
+        | { readonly inputPerSecond: number; readonly outputPerSecond: number }
+        | undefined;
     };
