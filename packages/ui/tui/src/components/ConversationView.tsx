@@ -39,24 +39,14 @@ export interface ConversationViewProps {
   readonly treeSitterClient?: TreeSitterClient | undefined;
 }
 
-/** Detect @-mention prefix in input text. Returns partial path or null. */
-function detectAtPrefix(text: string): string | null {
-  const lastAt = text.lastIndexOf("@");
-  if (lastAt < 0) return null;
-  // Only trigger if "@" is preceded by whitespace or is at start
-  if (lastAt > 0 && text[lastAt - 1] !== " " && text[lastAt - 1] !== "\n") return null;
-  const partial = text.slice(lastAt + 1);
-  // Don't trigger on email addresses (contains .com-like patterns before @)
-  if (partial.includes(" ")) return null;
-  return partial;
-}
-
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
   const atQuery = useTuiStore((s) => s.atQuery);
   const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
+  // #10: selected @-mention file path to insert into the textarea
+  const [atInsertPath, setAtInsertPath] = createSignal<string | null>(null);
 
   // Checkpoint marker visibility: show the /rewind hint as soon as the user
   // has submitted at least one message. Each user message corresponds to one
@@ -101,9 +91,11 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     storeCtx?.dispatch({ kind: "set_at_query", query: null });
     storeCtx?.dispatch({ kind: "set_at_results", results: [] });
     props.onAtQuery?.(null);
-    // Insert selected path into the input — communicated via onSubmit pattern
-    // The file path is inserted as "@path" text for the bridge to parse on submit
-    props.onSlashDetected(null);
+    // Insert the selected file path into the textarea via the atInsertPath signal.
+    // InputArea's deferred effect replaces "@partial" with "@path " and dismisses the overlay.
+    setAtInsertPath(path);
+    // Reset the signal so the same path can be selected again if needed
+    queueMicrotask(() => setAtInsertPath(null));
   };
 
   const dismissAtOverlay = (): void => {
@@ -229,6 +221,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         // continues typing to filter commands. Disabling the input would freeze
         // the query at the first "/" and break slash-command filtering.
         clearTrigger={clearTrigger()}
+        atInsertPath={atInsertPath()}
       />
       {/* SlashOverlay is rendered after InputArea with position="absolute" so it
           floats just above the input without affecting the flex layout.

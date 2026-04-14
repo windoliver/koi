@@ -14,21 +14,12 @@ import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
+import { detectAtPrefix } from "../commands/at-detection.js";
 import { detectSlashPrefix } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
 import { readClipboardImage } from "../utils/clipboard.js";
 import { COLORS } from "../theme.js";
 import { processInputKey } from "./input-keys.js";
-
-/** Detect @-mention prefix — returns partial path or null. */
-function detectAtPrefix(text: string): string | null {
-  const lastAt = text.lastIndexOf("@");
-  if (lastAt < 0) return null;
-  if (lastAt > 0 && text[lastAt - 1] !== " " && text[lastAt - 1] !== "\n") return null;
-  const partial = text.slice(lastAt + 1);
-  if (partial.includes(" ") || partial.includes("\n")) return null;
-  return partial;
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,6 +29,7 @@ function detectAtPrefix(text: string): string | null {
 interface TextareaRenderable {
   readonly plainText: string;
   setText(text: string): void;
+  setCursor(row: number, col: number): void;
 }
 
 export interface InputAreaProps {
@@ -77,6 +69,12 @@ export interface InputAreaProps {
    * The initial value (on mount) does NOT trigger a clear — only changes do.
    */
   readonly clearTrigger?: number | undefined;
+  /**
+   * When set, replaces the current @-mention partial in the textarea with
+   * this file path (formatted as "@path "). Cleared back to null by the parent
+   * after each insertion. Uses deferred effect — the initial null does not trigger.
+   */
+  readonly atInsertPath?: string | null | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +136,37 @@ export function InputArea(props: InputAreaProps): JSX.Element {
     ),
   );
 
+  // #10: replace @-partial with selected file path when atInsertPath changes
+  createEffect(
+    on(
+      () => props.atInsertPath,
+      (path) => {
+        if (path === null || path === undefined) return;
+        const text = safeText();
+        const lastAt = text.lastIndexOf("@");
+        if (lastAt < 0) return;
+        // Replace everything from "@" to end with "@selectedPath ".
+        // Quote paths containing spaces so the @-reference parser can
+        // round-trip them correctly (unquoted @path stops at first space).
+        const before = text.slice(0, lastAt);
+        const formattedRef = path.includes(" ") ? `@"${path}"` : `@${path}`;
+        const newText = `${before}${formattedRef} `;
+        safeSetText(newText);
+        // Move cursor to end of inserted text so the user can continue typing
+        if (!disposed && textareaRef !== null) {
+          try {
+            textareaRef.setCursor(0, newText.length);
+          } catch {
+            /* buffer destroyed during teardown */
+          }
+        }
+        // Dismiss the overlay after insertion
+        props.onAtDetected?.(null);
+      },
+      { defer: true },
+    ),
+  );
+
   useKeyboard((key: KeyEvent) => {
     if (disposed || !props.focused || disabledRef) return;
 
@@ -166,6 +195,15 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           props.onSlashSubmit?.(result.text);
           safeSetText("");
           props.onSlashDetected(null);
+          break;
+        }
+        // #10: Same guard for @-mention overlay. When an active @-mention
+        // is detected (no space after @), the AtOverlay owns Enter —
+        // SelectOverlay handles the selection and inserts the file path.
+        // Once inserted, the trailing space makes detectAtPrefix return
+        // null, so the next Enter submits normally. Matches CC behavior:
+        // Enter with active suggestions = select, not submit.
+        if (detectAtPrefix(result.text) !== null) {
           break;
         }
         if (result.text.trim() !== "") {
@@ -216,9 +254,11 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         // Skip history when:
         // - Multiline input: let textarea handle normal caret movement
         // - Slash overlay active: let overlay own Up/Down for selection
+        // - @-mention overlay active: let AtOverlay own Up/Down for file selection
         const isMultiline = text.includes("\n");
         const slashActive = detectSlashPrefix(text) !== null;
-        if (isMultiline || slashActive) break;
+        const atActive = detectAtPrefix(text) !== null;
+        if (isMultiline || slashActive || atActive) break;
 
         key.preventDefault();
         if (props.onHistoryNav) {
@@ -226,10 +266,11 @@ export function InputArea(props: InputAreaProps): JSX.Element {
           const historyText = props.onHistoryNav(direction, text);
           if (historyText !== null) {
             safeSetText(historyText);
-            // Recompute slash state after programmatic text replacement
-            // so the overlay stays in sync with the buffer contents
+            // Recompute slash and @-mention state after programmatic text
+            // replacement so overlays stay in sync with buffer contents
             queueMicrotask(() => {
               props.onSlashDetected(detectSlashPrefix(historyText));
+              props.onAtDetected?.(detectAtPrefix(historyText));
             });
           }
         }

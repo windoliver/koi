@@ -68,9 +68,11 @@ import {
 } from "@koi/tui";
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
+import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
+import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
@@ -1890,6 +1892,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     })();
   };
 
+  // #10: @-mention file completion handler — scans cwd via git ls-files,
+  // caches file list with 5s TTL, fuzzy-filters, and dispatches results.
+  const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
+    store.dispatch({ kind: "set_at_results", results }),
+  );
+
   const result = createTuiApp({
     store,
     permissionBridge,
@@ -2608,18 +2616,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
-        // #1742 loop-3 round 3: construct the stream FIRST, dispatch
-        // the user message only AFTER stream construction succeeds.
-        // Otherwise a synchronous rejection (poisoned runtime, disposed,
-        // lifecycleInFlight) leaves a phantom user message in the UI
-        // with no corresponding engine stream.
+        // #10: resolve @-mention file references before sending to the engine.
+        // Parses @path and @path#L10-20, reads files, injects content so the
+        // model sees the file directly without needing to call Glob/fs_read.
+        const resolved = resolveAtReferences(text, process.cwd());
+        const modelText =
+          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
         let stream: AsyncIterable<EngineEvent>;
         try {
           stream = isLoopMode
-            ? runTuiLoopTurn(handle.runtime, text, controller.signal, flags, store)
+            ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
             : handle.runtime.run({
                 kind: "text",
-                text,
+                text: modelText,
                 signal: controller.signal,
               });
         } catch (err) {
@@ -2725,6 +2735,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     // #16: turn-complete notification
     onTurnComplete: handleTurnComplete,
+    // #10: @-mention file completion
+    onAtQuery: handleAtQuery,
   });
 
   if (!result.ok) {

@@ -574,5 +574,6 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 
 ## Changelog
 
+- **@-mention file completion + content injection (#1782)** — `tui-command.ts` wires `onAtQuery` callback with `createFileCompletionHandler` (FileIndex bitmap pre-filter + nucleo-style scorer over cached `git ls-files`). New `at-reference.ts` parses `@path`, `@path#L10-20`, `@"quoted"` from submitted text, reads files with realpathSync containment, and injects `<file>` context blocks into `modelText` before `runtime.run()` — model sees content directly without tool calls.
 - **Cost attribution dashboard (#1636)** — `@koi/cost-aggregator` wired via `CostBridge` in tui-command.ts. Tracks per-model/provider cost from engine done events, computes pricing via models.dev live table, pushes breakdown to TUI `CostDashboardView` with 200ms debounce. Accessible via Ctrl+P → "Cost Dashboard".
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.

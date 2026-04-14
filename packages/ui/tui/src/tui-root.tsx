@@ -123,6 +123,13 @@ export interface TuiRootProps {
    * falls back to <text> (prose renders correctly; see #1542 for full init).
    */
   readonly treeSitterClient?: TreeSitterClient | undefined;
+  /**
+   * Called when the @-mention query changes in the input area (#10).
+   * The host uses this to run file completion (glob / git ls-files)
+   * and dispatch set_at_results back to the store.
+   * Null signals the overlay was dismissed.
+   */
+  readonly onAtQuery?: ((query: string | null) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +363,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             onSubmit={props.onSubmit}
             onSlashDetected={handleSlashDetected}
             onSlashSelect={handleSlashSelect}
+            onAtQuery={props.onAtQuery}
             onImageAttach={props.onImageAttach}
             focused={!hasModal()}
             syntaxStyle={props.syntaxStyle}
