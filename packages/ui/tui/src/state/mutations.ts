@@ -568,6 +568,21 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
+    case "tool_execution_started": {
+      // Reset startedAt on the tool-call block with matching callId.
+      // Dispatched by the permission bridge after a user approves a
+      // permission prompt. Keyed by callId (not toolName) so queued
+      // prompts for the same tool cannot cross-reset each other. (#1759)
+      const msg = lastAssistant(state);
+      if (!msg) break;
+      const blockIdx = findToolBlockIdx(msg.blocks, action.callId);
+      if (blockIdx < 0) break;
+      const block = msg.blocks[blockIdx] as ToolCallBlock;
+      if (block.status !== "running") break;
+      (block as { startedAt?: number }).startedAt = Date.now();
+      break;
+    }
+
     case "set_session_info": {
       (state as { sessionInfo: SessionInfo }).sessionInfo = {
         modelName: action.modelName,

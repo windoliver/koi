@@ -9,9 +9,16 @@
  * - Bridge resolves the Promise, dispatches permission_response to store, shows next queue item
  * - Bridge owns the queue — reducer just renders whatever modal it's told
  *
- * Timeout: 30s fail-closed deny (Decision 7A, matches @koi/acp precedent).
- * Timer starts when the prompt becomes visible, not at enqueue — queued prompts
- * don't time out while waiting behind another prompt.
+ * Timeout: default is `Number.POSITIVE_INFINITY` — permission prompts wait
+ * indefinitely for the user to respond. Callers can still pass a finite
+ * `timeoutMs` in tests or in agent-to-agent scenarios where a hung approval
+ * handler must be recovered from. The engine-side middleware also defaults
+ * to no approval timeout (see @koi/middleware-permissions config). (#1759)
+ *
+ * When a user approves (allow / always-allow / modify), the bridge dispatches
+ * `tool_execution_started` so the TUI reducer can reset startedAt on the
+ * matching running tool block — this prevents the elapsed-time counter from
+ * including the user's read/decide time.
  */
 
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@koi/core/middleware";
@@ -23,9 +30,17 @@ import type { PermissionPromptData, PermissionRiskLevel, TuiModal } from "../sta
 // ---------------------------------------------------------------------------
 
 /**
- * Default timeout for permission prompts (ms). Fail-closed deny after this.
- * Aligned with @koi/middleware-permissions DEFAULT_APPROVAL_TIMEOUT_MS (30s)
- * so the TUI prompt cannot outlive the engine-side approval window.
+ * Default timeout for permission prompts (ms). 30s fail-closed deny,
+ * aligned with @koi/middleware-permissions DEFAULT_APPROVAL_TIMEOUT_MS so
+ * the TUI prompt and the engine-side approval window share the same policy
+ * by default.
+ *
+ * Interactive TUI wiring opts into `Number.POSITIVE_INFINITY` explicitly
+ * (see `packages/meta/cli/src/tui-command.ts`) to give users unbounded
+ * decide-time on permission prompts. Ctrl+C remains the escape hatch.
+ *
+ * The bridge still honors a finite `timeoutMs` argument — startTimer /
+ * lifetimeTimer only no-op when the caller asks for Infinity. (#1759)
  */
 export const DEFAULT_PERMISSION_TIMEOUT_MS = 30_000;
 
@@ -36,12 +51,28 @@ export const DEFAULT_PERMISSION_TIMEOUT_MS = 30_000;
 /** Pending approval entry — one per in-flight permission prompt. */
 interface PendingApproval {
   readonly requestId: string;
+  /**
+   * Call-scoped identifier from `ApprovalRequest.metadata.callId` (set by
+   * the turn-runner). When present, the bridge dispatches
+   * `tool_execution_started` with this id so the reducer can reset
+   * `startedAt` on the exact running tool block instead of matching on
+   * tool name (which can collide across queued prompts). `undefined` if
+   * upstream didn't thread a callId — falls back to best-effort behavior.
+   * (#1759 round 1 review)
+   */
+  readonly callId: string | undefined;
   readonly resolve: (decision: ApprovalDecision) => void;
-  /** UX timer — starts when prompt becomes visible (front of queue). */
+  /**
+   * UX timer — starts when prompt becomes visible (front of queue).
+   * `null` if timeouts are disabled (timeoutMs === Infinity).
+   */
   timer: ReturnType<typeof setTimeout> | null;
-  /** Backstop timer — starts at enqueue, ensures prompt can't outlive engine timeout.
-   *  Prevents stale prompts from being shown after the engine already timed out. */
-  readonly lifetimeTimer: ReturnType<typeof setTimeout>;
+  /**
+   * Backstop timer — starts at enqueue, ensures prompt can't outlive engine timeout.
+   * Prevents stale prompts from being shown after the engine already timed out.
+   * `null` if timeouts are disabled (timeoutMs === Infinity).
+   */
+  readonly lifetimeTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /** Options for creating a permission bridge. */
@@ -62,8 +93,19 @@ export interface PermissionBridge {
   readonly handler: ApprovalHandler;
   /** Respond to a permission prompt. Called by TUI components (y/n/a keys). */
   readonly respond: (requestId: string, decision: ApprovalDecision) => void;
-  /** Cleanup: deny all pending, clear timers. */
+  /** Terminal cleanup. Use only for shutdown — the handle should not be
+   *  reused afterwards. For transient aborts/session resets, use
+   *  `cancelPending` instead. */
   readonly dispose: () => void;
+  /**
+   * Deny every in-flight approval and dismiss the modal without tearing
+   * the bridge down. Safe to call between turns: subsequent
+   * `handleApproval` calls keep working normally. Wired into per-turn
+   * Ctrl+C, `agent:clear`, `session:new`, and session resume so users
+   * are not stuck behind a stale modal for the full 60-minute interactive
+   * approval window. (#1759 review round 2)
+   */
+  readonly cancelPending: (reason: string) => void;
   /** Number of pending (unresolved) approval requests. */
   readonly pendingCount: () => number;
 }
@@ -98,14 +140,26 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
   // Pending approvals keyed by requestId
   const pending = new Map<string, PendingApproval>();
 
+  // Monotonically increasing counter assigned per `handleApproval` call —
+  // shown to the user in the prompt header so consecutive prompts (which
+  // the engine often serializes one-at-a-time, see #1759) have a visibly
+  // different number. Without this, the user can't tell whether the prompt
+  // that appeared after pressing `y` is a NEW tool call or a re-render of
+  // the same one. Process-scoped, never persisted.
+  // let: justified — incremented per prompt
+  let promptSequenceCounter = 0;
+
   // Queue of prompt data waiting to be shown (front = currently displayed)
   const queue: PermissionPromptData[] = [];
 
   // Modal that was active before the bridge took over — restored when queue empties
   let savedModal: TuiModal | null = null;
 
-  // Start the timeout for a pending entry (called when it becomes visible)
+  // Start the timeout for a pending entry (called when it becomes visible).
+  // No-op when `timeoutMs` is Infinity — the user is given unbounded time
+  // to respond (see #1759).
   function startTimer(entry: PendingApproval): void {
+    if (!Number.isFinite(timeoutMs)) return;
     if (entry.timer !== null) return; // already started
     entry.timer = setTimeout(() => {
       if (!pending.has(entry.requestId)) return; // already resolved
@@ -120,7 +174,18 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
   function showFrontOrDismiss(): void {
     const front = queue[0];
     if (front !== undefined) {
-      store.dispatch({ kind: "set_modal", modal: { kind: "permission-prompt", prompt: front } });
+      // Annotate the front prompt with its 1-indexed position in the
+      // pending queue (always 1 — the front is the visible one) and the
+      // total depth, so the PermissionPrompt component can render a
+      // "(1 of N)" hint. Without this, users hit y to approve, see the
+      // next queued prompt pop up, and assume the prior approval failed.
+      // (#1759)
+      const decorated: PermissionPromptData =
+        queue.length > 1 ? { ...front, queuePosition: 1, queueDepth: queue.length } : front;
+      store.dispatch({
+        kind: "set_modal",
+        modal: { kind: "permission-prompt", prompt: decorated },
+      });
       // Start timeout now that this prompt is visible to the user
       const entry = pending.get(front.requestId);
       if (entry !== undefined) {
@@ -150,6 +215,7 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
       // requests are visually prominent even if the caller forgets to wire classifyRisk.
       const riskLevel = classifyRisk !== undefined ? classifyRisk(request) : "high";
 
+      promptSequenceCounter += 1;
       const promptData: PermissionPromptData = {
         requestId,
         toolId: request.toolId,
@@ -158,20 +224,39 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
         riskLevel,
         metadata: request.metadata,
         permanentAvailable,
+        sequenceNumber: promptSequenceCounter,
       };
 
       // Backstop lifetime timer — starts NOW at enqueue time, matching the engine's
       // approval timeout window. Ensures a queued prompt that never becomes visible
       // is cleaned up before the engine times out, preventing stale prompts.
-      const lifetimeTimer = setTimeout(() => {
-        if (!pending.has(requestId)) return; // already resolved
-        pending.delete(requestId);
-        removeAndAdvance(requestId);
-        resolve({ kind: "deny", reason: "Permission prompt timed out" });
-      }, timeoutMs);
+      //
+      // No-op when `timeoutMs` is Infinity: users get unbounded time to
+      // respond, so there is nothing to back-stop. (#1759)
+      const lifetimeTimer: ReturnType<typeof setTimeout> | null = Number.isFinite(timeoutMs)
+        ? setTimeout(() => {
+            if (!pending.has(requestId)) return; // already resolved
+            pending.delete(requestId);
+            removeAndAdvance(requestId);
+            resolve({ kind: "deny", reason: "Permission prompt timed out" });
+          }, timeoutMs)
+        : null;
+
+      // Pick up the call-scoped id from the dedicated `callId` field on
+      // ApprovalRequest (turn-runner sets ToolRequest.callId, the
+      // permissions middleware forwards it here). NOT inside `metadata`
+      // — `metadata` is policy-visible and we deliberately keep
+      // UI/observability identifiers out of it. (#1759 round 6)
+      const callId = request.callId;
 
       // UX timer starts null — only activated when the prompt reaches the front of the queue
-      const entry: PendingApproval = { requestId, resolve, timer: null, lifetimeTimer };
+      const entry: PendingApproval = {
+        requestId,
+        callId,
+        resolve,
+        timer: null,
+        lifetimeTimer,
+      };
       pending.set(requestId, entry);
 
       // Save the current modal before the bridge takes over (first prompt only)
@@ -206,38 +291,93 @@ export function createPermissionBridge(options: PermissionBridgeOptions): Permis
     if (entry.timer !== null) {
       clearTimeout(entry.timer);
     }
-    clearTimeout(entry.lifetimeTimer);
+    if (entry.lifetimeTimer !== null) {
+      clearTimeout(entry.lifetimeTimer);
+    }
     pending.delete(requestId);
     removeAndAdvance(requestId);
 
     // Dispatch to store so reducer dismisses modal
     store.dispatch({ kind: "permission_response", requestId, decision });
 
+    // If the user approved, notify the reducer so the exact running tool
+    // block resets its startedAt — the elapsed-time counter will then reflect
+    // actual tool execution time, not the user's read/decide time. The
+    // dispatch is keyed by callId when available so queued prompts for the
+    // same tool cannot cross-reset each other. (#1759)
+    if (
+      entry.callId !== undefined &&
+      (decision.kind === "allow" || decision.kind === "always-allow" || decision.kind === "modify")
+    ) {
+      store.dispatch({ kind: "tool_execution_started", callId: entry.callId });
+    }
+
     // Resolve the engine's awaited Promise
     entry.resolve(decision);
   }
 
-  function dispose(): void {
-    // Deny all pending with cleanup reason
+  /**
+   * Internal: deny every pending approval, clear the queue, and either
+   * restore the prior modal (`restoreSavedModal: true` — used by
+   * `dispose()` for terminal shutdown / unit-test teardown) or clear it
+   * outright (`restoreSavedModal: false` — used by `cancelPending()` for
+   * reset/abort flows where leaking a stale overlay into the new session
+   * would be wrong).
+   */
+  function denyAllPending(reason: string, restoreSavedModal: boolean): void {
     for (const entry of pending.values()) {
       if (entry.timer !== null) {
         clearTimeout(entry.timer);
       }
-      clearTimeout(entry.lifetimeTimer);
-      entry.resolve({ kind: "deny", reason: "Permission bridge disposed" });
+      if (entry.lifetimeTimer !== null) {
+        clearTimeout(entry.lifetimeTimer);
+      }
+      entry.resolve({ kind: "deny", reason });
     }
     pending.clear();
     queue.length = 0;
-
-    // Restore the modal that was active before the bridge took over (or null)
-    store.dispatch({ kind: "set_modal", modal: savedModal });
+    store.dispatch({ kind: "set_modal", modal: restoreSavedModal ? savedModal : null });
     savedModal = null;
+  }
+
+  /**
+   * Deny every pending approval and CLEAR the modal (does not restore
+   * `savedModal`) without tearing the bridge down. Use this for
+   * transient aborts where the bridge must keep accepting future
+   * prompts: per-turn Ctrl+C, `agent:clear`, `session:new`, session
+   * resume, etc.
+   *
+   * Modal handling: cancellation explicitly clears the modal to `null`
+   * rather than restoring `savedModal` (the overlay that was open when
+   * the bridge first took over, e.g. command palette, session picker).
+   * Restoring a pre-prompt overlay across a reset would leak stale UI
+   * state into a freshly cleared session and could steer the next user
+   * action at the wrong context. (#1759 review round 8)
+   *
+   * Without this hook, a 60-minute interactive approval timeout combined
+   * with a session reset would leave the user staring at a stale modal
+   * for up to an hour after they tried to recover from a wedged turn.
+   */
+  function cancelPending(reason: string): void {
+    denyAllPending(reason, /* restoreSavedModal */ false);
+  }
+
+  /**
+   * Terminal cleanup. Denies every pending approval and restores the
+   * modal that was active before the bridge took over (or null). The
+   * restore behavior exists so a transient bridge teardown — e.g.
+   * unit-test cleanup, hot reload — does not leave the UI stuck on a
+   * dispatched permission overlay. Real shutdowns don't care.
+   */
+  function dispose(): void {
+    denyAllPending("Permission bridge disposed", /* restoreSavedModal */ true);
   }
 
   return {
     handler: handleApproval,
     respond,
     dispose,
+    cancelPending,
     pendingCount: () => pending.size,
   };
 }

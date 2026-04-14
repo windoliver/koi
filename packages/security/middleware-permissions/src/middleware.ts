@@ -1109,6 +1109,12 @@ export function createPermissionsMiddleware(
       request: ToolRequest,
       next: ToolHandler,
     ): Promise<ToolResponse> {
+      // `callId` is a UI/observability identifier carried on a dedicated
+      // ToolRequest.callId field (NOT inside `metadata`), so it never
+      // enters the backend policy query, the approval cache key, or
+      // the in-flight dedup key. That keeps approval coalescing on
+      // identical inputs intact while preserving custom-backend
+      // visibility into request.metadata. (#1759 review round 6)
       const query = queryForTool(ctx, request.toolId, request.metadata);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
@@ -1414,25 +1420,37 @@ export function createPermissionsMiddleware(
     const approvalStartMs = clock();
     const ac = new AbortController();
 
-    const approvalPromise = Promise.race([
+    // When approvalTimeoutMs is Infinity (default, see #1759), the timeout
+    // leg is omitted entirely — users get unbounded time to respond to
+    // interactive permission prompts. Agent-to-agent callers that need a
+    // hung-handler backstop should pass a finite value explicitly.
+    const approvalRace: readonly Promise<unknown>[] = [
       approvalHandler({
         toolId: request.toolId,
         input: request.input,
         reason: decision.reason,
         ...(request.metadata !== undefined ? { metadata: request.metadata } : {}),
+        // Forward the per-invocation correlation id (UI-only — never
+        // touches policy or cache identity). The TUI permission bridge
+        // reads this to dispatch a per-call timer reset. (#1759 round 6)
+        ...(request.callId !== undefined ? { callId: request.callId } : {}),
       }),
-      new Promise<never>((_, reject) => {
-        const timerId = setTimeout(() => {
-          reject(
-            new KoiRuntimeError({
-              code: "TIMEOUT",
-              message: `Approval for "${request.toolId}" timed out after ${approvalTimeoutMs}ms`,
-              retryable: false,
+      ...(Number.isFinite(approvalTimeoutMs)
+        ? [
+            new Promise<never>((_, reject) => {
+              const timerId = setTimeout(() => {
+                reject(
+                  new KoiRuntimeError({
+                    code: "TIMEOUT",
+                    message: `Approval for "${request.toolId}" timed out after ${approvalTimeoutMs}ms`,
+                    retryable: false,
+                  }),
+                );
+              }, approvalTimeoutMs);
+              ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
             }),
-          );
-        }, approvalTimeoutMs);
-        ac.signal.addEventListener("abort", () => clearTimeout(timerId), { once: true });
-      }),
+          ]
+        : []),
       // Race against the turn/session abort signal so an aborted turn
       // (Ctrl+C / agent:clear) cannot win approval and execute the tool
       // in what the user now believes is a fresh session.
@@ -1469,7 +1487,9 @@ export function createPermissionsMiddleware(
             ];
           })()
         : []),
-    ]).finally(() => {
+    ];
+
+    const approvalPromise = Promise.race(approvalRace).finally(() => {
       ac.abort();
       if (dedupKey !== undefined) {
         inflightApprovals.delete(dedupKey);

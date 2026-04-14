@@ -595,6 +595,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const permissionBridge = createPermissionBridge({
     store,
     permanentAvailable: approvalStore !== undefined,
+    // #1759: interactive users get effectively unbounded decide-time on
+    // permission prompts (60 minutes). Much longer than any reasonable
+    // human decision window, but still finite so a wedged renderer /
+    // stuck input / detached terminal eventually fails closed instead
+    // of hanging forever. Aligned with the engine-side TUI_APPROVAL_TIMEOUT_MS
+    // in tui-runtime.ts so both layers share the same deadline.
+    timeoutMs: 60 * 60 * 1000,
   });
 
   // Flush callback: reduces entire batch in one pass, single notification.
@@ -717,8 +724,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // earlier turns or permanently break MCP tools for the rest of the
   // session. Users who want to reset everything can use `/clear` or quit.
   const abortActiveStream = (): void => {
-    permissionBridge.dispose();
+    // Order matters here. The permissions middleware races the approval
+    // handler against `ctx.signal` (see handleAskDecision). If
+    // `cancelPending` runs first, the approval Promise settles with a
+    // synthetic `{kind:"deny"}` BEFORE the abort signal fires — the
+    // middleware then treats the turn as a normal permission denial
+    // and emits the wrong stopReason. Aborting the controller first
+    // means the signal is already raised when the deny resolves, so the
+    // middleware's signal-race branch wins and the turn ends as
+    // `stopReason: "interrupted"`. The cancelPending call still runs to
+    // dismiss the modal and keep the bridge usable for the next turn.
+    // (#1759 review round 5)
     activeController?.abort();
+    permissionBridge.cancelPending("Turn cancelled by user");
   };
 
   // TUI interrupt protocol (see docs/L2/interrupt.md, issue #1653):
@@ -830,6 +848,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal.aborted === true before calling resetSessionState().
     activeController?.abort();
     activeController = null;
+
+    // Cancel any pending permission prompts and dismiss the modal so a
+    // session reset (`agent:clear`, `session:new`, resume) doesn't leave
+    // the user stuck behind a stale 60-minute approval window. The bridge
+    // stays usable for the next turn. (#1759 review round 2)
+    permissionBridge.cancelPending("Session reset");
 
     // dispose() drops the buffer without flushing — the in-flight drainEngineStream
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.

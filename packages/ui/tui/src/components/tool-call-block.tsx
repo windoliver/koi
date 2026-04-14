@@ -223,6 +223,26 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
   // #7: per-block full-body expand (show more / truncated view)
   const isBodyExpanded = useTuiStore((s) => s.expandedBodyToolCallIds.has(props.block.callId));
 
+  // #1759: hide the elapsed-time counter on ANY running tool block while a
+  // permission prompt is open. The turn-runner executes tool calls
+  // sequentially (see @koi/query-engine turn-runner.ts), so while a single
+  // permission prompt is blocking, the entire turn is blocked — every
+  // "running" tool block in the current turn is effectively paused, waiting
+  // on the user's decision. Their wall-clock elapsed counters would lie
+  // about execution time if we let them keep ticking.
+  //
+  // A narrower per-call match (via `metadata.callId` or toolName) sounds
+  // more precise, but in practice it under-hides: when the model emits
+  // multiple tool calls in one turn, the first of them may have its status
+  // still rendered as "running" from the UI's perspective while a later
+  // call in the same batch is the one waiting on approval. The broader
+  // "any pending prompt blocks all timers" rule matches the turn-runner's
+  // actual serialization semantics and avoids the ticking-while-waiting
+  // regression seen in manual testing.
+  const isAwaitingApproval = useTuiStore(
+    (s) => props.block.status === "running" && s.modal?.kind === "permission-prompt",
+  );
+
   /** Merge arg chips and result chips for the chips row. */
   const allChips = createMemo((): readonly string[] => {
     const argChips = display()?.chips ?? [];
@@ -273,7 +293,7 @@ export function ToolCallBlock(props: ToolCallBlockProps): JSX.Element {
         <StatusIndicator
           status={props.block.status}
           spinnerFrame={props.spinnerFrame}
-          startedAt={props.block.startedAt}
+          startedAt={isAwaitingApproval() ? undefined : props.block.startedAt}
           durationMs={props.block.durationMs}
         />
         <Show

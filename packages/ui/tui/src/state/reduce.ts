@@ -388,6 +388,12 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       const initialArgs =
         event.args !== undefined ? capOutput(JSON.stringify(event.args)) : undefined;
 
+      // startedAt is set here as a best-effort initial timestamp for the
+      // common fast-path (allow / cached-allow decisions, no user prompt).
+      // The permission bridge dispatches `tool_execution_started` after a
+      // user actually approves an ask-path prompt, which RESETS this
+      // timestamp to Date.now() so the elapsed-time counter doesn't include
+      // the user's read/decide time. (See #1759.)
       const newBlock: TuiAssistantBlock = {
         kind: "tool_call",
         callId,
@@ -701,6 +707,27 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         return state;
       }
       return { ...state, modal: null };
+    }
+
+    case "tool_execution_started": {
+      // Reset startedAt on the tool-call block with matching callId.
+      // Dispatched by the permission bridge after a user approves a
+      // permission prompt, so the elapsed-time counter reflects actual
+      // tool execution time — not the user's read/decide time. Keyed by
+      // callId (not toolName) so queued prompts for the same tool cannot
+      // cross-reset each other. (#1759)
+      const found = findLastAssistant(state.messages);
+      if (found === undefined) return state;
+      const tool = findToolBlock(found.msg.blocks, action.callId);
+      if (tool === undefined || tool.block.status !== "running") return state;
+      const updatedBlocks = replaceAt(found.msg.blocks, tool.blockIdx, {
+        ...tool.block,
+        startedAt: Date.now(),
+      });
+      return {
+        ...state,
+        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+      };
     }
 
     case "set_session_info": {

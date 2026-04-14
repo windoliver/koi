@@ -128,6 +128,17 @@ export interface ToolRequest {
   readonly input: JsonObject;
   readonly metadata?: JsonObject;
   readonly signal?: AbortSignal | undefined;
+  /**
+   * Per-invocation correlation id, opaque to the policy layer. Set by the
+   * turn runner from the LLM-generated tool-call id and forwarded by the
+   * permission middleware to {@link ApprovalRequest.callId} so UI layers
+   * (e.g. the TUI permission bridge / tool-call timer reset) can target a
+   * specific invocation. INTENTIONALLY NOT part of `metadata` — UI/
+   * observability identifiers MUST NOT influence policy queries or
+   * approval-cache identity, otherwise per-invocation policy decisions
+   * could be defeated by approval coalescing. (#1759)
+   */
+  readonly callId?: string | undefined;
 }
 
 export interface ToolResponse {
@@ -142,6 +153,13 @@ export interface ApprovalRequest {
   readonly input: JsonObject;
   readonly reason: string;
   readonly metadata?: JsonObject;
+  /**
+   * Mirror of {@link ToolRequest.callId} — opaque per-invocation id for
+   * UI / observability layers (e.g. permission-bridge timer reset). Not
+   * part of `metadata` so it cannot bleed into policy queries or
+   * approval-cache identity. (#1759)
+   */
+  readonly callId?: string | undefined;
 }
 
 export type ApprovalDecision =
