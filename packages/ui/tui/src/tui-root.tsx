@@ -377,7 +377,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         <Match when={viewSignal() === "trajectory"}>
           <TrajectoryView />
         </Match>
-        <Match when={activeView() === "cost"}>
+        <Match when={viewSignal() === "cost"}>
           <CostDashboardView />
         </Match>
       </Switch>
