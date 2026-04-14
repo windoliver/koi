@@ -206,19 +206,69 @@ function mapSourceState(status: { readonly state: string }): string {
 }
 
 /**
+ * Build a compact run-report summary string for the TUI's `/trajectory` view
+ * without serializing the full report tree. Avoids the avoidable
+ * `JSON.stringify` of nested `childReports` on every refresh, which can
+ * spike CPU/memory when a delegated run has a large nested report. (#1764)
+ *
+ * Picks: high-level summary text (truncated), action / artifact / issue /
+ * recommendation counts, child-report count, and total token usage. Output
+ * is deterministic and bounded by RUN_REPORT_SUMMARY_MAX_CHARS irrespective
+ * of report depth.
+ */
+const RUN_REPORT_SUMMARY_MAX_CHARS = 300;
+const RUN_REPORT_SUMMARY_TEXT_BUDGET = 180;
+/** @internal — exported for unit tests only. */
+export function summarizeRunReport(runReport: {
+  readonly summary?: string;
+  readonly actions?: { readonly length: number };
+  readonly artifacts?: { readonly length: number };
+  readonly issues?: { readonly length: number };
+  readonly recommendations?: { readonly length: number };
+  readonly childReports?: { readonly length: number } | undefined;
+  readonly cost?: { readonly totalTokens?: number };
+}): string {
+  const summaryText =
+    typeof runReport.summary === "string"
+      ? runReport.summary.length > RUN_REPORT_SUMMARY_TEXT_BUDGET
+        ? `${runReport.summary.slice(0, RUN_REPORT_SUMMARY_TEXT_BUDGET - 1)}…`
+        : runReport.summary
+      : "";
+  const actions = runReport.actions?.length ?? 0;
+  const artifacts = runReport.artifacts?.length ?? 0;
+  const issues = runReport.issues?.length ?? 0;
+  const recommendations = runReport.recommendations?.length ?? 0;
+  const children = runReport.childReports?.length ?? 0;
+  const totalTokens = runReport.cost?.totalTokens ?? 0;
+  const counts = `actions=${actions} artifacts=${artifacts} issues=${issues} recs=${recommendations} children=${children} tokens=${totalTokens}`;
+  const composed = summaryText !== "" ? `${summaryText} · ${counts}` : counts;
+  return composed.length > RUN_REPORT_SUMMARY_MAX_CHARS
+    ? composed.slice(0, RUN_REPORT_SUMMARY_MAX_CHARS - 1) + "…"
+    : composed;
+}
+
+/**
  * Refresh trajectory + ledger data and dispatch to the TUI store.
  *
  * Uses the decision ledger as the single data source for all three lanes
  * (trajectory, audit, report). Falls back to raw getTrajectorySteps()
  * if the ledger query fails.
+ *
+ * Stale-refresh guard (#1764): callers schedule this fire-and-forget on a
+ * 500 ms delay after the turn completes. If `resetConversation()` /
+ * `session:new` runs in that window, `isStillCurrent()` flips and the
+ * dispatch is skipped — otherwise the post-reset store would be
+ * repopulated with the prior session's trajectory.
  */
 async function refreshTrajectoryData(
   handle: TuiRuntimeHandle,
   store: TuiStore,
   currentSessionId: string,
+  isStillCurrent: () => boolean,
 ): Promise<void> {
   const reader = handle.createDecisionLedger();
   const result = await reader.getLedger(currentSessionId);
+  if (!isStillCurrent()) return;
   if (result.ok) {
     const ledger = result.value;
     store.dispatch({
@@ -231,11 +281,12 @@ async function refreshTrajectoryData(
         report: mapSourceState(ledger.sources.report),
       },
       runReportSummary:
-        ledger.runReport !== undefined ? JSON.stringify(ledger.runReport).slice(0, 300) : undefined,
+        ledger.runReport !== undefined ? summarizeRunReport(ledger.runReport) : undefined,
     });
   } else {
     // Fallback: raw trajectory steps without ledger enrichment
     const steps = await handle.getTrajectorySteps();
+    if (!isStillCurrent()) return;
     store.dispatch({ kind: "set_trajectory_data", steps: mapTrajectorySteps(steps) });
   }
 }
@@ -843,6 +894,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — incremented per user submission
   let tuiTurnCounter = 0;
 
+  // Generation token for asynchronous /trajectory refreshes (#1764). Each
+  // call to `resetConversation()` increments this; in-flight refreshes
+  // capture the value at scheduling time and skip their dispatch if the
+  // generation has advanced. Without this, a delayed refresh from turn N
+  // can repopulate the just-cleared store with that turn's stale data
+  // after a session:new / resume / agent:clear runs.
+  // let: justified — incremented per session reset
+  let trajectoryRefreshGen = 0;
+
   const resetConversation = (): void => {
     // Abort the active controller first — C4-A ordering constraint requires
     // signal.aborted === true before calling resetSessionState().
@@ -859,6 +919,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // still holds the old batcher ref, so its later enqueue/flushSync are no-ops.
     batcher.dispose();
     batcher = createEventBatcher<EngineEvent>(dispatchBatch);
+
+    // Invalidate any in-flight refreshTrajectoryData() that was scheduled
+    // before this reset — its captured gen will no longer match. The
+    // destructive store clearing (clear_messages, set_trajectory_data,
+    // tuiTurnCounter) is deferred to the resetSessionState success branch
+    // per the #1742 fail-closed contract, but the generation bump must
+    // fire IMMEDIATELY so a late refresh cannot race ahead of that branch
+    // and repopulate stale lanes in the window between here and the
+    // success callback. The counter is local state, not store state, so
+    // it's safe to bump eagerly. (#1764)
+    trajectoryRefreshGen += 1;
 
     // #1742 loop-2 round 5: do NOT clear the visible transcript or splice
     // runtimeHandle.transcript until resetSessionState() actually resolves.
@@ -881,21 +952,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           store.dispatch({ kind: "set_trajectory_data", steps: [], auditEntries: [] });
           runtimeHandle?.transcript.splice(0);
           tuiTurnCounter = 0;
-          // #1742 loop-3 round 1: surface the cumulative-budget caveat
-          // to the user. /clear gives a fresh per-iteration turn/duration
-          // budget (resetIterationBudgetPerRun: true above) but token
-          // usage and accumulated cost continue across /clear so the
-          // process keeps a real spend ceiling. Without this notice a
-          // user could /clear, see an empty session, and immediately
-          // hit a token-budget error caused by the prior conversation
-          // with no in-product way to understand why. Restart koi tui
-          // is the only way to fully reset cumulative spend.
-          store.dispatch({
-            kind: "add_error",
-            code: "RESET_NOTICE",
-            message:
-              "Conversation cleared. Note: cumulative token usage continues across /clear; restart koi tui to fully reset the runtime-wide spend cap.",
-          });
+          // /clear is silent on success — a freshly cleared conversation
+          // is its own acknowledgement. If the user later hits the
+          // cumulative runtime-wide spend cap (which survives /clear by
+          // design — iteration budget resets, token accounting does not),
+          // the budget-exceeded error itself surfaces the explanation.
+          // Post-reset toast removed per #1764 review (was originally
+          // added by #1742 as a RESET_NOTICE but mimicked an error).
           return true;
         })
         .catch((resetError: unknown): boolean => {
@@ -1224,8 +1287,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             };
             await runtimeHandle.appendTrajectoryStep(rewindStep);
             // Refresh the trajectory + decision ledger view so the step
-            // shows up without waiting for the next turn.
-            void refreshTrajectoryData(runtimeHandle, store, runtimeHandle.runtime.sessionId);
+            // shows up without waiting for the next turn. Capture the
+            // current generation so a subsequent reset invalidates this
+            // refresh before it dispatches. (#1764)
+            const rewindGen = trajectoryRefreshGen;
+            void refreshTrajectoryData(
+              runtimeHandle,
+              store,
+              runtimeHandle.runtime.sessionId,
+              () => trajectoryRefreshGen === rewindGen,
+            );
 
             // Surface drift warnings — paths the rewind could not restore
             // because they were modified outside the tracked tool pipeline
@@ -1481,8 +1552,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // wrapMiddlewareWithTrace records MW spans asynchronously via
         // void store.append(...). Without the delay, getLedger() reads
         // before all spans are written.
+        //
+        // Capture trajectoryRefreshGen at scheduling time so a session
+        // reset that runs in the 500 ms window invalidates this refresh
+        // before it dispatches. Otherwise the post-reset store would be
+        // repopulated with this turn's stale trajectory. (#1764)
+        const submitGen = trajectoryRefreshGen;
         void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
-          refreshTrajectoryData(handle, store, handle.runtime.sessionId),
+          refreshTrajectoryData(
+            handle,
+            store,
+            handle.runtime.sessionId,
+            () => trajectoryRefreshGen === submitGen,
+          ),
         );
       } finally {
         // Guard against cross-run races: only clear activeController and

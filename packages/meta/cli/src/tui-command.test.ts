@@ -14,7 +14,7 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
 import type { EngineEvent } from "@koi/core";
 import { createEventBatcher, createInitialState, createStore } from "@koi/tui";
-import { drainEngineStream } from "./tui-command.js";
+import { drainEngineStream, summarizeRunReport } from "./tui-command.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -276,5 +276,85 @@ describe("drainEngineStream — abort handling", () => {
 
     expect(flushed.length).toBe(4);
     expect((flushed[1] as { kind: string }).kind).toBe("tool_call_start");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeRunReport — bounded TUI summary, no full JSON.stringify (#1764)
+// ---------------------------------------------------------------------------
+
+describe("summarizeRunReport", () => {
+  test("includes summary text and counts when present", () => {
+    const out = summarizeRunReport({
+      summary: "Finished refactor",
+      actions: { length: 3 },
+      artifacts: { length: 1 },
+      issues: { length: 0 },
+      recommendations: { length: 2 },
+      childReports: { length: 4 },
+      cost: { totalTokens: 1234 },
+    });
+    expect(out).toContain("Finished refactor");
+    expect(out).toContain("actions=3");
+    expect(out).toContain("artifacts=1");
+    expect(out).toContain("issues=0");
+    expect(out).toContain("recs=2");
+    expect(out).toContain("children=4");
+    expect(out).toContain("tokens=1234");
+  });
+
+  test("output is bounded regardless of summary text length", () => {
+    const longSummary = "x".repeat(10_000);
+    const out = summarizeRunReport({
+      summary: longSummary,
+      actions: { length: 1 },
+      artifacts: { length: 1 },
+      issues: { length: 1 },
+      recommendations: { length: 1 },
+      cost: { totalTokens: 99 },
+    });
+    expect(out.length).toBeLessThanOrEqual(300);
+    expect(out).toContain("…");
+  });
+
+  test("output is bounded for deeply nested childReports without serializing", () => {
+    // Construct a deeply nested report. If the function ever regresses to
+    // JSON.stringify(runReport), this test would either OOM or take >>1 ms.
+    function nest(depth: number): {
+      readonly summary: string;
+      readonly actions: { length: number };
+      readonly artifacts: { length: number };
+      readonly issues: { length: number };
+      readonly recommendations: { length: number };
+      readonly childReports: { length: number };
+      readonly cost: { totalTokens: number };
+    } {
+      return {
+        summary: "child",
+        actions: { length: 1 },
+        artifacts: { length: 0 },
+        issues: { length: 0 },
+        recommendations: { length: 0 },
+        childReports: { length: depth },
+        cost: { totalTokens: depth },
+      };
+    }
+    const start = Date.now();
+    const out = summarizeRunReport(nest(50_000));
+    const ms = Date.now() - start;
+    expect(out.length).toBeLessThanOrEqual(300);
+    // Should be effectively instant — no full-tree serialization.
+    expect(ms).toBeLessThan(50);
+  });
+
+  test("works when no summary text is provided", () => {
+    const out = summarizeRunReport({
+      actions: { length: 0 },
+      artifacts: { length: 0 },
+      issues: { length: 0 },
+      recommendations: { length: 0 },
+      cost: { totalTokens: 0 },
+    });
+    expect(out).toBe("actions=0 artifacts=0 issues=0 recs=0 children=0 tokens=0");
   });
 });
