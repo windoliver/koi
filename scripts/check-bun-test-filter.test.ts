@@ -186,6 +186,32 @@ describe("detectViolations — negative cases", () => {
     const v = detectViolations("a.md", "bun add @koi/runtime --filter=foo");
     expect(v).toHaveLength(0);
   });
+
+  test("allows `bun some-script.ts test --filter=x` (Codex round 8: bun runs script)", () => {
+    const v = detectViolations("a.md", "bun some-script.ts test --filter=x");
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows prose mentioning bun and test --filter separately (Codex round 8)", () => {
+    const v = detectViolations(
+      "a.md",
+      'Use "bun" and the phrase "test --filter=@koi/runtime" separately.',
+    );
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows prose with `bun` and `test` as separate words", () => {
+    const v = detectViolations(
+      "a.md",
+      "When you run bun on a Linux machine, the test --filter mechanism applies.",
+    );
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows `bun ./scripts/foo.ts test --filter=x` (script path)", () => {
+    const v = detectViolations("a.md", "bun ./scripts/foo.ts test --filter=x");
+    expect(v).toHaveLength(0);
+  });
 });
 
 describe("detectViolations — koi --until-pass argv reconstruction", () => {

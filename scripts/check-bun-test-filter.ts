@@ -131,30 +131,36 @@ function normalizeLine(line: string): string {
 }
 
 /**
- * Algorithm (Codex round 6 redesign — subcommand-anchored):
- *   1. Normalize markdown/shell decoration characters out of the line.
- *   2. Tokenize on whitespace.
- *   3. For each `bun` token, walk forward token-by-token. Treat anything
- *      that is NOT a known Bun subcommand as opaque (could be a flag, a
- *      flag value, a path, anything) and keep walking. The walk
- *      terminates only on:
- *        - the literal token `test` → check later tokens for `--filter`
- *        - any token in KNOWN_SUBCOMMANDS → abandon (different command)
- *   4. This makes the walker robust against any pre-`test` Bun flag
- *      regardless of whether it takes a separate value token, fixing the
- *      VALUE_FLAGS-allowlist gap that round 6 surfaced (e.g.
- *      `bun --env-file .env test --filter=foo`).
+ * Algorithm (Codex round 8 — flag-walker hybrid):
  *
- * Trade-off: lines like `bun some-script.ts test --filter=x` would be
- * flagged as a false positive even though `some-script.ts` is the bun
- * entry point. In practice this shape is vanishingly rare in docs and
- * we'd rather over-warn than miss the real footgun.
+ * For each `bun` token, walk forward through tokens that look like flags
+ * (start with `-`). After each space-separated flag (one without `=`),
+ * accept exactly one non-flag value token as the flag's argument. The
+ * walk terminates on:
+ *   - the literal token `test` → check later tokens for `--filter`
+ *   - any token in KNOWN_SUBCOMMANDS → abandon (different command)
+ *   - any other unexpected non-flag token → abandon (prose, script path,
+ *     unrelated positional)
+ *
+ * This combination handles:
+ *   - bun test --filter=...                            → flagged
+ *   - bun --watch test --filter=...                    → flagged
+ *   - bun --env-file .env test --filter=...            → flagged (round 6)
+ *   - bun --cwd packages/meta/runtime test --filter=...→ flagged (round 6)
+ *   - bun some-script.ts test --filter=...             → SKIPPED (round 8)
+ *   - "Use bun and the phrase test --filter=..."       → SKIPPED (round 8)
+ *   - bun install --filter=...                         → SKIPPED (subcmd)
+ *
+ * It threads between Codex round 6 (no incomplete VALUE_FLAGS allowlist)
+ * and round 8 (no overmatching prose / bare-script invocations) by
+ * trusting positional arity rather than per-flag knowledge.
  */
 function isBunTestWithFilter(line: string): boolean {
   const tokens = normalizeLine(line).match(/\S+/g) ?? [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] !== "bun") continue;
     let j = i + 1;
+    let prevWasSpaceFlag = false;
     while (j < tokens.length) {
       const tok = tokens[j] ?? "";
       if (tok === "test") {
@@ -169,7 +175,22 @@ function isBunTestWithFilter(line: string): boolean {
       if (KNOWN_SUBCOMMANDS.has(tok)) {
         break;
       }
-      j++;
+      if (tok.startsWith("-")) {
+        // Self-contained flag (--flag=value) consumes no following token.
+        // Bare flag (--flag) may consume the next token as its value.
+        prevWasSpaceFlag = !tok.includes("=");
+        j++;
+        continue;
+      }
+      // Non-flag, non-test, non-subcommand token. Accept only as the value
+      // of the immediately preceding space-separated flag; otherwise the
+      // line is prose or an unrelated positional and we abandon this `bun`.
+      if (prevWasSpaceFlag) {
+        prevWasSpaceFlag = false;
+        j++;
+        continue;
+      }
+      break;
     }
   }
   return false;
