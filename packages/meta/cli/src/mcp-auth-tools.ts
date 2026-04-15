@@ -115,9 +115,8 @@ function createAuthenticateTool(
           type: "text",
           text:
             `Authentication successful for "${serverName}". ` +
-            `Tokens are stored. The server's tools will be available ` +
-            `on the next session or after a /clear. For this session, ` +
-            `you can use web_fetch to call the server's API directly.`,
+            `Tokens are stored. Restart the TUI (quit and relaunch) ` +
+            `to load the server's tools into this runtime.`,
         },
       ],
     };

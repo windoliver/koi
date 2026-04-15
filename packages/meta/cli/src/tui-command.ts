@@ -2253,14 +2253,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             const { join } = await import("node:path");
             const { homedir } = await import("node:os");
 
-            const paths = [join(process.cwd(), ".mcp.json"), join(homedir(), ".koi", ".mcp.json")];
-            let config: Awaited<ReturnType<typeof loadMcpJsonFile>> | undefined;
-            for (const p of paths) {
-              const r = await loadMcpJsonFile(p);
-              if (r.ok && r.value.servers.length > 0) {
-                config = r;
-                break;
-              }
+            // Same precedence as runtime: only fall back to home config
+            // when project file is truly absent, not invalid.
+            const projectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+            let config: typeof projectResult | undefined;
+            if (projectResult.ok && projectResult.value.servers.length > 0) {
+              config = projectResult;
+            } else if (projectResult.error.code === "NOT_FOUND") {
+              const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+              if (homeResult.ok && homeResult.value.servers.length > 0) config = homeResult;
             }
 
             if (config === undefined || !config.ok) {
@@ -2308,6 +2309,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 const live = await runtimeHandle?.getMcpStatus();
                 if (live === undefined) return;
                 const liveMap = new Map(live.map((s) => [s.name, s]));
+                const configNames = new Set(servers.map((s) => s.name));
+                // Enrich config-based entries with live data
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveMap.get(entry.name);
                   if (l === undefined) return entry;
@@ -2324,6 +2327,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
+                // Append plugin-provided servers not in .mcp.json
+                for (const l of live) {
+                  if (!configNames.has(l.name)) {
+                    enriched.push({
+                      name: l.name,
+                      status:
+                        l.failureCode === undefined
+                          ? "connected"
+                          : l.failureCode === "AUTH_REQUIRED"
+                            ? "needs-auth"
+                            : "error",
+                      toolCount: l.toolCount,
+                      detail: l.failureMessage ?? "plugin",
+                    });
+                  }
+                }
                 store.dispatch({ kind: "set_mcp_status", servers: enriched });
               })();
             }
@@ -2343,13 +2362,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
               const { createOAuthAuthProvider } = await import("@koi/mcp");
 
-              // Find the server config
-              const paths = [
-                join(process.cwd(), ".mcp.json"),
-                join(homedir(), ".koi", ".mcp.json"),
-              ];
-              for (const p of paths) {
-                const r = await loadMcpJsonFile(p);
+              // Find the server config — same precedence as runtime
+              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
+              if (authProjectResult.ok) {
+                authConfigs.push(authProjectResult);
+              } else if (authProjectResult.error.code === "NOT_FOUND") {
+                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+                if (authHomeResult.ok) authConfigs.push(authHomeResult);
+              }
+              for (const r of authConfigs) {
                 if (!r.ok) continue;
                 const server = r.value.servers.find((s) => s.name === serverName);
                 if (server === undefined || server.kind !== "http" || server.oauth === undefined)
