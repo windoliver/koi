@@ -497,18 +497,33 @@ declare function loadRegisteredHooks(raw: unknown, tier: HookTier): Result<reado
  */
 declare function loadRegisteredHooksWithDiagnostics(raw: unknown, tier: HookTier): Result<LoadRegisteredHooksResult, KoiError>;
 /**
+ * Classification of a per-entry load failure.
+ *
+ * - \`"structural"\` — the root itself is unusable (e.g. not an array). Index
+ *   is \`-1\` and no per-entry metadata is available.
+ * - \`"schema"\` — the entry failed zod validation. \`failClosed\` is sniffed
+ *   from the raw JSON so the host can respect operator intent.
+ * - \`"duplicate"\` — the entry parsed cleanly but its \`name\` collides with
+ *   an earlier accepted entry. Carries \`failClosed\` from the parsed hook.
+ */
+type HookLoadErrorKind = "structural" | "schema" | "duplicate";
+/**
  * A loader error scoped to a single hook entry (or \`-1\` for structural errors
  * like "not an array"). Carries the hook's declared \`name\` when parseable so
  * operators can identify which entry failed without counting array indices.
  *
- * \`failClosed\` is sniffed from the raw entry independently of schema
- * validation: if the operator explicitly marked an entry \`failClosed: true\`
- * they have declared that hook load-critical, so callers can fail startup on
- * that error even when the rest of the schema is invalid. Absent field or a
- * non-boolean value → \`failClosed\` is \`undefined\` (best-effort partial load
- * is acceptable).
+ * \`failClosed\` is sniffed from the raw entry (schema failures) or lifted
+ * from the parsed hook (duplicate failures): if the operator explicitly
+ * marked an entry \`failClosed: true\` they have declared that hook
+ * load-critical, so callers can fail startup on that error. Absent field
+ * or a non-boolean value → \`failClosed\` is \`undefined\`.
+ *
+ * \`kind\` lets hosts apply coarser policy than per-entry inspection — e.g.
+ * "duplicate names are always fatal for user-tier hooks" without needing
+ * to match message strings.
  */
 interface HookLoadError {
+    readonly kind: HookLoadErrorKind;
     readonly index: number;
     readonly name?: string;
     readonly message: string;
@@ -793,6 +808,6 @@ declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookLoadError, type HookRegistry, type HookTier, type HookVerdictResult, type LoadHooksResult, type LoadRegisteredHooksPerEntryResult, type LoadRegisteredHooksResult, type PayloadStatus, type PinnedUrl, type PolicyActor, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, type RegisteredHook, type TierGroups, agentHookSchema, aggregateDecisions, aggregatePostDecisions, applyPolicy, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, createRegisteredHooks, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, groupByTier, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, loadRegisteredHooks, loadRegisteredHooksPerEntry, loadRegisteredHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, tierOrder, validateHeaderValue, validateHeaders, validateHookUrl, validateNoDuplicateNames, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookLoadError, type HookLoadErrorKind, type HookRegistry, type HookTier, type HookVerdictResult, type LoadHooksResult, type LoadRegisteredHooksPerEntryResult, type LoadRegisteredHooksResult, type PayloadStatus, type PinnedUrl, type PolicyActor, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, type RegisteredHook, type TierGroups, agentHookSchema, aggregateDecisions, aggregatePostDecisions, applyPolicy, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, createRegisteredHooks, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, groupByTier, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, loadRegisteredHooks, loadRegisteredHooksPerEntry, loadRegisteredHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, tierOrder, validateHeaderValue, validateHeaders, validateHookUrl, validateNoDuplicateNames, verdictToDecision };
 "
 `;

@@ -323,7 +323,7 @@ describe("loadRegisteredHooksPerEntry", () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it("keeps the first occurrence on duplicate names and reports the dupe", () => {
+  it("keeps the first occurrence on duplicate names and reports the dupe as kind=duplicate", () => {
     const result = loadRegisteredHooksPerEntry(
       [
         { kind: "command", name: "dupe", cmd: ["echo", "first"] },
@@ -334,9 +334,23 @@ describe("loadRegisteredHooksPerEntry", () => {
     expect(result.hooks).toHaveLength(1);
     expect(result.hooks[0]?.hook.kind).toBe("command");
     expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("duplicate");
     expect(result.errors[0]?.index).toBe(1);
     expect(result.errors[0]?.name).toBe("dupe");
     expect(result.errors[0]?.message).toContain("Duplicate");
+  });
+
+  it("tags structural root errors with kind=structural", () => {
+    const result = loadRegisteredHooksPerEntry({ not: "an array" }, "user");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("structural");
+    expect(result.errors[0]?.index).toBe(-1);
+  });
+
+  it("tags schema validation failures with kind=schema", () => {
+    const result = loadRegisteredHooksPerEntry([{ kind: "command", name: "bad", cmd: [] }], "user");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.kind).toBe("schema");
   });
 
   it("emits warnings for unknown event kinds on accepted entries", () => {

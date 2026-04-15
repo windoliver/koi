@@ -183,11 +183,19 @@ export function buildPluginMcpSetup(
  *   entry (e.g. an http hook lacking `KOI_DEV=1`) would silently drop every
  *   hook in the file (see issue #1781).
  *
- * Fail-closed opt-in: if any invalid entry has `failClosed: true` in the raw
- * JSON, the operator has explicitly declared that hook load-critical — this
- * function emits the normal per-entry diagnostics via `onLoadError` AND then
- * throws an Error so the caller aborts startup rather than running with a
- * reduced policy. Non-fail-closed invalid entries still partial-load (#1781).
+ * Host-level fatal policy:
+ * - `structural` errors (non-array root, etc.) → abort. We can't inspect
+ *   individual entries for failClosed intent.
+ * - `duplicate` name errors → abort. "First occurrence wins" would silently
+ *   keep a stale definition when the operator intended the later entry to
+ *   replace/tighten it. Making these fatal is safer than guessing intent.
+ * - `schema` errors with `failClosed: true` → abort. The operator explicitly
+ *   declared this hook load-critical.
+ * - `schema` errors without `failClosed` → partial-load (issue #1781): the
+ *   valid peers still load and the error is surfaced via `onLoadError`.
+ *
+ * All diagnostics are reported through `onLoadError` BEFORE any abort
+ * throws so operators see every broken entry, not just the first fatal.
  * Callers that don't want startup to abort should wrap the call in try/catch.
  *
  * When `filterAgentHooks` is true, any `kind: "agent"` hooks are removed
@@ -237,9 +245,7 @@ export async function loadUserRegisteredHooks(options: {
   // individual entries to see whether any were marked failClosed:true, and
   // an object-shaped root that contained a failClosed hook would otherwise
   // silently start the TUI with zero user hooks (review round 3 finding).
-  // Same reasoning as the parse-failure branch above — "we don't understand
-  // the file, so we cannot pretend nothing was configured."
-  const structuralErrors = loaded.errors.filter((e) => e.index < 0);
+  const structuralErrors = loaded.errors.filter((e) => e.kind === "structural");
   if (structuralErrors.length > 0) {
     throw new Error(
       `Refusing to start: ${path} is structurally invalid — ${structuralErrors
@@ -248,11 +254,23 @@ export async function loadUserRegisteredHooks(options: {
     );
   }
 
-  // Fail-closed opt-in (respects the operator's declared intent, addresses
-  // the architectural concern that partial loading weakens enforcement):
-  // if any invalid entry was marked `failClosed: true`, abort startup rather
-  // than run with a reduced policy.
-  const failClosedErrors = loaded.errors.filter((e) => e.failClosed === true);
+  // Duplicate-name errors are fatal: "first occurrence wins" would silently
+  // leave a stale definition in place when an operator intended the later
+  // entry to replace or tighten it, and that is indistinguishable from a
+  // policy bypass for audit/deny hooks (review round 4 finding).
+  const duplicateErrors = loaded.errors.filter((e) => e.kind === "duplicate");
+  if (duplicateErrors.length > 0) {
+    const labels = duplicateErrors.map((e) => `"${e.name}"`).join(", ");
+    throw new Error(
+      `Refusing to start: duplicate hook name(s) ${labels} in ${path}. Hook names must be unique per file — rename or remove the duplicate entries before retrying.`,
+    );
+  }
+
+  // Fail-closed opt-in: invalid schema entries marked failClosed:true abort
+  // startup; ordinary schema errors partial-load per issue #1781.
+  const failClosedErrors = loaded.errors.filter(
+    (e) => e.kind === "schema" && e.failClosed === true,
+  );
   if (failClosedErrors.length > 0) {
     const labels = failClosedErrors
       .map((e) => (e.name !== undefined ? `"${e.name}"` : `entry ${e.index}`))

@@ -200,6 +200,25 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors.some((m) => m.includes("array"))).toBe(true);
   });
 
+  test("aborts startup on duplicate hook names (review round 4 finding)", async () => {
+    // "First occurrence wins" would silently keep a stale definition when
+    // an operator intended the later entry to replace or tighten it.
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "deny", cmd: ["/bin/true"] },
+        { kind: "command", name: "deny", cmd: ["/bin/strict"] },
+      ]),
+    );
+    const errors: string[] = [];
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*duplicate hook name/);
+    expect(errors.some((m) => m.includes('"deny"'))).toBe(true);
+  });
+
   test("aborts startup when a failClosed entry fails to load", async () => {
     writeHooksJson(
       JSON.stringify([

@@ -161,18 +161,34 @@ export function loadRegisteredHooksWithDiagnostics(
 // ---------------------------------------------------------------------------
 
 /**
+ * Classification of a per-entry load failure.
+ *
+ * - `"structural"` — the root itself is unusable (e.g. not an array). Index
+ *   is `-1` and no per-entry metadata is available.
+ * - `"schema"` — the entry failed zod validation. `failClosed` is sniffed
+ *   from the raw JSON so the host can respect operator intent.
+ * - `"duplicate"` — the entry parsed cleanly but its `name` collides with
+ *   an earlier accepted entry. Carries `failClosed` from the parsed hook.
+ */
+export type HookLoadErrorKind = "structural" | "schema" | "duplicate";
+
+/**
  * A loader error scoped to a single hook entry (or `-1` for structural errors
  * like "not an array"). Carries the hook's declared `name` when parseable so
  * operators can identify which entry failed without counting array indices.
  *
- * `failClosed` is sniffed from the raw entry independently of schema
- * validation: if the operator explicitly marked an entry `failClosed: true`
- * they have declared that hook load-critical, so callers can fail startup on
- * that error even when the rest of the schema is invalid. Absent field or a
- * non-boolean value → `failClosed` is `undefined` (best-effort partial load
- * is acceptable).
+ * `failClosed` is sniffed from the raw entry (schema failures) or lifted
+ * from the parsed hook (duplicate failures): if the operator explicitly
+ * marked an entry `failClosed: true` they have declared that hook
+ * load-critical, so callers can fail startup on that error. Absent field
+ * or a non-boolean value → `failClosed` is `undefined`.
+ *
+ * `kind` lets hosts apply coarser policy than per-entry inspection — e.g.
+ * "duplicate names are always fatal for user-tier hooks" without needing
+ * to match message strings.
  */
 export interface HookLoadError {
+  readonly kind: HookLoadErrorKind;
   readonly index: number;
   readonly name?: string;
   readonly message: string;
@@ -212,6 +228,7 @@ export function loadRegisteredHooksPerEntry(
       hooks: [],
       errors: [
         {
+          kind: "structural",
           index: -1,
           message: "Hook config must be an array of hook entries",
         },
@@ -235,6 +252,7 @@ export function loadRegisteredHooksPerEntry(
       const rawName = rawEntry?.name;
       const rawFailClosed = rawEntry?.failClosed;
       errors.push({
+        kind: "schema",
         index: i,
         message: parsed.error.message,
         ...(typeof rawName === "string" && rawName.length > 0 ? { name: rawName } : {}),
@@ -253,6 +271,7 @@ export function loadRegisteredHooksPerEntry(
       // would leave the stale definition in place, so callers must be able
       // to abort startup on this error (review round 2 finding).
       errors.push({
+        kind: "duplicate",
         index: i,
         name: hook.name,
         message: `Duplicate hook name "${hook.name}" — first occurrence kept, this entry skipped`,

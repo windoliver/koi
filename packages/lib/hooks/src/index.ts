@@ -29,6 +29,7 @@ export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
 export type {
   HookLoadError,
+  HookLoadErrorKind,
   LoadHooksResult,
   LoadRegisteredHooksPerEntryResult,
   LoadRegisteredHooksResult,
