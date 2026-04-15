@@ -422,6 +422,48 @@ describe("loadUserRegisteredHooks", () => {
     ).rejects.toThrow(/Refusing to start.*agent hook.*failClosed.*"critical"/);
   });
 
+  test("disabled agent hooks do not trigger strict-mode abort (review third-loop r7)", async () => {
+    // `enabled: false` is the documented way to share one hooks.json
+    // across hosts that can/can't run agent hooks — it must not count
+    // toward the strict-mode fatal gate.
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "agent", name: "opt-out", prompt: "verify", enabled: false },
+      ]),
+    );
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: true,
+      onAgentHooksFiltered: () => {},
+      onLoadError: () => {},
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
+  });
+
+  test("disabled failClosed agent hooks do not abort startup (review third-loop r7)", async () => {
+    // Mirror test for the failClosed gate: a disabled entry is inert,
+    // regardless of what other fields it carries.
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        {
+          kind: "agent",
+          name: "critical-but-off",
+          prompt: "deny",
+          failClosed: true,
+          enabled: false,
+        },
+      ]),
+    );
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: true,
+      onAgentHooksFiltered: () => {},
+      onLoadError: () => {},
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
+  });
+
   test("strict mode: clean file loads normally", async () => {
     process.env.KOI_HOOKS_STRICT = "1";
     writeHooksJson(JSON.stringify([{ kind: "command", name: "clean", cmd: ["/bin/true"] }]));

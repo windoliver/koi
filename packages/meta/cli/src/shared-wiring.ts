@@ -302,10 +302,10 @@ export async function loadUserRegisteredHooks(options: {
   let effectiveRaw: unknown = raw;
   if (options.filterAgentHooks && Array.isArray(raw)) {
     const keptEntries: unknown[] = [];
-    // Display labels cover EVERY filtered agent entry — named or not —
-    // so the strict-mode gate cannot be silently bypassed by an unnamed
-    // `{kind:"agent",...}` entry (review round 8 new finding). Unnamed
-    // entries fall back to `entry <index>` labels.
+    // Display labels cover EVERY filtered ACTIVE agent entry — named or
+    // not — so the strict-mode gate cannot be silently bypassed by an
+    // unnamed `{kind:"agent",...}` entry. Unnamed entries fall back to
+    // `entry <index>` labels.
     const agentLabels: string[] = [];
     // `agentNames` is a strict subset used for the `onAgentHooksFiltered`
     // callback, which historically receives only string names. Operators
@@ -320,6 +320,18 @@ export async function loadUserRegisteredHooks(options: {
         entry !== null &&
         (entry as { readonly kind?: unknown }).kind === "agent"
       ) {
+        // Honor `enabled: false` for agent entries: a disabled hook is
+        // the documented way for an operator to share one hooks.json
+        // across hosts that can/can't run agent hooks. Counting a
+        // disabled entry toward the strict/failClosed gates would
+        // recreate a real lockout path (third-loop r7 finding).
+        const sniffedEnabled = (entry as { readonly enabled?: unknown }).enabled;
+        const isEnabled = sniffedEnabled !== false;
+        if (!isEnabled) {
+          // Still drop it from the set passed to the per-entry loader —
+          // a disabled hook is inert by definition, no need to validate.
+          continue;
+        }
         const sniffedName = (entry as { readonly name?: unknown }).name;
         const displayName =
           typeof sniffedName === "string" && sniffedName.length > 0 ? sniffedName : `entry ${i}`;
