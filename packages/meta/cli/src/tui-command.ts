@@ -2597,6 +2597,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       const controller = new AbortController();
       activeController = controller;
 
+      // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
+      // review r2). If the user tapped Ctrl+C while idle with background
+      // work running, the handler was left armed for the duration of
+      // the double-tap window — if they then submit a new prompt inside
+      // that window, a single Ctrl+C to cancel the new turn would be
+      // treated as the second tap of the stale sequence and force-exit
+      // the TUI. `complete()` is a no-op when the handler is idle, so
+      // this is safe to call unconditionally at every turn start.
+      sigintHandler.complete();
+
       // Inject a synthetic turn-boundary step so /trajectory can group steps
       // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
       // so we maintain our own counter here at the TUI session level.

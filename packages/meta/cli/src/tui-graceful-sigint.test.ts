@@ -234,6 +234,42 @@ describe("createTuiSigintHandler — idle foreground + live background (#1772)",
     expect(state.shutdownCount).toBe(0);
   });
 
+  test("new foreground turn INSIDE the double-tap window disarms the bg-wait state — host must call complete() at turn start (#1772 review r2)", () => {
+    // Adversarial-review round 2 caught that the disarm timer leaves
+    // a 2s window where the bg-wait armed state persists. If the user
+    // submits a new prompt *within* that window, the new turn is not
+    // yet past the disarm deadline — so a Ctrl+C to cancel the fresh
+    // turn is treated as the second tap of the stale bg-wait sequence
+    // and force-exits the TUI, destroying the active turn.
+    //
+    // The host (tui-command.ts) closes the gap by calling
+    // `handler.complete()` at every turn start. This test simulates
+    // that host behavior and locks in that the Ctrl+C then aborts the
+    // foreground stream instead of forcing.
+    const { state, handler, timers } = makeHarness({ hasBackground: true });
+
+    // 1. First tap: idle foreground, live background → hint + armed.
+    handler.handleSignal();
+    expect(state.writes.join("")).toContain("Background tasks still running");
+    expect(state.forceCount).toBe(0);
+
+    // 2. The user submits a new prompt 500ms later (well inside the 2s
+    //    double-tap window). The host invokes complete() at turn start
+    //    to clear any stale bg-wait arm, then a new foreground run
+    //    begins.
+    timers.advance(500);
+    handler.complete();
+    state.hasForeground = true;
+
+    // 3. User presses Ctrl+C to cancel the fresh turn.
+    handler.handleSignal();
+
+    // 4. MUST abort the stream, NOT force-exit.
+    expect(state.abortCount).toBe(1);
+    expect(state.forceCount).toBe(0);
+    expect(state.shutdownCount).toBe(0);
+  });
+
   test("after the double-tap window with no new turn, next Ctrl+C re-enters the bg-wait branch cleanly", () => {
     // Belt-and-braces: if the user ignores the first bg-hint and the bg
     // task keeps running, the NEXT Ctrl+C should re-show the hint (fresh
