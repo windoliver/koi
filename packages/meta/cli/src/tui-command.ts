@@ -2400,24 +2400,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           break;
         }
         case "system:cost": {
+          // The cost aggregator is populated from live engine "done" events
+          // in this TUI process only — resumed sessions do NOT backfill
+          // historical spend. Scope the copy to "this process" so users
+          // reading the notice do not mistake zero for whole-session total
+          // after `koi tui --resume <id>`.
           const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
           const totalIn = breakdown.byModel.reduce((s, m) => s + m.totalInputTokens, 0);
           const totalOut = breakdown.byModel.reduce((s, m) => s + m.totalOutputTokens, 0);
           if (totalIn === 0 && totalOut === 0) {
-            dispatchNotice(store, "cost-info", "[Cost: no model calls yet this session]");
+            dispatchNotice(store, "cost-info", "[Cost (this process): no model calls yet]");
           } else {
             dispatchNotice(
               store,
               "cost-info",
-              `[Cost: ${formatCost(breakdown.totalCostUsd)} — ` +
+              `[Cost (this process): ${formatCost(breakdown.totalCostUsd)} — ` +
                 `${formatTokens(totalIn)} in / ${formatTokens(totalOut)} out tokens]`,
             );
           }
           break;
         }
         case "system:tokens": {
+          // Process-local accounting — see the comment on system:cost above.
           const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
-          const lines: string[] = ["[Token usage this session]"];
+          const lines: string[] = ["[Token usage (this process)]"];
           if (breakdown.byModel.length === 0) {
             lines.push("  (no model calls yet)");
           } else {
@@ -2482,6 +2488,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
             const dropped = snapshot.length - result.messages.length;
             const partial = result.strategy === "micro-truncate-partial";
+            // UI-only notice: the dropped messages are gone from the model's
+            // view. We deliberately do NOT insert a transcript marker —
+            // pinned markers accumulate across repeat /compact calls (pair
+            // rescue keeps them even when nothing else can be dropped), and
+            // a `system:*` senderId would leak a hidden privileged prompt
+            // into every subsequent turn while being filtered from /export
+            // and resume surfaces. The user-facing notice below is the
+            // durable record; /trajectory can surface compactions separately
+            // if needed later.
             dispatchNotice(
               store,
               "compact-info",
