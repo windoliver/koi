@@ -78,8 +78,8 @@ import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
-import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
-import { decideTuiGracefulAction } from "./tui-graceful-sigint.js";
+import { createUnrefTimer } from "./sigint-handler.js";
+import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1093,39 +1093,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // plausible dual-path delivery delay, so it defends the first tap
   // without blocking a legitimate force double-tap.
   const TUI_COALESCE_WINDOW_MS = 150;
-  const sigintHandler = createSigintHandler({
-    onGraceful: () => {
-      // Three-way decision on the first Ctrl+C of a double-tap window.
-      // Delegated to a pure function so the state matrix is unit-testable
-      // without spinning up a TUI or the state machine.
-      //
-      //   - active foreground stream → abort it; the engine emits its
-      //     terminal `done` with stopReason: "interrupted" and the user
-      //     stays in the TUI.
-      //   - idle foreground + live background subprocesses → print the
-      //     "Ctrl+C again to exit" hint and return. The state machine is
-      //     already armed at this point; a second Ctrl+C within 2s falls
-      //     through to onForce which tears everything down. Without this
-      //     branch, first-tap-at-idle-with-live-bg immediately called
-      //     `shutdown(130)` and killed the TUI on one tap (#1772).
-      //   - idle foreground + no background → shutdown(130) matches the
-      //     standard single-SIGINT termination convention for an empty
-      //     idle REPL.
-      const action = decideTuiGracefulAction({
-        hasActiveForegroundStream: activeController !== null,
-        hasActiveBackgroundTasks: runtimeHandle?.hasActiveBackgroundTasks() ?? false,
-      });
-      switch (action.kind) {
-        case "abort-active-stream":
-          abortActiveStream();
-          return;
-        case "wait-for-bg-exit-tap":
-          process.stderr.write(action.hint);
-          return;
-        case "shutdown":
-          void shutdown(130);
-          return;
-      }
+  const TUI_DOUBLE_TAP_WINDOW_MS = 2000;
+  // Wiring for the three-way graceful SIGINT action + the bg-wait
+  // self-disarm timer is extracted into `createTuiSigintHandler`
+  // (see tui-graceful-sigint.ts) so the state matrix — including the
+  // #1772 idle-with-background case and its post-double-tap disarm —
+  // can be unit-tested without spinning up a TUI or runtime.
+  const sigintHandler = createTuiSigintHandler({
+    hasActiveForegroundStream: () => activeController !== null,
+    hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
+    abortActiveStream,
+    onShutdown: () => {
+      void shutdown(130);
     },
     onForce: () => {
       // Force path: abort the active foreground stream FIRST so no
@@ -1150,7 +1129,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     write: (msg: string) => {
       process.stderr.write(msg);
     },
-    doubleTapWindowMs: 2000,
+    doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
   });
