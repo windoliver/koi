@@ -1203,25 +1203,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // path, so this channel stays empty for them and no synthetic
         // middleware is appended.
         const perChildShutdownHooks: Array<() => Promise<void> | void> = [];
-        let drained = false;
+        // Per-hook completion tracking mirrors the parent dispose
+        // path: a transient failure on one hook (e.g. flaky audit
+        // flush) must stay retryable on the next drainHooks call,
+        // while already-successful hooks stay latched and do not
+        // re-run. A single `drained` flag would either drop the
+        // failed hook forever or re-run already-successful hooks
+        // and risk double-close.
+        const completedChildHooks = new WeakSet<() => Promise<void> | void>();
         const drainHooks = async (): Promise<void> => {
-          if (drained) return;
-          drained = true;
           // Reverse order so later registrations unwind first,
           // matching the parent's registerShutdown semantics.
-          // Collect every hook failure: we push them onto the
-          // parent-scoped accumulator (so wrappedDispose can
-          // surface them on the next parent-visible lifecycle
-          // operation) AND throw an AggregateError at the end
-          // so the immediate caller (onSessionEnd / unwind) sees
-          // the failure synchronously too. Silent swallowing here
-          // would hide audit close failures exactly at the
-          // shutdown/recovery boundary where audit integrity
-          // matters most.
+          // Collect every hook failure: push onto the parent-
+          // scoped accumulator so wrappedDispose can surface it
+          // on the next parent-visible lifecycle operation, AND
+          // throw an AggregateError so the immediate caller
+          // (onSessionEnd / unwind) sees the failure too.
           const errors: unknown[] = [];
           for (const hook of [...perChildShutdownHooks].reverse()) {
+            if (completedChildHooks.has(hook)) continue;
             try {
               await hook();
+              completedChildHooks.add(hook);
             } catch (err) {
               errors.push(err);
               childManifestCleanupFailures.push(err);
@@ -1233,7 +1236,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               `per-child manifest cleanup had ${errors.length} failure(s) at child session end. ` +
                 "Audit sinks or other file-backed child cleanup may not have fully flushed — " +
                 "the failures have also been attached to the parent runtime's dispose chain so the " +
-                "host's shutdown-reporting path will observe them.",
+                "host's shutdown-reporting path will observe them. A subsequent drain (e.g. retry " +
+                "from wrappedDispose) will retry only the hooks that failed.",
             );
           }
         };
@@ -1246,14 +1250,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
               hostId,
               workingDirectory: zoneBWorkingDirectory,
-              // Child re-resolution deliberately passes empty
-              // stackExports: the parent's exported handles
-              // (bashHandle, trajectory store, checkpoint, etc.)
-              // are parent-scoped mutable state that must not
-              // leak into a child runtime. Factories that read
-              // `stackExports` on the parent path see `{}` on
-              // the child path and must degrade gracefully.
-              stackExports: {},
+              // Child re-resolution inherits the parent's stack
+              // exports. This keeps the parent and spawned
+              // children on the same manifest-middleware policy:
+              // any factory that legitimately reads a parent-
+              // exported handle (bashHandle, trajectory store,
+              // checkpoint, ...) keeps working on the child
+              // path instead of silently degrading when
+              // delegated. The Readonly<Record<string, unknown>>
+              // shape advertised by ManifestMiddlewareContext
+              // remains the contract: factories must treat
+              // inherited handles as read-only and never mutate
+              // parent-scoped state. A child runtime that needs
+              // its own early-phase exports must run through a
+              // full independent runtime-factory assembly — out
+              // of scope for per-child manifest re-resolution.
+              stackExports: earlyContribution.exports,
               registerShutdown: (fn) => {
                 perChildShutdownHooks.push(fn);
               },

@@ -571,9 +571,49 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           } finally {
             spawnResult.handle.terminate();
             await spawnResult.handle.waitForCompletion();
-            await spawnResult.runtime.dispose();
+            // dispose() can reject when manifest-middleware
+            // cleanup (e.g. refcounted audit close, per-child
+            // drain) surfaces accumulated failures. That failure
+            // is security-relevant for the audit integrity
+            // story, so route it to parentInbox instead of
+            // letting it escape as an unhandled rejection.
+            try {
+              await spawnResult.runtime.dispose();
+            } catch (disposeErr: unknown) {
+              const disposeMsg =
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+              console.error(
+                `[agent-spawn] ${policy.kind} child dispose failed for "${manifest.name}"`,
+                disposeErr,
+              );
+              if (parentInbox !== undefined) {
+                const disposeItem: InboxItem = {
+                  id: `dispose-error-${spawnResult.childPid.id}-${Date.now()}`,
+                  from: spawnResult.childPid.id,
+                  mode: "collect",
+                  content: `[dispose-error] agent "${manifest.name}" (${policy.kind}) cleanup failed: ${disposeMsg}`,
+                  priority: 0,
+                  createdAt: Date.now(),
+                };
+                const accepted = parentInbox.push(disposeItem);
+                if (!accepted) {
+                  console.error(
+                    `[agent-spawn] UNRECOVERABLE: parent inbox full — child dispose error dropped for agent "${manifest.name}" (child: ${spawnResult.childPid.id}). Dispose error: ${disposeMsg}`,
+                  );
+                }
+              }
+            }
           }
-        })();
+        })().catch((bgErr: unknown) => {
+          // Terminal safety net: nothing in the async block above
+          // should escape, but if it does, log loudly so the
+          // failure is visible in process output rather than
+          // becoming an unhandled rejection that crashes Node.
+          console.error(
+            `[agent-spawn] UNRECOVERABLE: background ${policy.kind} task for "${manifest.name}" threw past its own error handlers`,
+            bgErr,
+          );
+        });
         // Return the child ID so callers can retrieve on_demand reports.
         // on_demand stores reports under sessionId("delivery-<childId>") —
         // callers can reconstruct the lookup key from this ID.
