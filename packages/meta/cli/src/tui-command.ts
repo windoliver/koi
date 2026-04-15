@@ -949,33 +949,53 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // true })` stays on `buildCoreProviders`' default path so we preserve
   // the existing out-of-workspace access semantics.
   if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
+    // Two-phase auth_required handling (#1777 review round 6): the
+    // callback may fire while `resolveFileSystemAsync` is still awaiting
+    // the bridge's mount reply — at that point the caller has no
+    // disposable handle, so exiting from the callback would orphan the
+    // python bridge subprocess. Record the event instead, and the
+    // post-await check disposes cleanly. Runtime-phase auth (after the
+    // resolver has returned) can safely SIGINT through the TUI sigint
+    // handler installed further down.
+    // let: mutable — set from within the subscription callback
+    let oauthRequired: { readonly provider: string; readonly user_email: string } | null = null;
+    let resolveComplete = false;
     try {
       const fsResult = await resolveFileSystemAsync(
         manifestFilesystemConfig,
         process.cwd(),
-        // auth_required handler: never call process.exit from here —
-        // it can fire later during any filesystem op (not just startup)
-        // and exiting from a subscription callback skips the TUI
-        // shutdown path, orphaning the bridge subprocess, renderer
-        // state, and session/transcript disposers. SIGINT routes
-        // through the sigint handler installed further down during a
-        // live session; during this pre-runtime window it falls
-        // through to the default handler which terminates the process
-        // with no runtime resources yet to clean up.
         (n) => {
-          if (n.method === "auth_required") {
-            process.stderr.write(
-              `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-            );
+          if (n.method !== "auth_required") return;
+          oauthRequired = { provider: n.params.provider, user_email: n.params.user_email };
+          process.stderr.write(
+            `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+              `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+          );
+          if (resolveComplete) {
             process.kill(process.pid, "SIGINT");
           }
         },
       );
       manifestFilesystemBackend = fsResult.backend;
+      resolveComplete = true;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
+      process.exit(1);
+    }
+    if (oauthRequired !== null) {
+      // Startup-phase auth fired before the resolver returned. Dispose
+      // the backend the caller now owns so the bridge subprocess does
+      // not orphan, then exit.
+      try {
+        await manifestFilesystemBackend.dispose?.();
+      } catch (fsDisposeErr) {
+        process.stderr.write(
+          `koi tui: filesystem.dispose failed after auth-required abort — ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
       process.exit(1);
     }
   }

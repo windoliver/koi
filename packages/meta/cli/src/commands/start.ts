@@ -297,34 +297,62 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // true })` and the permission middleware gates out-of-workspace access.
   // The operations gate still applies via `manifestFilesystemOps`.
   if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
+    // auth_required is handled in two phases (#1777 review round 6):
+    //
+    //   Startup — while `resolveFileSystemAsync` is still awaiting the
+    //     bridge's mount reply, the caller does NOT yet own a
+    //     disposable handle. Exiting from the callback here would
+    //     terminate before `manifestFilesystemBackend` is assigned,
+    //     orphaning the python bridge subprocess. The callback records
+    //     the event and the post-await check below disposes the
+    //     returned backend cleanly.
+    //
+    //   Runtime — once the resolver has returned, the backend is in
+    //     scope and the sigint handler / shutdownRuntime will be
+    //     installed below. At that point it is safe to raise SIGINT
+    //     from the callback: the sigint handler aborts the runtime
+    //     controller and `shutdownRuntime()` disposes the backend.
+    // let: mutable — set from within the subscription callback
+    let oauthRequired: { readonly provider: string; readonly user_email: string } | null = null;
+    let resolveComplete = false;
     try {
       const fsResult = await resolveFileSystemAsync(
         manifestFilesystemConfig,
         process.cwd(),
-        // auth_required handler: never call process.exit from here —
-        // it can fire later during any filesystem op (not just startup)
-        // and exiting from a subscription callback skips the normal
-        // shutdown path, orphaning the bridge subprocess and the
-        // session/transcript disposers. SIGINT is the right exit:
-        // during early resolve it falls through to the default handler
-        // (process terminates before any runtime resources exist to
-        // clean up), and during a live session it routes through the
-        // sigint handler registered below, which aborts the runtime
-        // controller and runs `shutdownRuntime()`.
         (n) => {
-          if (n.method === "auth_required") {
-            process.stderr.write(
-              `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-            );
+          if (n.method !== "auth_required") return;
+          oauthRequired = { provider: n.params.provider, user_email: n.params.user_email };
+          process.stderr.write(
+            `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+              `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+          );
+          if (resolveComplete) {
+            // Runtime-phase: safe — sigintHandler + shutdownRuntime exist.
             process.kill(process.pid, "SIGINT");
           }
+          // Startup-phase: post-await check below disposes cleanly.
         },
       );
       manifestFilesystemBackend = fsResult.backend;
+      resolveComplete = true;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
+      return ExitCode.FAILURE;
+    }
+    if (oauthRequired !== null) {
+      // Startup-phase auth fired before the resolver returned. The caller
+      // now owns the backend — dispose it explicitly and fail the command
+      // so the python bridge subprocess does not orphan.
+      try {
+        await manifestFilesystemBackend.dispose?.();
+      } catch (fsDisposeErr) {
+        process.stderr.write(
+          `koi start: filesystem.dispose failed after auth-required abort — ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
       return ExitCode.FAILURE;
     }
   }
