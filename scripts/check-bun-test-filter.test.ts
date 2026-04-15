@@ -217,6 +217,26 @@ describe("detectViolations — koi --until-pass argv reconstruction", () => {
     expect(v).toHaveLength(1);
   });
 
+  test('flags quoted `--until-pass "bun test --filter=..."` (Codex round 7)', () => {
+    // The CLI parser actually treats this as one literal argv token (broken
+    // usage), but the guard still catches it via quote-normalization in
+    // isBunTestWithFilter so neither the broken nor the working invocation
+    // can land in docs/scripts.
+    const v = detectViolations(
+      "a.md",
+      'koi start --until-pass "bun test --filter=@koi/runtime" --max-iter 3',
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags single-quoted `--until-pass 'bun test --filter=...'`", () => {
+    const v = detectViolations(
+      "a.md",
+      "koi start --until-pass 'bun test --filter=@koi/runtime' --max-iter 3",
+    );
+    expect(v).toHaveLength(1);
+  });
+
   test("allows canonical `--until-pass bun --until-pass run --until-pass test --until-pass --filter=<pkg>`", () => {
     const v = detectViolations(
       "a.md",

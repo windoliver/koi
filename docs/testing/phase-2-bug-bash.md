@@ -1035,8 +1035,8 @@ Packages not wired into `koi tui` are tested via **golden query replay** (determ
 
 | Q | Command | Pass Criteria |
 |---|---------|---------------|
-| Q100 | `koi start --prompt "Fix the failing test in test/math.test.ts" --until-pass "bun test" --max-iter 3` | Agent iterates: edit → verify → pass. Converges within max-iter |
-| Q101 | `koi start --prompt "Make this pass" --until-pass "false" --max-iter 2` | Hits max-iter; exits cleanly with non-zero code; no hang |
+| Q100 | `koi start --prompt "Fix the failing test in test/math.test.ts" --until-pass bun --until-pass test --max-iter 3` | Agent iterates: edit → verify → pass. Converges within max-iter |
+| Q101 | `koi start --prompt "Make this pass" --until-pass false --max-iter 2` | Hits max-iter; exits cleanly with non-zero code; no hang |
 
 ### S16 — Golden Query Replay (via `bun run test --filter=@koi/runtime`)
 
