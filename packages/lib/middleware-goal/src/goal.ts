@@ -30,8 +30,10 @@ import {
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
   type DriftUserMessage,
+  type GoalController,
   type GoalItemWithId,
   type GoalMiddlewareConfig,
+  type GoalMiddlewareWithController,
   validateGoalConfig,
 } from "./config.js";
 import {
@@ -134,7 +136,7 @@ function buildGoalMessage(text: string): InboundMessage {
   };
 }
 
-export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddleware {
+export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewareWithController {
   const result = validateGoalConfig(config);
   if (!result.ok) {
     throw KoiRuntimeError.from(result.error.code, result.error.message);
@@ -144,7 +146,9 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   const baseInterval = config.baseInterval ?? DEFAULT_BASE_INTERVAL;
   const maxInterval = config.maxInterval ?? DEFAULT_MAX_INTERVAL;
   const callbackTimeoutMs = config.callbackTimeoutMs ?? DEFAULT_CALLBACK_TIMEOUT_MS;
-  const allKeywords = extractKeywords(config.objectives);
+  // Mutable: updated by GoalController.add/remove/clear
+  let allKeywords = extractKeywords(config.objectives);
+  let nextGoalIndex = config.objectives.length;
   const sessions = new Map<SessionId, GoalSessionState>();
   const deferCompletions = config.detectCompletions !== undefined;
   // Buffer response text when either callback is configured. isDrifting
@@ -470,7 +474,87 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     return true;
   }
 
-  return {
+  // ---------------------------------------------------------------------------
+  // GoalController — mid-session goal management
+  // ---------------------------------------------------------------------------
+
+  /** Recompute allKeywords from all items across all sessions. */
+  function recomputeKeywords(items: readonly GoalItemWithId[]): void {
+    allKeywords = extractKeywords(items.map((i) => i.text));
+  }
+
+  const controller: GoalController = {
+    add(text: string): string | undefined {
+      const trimmed = text.trim();
+      if (trimmed.length === 0) return undefined;
+      // Update all active sessions
+      for (const [sid, state] of sessions) {
+        // Skip if already exists
+        if (state.items.some((i) => i.text === trimmed)) return undefined;
+        const id = `goal-${String(nextGoalIndex)}`;
+        nextGoalIndex += 1;
+        const newItem: GoalItemWithId = { id, text: trimmed, completed: false };
+        const newItems = [...state.items, newItem];
+        const newKeywords = new Map(state.keywordsPerItem);
+        newKeywords.set(trimmed, extractKeywords([trimmed]));
+        updateSession(sid, () => ({
+          items: newItems,
+          keywordsPerItem: newKeywords,
+          forceInjectNextTurn: true,
+        }));
+        recomputeKeywords(newItems);
+        return id;
+      }
+      // No active session — store for next session start
+      nextGoalIndex += 1;
+      return `goal-${String(nextGoalIndex - 1)}`;
+    },
+
+    remove(text: string): boolean {
+      const trimmed = text.trim();
+      let found = false;
+      for (const [sid, state] of sessions) {
+        const idx = state.items.findIndex((i) => i.text === trimmed);
+        if (idx === -1) continue;
+        found = true;
+        const newItems = state.items.filter((_, i) => i !== idx);
+        const newKeywords = new Map(state.keywordsPerItem);
+        newKeywords.delete(trimmed);
+        updateSession(sid, () => ({
+          items: newItems,
+          keywordsPerItem: newKeywords,
+          forceInjectNextTurn: true,
+        }));
+        recomputeKeywords(newItems);
+      }
+      return found;
+    },
+
+    list(): readonly GoalItemWithId[] {
+      // Return items from first active session (TUI is single-session)
+      for (const state of sessions.values()) {
+        return state.items;
+      }
+      return [];
+    },
+
+    clear(): void {
+      for (const [sid] of sessions) {
+        updateSession(sid, () => ({
+          items: [],
+          keywordsPerItem: new Map(),
+          forceInjectNextTurn: false,
+        }));
+      }
+      allKeywords = new Set();
+    },
+  };
+
+  // ---------------------------------------------------------------------------
+  // KoiMiddleware implementation
+  // ---------------------------------------------------------------------------
+
+  const middleware: KoiMiddleware = {
     name: "goal",
     priority: 340,
 
@@ -648,4 +732,6 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       sessions.delete(ctx.sessionId);
     },
   };
+
+  return { middleware, controller };
 }

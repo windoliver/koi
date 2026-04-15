@@ -2,7 +2,7 @@
  * Goal middleware configuration and validation.
  */
 
-import type { KoiError, Result, SessionId, TurnContext, TurnId } from "@koi/core";
+import type { KoiError, KoiMiddleware, Result, SessionId, TurnContext, TurnId } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 
 /** Lightweight goal state used by the exported pure helpers. */
@@ -124,6 +124,29 @@ export interface GoalMiddlewareConfig {
   readonly callbackTimeoutMs?: number;
   /** Observability hook fired on callback error/timeout. */
   readonly onCallbackError?: OnCallbackErrorFn;
+}
+
+/**
+ * Controller for mid-session goal management. Returned alongside the
+ * KoiMiddleware by `createGoalMiddleware`. Allows TUI commands like
+ * `/goal add <text>` and `/goal remove <text>` to modify objectives
+ * without restarting the session.
+ */
+export interface GoalController {
+  /** Add a new objective. Returns the assigned goal ID. No-op if text already exists. */
+  readonly add: (text: string) => string | undefined;
+  /** Remove an objective by text (exact match). Returns true if found and removed. */
+  readonly remove: (text: string) => boolean;
+  /** List all current objectives with their status. */
+  readonly list: () => readonly GoalItemWithId[];
+  /** Remove all objectives. */
+  readonly clear: () => void;
+}
+
+/** Return type of createGoalMiddleware — middleware + controller for runtime access. */
+export interface GoalMiddlewareWithController {
+  readonly middleware: KoiMiddleware;
+  readonly controller: GoalController;
 }
 
 export const DEFAULT_GOAL_HEADER = "## Active Goals";

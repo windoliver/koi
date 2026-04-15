@@ -1,6 +1,7 @@
 import { describe, expect, it, mock } from "bun:test";
 import type {
   InboundMessage,
+  KoiMiddleware,
   ModelChunk,
   ModelHandler,
   ModelRequest,
@@ -12,17 +13,22 @@ import type {
 } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
 
-import type { DriftUserMessage } from "./index.js";
+import type { DriftUserMessage, GoalMiddlewareConfig } from "./index.js";
 
 import {
   computeNextInterval,
-  createGoalMiddleware,
+  createGoalMiddleware as createGoalMiddlewareRaw,
   detectCompletions,
   extractKeywords,
   isDrifting,
   renderGoalBlock,
   validateGoalConfig,
 } from "./index.js";
+
+/** Test helper: unwrap middleware from the controller wrapper. */
+function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddleware {
+  return createGoalMiddlewareRaw(config).middleware;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers

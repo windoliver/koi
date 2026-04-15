@@ -144,6 +144,14 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     minSessionCount: 3,
   },
 
+  // ---- Goals ----
+  {
+    id: "session:goal",
+    label: "Goal",
+    description: "Manage objectives: /goal add|remove|list|clear <text>",
+    category: "session",
+  },
+
   // ---- Display ----
   {
     id: "display:thinking",

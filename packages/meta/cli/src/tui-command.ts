@@ -2267,6 +2267,102 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           postClearTurnCount = 0;
           resetConversation({ truncatePersistedTranscript: true });
           break;
+        case "session:goal": {
+          const ctrl = runtimeHandle?.goalController;
+          const parts = args.trim().split(/\s+/);
+          const subCmd = parts[0]?.toLowerCase() ?? "list";
+          const goalText = parts.slice(1).join(" ").trim();
+
+          if (subCmd === "list" || args.trim().length === 0) {
+            if (ctrl === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_INFO",
+                message: "No goals active. Launch with --goal to enable goal tracking.",
+              });
+              break;
+            }
+            const items = ctrl.list();
+            if (items.length === 0) {
+              store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "No goals set." });
+            } else {
+              const lines = items.map((i) => `${i.completed ? "[x]" : "[ ]"} ${i.text}`);
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_INFO",
+                message: `Goals:\n${lines.join("\n")}`,
+              });
+            }
+          } else if (subCmd === "add") {
+            if (goalText.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_MISSING_TEXT",
+                message: "Usage: /goal add <objective text>",
+              });
+              break;
+            }
+            if (ctrl === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_NOT_ENABLED",
+                message: "Goal tracking not active. Launch with --goal to enable.",
+              });
+              break;
+            }
+            const id = ctrl.add(goalText);
+            if (id !== undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_INFO",
+                message: `Goal added: "${goalText}" (${id})`,
+              });
+            } else {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_INFO",
+                message: `Goal already exists: "${goalText}"`,
+              });
+            }
+          } else if (subCmd === "remove") {
+            if (goalText.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_MISSING_TEXT",
+                message: "Usage: /goal remove <objective text>",
+              });
+              break;
+            }
+            if (ctrl === undefined) {
+              store.dispatch({
+                kind: "add_error",
+                code: "GOAL_NOT_ENABLED",
+                message: "Goal tracking not active. Launch with --goal to enable.",
+              });
+              break;
+            }
+            const removed = ctrl.remove(goalText);
+            store.dispatch({
+              kind: "add_error",
+              code: "GOAL_INFO",
+              message: removed ? `Goal removed: "${goalText}"` : `Goal not found: "${goalText}"`,
+            });
+          } else if (subCmd === "clear") {
+            if (ctrl === undefined) {
+              store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "No goals active." });
+              break;
+            }
+            ctrl.clear();
+            store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "All goals cleared." });
+          } else {
+            store.dispatch({
+              kind: "add_error",
+              code: "GOAL_UNKNOWN_SUBCOMMAND",
+              message: `Unknown subcommand "${subCmd}". Usage: /goal add|remove|list|clear <text>`,
+            });
+          }
+          break;
+        }
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({

@@ -52,6 +52,7 @@ import { resolveFsPath } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
+import type { GoalController } from "@koi/middleware-goal";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
@@ -395,6 +396,12 @@ export interface KoiRuntimeHandle {
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * Goal controller for mid-session objective management. Undefined when
+   * no `--goal` flags were provided at launch. Used by the `/goal` TUI
+   * command to add, remove, list, and clear objectives without restarting.
+   */
+  readonly goalController: GoalController | undefined;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -872,10 +879,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
   // Only installed when the caller provides objectives. Injects goal blocks
   // into model messages and tracks drift/completion across turns.
-  const goalMw =
+  const goalResult =
     config.goals !== undefined && config.goals.length > 0
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
+  const goalMw = goalResult?.middleware;
+  const goalController = goalResult?.controller;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1295,6 +1304,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       return hadWork;
     },
+    goalController,
   };
 }
 

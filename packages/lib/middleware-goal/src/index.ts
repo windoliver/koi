@@ -6,9 +6,11 @@ export type {
   DetectCompletionsFn,
   DriftJudgeInput,
   DriftUserMessage,
+  GoalController,
   GoalItem,
   GoalItemWithId,
   GoalMiddlewareConfig,
+  GoalMiddlewareWithController,
   IsDriftingFn,
   OnCallbackErrorFn,
 } from "./config.js";
