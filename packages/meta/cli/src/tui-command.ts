@@ -36,6 +36,7 @@ import type {
   AuditEntry,
   EngineEvent,
   FileSystemBackend,
+  FileSystemConfig,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
@@ -699,6 +700,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
+  // Deferred filesystem resolution (#1777): parse+validate here, but do
+  // NOT spawn the nexus local-bridge subprocess until after every other
+  // startup check has passed (API config, TTY, signal-handler install).
+  // Spawning earlier would orphan the bridge when e.g. API validation
+  // fails and `process.exit(1)` fires before the TUI shutdown path exists.
+  // let: mutable — assigned once during manifest parsing
+  let manifestFilesystemConfig: FileSystemConfig | undefined;
+  // let: mutable — assigned by the deferred resolver further below
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
@@ -713,52 +722,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
-    // Apply the `FileSystemConfig.operations` contract's `["read"]` default
-    // at the host level so manifest-driven filesystems default to read-only
-    // even on the host-default local backend path. For `backend: "local"`
-    // we intentionally do NOT pre-resolve because
-    // `resolveFileSystem({backend:"local"})` builds a local backend without
-    // `allowExternalPaths` (a sandbox tightening relative to the prior
-    // host-default path). Leaving `manifestFilesystemBackend` undefined
-    // lets `buildCoreProviders` construct the usual local backend and the
-    // permission middleware gates external paths. For `backend: "nexus"`
-    // we resolve upfront so malformed configs fail fast and the bridge
-    // spawns before the first tool call.
     if (manifestResult.value.filesystem !== undefined) {
-      const fsConfig = manifestResult.value.filesystem;
-      manifestFilesystemOps = fsConfig.operations ?? (["read"] as const);
-      if (fsConfig.backend === "nexus") {
-        try {
-          const fsResult = await resolveFileSystemAsync(
-            fsConfig,
-            process.cwd(),
-            // auth_required handler: never call process.exit from here —
-            // it can fire later during any filesystem op (not just
-            // startup) and exiting from a subscription callback skips
-            // the TUI shutdown path, orphaning the bridge subprocess,
-            // renderer state, and session/transcript disposers. SIGINT
-            // is the right exit: during early resolve it falls through
-            // to the default handler (the TUI sigint handler is not
-            // registered yet), and during a live session it routes
-            // through the sigint handler, which aborts the runtime
-            // controller and runs the normal shutdown path below.
-            (n) => {
-              if (n.method === "auth_required") {
-                process.stderr.write(
-                  `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                    `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-                );
-                process.kill(process.pid, "SIGINT");
-              }
-            },
-          );
-          manifestFilesystemBackend = fsResult.backend;
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
-          process.exit(1);
-        }
-      }
+      manifestFilesystemConfig = manifestResult.value.filesystem;
+      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
   }
 
@@ -968,6 +934,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // persistence because intermediate loop iterations are not
   // resumable — matches koi start --until-pass semantics.
   const isLoopMode = flags.untilPass.length > 0;
+
+  // ---------------------------------------------------------------------------
+  // Deferred filesystem resolution — LAST pre-runtime step (#1777)
+  // ---------------------------------------------------------------------------
+  //
+  // For `backend: "nexus"` we resolve here, immediately before
+  // `createKoiRuntime`, so every earlier early-exit path (API key, TTY,
+  // signal-handler install, etc.) has already cleared. Spawning the
+  // bridge any earlier would orphan the python subprocess when a
+  // subsequent `process.exit(1)` fires before the TUI shutdown path
+  // exists. For `backend: "local"` (and default) we do NOT pre-resolve
+  // — the host-default `createLocalFileSystem(cwd, { allowExternalPaths:
+  // true })` stays on `buildCoreProviders`' default path so we preserve
+  // the existing out-of-workspace access semantics.
+  if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
+    try {
+      const fsResult = await resolveFileSystemAsync(
+        manifestFilesystemConfig,
+        process.cwd(),
+        // auth_required handler: never call process.exit from here —
+        // it can fire later during any filesystem op (not just startup)
+        // and exiting from a subscription callback skips the TUI
+        // shutdown path, orphaning the bridge subprocess, renderer
+        // state, and session/transcript disposers. SIGINT routes
+        // through the sigint handler installed further down during a
+        // live session; during this pre-runtime window it falls
+        // through to the default handler which terminates the process
+        // with no runtime resources yet to clean up.
+        (n) => {
+          if (n.method === "auth_required") {
+            process.stderr.write(
+              `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+            );
+            process.kill(process.pid, "SIGINT");
+          }
+        },
+      );
+      manifestFilesystemBackend = fsResult.backend;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
+      process.exit(1);
+    }
+  }
 
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.

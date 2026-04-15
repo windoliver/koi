@@ -18,6 +18,7 @@ import type {
   EngineEvent,
   EngineInput,
   FileSystemBackend,
+  FileSystemConfig,
   InboundMessage,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
@@ -105,6 +106,15 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
+  // Deferred filesystem resolution (#1777): parse+validate here, but do
+  // NOT spawn the nexus local-bridge subprocess until after every other
+  // startup validation has passed — otherwise a subsequent early-return
+  // (unsupported `stacks: spawn`, missing API key, session resume error)
+  // would orphan the bridge before `shutdownRuntime` is in scope to
+  // dispose it.
+  // let: mutable — assigned once during manifest parsing
+  let manifestFilesystemConfig: FileSystemConfig | undefined;
+  // let: mutable — assigned by the deferred resolver just before createKoiRuntime
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
@@ -139,58 +149,17 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return ExitCode.FAILURE;
     }
 
+    // Stash the validated FileSystemConfig so the downstream resolver (just
+    // before createKoiRuntime) can spawn the bridge. Parsing + path
+    // anchoring has already happened in `loadManifestConfig`; we only
+    // defer the subprocess spawn, not the fail-fast-on-bad-config path.
     // Apply the `FileSystemConfig.operations` contract's `["read"]` default
     // at the host level so manifest-driven filesystems default to read-only
     // even on the host-default local backend path. `buildCoreProviders`
     // honors `filesystemOperations` verbatim — no implicit escalation.
-    //
-    // For `backend: "nexus"` we resolve upfront so malformed configs fail
-    // fast before any adapter/subprocess is created, and the bridge spawns
-    // before the first tool call instead of on first I/O. For
-    // `backend: "local"` (and default) we intentionally do NOT pre-resolve,
-    // because `resolveFileSystem({backend:"local"})` builds a local backend
-    // without `allowExternalPaths` — that's a sandbox tightening relative
-    // to main's behavior. Leaving `manifestFilesystemBackend` undefined
-    // lets `buildCoreProviders` construct the usual
-    // `createLocalFileSystem(cwd, { allowExternalPaths: true })` and relies
-    // on the permission middleware to gate out-of-workspace access, which
-    // is what previously worked. The operations gate still applies via
-    // `manifestFilesystemOps`.
     if (manifestResult.value.filesystem !== undefined) {
-      const fsConfig = manifestResult.value.filesystem;
-      manifestFilesystemOps = fsConfig.operations ?? (["read"] as const);
-      if (fsConfig.backend === "nexus") {
-        try {
-          const fsResult = await resolveFileSystemAsync(
-            fsConfig,
-            process.cwd(),
-            // auth_required handler: never call process.exit from here —
-            // it can fire later during any filesystem op (not just
-            // startup) and exiting from a subscription callback skips
-            // the normal shutdown path, orphaning the bridge subprocess
-            // and the session/transcript disposers. SIGINT is the right
-            // exit: during early resolve it falls through to the default
-            // handler (process terminates before any runtime resources
-            // exist to clean up), and during a live session it routes
-            // through the sigint handler registered below, which aborts
-            // the runtime controller and runs `shutdownRuntime()`.
-            (n) => {
-              if (n.method === "auth_required") {
-                process.stderr.write(
-                  `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                    `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-                );
-                process.kill(process.pid, "SIGINT");
-              }
-            },
-          );
-          manifestFilesystemBackend = fsResult.backend;
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : String(err);
-          process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
-          return ExitCode.FAILURE;
-        }
-      }
+      manifestFilesystemConfig = manifestResult.value.filesystem;
+      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
 
     if (
@@ -307,6 +276,59 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // entry to the JSONL session log, so a later `koi start --resume <id>`
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
+
+  // ---------------------------------------------------------------------------
+  // 3b. Deferred filesystem resolution — LAST pre-runtime step (#1777)
+  // ---------------------------------------------------------------------------
+  //
+  // For `backend: "nexus"` we resolve here, immediately before
+  // `createKoiRuntime`, so every prior early-return path (stack-spawn
+  // rejection, API-key failure, session-resume error) has already been
+  // cleared. Spawning the bridge any earlier would orphan the python
+  // subprocess when one of those validations returns FAILURE, because
+  // `shutdownRuntime` is not yet in scope to dispose it.
+  //
+  // For `backend: "local"` (and default) we intentionally do NOT
+  // pre-resolve — `resolveFileSystem({backend:"local"})` builds a local
+  // backend without `allowExternalPaths`, which is a sandbox tightening
+  // relative to the existing host-default path. Leaving
+  // `manifestFilesystemBackend` undefined lets `buildCoreProviders`
+  // construct the usual `createLocalFileSystem(cwd, { allowExternalPaths:
+  // true })` and the permission middleware gates out-of-workspace access.
+  // The operations gate still applies via `manifestFilesystemOps`.
+  if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
+    try {
+      const fsResult = await resolveFileSystemAsync(
+        manifestFilesystemConfig,
+        process.cwd(),
+        // auth_required handler: never call process.exit from here —
+        // it can fire later during any filesystem op (not just startup)
+        // and exiting from a subscription callback skips the normal
+        // shutdown path, orphaning the bridge subprocess and the
+        // session/transcript disposers. SIGINT is the right exit:
+        // during early resolve it falls through to the default handler
+        // (process terminates before any runtime resources exist to
+        // clean up), and during a live session it routes through the
+        // sigint handler registered below, which aborts the runtime
+        // controller and runs `shutdownRuntime()`.
+        (n) => {
+          if (n.method === "auth_required") {
+            process.stderr.write(
+              `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+            );
+            process.kill(process.pid, "SIGINT");
+          }
+        },
+      );
+      manifestFilesystemBackend = fsResult.backend;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
+      return ExitCode.FAILURE;
+    }
+  }
+
   const runtimeHandle = await createKoiRuntime({
     modelAdapter,
     modelName: model,
