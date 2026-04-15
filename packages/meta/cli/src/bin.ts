@@ -43,14 +43,23 @@ Global flags:
 
 const rawArgv = process.argv.slice(2);
 
-if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
-  process.stdout.write(`${VERSION}\n`);
-  process.exit(0);
-}
+// Fast-path: top-level --version / --help exit before loading dispatch.
+// Only trigger when no subcommand precedes the flag — `koi start --help`
+// must reach dispatch so it can print the per-command help block (#1729).
+// A subcommand is detected by "first arg exists and is not a flag".
+const firstArg = rawArgv[0];
+const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
 
-if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
-  process.stdout.write(HELP);
-  process.exit(0);
+if (!hasSubcommand) {
+  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+    process.stdout.write(`${VERSION}\n`);
+    process.exit(0);
+  }
+
+  if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
 }
 
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.

@@ -225,7 +225,7 @@ describe("bin.ts", () => {
     });
   });
 
-  describe("--help with subcommand", () => {
+  describe("--help with subcommand (#1729)", () => {
     test("command --help prints help and exits 0", async () => {
       const r = await runBin(["start", "--help"]);
       expect(r.exitCode).toBe(0);
@@ -236,6 +236,60 @@ describe("bin.ts", () => {
       const r = await runBin(["serve", "-h"]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("koi");
+    });
+
+    // Regression for #1729: every subcommand must emit its own help block,
+    // not the generic top-level usage. The per-command marker `koi <cmd> —`
+    // only appears in help.ts, so its presence proves the dispatch help
+    // branch picked the right COMMAND_HELP entry.
+    const SUBCOMMANDS = [
+      "init",
+      "start",
+      "serve",
+      "tui",
+      "sessions",
+      "logs",
+      "status",
+      "doctor",
+      "stop",
+      "deploy",
+      "plugin",
+      "mcp",
+    ] as const;
+
+    for (const cmd of SUBCOMMANDS) {
+      test(`\`koi ${cmd} --help\` prints per-command help`, async () => {
+        const r = await runBin([cmd, "--help"]);
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toContain(`koi ${cmd} —`);
+        expect(r.stdout).toContain("Usage:");
+        // Proves we are NOT falling back to the generic top-level help.
+        expect(r.stdout).not.toContain("agent engine CLI");
+      });
+    }
+
+    test("`koi plugin --help` does not emit subcommand-required error", async () => {
+      // Regression: plugin parser throws ParseError when no subcommand is
+      // given. --help must short-circuit before that throw fires.
+      const r = await runBin(["plugin", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("install");
+      expect(r.stdout).toContain("list");
+    });
+
+    test("`koi mcp --help` does not emit subcommand-required error", async () => {
+      const r = await runBin(["mcp", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("auth");
+    });
+
+    test("`koi start --help` lists --prompt flag", async () => {
+      const r = await runBin(["start", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--prompt");
+      expect(r.stdout).toContain("--until-pass");
     });
   });
 

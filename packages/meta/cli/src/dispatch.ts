@@ -31,6 +31,7 @@ import {
   parseArgs,
   type TuiFlags,
 } from "./args.js";
+import { COMMAND_HELP } from "./help.js";
 import type { CommandModule } from "./types.js";
 
 /**
@@ -75,6 +76,9 @@ export async function runDispatch(
   }
 
   if (flags.help) {
+    if (isKnownCommand(flags.command)) {
+      return { kind: "exit", code: 0, stdout: COMMAND_HELP[flags.command] };
+    }
     return { kind: "exit", code: 0, stdout: helpText };
   }
   if (flags.version) {
