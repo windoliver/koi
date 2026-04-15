@@ -310,6 +310,46 @@ describe("loadUserRegisteredHooks", () => {
     ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1.*"dup"/);
   });
 
+  test("strict mode: any agent entry aborts under filterAgentHooks:true", async () => {
+    // Strict mode operator opted into "fail on anything the loader cannot
+    // honor" — silently dropping unsupported agent hooks is exactly the
+    // class of bypass strict mode exists to prevent (review round 7 new).
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "agent", name: "verify", prompt: "check" },
+      ]),
+    );
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: () => {},
+        onLoadError: () => {},
+      }),
+    ).rejects.toThrow(/Refusing to start.*agent hook.*KOI_HOOKS_STRICT=1/);
+  });
+
+  test("lenient mode: failClosed:true agent entry aborts even under filterAgentHooks", async () => {
+    // The per-hook failClosed opt-in is an explicit contract — even
+    // outside strict mode, an agent hook marked load-critical cannot be
+    // silently dropped by a host that doesn't support agent hooks
+    // (review round 7 new finding).
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "agent", name: "critical", prompt: "deny", failClosed: true },
+      ]),
+    );
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: () => {},
+        onLoadError: () => {},
+      }),
+    ).rejects.toThrow(/Refusing to start.*agent hook.*failClosed.*"critical"/);
+  });
+
   test("strict mode: clean file loads normally", async () => {
     process.env.KOI_HOOKS_STRICT = "1";
     writeHooksJson(JSON.stringify([{ kind: "command", name: "clean", cmd: ["/bin/true"] }]));
@@ -353,17 +393,18 @@ describe("loadUserRegisteredHooks", () => {
     expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
   });
 
-  test("pre-filters agent entries so invalid agent hooks cannot brick TUI startup (review round 5 finding)", async () => {
+  test("pre-filters non-failClosed agent entries so invalid agent hooks cannot brick TUI startup (review round 5 finding)", async () => {
     // All of these would otherwise be fatal under filterAgentHooks:true —
-    // duplicate agent name + schema-invalid agent + failClosed agent. The
-    // TUI does not support agent hooks, so they must be skipped entirely.
+    // duplicate agent name + schema-invalid agent. The TUI does not support
+    // agent hooks, and operators who share a hooks.json across hosts should
+    // not be locked out of the TUI by a host they aren't currently using.
+    // (Agents marked `failClosed: true` do abort; see the round-7 test.)
     writeHooksJson(
       JSON.stringify([
         { kind: "command", name: "good", cmd: ["/bin/true"] },
         { kind: "agent", name: "dup", prompt: "verify" },
         { kind: "agent", name: "dup", prompt: "verify" },
         { kind: "agent", name: "broken", prompt: "" },
-        { kind: "agent", name: "strict", prompt: "deny", failClosed: true },
       ]),
     );
     const filtered: string[][] = [];
@@ -373,7 +414,7 @@ describe("loadUserRegisteredHooks", () => {
     });
     expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
     expect(filtered).toHaveLength(1);
-    expect(filtered[0]).toEqual(["dup", "dup", "broken", "strict"]);
+    expect(filtered[0]).toEqual(["dup", "dup", "broken"]);
   });
 
   test("filters agent hooks and fires onAgentHooksFiltered", async () => {

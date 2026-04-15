@@ -235,32 +235,71 @@ export async function loadUserRegisteredHooks(options: {
     return [];
   }
 
-  // Pre-filter agent entries when the host cannot run them: stripping them
-  // from the raw array before validation means malformed/duplicate/failClosed
-  // agent entries cannot abort startup for a host that would have ignored
-  // them anyway (review round 5 finding). The stripped names are still
-  // surfaced via `onAgentHooksFiltered` so operators know what was skipped.
+  // Agent-hook handling for hosts that cannot run agent hooks
+  // (filterAgentHooks: true). Three cases in priority order:
+  //
+  // 1. Strict mode + any agent entry → fatal. The operator opted into
+  //    "fail on anything the loader cannot honor," and silently dropping
+  //    unsupported types under KOI_HOOKS_STRICT=1 is exactly the class of
+  //    bypass strict mode exists to prevent (review round 7 new finding).
+  //
+  // 2. Lenient mode + agent entry marked `failClosed: true` → fatal. Even
+  //    outside strict mode, the per-hook failClosed opt-in is the explicit
+  //    contract: the operator declared this hook load-critical and the
+  //    host cannot honor it, so refusing to start is the only truthful
+  //    response. This preserves the failClosed guarantee for operators
+  //    who share a hooks.json across TUI and agent-capable hosts.
+  //
+  // 3. Otherwise → silently strip the agent entries before validation and
+  //    report the names via `onAgentHooksFiltered` (round 5 behaviour).
+  //    Stripping before validation means malformed/duplicate agent entries
+  //    cannot abort startup for a host that would have ignored them anyway.
   let effectiveRaw: unknown = raw;
   if (options.filterAgentHooks && Array.isArray(raw)) {
     const keptEntries: unknown[] = [];
     const agentNames: string[] = [];
-    for (const entry of raw) {
+    const failClosedAgentLabels: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const entry: unknown = raw[i];
       if (
         typeof entry === "object" &&
         entry !== null &&
         (entry as { readonly kind?: unknown }).kind === "agent"
       ) {
         const sniffedName = (entry as { readonly name?: unknown }).name;
+        const displayName =
+          typeof sniffedName === "string" && sniffedName.length > 0 ? sniffedName : `entry ${i}`;
         if (typeof sniffedName === "string" && sniffedName.length > 0) {
           agentNames.push(sniffedName);
+        }
+        if ((entry as { readonly failClosed?: unknown }).failClosed === true) {
+          failClosedAgentLabels.push(`"${displayName}"`);
         }
         continue;
       }
       keptEntries.push(entry);
     }
+
+    // Surface the agent-hook names to the caller BEFORE any fatal throw so
+    // operators see the full list of unsupported entries, not just the
+    // first one that triggered abortion.
     if (agentNames.length > 0 && options.onAgentHooksFiltered !== undefined) {
       options.onAgentHooksFiltered(agentNames);
     }
+
+    if (strictMode && agentNames.length > 0) {
+      throw new Error(
+        `Refusing to start: ${agentNames.length} agent hook(s) in ${path} — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries. Remove the agent entries or run via a host that supports them.`,
+      );
+    }
+    if (failClosedAgentLabels.length > 0) {
+      throw new Error(
+        `Refusing to start: agent hook(s) marked failClosed:true cannot be loaded by this host (${failClosedAgentLabels.join(
+          ", ",
+        )}). Remove failClosed from the affected entries or run via a host that supports agent hooks.`,
+      );
+    }
+
     effectiveRaw = keptEntries;
   }
 
