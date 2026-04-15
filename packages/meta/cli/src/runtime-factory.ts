@@ -702,6 +702,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // capability).
   const spawnStackActive = enabledStackIds === undefined || enabledStackIds.has("spawn");
 
+  // Fail-closed: reject manifest.middleware + spawn combinations
+  // BEFORE any stack activation runs. The check counts enabled
+  // entries on the raw config without invoking any factory, so
+  // nothing allocates resources on the rejection path. Hoisting it
+  // above `activateStacks(..., { phase: "early" })` means a
+  // rejected config cannot create ~/.koi/snapshots SQLite state,
+  // load MCP setup, write trajectory files, or mutate disk in any
+  // other way before the error surfaces. Per-child re-resolution
+  // of manifest middleware (needed to legitimately combine zone B
+  // with spawn) is a tracked follow-up.
+  const earlyEnabledManifestMiddlewareCount = (config.manifestMiddleware ?? []).reduce(
+    (count, entry) => (entry.enabled === false ? count : count + 1),
+    0,
+  );
+  if (earlyEnabledManifestMiddlewareCount > 0 && spawnStackActive) {
+    throw new Error(
+      "koi-runtime: manifest zone-B middleware cannot be combined with the spawn preset stack in this release. " +
+        `Parent runtime has ${earlyEnabledManifestMiddlewareCount} manifest middleware entries; if children were allowed to spawn without them, ` +
+        "delegated work would silently escape manifest-enforced policy (audit, retry, etc.). " +
+        "Either remove manifest.middleware entries, or disable the spawn stack via manifest.stacks. " +
+        "Per-child re-resolution of manifest middleware is a tracked follow-up.",
+    );
+  }
+
   // `bash_background` depends on the task-board surface for job
   // status / output inspection. If the caller requested
   // `backgroundSubprocesses: true` but the spawn stack (which
@@ -1018,26 +1042,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // zone B from outside with `hook`/`permissions`/`exfiltration-
   // guard` so repo-authored content only sees already-gated,
   // already-redacted traffic (see `compose-middleware.ts`).
-  // Fail-closed config check BEFORE any manifest middleware factory
-  // runs. Some built-in factories (notably @koi/middleware-audit)
-  // open files or allocate resources at resolution time; if we
-  // resolved first and then threw, a rejected config could still
-  // mutate the workspace on disk. Count the enabled entries without
-  // invoking any factory so the check is pure.
-  const enabledManifestMiddlewareCount = (config.manifestMiddleware ?? []).reduce(
-    (count, entry) => (entry.enabled === false ? count : count + 1),
-    0,
-  );
-  if (enabledManifestMiddlewareCount > 0 && spawnStackActive) {
-    throw new Error(
-      "koi-runtime: manifest zone-B middleware cannot be combined with the spawn preset stack in this release. " +
-        `Parent runtime has ${enabledManifestMiddlewareCount} manifest middleware entries; if children were allowed to spawn without them, ` +
-        "delegated work would silently escape manifest-enforced policy (audit, retry, etc.). " +
-        "Either remove manifest.middleware entries, or disable the spawn stack via manifest.stacks. " +
-        "Per-child re-resolution of manifest middleware is a tracked follow-up.",
-    );
-  }
-
+  //
+  // (The manifest+spawn incompatibility check runs earlier —
+  // BEFORE activateStacks — so a rejected config cannot mutate
+  // disk through checkpoint/MCP/etc. stack activation before the
+  // error surfaces.)
   const manifestMiddlewareRegistry =
     config.middlewareRegistry ??
     createBuiltinManifestRegistry({

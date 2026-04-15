@@ -926,6 +926,38 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("session-transcript"));
   });
 
+  test("preserves class-based middleware prototype + methods when normalizing", async () => {
+    // Codex round-loop-2 round 4: a shallow spread stripped the
+    // prototype, which broke class-based middleware returned from
+    // host/plugin registries. Verify that a class instance with
+    // a prototype method survives normalization.
+    class CustomMiddleware {
+      readonly name = "custom-class";
+      // wrapModelCall is defined on the prototype, not as an own
+      // property. A spread would not copy it; Object.create with
+      // getOwnPropertyDescriptors must preserve the prototype chain.
+      wrapModelCall(): void {}
+    }
+    const registry = new MiddlewareRegistry();
+    registry.register("@koi/class-mw", () => new CustomMiddleware() as unknown as KoiMiddleware);
+    const resolved = await resolveManifestMiddleware(
+      [{ name: "@koi/class-mw", options: undefined, enabled: true }],
+      registry,
+      stubCtx(),
+    );
+    expect(resolved.length).toBe(1);
+    const mw = resolved[0];
+    if (mw === undefined) throw new Error("expected resolved middleware");
+    expect(mw.name).toBe("custom-class");
+    expect(mw.phase).toBe("resolve");
+    expect(mw.priority).toBe(500);
+    // Prototype chain preserved → wrapModelCall still callable.
+    expect(typeof (mw as unknown as CustomMiddleware).wrapModelCall).toBe("function");
+    // The normalized object is a separate instance but shares the
+    // prototype; `instanceof` still works.
+    expect(mw instanceof CustomMiddleware).toBe(true);
+  });
+
   test("multiple zone B entries land on the forced slot and keep declared order", async () => {
     const registry = new MiddlewareRegistry();
     registry.register("@koi/x", () => stubMiddleware("x"));

@@ -246,11 +246,31 @@ export async function resolveManifestMiddleware(
     // a low priority could leapfrog the security layers. By rewriting
     // the slot at resolution time, every zone B entry provably runs
     // after `exfiltration-guard`, `permissions`, and `hooks`.
-    const normalized: KoiMiddleware = {
-      ...fromFactory,
-      phase: ZONE_B_PHASE,
-      priority: ZONE_B_PRIORITY,
-    };
+    // Preserve the factory's original prototype chain and all own
+    // property descriptors (including accessors and non-enumerable
+    // fields) when overriding phase/priority. A shallow spread
+    // (`{...fromFactory}`) would strip prototypes, drop getter
+    // semantics, and lose any non-enumerable `wrapModelCall`/
+    // `onSessionEnd`/etc. hooks that a class-based KoiMiddleware
+    // implementation might expose. Class-based middleware returned
+    // from a host/plugin registry would then resolve to a broken
+    // stub at the zone-B slot.
+    const normalized = Object.create(
+      Object.getPrototypeOf(fromFactory),
+      Object.getOwnPropertyDescriptors(fromFactory),
+    ) as KoiMiddleware;
+    Object.defineProperty(normalized, "phase", {
+      value: ZONE_B_PHASE,
+      writable: false,
+      enumerable: true,
+      configurable: true,
+    });
+    Object.defineProperty(normalized, "priority", {
+      value: ZONE_B_PRIORITY,
+      writable: false,
+      enumerable: true,
+      configurable: true,
+    });
     resolved.push(normalized);
   }
   return resolved;
