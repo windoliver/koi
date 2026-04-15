@@ -714,15 +714,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     // Resolve filesystem backend upfront so malformed nexus configs fail fast
-    // before TUI allocations / renderer startup. The nexus local-bridge path
-    // spawns the python subprocess here. The TUI doesn't wire an OAuth
-    // notification handler in this pass — remote OAuth flows would need a
-    // channel-aware handler threaded in after createCliChannel / TUI store.
+    // before TUI allocations / renderer startup. We subscribe a fail-loud auth
+    // handler so mounts that need OAuth surface a clear error instead of
+    // hanging on the first I/O call — routing pasted redirect URLs back via
+    // `transport.submitAuthCode` requires a channel-aware handler that has
+    // visibility into the TUI store's inbound-message stream, which is built
+    // several hundred lines below this point. Until that wiring lands, the
+    // correct posture is reject, not silently wedge. Non-auth mounts (e.g.
+    // `local://...`) flow through normally because the bridge never emits
+    // `auth_required` for them.
     if (manifestResult.value.filesystem !== undefined) {
       try {
         const fsResult = await resolveFileSystemAsync(
           manifestResult.value.filesystem,
           process.cwd(),
+          (n) => {
+            if (n.method === "auth_required") {
+              process.stderr.write(
+                `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                  `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+              );
+              process.exit(1);
+            }
+          },
         );
         manifestFilesystemBackend = fsResult.backend;
         manifestFilesystemOps = fsResult.operations;

@@ -141,14 +141,28 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
 
     // Resolve filesystem backend upfront so malformed nexus configs fail fast
     // before any adapter/subprocess is created. The local path is synchronous;
-    // the nexus local-bridge path spawns the python subprocess and wires auth
-    // notifications — we omit the notification handler here because `koi start`
-    // has no interactive approval UI for OAuth, matching the auto-allow posture.
+    // the nexus local-bridge path spawns the python subprocess. We subscribe a
+    // fail-loud auth handler so mounts that actually need OAuth surface a clear
+    // error instead of hanging on the first I/O call — `koi start` has no
+    // interactive channel that can route redirect URLs back via
+    // `transport.submitAuthCode`, so the correct posture is to reject the run
+    // rather than silently wedge. Non-auth mounts (e.g. `local://...`) flow
+    // through normally because the bridge never emits `auth_required` for
+    // them.
     if (manifestResult.value.filesystem !== undefined) {
       try {
         const fsResult = await resolveFileSystemAsync(
           manifestResult.value.filesystem,
           process.cwd(),
+          (n) => {
+            if (n.method === "auth_required") {
+              process.stderr.write(
+                `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                  `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+              );
+              process.exit(Number(ExitCode.FAILURE));
+            }
+          },
         );
         manifestFilesystemBackend = fsResult.backend;
         manifestFilesystemOps = fsResult.operations;

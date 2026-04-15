@@ -543,9 +543,19 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
     // (path-aware rules + approval handler) that gates out-of-workspace access.
+    const manifestFs = config.filesystem;
     const fs: FileSystemBackend =
-      config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
-    const ops = config.filesystemOperations;
+      manifestFs ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    // Operation gating rules (@koi/core FileSystemConfig contract at
+    // packages/kernel/core/src/assembly.ts): default for manifest-backed
+    // filesystems is `["read"]` — write/edit require explicit opt-in so a
+    // user who only wants to point `fs_read` at an alternate backend
+    // doesn't silently grant the agent mutation authority over it. The
+    // host-default local backend (no manifest) keeps all three wired
+    // because the permission middleware + interactive approval is the
+    // gate for those tools and several hosts rely on it.
+    const ops =
+      config.filesystemOperations ?? (manifestFs !== undefined ? (["read"] as const) : undefined);
     const wantRead = ops === undefined || ops.includes("read");
     const wantWrite = ops === undefined || ops.includes("write");
     const wantEdit = ops === undefined || ops.includes("edit");

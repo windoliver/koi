@@ -2,9 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { HookConfig } from "@koi/core";
+import type { FileSystemBackend, HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
-import { buildPluginMcpSetup, loadUserMcpSetup, mergeUserAndPluginHooks } from "./shared-wiring.js";
+import {
+  buildCoreProviders,
+  buildPluginMcpSetup,
+  loadUserMcpSetup,
+  mergeUserAndPluginHooks,
+} from "./shared-wiring.js";
 
 function mkTempCwd(): string {
   return mkdtempSync(join(tmpdir(), "koi-shared-wiring-"));
@@ -111,6 +116,75 @@ describe("buildPluginMcpSetup", () => {
 // ---------------------------------------------------------------------------
 // mergeUserAndPluginHooks
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// buildCoreProviders — filesystem operation gating
+// ---------------------------------------------------------------------------
+
+// Stub backend — buildCoreProviders does not call into it at assembly time
+// (createFsReadTool et al are deferred to provider.attach()), so a marker
+// object satisfies the branch under test.
+const stubBackend: FileSystemBackend = {
+  name: "stub",
+  read: async () => ({ ok: false, error: { code: "INTERNAL", message: "stub", retryable: false } }),
+  write: async () => ({
+    ok: false,
+    error: { code: "INTERNAL", message: "stub", retryable: false },
+  }),
+  edit: async () => ({ ok: false, error: { code: "INTERNAL", message: "stub", retryable: false } }),
+} as unknown as FileSystemBackend;
+
+describe("buildCoreProviders: filesystem operation gating", () => {
+  test("host default (no manifest filesystem) wires all three fs tools", () => {
+    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).toContain("fs-edit");
+  });
+
+  test("manifest filesystem without operations defaults to read-only", () => {
+    // Regression for #1777: `FileSystemConfig.operations` default in
+    // `@koi/core/assembly.ts` is `["read"]` — manifest-backed filesystems
+    // must NOT silently escalate to write/edit authority when operations
+    // is omitted. Opt-in mutation only.
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystem: stubBackend,
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).not.toContain("fs-write");
+    expect(names).not.toContain("fs-edit");
+  });
+
+  test("manifest filesystem with explicit operations=[read,write] wires only those", () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystem: stubBackend,
+      filesystemOperations: ["read", "write"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).not.toContain("fs-edit");
+  });
+
+  test("manifest filesystem with explicit operations=[read,write,edit] wires all three", () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystem: stubBackend,
+      filesystemOperations: ["read", "write", "edit"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).toContain("fs-edit");
+  });
+});
 
 describe("mergeUserAndPluginHooks", () => {
   test("returns empty array when both inputs are empty", () => {
