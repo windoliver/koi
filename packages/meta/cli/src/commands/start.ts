@@ -139,37 +139,57 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return ExitCode.FAILURE;
     }
 
-    // Resolve filesystem backend upfront so malformed nexus configs fail fast
-    // before any adapter/subprocess is created. The local path is synchronous;
-    // the nexus local-bridge path spawns the python subprocess. We subscribe a
-    // fail-loud auth handler so mounts that actually need OAuth surface a clear
-    // error instead of hanging on the first I/O call — `koi start` has no
-    // interactive channel that can route redirect URLs back via
-    // `transport.submitAuthCode`, so the correct posture is to reject the run
-    // rather than silently wedge. Non-auth mounts (e.g. `local://...`) flow
-    // through normally because the bridge never emits `auth_required` for
-    // them.
+    // Apply the `FileSystemConfig.operations` contract's `["read"]` default
+    // at the host level so manifest-driven filesystems default to read-only
+    // even on the host-default local backend path. `buildCoreProviders`
+    // honors `filesystemOperations` verbatim — no implicit escalation.
+    //
+    // For `backend: "nexus"` we resolve upfront so malformed configs fail
+    // fast before any adapter/subprocess is created, and the bridge spawns
+    // before the first tool call instead of on first I/O. For
+    // `backend: "local"` (and default) we intentionally do NOT pre-resolve,
+    // because `resolveFileSystem({backend:"local"})` builds a local backend
+    // without `allowExternalPaths` — that's a sandbox tightening relative
+    // to main's behavior. Leaving `manifestFilesystemBackend` undefined
+    // lets `buildCoreProviders` construct the usual
+    // `createLocalFileSystem(cwd, { allowExternalPaths: true })` and relies
+    // on the permission middleware to gate out-of-workspace access, which
+    // is what previously worked. The operations gate still applies via
+    // `manifestFilesystemOps`.
     if (manifestResult.value.filesystem !== undefined) {
-      try {
-        const fsResult = await resolveFileSystemAsync(
-          manifestResult.value.filesystem,
-          process.cwd(),
-          (n) => {
-            if (n.method === "auth_required") {
-              process.stderr.write(
-                `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                  `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-              );
-              process.exit(Number(ExitCode.FAILURE));
-            }
-          },
-        );
-        manifestFilesystemBackend = fsResult.backend;
-        manifestFilesystemOps = fsResult.operations;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
-        return ExitCode.FAILURE;
+      const fsConfig = manifestResult.value.filesystem;
+      manifestFilesystemOps = fsConfig.operations ?? (["read"] as const);
+      if (fsConfig.backend === "nexus") {
+        try {
+          const fsResult = await resolveFileSystemAsync(
+            fsConfig,
+            process.cwd(),
+            // auth_required handler: never call process.exit from here —
+            // it can fire later during any filesystem op (not just
+            // startup) and exiting from a subscription callback skips
+            // the normal shutdown path, orphaning the bridge subprocess
+            // and the session/transcript disposers. SIGINT is the right
+            // exit: during early resolve it falls through to the default
+            // handler (process terminates before any runtime resources
+            // exist to clean up), and during a live session it routes
+            // through the sigint handler registered below, which aborts
+            // the runtime controller and runs `shutdownRuntime()`.
+            (n) => {
+              if (n.method === "auth_required") {
+                process.stderr.write(
+                  `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                    `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+                );
+                process.kill(process.pid, "SIGINT");
+              }
+            },
+          );
+          manifestFilesystemBackend = fsResult.backend;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
+          return ExitCode.FAILURE;
+        }
       }
     }
 

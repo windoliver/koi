@@ -143,14 +143,16 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-edit");
   });
 
-  test("manifest filesystem without operations defaults to read-only", () => {
-    // Regression for #1777: `FileSystemConfig.operations` default in
-    // `@koi/core/assembly.ts` is `["read"]` — manifest-backed filesystems
-    // must NOT silently escalate to write/edit authority when operations
-    // is omitted. Opt-in mutation only.
+  test("filesystemOperations=[read] gates to read-only even without a supplied backend", () => {
+    // Regression for #1777: hosts apply the `FileSystemConfig.operations`
+    // default (`["read"]`) at the callsite before invoking this builder.
+    // `filesystemOperations` must be honored verbatim — including when no
+    // custom backend is supplied, so a manifest that sets
+    // `filesystem: { backend: local, operations: [read] }` runs read-only
+    // on the default local backend.
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
-      filesystem: stubBackend,
+      filesystemOperations: ["read"],
       includeWebFetch: false,
     });
     const names = providers.map((p) => p.name);
@@ -159,7 +161,7 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).not.toContain("fs-edit");
   });
 
-  test("manifest filesystem with explicit operations=[read,write] wires only those", () => {
+  test("filesystemOperations=[read,write] wires only those tools", () => {
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
       filesystem: stubBackend,
@@ -172,11 +174,27 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).not.toContain("fs-edit");
   });
 
-  test("manifest filesystem with explicit operations=[read,write,edit] wires all three", () => {
+  test("filesystemOperations=[read,write,edit] wires all three", () => {
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
       filesystem: stubBackend,
       filesystemOperations: ["read", "write", "edit"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).toContain("fs-edit");
+  });
+
+  test("no manifest, no operations: legacy host-default wires all three", () => {
+    // Ensures the "manifest defaults to read-only" logic lives at the
+    // host callsite (start.ts / tui-command.ts), not here — the
+    // host-default local path has no manifest signal and must keep all
+    // three tools wired so the permission middleware remains the gate.
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystem: stubBackend,
       includeWebFetch: false,
     });
     const names = providers.map((p) => p.name);

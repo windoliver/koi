@@ -543,19 +543,19 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
     // (path-aware rules + approval handler) that gates out-of-workspace access.
-    const manifestFs = config.filesystem;
+    // Hosts that want to sub a non-local backend pass it in via `filesystem`;
+    // `backend: "local"` stays on this default path so the manifest-driven
+    // local case preserves the same out-of-workspace semantics as the
+    // host-default local case.
     const fs: FileSystemBackend =
-      manifestFs ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
-    // Operation gating rules (@koi/core FileSystemConfig contract at
-    // packages/kernel/core/src/assembly.ts): default for manifest-backed
-    // filesystems is `["read"]` — write/edit require explicit opt-in so a
-    // user who only wants to point `fs_read` at an alternate backend
-    // doesn't silently grant the agent mutation authority over it. The
-    // host-default local backend (no manifest) keeps all three wired
-    // because the permission middleware + interactive approval is the
-    // gate for those tools and several hosts rely on it.
-    const ops =
-      config.filesystemOperations ?? (manifestFs !== undefined ? (["read"] as const) : undefined);
+      config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    // Operation gating: `undefined` means "wire all three" (the default for
+    // host-default filesystems). Manifest-driven filesystems apply the
+    // `FileSystemConfig` contract's `["read"]` default at the host level
+    // before calling into this builder (start.ts / tui-command.ts), so by
+    // the time we see `filesystemOperations` here it's already the resolved
+    // gate — never implicitly escalated to write/edit.
+    const ops = config.filesystemOperations;
     const wantRead = ops === undefined || ops.includes("read");
     const wantWrite = ops === undefined || ops.includes("write");
     const wantEdit = ops === undefined || ops.includes("edit");

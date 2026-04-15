@@ -713,37 +713,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
-    // Resolve filesystem backend upfront so malformed nexus configs fail fast
-    // before TUI allocations / renderer startup. We subscribe a fail-loud auth
-    // handler so mounts that need OAuth surface a clear error instead of
-    // hanging on the first I/O call — routing pasted redirect URLs back via
-    // `transport.submitAuthCode` requires a channel-aware handler that has
-    // visibility into the TUI store's inbound-message stream, which is built
-    // several hundred lines below this point. Until that wiring lands, the
-    // correct posture is reject, not silently wedge. Non-auth mounts (e.g.
-    // `local://...`) flow through normally because the bridge never emits
-    // `auth_required` for them.
+    // Apply the `FileSystemConfig.operations` contract's `["read"]` default
+    // at the host level so manifest-driven filesystems default to read-only
+    // even on the host-default local backend path. For `backend: "local"`
+    // we intentionally do NOT pre-resolve because
+    // `resolveFileSystem({backend:"local"})` builds a local backend without
+    // `allowExternalPaths` (a sandbox tightening relative to the prior
+    // host-default path). Leaving `manifestFilesystemBackend` undefined
+    // lets `buildCoreProviders` construct the usual local backend and the
+    // permission middleware gates external paths. For `backend: "nexus"`
+    // we resolve upfront so malformed configs fail fast and the bridge
+    // spawns before the first tool call.
     if (manifestResult.value.filesystem !== undefined) {
-      try {
-        const fsResult = await resolveFileSystemAsync(
-          manifestResult.value.filesystem,
-          process.cwd(),
-          (n) => {
-            if (n.method === "auth_required") {
-              process.stderr.write(
-                `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-                  `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-              );
-              process.exit(1);
-            }
-          },
-        );
-        manifestFilesystemBackend = fsResult.backend;
-        manifestFilesystemOps = fsResult.operations;
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
-        process.exit(1);
+      const fsConfig = manifestResult.value.filesystem;
+      manifestFilesystemOps = fsConfig.operations ?? (["read"] as const);
+      if (fsConfig.backend === "nexus") {
+        try {
+          const fsResult = await resolveFileSystemAsync(
+            fsConfig,
+            process.cwd(),
+            // auth_required handler: never call process.exit from here —
+            // it can fire later during any filesystem op (not just
+            // startup) and exiting from a subscription callback skips
+            // the TUI shutdown path, orphaning the bridge subprocess,
+            // renderer state, and session/transcript disposers. SIGINT
+            // is the right exit: during early resolve it falls through
+            // to the default handler (the TUI sigint handler is not
+            // registered yet), and during a live session it routes
+            // through the sigint handler, which aborts the runtime
+            // controller and runs the normal shutdown path below.
+            (n) => {
+              if (n.method === "auth_required") {
+                process.stderr.write(
+                  `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
+                    `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
+                );
+                process.kill(process.pid, "SIGINT");
+              }
+            },
+          );
+          manifestFilesystemBackend = fsResult.backend;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
+          process.exit(1);
+        }
       }
     }
   }
