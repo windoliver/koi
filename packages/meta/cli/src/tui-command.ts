@@ -1314,13 +1314,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   //
   // `truncatePersistedTranscript` controls whether the on-disk
   // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
-  // state. agent:clear / session:new pass `true` because the
-  // durable transcript is exactly what the user wants erased.
-  // Session switching must NOT pass `true` — the live JSONL
-  // belongs to the startup session id and must survive the switch,
-  // otherwise any work done before the pick is destroyed and the
-  // post-quit resume hint points at a file whose identity no
-  // longer matches that work.
+  // state. agent:clear passes `true` because the durable
+  // transcript is exactly what the user wants erased.
+  // session:new passes `false` — the old transcript is preserved
+  // so it remains resumable via /sessions; the caller rotates
+  // `tuiSessionId` after the reset so new turns write to a
+  // separate file. Session switching also passes `false` — the
+  // live JSONL belongs to the startup session id and must survive
+  // the switch.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
     // Bump the reset generation BEFORE any other state changes
     // so older async reset IIFEs can detect that they've been
@@ -1382,7 +1383,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // history. Await the drain first, then truncate.
     const inflightRun = activeRunPromise;
     const shouldTruncate = options.truncatePersistedTranscript;
-    // A `/clear` / `/new` issued during the startup resume window
+    // A `/clear` issued during the startup resume window
     // (before createKoiRuntime has resolved) still has to honor
     // the privacy boundary. Clearing the prime array is synchronous
     // and safe regardless of runtime readiness.
@@ -2224,7 +2225,53 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           rewindBoundaryActive = true;
           clearedThisProcess = true;
           postClearTurnCount = 0;
-          resetConversation({ truncatePersistedTranscript: true });
+          // Unlike /clear, /new preserves the current transcript on disk
+          // so it remains resumable via /sessions. After the reset barrier
+          // resolves, rotate tuiSessionId and rebind the engine so new
+          // turns write to a separate JSONL file.
+          void (async (): Promise<void> => {
+            resetConversation({ truncatePersistedTranscript: false });
+            const resetOk = await resetBarrier;
+            if (!resetOk || lastResetFailed) {
+              store.dispatch({
+                kind: "add_error",
+                code: "NEW_SESSION_FAILED",
+                message:
+                  "New session failed: session reset did not complete. " +
+                  "Restart koi tui to recover.",
+              });
+              return;
+            }
+            // Rotate to a fresh session ID.
+            tuiSessionId = sessionId(crypto.randomUUID());
+            // Rebind the engine so the session-transcript middleware
+            // routes future turns to the new JSONL file.
+            if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(tuiSessionId as string);
+              } catch (rebindErr: unknown) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "NEW_SESSION_FAILED",
+                  message: `New session failed: cannot rebind runtime: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }`,
+                });
+                return;
+              }
+            }
+            store.dispatch({
+              kind: "set_session_info",
+              modelName,
+              provider,
+              sessionName: "",
+              sessionId: tuiSessionId,
+            });
+            // Refresh session list so the old session appears in /sessions.
+            void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+              store.dispatch({ kind: "set_session_list", sessions });
+            });
+          })();
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
