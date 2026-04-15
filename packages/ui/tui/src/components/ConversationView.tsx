@@ -112,15 +112,14 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
   );
 
   const handleSlashSelect = (command: SlashCommand): void => {
-    // Parse args from the current slash query — what the user typed after
-    // the command name. The slashQuery state holds the text after `/` so
-    // we re-prepend it for parseSlashCommand. For example, if the user
-    // typed `/rewind 3`, slashQuery is `"rewind 3"` and parsed.args is `"3"`.
+    // Guard: if slashQuery is null, handleSlashSubmit already dispatched
+    // this command with correct args — skip to prevent double-dispatch.
     const query = slashQuery();
-    const parsed = query !== null ? parseSlashCommand(`/${query}`) : null;
+    if (query === null) return;
+
+    const parsed = parseSlashCommand(`/${query}`);
     const args = parsed?.args ?? "";
 
-    process.stderr.write(`[slash-select] command=${command.name} args="${args}" hasOnSlashSelect=${props.onSlashSelect !== undefined}\n`);
     props.onSlashDetected(null);
     setClearTrigger((n: number) => n + 1);
     props.onSlashSelect?.(command, args);

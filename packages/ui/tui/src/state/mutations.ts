@@ -546,6 +546,19 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
+    case "add_info": {
+      const infoBlock: TuiAssistantBlock = { kind: "info", message: action.message };
+      const implicit: TuiMessage = {
+        kind: "assistant",
+        id: `assistant-info-${state.messages.length}`,
+        blocks: [infoBlock],
+        streaming: false,
+      };
+      (state.messages as TuiMessage[]).push(implicit);
+      maybeCompact(state);
+      break;
+    }
+
     case "clear_messages":
       (state as unknown as { messages: TuiMessage[] }).messages = [];
       (state as { agentStatus: string }).agentStatus = "idle";

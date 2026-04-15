@@ -2272,7 +2272,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           if (ctrl === undefined) {
             store.dispatch({
               kind: "add_error",
-              code: "GOAL_INFO",
+              code: "GOAL_ERROR",
               message: "Runtime not ready — try again.",
             });
             break;
@@ -2286,14 +2286,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (items.length === 0) {
               store.dispatch({
                 kind: "add_error",
-                code: "GOAL_INFO",
+                code: "goal",
                 message: "No goals set. Use /goal add <text> to add one.",
               });
             } else {
               const lines = items.map((i) => `${i.completed ? "[x]" : "[ ]"} ${i.text}`);
               store.dispatch({
                 kind: "add_error",
-                code: "GOAL_INFO",
+                code: "goal",
                 message: `Goals:\n${lines.join("\n")}`,
               });
             }
@@ -2301,30 +2301,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             if (goalText.length === 0) {
               store.dispatch({
                 kind: "add_error",
-                code: "GOAL_MISSING_TEXT",
+                code: "goal",
                 message: "Usage: /goal add <objective text>",
               });
               break;
             }
             const id = ctrl.add(goalText);
-            if (id !== undefined) {
-              store.dispatch({
-                kind: "add_error",
-                code: "GOAL_INFO",
-                message: `Goal added: "${goalText}" (${id})`,
-              });
-            } else {
-              store.dispatch({
-                kind: "add_error",
-                code: "GOAL_INFO",
-                message: `Goal already exists: "${goalText}"`,
-              });
-            }
+            store.dispatch({
+              kind: "add_error",
+              code: "goal",
+              message:
+                id !== undefined
+                  ? `Goal added: "${goalText}"`
+                  : `Goal already exists: "${goalText}"`,
+            });
           } else if (subCmd === "remove") {
             if (goalText.length === 0) {
               store.dispatch({
                 kind: "add_error",
-                code: "GOAL_MISSING_TEXT",
+                code: "goal",
                 message: "Usage: /goal remove <objective text>",
               });
               break;
@@ -2332,17 +2327,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             const removed = ctrl.remove(goalText);
             store.dispatch({
               kind: "add_error",
-              code: "GOAL_INFO",
+              code: "goal",
               message: removed ? `Goal removed: "${goalText}"` : `Goal not found: "${goalText}"`,
             });
           } else if (subCmd === "clear") {
             ctrl.clear();
-            store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "All goals cleared." });
+            store.dispatch({ kind: "add_error", code: "goal", message: "All goals cleared." });
           } else {
             store.dispatch({
               kind: "add_error",
-              code: "GOAL_UNKNOWN_SUBCOMMAND",
-              message: `Unknown subcommand "${subCmd}". Usage: /goal add|remove|list|clear <text>`,
+              code: "goal",
+              message: `Unknown: "${subCmd}". Usage: /goal add|remove|list|clear <text>`,
             });
           }
           break;

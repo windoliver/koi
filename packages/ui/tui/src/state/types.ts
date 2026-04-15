@@ -246,6 +246,10 @@ export type TuiAssistantBlock =
       readonly kind: "error";
       readonly code: string;
       readonly message: string;
+    }
+  | {
+      readonly kind: "info";
+      readonly message: string;
     };
 
 /** Materialized message — reducer accumulates streaming deltas into these. */
@@ -439,6 +443,10 @@ export type TuiAction =
   | {
       readonly kind: "add_error";
       readonly code: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "add_info";
       readonly message: string;
     }
   | { readonly kind: "clear_messages" }
