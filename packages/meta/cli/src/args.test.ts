@@ -320,6 +320,27 @@ describe("parseArgs", () => {
         version: false,
       });
     });
+
+    // Review round 9: parseStartFlags is exported as public API.
+    // When --help is set, the parser must still faithfully return the
+    // user's other parsed values (--prompt, --manifest, etc.) — not
+    // fabricate default shells. Semantic validators that would throw
+    // are silently coerced to safe fallbacks so the shape stays valid.
+    test("parseArgs(start --help --prompt foo) preserves --prompt value", () => {
+      const f = asFlags(isStartFlags, ["start", "--help", "--prompt", "foo"]);
+      expect(f.help).toBe(true);
+      expect(f.mode).toEqual({ kind: "prompt", text: "foo" });
+    });
+
+    test("parseArgs(deploy --help --port 99999) preserves non-validated fields", () => {
+      const f = asFlags(isDeployFlags, ["deploy", "--help", "--port", "99999", "--system"]);
+      expect(f.help).toBe(true);
+      expect(f.system).toBe(true);
+      // Out-of-range port silently falls back to undefined under help
+      // mode rather than throwing — the user asked for help, not a
+      // config validation pass.
+      expect(f.port).toBeUndefined();
+    });
   });
 
   describe("logFormat env var", () => {

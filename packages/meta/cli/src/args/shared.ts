@@ -104,6 +104,30 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
 }
 
 /**
+ * parseIntFlag variant used by the help/version escape hatch: when
+ * `skipValidators` is true and the underlying validator would throw,
+ * return `fallback` instead. Lets parsers continue to build a
+ * shape-complete flags object when the user is only asking for help.
+ */
+export function parseIntFlagSafe(
+  name: string,
+  value: string,
+  min: number,
+  max: number,
+  skipValidators: boolean,
+  fallback: number,
+): number {
+  if (skipValidators) {
+    try {
+      return parseIntFlag(name, value, min, max);
+    } catch {
+      return fallback;
+    }
+  }
+  return parseIntFlag(name, value, min, max);
+}
+
+/**
  * Validates a numeric CLI flag. Rejects non-integers, trailing junk (e.g. "123abc"),
  * scientific notation (e.g. "1e3"), and out-of-range values.
  */

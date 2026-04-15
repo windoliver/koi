@@ -84,33 +84,17 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
 
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "tui" as const,
-      version: versionRequested,
-      help: helpRequested,
-      agent: values.agent,
-      session: values.session,
-      resume: values.resume,
-      manifest: values.manifest,
-      goal: [],
-      untilPass: [],
-      maxIter: DEFAULT_MAX_ITER,
-      verifierTimeoutMs: DEFAULT_VERIFIER_TIMEOUT_MS,
-      allowSideEffects: false,
-      verifierInheritEnv: false,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
 
   const untilPass = values["until-pass"] ?? [];
-  if (untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
+  if (!skipValidators && untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");
   }
 
   const allowSideEffects = values["allow-side-effects"] ?? false;
 
   // Fail closed on unsafe combinations — mirrors koi start semantics.
-  if (untilPass.length > 0) {
+  if (!skipValidators && untilPass.length > 0) {
     if (!allowSideEffects) {
       throw new ParseError(
         "--until-pass requires --allow-side-effects to explicitly acknowledge the loop's trust-boundary implications:\n" +
@@ -138,19 +122,41 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
 
   return {
     command: "tui" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     agent: values.agent,
     session: values.session,
     resume: values.resume,
     manifest: values.manifest,
     goal: values.goal ?? [],
     untilPass,
-    maxIter: resolveMaxIter(values["max-iter"]),
-    verifierTimeoutMs: resolveVerifierTimeoutMs(values["verifier-timeout"]),
+    maxIter: resolveMaxIterSafe(values["max-iter"], skipValidators),
+    verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
   };
+}
+
+function resolveMaxIterSafe(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveMaxIter(raw);
+    } catch {
+      return DEFAULT_MAX_ITER;
+    }
+  }
+  return resolveMaxIter(raw);
+}
+
+function resolveVerifierTimeoutMsSafe(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveVerifierTimeoutMs(raw);
+    } catch {
+      return DEFAULT_VERIFIER_TIMEOUT_MS;
+    }
+  }
+  return resolveVerifierTimeoutMs(raw);
 }
 
 // Strict positive-integer regex. parseInt alone accepts trailing junk

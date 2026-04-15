@@ -35,17 +35,7 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
   );
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "deploy" as const,
-      version: versionRequested,
-      help: helpRequested,
-      manifest: values.manifest ?? positionals[0],
-      system: false,
-      uninstall: false,
-      port: undefined,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "deploy" as const,
     version: versionRequested,
@@ -53,8 +43,19 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
     manifest: values.manifest ?? positionals[0],
     system: values.system ?? false,
     uninstall: values.uninstall ?? false,
-    port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
+    port: values.port !== undefined ? parseDeployPort(values.port, skipValidators) : undefined,
   };
+}
+
+function parseDeployPort(value: string, skip: boolean): number | undefined {
+  if (skip) {
+    try {
+      return parseIntFlag("port", value, 1, 65535);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseIntFlag("port", value, 1, 65535);
 }
 
 export function isDeployFlags(flags: BaseFlags): flags is DeployFlags {

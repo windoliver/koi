@@ -32,27 +32,27 @@ export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): Statu
   );
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "status" as const,
-      version: versionRequested,
-      help: helpRequested,
-      manifest: values.manifest ?? positionals[0],
-      timeout: undefined,
-      json: false,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "status" as const,
     version: versionRequested,
     help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     timeout:
-      values.timeout !== undefined
-        ? parseIntFlag("timeout", values.timeout, 1, Number.MAX_SAFE_INTEGER)
-        : undefined,
+      values.timeout !== undefined ? parseStatusTimeout(values.timeout, skipValidators) : undefined,
     json: values.json ?? false,
   };
+}
+
+function parseStatusTimeout(value: string, skip: boolean): number | undefined {
+  if (skip) {
+    try {
+      return parseIntFlag("timeout", value, 1, Number.MAX_SAFE_INTEGER);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseIntFlag("timeout", value, 1, Number.MAX_SAFE_INTEGER);
 }
 
 export function isStatusFlags(flags: BaseFlags): flags is StatusFlags {

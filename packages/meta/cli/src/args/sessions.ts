@@ -1,5 +1,5 @@
 import type { BaseFlags, GlobalFlags } from "./shared.js";
-import { parseIntFlag, typedParseArgs } from "./shared.js";
+import { parseIntFlagSafe, typedParseArgs } from "./shared.js";
 
 export interface SessionsFlags extends BaseFlags {
   readonly command: "sessions";
@@ -31,16 +31,7 @@ export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): Ses
   const sub = positionals[0];
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "sessions" as const,
-      version: versionRequested,
-      help: helpRequested,
-      subcommand: sub === "list" ? ("list" as const) : undefined,
-      manifest: values.manifest,
-      limit: 20,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "sessions" as const,
     version: versionRequested,
@@ -49,7 +40,7 @@ export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): Ses
     manifest: values.manifest,
     limit:
       values.limit !== undefined
-        ? parseIntFlag("limit", values.limit, 1, Number.MAX_SAFE_INTEGER)
+        ? parseIntFlagSafe("limit", values.limit, 1, Number.MAX_SAFE_INTEGER, skipValidators, 20)
         : 20,
   };
 }

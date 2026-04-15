@@ -135,43 +135,24 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     "start",
   );
 
-  // Help/version escape hatch: return a shape-complete StartFlags with
-  // safe defaults before running any semantic validators. Dispatch
-  // exits immediately on help/version, so fields like mode/logFormat
-  // are never consulted — but they must type-check.
+  // Help/version is an escape hatch: when set, all semantic validators
+  // that would throw on bad values or unsafe combinations are skipped.
+  // The parser still returns the user's actual parsed values — no
+  // fabricated defaults, no discarded fields — so external callers of
+  // parseStartFlags see a faithful representation of the invocation.
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "start" as const,
-      version: versionRequested,
-      help: helpRequested,
-      manifest: values.manifest ?? positionals[0],
-      mode: { kind: "interactive" },
-      resume: values.resume,
-      verbose: false,
-      dryRun: false,
-      logFormat: "text",
-      noTui: false,
-      contextWindow: DEFAULT_CONTEXT_WINDOW,
-      untilPass: [],
-      maxIter: DEFAULT_MAX_ITER,
-      verifierTimeoutMs: DEFAULT_VERIFIER_TIMEOUT_MS,
-      workingDir: undefined,
-      allowSideEffects: false,
-      verifierInheritEnv: false,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
 
   const untilPass = values["until-pass"] ?? [];
-  if (untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
+  if (!skipValidators && untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");
   }
 
   const promptText = values.prompt;
   // Reject empty/whitespace-only --prompt: prevents empty shell expansions
   // (e.g. --prompt "$UNSET_VAR") from silently falling into interactive mode.
-  if (promptText !== undefined && promptText.trim().length === 0) {
+  if (!skipValidators && promptText !== undefined && promptText.trim().length === 0) {
     throw new ParseError("--prompt value cannot be empty or whitespace-only");
   }
   const mode: StartMode =
@@ -185,7 +166,7 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
   // Running it silently without a verifier-enforced prompt, or combining it
   // with --resume (which expects persistent session state we don't write in
   // loop mode), would both violate user expectations.
-  if (untilPass.length > 0) {
+  if (!skipValidators && untilPass.length > 0) {
     if (mode.kind !== "prompt") {
       throw new ParseError(
         "--until-pass requires --prompt: convergence loop mode runs a single prompt with verifier enforcement, and there is no interactive-loop mode yet",
@@ -215,7 +196,7 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     // would get a mixed stream of JSON events and plain-text loop
     // decorations. Reject the combination at parse time until structured
     // loop events are plumbed through a shared renderer.
-    if (resolveLogFormat(values["log-format"]) === "json") {
+    if (resolveLogFormatOrDefault(values["log-format"], skipValidators) === "json") {
       throw new ParseError(
         "--until-pass cannot be combined with --log-format json: loop mode writes human-readable iteration banners and verifier status lines directly to stdout, which would produce a mixed stream that breaks JSON parsing. Omit --log-format json (or switch to single-prompt mode) until structured loop events are implemented",
       );
@@ -224,23 +205,59 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
 
   return {
     command: "start" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     mode,
     resume: values.resume,
     verbose: values.verbose ?? false,
     dryRun: values["dry-run"] ?? false,
-    logFormat: resolveLogFormat(values["log-format"]),
+    logFormat: resolveLogFormatOrDefault(values["log-format"], skipValidators),
     noTui: values["no-tui"] ?? false,
     contextWindow: resolveContextWindow(values["context-window"]),
     untilPass,
-    maxIter: resolveMaxIter(values["max-iter"]),
-    verifierTimeoutMs: resolveVerifierTimeoutMs(values["verifier-timeout"]),
+    maxIter: resolveMaxIterOrDefault(values["max-iter"], skipValidators),
+    verifierTimeoutMs: resolveVerifierTimeoutMsOrDefault(
+      values["verifier-timeout"],
+      skipValidators,
+    ),
     workingDir: undefined,
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
   };
+}
+
+function resolveLogFormatOrDefault(raw: string | undefined, skip: boolean): "text" | "json" {
+  if (skip) {
+    try {
+      return resolveLogFormat(raw);
+    } catch {
+      return "text";
+    }
+  }
+  return resolveLogFormat(raw);
+}
+
+function resolveMaxIterOrDefault(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveMaxIter(raw);
+    } catch {
+      return DEFAULT_MAX_ITER;
+    }
+  }
+  return resolveMaxIter(raw);
+}
+
+function resolveVerifierTimeoutMsOrDefault(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveVerifierTimeoutMs(raw);
+    } catch {
+      return DEFAULT_VERIFIER_TIMEOUT_MS;
+    }
+  }
+  return resolveVerifierTimeoutMs(raw);
 }
 
 const DEFAULT_MAX_ITER = 10;

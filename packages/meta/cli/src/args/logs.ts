@@ -1,5 +1,5 @@
 import type { BaseFlags, GlobalFlags } from "./shared.js";
-import { parseIntFlag, typedParseArgs } from "./shared.js";
+import { parseIntFlagSafe, typedParseArgs } from "./shared.js";
 
 export interface LogsFlags extends BaseFlags {
   readonly command: "logs";
@@ -32,16 +32,7 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
   );
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "logs" as const,
-      version: versionRequested,
-      help: helpRequested,
-      manifest: values.manifest ?? positionals[0],
-      follow: false,
-      lines: 50,
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "logs" as const,
     version: versionRequested,
@@ -50,7 +41,7 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
     follow: values.follow ?? false,
     lines:
       values.lines !== undefined
-        ? parseIntFlag("lines", values.lines, 1, Number.MAX_SAFE_INTEGER)
+        ? parseIntFlagSafe("lines", values.lines, 1, Number.MAX_SAFE_INTEGER, skipValidators, 50)
         : 50,
   };
 }

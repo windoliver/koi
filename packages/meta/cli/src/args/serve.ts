@@ -35,27 +35,48 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
   );
   const helpRequested = values.help ?? g.help;
   const versionRequested = values.version ?? g.version;
-  if (helpRequested || versionRequested) {
-    return {
-      command: "serve" as const,
-      version: versionRequested,
-      help: helpRequested,
-      manifest: values.manifest ?? positionals[0],
-      port: undefined,
-      verbose: false,
-      logFormat: "text",
-    };
-  }
+  const skipValidators = helpRequested || versionRequested;
 
   return {
     command: "serve" as const,
     version: versionRequested,
     help: helpRequested,
     manifest: values.manifest ?? positionals[0],
-    port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
+    port:
+      values.port !== undefined
+        ? parseIntFlagOrUndefined("port", values.port, 1, 65535, skipValidators)
+        : undefined,
     verbose: values.verbose ?? false,
-    logFormat: resolveLogFormat(values["log-format"]),
+    logFormat: resolveLogFormatOrText(values["log-format"], skipValidators),
   };
+}
+
+function parseIntFlagOrUndefined(
+  name: string,
+  value: string,
+  min: number,
+  max: number,
+  skip: boolean,
+): number | undefined {
+  if (skip) {
+    try {
+      return parseIntFlag(name, value, min, max);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseIntFlag(name, value, min, max);
+}
+
+function resolveLogFormatOrText(raw: string | undefined, skip: boolean): "text" | "json" {
+  if (skip) {
+    try {
+      return resolveLogFormat(raw);
+    } catch {
+      return "text";
+    }
+  }
+  return resolveLogFormat(raw);
 }
 
 export function isServeFlags(flags: BaseFlags): flags is ServeFlags {
