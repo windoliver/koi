@@ -30,6 +30,7 @@ import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js
 import { createTextCollector } from "./output-collector.js";
 import { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
 import { applyForkMaxTurns, spawnChildAgent } from "./spawn-child.js";
+import { markPreAdmission } from "./spawn-pre-admission.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -115,11 +116,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     if (request.absoluteDeadlineMs !== undefined && request.absoluteDeadlineMs <= Date.now()) {
       return {
         ok: false,
-        error: {
+        error: markPreAdmission({
           code: "TIMEOUT",
           message: `Spawn request for "${request.agentName}" was rejected: absoluteDeadlineMs (${request.absoluteDeadlineMs}) has already elapsed.`,
           retryable: false,
-        },
+        }),
       };
     }
 
@@ -163,7 +164,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         }
       } else if (!resolveResult.ok) {
         // Non-NOT_FOUND resolver errors: fail closed (preserve existing behavior)
-        return { ok: false, error: resolveResult.error };
+        return { ok: false, error: markPreAdmission(resolveResult.error) };
       } else {
         const definition = resolveResult.value;
 
@@ -204,7 +205,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       manifest.name,
     );
     if (permissionError !== undefined) {
-      return { ok: false, error: permissionError };
+      return { ok: false, error: markPreAdmission(permissionError) };
     }
 
     // 3b. additionalTools ceiling guard — Issue 1.
@@ -223,7 +224,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       if (unknownTools.length > 0) {
         return {
           ok: false,
-          error: {
+          error: markPreAdmission({
             code: "PERMISSION",
             message:
               `Cannot spawn "${request.agentName}": additionalTools contains tool(s) not registered ` +
@@ -231,7 +232,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
               `Unknown tool(s): ${unknownTools.map((t) => t.name).join(", ")}. ` +
               `Register the tool on the parent first, or remove it from additionalTools.`,
             retryable: false,
-          },
+          }),
         };
       }
     }
@@ -269,7 +270,7 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     // Fail fast on conflicting list fields before building child options.
     const validation = validateSpawnRequest(request);
     if (!validation.ok) {
-      return { ok: false, error: validation.error };
+      return { ok: false, error: markPreAdmission(validation.error) };
     }
     // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
     const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
@@ -314,23 +315,23 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       if (policy.kind === "on_demand" && options.reportStore === undefined) {
         return {
           ok: false,
-          error: {
+          error: markPreAdmission({
             code: "VALIDATION",
             message:
               "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
             retryable: false,
-          },
+          }),
         };
       }
       if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
         return {
           ok: false,
-          error: {
+          error: markPreAdmission({
             code: "VALIDATION",
             message:
               "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
             retryable: false,
-          },
+          }),
         };
       }
       return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
@@ -341,13 +342,21 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         try {
           spawnResult = await spawnChildAgent(spawnOptions);
         } catch (e: unknown) {
+          // spawnChildAgent() failures are all pre-admission: slot
+          // acquisition, governance, assembly, cancellation — none
+          // imply the child actually ran. Mark accordingly so the
+          // spawn guard refunds the per-turn burst budget (#1793).
           if (e instanceof KoiRuntimeError) {
-            return { ok: false, error: e.toKoiError() };
+            return { ok: false, error: markPreAdmission(e.toKoiError()) };
           }
           const message = e instanceof Error ? e.message : String(e);
           return {
             ok: false,
-            error: { code: "INTERNAL", message: `Spawn failed: ${message}`, retryable: false },
+            error: markPreAdmission({
+              code: "INTERNAL",
+              message: `Spawn failed: ${message}`,
+              retryable: false,
+            }),
           };
         }
         const parentInbox = base.parentAgent.component(INBOX);

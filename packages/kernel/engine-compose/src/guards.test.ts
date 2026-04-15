@@ -1085,6 +1085,35 @@ describe("createSpawnGuard", () => {
     await p1;
   });
 
+  test("per-turn budget is refunded on tagged pre-admission errors (#1793)", async () => {
+    // Pre-admission failures (resolver NOT_FOUND, VALIDATION, PERMISSION,
+    // etc.) that the spawn pipeline explicitly tags with
+    // context.preAdmission=true should NOT consume the per-turn burst
+    // budget — the child was never actually admitted.
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
+    const wrap = getToolWrap(guard);
+    const ctx = mockTurnContext();
+
+    const preAdmissionError = (): Promise<never> =>
+      Promise.reject(
+        KoiRuntimeError.from("NOT_FOUND", "agent not found", {
+          context: { preAdmission: true },
+        }),
+      );
+    const preAdmissionNext: ToolNext = mock(preAdmissionError);
+
+    // Three pre-admission failures — all refunded.
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
+
+    // Two valid spawns must now succeed — the budget was refunded.
+    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    expect(succeedingNext).toHaveBeenCalledTimes(2);
+  });
+
   test("child-propagated KoiRuntimeError codes still consume burst budget (#1793)", async () => {
     // Adversarial review round 6: a spawned child that was already
     // admitted can fail later with PERMISSION / RATE_LIMIT /
