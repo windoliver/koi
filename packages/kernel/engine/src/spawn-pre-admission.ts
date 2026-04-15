@@ -25,3 +25,19 @@ export function markPreAdmission(error: KoiError): KoiError {
     context: { ...(error.context ?? {}), preAdmission: true },
   };
 }
+
+/**
+ * Strip a forged `context.preAdmission` from an error that a child agent
+ * may have produced. The marker is just a JSON field on KoiError and is
+ * untrusted when crossing the child → parent boundary: a malicious or
+ * buggy child could set it to bypass the parent's per-turn fan-out cap.
+ * Call this on every post-admission error path before returning the
+ * error to the parent spawn executor.
+ */
+export function stripPreAdmission(error: KoiError): KoiError {
+  if (error.context === undefined) return error;
+  const ctx = error.context as Record<string, unknown>;
+  if (!("preAdmission" in ctx)) return error;
+  const { preAdmission: _discarded, ...rest } = ctx;
+  return { ...error, context: rest };
+}

@@ -10,7 +10,7 @@ import { KoiRuntimeError } from "@koi/errors";
 
 import type { OutputCollector } from "./output-collector.js";
 import { spawnChildAgent } from "./spawn-child.js";
-import { markPreAdmission } from "./spawn-pre-admission.js";
+import { markPreAdmission, stripPreAdmission } from "./spawn-pre-admission.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -81,10 +81,14 @@ export async function runSpawnedAgent(options: RunSpawnedAgentOptions): Promise<
     return { ok: true, output: collector.output() };
   } catch (e: unknown) {
     // Post-admission: the child was successfully assembled and started
-    // running. Preserve structured KoiError fields but do NOT tag as
-    // pre-admission — this failure must count against the burst budget.
+    // running. Preserve structured KoiError fields but strip any
+    // `context.preAdmission` marker a child may have forged — the
+    // parent's spawn guard treats that flag as authoritative, so
+    // allowing it to cross the child→parent boundary would let a
+    // malicious or buggy child refund the parent's per-turn fan-out
+    // budget and bypass the cap (#1793).
     if (e instanceof KoiRuntimeError) {
-      return { ok: false, error: e.toKoiError() };
+      return { ok: false, error: stripPreAdmission(e.toKoiError()) };
     }
     const message = e instanceof Error ? e.message : String(e);
     return {
