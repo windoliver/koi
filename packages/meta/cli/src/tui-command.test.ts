@@ -36,13 +36,17 @@ async function* makeErrorStream(): AsyncGenerator<EngineEvent> {
 // ---------------------------------------------------------------------------
 
 describe("drainEngineStream — happy path", () => {
-  test("sets connected before streaming and disconnected after", async () => {
+  test("sets connected before streaming and stays connected after (#1753)", async () => {
     const store = createStore(createInitialState());
     const batcher = createEventBatcher<EngineEvent>(() => {});
 
     expect(store.getState().connectionStatus).toBe("disconnected");
     await drainEngineStream(makeStream([]), store, batcher);
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    // Regression: drainEngineStream used to unconditionally flip the
+    // status back to "disconnected" in a `finally` block, which made
+    // /doctor report a false-negative connection state after every
+    // successful turn.
+    expect(store.getState().connectionStatus).toBe("connected");
   });
 
   test("text_delta events go directly to store.streamDelta, not batcher", async () => {
@@ -175,9 +179,10 @@ describe("drainEngineStream — abort handling", () => {
 
     await drainEngineStream(abortStream(), store, batcher);
 
-    // drainEngineStream catches all errors (including AbortError) and
-    // dispatches add_error. This is correct behavior — the TUI shows the error.
-    // The key assertion: it doesn't crash and always sets disconnected.
+    // AbortError without a caller-provided AbortSignal falls through to
+    // the generic error branch: the turn failed from drain's point of
+    // view, so it is surfaced as a plain engine error and the channel
+    // is marked disconnected.
     expect(store.getState().connectionStatus).toBe("disconnected");
 
     // Verify we still get an error dispatch (abort is still surfaced)
@@ -190,17 +195,24 @@ describe("drainEngineStream — abort handling", () => {
     expect(errorCalls.length).toBe(1);
   });
 
-  test("sets disconnected status after abort", async () => {
+  test("user-initiated abort keeps the channel connected (#1753)", async () => {
+    // With a caller-provided AbortSignal that is already aborted when
+    // the generator throws AbortError, drainEngineStream treats this as
+    // a clean user cancel — synthesizes a terminal `done` and returns
+    // early without flipping connection status. The LLM connection is
+    // still healthy; the user just pressed Ctrl+C.
     const store = createStore(createInitialState());
     const batcher = createEventBatcher<EngineEvent>(() => {});
+    const controller = new AbortController();
 
     async function* abortStream(): AsyncGenerator<EngineEvent> {
       yield* []; // satisfy useYield lint — generator must have at least one yield point
+      controller.abort();
       throw new DOMException("aborted", "AbortError");
     }
 
-    await drainEngineStream(abortStream(), store, batcher);
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    await drainEngineStream(abortStream(), store, batcher, controller.signal);
+    expect(store.getState().connectionStatus).toBe("connected");
   });
 
   test("streamDelta is called for text_delta before abort", async () => {
@@ -250,7 +262,10 @@ describe("drainEngineStream — abort handling", () => {
     // should be visible. The critical assertion is absence of leaks.
     expect(flushed.some((e) => (e as { delta?: string }).delta === "after-dispose")).toBe(false);
     expect(flushed.some((e) => (e as { delta?: string }).delta === "still-after")).toBe(false);
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    // #1753: batcher disposal is a UI-side reset, not a model/network
+    // failure — the channel that was dispatched to "connected" at the
+    // top of drainEngineStream stays connected.
+    expect(store.getState().connectionStatus).toBe("connected");
   });
 
   test("does not dispatch ENGINE_ERROR when stream throws after disposal — #1742", async () => {

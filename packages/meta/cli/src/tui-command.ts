@@ -638,13 +638,17 @@ export async function drainEngineStream(
       batcher.flushSync();
       return;
     }
+    // Real engine failure — the model call errored out. Mark the channel
+    // disconnected so /doctor reflects the true last-known state, and
+    // surface the error toast. (#1753: previously a `finally` block set
+    // disconnected unconditionally, including on the happy path, so
+    // /doctor reported "disconnected" after every successful turn.)
+    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
     store.dispatch({
       kind: "add_error",
       code: "ENGINE_ERROR",
       message: e instanceof Error ? e.message : String(e),
     });
-  } finally {
-    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
   }
 }
 
