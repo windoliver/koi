@@ -2242,8 +2242,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // Rotate to a fresh session ID.
+            // Rotate to a fresh session ID and keep viewedSessionId
+            // in sync so isInPickerMode() stays false.
             tuiSessionId = sessionId(crypto.randomUUID());
+            viewedSessionId = tuiSessionId;
             // Rebind the engine so the session-transcript middleware
             // routes future turns to the new JSONL file.
             if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
