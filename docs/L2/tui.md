@@ -595,6 +595,9 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 
 ## Changelog
 
+- **Ctrl+N new session keybinding (#1783):** Global `isCtrlN` predicate + handler in `handleGlobalKey`, guarded against modal, non-conversation views, and inline slash/@ overlays. `session:new` preserves old transcript and rotates `tuiSessionId` + rebinds engine so old sessions are resumable via `/sessions`.
+- **Unified `/sessions` command (#1783):** Removed redundant `nav:sessions` read-only view. Renamed `session:resume` → `session:sessions`. Single command opens the session picker modal (browse + resume). `createEffect` on modal auto-refreshes session list from any source (palette, slash command, SpawnBlock click).
+- **Writable session resume (#1783):** Picker now fully resumes sessions (rebind engine → hydrate transcript → update `tuiSessionId`/`viewedSessionId`). Fail-closed: rebind before hydrate, `lastResetFailed` latch on failure. Cost bridge retargeted via `setSession()`.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
 
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
