@@ -896,20 +896,33 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       directChildren++;
       spawnsThisTurn++;
 
-      // 5. Fire fan-out warning (synchronous, at most once per session)
+      // 5. Fire fan-out warning — at most once per session, and cover
+      //    BOTH enforcement paths. In the sequential turn-runner path
+      //    directChildren dips back to 0 between awaited spawns, so the
+      //    warning would never fire for same-turn bursts if it were
+      //    keyed only off directChildren (#1793).
       if (
         !firedFanOutWarning &&
         policy.fanOutWarningAt !== undefined &&
-        policy.onWarning !== undefined &&
-        directChildren >= policy.fanOutWarningAt
+        policy.onWarning !== undefined
       ) {
-        firedFanOutWarning = true;
-        policy.onWarning({
-          kind: "fan_out",
-          current: directChildren,
-          limit: policy.maxFanOut,
-          warningAt: policy.fanOutWarningAt,
-        });
+        const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
+        const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
+        if (concurrentTriggered || burstTriggered) {
+          firedFanOutWarning = true;
+          // Prefer whichever counter is higher so operators see the most
+          // pressing pressure first. On ties, prefer "concurrent" because
+          // in-flight children are the more immediate resource pressure.
+          const useBurst =
+            burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
+          policy.onWarning({
+            kind: "fan_out",
+            reason: useBurst ? "per_turn_burst" : "concurrent",
+            current: useBurst ? spawnsThisTurn : directChildren,
+            limit: policy.maxFanOut,
+            warningAt: policy.fanOutWarningAt,
+          });
+        }
       }
 
       // 6. Execute spawn:

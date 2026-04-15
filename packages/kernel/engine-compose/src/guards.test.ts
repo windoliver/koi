@@ -961,6 +961,42 @@ describe("createSpawnGuard", () => {
     expect(next).toHaveBeenCalledTimes(4);
   });
 
+  test("fan-out warning fires on sequential per-turn bursts (#1793)", async () => {
+    // Adversarial-review round 3: the sequential turn-runner path dips
+    // directChildren back to 0 between awaited spawns, so a warning keyed
+    // only off directChildren would never fire for same-turn bursts — the
+    // exact regression #1793 was supposed to surface. The warning must
+    // cover both enforcement paths.
+    const warnings: unknown[] = [];
+    const guard = createSpawnGuard({
+      policy: {
+        maxFanOut: 5,
+        fanOutWarningAt: 3,
+        onWarning: (info) => warnings.push(info),
+      },
+      agentDepth: 0,
+    });
+    const wrap = getToolWrap(guard);
+    const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    const ctx = mockTurnContext();
+
+    // Three SEQUENTIAL spawns in one turn — each completes before the
+    // next starts, so directChildren never exceeds 1. Warning must still
+    // fire from the per-turn burst counter.
+    await wrap(ctx, mockToolRequest("forge_agent"), next);
+    await wrap(ctx, mockToolRequest("forge_agent"), next);
+    await wrap(ctx, mockToolRequest("forge_agent"), next);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      kind: "fan_out",
+      reason: "per_turn_burst",
+      current: 3,
+      limit: 5,
+      warningAt: 3,
+    });
+  });
+
   test("spawn guard does NOT install model hooks (budget is keyed off turnId, not model calls)", () => {
     // Adversarial-review: early revisions reset the counter inside
     // wrapModelCall/wrapModelStream, which lets a cooperating adapter call
@@ -1114,6 +1150,7 @@ describe("createSpawnGuard", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toEqual({
       kind: "fan_out",
+      reason: "concurrent",
       current: 2,
       limit: 3,
       warningAt: 2,

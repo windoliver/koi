@@ -67,6 +67,12 @@ export interface LoopDetectionConfig {
 export interface SpawnWarningInfo {
   /** Which limit triggered the warning. */
   readonly kind: "fan_out" | "total_processes";
+  /**
+   * Which enforcement path raised the warning. Present only for
+   * `kind: "fan_out"`. `"concurrent"` = in-flight direct children;
+   * `"per_turn_burst"` = spawns issued within the current model turn.
+   */
+  readonly reason?: "concurrent" | "per_turn_burst";
   /** Current count when warning fired. */
   readonly current: number;
   /** Hard limit that will be enforced. */
@@ -93,18 +99,25 @@ export interface SpawnPolicy {
    */
   readonly maxDepth: number;
   /**
-   * Maximum direct children per parent — dual enforcement:
-   *   1. Concurrent in-flight: a parent may have at most maxFanOut live
-   *      children at any moment (each slot is held for the child's
-   *      lifetime and released when it terminates). Matters when a future
-   *      engine parallelises tool-call dispatch.
-   *   2. Per-turn burst: a parent may issue at most maxFanOut spawn tool
-   *      calls within one agent turn (keyed off `TurnContext.turnId`).
-   *      Required because today's turn-runner awaits batched tool calls
-   *      sequentially, so the in-flight counter alone never caught batch
-   *      fan-out bursts (#1793).
-   * Whichever cap is hit first throws RATE_LIMIT. Both use the same knob
-   * so there's no new config surface to learn.
+   * Maximum direct children per parent — dual enforcement against one knob.
+   *
+   * 1. **In-flight (concurrent)**: a parent may have at most `maxFanOut`
+   *    outstanding `spawn` tool calls whose slots are held for the
+   *    lifetime of the spawn tool call (not the child process). Most
+   *    spawn adapters await the child to completion synchronously, in
+   *    which case the slot ≈ child lifetime; deferred / on-demand
+   *    adapters that return as soon as the child is launched release
+   *    the slot earlier, and the per-turn counter below is what keeps
+   *    them bounded.
+   *
+   * 2. **Per-turn burst**: a parent may issue at most `maxFanOut` spawn
+   *    tool calls within one agent turn (keyed off `TurnContext.turnId`).
+   *    Required because today's turn-runner awaits batched tool calls
+   *    sequentially, so the in-flight counter alone never caught batch
+   *    fan-out bursts (#1793).
+   *
+   * Whichever cap is hit first throws `RATE_LIMIT`. For tree-wide live
+   * child counts, use `maxTotalProcesses` (ledger-based).
    */
   readonly maxFanOut: number;
   /**
