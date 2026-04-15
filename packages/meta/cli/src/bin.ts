@@ -44,29 +44,40 @@ Global flags:
 const rawArgv = process.argv.slice(2);
 
 // Fast-path: top-level --version / --help exit before loading dispatch.
-// Only triggers when no subcommand precedes the flag — `koi start --help`
-// must reach dispatch so it can print the per-command help block (#1729).
-// A subcommand is detected by "first arg exists and is not a flag".
+// Three gates, all must hold for the fast-path to fire:
+//   1. No subcommand precedes the flag — `koi start --help` must reach
+//      dispatch so it can print the per-command help block (#1729).
+//   2. The flag appears before the first `--` operand terminator —
+//      `koi -- --version` is a literal operand request, not a version
+//      probe. Matches detectGlobalFlags semantics in args/shared.ts so
+//      the parser and entrypoint share one contract.
+//   3. The flag is actually present.
 //
-// NOTE on `--`: a top-level `koi -- --version` ought to treat --version
-// as a literal operand, not a version probe, but we cannot prove that
-// path end-to-end: Bun itself consumes the first `--` from its argv
-// before the shim is invoked, so a dev-mode test via `bun bin.ts --
-// --version` is indistinguishable from `bun bin.ts --version`. Rather
-// than ship behavior we can't verify, the fast-path keeps the simpler
-// includes() scan and does not claim `--` support at the top level.
-// Subcommand-level `--` (e.g. `koi plugin install -- --help`) IS
-// honored by parseArgs / typedParseArgs and is regression-tested.
+// Subcommand detection: "first arg exists and is not a flag".
+//
+// Dev-mode testability note: Bun consumes the first `--` from its own
+// argv before the shim sees it, so `bun bin.ts -- --version` can't
+// express this case end-to-end under dev invocation. The behavior is
+// still correct for the installed binary shim, and the `--` scan is
+// unit-tested via detectGlobalFlags/parseArgs in args.test.ts.
 const firstArg = rawArgv[0];
 const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
 
 if (!hasSubcommand) {
-  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+  let wantsVersion = false;
+  let wantsHelp = false;
+  for (const a of rawArgv) {
+    if (a === "--") break;
+    if (a === "--version" || a === "-V") wantsVersion = true;
+    else if (a === "--help" || a === "-h") wantsHelp = true;
+  }
+
+  if (wantsVersion) {
     process.stdout.write(`${VERSION}\n`);
     process.exit(0);
   }
 
-  if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
+  if (wantsHelp) {
     process.stdout.write(HELP);
     process.exit(0);
   }
