@@ -395,6 +395,20 @@ export interface KoiRuntimeHandle {
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * MCP server status — returns configured servers, their connection states,
+   * and tool counts. Used by the `/mcp` TUI command. Returns empty array when
+   * no MCP servers are configured.
+   */
+  readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+}
+
+/** Status entry for a single MCP server (used by /mcp TUI command). */
+export interface McpServerStatus {
+  readonly name: string;
+  readonly toolCount: number;
+  readonly failureCode: string | undefined;
+  readonly failureMessage: string | undefined;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -966,6 +980,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/checkpoint").Checkpoint
     | undefined;
 
+  // --- MCP resolver exported by the MCP preset stack ---
+  // Read here for the returned KoiRuntimeHandle.getMcpStatus().
+  const mcpResolver = stackContribution.exports.mcpResolver as
+    | import("@koi/mcp").McpResolver
+    | undefined;
+
   // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
   // Build the NDJSON sink + hash-chained audit middleware when the host
   // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
@@ -1143,6 +1163,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               : Promise.resolve([]),
         },
       }),
+    getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
+      if (mcpResolver === undefined) return [];
+      const descriptors = await mcpResolver.discover();
+      const failures = mcpResolver.failures;
+      // Group descriptors by server name
+      const toolCounts = new Map<string, number>();
+      for (const d of descriptors) {
+        const server = d.server ?? "unknown";
+        toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+      }
+      const entries: McpServerStatus[] = [];
+      for (const [name, count] of toolCounts) {
+        entries.push({ name, toolCount: count, failureCode: undefined, failureMessage: undefined });
+      }
+      for (const f of failures) {
+        if (!toolCounts.has(f.serverName)) {
+          entries.push({
+            name: f.serverName,
+            toolCount: 0,
+            failureCode: f.error.code,
+            failureMessage: f.error.message,
+          });
+        }
+      }
+      return entries;
+    },
     getTrajectorySteps: async () => {
       if (trajectoryStore === undefined) return [];
       const steps = await trajectoryStore.getDocument(trajectoryDocId);

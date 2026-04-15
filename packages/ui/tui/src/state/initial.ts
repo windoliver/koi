@@ -47,5 +47,6 @@ export function createInitialState(): TuiState {
     showThinking: true,
     costBreakdown: null,
     tokenRate: null,
+    mcpServers: [],
   };
 }

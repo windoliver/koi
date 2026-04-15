@@ -42,7 +42,16 @@ export type TuiView =
   | "help"
   | "agents"
   | "trajectory"
-  | "cost";
+  | "cost"
+  | "mcp";
+
+/** MCP server status entry for the /mcp view. */
+export interface McpServerInfo {
+  readonly name: string;
+  readonly status: "connected" | "needs-auth" | "error" | "pending";
+  readonly toolCount: number;
+  readonly detail: string | undefined;
+}
 
 /** Risk level for permission prompts — computed by permissions middleware. */
 export type PermissionRiskLevel = "low" | "medium" | "high";
@@ -352,6 +361,8 @@ export interface TuiState {
   readonly runReportSummary: string | null;
   /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
   readonly showThinking: boolean;
+  /** MCP server status list — populated by host on /mcp command. */
+  readonly mcpServers: readonly McpServerInfo[];
   /** Cost breakdown injected by host — null before first cost data push. */
   readonly costBreakdown: CostBreakdown | null;
   /** Token throughput rate (tokens/sec) — null before first data push. */
@@ -432,6 +443,7 @@ export type TuiAction =
       readonly blocks: readonly ContentBlock[];
     }
   | { readonly kind: "set_view"; readonly view: TuiView }
+  | { readonly kind: "set_mcp_status"; readonly servers: readonly McpServerInfo[] }
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }
   | { readonly kind: "set_connection_status"; readonly status: ConnectionStatus }
   | { readonly kind: "set_layout"; readonly tier: LayoutTier }

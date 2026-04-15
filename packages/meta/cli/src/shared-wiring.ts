@@ -47,7 +47,7 @@ import {
   createRegisteredHooks,
   loadRegisteredHooksPerEntry,
 } from "@koi/hooks";
-import type { McpResolver, McpServerConfig } from "@koi/mcp";
+import type { McpResolver, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createSkillsMcpBridge } from "@koi/runtime";
@@ -60,6 +60,8 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import type { AuthServerEntry } from "./mcp-auth-tools.js";
+import { createCliAuthToolFactory } from "./mcp-auth-tools.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 
 /** Common shape for an assembled MCP setup — user config or plugin-provided. */
@@ -145,14 +147,52 @@ export async function loadUserMcpSetup(
   cwd: string,
   skillsRuntime: SkillsRuntime | undefined,
 ): Promise<McpSetup | undefined> {
-  const mcpConfigPath = join(cwd, ".mcp.json");
-  const result = await loadMcpJsonFile(mcpConfigPath);
-  if (!result.ok) return undefined;
+  // Search order: project root first, then user home fallback (~/.koi/.mcp.json).
+  const candidates = [join(cwd, ".mcp.json"), join(homedir(), ".koi", ".mcp.json")];
+  let result: Awaited<ReturnType<typeof loadMcpJsonFile>> | undefined;
+  for (const p of candidates) {
+    const r = await loadMcpJsonFile(p);
+    if (r.ok) {
+      result = r;
+      break;
+    }
+  }
+  if (result === undefined || !result.ok) return undefined;
   if (result.value.servers.length === 0) return undefined;
 
-  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
+  // Collect auth providers + connections so we can create auth pseudo-tools
+  // for servers that need OAuth but have no stored tokens.
+  const authProviders = new Map<string, OAuthAuthProvider>();
+  const authServers = new Map<string, AuthServerEntry>();
+  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+
+  const connections = result.value.servers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    connectionsByName.set(server.name, conn);
+    return conn;
+  });
+
+  // Build auth server entries for any server that has an OAuth provider
+  for (const server of result.value.servers) {
+    const provider = authProviders.get(server.name);
+    const connection = connectionsByName.get(server.name);
+    if (provider !== undefined && connection !== undefined && server.kind === "http") {
+      authServers.set(server.name, { provider, connection, url: server.url });
+    }
+  }
+
   const resolver = createMcpResolver(connections);
-  const provider = createMcpComponentProvider({ resolver });
+
+  // Wire auth tool factory when OAuth servers are present
+  const createAuthTools =
+    authServers.size > 0
+      ? createCliAuthToolFactory({
+          servers: authServers,
+          rediscover: () => resolver.discover(),
+        })
+      : undefined;
+
+  const provider = createMcpComponentProvider({ resolver, createAuthTools });
 
   let bridge: SkillsMcpBridge | undefined;
   if (skillsRuntime !== undefined) {
@@ -186,9 +226,36 @@ export function buildPluginMcpSetup(
   pluginMcpServers: readonly McpServerConfig[],
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
-  const connections = pluginMcpServers.map((server) => createOAuthAwareMcpConnection(server));
+
+  const authProviders = new Map<string, OAuthAuthProvider>();
+  const authServers = new Map<string, AuthServerEntry>();
+  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+
+  const connections = pluginMcpServers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    connectionsByName.set(server.name, conn);
+    return conn;
+  });
+
+  for (const server of pluginMcpServers) {
+    const provider = authProviders.get(server.name);
+    const connection = connectionsByName.get(server.name);
+    if (provider !== undefined && connection !== undefined && server.kind === "http") {
+      authServers.set(server.name, { provider, connection, url: server.url });
+    }
+  }
+
   const resolver = createMcpResolver(connections);
-  const provider = createMcpComponentProvider({ resolver });
+
+  const createAuthTools =
+    authServers.size > 0
+      ? createCliAuthToolFactory({
+          servers: authServers,
+          rediscover: () => resolver.discover(),
+        })
+      : undefined;
+
+  const provider = createMcpComponentProvider({ resolver, createAuthTools });
   return {
     resolver,
     provider,

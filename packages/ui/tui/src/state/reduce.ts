@@ -666,6 +666,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_view":
       return action.view === state.activeView ? state : { ...state, activeView: action.view };
 
+    case "set_mcp_status":
+      return { ...state, mcpServers: action.servers };
+
     case "set_modal":
       return action.modal === null && state.modal === null
         ? state

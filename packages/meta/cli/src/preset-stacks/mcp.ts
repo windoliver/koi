@@ -49,6 +49,9 @@ export const mcpStack: PresetStack = {
         ...(userMcpSetup !== undefined ? [userMcpSetup.provider] : []),
         ...(pluginMcpSetup !== undefined ? [pluginMcpSetup.provider] : []),
       ],
+      exports: {
+        ...(userMcpSetup !== undefined ? { mcpResolver: userMcpSetup.resolver } : {}),
+      },
       onShutdown: () => {
         // Best-effort dispose. Neither setup has background work that
         // would block exit — they hold connection pools whose

@@ -172,6 +172,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "system",
   },
   {
+    id: "nav:mcp",
+    label: "MCP Servers",
+    description: "View MCP server connections and authentication status",
+    category: "navigation",
+  },
+  {
     id: "system:quit",
     label: "Quit",
     description: "Exit Koi",

@@ -2245,6 +2245,169 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           })();
           break;
+        case "nav:mcp":
+          // Instant — reads config + checks Keychain. No network, no runtime needed.
+          void (async (): Promise<void> => {
+            const { loadMcpJsonFile, computeServerKey } = await import("@koi/mcp");
+            const { createSecureStorage } = await import("@koi/secure-storage");
+            const { join } = await import("node:path");
+            const { homedir } = await import("node:os");
+
+            const paths = [join(process.cwd(), ".mcp.json"), join(homedir(), ".koi", ".mcp.json")];
+            let config: Awaited<ReturnType<typeof loadMcpJsonFile>> | undefined;
+            for (const p of paths) {
+              const r = await loadMcpJsonFile(p);
+              if (r.ok && r.value.servers.length > 0) {
+                config = r;
+                break;
+              }
+            }
+
+            if (config === undefined || !config.ok) {
+              store.dispatch({ kind: "set_mcp_status", servers: [] });
+              store.dispatch({ kind: "set_view", view: "mcp" });
+              return;
+            }
+
+            // Check token storage for each OAuth server — fast Keychain lookup, no network
+            const storage = createSecureStorage();
+            const servers: import("@koi/tui").McpServerInfo[] = await Promise.all(
+              config.value.servers.map(async (s) => {
+                const hasOAuth = s.kind === "http" && s.oauth !== undefined;
+                if (!hasOAuth) {
+                  // Non-OAuth server — assume configured/ready
+                  return {
+                    name: s.name,
+                    status: "connected" as const,
+                    toolCount: 0,
+                    detail: `${s.kind} transport`,
+                  };
+                }
+                // Check Keychain for stored tokens
+                const key = computeServerKey(s.name, s.kind === "http" ? s.url : "");
+                const raw = await storage.get(key);
+                const hasTokens = raw !== undefined;
+                return {
+                  name: s.name,
+                  status: hasTokens ? ("connected" as const) : ("needs-auth" as const),
+                  toolCount: 0,
+                  detail: hasTokens ? "Authenticated (tokens stored)" : undefined,
+                };
+              }),
+            );
+
+            // If runtime is ready, enrich with live tool counts
+            if (runtimeHandle !== null) {
+              const live = await runtimeHandle.getMcpStatus();
+              const liveMap = new Map(live.map((s) => [s.name, s]));
+              for (let i = 0; i < servers.length; i++) {
+                const entry = servers[i];
+                if (entry === undefined) continue;
+                const l = liveMap.get(entry.name);
+                if (l !== undefined) {
+                  const liveStatus: "connected" | "needs-auth" | "error" =
+                    l.failureCode === undefined
+                      ? "connected"
+                      : l.failureCode === "AUTH_REQUIRED"
+                        ? "needs-auth"
+                        : "error";
+                  servers[i] = {
+                    name: l.name,
+                    status: liveStatus,
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? entry.detail,
+                  };
+                }
+              }
+            }
+
+            store.dispatch({ kind: "set_mcp_status", servers });
+            store.dispatch({ kind: "set_view", view: "mcp" });
+          })();
+          break;
+        case "nav:mcp-auth":
+          // Triggered by pressing Enter on a needs-auth server in /mcp view.
+          // args = server name. Runs `koi mcp auth <name>` inline.
+          void (async (): Promise<void> => {
+            const serverName = args.trim();
+            if (serverName === "") return;
+            try {
+              const { loadMcpJsonFile } = await import("@koi/mcp");
+              const { join } = await import("node:path");
+              const { homedir } = await import("node:os");
+              const { createSecureStorage } = await import("@koi/secure-storage");
+              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
+              const { createOAuthAuthProvider } = await import("@koi/mcp");
+
+              // Find the server config
+              const paths = [
+                join(process.cwd(), ".mcp.json"),
+                join(homedir(), ".koi", ".mcp.json"),
+              ];
+              for (const p of paths) {
+                const r = await loadMcpJsonFile(p);
+                if (!r.ok) continue;
+                const server = r.value.servers.find((s) => s.name === serverName);
+                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
+                  continue;
+
+                const storage = createSecureStorage();
+                const runtime = createCliOAuthRuntime();
+                const provider = createOAuthAuthProvider({
+                  serverName: server.name,
+                  serverUrl: server.url,
+                  oauthConfig: server.oauth,
+                  runtime,
+                  storage,
+                });
+
+                const success = await provider.startAuthFlow();
+                if (success) {
+                  // Refresh /mcp view with updated Keychain state
+                  const { computeServerKey: computeKey } = await import("@koi/mcp");
+                  const freshStorage = createSecureStorage();
+                  const refreshed: import("@koi/tui").McpServerInfo[] = await Promise.all(
+                    r.value.servers.map(async (s2) => {
+                      const hasOAuth2 = s2.kind === "http" && s2.oauth !== undefined;
+                      if (!hasOAuth2) {
+                        return {
+                          name: s2.name,
+                          status: "connected" as const,
+                          toolCount: 0,
+                          detail: `${s2.kind} transport`,
+                        };
+                      }
+                      const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
+                      const raw2 = await freshStorage.get(key2);
+                      return {
+                        name: s2.name,
+                        status: (raw2 !== undefined ? "connected" : "needs-auth") as
+                          | "connected"
+                          | "needs-auth",
+                        toolCount: 0,
+                        detail: raw2 !== undefined ? "Authenticated" : undefined,
+                      };
+                    }),
+                  );
+                  store.dispatch({ kind: "set_mcp_status", servers: refreshed });
+                } else {
+                  store.dispatch({
+                    kind: "add_error",
+                    code: "MCP_AUTH",
+                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
+                  });
+                }
+                break;
+              }
+            } catch (e: unknown) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
+              });
+            }
+          })();
+          break;
         case "system:quit":
           void shutdown();
           break;

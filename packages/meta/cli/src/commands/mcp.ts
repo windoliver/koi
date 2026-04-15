@@ -262,10 +262,7 @@ interface LoadedConfig {
 
 async function loadConfigs(): Promise<LoadedConfig | undefined> {
   const cwd = process.cwd();
-  const paths = [
-    resolve(cwd, ".mcp.json"),
-    resolve(process.env.HOME ?? ".", ".claude", ".mcp.json"),
-  ];
+  const paths = [resolve(cwd, ".mcp.json"), resolve(process.env.HOME ?? ".", ".koi", ".mcp.json")];
 
   for (const p of paths) {
     const result = await loadMcpJsonFile(p);
