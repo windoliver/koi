@@ -251,22 +251,31 @@ export async function loadUserRegisteredHooks(options: {
 }): Promise<readonly RegisteredHook[]> {
   const strictMode = process.env.KOI_HOOKS_STRICT === "1";
   const path = resolveUserHooksConfigPath();
-  const file = Bun.file(path);
-  if (!(await file.exists())) return [];
 
+  // Single-step read: attempting `file.exists()` then `file.json()` was a
+  // TOCTOU race that treated any atomic replace/delete between the two
+  // operations as fatal corruption, even on routine editor saves (review
+  // third-loop r3 finding). We now try the read directly and treat
+  // ENOENT as "file absent" (silent empty). Any other error — a real
+  // parse failure, permission issue, or concurrent truncation — is still
+  // fatal because the file existed but produced unknown content, which
+  // could have hidden a failClosed hook.
   let raw: unknown;
   try {
-    raw = await file.json();
+    raw = await Bun.file(path).json();
   } catch (e) {
-    // File exists but cannot be read/parsed. This is now fatal by default:
-    // a corrupt file could have declared failClosed hooks we cannot
-    // inspect, so degrading to an empty hook set is indistinguishable from
-    // a silent policy bypass. Operators whose workflows cannot tolerate
-    // this (e.g., editors doing unsynchronized partial writes) should
-    // either fix their editor to use atomic writes (`write → fsync →
-    // rename`) or remove the file entirely while editing.
-    const detail = e instanceof Error ? e.message : String(e);
-    const msg = `Could not read ${path}: ${detail}`;
+    // Bun surfaces a missing file with an error whose `code` is "ENOENT".
+    // Guard against both the Node-style code property and a message
+    // fallback so the detection survives small runtime divergences.
+    const errCode =
+      typeof e === "object" && e !== null && "code" in e
+        ? (e as { readonly code?: unknown }).code
+        : undefined;
+    const errMsg = e instanceof Error ? e.message : String(e);
+    if (errCode === "ENOENT" || /ENOENT|no such file/i.test(errMsg)) {
+      return [];
+    }
+    const msg = `Could not read ${path}: ${errMsg}`;
     options.onLoadError?.(msg);
     throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
   }
@@ -436,19 +445,17 @@ export async function loadUserRegisteredHooks(options: {
  * (tier-tagged as "session"), returning a single deterministic list in
  * user-then-plugin order.
  *
- * When `filterAgentHooks` is true, `kind: "agent"` plugin hooks cannot
- * run on the current host. To keep plugin hooks under the same
- * fail-closed policy as user hooks (third-loop round 2 finding), this
- * function applies the SAME two escape hatches:
- *
- * - Any plugin agent hook marked `failClosed: true` → throw. The plugin
- *   author explicitly declared the hook load-critical.
- * - Any plugin agent hook under `KOI_HOOKS_STRICT=1` → throw. Strict mode
- *   does not permit silently dropping unsupported entries, regardless of
- *   tier.
- * - Otherwise → filter the agent hooks out and report the names via
- *   `onFilteredAgentHooks` so operators can see which plugin hooks were
- *   skipped.
+ * When `filterAgentHooks` is true, `kind: "agent"` plugin hooks are
+ * silently dropped (with the names reported via `onFilteredAgentHooks`
+ * so operators know what was skipped). Unlike USER hooks, plugin hooks
+ * are auto-discovered from third-party packages the operator installed
+ * but does not directly author — letting a plugin's `failClosed: true`
+ * agent hook abort startup would mean any plugin update could brick
+ * every TUI session on hosts that cannot run agent hooks, which is a
+ * worse failure mode than the silent bypass it would prevent (review
+ * third-loop r3 finding). Operators who need strict plugin enforcement
+ * should audit their plugin set and remove unsupported plugins rather
+ * than rely on startup-fatal load behaviour here.
  */
 export function mergeUserAndPluginHooks(
   userHooks: readonly RegisteredHook[],
@@ -460,21 +467,7 @@ export function mergeUserAndPluginHooks(
 ): readonly RegisteredHook[] {
   let effectivePluginConfigs = pluginHookConfigs;
   if (options.filterAgentHooks) {
-    const strictMode = process.env.KOI_HOOKS_STRICT === "1";
     const agentHooks = pluginHookConfigs.filter((h) => h.kind === "agent");
-    const failClosedAgents = agentHooks.filter((h) => h.failClosed === true);
-    if (failClosedAgents.length > 0) {
-      const labels = failClosedAgents.map((h) => `"${h.name}"`).join(", ");
-      throw new Error(
-        `Refusing to start: plugin agent hook(s) marked failClosed:true cannot be loaded by this host (${labels}). Remove failClosed from the affected plugin entries or run via a host that supports agent hooks.`,
-      );
-    }
-    if (strictMode && agentHooks.length > 0) {
-      const labels = agentHooks.map((h) => `"${h.name}"`).join(", ");
-      throw new Error(
-        `Refusing to start: ${agentHooks.length} plugin agent hook(s) (${labels}) — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries.`,
-      );
-    }
     if (agentHooks.length > 0 && options.onFilteredAgentHooks !== undefined) {
       options.onFilteredAgentHooks(agentHooks.map((h) => h.name));
     }

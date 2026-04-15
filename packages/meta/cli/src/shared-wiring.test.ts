@@ -149,6 +149,22 @@ describe("loadUserRegisteredHooks", () => {
     rmSync(fakeHome, { recursive: true, force: true });
   });
 
+  test("returns [] silently when the configured path vanishes between check and read (ENOENT race, review third-loop r3)", async () => {
+    // Regression: we used to probe file.exists() then separately call
+    // file.json(). If the file was atomically replaced or removed between
+    // those two steps, startup failed fatally on normal editor saves.
+    // The loader must treat ENOENT as "file absent" even if a prior probe
+    // had seen the file.
+    __setUserHooksConfigPathForTests(join(fakeHome, ".koi", "never-existed.json"));
+    const errors: string[] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   test("returns [] silently when hooks.json is absent", async () => {
     const errors: string[] = [];
     const hooks = await loadUserRegisteredHooks({
@@ -535,28 +551,28 @@ describe("mergeUserAndPluginHooks", () => {
     expect(merged).toHaveLength(2);
   });
 
-  test("aborts when a plugin agent hook is marked failClosed:true (review third-loop r2)", () => {
-    const plugin: HookConfig[] = [
-      commandHook("p1"),
-      { kind: "agent", name: "critical-plugin", prompt: "deny", failClosed: true },
-    ];
-    expect(() =>
-      mergeUserAndPluginHooks([], plugin, {
-        filterAgentHooks: true,
-      }),
-    ).toThrow(/Refusing to start.*plugin agent hook.*failClosed.*"critical-plugin"/);
-  });
-
-  test("aborts on plugin agent hooks under KOI_HOOKS_STRICT=1 (review third-loop r2)", () => {
+  test("does NOT abort on plugin agent hooks even under KOI_HOOKS_STRICT=1 (review third-loop r3)", () => {
+    // Plugin hooks are auto-discovered from third-party packages the
+    // operator does not directly author. Letting a plugin-authored
+    // failClosed:true agent hook brick TUI startup would mean any plugin
+    // update could take down every session — a worse failure mode than
+    // silently filtering out unsupported plugin hooks. Operators who need
+    // strict plugin enforcement should audit their plugin set.
     const origStrict = process.env.KOI_HOOKS_STRICT;
     process.env.KOI_HOOKS_STRICT = "1";
     try {
-      const plugin = [commandHook("p1"), agentHook("plugin-agent")];
-      expect(() =>
-        mergeUserAndPluginHooks([], plugin, {
-          filterAgentHooks: true,
-        }),
-      ).toThrow(/Refusing to start.*1 plugin agent hook.*KOI_HOOKS_STRICT=1/);
+      const plugin: HookConfig[] = [
+        commandHook("p1"),
+        { kind: "agent", name: "critical-plugin", prompt: "deny", failClosed: true },
+        agentHook("another-plugin"),
+      ];
+      const filtered: string[][] = [];
+      const merged = mergeUserAndPluginHooks([], plugin, {
+        filterAgentHooks: true,
+        onFilteredAgentHooks: (names) => filtered.push([...names]),
+      });
+      expect(merged.map((rh) => rh.hook.name)).toEqual(["p1"]);
+      expect(filtered).toEqual([["critical-plugin", "another-plugin"]]);
     } finally {
       if (origStrict === undefined) {
         delete process.env.KOI_HOOKS_STRICT;
