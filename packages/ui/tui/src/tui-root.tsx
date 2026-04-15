@@ -156,6 +156,16 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     }),
   );
 
+  // Refresh session list whenever the session-picker modal opens, regardless
+  // of which component opened it (command palette, /sessions, SpawnBlock click).
+  createEffect(
+    on(modal, (m) => {
+      if (m?.kind === "session-picker") {
+        props.onCommand("session:sessions", "");
+      }
+    }),
+  );
+
   // DEV ONLY: keyboard focus invariant.
   // Exactly one "zone" must have focused=true at all times:
   //   - ConversationView (when modal === null → focused={!hasModal()} = true)
@@ -299,6 +309,11 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     store.dispatch({ kind: "set_modal", modal: null });
   };
 
+  /** Open the session picker. The createEffect above auto-refreshes the list. */
+  const openSessionPicker = (): void => {
+    store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+  };
+
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
     store.dispatch({ kind: "set_modal", modal: null });
     const navView = resolveNavCommand(cmd.id);
@@ -309,9 +324,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     }
     // session:resume opens the session picker modal inline — host is not involved.
     if (cmd.id === "session:sessions") {
-      store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
-      // Also forward to onCommand so the CLI refreshes the session list.
-      props.onCommand(cmd.id, args);
+      openSessionPicker();
       return;
     }
     if (cmd.id === "session:rename") {

@@ -2264,6 +2264,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               }
             }
             // Rebind succeeded — safe to update host-side session ids.
+            // Clear stale failure latches: a prior /clear failure on
+            // the OLD session must not poison the fresh session.
+            clearPersistFailed = false;
+            lastResetFailed = false;
             tuiSessionId = newSid;
             viewedSessionId = newSid;
             costBridge.setSession(newSid as string, modelName, provider);
@@ -2504,6 +2508,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
+          // Clear stale failure latches from the prior session.
+          clearPersistFailed = false;
+          lastResetFailed = false;
           costBridge.setSession(targetSid as string, modelName, provider);
           store.dispatch({
             kind: "set_session_info",
