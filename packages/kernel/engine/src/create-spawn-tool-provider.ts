@@ -69,7 +69,6 @@ export interface SpawnToolProviderConfig {
   readonly perChildMiddlewareFactory?:
     | ((childCtx: {
         readonly childRunId: string;
-        readonly parentSessionId: string;
         readonly parentAgentId: string;
       }) => Promise<readonly KoiMiddleware[]>)
     | undefined;

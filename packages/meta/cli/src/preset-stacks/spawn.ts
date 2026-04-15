@@ -108,7 +108,6 @@ export const spawnStack: PresetStack = {
     ] as
       | ((childCtx: {
           readonly childRunId: string;
-          readonly parentSessionId: string;
           readonly parentAgentId: string;
         }) => Promise<readonly KoiMiddleware[]>)
       | undefined;

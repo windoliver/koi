@@ -1151,7 +1151,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const buildPerChildManifestMiddlewareFactory = ():
       | ((childCtx: {
           readonly childRunId: string;
-          readonly parentSessionId: string;
           readonly parentAgentId: string;
         }) => Promise<readonly KoiMiddleware[]>)
       | undefined => {
@@ -1159,8 +1158,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         return undefined;
       }
       return async (childCtx) => {
+        // Read the LIVE parent runtime session id, not a static
+        // manifest label. `runtimeForRotation` is the mutable
+        // reference the factory populates once the engine runtime
+        // is constructed; it rotates on cycleSession() and rebinds
+        // on resume. Reading it here means children spawned after
+        // a /clear or /rewind correctly inherit the rotated parent
+        // session id as their prefix. Fall back to a neutral label
+        // on the (normally unreachable) pre-assignment path.
+        const liveParentSessionId = runtimeForRotation?.sessionId ?? "parent-session";
         return resolveManifestMiddleware(config.manifestMiddleware, manifestMiddlewareRegistry, {
-          sessionId: `${childCtx.parentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
+          sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
           hostId,
           workingDirectory: zoneBWorkingDirectory,
           stackExports: earlyContribution.exports,
