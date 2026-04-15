@@ -66,10 +66,20 @@ export const memoryStack: PresetStack = {
     const memoryFs = createLocalFileSystem(memoryDir);
 
     // Frozen-snapshot recall middleware: scans memory dir once per session,
-    // injects formatted memories into every model call.
+    // injects formatted memories into every model call. When a model adapter
+    // is available, enables per-turn relevance selection (lightweight side-query
+    // picks the most relevant memories for the current user message).
     const recallMw = createMemoryRecallMiddleware({
       fs: memoryFs,
       recall: { memoryDir },
+      ...(ctx.modelAdapter !== undefined
+        ? {
+            relevanceSelector: {
+              modelCall: ctx.modelAdapter.complete,
+              maxFiles: 5,
+            },
+          }
+        : {}),
     });
 
     // Extraction middleware: harvests learnings from spawn tool outputs

@@ -76,20 +76,27 @@ ${storageSection}
 - Choose the right **type** (user, feedback, project, reference)
 - **Content** should include the fact, then a \`**Why:**\` and \`**How to apply:**\` line for feedback/project types
 
-### How to recall
+### Auto-injection (you don't need to call recall)
 
-- At conversation start: recall context about the user or topic
-- When user references past work: recall relevant facts before answering
-- Use **tier filter** for recent facts only (\`tier: "hot"\`) vs. full history (\`tier: "all"\`)
+Your stored memories are **automatically injected** at the start of every session.
+You do NOT need to call \`${prefix}_recall\` to access them — they are already in
+your context above. The system scores memories by recency and relevance, selects
+the most important ones within a token budget, and injects them before your first
+turn.
+
+**Only use \`${prefix}_recall\` or \`${prefix}_search\` when:**
+- The user explicitly asks to search or list their memories
+- You need a specific memory that may not be in the auto-injected set
+- You want to check if a memory exists before storing a duplicate
 
 ### Decay tiers
 
 Facts automatically decay based on recency:
-- **Hot** (recent): prioritized in recall
+- **Hot** (recent): prioritized in auto-injection
 - **Warm** (weeks old): still accessible, lower priority
-- **Cold** (months old): preserved but excluded from summaries
+- **Cold** (months old): preserved but may not be auto-injected
 
-Accessing a cold fact through recall warms it back up.
+Storing or accessing a cold fact warms it back up.
 `;
 }
 
