@@ -697,6 +697,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
+  // #1777: the manifest filesystem block is parsed+validated by
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
+  // `backend: "local"` on the host-default local backend path.
+  // `backend: "nexus"` is rejected here because the TUI permission
+  // middleware and checkpoint stack both assume the filesystem
+  // backend is rooted at `cwd`; approving or rewinding against a
+  // non-cwd backend would break trust-boundary and rollback
+  // invariants.
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -708,6 +717,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
+
+    if (manifestResult.value.filesystem !== undefined) {
+      if (manifestResult.value.filesystem.backend === "nexus") {
+        process.stderr.write(
+          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
+            "  The TUI permission middleware and checkpoint stack both assume the\n" +
+            "  filesystem backend is rooted at the session cwd, and approving or\n" +
+            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
+            "  rollback invariants. Omit the `filesystem:` block or use\n" +
+            "  `backend: local`.\n",
+        );
+        process.exit(1);
+      }
+      // Apply the `FileSystemConfig.operations` contract's `["read"]`
+      // default at the host level. `buildCoreProviders` honors
+      // `filesystemOperations` verbatim. NOTE: this gates only the
+      // `fs_*` tools — the `execution` preset stack still contributes
+      // Bash, so a model in a read-only manifest posture can still
+      // mutate the workspace via shell commands. Manifest authors who
+      // need a true read-only posture should also omit `execution`
+      // from `manifest.stacks`.
+      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -948,6 +980,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // plugin (v1's "wire everything" posture).
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
