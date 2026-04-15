@@ -836,24 +836,31 @@ function createAuditManifestEntry(
   // justified for explicit mutable accounting.
   const sharedState = getOrInitAuditSinkState(sink);
 
-  if (sinkIsNew) {
-    // Only the first resolver that opens this sink registers
-    // the close + failure-check hook. Subsequent resolvers
-    // re-use the cached sink without re-registering close
-    // (otherwise the dispose chain would try to close an
-    // already-ended writer).
-    ctx.registerShutdown(async () => {
-      await sink.close();
-      if (sharedState.writeFailures > 0) {
-        throw new Error(
-          `manifest @koi/middleware-audit: ${sharedState.writeFailures} audit write(s) failed during the session. ` +
-            "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
-            `First error: ${sharedState.firstError instanceof Error ? sharedState.firstError.message : String(sharedState.firstError)}`,
-          { cause: sharedState.firstError },
-        );
-      }
-    });
-  }
+  // Refcounted close: EVERY resolver (parent + each per-child
+  // re-resolve) increments the refCount and registers its own
+  // release hook. The release that drops the count to zero
+  // actually closes the sink and surfaces accumulated write
+  // failures. This keeps the sink alive across parent.dispose()
+  // when deferred/on_demand children are still running in the
+  // background — whichever runtime disposes last is the one
+  // that flushes and closes.
+  sharedState.refCount += 1;
+  ctx.registerShutdown(async () => {
+    sharedState.refCount -= 1;
+    if (sharedState.refCount > 0 || sharedState.closed) {
+      return;
+    }
+    sharedState.closed = true;
+    await sink.close();
+    if (sharedState.writeFailures > 0) {
+      throw new Error(
+        `manifest @koi/middleware-audit: ${sharedState.writeFailures} audit write(s) failed during the session. ` +
+          "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
+          `First error: ${sharedState.firstError instanceof Error ? sharedState.firstError.message : String(sharedState.firstError)}`,
+        { cause: sharedState.firstError },
+      );
+    }
+  });
 
   // Built-in audit is registered as `trusted` in the built-in
   // registry, which means the resolver skips the zone-B adapter
@@ -892,6 +899,18 @@ function createAuditManifestEntry(
 interface AuditSinkSharedState {
   writeFailures: number;
   firstError: unknown;
+  /**
+   * Reference count across parent + every per-child resolve
+   * that binds this cached sink. Each resolver (parent or child)
+   * increments on bind and registers a release hook; the last
+   * release hook to run actually closes the sink. This prevents
+   * parent `dispose()` from closing the writer while deferred /
+   * on_demand children are still streaming audit records
+   * through the shared sink.
+   */
+  refCount: number;
+  /** True once the last release has closed the sink. */
+  closed: boolean;
 }
 
 const auditSinkSharedStates = new WeakMap<ClosableAuditSink, AuditSinkSharedState>();
@@ -899,7 +918,7 @@ const auditSinkSharedStates = new WeakMap<ClosableAuditSink, AuditSinkSharedStat
 function getOrInitAuditSinkState(sink: ClosableAuditSink): AuditSinkSharedState {
   let state = auditSinkSharedStates.get(sink);
   if (state === undefined) {
-    state = { writeFailures: 0, firstError: undefined };
+    state = { writeFailures: 0, firstError: undefined, refCount: 0, closed: false };
     auditSinkSharedStates.set(sink, state);
   }
   return state;

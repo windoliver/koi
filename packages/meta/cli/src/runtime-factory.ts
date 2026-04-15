@@ -1221,7 +1221,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
               hostId,
               workingDirectory: zoneBWorkingDirectory,
-              stackExports: earlyContribution.exports,
+              // Child re-resolution deliberately passes empty
+              // stackExports: the parent's exported handles
+              // (bashHandle, trajectory store, checkpoint, etc.)
+              // are parent-scoped mutable state that must not
+              // leak into a child runtime. Factories that read
+              // `stackExports` on the parent path see `{}` on
+              // the child path and must degrade gracefully.
+              stackExports: {},
               registerShutdown: (fn) => {
                 perChildShutdownHooks.push(fn);
               },
