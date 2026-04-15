@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { typedParseArgs } from "./shared.js";
 
 export interface DoctorFlags extends BaseFlags {
@@ -8,7 +8,7 @@ export interface DoctorFlags extends BaseFlags {
   readonly json: boolean;
 }
 
-export function parseDoctorFlags(rest: readonly string[], g: GlobalFlags): DoctorFlags {
+export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly repair: boolean | undefined;

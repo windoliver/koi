@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlag, typedParseArgs } from "./shared.js";
 
 export interface StatusFlags extends BaseFlags {
@@ -8,7 +8,7 @@ export interface StatusFlags extends BaseFlags {
   readonly json: boolean;
 }
 
-export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): StatusFlags {
+export function parseStatusFlags(rest: readonly string[]): StatusFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly timeout: string | undefined;

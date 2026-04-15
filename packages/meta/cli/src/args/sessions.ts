@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlagSafe, typedParseArgs } from "./shared.js";
 
 export interface SessionsFlags extends BaseFlags {
@@ -8,7 +8,7 @@ export interface SessionsFlags extends BaseFlags {
   readonly limit: number;
 }
 
-export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): SessionsFlags {
+export function parseSessionsFlags(rest: readonly string[]): SessionsFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly limit: string | undefined;

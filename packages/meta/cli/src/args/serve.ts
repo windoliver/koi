@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlag, resolveLogFormat, typedParseArgs } from "./shared.js";
 
 export interface ServeFlags extends BaseFlags {
@@ -9,7 +9,7 @@ export interface ServeFlags extends BaseFlags {
   readonly logFormat: "text" | "json";
 }
 
-export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeFlags {
+export function parseServeFlags(rest: readonly string[]): ServeFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly port: string | undefined;

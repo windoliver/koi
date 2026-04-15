@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
 export interface TuiFlags extends BaseFlags {
@@ -45,7 +45,7 @@ export interface TuiFlags extends BaseFlags {
   readonly verifierInheritEnv: boolean;
 }
 
-export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags {
+export function parseTuiFlags(rest: readonly string[]): TuiFlags {
   type V = {
     readonly agent: string | undefined;
     readonly session: string | undefined;

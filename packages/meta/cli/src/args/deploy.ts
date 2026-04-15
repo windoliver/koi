@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlag, typedParseArgs } from "./shared.js";
 
 export interface DeployFlags extends BaseFlags {
@@ -9,7 +9,7 @@ export interface DeployFlags extends BaseFlags {
   readonly port: number | undefined;
 }
 
-export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): DeployFlags {
+export function parseDeployFlags(rest: readonly string[]): DeployFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly system: boolean | undefined;

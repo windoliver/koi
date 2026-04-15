@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, resolveLogFormat, typedParseArgs } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ export interface StartFlags extends BaseFlags {
   readonly verifierInheritEnv: boolean;
 }
 
-export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartFlags {
+export function parseStartFlags(rest: readonly string[]): StartFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly prompt: string | undefined;

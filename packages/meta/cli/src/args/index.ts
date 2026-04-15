@@ -53,7 +53,7 @@ import type { ServeFlags } from "./serve.js";
 import { parseServeFlags } from "./serve.js";
 import type { SessionsFlags } from "./sessions.js";
 import { parseSessionsFlags } from "./sessions.js";
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { detectGlobalFlags, extractCommand } from "./shared.js";
 import type { StartFlags } from "./start.js";
 import { parseStartFlags } from "./start.js";
@@ -122,7 +122,7 @@ export function isKnownCommand(cmd: string | undefined): cmd is KnownCommand {
   return false;
 }
 
-type CommandParser = (rest: readonly string[], g: GlobalFlags) => CliFlags;
+type CommandParser = (rest: readonly string[]) => CliFlags;
 
 const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
   init: parseInitFlags,
@@ -150,9 +150,10 @@ export function parseArgs(argv: readonly string[]): CliFlags {
   // Known commands own their own --help/-h/--version/-V parsing. node:util
   // handles option-value arity (so e.g. `koi start --prompt --help` treats
   // `--help` as the string value of `--prompt`, not as a help request).
-  // Pass `rest` through intact — no pre-filtering needed.
+  // Pass `rest` through intact — no pre-filtering, no GlobalFlags merge:
+  // the per-command parser is authoritative for its own argv.
   if (isKnownCommand(command)) {
-    return COMMAND_PARSERS[command](rest, globalFlags);
+    return COMMAND_PARSERS[command](rest);
   }
 
   // Unknown command — fall back to the bare globalFlags shape so callers

@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ export interface PluginFlags extends BaseFlags {
 // Parser
 // ---------------------------------------------------------------------------
 
-export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): PluginFlags {
+export function parsePluginFlags(rest: readonly string[]): PluginFlags {
   type V = {
     readonly json: boolean | undefined;
     readonly help: boolean | undefined;

@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ export interface McpFlags extends BaseFlags {
 // Parser
 // ---------------------------------------------------------------------------
 
-export function parseMcpFlags(rest: readonly string[], g: GlobalFlags): McpFlags {
+export function parseMcpFlags(rest: readonly string[]): McpFlags {
   type V = {
     readonly json: boolean | undefined;
     readonly help: boolean | undefined;

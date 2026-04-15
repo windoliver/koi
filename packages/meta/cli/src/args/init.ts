@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { typedParseArgs } from "./shared.js";
 
 export interface InitFlags extends BaseFlags {
@@ -11,7 +11,7 @@ export interface InitFlags extends BaseFlags {
   readonly engine: string | undefined;
 }
 
-export function parseInitFlags(rest: readonly string[], g: GlobalFlags): InitFlags {
+export function parseInitFlags(rest: readonly string[]): InitFlags {
   type V = {
     readonly yes: boolean | undefined;
     readonly name: string | undefined;
