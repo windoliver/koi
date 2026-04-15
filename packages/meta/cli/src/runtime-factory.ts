@@ -60,10 +60,20 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import { composeRuntimeMiddleware } from "./compose-middleware.js";
+import {
+  buildInheritedMiddlewareForChildren,
+  composeRuntimeMiddleware,
+} from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
+import type { ManifestMiddlewareEntry, TrustedHostConfig } from "./manifest.js";
+import {
+  createBuiltinManifestRegistry,
+  type MiddlewareRegistry,
+  resolveManifestMiddleware,
+} from "./middleware-registry.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
+import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
@@ -165,6 +175,57 @@ export interface KoiRuntimeConfig {
    * key; see `loadManifestConfig`.
    */
   readonly plugins?: readonly string[] | undefined;
+  /**
+   * Zone B — ordered, user-controlled middleware resolved from
+   * `manifest.middleware`. Each entry names a middleware registered
+   * in `middlewareRegistry` and carries optional factory options.
+   * Order is authoritative within zone B; the resolved chain
+   * always sits between zone A (preset stacks) and zone C
+   * (required core), per `composeRuntimeMiddleware`.
+   *
+   * Unknown names throw `UnknownManifestMiddlewareError` at factory
+   * time with the full registered-name list. Core middleware names
+   * (`hook`, `permissions`, `exfiltration-guard`, etc.) are rejected
+   * earlier by the manifest loader and never reach this field.
+   */
+  readonly manifestMiddleware?: readonly ManifestMiddlewareEntry[] | undefined;
+  /**
+   * Registry used to resolve `manifestMiddleware` entry names to
+   * concrete factories. When omitted, the factory constructs
+   * `createBuiltinManifestRegistry({allowFileBackedSinks: config.allowManifestFileSinks})`.
+   * Pass `createDefaultManifestRegistry()` for an empty registry
+   * when you want full control over the available names (useful
+   * for tests or plugins), or pass a custom populated registry to
+   * register host-specific factories.
+   */
+  readonly middlewareRegistry?: MiddlewareRegistry | undefined;
+  /**
+   * Host-controlled opt-in for file-backed manifest middleware
+   * (currently only `@koi/middleware-audit`, which creates an
+   * NDJSON sink at resolution time). Default: `false`.
+   *
+   * When `false`, the default built-in registry does NOT register
+   * `@koi/middleware-audit`, so manifest entries naming it throw
+   * `UnknownManifestMiddlewareError`. When `true`, the audit
+   * middleware is available subject to path validation.
+   *
+   * Repo-authored `koi.yaml` cannot flip this flag — it is passed
+   * programmatically by the host (CLI flag, env var, or
+   * out-of-band policy). The rationale is the same as
+   * `TrustedHostConfig`: letting committed manifests trigger
+   * filesystem side effects is a trust-boundary regression we
+   * deliberately avoid.
+   */
+  readonly allowManifestFileSinks?: boolean | undefined;
+  /**
+   * Structured opt-outs for security-critical zone C layers.
+   * Omitting this block is the safe default — every required layer
+   * stays active. Enabling an opt-out logs a bright startup warning
+   * and is the only path to boot without that layer. There is no
+   * single "trust everything" boolean; every relaxation is named
+   * and auditable.
+   */
+  readonly trustedHost?: TrustedHostConfig | undefined;
   /**
    * Engine loop-detection override. Passed verbatim to `createKoi`.
    *
@@ -941,17 +1002,115 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const systemPromptMw = coreSlots.systemPrompt;
   const sessionTranscriptMw = coreSlots.sessionTranscript;
 
+  // --- Zone B: resolve manifest-declared middleware ---
+  // Resolved BEFORE late-phase stack activation and BEFORE the
+  // child-inheritance snapshot below, so that:
+  //   (1) spawned child agents inherit the same manifest-declared
+  //       middleware as the parent — preventing a split-brain where
+  //       delegated work silently escapes manifest policy.
+  //   (2) resolved entries can read early-phase stack exports
+  //       (bashHandle, trajectoryStore, ...) via
+  //       `ManifestMiddlewareContext.stackExports`.
+  //
+  // Unknown names throw with the full registered-name list. Core
+  // middleware names are rejected by the manifest loader earlier
+  // and cannot reach this code path. The composed chain wraps
+  // zone B from outside with `hook`/`permissions`/`exfiltration-
+  // guard` so repo-authored content only sees already-gated,
+  // already-redacted traffic (see `compose-middleware.ts`).
+  // Fail-closed config check BEFORE any manifest middleware factory
+  // runs. Some built-in factories (notably @koi/middleware-audit)
+  // open files or allocate resources at resolution time; if we
+  // resolved first and then threw, a rejected config could still
+  // mutate the workspace on disk. Count the enabled entries without
+  // invoking any factory so the check is pure.
+  const enabledManifestMiddlewareCount = (config.manifestMiddleware ?? []).reduce(
+    (count, entry) => (entry.enabled === false ? count : count + 1),
+    0,
+  );
+  if (enabledManifestMiddlewareCount > 0 && spawnStackActive) {
+    throw new Error(
+      "koi-runtime: manifest zone-B middleware cannot be combined with the spawn preset stack in this release. " +
+        `Parent runtime has ${enabledManifestMiddlewareCount} manifest middleware entries; if children were allowed to spawn without them, ` +
+        "delegated work would silently escape manifest-enforced policy (audit, retry, etc.). " +
+        "Either remove manifest.middleware entries, or disable the spawn stack via manifest.stacks. " +
+        "Per-child re-resolution of manifest middleware is a tracked follow-up.",
+    );
+  }
+
+  const manifestMiddlewareRegistry =
+    config.middlewareRegistry ??
+    createBuiltinManifestRegistry({
+      allowFileBackedSinks: config.allowManifestFileSinks === true,
+    });
+  // workingDirectory is threaded from `config.cwd` (same source as
+  // file tools and permission scope) rather than `process.cwd()`, so
+  // embedders that build runtimes for workspaces other than the
+  // launcher process directory get consistent path resolution across
+  // audit sinks, fs_read permissions, and Bash tool working dir.
+  const zoneBWorkingDirectory = config.cwd ?? process.cwd();
+  // Cleanup callbacks registered by file-backed manifest middleware
+  // factories (currently only @koi/middleware-audit, which opens an
+  // NDJSON writer at resolution time). Fired from
+  // shutdownBackgroundTasks on the runtime handle so hosts that
+  // drain background work on SIGINT/SIGTERM get best-effort flush +
+  // close for audit files.
+  const manifestMiddlewareShutdownHooks: Array<() => Promise<void> | void> = [];
+  let zoneBMiddleware: readonly KoiMiddleware[];
+  try {
+    zoneBMiddleware = await resolveManifestMiddleware(
+      config.manifestMiddleware,
+      manifestMiddlewareRegistry,
+      {
+        sessionId: config.session?.sessionId ?? "no-session",
+        hostId,
+        workingDirectory: zoneBWorkingDirectory,
+        stackExports: earlyContribution.exports,
+        registerShutdown: (fn) => {
+          manifestMiddlewareShutdownHooks.push(fn);
+        },
+      },
+    );
+  } catch (err) {
+    // Resolution failed after one or more factories registered
+    // cleanup callbacks. Unwind them in reverse order so any
+    // partially-constructed resources are released before the
+    // assembly error propagates to the host.
+    for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+      try {
+        await hook();
+      } catch (cleanupErr) {
+        console.warn(
+          `[koi/${hostId}] manifest-middleware cleanup failed during error unwind: ${
+            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+          }`,
+        );
+      }
+    }
+    throw err;
+  }
+
   // --- Late-phase stack activation (spawn + any future late stacks) ---
-  // Now that the core middleware is built, publish the child-
-  // inheritance list into the late context's `host` bag and fire the
-  // late pass. Spawn reads `LATE_PHASE_HOST_KEYS.inheritedMiddleware`
-  // and composes its child adapter around it.
-  const inheritedMiddlewareForChildren: readonly KoiMiddleware[] = [
-    permMw,
-    exfiltrationGuardMw,
-    hookMw,
-    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
-  ];
+  // Now that the core middleware and zone B are both built, publish
+  // the child-inheritance list into the late context's `host` bag
+  // and fire the late pass. Spawn reads
+  // `LATE_PHASE_HOST_KEYS.inheritedMiddleware` and composes its
+  // child adapter around it.
+  //
+  // Zone B is INTENTIONALLY NOT inherited — see
+  // `buildInheritedMiddlewareForChildren` for the rationale. Sharing
+  // parent middleware instances with children would interleave
+  // mutable per-session state (e.g. audit queues + hash chains).
+  //
+  // (The spawn+zoneB incompatibility check runs earlier, BEFORE
+  // manifest middleware is resolved, so that a rejected config
+  // cannot cause any factory to open files or allocate resources.)
+  const inheritedMiddlewareForChildren = buildInheritedMiddlewareForChildren({
+    permissions: permMw,
+    exfiltrationGuard: exfiltrationGuardMw,
+    hook: hookMw,
+    ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+  });
   const lateContext: import("./preset-stacks.js").StackActivationContext = {
     ...earlyContext,
     host: {
@@ -994,8 +1153,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
   // The ordering (outermost → innermost) is defined in one place —
   // compose-middleware.ts. Preset stacks (observability, checkpoint,
-  // memory, execution, etc.) plug in via `presetExtras`; the named
-  // slots here are the ALWAYS-ON core layers only.
+  // memory, execution, etc.) plug in via `presetExtras`; user-
+  // controlled manifest middleware plugs in via `manifestMiddleware`;
+  // the named slots here are the ALWAYS-ON core layers only.
   const allMiddleware = composeRuntimeMiddleware({
     hook: hookMw,
     permissions: permMw,
@@ -1004,9 +1164,30 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? { modelRouter: config.modelRouterMiddleware }
       : {}),
     ...(goalMw !== undefined ? { goal: goalMw } : {}),
+    // presetExtras includes both the code-owned stack middleware
+    // and main's env-var-gated audit preset extras (from
+    // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), kept for backward
+    // compatibility with that host opt-in. Zone B manifest
+    // middleware flows through the separate `manifestMiddleware`
+    // slot and is composed strictly INSIDE the security core
+    // layers, regardless of array position here.
     presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
+    manifestMiddleware: zoneBMiddleware,
     ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
     ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
+  });
+
+  // --- Required-set invariant: refuse to boot with a gutted chain ---
+  // Runs after composition so it checks the actually-assembled list,
+  // not the intended inputs. This is the last line of defense against
+  // a programmatic caller that constructs a chain without the core
+  // security layers. Terminal-capable runtimes (koi tui, koi start)
+  // always require hook + permissions + exfiltration-guard unless the
+  // caller sets the matching `trustedHost` opt-out with security
+  // review. See `required-middleware.ts` for the per-layer rules.
+  enforceRequiredMiddleware(allMiddleware, {
+    terminalCapable: true,
+    trustedHost: config.trustedHost,
   });
   // Wrap every middleware with the trace wrapper when the observability
   // stack is active (provides `trajectoryStore`). When the stack is
@@ -1130,8 +1311,42 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // happens before any rotation can fire.
   runtimeForRotation = runtime;
 
+  // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
+  // close, etc.) runs AFTER the engine's dispose path completes.
+  // Engine dispose triggers middleware onSessionEnd hooks, which is
+  // when audit writes its final `session_end` record. Closing the
+  // sink before dispose would drop that record. We also remove the
+  // cleanup from shutdownBackgroundTasks below so it is only wired
+  // through this one authoritative path.
+  const engineDispose = runtime.dispose.bind(runtime);
+  const wrappedRuntime: typeof runtime = {
+    ...runtime,
+    dispose: async (): Promise<void> => {
+      try {
+        await engineDispose();
+      } finally {
+        // Fire manifest-middleware cleanup in reverse registration
+        // order. Each hook is awaited so the audit sink's final
+        // flush + writer.end() complete before dispose resolves.
+        // Errors are logged but do not mask an engine dispose error
+        // (engineDispose runs first inside the try).
+        for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+          try {
+            await hook();
+          } catch (hookErr) {
+            console.warn(
+              `[koi/${hostId}] manifest-middleware shutdown hook failed during dispose: ${
+                hookErr instanceof Error ? hookErr.message : String(hookErr)
+              }`,
+            );
+          }
+        }
+      }
+    },
+  };
+
   return {
-    runtime,
+    runtime: wrappedRuntime,
     checkpoint: checkpointHandle,
     transcript,
     sandboxActive,
@@ -1273,6 +1488,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           );
         }
       }
+      // Manifest-middleware cleanup (audit sink close, etc.) is
+      // deliberately NOT fired here. It runs on runtime.dispose()
+      // AFTER the engine's onSessionEnd hooks complete, so audit
+      // middleware's final `session_end` record is flushed to the
+      // file before the writer is closed. shutdownBackgroundTasks
+      // may be called before dispose (to drain bg work), which
+      // would otherwise close the sink too early. See wrapping of
+      // runtime.dispose above.
       // configHotReload is factory-bootstrap, not a stack feature —
       // dispose directly.
       configHotReload?.dispose();

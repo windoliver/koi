@@ -13,8 +13,10 @@
  */
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { ApprovalHandler, ModelAdapter } from "@koi/core";
+import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
+import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
+import { RequiredMiddlewareError } from "./required-middleware.js";
 import { createKoiRuntime, MAX_TRAJECTORY_STEPS } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
@@ -258,5 +260,253 @@ describe("createKoiRuntime — resetSessionState", () => {
     // sandboxActive depends on whether seatbelt/bwrap is available on this machine.
     // We just verify it's a boolean — the actual value depends on the test environment.
     expect(typeof runtimeHandle.sandboxActive).toBe("boolean");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zone B — manifest-driven middleware integration
+//
+// These tests exercise the full wire-up from runtime factory config →
+// MiddlewareRegistry → resolved chain → enforceRequiredMiddleware. They
+// complement the unit tests in manifest-middleware.test.ts which cover
+// the individual pieces in isolation.
+// ---------------------------------------------------------------------------
+
+function stubManifestMiddleware(name: string): KoiMiddleware {
+  return { name } as unknown as KoiMiddleware;
+}
+
+describe("createKoiRuntime — zone B manifest middleware", () => {
+  // Zone B is incompatible with the spawn preset stack in this
+  // release (per-child re-resolution is a follow-up), so tests that
+  // set `manifestMiddleware` must also explicitly exclude spawn
+  // from the stack list. Use a helper to make that intent obvious.
+  const STACKS_WITHOUT_SPAWN: readonly string[] = [
+    "observability",
+    "execution",
+    "memory",
+    "mcp",
+    "notebook",
+    "rules",
+    "skills",
+    "checkpoint",
+  ];
+
+  test("invokes the registered factory for each enabled entry with verbatim options", async () => {
+    const registry = new MiddlewareRegistry();
+    const capturedOptions: (Readonly<Record<string, unknown>> | undefined)[] = [];
+    registry.register("test/option-capture", (entry) => {
+      capturedOptions.push(entry.options);
+      return stubManifestMiddleware("option-capture");
+    });
+
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [
+        {
+          name: "test/option-capture",
+          options: { destination: "./audit.log", verbose: true },
+          enabled: true,
+        },
+      ],
+    });
+
+    expect(capturedOptions).toEqual([{ destination: "./audit.log", verbose: true }]);
+  });
+
+  test("does not invoke the factory for entries with enabled: false", async () => {
+    const registry = new MiddlewareRegistry();
+    const enabledCalls: string[] = [];
+    const disabledCalls: string[] = [];
+    registry.register("test/enabled", () => {
+      enabledCalls.push("hit");
+      return stubManifestMiddleware("enabled");
+    });
+    registry.register("test/disabled", () => {
+      disabledCalls.push("hit");
+      return stubManifestMiddleware("disabled");
+    });
+
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [
+        { name: "test/enabled", options: undefined, enabled: true },
+        { name: "test/disabled", options: undefined, enabled: false },
+      ],
+    });
+
+    expect(enabledCalls.length).toBe(1);
+    expect(disabledCalls.length).toBe(0);
+  });
+
+  test("invokes multiple factories in declared order", async () => {
+    const registry = new MiddlewareRegistry();
+    const callOrder: string[] = [];
+    registry.register("test/first", () => {
+      callOrder.push("first");
+      return stubManifestMiddleware("first");
+    });
+    registry.register("test/second", () => {
+      callOrder.push("second");
+      return stubManifestMiddleware("second");
+    });
+    registry.register("test/third", () => {
+      callOrder.push("third");
+      return stubManifestMiddleware("third");
+    });
+
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [
+        { name: "test/third", options: undefined, enabled: true },
+        { name: "test/first", options: undefined, enabled: true },
+        { name: "test/second", options: undefined, enabled: true },
+      ],
+    });
+
+    // Resolver walks the entries in declared manifest order, not
+    // registration order. composeRuntimeMiddleware then preserves
+    // that order when it splices zone B into the chain.
+    expect(callOrder).toEqual(["third", "first", "second"]);
+  });
+
+  test("throws UnknownManifestMiddlewareError when entry name is not registered", async () => {
+    const registry = new MiddlewareRegistry();
+    registry.register("test/known", () => stubManifestMiddleware("known"));
+
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        stacks: STACKS_WITHOUT_SPAWN,
+        middlewareRegistry: registry,
+        manifestMiddleware: [{ name: "test/typo", options: undefined, enabled: true }],
+      }),
+    ).rejects.toBeInstanceOf(UnknownManifestMiddlewareError);
+  });
+
+  test("omitted manifestMiddleware is backward compatible — factory assembles normally", async () => {
+    runtimeHandle = await createKoiRuntime(makeConfig());
+    expect(runtimeHandle.runtime).toBeDefined();
+    // The factory would throw via enforceRequiredMiddleware if any of
+    // hooks / permissions / exfiltration-guard were missing from the
+    // composed chain, so reaching this line proves all three are
+    // present when no manifest middleware is provided.
+  });
+
+  test("fails closed when manifest middleware is combined with the spawn stack", async () => {
+    // Codex round-4 finding #1: silently dropping zone B on
+    // delegated work is a policy hole. The factory now refuses to
+    // assemble a runtime that combines zone B with spawn until
+    // per-child re-resolution lands.
+    const registry = new MiddlewareRegistry();
+    registry.register("test/audit-like", () => stubManifestMiddleware("audit-like"));
+    await expect(
+      createKoiRuntime({
+        ...makeConfig(),
+        // No `stacks` override → spawn is active by default.
+        middlewareRegistry: registry,
+        manifestMiddleware: [{ name: "test/audit-like", options: undefined, enabled: true }],
+      }),
+    ).rejects.toThrow(/cannot be combined with the spawn preset stack/);
+  });
+
+  test("manifest middleware with spawn explicitly disabled assembles cleanly", async () => {
+    const registry = new MiddlewareRegistry();
+    registry.register("test/audit-like", () => stubManifestMiddleware("audit-like"));
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/audit-like", options: undefined, enabled: true }],
+    });
+    expect(runtimeHandle.runtime).toBeDefined();
+  });
+
+  test("manifest middleware shutdown hooks fire AFTER runtime.dispose() completes", async () => {
+    // Codex round-10 finding #1: the audit sink's final session_end
+    // record is written inside the engine's onSessionEnd path
+    // during runtime.dispose(). Closing the sink before dispose
+    // would drop that record. The runtime factory wraps
+    // runtime.dispose so cleanup runs after the engine dispose
+    // resolves.
+    const order: string[] = [];
+    const registry = new MiddlewareRegistry();
+    registry.register("test/shutdown-probe", (_entry, ctx) => {
+      ctx.registerShutdown(async () => {
+        order.push("manifest-cleanup");
+      });
+      return stubManifestMiddleware("shutdown-probe");
+    });
+    const handle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/shutdown-probe", options: undefined, enabled: true }],
+    });
+    // runtime.dispose() is wrapped; it must run the engine dispose
+    // first (no observable marker for that from outside), then our
+    // shutdown hook second.
+    await handle.runtime.dispose();
+    expect(order).toEqual(["manifest-cleanup"]);
+    // Explicitly clear so afterEach does not double-dispose.
+    runtimeHandle = null;
+  });
+
+  test("manifest middleware shutdown hooks NOT fired by shutdownBackgroundTasks", async () => {
+    // Sibling of the previous test: shutdownBackgroundTasks is
+    // called by hosts BEFORE dispose to drain bg work. If it
+    // closed the sink, the later dispose path would hit a closed
+    // sink. Verify the hook is deferred to dispose.
+    let firedByBgShutdown = false;
+    const registry = new MiddlewareRegistry();
+    registry.register("test/bg-probe", (_entry, ctx) => {
+      ctx.registerShutdown(() => {
+        firedByBgShutdown = true;
+      });
+      return stubManifestMiddleware("bg-probe");
+    });
+    const handle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/bg-probe", options: undefined, enabled: true }],
+    });
+    handle.shutdownBackgroundTasks();
+    expect(firedByBgShutdown).toBe(false);
+    // dispose should then fire the hook.
+    await handle.runtime.dispose();
+    expect(firedByBgShutdown).toBe(true);
+    runtimeHandle = null;
+  });
+});
+
+describe("createKoiRuntime — trustedHost enforcement", () => {
+  test("default posture assembles (invariant: all three required security layers present)", async () => {
+    runtimeHandle = await createKoiRuntime(makeConfig());
+    // Same logic as the backward-compat test above: assembly success
+    // means enforceRequiredMiddleware found hooks + permissions +
+    // exfiltration-guard in the composed chain. If any were missing
+    // it would throw RequiredMiddlewareError before createKoi is
+    // called. This is the integration-level proof that zone C stays
+    // mandatory when no trustedHost is set.
+    expect(runtimeHandle.runtime).toBeDefined();
+  });
+
+  test("RequiredMiddlewareError carries missing[] and terminalCapable for host error handling", () => {
+    // Unit-tested more fully in manifest-middleware.test.ts; this
+    // check lives here to ensure the error class is importable
+    // through the runtime-factory boundary where hosts assemble
+    // runtimes — a sanity anchor for the public surface.
+    const err = new RequiredMiddlewareError(["permissions"], true);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.missing).toEqual(["permissions"]);
+    expect(err.terminalCapable).toBe(true);
+    expect(err.name).toBe("RequiredMiddlewareError");
   });
 });

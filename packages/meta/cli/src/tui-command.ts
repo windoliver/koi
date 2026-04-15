@@ -760,6 +760,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // non-cwd backend would break trust-boundary and rollback
   // invariants.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -794,6 +795,36 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // from `manifest.stacks`.
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
+  }
+
+  // If the manifest declares ENABLED zone-B middleware AND the user
+  // did NOT pass an explicit `stacks:` list, auto-disable the spawn
+  // preset stack. The runtime factory fails closed only on enabled
+  // entries, so we must use the same predicate here — otherwise a
+  // manifest that keeps a disabled middleware stanza (e.g. an
+  // experimental entry with `enabled: false`) would still lose
+  // spawn for the whole session, a capability regression that is
+  // hard to diagnose because no zone-B middleware would actually
+  // run. Auto-disabling keeps the TUI usable while surfacing the
+  // trade-off via a warning only when it is actually needed.
+  const enabledManifestMiddlewareCount =
+    manifestMiddleware?.filter((entry) => entry.enabled !== false).length ?? 0;
+  if (enabledManifestMiddlewareCount > 0 && manifestStacks === undefined) {
+    const { DEFAULT_STACKS } = await import("./preset-stacks.js");
+    manifestStacks = DEFAULT_STACKS.filter((stack) => stack.id !== "spawn").map(
+      (stack) => stack.id,
+    );
+    process.stderr.write(
+      `koi tui: manifest.middleware has ${enabledManifestMiddlewareCount} enabled entries; ` +
+        "auto-disabling the spawn preset stack for this session. " +
+        "Delegated child agents cannot inherit manifest middleware in this release, " +
+        "so spawn is unsafe to combine with manifest.middleware. " +
+        "Set stacks: explicitly in the manifest to silence this warning.\n",
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -1035,6 +1066,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Zone B — manifest-declared middleware. Resolved inside the
+    // factory via the default built-in registry. Runs INSIDE the
+    // security guard so repo-authored content cannot observe raw
+    // traffic before `exfiltration-guard` redacts secrets.
+    //
+    // `allowManifestFileSinks` gates the built-in audit entry
+    // (which opens a file at resolution time). Controlled by the
+    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+    // manifest so repo content cannot flip it.
+    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.

@@ -108,6 +108,90 @@ function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): F
   };
 }
 
+/**
+ * Names of core middleware layers that hosts configure via factory flags,
+ * not via `manifest.middleware`. Users who name any of these in the zone-B
+ * middleware list get a load-time error directing them to the host flag.
+ *
+ * This list covers three forms:
+ *   1. Runtime middleware `.name` values (`permissions`, `hooks`, ...)
+ *   2. Canonical workspace package names (`@koi/permissions`, ...)
+ *   3. camelCase variants and short aliases in case of typo tolerance
+ *
+ * All three forms are rejected because the runtime factory and YAML loader
+ * both run this check against user-supplied entries. Extending the list
+ * beyond the short name forms closes the gap an embedder might create by
+ * naming a core layer by its package name when calling `createKoiRuntime`
+ * programmatically — the security-critical layers in zone C stay out of
+ * user reach regardless of the entry surface.
+ */
+export const CORE_MIDDLEWARE_BLOCKLIST: readonly string[] = [
+  // Runtime middleware `.name` values.
+  "hook",
+  "hooks",
+  "permissions",
+  "exfiltration-guard",
+  "exfiltrationGuard",
+  "model-router",
+  "modelRouter",
+  "goal",
+  "system-prompt",
+  "systemPrompt",
+  "session-transcript",
+  "sessionTranscript",
+  // Canonical workspace package names — embedders calling
+  // `createKoiRuntime({ manifestMiddleware: [{ name: "@koi/permissions", ... }] })`
+  // must also be rejected, not just YAML users.
+  "@koi/permissions",
+  "@koi/middleware-permissions",
+  "@koi/hooks",
+  "@koi/middleware-hooks",
+  "@koi/middleware-exfiltration-guard",
+  "@koi/exfiltration-guard",
+  "@koi/model-router",
+  "@koi/middleware-model-router",
+  "@koi/middleware-goal",
+  "@koi/goal",
+  "@koi/system-prompt",
+  "@koi/middleware-system-prompt",
+  "@koi/session",
+  "@koi/session-transcript",
+  "@koi/middleware-session-transcript",
+];
+
+/**
+ * A single entry in `manifest.middleware` (zone B). Users declare these
+ * in order; the resolved chain preserves declared order within zone B.
+ */
+export interface ManifestMiddlewareEntry {
+  readonly name: string;
+  readonly options: Readonly<Record<string, unknown>> | undefined;
+  readonly enabled: boolean;
+}
+
+/**
+ * Narrow, auditable opt-outs for security-critical zone-C layers.
+ *
+ * **Host-controlled only.** This config is NOT accepted from manifest
+ * YAML — the manifest loader rejects any top-level `trustedHost:`
+ * field with a clear error directing users to host configuration.
+ * The rationale: `koi.yaml` is repository content, so letting a
+ * committed manifest disable `permissions` or `exfiltration-guard`
+ * would let anyone with write access to the repo silently downgrade
+ * the security posture of every developer who opens the project.
+ *
+ * Hosts that genuinely need to relax the baseline (e.g. a sandboxed
+ * CI runner with compensating controls) pass a `TrustedHostConfig`
+ * programmatically to `createKoiRuntime`, typically threaded from a
+ * CLI flag, environment variable, or an out-of-band policy store
+ * that cannot be set by repository content. Every enabled opt-out
+ * logs a bright startup warning.
+ */
+export interface TrustedHostConfig {
+  readonly disableExfiltrationGuard: boolean;
+  readonly disablePermissions: boolean;
+}
+
 export interface ManifestConfig {
   readonly modelName: string;
   readonly instructions: string | undefined;
@@ -117,6 +201,22 @@ export interface ManifestConfig {
    * means "deactivate every stack" (the host runs core middleware only).
    */
   readonly stacks: readonly string[] | undefined;
+  /**
+   * Zone B: ordered, user-controlled middleware list. Each entry names a
+   * middleware registered in the `MiddlewareRegistry` and carries
+   * optional `options` passed verbatim to the factory. `enabled: false`
+   * excludes an entry without removing it from the manifest (useful for
+   * A/B comparison and review diffs).
+   *
+   * Zone B entries CANNOT name any layer in `CORE_MIDDLEWARE_BLOCKLIST` —
+   * core layers are configured via host flags, not the manifest. Zone B
+   * always composes between zone A (preset stacks) and zone C (required
+   * core); users cannot reorder across zones.
+   *
+   * `undefined` means "no zone B entries" — existing manifests that only
+   * use `stacks` keep working unchanged.
+   */
+  readonly middleware: readonly ManifestMiddlewareEntry[] | undefined;
   /**
    * Opt-in subset of discovered plugin names. `undefined` means
    * "activate every plugin found in `~/.koi/plugins/`" — matches the
@@ -268,6 +368,29 @@ export async function loadManifestConfig(
     backgroundSubprocesses = bgSubsRaw;
   }
 
+  const middlewareResult = parseManifestMiddleware(raw.middleware);
+  if (!middlewareResult.ok) {
+    return middlewareResult;
+  }
+
+  // Security baseline opt-outs are NOT accepted from manifest YAML.
+  // `koi.yaml` is repository content; letting a committed manifest
+  // disable `permissions` or `exfiltration-guard` would let anyone
+  // with repo write access silently downgrade the security posture
+  // of every developer who opens the project. Hosts that genuinely
+  // need to relax the baseline configure it out-of-band (CLI flag,
+  // env var, or policy store) directly into `createKoiRuntime`.
+  if (raw.trustedHost !== undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.trustedHost is not accepted in koi.yaml — security baseline opt-outs " +
+        "(disablePermissions, disableExfiltrationGuard) must be configured by the host " +
+        "(CLI flag, env var, or out-of-band policy), not by repository content. " +
+        "See docs/L2/manifest.md for the rationale.",
+    };
+  }
+
   let filesystem: FileSystemConfig | undefined;
   const fsRaw = raw.filesystem;
   if (fsRaw !== undefined) {
@@ -343,6 +466,143 @@ export async function loadManifestConfig(
       plugins,
       backgroundSubprocesses,
       filesystem,
+      middleware: middlewareResult.value,
+    },
+  };
+}
+
+type ParseResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Parse `manifest.middleware` (zone B). Accepts two entry shapes:
+ *
+ *   # Explicit form
+ *   - name: "@koi/middleware-audit"
+ *     options: { filePath: "./session.audit.ndjson" }
+ *     enabled: true
+ *
+ *   # Shorthand form — single-key object becomes {name, options}
+ *   - "@koi/middleware-audit": { filePath: "./session.audit.ndjson" }
+ *
+ * Rejects any entry whose name appears in `CORE_MIDDLEWARE_BLOCKLIST` —
+ * core layers are configured by host flags, not the manifest.
+ *
+ * Built-in registrations and the options each accepts are documented
+ * in `docs/L2/manifest.md` under "Built-in registrations."
+ */
+function parseManifestMiddleware(
+  raw: unknown,
+): ParseResult<readonly ManifestMiddlewareEntry[] | undefined> {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        'manifest.middleware must be a list of entries, e.g. middleware: [{name: "@koi/middleware-audit"}]',
+    };
+  }
+
+  const out: ManifestMiddlewareEntry[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    const normalized = normalizeMiddlewareEntry(entry, i);
+    if (!normalized.ok) {
+      return normalized;
+    }
+    if (CORE_MIDDLEWARE_BLOCKLIST.includes(normalized.value.name)) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${i}]: "${normalized.value.name}" is a core middleware — configure it via host flags, not the manifest.\nblocked names: ${CORE_MIDDLEWARE_BLOCKLIST.join(", ")}`,
+      };
+    }
+    out.push(normalized.value);
+  }
+  return { ok: true, value: out };
+}
+
+function normalizeMiddlewareEntry(
+  entry: unknown,
+  index: number,
+): ParseResult<ManifestMiddlewareEntry> {
+  if (typeof entry !== "object" || entry === null) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] must be an object (explicit {name, options} or shorthand {"@koi/name": {options}})`,
+    };
+  }
+
+  const rec = entry as Record<string, unknown>;
+
+  // Explicit form: has `name` field.
+  if (typeof rec.name === "string") {
+    if (rec.name.length === 0) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].name must be a non-empty string`,
+      };
+    }
+    const options = rec.options;
+    if (
+      options !== undefined &&
+      (typeof options !== "object" || options === null || Array.isArray(options))
+    ) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].options must be an object (or omitted)`,
+      };
+    }
+    const enabledRaw = rec.enabled;
+    if (enabledRaw !== undefined && typeof enabledRaw !== "boolean") {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].enabled must be a boolean (or omitted)`,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        name: rec.name,
+        options: options as Readonly<Record<string, unknown>> | undefined,
+        enabled: enabledRaw === undefined ? true : enabledRaw,
+      },
+    };
+  }
+
+  // Shorthand form: single-key object whose value is the options record.
+  const keys = Object.keys(rec);
+  if (keys.length !== 1) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand form requires exactly one key (got ${keys.length}): use {"@koi/name": {options}} or the explicit {name, options} form`,
+    };
+  }
+  const name = keys[0];
+  if (name === undefined || name.length === 0) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand key must be a non-empty string`,
+    };
+  }
+  const optionsRaw = rec[name];
+  if (
+    optionsRaw !== undefined &&
+    (typeof optionsRaw !== "object" || optionsRaw === null || Array.isArray(optionsRaw))
+  ) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand value must be an options object (or null/omitted)`,
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      name,
+      options: optionsRaw as Readonly<Record<string, unknown>> | undefined,
+      enabled: true,
     },
   };
 }

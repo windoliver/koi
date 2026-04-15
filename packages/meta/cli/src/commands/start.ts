@@ -108,6 +108,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // remote/bridge storage, which would silently grant a repo-local
   // manifest unreviewed access to data outside the workspace.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -118,6 +119,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
 
     // Fail fast on settings that `koi start` cannot honor, rather
     // than silently discarding them. A shared manifest that targets
@@ -331,6 +336,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Zone B — manifest-declared middleware. Resolved inside the
+    // factory; unknown names throw, core names are blocked by the
+    // loader, and composed entries run INSIDE the security guard.
+    //
+    // `allowManifestFileSinks` gates the built-in audit entry
+    // (which opens a file at resolution time). Controlled by the
+    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+    // manifest so repo content cannot flip it.
+    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
   });

@@ -1,0 +1,504 @@
+/**
+ * Manifest middleware registry.
+ *
+ * Decouples `manifest.middleware` entry names from concrete factory
+ * imports so hosts and plugins can add zone-B middleware without
+ * reaching into `runtime-factory.ts`. Ported from v1's
+ * `archive/v1/packages/meta/starter/src/builtin-registry.ts` pattern,
+ * tightened so unknown names fail loudly instead of silently skipping.
+ *
+ * Scope: zone B is middleware-only. This registry intentionally CANNOT
+ * contribute providers, hookExtras, exports, or lifecycle hooks — those
+ * concerns live in `PresetStack` activation (see
+ * `packages/meta/cli/src/preset-stacks.ts`). If a package needs to
+ * contribute any of those, it stays stack-only and does not register
+ * here.
+ */
+
+import { lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
+import { createAuditMiddleware } from "@koi/middleware-audit";
+
+import { CORE_MIDDLEWARE_BLOCKLIST, type ManifestMiddlewareEntry } from "./manifest.js";
+
+/**
+ * Thrown when a manifest middleware entry names a core middleware layer
+ * that hosts configure via factory flags, not via `manifest.middleware`.
+ * Runs in addition to the YAML-level check so programmatic callers of
+ * `createKoiRuntime({ manifestMiddleware: [...] })` cannot bypass the
+ * blocklist by skipping `loadManifestConfig`.
+ */
+export class CoreMiddlewareBlockedError extends Error {
+  override readonly name = "CoreMiddlewareBlockedError";
+  readonly blockedName: string;
+  constructor(blockedName: string) {
+    super(
+      `manifest.middleware entry "${blockedName}" names a core middleware layer — ` +
+        "configure it via host flags, not manifest content. " +
+        `blocked names: ${CORE_MIDDLEWARE_BLOCKLIST.join(", ")}`,
+    );
+    this.blockedName = blockedName;
+  }
+}
+
+/**
+ * Forced phase + priority for every resolved zone-B middleware.
+ *
+ * The engine's `sortMiddlewareByPhase` orders middleware by tier
+ * (intercept=0 < resolve=1 < observe=2) and then by ascending
+ * priority within a tier. The real security / core layer ordering
+ * after sort is:
+ *
+ *   exfiltration-guard  intercept  priority 50    (outermost)
+ *   permissions         intercept  priority 100
+ *   system-prompt       resolve    priority 100
+ *   goal                resolve    priority 340
+ *   hooks               resolve    priority 400
+ *   ──────────── zone B slot: resolve / 500 ─────────────
+ *   model-router        resolve    priority 900
+ *   session-transcript  observe    priority 200
+ *
+ * Zone B lands at `resolve / 500` — strictly INSIDE every security
+ * layer (exfiltration-guard, permissions, hooks), strictly INSIDE
+ * the prompt / goal layers (so repo-authored middleware sees the
+ * final model-facing request with injected prompt and goal text),
+ * and strictly OUTSIDE model-router and session-transcript (so
+ * routing and transcript recording happen after zone B logic).
+ *
+ * The value is forced here so a manifest entry that declared
+ * `phase: "intercept"` at a lower priority cannot leapfrog the
+ * security layers once `sortMiddlewareByPhase` runs. This closes
+ * the execution-order gap Codex rounds 2 and 5 caught: the array
+ * order in `composeRuntimeMiddleware` is irrelevant; sort order is
+ * what matters, and it is fixed here regardless of what the
+ * factory returned.
+ */
+const ZONE_B_PHASE: MiddlewarePhase = "resolve";
+const ZONE_B_PRIORITY = 500;
+
+/**
+ * Context passed to every manifest middleware factory. Intentionally
+ * narrow: the factory gets enough to configure itself, but no access
+ * to providers or runtime internals.
+ *
+ * `stackExports` carries the already-resolved early-phase stack
+ * exports (bashHandle, trajectoryStore, etc.) so a manifest-registered
+ * middleware can read a read-only view if it needs to, without
+ * forcing every zone-B middleware to become a stack.
+ *
+ * `registerShutdown` lets a factory register a cleanup callback that
+ * fires when the runtime is disposed. File-backed middleware like
+ * `@koi/middleware-audit` opens a file writer at resolution time;
+ * without a shutdown hook, the writer would leak its file descriptor
+ * and flush timer across the runtime's lifetime. The runtime factory
+ * calls every registered shutdown fn in reverse registration order
+ * on `KoiRuntimeHandle.dispose()`, and also on post-resolution
+ * assembly failure so partially constructed resources are unwound.
+ */
+export interface ManifestMiddlewareContext {
+  readonly sessionId: string;
+  readonly hostId: string;
+  readonly workingDirectory: string;
+  readonly stackExports: Readonly<Record<string, unknown>>;
+  readonly registerShutdown: (fn: () => Promise<void> | void) => void;
+}
+
+export type ManifestMiddlewareFactory = (
+  entry: ManifestMiddlewareEntry,
+  ctx: ManifestMiddlewareContext,
+) => Promise<KoiMiddleware> | KoiMiddleware;
+
+/**
+ * Mutable registry of name → factory. Registration is an
+ * append-only operation in practice; duplicate registration of the
+ * same name replaces the previous factory (plugins can override
+ * built-ins explicitly if they want to).
+ */
+export class MiddlewareRegistry {
+  readonly #entries = new Map<string, ManifestMiddlewareFactory>();
+
+  register(name: string, factory: ManifestMiddlewareFactory): void {
+    this.#entries.set(name, factory);
+  }
+
+  get(name: string): ManifestMiddlewareFactory | undefined {
+    return this.#entries.get(name);
+  }
+
+  has(name: string): boolean {
+    return this.#entries.has(name);
+  }
+
+  names(): readonly string[] {
+    return Array.from(this.#entries.keys()).sort();
+  }
+}
+
+/**
+ * Error thrown when `manifest.middleware` names a middleware that
+ * is not registered. The error surfaces the full list of registered
+ * names so users can spot typos or missing imports.
+ */
+export class UnknownManifestMiddlewareError extends Error {
+  override readonly name = "UnknownManifestMiddlewareError";
+  readonly requestedName: string;
+  readonly registeredNames: readonly string[];
+  constructor(requestedName: string, registeredNames: readonly string[]) {
+    super(
+      `unknown manifest middleware "${requestedName}" — registered names: ${
+        registeredNames.length === 0 ? "(none)" : registeredNames.join(", ")
+      }`,
+    );
+    this.requestedName = requestedName;
+    this.registeredNames = registeredNames;
+  }
+}
+
+/**
+ * Resolve an ordered list of manifest middleware entries into
+ * concrete `KoiMiddleware` instances. Preserves declared order and
+ * drops entries with `enabled: false`.
+ *
+ * Throws `UnknownManifestMiddlewareError` on the first unknown name
+ * rather than silently skipping (v1's behavior was to warn + skip,
+ * which let typos ship unnoticed).
+ */
+export async function resolveManifestMiddleware(
+  entries: readonly ManifestMiddlewareEntry[] | undefined,
+  registry: MiddlewareRegistry,
+  ctx: ManifestMiddlewareContext,
+): Promise<readonly KoiMiddleware[]> {
+  if (entries === undefined || entries.length === 0) {
+    return [];
+  }
+  const resolved: KoiMiddleware[] = [];
+  for (const entry of entries) {
+    if (entry.enabled === false) {
+      continue;
+    }
+    // Re-apply the core blocklist at runtime. Embedders calling
+    // createKoiRuntime programmatically do not go through
+    // loadManifestConfig, so the YAML-level parser check is not
+    // enough to stop a caller from naming a core layer via the
+    // public manifestMiddleware API.
+    if (CORE_MIDDLEWARE_BLOCKLIST.includes(entry.name)) {
+      throw new CoreMiddlewareBlockedError(entry.name);
+    }
+    const factory = registry.get(entry.name);
+    if (factory === undefined) {
+      throw new UnknownManifestMiddlewareError(entry.name, registry.names());
+    }
+    const fromFactory = await factory(entry, ctx);
+    // Force zone-B phase + priority regardless of what the factory
+    // declared. This is the execution-time security invariant: the
+    // engine's `sortMiddlewareByPhase` would otherwise re-order
+    // middleware and a manifest entry with `phase: "intercept"` and
+    // a low priority could leapfrog the security layers. By rewriting
+    // the slot at resolution time, every zone B entry provably runs
+    // after `exfiltration-guard`, `permissions`, and `hooks`.
+    const normalized: KoiMiddleware = {
+      ...fromFactory,
+      phase: ZONE_B_PHASE,
+      priority: ZONE_B_PRIORITY,
+    };
+    resolved.push(normalized);
+  }
+  return resolved;
+}
+
+/**
+ * Create an empty registry. Plugins and tests use this when they
+ * want full control over which middleware names are resolvable,
+ * without inheriting any built-ins.
+ */
+export function createDefaultManifestRegistry(): MiddlewareRegistry {
+  return new MiddlewareRegistry();
+}
+
+/**
+ * Options for the built-in manifest registry.
+ */
+export interface BuiltinManifestRegistryOptions {
+  /**
+   * When `true`, register manifest middleware that opens writable
+   * files at resolution time (currently `@koi/middleware-audit`,
+   * which creates an NDJSON sink). Default: `false`.
+   *
+   * This is a host-controlled gate: repo-authored `koi.yaml` cannot
+   * flip it. Hosts opt in via CLI flag / env / trust-host config
+   * and accept that manifest entries they enable are allowed to
+   * create files inside the workspace (subject to the audit path
+   * validation: `.audit.ndjson` suffix, no symlink escape, no `..`
+   * traversal, no absolute paths).
+   *
+   * When `false` (default), the audit built-in is NOT registered,
+   * so `manifest.middleware` entries naming `@koi/middleware-audit`
+   * throw `UnknownManifestMiddlewareError` at resolution time. This
+   * keeps repo content from creating any filesystem side effects
+   * via manifest alone, regardless of path.
+   */
+  readonly allowFileBackedSinks?: boolean | undefined;
+}
+
+/**
+ * Create a registry pre-populated with the audited built-in manifest
+ * middleware. Hosts pass this when constructing the runtime; the
+ * default registry returned by `createDefaultManifestRegistry()` is
+ * empty.
+ *
+ * The set is intentionally small and defense-in-depth. A built-in
+ * candidate must meet every criterion in the stack-vs-manifest
+ * decision rule (`docs/L2/manifest.md`):
+ *   - pure interposition — no providers, no exports
+ *   - no hookExtras that need early-phase merging
+ *   - no session-reset or shutdown lifecycle
+ *   - no late-phase dependency on inherited middleware
+ *   - not already wired via a preset stack (avoids double-wire)
+ *
+ * Additionally, built-ins that perform filesystem I/O at resolution
+ * time (`@koi/middleware-audit` creates an NDJSON file sink) are
+ * ONLY registered when the host passes
+ * `{ allowFileBackedSinks: true }`. This keeps repo-authored
+ * manifests from triggering disk writes without an explicit host
+ * trust decision.
+ *
+ * Audited packages:
+ *   - ✅ `@koi/middleware-audit`          — file sink, host-gated
+ *   - ❌ `@koi/middleware-extraction`     — wired in memory stack
+ *   - ❌ `@koi/middleware-semantic-retry` — wired in observability stack
+ *   - ❌ `@koi/context-manager`           — utility lib, no factory
+ */
+export function createBuiltinManifestRegistry(
+  options: BuiltinManifestRegistryOptions = {},
+): MiddlewareRegistry {
+  const registry = new MiddlewareRegistry();
+  if (options.allowFileBackedSinks === true) {
+    registry.register("@koi/middleware-audit", createAuditManifestEntry);
+  }
+  return registry;
+}
+
+// ---------------------------------------------------------------------------
+// Built-in factories
+// ---------------------------------------------------------------------------
+
+/**
+ * Options accepted by the `@koi/middleware-audit` manifest entry.
+ *
+ * The underlying middleware takes an `AuditSink` object which cannot
+ * be expressed directly in YAML, so this factory translates a small
+ * user-friendly shape into a real sink. Today only the NDJSON file
+ * sink is supported; additional sinks can be added behind a `sink`
+ * discriminator later without breaking existing manifests.
+ */
+interface AuditManifestOptions {
+  readonly filePath: string;
+  readonly flushIntervalMs?: number;
+  readonly redactRequestBodies?: boolean;
+  readonly signing?: boolean;
+}
+
+/**
+ * Resolve a manifest-supplied audit sink path against the workspace
+ * root and reject anything that escapes it. This is the trust-boundary
+ * fix for Codex round 2/3 findings: without validation, a repo-authored
+ * `koi.yaml` with `filePath: /Users/victim/.ssh/authorized_keys` (or a
+ * committed symlink pointing out of tree) would trigger arbitrary file
+ * writes at runtime assembly time, before any permission middleware runs.
+ *
+ * Defense in depth:
+ *   1. Reject absolute paths literally.
+ *   2. Reject lexical `..` traversal out of the workspace.
+ *   3. Resolve the target's PARENT directory via `realpathSync` and
+ *      confirm that the real parent is still inside the real workspace
+ *      root. This blocks the symlink-escape class where a repo commits
+ *      `logs/audit.ndjson` as a symlink to a host path that passes the
+ *      lexical check but the subsequent file open would follow. The
+ *      file itself may not exist yet, so we resolve the parent dir
+ *      (which does exist or was created by the caller) rather than the
+ *      file path.
+ *
+ * Hosts that genuinely need an absolute or out-of-workspace sink path
+ * thread it programmatically via a custom `MiddlewareRegistry` that
+ * registers its own factory — not via manifest content.
+ */
+/**
+ * Required filename suffix for manifest-configured audit sinks.
+ * Combined with the lexical + realpath checks, this prevents a
+ * repo-authored `koi.yaml` from pointing `filePath` at an existing
+ * arbitrary workspace file (e.g. `package.json`, `src/index.ts`,
+ * `bun.lock`) and silently corrupting it by appending audit NDJSON.
+ *
+ * Legitimate manifest audit entries name a dedicated file such as
+ * `./audit.audit.ndjson` or `logs/session.audit.ndjson`. Hosts that
+ * want a different filename scheme configure the sink
+ * programmatically via a custom `MiddlewareRegistry`, bypassing
+ * this lexical guard.
+ */
+const AUDIT_FILE_SUFFIX = ".audit.ndjson";
+
+function resolveAuditFilePath(filePath: string, workspaceRoot: string): string {
+  if (!filePath.endsWith(AUDIT_FILE_SUFFIX)) {
+    throw new Error(
+      `@koi/middleware-audit: filePath "${filePath}" must end in "${AUDIT_FILE_SUFFIX}" when configured from manifest. ` +
+        "The extension requirement prevents repo-authored config from pointing at existing arbitrary " +
+        "workspace files (package.json, source files, etc.) and silently corrupting them by appending audit JSON. " +
+        "Hosts that need a different filename scheme must configure the sink programmatically.",
+    );
+  }
+  if (isAbsolute(filePath)) {
+    throw new Error(
+      `@koi/middleware-audit: absolute filePath "${filePath}" is not allowed in manifest — ` +
+        "the path must be relative to the workspace root. " +
+        "Hosts that require an absolute path must thread it programmatically, not via koi.yaml.",
+    );
+  }
+  const lexicalResolved = resolvePath(workspaceRoot, filePath);
+  const lexicalRel = relative(workspaceRoot, lexicalResolved);
+  if (lexicalRel.startsWith("..") || isAbsolute(lexicalRel)) {
+    throw new Error(
+      `@koi/middleware-audit: filePath "${filePath}" escapes the workspace root "${workspaceRoot}" — ` +
+        "paths that leave the workspace are rejected. " +
+        "Audit sinks must stay inside the workspace when configured from manifest content.",
+    );
+  }
+
+  // Symlink-aware check: resolve the parent directory AND, if the
+  // target exists, the target itself via the real filesystem, and
+  // verify both are inside the real workspace root. Two separate
+  // checks because the file may not exist yet (first write).
+  let realWorkspaceRoot: string;
+  try {
+    realWorkspaceRoot = realpathSync(workspaceRoot);
+  } catch (err: unknown) {
+    throw new Error(
+      `@koi/middleware-audit: workspace root "${workspaceRoot}" could not be resolved: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  const parentDir = dirname(lexicalResolved);
+  let realParentDir: string;
+  try {
+    realParentDir = realpathSync(parentDir);
+  } catch (err: unknown) {
+    throw new Error(
+      `@koi/middleware-audit: parent directory "${parentDir}" does not exist or cannot be resolved: ${
+        err instanceof Error ? err.message : String(err)
+      }. Create the directory inside the workspace before enabling the manifest entry.`,
+    );
+  }
+  const parentRel = relative(realWorkspaceRoot, realParentDir);
+  if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+    throw new Error(
+      `@koi/middleware-audit: filePath "${filePath}" resolves through a symlinked parent directory that escapes the workspace root — ` +
+        `real parent "${realParentDir}" is outside real workspace "${realWorkspaceRoot}". ` +
+        "Audit sinks must stay inside the real workspace when configured from manifest content.",
+    );
+  }
+
+  // The file itself may be a committed symlink inside an in-tree
+  // directory, e.g. `logs/audit.ndjson → /etc/passwd`. `realParentDir`
+  // would be in-tree, but the final file open would still follow the
+  // symlink and write out of tree. Use `lstat` to detect a symlink
+  // without following it; if one exists, reject unconditionally.
+  try {
+    const stat = lstatSync(lexicalResolved);
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `@koi/middleware-audit: filePath "${filePath}" is itself a symlink — audit sinks cannot be written via symlinks ` +
+          "when configured from manifest content. Replace the symlink with a regular file, or configure the sink programmatically.",
+      );
+    }
+    // For an existing regular file, also verify its realpath is
+    // inside the real workspace. lstat gave us "not a symlink," so
+    // realpath on the file is safe and equivalent to lexicalResolved.
+    const realFile = realpathSync(lexicalResolved);
+    const realFileRel = relative(realWorkspaceRoot, realFile);
+    if (realFileRel.startsWith("..") || isAbsolute(realFileRel)) {
+      throw new Error(
+        `@koi/middleware-audit: existing filePath "${filePath}" resolves outside the workspace real root — ` +
+          `real path "${realFile}" is outside real workspace "${realWorkspaceRoot}".`,
+      );
+    }
+  } catch (err: unknown) {
+    // ENOENT (file does not exist yet) is the expected happy path —
+    // the parent directory was already verified above, so the sink
+    // will create a new file inside a real in-tree directory. Any
+    // other error (EACCES, EIO, the two thrown errors above) bubbles
+    // up — we fail closed rather than silently proceeding.
+    if (
+      !(err instanceof Error) ||
+      !("code" in err) ||
+      (err as NodeJS.ErrnoException).code !== "ENOENT"
+    ) {
+      throw err;
+    }
+  }
+
+  return lexicalResolved;
+}
+
+function parseAuditOptions(
+  raw: Readonly<Record<string, unknown>> | undefined,
+): AuditManifestOptions {
+  if (raw === undefined) {
+    throw new Error(
+      '@koi/middleware-audit: options are required — manifest entry must include `filePath` (e.g. `"@koi/middleware-audit": { filePath: "./audit.log" }`)',
+    );
+  }
+  const filePath = raw.filePath;
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error("@koi/middleware-audit: options.filePath must be a non-empty string");
+  }
+  const flushIntervalMs = raw.flushIntervalMs;
+  if (
+    flushIntervalMs !== undefined &&
+    (typeof flushIntervalMs !== "number" || flushIntervalMs <= 0)
+  ) {
+    throw new Error("@koi/middleware-audit: options.flushIntervalMs must be a positive number");
+  }
+  const redactRequestBodies = raw.redactRequestBodies;
+  if (redactRequestBodies !== undefined && typeof redactRequestBodies !== "boolean") {
+    throw new Error("@koi/middleware-audit: options.redactRequestBodies must be a boolean");
+  }
+  const signing = raw.signing;
+  if (signing !== undefined && typeof signing !== "boolean") {
+    throw new Error("@koi/middleware-audit: options.signing must be a boolean");
+  }
+  return {
+    filePath,
+    ...(typeof flushIntervalMs === "number" ? { flushIntervalMs } : {}),
+    ...(typeof redactRequestBodies === "boolean" ? { redactRequestBodies } : {}),
+    ...(typeof signing === "boolean" ? { signing } : {}),
+  };
+}
+
+function createAuditManifestEntry(
+  entry: ManifestMiddlewareEntry,
+  ctx: ManifestMiddlewareContext,
+): KoiMiddleware {
+  const options = parseAuditOptions(entry.options);
+  const safeFilePath = resolveAuditFilePath(options.filePath, ctx.workingDirectory);
+  const sink = createNdjsonAuditSink({
+    filePath: safeFilePath,
+    ...(options.flushIntervalMs !== undefined ? { flushIntervalMs: options.flushIntervalMs } : {}),
+  });
+  // Register the sink's close() with the runtime's shutdown chain
+  // so the file writer and flush timer are released on dispose.
+  // Without this, every runtime using manifest audit leaks its
+  // writer and timer until process exit — see Codex round 9
+  // finding #2.
+  ctx.registerShutdown(async () => {
+    await sink.close();
+  });
+  return createAuditMiddleware({
+    sink,
+    ...(options.redactRequestBodies !== undefined
+      ? { redactRequestBodies: options.redactRequestBodies }
+      : {}),
+    ...(options.signing !== undefined ? { signing: options.signing } : {}),
+  });
+}
