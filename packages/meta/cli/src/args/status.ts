@@ -13,6 +13,8 @@ export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): Statu
     readonly manifest: string | undefined;
     readonly timeout: string | undefined;
     readonly json: boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -21,6 +23,8 @@ export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): Statu
         manifest: { type: "string" },
         timeout: { type: "string" },
         json: { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -28,8 +32,8 @@ export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): Statu
   );
   return {
     command: "status" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
     timeout:
       values.timeout !== undefined

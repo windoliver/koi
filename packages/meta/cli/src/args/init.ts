@@ -18,6 +18,8 @@ export function parseInitFlags(rest: readonly string[], g: GlobalFlags): InitFla
     readonly template: string | undefined;
     readonly model: string | undefined;
     readonly engine: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -28,6 +30,8 @@ export function parseInitFlags(rest: readonly string[], g: GlobalFlags): InitFla
         template: { type: "string" },
         model: { type: "string" },
         engine: { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -36,8 +40,8 @@ export function parseInitFlags(rest: readonly string[], g: GlobalFlags): InitFla
   return {
     command: "init" as const,
     directory: positionals[0],
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     yes: values.yes ?? false,
     name: values.name,
     template: values.template,

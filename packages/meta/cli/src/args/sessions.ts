@@ -9,13 +9,20 @@ export interface SessionsFlags extends BaseFlags {
 }
 
 export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): SessionsFlags {
-  type V = { readonly manifest: string | undefined; readonly limit: string | undefined };
+  type V = {
+    readonly manifest: string | undefined;
+    readonly limit: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
+  };
   const { values, positionals } = typedParseArgs<V>(
     {
       args: rest,
       options: {
         manifest: { type: "string" },
         limit: { type: "string", short: "n" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -24,8 +31,8 @@ export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): Ses
   const sub = positionals[0];
   return {
     command: "sessions" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     subcommand: sub === "list" ? ("list" as const) : undefined,
     manifest: values.manifest,
     limit:

@@ -107,6 +107,8 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     readonly "verifier-timeout": string | undefined;
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -125,6 +127,8 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
         "verifier-timeout": { type: "string" },
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -192,8 +196,8 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
 
   return {
     command: "start" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
     mode,
     resume: values.resume,

@@ -25,7 +25,6 @@
 import {
   type CliFlags,
   COMMAND_NAMES,
-  extractCommand,
   isKnownCommand,
   isTuiFlags,
   ParseError,
@@ -65,31 +64,6 @@ export async function runDispatch(
   helpText: string,
   version: string,
 ): Promise<DispatchResult> {
-  // Per-command `--help` / `--version` short-circuit (#1729). We peek at
-  // raw argv before calling parseArgs so strict parsers (plugin, mcp)
-  // don't throw on missing required positionals and shadow a help/version
-  // request with a usage error, and so parseArgs preserves its invariant
-  // that a known command always yields that command's full flag shape.
-  //
-  // `--` acts as an operand terminator: tokens after it are literal
-  // operands, so e.g. `koi plugin install -- --help` must not be
-  // rewritten to "print plugin help". Only tokens before the terminator
-  // count as flag candidates here.
-  //
-  // Version takes precedence over help (matches the top-level fast-path,
-  // where the --version check runs first).
-  const { command: rawCommand } = extractCommand(rawArgv);
-  const rawHelpVersion = detectHelpVersionBeforeTerminator(rawArgv);
-  if (rawHelpVersion.version && isKnownCommand(rawCommand)) {
-    return { kind: "exit", code: 0, stdout: `${version}\n` };
-  }
-  if (rawHelpVersion.help && isKnownCommand(rawCommand)) {
-    // Lazy import keeps COMMAND_HELP off the cold-start path measured by
-    // the startup-latency benchmark.
-    const { COMMAND_HELP } = await import("./help.js");
-    return { kind: "exit", code: 0, stdout: COMMAND_HELP[rawCommand] };
-  }
-
   let flags: CliFlags;
   try {
     flags = parseArgs(rawArgv);
@@ -100,11 +74,19 @@ export async function runDispatch(
     throw e;
   }
 
-  if (flags.help) {
-    return { kind: "exit", code: 0, stdout: helpText };
-  }
+  // --version takes precedence over --help (matches the bin.ts fast-path
+  // order and the POSIX convention of exiting on --version first).
   if (flags.version) {
     return { kind: "exit", code: 0, stdout: `${version}\n` };
+  }
+  if (flags.help) {
+    if (isKnownCommand(flags.command)) {
+      // Lazy import so the 200-line COMMAND_HELP table stays off the
+      // cold-start path measured by the startup-latency benchmark.
+      const { COMMAND_HELP } = await import("./help.js");
+      return { kind: "exit", code: 0, stdout: COMMAND_HELP[flags.command] };
+    }
+    return { kind: "exit", code: 0, stdout: helpText };
   }
   if (flags.command === undefined) {
     return { kind: "exit", code: 0, stdout: helpText };
@@ -146,24 +128,4 @@ export async function runDispatch(
     stderr += `  ${name}\n`;
   }
   return { kind: "exit", code: 1, stderr };
-}
-
-/**
- * Scan argv for `--help`/`-h` and `--version`/`-V`, stopping at the `--`
- * operand terminator. Used by the per-command short-circuit so literal
- * operands like `koi plugin install -- --help` cannot be misinterpreted
- * as a help request.
- */
-function detectHelpVersionBeforeTerminator(argv: readonly string[]): {
-  readonly help: boolean;
-  readonly version: boolean;
-} {
-  let help = false;
-  let version = false;
-  for (const a of argv) {
-    if (a === "--") break;
-    if (a === "--help" || a === "-h") help = true;
-    else if (a === "--version" || a === "-V") version = true;
-  }
-  return { help, version };
 }

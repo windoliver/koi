@@ -15,6 +15,8 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
     readonly port: string | undefined;
     readonly verbose: boolean | undefined;
     readonly "log-format": string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -24,6 +26,8 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
         port: { type: "string", short: "p" },
         verbose: { type: "boolean", short: "v", default: false },
         "log-format": { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -31,8 +35,8 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
   );
   return {
     command: "serve" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
     port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
     verbose: values.verbose ?? false,

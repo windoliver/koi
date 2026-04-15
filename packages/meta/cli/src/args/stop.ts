@@ -7,19 +7,27 @@ export interface StopFlags extends BaseFlags {
 }
 
 export function parseStopFlags(rest: readonly string[], g: GlobalFlags): StopFlags {
-  type V = { readonly manifest: string | undefined };
+  type V = {
+    readonly manifest: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
+  };
   const { values, positionals } = typedParseArgs<V>(
     {
       args: rest,
-      options: { manifest: { type: "string" } },
+      options: {
+        manifest: { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
+      },
       allowPositionals: true,
     },
     "stop",
   );
   return {
     command: "stop" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
   };
 }

@@ -57,6 +57,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     readonly "verifier-timeout": string | undefined;
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values } = typedParseArgs<V>(
     {
@@ -72,6 +74,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
         "verifier-timeout": { type: "string" },
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -114,8 +118,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
 
   return {
     command: "tui" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     agent: values.agent,
     session: values.session,
     resume: values.resume,

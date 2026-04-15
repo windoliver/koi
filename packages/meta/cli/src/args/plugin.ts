@@ -29,24 +29,42 @@ export interface PluginFlags extends BaseFlags {
 // ---------------------------------------------------------------------------
 
 export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): PluginFlags {
-  type V = { readonly json: boolean | undefined };
+  type V = {
+    readonly json: boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
+  };
   const { values, positionals } = typedParseArgs<V>(
     {
       args: rest,
       options: {
         json: { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "plugin",
   );
 
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
   const sub = positionals[0];
-  if (sub === undefined || !VALID_SUBCOMMANDS.has(sub)) {
-    throw new ParseError(`koi plugin requires a subcommand: ${[...VALID_SUBCOMMANDS].join(", ")}`);
+
+  // When --help or --version is present, defer the subcommand-required
+  // check so dispatch can serve help/version instead of a usage error.
+  // subcommand falls back to "list" for shape compatibility; dispatch
+  // exits before any command body reads it.
+  if (!helpRequested && !versionRequested) {
+    if (sub === undefined || !VALID_SUBCOMMANDS.has(sub)) {
+      throw new ParseError(
+        `koi plugin requires a subcommand: ${[...VALID_SUBCOMMANDS].join(", ")}`,
+      );
+    }
   }
 
-  const subcommand = sub as PluginSubcommand;
+  const subcommand: PluginSubcommand =
+    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as PluginSubcommand) : "list";
 
   // install: koi plugin install <path>       → name=undefined, path=pos[1]
   // update:  koi plugin update <name> <path> → name=pos[1], path=pos[2]
@@ -56,8 +74,8 @@ export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): Plugi
 
   return {
     command: "plugin" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     subcommand,
     name,
     path,

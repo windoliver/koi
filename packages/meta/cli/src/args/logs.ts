@@ -13,6 +13,8 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
     readonly manifest: string | undefined;
     readonly follow: boolean | undefined;
     readonly lines: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -21,6 +23,8 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
         manifest: { type: "string" },
         follow: { type: "boolean", short: "f", default: false },
         lines: { type: "string", short: "n" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -28,8 +32,8 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
   );
   return {
     command: "logs" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
     follow: values.follow ?? false,
     lines:

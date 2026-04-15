@@ -379,6 +379,34 @@ describe("bin.ts", () => {
       const trimmed = r.stdout.trim();
       expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
     });
+
+    // Review round 6: string option values must not be misclassified
+    // as global help/version. node:util's option-arity awareness
+    // guarantees this once the parsers own --help/--version themselves.
+    test("`koi start --prompt --help` treats --help as --prompt value, NOT a help request", async () => {
+      // If this ran as a help short-circuit, stdout would contain the
+      // start help banner. Instead, the prompt value is "--help" and
+      // start either runs (exits 2 on no API key) or errors out —
+      // never exits 0 with the help banner.
+      const r = await runBin(["start", "--prompt", "--help"], { OPENROUTER_API_KEY: "" });
+      expect(r.stdout).not.toContain("koi start —");
+      // Accept any non-help exit: real start invocation fails because
+      // no @koi/core built in this worktree (exit 2 module-load error).
+      expect(r.exitCode).not.toBe(0);
+    });
+
+    test("`koi start --prompt --version` treats --version as --prompt value", async () => {
+      const r = await runBin(["start", "--prompt", "--version"], { OPENROUTER_API_KEY: "" });
+      // Must NOT exit 0 with just "0.0.0" — that would be the
+      // version short-circuit swallowing the literal prompt value.
+      const trimmed = r.stdout.trim();
+      expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
+    });
+
+    test("`koi serve --manifest --help` treats --help as --manifest value", async () => {
+      const r = await runBin(["serve", "--manifest", "--help"]);
+      expect(r.stdout).not.toContain("koi serve —");
+    });
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {

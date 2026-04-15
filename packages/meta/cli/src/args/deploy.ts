@@ -15,6 +15,8 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
     readonly system: boolean | undefined;
     readonly uninstall: boolean | undefined;
     readonly port: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -24,6 +26,8 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
         system: { type: "boolean", default: false },
         uninstall: { type: "boolean", default: false },
         port: { type: "string", short: "p" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -31,8 +35,8 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
   );
   return {
     command: "deploy" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? g.version,
+    help: values.help ?? g.help,
     manifest: values.manifest ?? positionals[0],
     system: values.system ?? false,
     uninstall: values.uninstall ?? false,

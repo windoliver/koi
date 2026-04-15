@@ -23,7 +23,7 @@ export { isServeFlags, parseServeFlags } from "./serve.js";
 export type { SessionsFlags } from "./sessions.js";
 export { isSessionsFlags, parseSessionsFlags } from "./sessions.js";
 export type { BaseFlags, GlobalFlags } from "./shared.js";
-export { detectGlobalFlags, extractCommand, GLOBAL_RAW_FLAGS, ParseError } from "./shared.js";
+export { detectGlobalFlags, extractCommand, ParseError } from "./shared.js";
 export type { StartFlags, StartMode } from "./start.js";
 export { isStartFlags, parseStartFlags } from "./start.js";
 export type { StatusFlags } from "./status.js";
@@ -54,7 +54,7 @@ import { parseServeFlags } from "./serve.js";
 import type { SessionsFlags } from "./sessions.js";
 import { parseSessionsFlags } from "./sessions.js";
 import type { BaseFlags, GlobalFlags } from "./shared.js";
-import { detectGlobalFlags, extractCommand, GLOBAL_RAW_FLAGS } from "./shared.js";
+import { detectGlobalFlags, extractCommand } from "./shared.js";
 import type { StartFlags } from "./start.js";
 import { parseStartFlags } from "./start.js";
 import type { StatusFlags } from "./status.js";
@@ -146,35 +146,17 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
 export function parseArgs(argv: readonly string[]): CliFlags {
   const globalFlags = detectGlobalFlags(argv);
   const { command, rest } = extractCommand(argv);
-  // Strip global flags (--help/-h/--version/-V) so per-command parsers
-  // never see them as unknown options — but only before the `--` operand
-  // terminator. Tokens after `--` are literal operands (e.g.
-  // `koi plugin install -- --help` targets a plugin literally named
-  // `--help`) and must reach the parser intact.
-  const filteredRest = filterGlobalRawFlagsBeforeTerminator(rest);
 
+  // Known commands own their own --help/-h/--version/-V parsing. node:util
+  // handles option-value arity (so e.g. `koi start --prompt --help` treats
+  // `--help` as the string value of `--prompt`, not as a help request).
+  // Pass `rest` through intact — no pre-filtering needed.
   if (isKnownCommand(command)) {
-    return COMMAND_PARSERS[command](filteredRest, globalFlags);
+    return COMMAND_PARSERS[command](rest, globalFlags);
   }
 
+  // Unknown command — fall back to the bare globalFlags shape so callers
+  // like `bin.ts` can still surface top-level --help/--version/--unknown
+  // without loading a command module.
   return { command, ...globalFlags };
-}
-
-function filterGlobalRawFlagsBeforeTerminator(argv: readonly string[]): readonly string[] {
-  const out: string[] = [];
-  let terminated = false;
-  for (const a of argv) {
-    if (terminated) {
-      out.push(a);
-      continue;
-    }
-    if (a === "--") {
-      terminated = true;
-      out.push(a);
-      continue;
-    }
-    if (GLOBAL_RAW_FLAGS.has(a)) continue;
-    out.push(a);
-  }
-  return out;
 }

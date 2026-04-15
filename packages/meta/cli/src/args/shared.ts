@@ -2,7 +2,7 @@
  * Shared parser infrastructure — used by all per-command arg modules.
  *
  * Exports: ParseError, BaseFlags, typedParseArgs, parseIntFlag,
- * resolveLogFormat, detectGlobalFlags, extractCommand, GLOBAL_RAW_FLAGS.
+ * resolveLogFormat, detectGlobalFlags, extractCommand.
  */
 
 import { parseArgs as nodeParseArgs } from "node:util";
@@ -144,6 +144,3 @@ export function extractCommand(argv: readonly string[]): {
   }
   return { command: first, rest: argv.slice(1) };
 }
-
-/** Stripped from rest before command dispatch so parsers never see them as unknown flags. */
-export const GLOBAL_RAW_FLAGS: ReadonlySet<string> = new Set(["--help", "-h", "--version", "-V"]);
