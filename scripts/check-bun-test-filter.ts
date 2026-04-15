@@ -29,8 +29,13 @@ export interface Violation {
   readonly text: string;
 }
 
-const IGNORE_MARKER = "check:bun-test-filter-ignore";
-
+/**
+ * Path-level allowlist for the few files that must reference the banned
+ * pattern as a literal string (the guard's own source/tests, plus a
+ * hypothetical CLI ergonomics example in the loop plan). There is NO
+ * inline opt-out marker — exemption is centralized and auditable here.
+ * Adding a new entry should be a deliberate PR decision, reviewed.
+ */
 const ALLOWED_PATHS: ReadonlySet<string> = new Set([
   "scripts/check-bun-test-filter.ts",
   "scripts/check-bun-test-filter.test.ts",
@@ -195,7 +200,6 @@ export function detectViolations(file: string, content: string): Violation[] {
   const violations: Violation[] = [];
   const logical = joinContinuations(content);
   for (const { text, originLine } of logical) {
-    if (text.includes(IGNORE_MARKER)) continue;
     // Split on shell command separators so `foo; bun test --filter=x` is
     // checked as two commands (only the second is a violation).
     const commands = text.split(/[;|&]+/);

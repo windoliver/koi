@@ -1045,7 +1045,7 @@ Each row is a golden query exercising packages through the full agent pipeline. 
 bun run test --filter=@koi/runtime
 ```
 
-> **Workspace filter gotcha (#1788)**: `--filter=<pkg>` is a Turborepo workspace selector. It must be passed via `bun run test`, which delegates to `turbo run test` (the root `test` script). Do **not** write `bun test --filter=...` — Bun's built-in `bun test` runner has no `--filter` flag, silently ignores it, and walks every workspace test instead. From a single package directory, `cd packages/meta/runtime && bun test` works as a workspace-scoped fallback. <!-- check:bun-test-filter-ignore -->
+> **Workspace filter gotcha (#1788)**: `--filter=<pkg>` is a Turborepo workspace selector and must be passed via `bun run test`, which delegates to `turbo run test` (the root `test` script). The bare Bun runner has no workspace filter of its own; passing `--filter` directly silently walks every workspace. From a single package directory, `cd packages/meta/runtime` and run the suite without any filter flag. The `check:bun-test-filter` CI gate enforces this — see `scripts/check-bun-test-filter.ts` and its unit tests for the exact patterns it rejects.
 
 | Golden Query | Packages Exercised | Pass Criteria |
 |---|---|---|

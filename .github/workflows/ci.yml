@@ -685,7 +685,7 @@ jobs:
       - name: Check layer boundaries
         run: bun run check:layers
 
-      - name: Check bun-test-filter guard (#1788) # check:bun-test-filter-ignore
+      - name: Check workspace-filter guard (#1788)
         run: bun run check:bun-test-filter
 
       - name: Check package descriptions

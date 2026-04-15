@@ -127,10 +127,18 @@ describe("detectViolations — negative cases", () => {
     expect(v).toHaveLength(0);
   });
 
-  test("respects inline ignore marker", () => {
-    const content = "bun test --filter=foo  # check:bun-test-filter-ignore";
-    const v = detectViolations("a.md", content);
-    expect(v).toHaveLength(0);
+  test("inline ignore marker does NOT suppress violations (no opt-out exists)", () => {
+    // Codex round 5: inline opt-out makes the policy unenforceable. The
+    // guard now has no marker bypass; exemption is path-based only.
+    const samples = [
+      "bun test --filter=foo  # check:bun-test-filter-ignore",
+      "bun test --filter=foo // check:bun-test-filter-ignore",
+      "bun test --filter=foo <!-- check:bun-test-filter-ignore -->",
+    ];
+    for (const sample of samples) {
+      const v = detectViolations("a.md", sample);
+      expect(v).toHaveLength(1);
+    }
   });
 
   test("does not match --filter on a separate logical line", () => {
