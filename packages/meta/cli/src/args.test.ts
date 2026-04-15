@@ -277,6 +277,21 @@ describe("parseArgs", () => {
     test("-h after manifest still sets help", () => {
       expect(asFlags(isStartFlags, ["start", "./a.yaml", "-h"]).help).toBe(true);
     });
+
+    // Regression for #1729 review: parseArgs must always return a full
+    // command-specific flag shape when the command is known, even when
+    // --help is present. Earlier drafts returned a minimal BaseFlags
+    // shell that still narrowed through is*Flags guards, silently
+    // handing callers objects missing required fields.
+    test("parseArgs(start --help) returns complete StartFlags shape", () => {
+      const f = asFlags(isStartFlags, ["start", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.mode).toBeDefined();
+      expect(f.logFormat).toBe("text");
+      expect(f.untilPass).toEqual([]);
+      expect(typeof f.maxIter).toBe("number");
+      expect(typeof f.contextWindow).toBe("number");
+    });
   });
 
   describe("logFormat env var", () => {

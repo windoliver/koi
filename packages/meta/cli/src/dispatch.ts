@@ -25,13 +25,14 @@
 import {
   type CliFlags,
   COMMAND_NAMES,
+  detectGlobalFlags,
+  extractCommand,
   isKnownCommand,
   isTuiFlags,
   ParseError,
   parseArgs,
   type TuiFlags,
 } from "./args.js";
-import { COMMAND_HELP } from "./help.js";
 import type { CommandModule } from "./types.js";
 
 /**
@@ -65,6 +66,19 @@ export async function runDispatch(
   helpText: string,
   version: string,
 ): Promise<DispatchResult> {
+  // Per-command `--help` short-circuit (#1729). We peek at raw argv before
+  // calling parseArgs so strict parsers (plugin, mcp) don't throw on missing
+  // required positionals and shadow the help request with a usage error, and
+  // so parseArgs preserves its invariant that a known command always yields
+  // that command's full flag shape. Lazy import keeps COMMAND_HELP off the
+  // cold-start path measured by the startup-latency benchmark.
+  const rawGlobalFlags = detectGlobalFlags(rawArgv);
+  const { command: rawCommand } = extractCommand(rawArgv);
+  if (rawGlobalFlags.help && isKnownCommand(rawCommand)) {
+    const { COMMAND_HELP } = await import("./help.js");
+    return { kind: "exit", code: 0, stdout: COMMAND_HELP[rawCommand] };
+  }
+
   let flags: CliFlags;
   try {
     flags = parseArgs(rawArgv);
@@ -76,9 +90,6 @@ export async function runDispatch(
   }
 
   if (flags.help) {
-    if (isKnownCommand(flags.command)) {
-      return { kind: "exit", code: 0, stdout: COMMAND_HELP[flags.command] };
-    }
     return { kind: "exit", code: 0, stdout: helpText };
   }
   if (flags.version) {

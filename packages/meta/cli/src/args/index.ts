@@ -148,14 +148,6 @@ export function parseArgs(argv: readonly string[]): CliFlags {
   const { command, rest } = extractCommand(argv);
   const filteredRest = rest.filter((a) => !GLOBAL_RAW_FLAGS.has(a));
 
-  // When the user asks for help on a known command (e.g. `koi plugin --help`),
-  // short-circuit before per-command parsing. Strict parsers like `plugin`
-  // and `mcp` throw ParseError on missing required positionals, which would
-  // otherwise shadow the help request with a usage error.
-  if (globalFlags.help && isKnownCommand(command)) {
-    return { command, version: globalFlags.version, help: true };
-  }
-
   if (isKnownCommand(command)) {
     return COMMAND_PARSERS[command](filteredRest, globalFlags);
   }
