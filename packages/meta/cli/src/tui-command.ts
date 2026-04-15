@@ -2450,39 +2450,45 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
 
-          // Step 3: hydrate memory + UI from the validated target.
-          // The picked session is loaded into the runtime's
-          // in-memory transcript (read-only preview mode); the JSONL
-          // is NOT copied on disk. To durably continue the picked
-          // session, quit and relaunch with `koi tui --resume <id>`.
+          // Step 3: hydrate memory + UI from the validated target
+          // and rebind the runtime so the resumed session is fully
+          // writable — new turns append to its JSONL, not the
+          // startup session's.
           if (runtimeHandle !== null) {
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
+            }
+            // Rebind engine session so transcript middleware routes
+            // future writes to the selected session's JSONL file.
+            if (runtimeHandle.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(selectedId);
+              } catch (rebindErr: unknown) {
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message: `Cannot resume session: rebind failed: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }. Quit and relaunch with \`koi tui --resume ${selectedId}\`.`,
+                });
+                return;
+              }
             }
           }
           store.dispatch({
             kind: "load_history",
             messages: resumeResult.value.messages,
           });
-          // Lock the session into read-only picker mode. Subsequent
-          // submissions and `/rewind` are refused because the runtime
-          // still routes writes to the startup session id and the
-          // checkpoint chain still belongs to that session — allowing
-          // mutation would silently mix the picked conversation with
-          // the startup archive and let `/rewind` walk across the
-          // pick boundary. The user is pointed at
-          // `koi tui --resume <pickedId>` as the correct way to
-          // durably continue the picked session.
-          //
-          // Rotate the VIEWED session id so the status-bar chip,
-          // the post-quit resume hint, and every picker-mode
-          // guard all use the conversation on screen. The runtime
-          // routing key stays `tuiSessionId`. Because
-          // `isInPickerMode()` is derived from
-          // `viewedSessionId !== tuiSessionId`, the read-only
-          // guards auto-enable here AND auto-disable again the
-          // moment the user picks the startup session back.
+          // Fully switch to the selected session — update both
+          // tuiSessionId and viewedSessionId so isInPickerMode()
+          // returns false and the session is writable. New turns
+          // append to the selected session's JSONL file via the
+          // rebind above.
+          tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          rewindBoundaryActive = true;
+          clearedThisProcess = false;
+          postClearTurnCount = 0;
           store.dispatch({
             kind: "set_session_info",
             modelName,
