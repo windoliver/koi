@@ -704,14 +704,14 @@ git -C "$FIXTURE" add -A && git -C "$FIXTURE" commit -q -m "add broken test"
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
   "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
-   --until-pass 'bun test' --max-iter 3 --allow-side-effects"
+   --until-pass bun --until-pass test --max-iter 3 --allow-side-effects"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
 | Q153 | `Fix the failing test in test/broken.test.ts` | fs_read, fs_edit, Bash | Agent iterates: read → edit → `bun test` → verify. Converges within max-iter. TUI shows `--- loop iteration N ---` banners |
-| Q154 | (max-iter bail) Use `--until-pass "false" --max-iter 2` with prompt `Make this pass` | Bash | Hits max-iter; exits cleanly with non-zero code; no hang; TUI shows both iterations |
-| Q155 | (verifier timeout) Use `--until-pass "sleep 60" --verifier-timeout 2000` | — | Verifier times out; clean error; TUI doesn't hang |
+| Q154 | (max-iter bail) Use `--until-pass false --max-iter 2` with prompt `Make this pass` | Bash | Hits max-iter; exits cleanly with non-zero code; no hang; TUI shows both iterations |
+| Q155 | (verifier timeout) Use `--until-pass sleep --until-pass 60 --verifier-timeout 2000` | — | Verifier times out; clean error; TUI doesn't hang |
 
 ### S25 — File-Based Memory Persistence
 

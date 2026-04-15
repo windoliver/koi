@@ -47,6 +47,21 @@ describe("detectViolations — positive cases", () => {
     expect(v).toHaveLength(1);
   });
 
+  test("flags `bun --env-file <file> test --filter=<pkg>` (Codex round 6: unknown value flag)", () => {
+    const v = detectViolations("a.md", "bun --env-file .env test --filter=@koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags `bun --hot --watch test --filter=<pkg>` (multiple boolean flags)", () => {
+    const v = detectViolations("a.md", "bun --hot --watch test --filter=@koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags hypothetical future flag `bun --some-new-flag value test --filter=<pkg>`", () => {
+    const v = detectViolations("a.md", "bun --some-new-flag somevalue test --filter=@koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
   test("flags inline Markdown code: `bun test --filter=<pkg>`", () => {
     const v = detectViolations("a.md", "Run `bun test --filter=@koi/runtime` from the root.");
     expect(v).toHaveLength(1);
@@ -154,6 +169,21 @@ describe("detectViolations — negative cases", () => {
 
   test("allows `bun --watch run test --filter=<pkg>` (canonical with bun flag)", () => {
     const v = detectViolations("a.md", "bun --watch run test --filter=@koi/runtime");
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows `bun install` (different subcommand abandons walk)", () => {
+    const v = detectViolations("a.md", "bun install --filter=@koi/runtime");
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows `bun create vite my-test --filter=foo` (subcommand `create`)", () => {
+    const v = detectViolations("a.md", "bun create vite my-test --filter=foo");
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows `bun add @koi/runtime --filter` (subcommand `add`)", () => {
+    const v = detectViolations("a.md", "bun add @koi/runtime --filter=foo");
     expect(v).toHaveLength(0);
   });
 });

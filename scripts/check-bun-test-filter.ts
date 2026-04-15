@@ -84,29 +84,40 @@ function joinContinuations(content: string): LogicalLine[] {
  * Token-aware detection of `bun [opts] test [args] --filter ...`.
  *
 /**
- * Bun-level flags that consume a following argv token as their value.
- * When skipping these during a walk, also skip the next token so the
- * value does not get mistaken for a subcommand.
+ * Known Bun subcommands that, when seen between `bun` and a hypothetical
+ * `test` token, mean we are NOT looking at `bun test` and should abandon
+ * the search for that `bun` occurrence. This is a deny-list anchored on
+ * the small, stable set of Bun subcommands rather than an open-ended
+ * allowlist of value-taking flags (which Codex round 6 correctly noted
+ * is incomplete and bypassable for any unlisted flag like `--env-file`).
+ *
+ * Source: `bun --help` top-level subcommands, Bun 1.3.x.
  */
-const VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "--cwd",
-  "--config",
-  "-c",
-  "--port",
-  "--define",
-  "--external",
-  "--loader",
-  "--require",
-  "-r",
-  "--target",
-  "--format",
-  "--inspect",
-  "--inspect-brk",
-  "--inspect-wait",
-  "--max-old-space-size",
-  "--banner",
-  "--footer",
-  "--main-fields",
+const KNOWN_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "run",
+  "x",
+  "exec",
+  "install",
+  "i",
+  "add",
+  "a",
+  "remove",
+  "rm",
+  "update",
+  "outdated",
+  "link",
+  "unlink",
+  "init",
+  "create",
+  "pm",
+  "repl",
+  "upgrade",
+  "build",
+  "audit",
+  "publish",
+  "patch",
+  "why",
+  "info",
 ]);
 
 /**
@@ -120,17 +131,24 @@ function normalizeLine(line: string): string {
 }
 
 /**
- * Algorithm:
+ * Algorithm (Codex round 6 redesign — subcommand-anchored):
  *   1. Normalize markdown/shell decoration characters out of the line.
- *   2. Tokenize the logical line on whitespace.
- *   3. For each `bun` token, walk forward through flag tokens (starting
- *      with `-`). For each flag, also skip the next token if the flag is
- *      in VALUE_FLAGS and lacks `=value`.
- *   4. If the next non-flag token is exactly `test`, look at all later
- *      tokens for `--filter` or `--filter=...` — if found, it is a
- *      violation.
- *   5. Any other non-flag landing token (`run`, `x`, `install`, etc.) ends
- *      the search for that `bun` occurrence.
+ *   2. Tokenize on whitespace.
+ *   3. For each `bun` token, walk forward token-by-token. Treat anything
+ *      that is NOT a known Bun subcommand as opaque (could be a flag, a
+ *      flag value, a path, anything) and keep walking. The walk
+ *      terminates only on:
+ *        - the literal token `test` → check later tokens for `--filter`
+ *        - any token in KNOWN_SUBCOMMANDS → abandon (different command)
+ *   4. This makes the walker robust against any pre-`test` Bun flag
+ *      regardless of whether it takes a separate value token, fixing the
+ *      VALUE_FLAGS-allowlist gap that round 6 surfaced (e.g.
+ *      `bun --env-file .env test --filter=foo`).
+ *
+ * Trade-off: lines like `bun some-script.ts test --filter=x` would be
+ * flagged as a false positive even though `some-script.ts` is the bun
+ * entry point. In practice this shape is vanishingly rare in docs and
+ * we'd rather over-warn than miss the real footgun.
  */
 function isBunTestWithFilter(line: string): boolean {
   const tokens = normalizeLine(line).match(/\S+/g) ?? [];
@@ -139,18 +157,6 @@ function isBunTestWithFilter(line: string): boolean {
     let j = i + 1;
     while (j < tokens.length) {
       const tok = tokens[j] ?? "";
-      if (tok.startsWith("-")) {
-        if (tok.includes("=")) {
-          j++;
-          continue;
-        }
-        if (VALUE_FLAGS.has(tok)) {
-          j += 2;
-          continue;
-        }
-        j++;
-        continue;
-      }
       if (tok === "test") {
         for (let k = j + 1; k < tokens.length; k++) {
           const later = tokens[k] ?? "";
@@ -160,8 +166,10 @@ function isBunTestWithFilter(line: string): boolean {
         }
         break;
       }
-      // Different subcommand (run, x, install, etc.) — abandon.
-      break;
+      if (KNOWN_SUBCOMMANDS.has(tok)) {
+        break;
+      }
+      j++;
     }
   }
   return false;
