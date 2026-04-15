@@ -198,10 +198,13 @@ export function buildPluginMcpSetup(
  * throws so operators see every broken entry, not just the first fatal.
  * Callers that don't want startup to abort should wrap the call in try/catch.
  *
- * When `filterAgentHooks` is true, any `kind: "agent"` hooks are removed
- * (and their names reported via the optional callback) so the caller can
- * warn the operator. Agent hooks require a spawnFn that the TUI does not
- * provide — the same filter applied before this helper existed.
+ * When `filterAgentHooks` is true, any `kind: "agent"` hooks are stripped
+ * from the raw array **before** per-entry validation (and their names
+ * reported via the optional callback). Pre-filtering matters: the TUI does
+ * not support agent hooks at all, so a malformed or failClosed agent hook,
+ * or a duplicate involving one, must not abort startup for a host that
+ * would have ignored the entry anyway (review round 5 finding). Agent
+ * hooks require a spawnFn that the TUI does not provide.
  */
 export async function loadUserRegisteredHooks(options: {
   readonly filterAgentHooks: boolean;
@@ -225,7 +228,36 @@ export async function loadUserRegisteredHooks(options: {
     throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
   }
 
-  const loaded = loadRegisteredHooksPerEntry(raw, "user");
+  // Pre-filter agent entries when the host cannot run them: stripping them
+  // from the raw array before validation means malformed/duplicate/failClosed
+  // agent entries cannot abort startup for a host that would have ignored
+  // them anyway (review round 5 finding). The stripped names are still
+  // surfaced via `onAgentHooksFiltered` so operators know what was skipped.
+  let effectiveRaw: unknown = raw;
+  if (options.filterAgentHooks && Array.isArray(raw)) {
+    const keptEntries: unknown[] = [];
+    const agentNames: string[] = [];
+    for (const entry of raw) {
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as { readonly kind?: unknown }).kind === "agent"
+      ) {
+        const sniffedName = (entry as { readonly name?: unknown }).name;
+        if (typeof sniffedName === "string" && sniffedName.length > 0) {
+          agentNames.push(sniffedName);
+        }
+        continue;
+      }
+      keptEntries.push(entry);
+    }
+    if (agentNames.length > 0 && options.onAgentHooksFiltered !== undefined) {
+      options.onAgentHooksFiltered(agentNames);
+    }
+    effectiveRaw = keptEntries;
+  }
+
+  const loaded = loadRegisteredHooksPerEntry(effectiveRaw, "user");
   if (options.onLoadError !== undefined) {
     for (const err of loaded.errors) {
       const where =
@@ -280,12 +312,10 @@ export async function loadUserRegisteredHooks(options: {
     );
   }
 
-  if (!options.filterAgentHooks) return loaded.hooks;
-  const agentHooks = loaded.hooks.filter((rh) => rh.hook.kind === "agent");
-  if (agentHooks.length > 0 && options.onAgentHooksFiltered !== undefined) {
-    options.onAgentHooksFiltered(agentHooks.map((rh) => rh.hook.name));
-  }
-  return loaded.hooks.filter((rh) => rh.hook.kind !== "agent");
+  // When filterAgentHooks is true, agent entries were already stripped
+  // from the raw array above; loaded.hooks never contains any. The post-
+  // filter that used to live here is redundant.
+  return loaded.hooks;
 }
 
 /**

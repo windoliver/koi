@@ -252,6 +252,29 @@ describe("loadUserRegisteredHooks", () => {
     expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
   });
 
+  test("pre-filters agent entries so invalid agent hooks cannot brick TUI startup (review round 5 finding)", async () => {
+    // All of these would otherwise be fatal under filterAgentHooks:true —
+    // duplicate agent name + schema-invalid agent + failClosed agent. The
+    // TUI does not support agent hooks, so they must be skipped entirely.
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "agent", name: "dup", prompt: "verify" },
+        { kind: "agent", name: "dup", prompt: "verify" },
+        { kind: "agent", name: "broken", prompt: "" },
+        { kind: "agent", name: "strict", prompt: "deny", failClosed: true },
+      ]),
+    );
+    const filtered: string[][] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: true,
+      onAgentHooksFiltered: (names) => filtered.push([...names]),
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]).toEqual(["dup", "dup", "broken", "strict"]);
+  });
+
   test("filters agent hooks and fires onAgentHooksFiltered", async () => {
     writeHooksJson(
       JSON.stringify([
