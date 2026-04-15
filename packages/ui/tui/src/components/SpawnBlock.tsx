@@ -54,9 +54,9 @@ export function SpawnBlock(props: SpawnBlockProps): JSX.Element {
       flexDirection="column"
       paddingLeft={1}
       onMouseDown={() => {
-        // #3: click completed spawn → navigate to sessions view to find child session
+        // #3: click completed spawn → open session picker to find child session
         if (!isRunning()) {
-          storeCtx?.dispatch({ kind: "set_view", view: "sessions" });
+          storeCtx?.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
         }
       }}
     >

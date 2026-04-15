@@ -46,13 +46,6 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "navigation",
   },
   {
-    id: "nav:sessions",
-    label: "Sessions",
-    description: "Browse and resume saved sessions",
-    category: "navigation",
-    ctrlShortcut: "S",
-  },
-  {
     id: "nav:help",
     label: "Help",
     description: "Show keyboard shortcuts and documentation",
@@ -116,11 +109,11 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     ctrlShortcut: "N",
   },
   {
-    id: "session:resume",
-    label: "Resume session",
-    description: "Resume the most recent saved session",
+    id: "session:sessions",
+    label: "Sessions",
+    description: "Browse and resume saved sessions",
     category: "session",
-    minSessionCount: 2,
+    ctrlShortcut: "S",
   },
   {
     id: "session:fork",
