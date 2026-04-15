@@ -381,6 +381,24 @@ describe("loadRegisteredHooksPerEntry", () => {
     expect(result.errors[0]?.name).toBe("deny");
   });
 
+  it("carries failClosed from the parsed hook on duplicate-name errors", () => {
+    // A duplicate entry marked failClosed:true usually signals a
+    // replacement/tightening that must not silently defer to the stale
+    // first occurrence — callers need the flag to abort startup
+    // (review round 2 finding).
+    const result = loadRegisteredHooksPerEntry(
+      [
+        { kind: "command", name: "deny", cmd: ["/bin/true"] },
+        { kind: "command", name: "deny", cmd: ["/bin/true"], failClosed: true },
+      ],
+      "user",
+    );
+    expect(result.hooks).toHaveLength(1);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.name).toBe("deny");
+    expect(result.errors[0]?.failClosed).toBe(true);
+  });
+
   it("leaves failClosed undefined when absent or non-boolean", () => {
     const result = loadRegisteredHooksPerEntry(
       [

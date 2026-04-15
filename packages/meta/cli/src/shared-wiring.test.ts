@@ -156,17 +156,19 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors).toEqual([]);
   });
 
-  test("reports an error and returns [] when hooks.json is not JSON", async () => {
+  test("aborts startup when hooks.json exists but cannot be parsed (fail closed)", async () => {
+    // A truncated write, merge conflict, or corrupt file must not degrade to
+    // "no hooks configured" — the file may have declared failClosed hooks
+    // and we cannot know (review round 2 finding).
     writeHooksJson("not-json");
     const errors: string[] = [];
-    const hooks = await loadUserRegisteredHooks({
-      filterAgentHooks: false,
-      onLoadError: (m) => errors.push(m),
-    });
-    expect(hooks).toEqual([]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("Could not read");
-    expect(errors[0]).toContain("hooks.json");
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*Could not read/);
+    expect(errors.some((m) => m.includes("Could not read"))).toBe(true);
   });
 
   test("loads valid peers when one entry is invalid (issue #1781 regression)", async () => {

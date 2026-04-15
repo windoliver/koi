@@ -170,8 +170,12 @@ export function buildPluginMcpSetup(
  *
  * Loader semantics:
  * - File absent → silent empty result (hooks.json is optional).
- * - File present but unreadable / not JSON → `onLoadError` is invoked with a
- *   diagnostic; empty result is returned.
+ * - File present but unreadable / not JSON → **fatal**. Because the file's
+ *   contents are unknown, we cannot tell whether the operator had declared
+ *   any `failClosed:true` hooks in it; silently treating corruption as
+ *   "no hooks configured" is the exact class of silent policy bypass this
+ *   function exists to close. `onLoadError` is called with the diagnostic
+ *   and then the function throws to abort startup.
  * - File present and parseable → each entry is validated independently via
  *   `loadRegisteredHooksPerEntry`. Invalid entries are reported through
  *   `onLoadError` (one call per error) and skipped; valid peers still load.
@@ -204,8 +208,13 @@ export async function loadUserRegisteredHooks(options: {
   try {
     raw = await file.json();
   } catch (e) {
-    options.onLoadError?.(`Could not read ${path}: ${e instanceof Error ? e.message : String(e)}`);
-    return [];
+    // File exists but cannot be read or parsed. We have no way to know
+    // whether it declared any failClosed:true hooks, so fail closed rather
+    // than silently proceed with an empty hook set (review round 2 finding).
+    const detail = e instanceof Error ? e.message : String(e);
+    const msg = `Could not read ${path}: ${detail}`;
+    options.onLoadError?.(msg);
+    throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
   }
 
   const loaded = loadRegisteredHooksPerEntry(raw, "user");

@@ -247,10 +247,16 @@ export function loadRegisteredHooksPerEntry(
     if (hook.enabled === false) continue;
 
     if (seen.has(hook.name)) {
+      // Preserve failClosed from the parsed hook: a duplicate-name entry
+      // marked failClosed:true signals the operator intended this
+      // definition to replace/tighten an earlier one; dropping it silently
+      // would leave the stale definition in place, so callers must be able
+      // to abort startup on this error (review round 2 finding).
       errors.push({
         index: i,
         name: hook.name,
         message: `Duplicate hook name "${hook.name}" — first occurrence kept, this entry skipped`,
+        ...(hook.failClosed === true ? { failClosed: true } : {}),
       });
       continue;
     }
