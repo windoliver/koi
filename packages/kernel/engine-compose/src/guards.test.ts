@@ -911,45 +911,56 @@ describe("createSpawnGuard", () => {
     await p2;
   });
 
-  test("allows sequential spawns beyond fan-out limit", async () => {
+  test("enforces fan-out across sequential spawns in one model turn (#1793)", async () => {
+    // Regression for #1793: real engines execute batched tool_use calls
+    // sequentially via `for ... await`, so a concurrent-in-flight counter
+    // never exceeds 1. The per-model-turn counter catches this case.
     const guard = createSpawnGuard({ policy: { maxFanOut: 2 }, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
+    const toolWrap = getToolWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
     const ctx = mockTurnContext();
 
-    // Sequential spawns: each completes before next starts, fan-out resets to 0
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    expect(next).toHaveBeenCalledTimes(4);
-  });
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
 
-  test("fan-out slot freed when concurrent child completes", async () => {
-    const guard = createSpawnGuard({ policy: { maxFanOut: 1 }, agentDepth: 0 });
-    const wrap = getToolWrap(guard);
-    const ctx = mockTurnContext();
-
-    // Start 1 concurrent spawn
-    const d1 = deferredToolNext();
-    const p1 = wrap(ctx, mockToolRequest("forge_agent"), d1.next);
-
-    // 2nd spawn blocked — fan-out at 1/1
+    // Third spawn in the same batch must be rejected.
     try {
-      await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
+      await toolWrap(ctx, mockToolRequest("forge_agent"), next);
       expect.unreachable("should have thrown");
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("RATE_LIMIT");
+        expect(e.retryable).toBe(true);
+        expect(e.message).toContain("Max fan-out exceeded");
+        expect(e.message).toContain("2/2");
+      }
     }
+    expect(next).toHaveBeenCalledTimes(2);
+  });
 
-    // Complete child 1 — fan-out back to 0
-    d1.resolve();
-    await p1;
-
-    // Now spawn succeeds
+  test("fan-out counter resets at each new model turn", async () => {
+    // Same sequential batch, but with an intervening model call resetting
+    // the per-turn budget. The parent can spawn many children total across
+    // its lifetime — just not more than maxFanOut in any single batch.
+    const guard = createSpawnGuard({ policy: { maxFanOut: 2 }, agentDepth: 0 });
+    const toolWrap = getToolWrap(guard);
+    const modelWrap = getModelWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    await wrap(ctx, mockToolRequest("forge_agent"), next);
-    expect(next).toHaveBeenCalledTimes(1);
+    const modelNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
+    const ctx = mockTurnContext();
+
+    // Turn 1: exhaust the budget.
+    await modelWrap(ctx, mockModelRequest(), modelNext);
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+
+    // Turn 2: new model call resets the counter — two more spawns succeed.
+    await modelWrap(ctx, mockModelRequest(), modelNext);
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+
+    expect(next).toHaveBeenCalledTimes(4);
   });
 
   // -------------------------------------------------------------------------

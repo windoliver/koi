@@ -93,8 +93,11 @@ export interface SpawnPolicy {
    */
   readonly maxDepth: number;
   /**
-   * Maximum number of direct children per agent (fan-out).
-   * Transient limit — retryable once a child terminates and releases its slot.
+   * Maximum number of spawn tool calls a parent agent may issue in a single
+   * model turn's tool_use batch. The counter resets at the start of each
+   * new model call, so a long-running agent can spawn many children over
+   * its lifetime — it just can't ask for more than maxFanOut in one batch.
+   * RATE_LIMIT error is retryable on the next model turn.
    */
   readonly maxFanOut: number;
   /**

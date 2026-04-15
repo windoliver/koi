@@ -777,11 +777,22 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
-  // let justified: mutable per-agent fan-out counter
-  let directChildren = 0;
+  // let justified: mutable per-model-turn spawn counter.
+  // Counts successful spawn tool calls issued in the current model turn's
+  // tool_use batch. Reset before each new model call. Real engines (see
+  // @koi/query-engine turn-runner) execute batched tool calls sequentially
+  // via `for … await`, so a decrement-on-completion counter would never
+  // exceed 1 and the cap would be silently bypassed (#1793). Resetting on
+  // the model-turn boundary instead caps batch size — the natural semantic
+  // for "max fan-out per turn".
+  let spawnsThisTurn = 0;
 
-  // let justified: mutable flag to fire fan-out warning at most once
+  // let justified: mutable flag to fire fan-out warning at most once per session
   let firedFanOutWarning = false;
+
+  function resetTurnCounter(): void {
+    spawnsThisTurn = 0;
+  }
 
   return {
     name: "koi:spawn-guard",
@@ -789,8 +800,21 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     priority: 2,
 
     onSessionStart: async () => {
-      directChildren = 0;
+      spawnsThisTurn = 0;
       firedFanOutWarning = false;
+    },
+
+    // Reset the per-turn counter at each new model call. A fresh model turn
+    // gets a fresh spawn budget; sequential batches are each capped at
+    // maxFanOut. This is the enforcement point for #1793.
+    wrapModelCall: async (_ctx, request, next) => {
+      resetTurnCounter();
+      return next(request);
+    },
+
+    wrapModelStream: (_ctx, request, next) => {
+      resetTurnCounter();
+      return next(request);
     },
 
     wrapToolCall: async (_ctx, request, next) => {
@@ -832,42 +856,46 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         }
       }
 
-      // 3. Check fan-out (transient, RATE_LIMIT — retryable when child completes)
-      if (directChildren >= policy.maxFanOut) {
+      // 3. Check fan-out (RATE_LIMIT — retryable on the next model turn,
+      //    which resets the counter)
+      if (spawnsThisTurn >= policy.maxFanOut) {
         throw KoiRuntimeError.from(
           "RATE_LIMIT",
-          `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} children`,
+          `Max fan-out exceeded: ${spawnsThisTurn}/${policy.maxFanOut} children in this model turn`,
           {
             retryable: true,
-            context: { directChildren, maxFanOut: policy.maxFanOut },
+            context: { spawnsThisTurn, maxFanOut: policy.maxFanOut },
           },
         );
       }
 
       // 4. Optimistic: increment fan-out before next()
-      directChildren++;
+      spawnsThisTurn++;
 
-      // 5. Fire fan-out warning (synchronous, at most once)
+      // 5. Fire fan-out warning (synchronous, at most once per session)
       if (
         !firedFanOutWarning &&
         policy.fanOutWarningAt !== undefined &&
         policy.onWarning !== undefined &&
-        directChildren >= policy.fanOutWarningAt
+        spawnsThisTurn >= policy.fanOutWarningAt
       ) {
         firedFanOutWarning = true;
         policy.onWarning({
           kind: "fan_out",
-          current: directChildren,
+          current: spawnsThisTurn,
           limit: policy.maxFanOut,
           warningAt: policy.fanOutWarningAt,
         });
       }
 
-      // 6. Execute spawn — release fan-out slot when child completes (success or failure)
+      // 6. Execute spawn. Roll back the counter only on failure — a spawn
+      //    that didn't run should not consume budget. Successful spawns
+      //    remain counted until the next model turn resets the counter.
       try {
         return await next(request);
-      } finally {
-        directChildren--;
+      } catch (e: unknown) {
+        spawnsThisTurn--;
+        throw e;
       }
     },
   };

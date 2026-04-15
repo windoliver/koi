@@ -218,6 +218,37 @@ describe("spawn governance integration", () => {
     expect(errors.every((e) => e.includes("Max fan-out exceeded"))).toBe(true);
   });
 
+  test("enforces fan-out on sequential spawn batch within one turn (#1793)", async () => {
+    // Regression for #1793: real engines await each tool call in a batch
+    // sequentially (see turn-runner.ts). An in-flight concurrent counter
+    // never exceeds 1 and silently bypasses the cap. The guard must cap
+    // the cumulative spawn count per model turn instead.
+    const results: string[] = [];
+    const adapter = spawnTestAdapter(
+      Array.from({ length: 6 }, (_, i) => ({
+        toolId: "forge_agent",
+        input: { task: `job-${i}` },
+      })),
+      results,
+    );
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      spawn: { maxFanOut: 5 },
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    const successes = results.filter((r) => r.startsWith("ok:"));
+    const errors = results.filter((r) => r.startsWith("error:"));
+
+    expect(successes.length).toBe(5);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("Max fan-out exceeded");
+  });
+
   test("warning callback fires through createKoi spawn options", async () => {
     const warnings: SpawnWarningInfo[] = [];
 
