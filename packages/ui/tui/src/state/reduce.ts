@@ -13,6 +13,7 @@ import type {
   SessionInfo,
   SessionSummary,
   SpawnProgress,
+  SpawnRecord,
   SpawnStats,
   ToolResultData,
   TuiAction,
@@ -20,7 +21,13 @@ import type {
   TuiMessage,
   TuiState,
 } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";
+import {
+  COMPACT_THRESHOLD,
+  MAX_FINISHED_SPAWNS,
+  MAX_MESSAGES,
+  MAX_SESSIONS,
+  MAX_TOOL_RESULT_BYTES,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Assistant message type (narrowed)
@@ -52,6 +59,18 @@ function findLastAssistant(messages: readonly TuiMessage[]): FoundAssistant | un
 /** Replace a single element in a readonly array by index. */
 function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
   return arr.with(idx, value);
+}
+
+/**
+ * Prepend a finished spawn record and cap the buffer at MAX_FINISHED_SPAWNS.
+ * Most-recent-first ordering lets the /agents view render without re-sorting.
+ */
+function appendFinishedSpawn(
+  existing: readonly SpawnRecord[],
+  record: SpawnRecord,
+): readonly SpawnRecord[] {
+  const next = [record, ...existing];
+  return next.length > MAX_FINISHED_SPAWNS ? next.slice(0, MAX_FINISHED_SPAWNS) : next;
 }
 
 /**
@@ -556,7 +575,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       if (blockIdx < 0) return state;
 
       const spawnStatus: "complete" = "complete";
-      const durationMs = Date.now() - progress.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - progress.startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
@@ -575,6 +595,15 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
         activeSpawns,
+        finishedSpawns: appendFinishedSpawn(state.finishedSpawns, {
+          agentId,
+          agentName: progress.agentName,
+          description: progress.description,
+          startedAt: progress.startedAt,
+          finishedAt,
+          durationMs,
+          outcome: "complete",
+        }),
       };
     }
 
@@ -821,7 +850,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       );
       if (blockIdx < 0) return state;
 
-      const durationMs = Date.now() - progress.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - progress.startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
@@ -840,6 +870,15 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
         activeSpawns,
+        finishedSpawns: appendFinishedSpawn(state.finishedSpawns, {
+          agentId: action.agentId,
+          agentName: progress.agentName,
+          description: progress.description,
+          startedAt: progress.startedAt,
+          finishedAt,
+          durationMs,
+          outcome: action.outcome,
+        }),
       };
     }
 

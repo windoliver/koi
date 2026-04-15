@@ -214,6 +214,20 @@ export interface SpawnProgress {
   readonly currentTool?: string | undefined;
 }
 
+/** Historical record for a spawn that reached a terminal state (#1792). */
+export interface SpawnRecord {
+  readonly agentId: string;
+  readonly agentName: string;
+  readonly description: string;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly durationMs: number;
+  readonly outcome: "complete" | "failed";
+}
+
+/** Maximum number of finished spawns retained for the /agents view. */
+export const MAX_FINISHED_SPAWNS = 20;
+
 /** A single block within an assistant message. */
 export type TuiAssistantBlock =
   | { readonly kind: "text"; readonly text: string }
@@ -326,6 +340,13 @@ export interface TuiState {
    * Entries are removed when the agent reaches a terminal status.
    */
   readonly activeSpawns: ReadonlyMap<string, SpawnProgress>;
+  /**
+   * Rolling history of spawned agents that reached a terminal state in the
+   * current session (#1792). Most-recent-first, capped at MAX_FINISHED_SPAWNS.
+   * Used by the /agents view to surface recently-completed spawns that would
+   * otherwise disappear from activeSpawns the moment they finish.
+   */
+  readonly finishedSpawns: readonly SpawnRecord[];
   /** Max context tokens for the current model — used for context % indicator (#17). */
   readonly maxContextTokens: number | null;
   /** Live retry countdown — set by the bridge when the engine retries (#20). */

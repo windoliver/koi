@@ -14,6 +14,7 @@ import type {
   SessionInfo,
   SessionSummary,
   SpawnProgress,
+  SpawnRecord,
   SpawnStats,
   ToolResultData,
   TuiAction,
@@ -21,7 +22,13 @@ import type {
   TuiMessage,
   TuiState,
 } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";
+import {
+  COMPACT_THRESHOLD,
+  MAX_FINISHED_SPAWNS,
+  MAX_MESSAGES,
+  MAX_SESSIONS,
+  MAX_TOOL_RESULT_BYTES,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Mutable type aliases (produce() strips readonly via proxy — these
@@ -75,6 +82,17 @@ function capToolResult(output: unknown): ToolResultData {
     return { value: output, byteSize, truncated: false };
   }
   return { value: serialized.slice(-MAX_TOOL_RESULT_BYTES), byteSize, truncated: true };
+}
+
+/**
+ * Prepend a finished spawn record to the ring buffer and cap at
+ * MAX_FINISHED_SPAWNS. Mirrors appendFinishedSpawn in reduce.ts. Mutates the
+ * draft directly since the whole state module runs inside produce().
+ */
+function recordFinishedSpawn(state: Draft, record: SpawnRecord): void {
+  const next = [record, ...state.finishedSpawns];
+  const capped = next.length > MAX_FINISHED_SPAWNS ? next.slice(0, MAX_FINISHED_SPAWNS) : next;
+  (state as unknown as { finishedSpawns: readonly SpawnRecord[] }).finishedSpawns = capped;
 }
 
 /** Find the index of the last assistant message. Returns -1 if none. */
@@ -389,7 +407,8 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
       );
       if (blockIdx < 0) break;
 
-      const durationMs = Date.now() - progress.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - progress.startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
@@ -404,6 +423,15 @@ function mutateEngineEvent(state: Draft, event: EngineEvent): void {
       const spawns = new Map(state.activeSpawns);
       spawns.delete(agentId);
       (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      recordFinishedSpawn(state, {
+        agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        startedAt: progress.startedAt,
+        finishedAt,
+        durationMs,
+        outcome: "complete",
+      });
       break;
     }
 
@@ -628,7 +656,8 @@ export function mutate(state: Draft, action: TuiAction): void {
       );
       if (blockIdx < 0) break;
 
-      const durationMs = Date.now() - progress.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - progress.startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
@@ -643,6 +672,15 @@ export function mutate(state: Draft, action: TuiAction): void {
       const spawns = new Map(state.activeSpawns);
       spawns.delete(action.agentId);
       (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      recordFinishedSpawn(state, {
+        agentId: action.agentId,
+        agentName: progress.agentName,
+        description: progress.description,
+        startedAt: progress.startedAt,
+        finishedAt,
+        durationMs,
+        outcome: action.outcome,
+      });
       break;
     }
 

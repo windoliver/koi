@@ -14,8 +14,13 @@ import {
   toolResult,
   userMsg,
 } from "./test-helpers.js";
-import type { TuiAction, TuiAssistantBlock, TuiMessage } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_RESULT_BYTES } from "./types.js";
+import type { TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
+import {
+  COMPACT_THRESHOLD,
+  MAX_FINISHED_SPAWNS,
+  MAX_MESSAGES,
+  MAX_TOOL_RESULT_BYTES,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared output fixture for "done" events
@@ -2682,6 +2687,107 @@ describe("reduce — engine_event — spawn", () => {
       }),
     );
     expect(next).toBe(state);
+  });
+
+  // Regression for #1792: /agents view showed "No active agents" immediately
+  // after successful spawns — no history retained.
+  test("set_spawn_terminal appends SpawnRecord to finishedSpawns with outcome", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-hist-1",
+        agentName: "historian",
+        description: "research the past",
+        status: "running",
+      },
+    ];
+    const startedAt = Date.now() - 1250;
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        ["child-hist-1", { agentName: "historian", description: "research the past", startedAt }],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-hist-1",
+      outcome: "failed",
+    });
+    expect(next.finishedSpawns.length).toBe(1);
+    const rec = next.finishedSpawns[0];
+    expect(rec).toBeDefined();
+    if (rec) {
+      expect(rec.agentId).toBe("child-hist-1");
+      expect(rec.agentName).toBe("historian");
+      expect(rec.description).toBe("research the past");
+      expect(rec.outcome).toBe("failed");
+      expect(rec.startedAt).toBe(startedAt);
+      expect(rec.durationMs).toBeGreaterThanOrEqual(1250);
+      expect(rec.finishedAt).toBeGreaterThanOrEqual(rec.startedAt);
+    }
+  });
+
+  test("agent_status_changed (terminated) appends SpawnRecord with outcome=complete", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-hist-2",
+        agentName: "worker",
+        description: "Do work",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-hist-2",
+          { agentName: "worker", description: "Do work", startedAt: Date.now() - 10 },
+        ],
+      ]),
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-hist-2" as import("@koi/core/ecs").AgentId,
+        agentName: "worker",
+        status: "terminated",
+      }),
+    );
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("child-hist-2");
+    expect(next.finishedSpawns[0]?.outcome).toBe("complete");
+  });
+
+  test("finishedSpawns is ordered most-recent-first and capped at MAX_FINISHED_SPAWNS", () => {
+    let state: TuiState = createInitialState();
+    // Push 25 terminal spawns; the buffer should retain the last 20 in
+    // most-recent-first order.
+    for (let i = 0; i < 25; i++) {
+      const id = `child-${i}`;
+      const withBlock: readonly TuiAssistantBlock[] = [
+        {
+          kind: "spawn_call",
+          agentId: id,
+          agentName: `a${i}`,
+          description: `d${i}`,
+          status: "running",
+        },
+      ];
+      state = stateWith({
+        ...state,
+        messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks: withBlock })],
+        activeSpawns: new Map([
+          [id, { agentName: `a${i}`, description: `d${i}`, startedAt: Date.now() - 1 }],
+        ]),
+      });
+      state = reduce(state, { kind: "set_spawn_terminal", agentId: id, outcome: "complete" });
+    }
+    expect(state.finishedSpawns.length).toBe(MAX_FINISHED_SPAWNS);
+    // Newest at index 0, oldest retained at the tail.
+    expect(state.finishedSpawns[0]?.agentId).toBe("child-24");
+    expect(state.finishedSpawns[MAX_FINISHED_SPAWNS - 1]?.agentId).toBe("child-5");
   });
 });
 
