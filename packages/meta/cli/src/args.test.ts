@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { CliFlags } from "./args.js";
 import {
+  detectGlobalFlags,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
   isKnownCommand,
   isLogsFlags,
+  isMcpFlags,
+  isPluginFlags,
   isServeFlags,
   isSessionsFlags,
   isStartFlags,
@@ -276,6 +279,121 @@ describe("parseArgs", () => {
 
     test("-h after manifest still sets help", () => {
       expect(asFlags(isStartFlags, ["start", "./a.yaml", "-h"]).help).toBe(true);
+    });
+
+    // Regression for #1729 review: parseArgs must always return a full
+    // command-specific flag shape when the command is known, even when
+    // --help is present. Earlier drafts returned a minimal BaseFlags
+    // shell that still narrowed through is*Flags guards, silently
+    // handing callers objects missing required fields.
+    test("parseArgs(start --help) returns complete StartFlags shape", () => {
+      const f = asFlags(isStartFlags, ["start", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.mode).toBeDefined();
+      expect(f.logFormat).toBe("text");
+      expect(f.untilPass).toEqual([]);
+      expect(typeof f.maxIter).toBe("number");
+      expect(typeof f.contextWindow).toBe("number");
+    });
+
+    // Review round 7: detectGlobalFlags and parseArgs must both honor
+    // the `--` operand terminator, so `koi -- --version` treats
+    // `--version` as a literal operand rather than a version probe.
+    // Covered here as a unit test because bun spawn itself consumes
+    // the first `--` from the invocation argv, so bin.test.ts cannot
+    // express this case end-to-end.
+    test("detectGlobalFlags stops at `--` terminator", () => {
+      expect(detectGlobalFlags(["--", "--version"])).toEqual({ help: false, version: false });
+      expect(detectGlobalFlags(["--", "--help"])).toEqual({ help: false, version: false });
+      expect(detectGlobalFlags(["--version", "--"])).toEqual({ help: false, version: true });
+      expect(detectGlobalFlags(["--help", "--"])).toEqual({ help: true, version: false });
+    });
+
+    test("parseArgs respects `--` terminator for top-level flags", () => {
+      // `koi -- --version` → no command, globalFlags stop at --, no help/version
+      expect(parseArgs(["--", "--version"])).toEqual({
+        command: undefined,
+        help: false,
+        version: false,
+      });
+      expect(parseArgs(["--", "--help"])).toEqual({
+        command: undefined,
+        help: false,
+        version: false,
+      });
+    });
+
+    // Review round 9: parseStartFlags is exported as public API.
+    // When --help is set, the parser must still faithfully return the
+    // user's other parsed values (--prompt, --manifest, etc.) — not
+    // fabricate default shells. Semantic validators that would throw
+    // are silently coerced to safe fallbacks so the shape stays valid.
+    test("parseArgs(start --help --prompt foo) preserves --prompt value", () => {
+      const f = asFlags(isStartFlags, ["start", "--help", "--prompt", "foo"]);
+      expect(f.help).toBe(true);
+      expect(f.mode).toEqual({ kind: "prompt", text: "foo" });
+    });
+
+    test("parseArgs(deploy --help --port 99999) preserves non-validated fields", () => {
+      const f = asFlags(isDeployFlags, ["deploy", "--help", "--port", "99999", "--system"]);
+      expect(f.help).toBe(true);
+      expect(f.system).toBe(true);
+      // Out-of-range port silently falls back to undefined under help
+      // mode rather than throwing — the user asked for help, not a
+      // config validation pass.
+      expect(f.port).toBeUndefined();
+    });
+
+    // Review round 10: parsePluginFlags and parseMcpFlags must NOT
+    // fabricate a synthetic "list" subcommand when --help/--version is
+    // present and the user supplied no subcommand. The parser preserves
+    // invalid argv as invalid; downstream callers that branch on
+    // subcommand must check flags.help/flags.version first.
+    test("parseArgs(plugin --help) returns subcommand: undefined, not list", () => {
+      const f = asFlags(isPluginFlags, ["plugin", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(plugin typo --version) returns subcommand: undefined", () => {
+      const f = asFlags(isPluginFlags, ["plugin", "typo", "--version"]);
+      expect(f.version).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(mcp --help) returns subcommand: undefined", () => {
+      const f = asFlags(isMcpFlags, ["mcp", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(mcp auth --help) preserves subcommand: 'auth'", () => {
+      // auth is a real subcommand the user typed — preserve it.
+      // The missing-server check is skipped because help is set.
+      const f = asFlags(isMcpFlags, ["mcp", "auth", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBe("auth");
+      expect(f.server).toBeUndefined();
+    });
+
+    // Review round 6: under strict:false, node:util reports a string
+    // option with no value as the boolean `true` instead of undefined.
+    // typedParseArgs must normalize these back to undefined so the
+    // exported flag types (`string | undefined`) are not violated on
+    // the help/version path, where we otherwise don't throw.
+    test("parseArgs(start --help --prompt) normalizes missing --prompt to undefined", () => {
+      const f = asFlags(isStartFlags, ["start", "--help", "--prompt"]);
+      expect(f.help).toBe(true);
+      // Before the fix, values.prompt was boolean `true`, which poisoned
+      // flags.mode. After the fix, prompt is undefined → mode is
+      // interactive.
+      expect(f.mode).toEqual({ kind: "interactive" });
+    });
+
+    test("parseArgs(serve --help --manifest) normalizes missing --manifest to undefined", () => {
+      const f = asFlags(isServeFlags, ["serve", "--help", "--manifest"]);
+      expect(f.help).toBe(true);
+      expect(f.manifest).toBeUndefined();
     });
   });
 

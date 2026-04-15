@@ -74,11 +74,19 @@ export async function runDispatch(
     throw e;
   }
 
-  if (flags.help) {
-    return { kind: "exit", code: 0, stdout: helpText };
-  }
+  // --version takes precedence over --help (matches the bin.ts fast-path
+  // order and the POSIX convention of exiting on --version first).
   if (flags.version) {
     return { kind: "exit", code: 0, stdout: `${version}\n` };
+  }
+  if (flags.help) {
+    if (isKnownCommand(flags.command)) {
+      // Lazy import so the 200-line COMMAND_HELP table stays off the
+      // cold-start path measured by the startup-latency benchmark.
+      const { COMMAND_HELP } = await import("./help.js");
+      return { kind: "exit", code: 0, stdout: COMMAND_HELP[flags.command] };
+    }
+    return { kind: "exit", code: 0, stdout: helpText };
   }
   if (flags.command === undefined) {
     return { kind: "exit", code: 0, stdout: helpText };

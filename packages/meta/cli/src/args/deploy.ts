@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlag, typedParseArgs } from "./shared.js";
 
 export interface DeployFlags extends BaseFlags {
@@ -9,12 +9,14 @@ export interface DeployFlags extends BaseFlags {
   readonly port: number | undefined;
 }
 
-export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): DeployFlags {
+export function parseDeployFlags(rest: readonly string[]): DeployFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly system: boolean | undefined;
     readonly uninstall: boolean | undefined;
     readonly port: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -24,20 +26,36 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
         system: { type: "boolean", default: false },
         uninstall: { type: "boolean", default: false },
         port: { type: "string", short: "p" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "deploy",
   );
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "deploy" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     system: values.system ?? false,
     uninstall: values.uninstall ?? false,
-    port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
+    port: values.port !== undefined ? parseDeployPort(values.port, skipValidators) : undefined,
   };
+}
+
+function parseDeployPort(value: string, skip: boolean): number | undefined {
+  if (skip) {
+    try {
+      return parseIntFlag("port", value, 1, 65535);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseIntFlag("port", value, 1, 65535);
 }
 
 export function isDeployFlags(flags: BaseFlags): flags is DeployFlags {

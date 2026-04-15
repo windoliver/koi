@@ -1,5 +1,5 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
-import { parseIntFlag, typedParseArgs } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
+import { parseIntFlagSafe, typedParseArgs } from "./shared.js";
 
 export interface SessionsFlags extends BaseFlags {
   readonly command: "sessions";
@@ -8,29 +8,39 @@ export interface SessionsFlags extends BaseFlags {
   readonly limit: number;
 }
 
-export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): SessionsFlags {
-  type V = { readonly manifest: string | undefined; readonly limit: string | undefined };
+export function parseSessionsFlags(rest: readonly string[]): SessionsFlags {
+  type V = {
+    readonly manifest: string | undefined;
+    readonly limit: string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
+  };
   const { values, positionals } = typedParseArgs<V>(
     {
       args: rest,
       options: {
         manifest: { type: "string" },
         limit: { type: "string", short: "n" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "sessions",
   );
   const sub = positionals[0];
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
+  const skipValidators = helpRequested || versionRequested;
   return {
     command: "sessions" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     subcommand: sub === "list" ? ("list" as const) : undefined,
     manifest: values.manifest,
     limit:
       values.limit !== undefined
-        ? parseIntFlag("limit", values.limit, 1, Number.MAX_SAFE_INTEGER)
+        ? parseIntFlagSafe("limit", values.limit, 1, Number.MAX_SAFE_INTEGER, skipValidators, 20)
         : 20,
   };
 }

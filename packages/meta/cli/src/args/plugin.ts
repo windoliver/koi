@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,13 @@ const VALID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 export interface PluginFlags extends BaseFlags {
   readonly command: "plugin";
-  readonly subcommand: PluginSubcommand;
+  /**
+   * Undefined only when `help` or `version` is also true — in that case
+   * the parser preserves invalid argv (missing/unknown subcommand) as
+   * invalid instead of coercing it to a synthetic `"list"`. Callers that
+   * branch on `subcommand` MUST check `help`/`version` first.
+   */
+  readonly subcommand: PluginSubcommand | undefined;
   readonly name: string | undefined;
   readonly path: string | undefined;
   readonly json: boolean;
@@ -28,36 +34,54 @@ export interface PluginFlags extends BaseFlags {
 // Parser
 // ---------------------------------------------------------------------------
 
-export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): PluginFlags {
-  type V = { readonly json: boolean | undefined };
+export function parsePluginFlags(rest: readonly string[]): PluginFlags {
+  type V = {
+    readonly json: boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
+  };
   const { values, positionals } = typedParseArgs<V>(
     {
       args: rest,
       options: {
         json: { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "plugin",
   );
 
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
   const sub = positionals[0];
-  if (sub === undefined || !VALID_SUBCOMMANDS.has(sub)) {
-    throw new ParseError(`koi plugin requires a subcommand: ${[...VALID_SUBCOMMANDS].join(", ")}`);
+
+  // When --help or --version is present, defer the subcommand-required
+  // check so dispatch can serve help/version instead of a usage error.
+  // subcommand falls back to "list" for shape compatibility; dispatch
+  // exits before any command body reads it.
+  if (!helpRequested && !versionRequested) {
+    if (sub === undefined || !VALID_SUBCOMMANDS.has(sub)) {
+      throw new ParseError(
+        `koi plugin requires a subcommand: ${[...VALID_SUBCOMMANDS].join(", ")}`,
+      );
+    }
   }
 
-  const subcommand = sub as PluginSubcommand;
+  const subcommand: PluginSubcommand | undefined =
+    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as PluginSubcommand) : undefined;
 
   // install: koi plugin install <path>       → name=undefined, path=pos[1]
   // update:  koi plugin update <name> <path> → name=pos[1], path=pos[2]
   // others:  koi plugin <sub> <name>         → name=pos[1], path=undefined
-  const name = subcommand === "install" ? undefined : positionals[1];
+  const name = subcommand === "install" || subcommand === undefined ? undefined : positionals[1];
   const path = subcommand === "install" ? positionals[1] : positionals[2];
 
   return {
     command: "plugin" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     subcommand,
     name,
     path,

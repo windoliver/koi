@@ -721,11 +721,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
       );
     },
+    onLoadError: (message) => {
+      // Per-entry loader errors: surface each so operators see which entry
+      // broke the file instead of silently losing every hook (issue #1781).
+      console.warn(`[koi tui] hooks.json: ${message}`);
+    },
   });
   // Merge plugin hooks (session tier) with user hooks (user tier).
   // Plugin hooks run first within their tier; user hooks in the next tier phase.
   const allHooks = mergeUserAndPluginHooks(loadedHooks, pluginComponents.hooks, {
     filterAgentHooks: true,
+    onFilteredAgentHooks: (names) => {
+      console.warn(
+        `[koi tui] ${names.length} plugin agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
+      );
+    },
   });
 
   // Lightweight PromptModelCaller — delegates to the TUI's model adapter for
