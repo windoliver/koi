@@ -200,6 +200,31 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors.some((m) => m.includes("array"))).toBe(true);
   });
 
+  test("aborts startup when a failClosed replacement duplicates a stale entry (review round 7)", async () => {
+    // Replacement-in-place: operator edited a deny hook, left the old copy
+    // above it, and marked the replacement failClosed:true. The stricter
+    // replacement must not silently defer to the stale definition.
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "deny", cmd: ["/bin/true"] },
+        {
+          kind: "command",
+          name: "deny",
+          cmd: ["/bin/strict"],
+          failClosed: true,
+        },
+      ]),
+    );
+    const errors: string[] = [];
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*failClosed.*"deny"/);
+    expect(errors.some((m) => m.includes("Duplicate"))).toBe(true);
+  });
+
   test("keeps first occurrence on duplicate hook names and warns (issue #1781 availability)", async () => {
     // Duplicate names warn but do not abort startup. Operators who want a
     // failing duplicate to be fatal mark the entry `failClosed: true`.

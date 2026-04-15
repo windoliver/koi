@@ -271,15 +271,16 @@ export async function loadUserRegisteredHooks(options: {
     }
   }
 
-  // Fail-closed opt-in is the only fatal path: schema-invalid entries that
-  // the operator explicitly marked `failClosed: true` abort startup.
-  // Structural root errors, duplicate names, and ordinary schema errors
-  // degrade to warnings + partial load so benign config mistakes (typos,
-  // partial writes, merge-conflict artifacts) cannot deny service to the
-  // TUI / CLI (review round 6).
-  const failClosedErrors = loaded.errors.filter(
-    (e) => e.kind === "schema" && e.failClosed === true,
-  );
+  // Fail-closed opt-in is the only fatal path: any load error — schema
+  // failure OR duplicate-name failure — on an entry the operator explicitly
+  // marked `failClosed: true` aborts startup. The duplicate case matters:
+  // if an operator edits a deny/audit hook in place but forgets to remove
+  // the older copy, the stricter replacement is declared load-critical and
+  // the runtime must refuse to run the stale definition (review round 7
+  // finding). Structural root errors, ordinary schema errors, and
+  // unmarked duplicate names still degrade to warnings + partial load so
+  // benign config mistakes cannot deny service to the TUI / CLI (round 6).
+  const failClosedErrors = loaded.errors.filter((e) => e.failClosed === true);
   if (failClosedErrors.length > 0) {
     const labels = failClosedErrors
       .map((e) => (e.name !== undefined ? `"${e.name}"` : `entry ${e.index}`))
