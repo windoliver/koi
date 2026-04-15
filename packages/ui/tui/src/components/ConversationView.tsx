@@ -130,6 +130,10 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
    * Handle slash command submitted directly from InputArea (Enter on "/cmd").
    * Parses the command name, finds the matching SlashCommand, and dispatches.
    * This replaces the old flow where SlashOverlay's useKeyboard caught Enter.
+   *
+   * Dispatches directly to props.onSlashSelect with parsed args instead of
+   * going through handleSlashSelect (which reads args from the overlay's
+   * slashQuery state — unreliable for direct Enter submissions).
    */
   const handleSlashSubmit = (text: string): void => {
     const parsed = parseSlashCommand(text);
@@ -137,7 +141,9 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     const cmdMatches = matchCommands(SLASH_COMMANDS, parsed.command);
     const match = cmdMatches[0];
     if (match !== undefined) {
-      handleSlashSelect(match.command);
+      props.onSlashDetected(null);
+      setClearTrigger((n: number) => n + 1);
+      props.onSlashSelect?.(match.command, parsed.args);
     }
   };
 
