@@ -173,6 +173,43 @@ export async function resolveManifestMiddleware(
   if (entries === undefined || entries.length === 0) {
     return [];
   }
+  // Pre-resolution collision check for file-backed entries that
+  // share a canonical target path. Multiple `@koi/middleware-audit`
+  // entries pointing at the same `.audit.ndjson` would otherwise
+  // create independent NDJSON writers and independent hash/signing
+  // chains, interleaving their records into one file and making
+  // any later verification meaningless. Runs BEFORE any factory
+  // so no resources leak on the rejection path.
+  //
+  // This check is limited to the one built-in that opens a file
+  // (`@koi/middleware-audit`). Other built-ins that don't allocate
+  // file resources don't need dedup.
+  const claimedAuditPaths = new Set<string>();
+  for (const entry of entries) {
+    if (entry.enabled === false || entry.name !== "@koi/middleware-audit") {
+      continue;
+    }
+    const rawFilePath = entry.options?.filePath;
+    if (typeof rawFilePath !== "string" || rawFilePath.length === 0) {
+      // Let the per-entry factory surface the clearer validation
+      // error; skip dedup so we don't mask it.
+      continue;
+    }
+    // Canonical key = absolute path resolved against the runtime's
+    // workspace. The factory later rejects absolute, traversed, and
+    // symlinked paths; here we only need enough canonicalization
+    // to equate two manifest entries that name the same file.
+    const canonical = resolvePath(ctx.workingDirectory, rawFilePath);
+    if (claimedAuditPaths.has(canonical)) {
+      throw new Error(
+        `@koi/middleware-audit: filePath "${rawFilePath}" is already claimed by an earlier manifest entry in this session. ` +
+          "Two audit entries cannot share the same canonical target — they would interleave records and corrupt any hash/signing chain. " +
+          "Merge them into one entry, or target a different file.",
+      );
+    }
+    claimedAuditPaths.add(canonical);
+  }
+
   const resolved: KoiMiddleware[] = [];
   for (const entry of entries) {
     if (entry.enabled === false) {
@@ -297,7 +334,10 @@ interface AuditManifestOptions {
   readonly filePath: string;
   readonly flushIntervalMs?: number;
   readonly redactRequestBodies?: boolean;
-  readonly signing?: boolean;
+  // `signing` is intentionally NOT part of the resolved options —
+  // the parser rejects `signing: true` from manifest content because
+  // the ephemeral keypair's public key is never persisted. See
+  // parseAuditOptions for the full rationale.
 }
 
 /**
@@ -468,11 +508,29 @@ function parseAuditOptions(
   if (signing !== undefined && typeof signing !== "boolean") {
     throw new Error("@koi/middleware-audit: options.signing must be a boolean");
   }
+  // Reject `signing: true` from manifest content. The underlying
+  // createAuditMiddleware({signing: true}) generates an ephemeral
+  // Ed25519 keypair and exposes the public key only on the returned
+  // middleware instance — this registry path does not persist or
+  // publish the key anywhere durable, so every entry the sink
+  // writes is signed with a keypair that vanishes at process exit.
+  // That turns tamper-evident mode into a false assurance during
+  // incident response. Fail closed until there's a host-controlled
+  // key-export path; hosts that need verifiable signing must wire
+  // the audit middleware programmatically via a custom registry
+  // factory where they own the key lifecycle.
+  if (signing === true) {
+    throw new Error(
+      "@koi/middleware-audit: options.signing is not supported from manifest. " +
+        "The underlying middleware generates an ephemeral keypair whose public key is not persisted, " +
+        "so any signatures produced from manifest config cannot be verified after process exit. " +
+        "Hosts that need tamper-evident audit must register the middleware programmatically via a custom MiddlewareRegistry so they own the key export path.",
+    );
+  }
   return {
     filePath,
     ...(typeof flushIntervalMs === "number" ? { flushIntervalMs } : {}),
     ...(typeof redactRequestBodies === "boolean" ? { redactRequestBodies } : {}),
-    ...(typeof signing === "boolean" ? { signing } : {}),
   };
 }
 
@@ -499,6 +557,6 @@ function createAuditManifestEntry(
     ...(options.redactRequestBodies !== undefined
       ? { redactRequestBodies: options.redactRequestBodies }
       : {}),
-    ...(options.signing !== undefined ? { signing: options.signing } : {}),
+    // signing deliberately omitted — see parseAuditOptions for why.
   });
 }

@@ -530,7 +530,7 @@ describe("built-in @koi/middleware-audit factory", () => {
     await registered[0]?.();
   });
 
-  test("accepts optional flushIntervalMs, redactRequestBodies, signing", async () => {
+  test("accepts optional flushIntervalMs and redactRequestBodies", async () => {
     const workspace = mkTempCwd();
     const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
     const resolved = await resolveManifestMiddleware(
@@ -541,7 +541,6 @@ describe("built-in @koi/middleware-audit factory", () => {
             filePath: "audit-2.audit.ndjson",
             flushIntervalMs: 500,
             redactRequestBodies: true,
-            signing: true,
           },
           enabled: true,
         },
@@ -551,6 +550,75 @@ describe("built-in @koi/middleware-audit factory", () => {
     );
     expect(resolved.length).toBe(1);
     expect(resolved[0]?.name).toBe("audit");
+  });
+
+  test("rejects signing: true from manifest (ephemeral keypair, no verification path)", async () => {
+    // Codex round 2: signing from manifest generates an ephemeral
+    // keypair whose public key is never persisted, turning
+    // tamper-evident mode into a false assurance.
+    const workspace = mkTempCwd();
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    await expect(
+      resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "signed.audit.ndjson", signing: true },
+            enabled: true,
+          },
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      ),
+    ).rejects.toThrow(/signing is not supported from manifest/);
+  });
+
+  test("rejects two audit entries targeting the same canonical filePath", async () => {
+    // Codex round 2: independent sinks on the same file would
+    // interleave records and corrupt any hash/signing chain.
+    const workspace = mkTempCwd();
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    await expect(
+      resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "shared.audit.ndjson" },
+            enabled: true,
+          },
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "shared.audit.ndjson" },
+            enabled: true,
+          },
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      ),
+    ).rejects.toThrow(/already claimed by an earlier manifest entry/);
+  });
+
+  test("collision check normalizes `./foo` vs `foo` to the same canonical path", async () => {
+    const workspace = mkTempCwd();
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    await expect(
+      resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "audit-collide.audit.ndjson" },
+            enabled: true,
+          },
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "./audit-collide.audit.ndjson" },
+            enabled: true,
+          },
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      ),
+    ).rejects.toThrow(/already claimed/);
   });
 
   test("rejects negative flushIntervalMs", async () => {
