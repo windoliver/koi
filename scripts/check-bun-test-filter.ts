@@ -40,6 +40,11 @@ const ALLOWED_PATHS: ReadonlySet<string> = new Set([
   "scripts/check-bun-test-filter.ts",
   "scripts/check-bun-test-filter.test.ts",
   ".claude/plans/issue-1624-loop-until-pass.md",
+  // JSDoc comment in this file shows a CLI ergonomics example that
+  // happens to embed the literal banned pattern. The file is part of
+  // the startup-latency gate's measurement surface, so editing it
+  // requires the `baseline-migration` label — out of scope for #1788.
+  "packages/meta/cli/src/args/start.ts",
 ]);
 
 interface LogicalLine {

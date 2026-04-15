@@ -33,14 +33,12 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
       "--until-pass",
       "bun",
       "--until-pass",
-      "run",
-      "--until-pass",
       "test",
       "--until-pass",
-      "--filter=@koi/runtime",
+      "--filter=foo",
       "--allow-side-effects",
     ]);
-    expect(flags.untilPass).toEqual(["bun", "run", "test", "--filter=@koi/runtime"]);
+    expect(flags.untilPass).toEqual(["bun", "test", "--filter=foo"]);
   });
 
   test("--max-iter parses to integer", () => {

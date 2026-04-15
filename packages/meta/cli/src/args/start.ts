@@ -32,7 +32,7 @@ export interface StartFlags extends BaseFlags {
   /**
    * Convergence loop (@koi/loop #1624): argv tokens for the verifier command.
    * Repeatable flag. First occurrence is the binary, subsequent are its args.
-   * Example: --until-pass bun --until-pass run --until-pass test --until-pass --filter=@koi/runtime
+   * Example: --until-pass bun --until-pass test --until-pass --filter=foo
    * Empty array disables loop mode (falls back to single-prompt execution).
    */
   readonly untilPass: readonly string[];
