@@ -106,10 +106,10 @@ export const spawnStack: PresetStack = {
     const perChildManifestMiddlewareFactory = ctx.host?.[
       LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory
     ] as
-      | ((childCtx: {
-          readonly childRunId: string;
-          readonly parentAgentId: string;
-        }) => Promise<readonly KoiMiddleware[]>)
+      | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+          readonly middleware: readonly KoiMiddleware[];
+          readonly unwind?: () => Promise<void> | void;
+        }>)
       | undefined;
     const onSpawnEvent = ctx.host?.[SPAWN_EVENT_CALLBACK_HOST_KEY] as
       | SpawnEventCallback

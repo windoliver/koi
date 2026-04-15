@@ -67,10 +67,10 @@ export interface SpawnToolProviderConfig {
    * before `systemPrompt` is injected in the child chain.
    */
   readonly perChildMiddlewareFactory?:
-    | ((childCtx: {
-        readonly childRunId: string;
-        readonly parentAgentId: string;
-      }) => Promise<readonly KoiMiddleware[]>)
+    | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+        readonly middleware: readonly KoiMiddleware[];
+        readonly unwind?: () => Promise<void> | void;
+      }>)
     | undefined;
   /**
    * ReportStore for on_demand delivery. Required when resolved agent manifests

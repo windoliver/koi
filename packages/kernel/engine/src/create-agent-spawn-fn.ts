@@ -87,10 +87,21 @@ export interface CreateAgentSpawnFnOptions {
    * there is nothing to add.
    */
   readonly perChildMiddlewareFactory?:
-    | ((childCtx: {
-        readonly childRunId: string;
-        readonly parentAgentId: string;
-      }) => Promise<readonly KoiMiddleware[]>)
+    | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+        readonly middleware: readonly KoiMiddleware[];
+        /**
+         * Optional unwind callback invoked by the engine when
+         * spawn assembly fails AFTER the factory has already
+         * allocated child-scoped resources (slot acquisition,
+         * governance, child runtime build, delivery setup, or
+         * any synchronous throw from `spawnChildAgent`). The
+         * callback must be idempotent — the happy-path cleanup
+         * is owned by the returned middleware's own lifecycle
+         * hooks (e.g. `onSessionEnd`), so unwind and normal
+         * completion may race; whichever fires first wins.
+         */
+        readonly unwind?: () => Promise<void> | void;
+      }>)
     | undefined;
   /**
    * ReportStore for on_demand delivery. Required when spawning agents with
@@ -344,6 +355,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     // resolution only on the happy path means failed spawn
     // requests cost zero per-child resources.
     const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
+    // Captured here so post-resolution failure paths below can
+    // unwind any child-scoped resources the factory allocated
+    // before `spawnChildAgent` was even attempted. Happy-path
+    // cleanup flows through the middleware's own lifecycle hooks.
+    let perChildUnwind: (() => Promise<void> | void) | undefined;
     if (perChildMiddlewareFactory !== undefined) {
       // Unique per-spawn id so sibling children from the same
       // parent never collapse onto one derived session label.
@@ -353,12 +369,13 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       // throwing factory would otherwise abort the parent turn and
       // bypass all the caller machinery that expects the `{ ok:
       // false, error }` shape for assembly-time spawn failures.
-      let perChildMiddleware: readonly KoiMiddleware[];
       try {
-        perChildMiddleware = await perChildMiddlewareFactory({
+        const factoryResult = await perChildMiddlewareFactory({
           childRunId,
           parentAgentId: base.parentAgent.pid.id,
         });
+        childMiddleware.push(...factoryResult.middleware);
+        perChildUnwind = factoryResult.unwind;
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e);
         return {
@@ -370,8 +387,23 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           },
         };
       }
-      childMiddleware.push(...perChildMiddleware);
     }
+    // Best-effort unwind helper: invoked from every post-resolution
+    // failure path below so partially allocated child-scoped
+    // resources do not leak when spawn assembly fails after the
+    // factory has run. Errors inside unwind are swallowed and
+    // logged; the original failure is what the caller sees.
+    const tryUnwindPerChild = async (): Promise<void> => {
+      if (perChildUnwind === undefined) return;
+      try {
+        await perChildUnwind();
+      } catch (unwindErr) {
+        console.error(
+          `[agent-spawn] per-child unwind failed during spawn-failure cleanup for "${request.agentName}"`,
+          unwindErr,
+        );
+      }
+    };
     if (systemPrompt !== undefined) {
       childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
     }
@@ -417,6 +449,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         try {
           spawnResult = await spawnChildAgent(spawnOptions);
         } catch (e: unknown) {
+          // spawnChildAgent failed after per-child middleware was
+          // already resolved. Drain the factory's unwind before
+          // surfacing the error so any allocated child-scoped
+          // resources (file handles, timers) are released.
+          await tryUnwindPerChild();
           if (e instanceof KoiRuntimeError) {
             return { ok: false, error: e.toKoiError() };
           }
@@ -558,13 +595,34 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
             AbortSignal.timeout(Math.max(0, effectiveDeadlineMs - Date.now())),
           ])
         : request.signal;
-    return runWithAgentContext(agentContext, () =>
-      runSpawnedAgent({
-        spawnOptions,
-        input: { kind: "text", text: request.description, signal: streamingSignal },
-        collector: createTextCollector(),
-      }),
-    );
+    // Streaming path: runSpawnedAgent owns the child runtime
+    // lifecycle end-to-end, so happy-path unwind flows through
+    // the middleware's own onSessionEnd. But if runSpawnedAgent
+    // itself throws before the session starts (assembly /
+    // governance failure), the factory's cleanup never fires.
+    // Wrap the call so we unwind on that failure too.
+    // drainHooks in the factory is idempotent, so a successful
+    // run's onSessionEnd will no-op when called again.
+    try {
+      const streamingResult = await runWithAgentContext(agentContext, () =>
+        runSpawnedAgent({
+          spawnOptions,
+          input: { kind: "text", text: request.description, signal: streamingSignal },
+          collector: createTextCollector(),
+        }),
+      );
+      // On a structured ok:false result from runSpawnedAgent the
+      // child session may not have reached onSessionEnd — unwind
+      // defensively. On ok:true the cleanup already ran and
+      // drainHooks's idempotency guard makes this a no-op.
+      if (!streamingResult.ok) {
+        await tryUnwindPerChild();
+      }
+      return streamingResult;
+    } catch (e: unknown) {
+      await tryUnwindPerChild();
+      throw e;
+    }
   };
 }
 

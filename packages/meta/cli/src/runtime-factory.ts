@@ -218,6 +218,21 @@ export interface KoiRuntimeConfig {
    */
   readonly allowManifestFileSinks?: boolean | undefined;
   /**
+   * Host capability flag consumed by the required-middleware
+   * enforcer. Terminal-capable runtimes (e.g. `koi tui`, `koi
+   * start`) ship interactive shell / bash / web_fetch and must
+   * boot with the full security baseline: `hooks`, `permissions`,
+   * `exfiltration-guard`. Headless / CI runtimes (analysis agents,
+   * programmatic embedders) only require `hooks` and may omit
+   * the terminal-only layers.
+   *
+   * Defaults to `true` — the conservative posture that matches
+   * the existing terminal hosts. Embedders assembling a headless
+   * runtime pass `false` explicitly, and the enforcer relaxes
+   * the baseline accordingly.
+   */
+  readonly terminalCapable?: boolean | undefined;
+  /**
    * Engine loop-detection override. Passed verbatim to `createKoi`.
    *
    * - `undefined` (default) → the engine's default detector runs,
@@ -1149,10 +1164,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // the cached sink do NOT re-register close, so the dispose
     // chain closes each sink exactly once.
     const buildPerChildManifestMiddlewareFactory = ():
-      | ((childCtx: {
-          readonly childRunId: string;
-          readonly parentAgentId: string;
-        }) => Promise<readonly KoiMiddleware[]>)
+      | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+          readonly middleware: readonly KoiMiddleware[];
+          readonly unwind?: () => Promise<void> | void;
+        }>)
       | undefined => {
       if ((config.manifestMiddleware ?? []).length === 0) {
         return undefined;
@@ -1180,27 +1195,57 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // path, so this channel stays empty for them and no synthetic
         // middleware is appended.
         const perChildShutdownHooks: Array<() => Promise<void> | void> = [];
-        const childMiddleware = await resolveManifestMiddleware(
-          config.manifestMiddleware,
-          manifestMiddlewareRegistry,
-          {
-            sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
-            hostId,
-            workingDirectory: zoneBWorkingDirectory,
-            stackExports: earlyContribution.exports,
-            registerShutdown: (fn) => {
-              perChildShutdownHooks.push(fn);
+        let drained = false;
+        const drainHooks = async (): Promise<void> => {
+          if (drained) return;
+          drained = true;
+          // Reverse order so later registrations unwind first,
+          // matching the parent's registerShutdown semantics.
+          for (const hook of [...perChildShutdownHooks].reverse()) {
+            try {
+              await hook();
+            } catch (err) {
+              console.error(
+                `[koi/${hostId}] per-child cleanup hook failed at child session end`,
+                err,
+              );
+            }
+          }
+        };
+        let childMiddleware: readonly KoiMiddleware[];
+        try {
+          childMiddleware = await resolveManifestMiddleware(
+            config.manifestMiddleware,
+            manifestMiddlewareRegistry,
+            {
+              sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
+              hostId,
+              workingDirectory: zoneBWorkingDirectory,
+              stackExports: earlyContribution.exports,
+              registerShutdown: (fn) => {
+                perChildShutdownHooks.push(fn);
+              },
+              sharedAuditSinks,
             },
-            sharedAuditSinks,
-          },
-        );
+          );
+        } catch (resolveErr) {
+          // Factory partially allocated resources before throwing.
+          // Drain whatever has been registered so nothing leaks,
+          // then re-throw so the engine converts it to a
+          // SpawnResult.error.
+          await drainHooks();
+          throw resolveErr;
+        }
         if (perChildShutdownHooks.length === 0) {
-          return childMiddleware;
+          return { middleware: childMiddleware };
         }
         // Append a synthetic cleanup middleware that drains the
-        // collected hooks in reverse registration order at child
-        // session end. Observe-phase + low priority so it runs
-        // after every real middleware's own onSessionEnd.
+        // collected hooks at child session end. Observe-phase +
+        // low priority so it runs after every real middleware's
+        // own onSessionEnd. drainHooks() is idempotent: whichever
+        // path fires first (normal completion via onSessionEnd
+        // OR post-resolution failure via `unwind`) wins, and the
+        // other becomes a no-op.
         const cleanupMiddleware: KoiMiddleware = {
           name: "per-child-cleanup",
           phase: "observe",
@@ -1208,21 +1253,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           concurrent: true,
           describeCapabilities: () => undefined,
           onSessionEnd: async () => {
-            // Reverse order so later registrations unwind first,
-            // matching the parent's registerShutdown semantics.
-            for (const hook of [...perChildShutdownHooks].reverse()) {
-              try {
-                await hook();
-              } catch (err) {
-                console.error(
-                  `[koi/${hostId}] per-child cleanup hook failed at child session end`,
-                  err,
-                );
-              }
-            }
+            await drainHooks();
           },
         };
-        return [...childMiddleware, cleanupMiddleware];
+        return {
+          middleware: [...childMiddleware, cleanupMiddleware],
+          unwind: drainHooks,
+        };
       };
     };
     const perChildManifestMiddlewareFactory = buildPerChildManifestMiddlewareFactory();
@@ -1306,7 +1343,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // koi start) always require hooks + permissions +
     // exfiltration-guard. See `required-middleware.ts`.
     enforceRequiredMiddleware(allMiddleware, {
-      terminalCapable: true,
+      terminalCapable: config.terminalCapable ?? true,
     });
     // Wrap every middleware with the trace wrapper when the observability
     // stack is active (provides `trajectoryStore`). When the stack is
