@@ -310,6 +310,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     // session:resume opens the session picker modal inline — host is not involved.
     if (cmd.id === "session:sessions") {
       store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+      // Also forward to onCommand so the CLI refreshes the session list.
+      props.onCommand(cmd.id, args);
       return;
     }
     if (cmd.id === "session:rename") {

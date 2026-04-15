@@ -2273,6 +2273,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
           })();
           break;
+        case "session:sessions":
+          // Refresh the session list every time the picker opens so
+          // sessions saved by a recent Ctrl+N appear immediately.
+          void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+            store.dispatch({ kind: "set_session_list", sessions });
+          });
+          break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
