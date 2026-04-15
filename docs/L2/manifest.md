@@ -291,6 +291,63 @@ manifest is provided, so programmatic callers get the same safety.
 
 ---
 
+## Known limitations (this release)
+
+Zone B ships with two tracked gaps that operators must understand
+before enabling manifest middleware in production:
+
+### 1. Streamed model calls are NOT audited
+
+The zone-B adapter forces `concurrent: true` to keep manifest
+middleware observational-only, but the engine's concurrent-observer
+scheduling applies only to `wrapModelCall` and `wrapToolCall`.
+Stream wrappers (`wrapModelStream`) always run sequentially in the
+onion and could mutate provider-bound requests or yielded chunks,
+so the adapter fails closed on any middleware that declares one.
+
+The built-in `@koi/middleware-audit` factory works around this by
+stripping `wrapModelStream` from its returned middleware, which
+means:
+
+- Non-streaming model calls ARE recorded in the NDJSON sink.
+- Streaming model calls are NOT recorded — streamed responses
+  pass through the chain without touching the manifest audit.
+- A loud startup warning fires on every resolution:
+  `[koi/manifest-audit] ... streamed model calls will NOT be recorded.`
+
+Hosts that need a complete audit trail (streaming + non-streaming)
+must register audit programmatically via a custom
+`MiddlewareRegistry`, bypassing zone B and using the full sequential
+`wrapModelStream` path. Main's `@koi/runtime` wiring already does
+this via the observability stack.
+
+### 2. Spawn is incompatible with manifest middleware
+
+Delegated child agents cannot inherit manifest-declared middleware
+instances safely: sharing a parent's audit queue or signing chain
+across runtimes would interleave records and corrupt the trail.
+Per-child re-resolution requires engine-level changes and is
+tracked as a follow-up.
+
+The runtime factory fails closed when manifest middleware is
+combined with the spawn preset stack. `koi tui` auto-filters spawn
+out of the default stack set (with a stderr warning) when manifest
+middleware is present AND the user did not pass an explicit
+`stacks:` list, to keep the default path usable. The net effect:
+
+- TUI with manifest middleware: spawn is auto-disabled, task/
+  background-process tools are unavailable, warning logged.
+- `koi start` with manifest middleware: already excludes spawn by
+  default.
+- Programmatic `createKoiRuntime` callers get a hard throw if they
+  set `manifestMiddleware` and leave spawn in `stacks`.
+
+Hosts that need both sub-agent spawning and manifest-enforced
+policy across the delegation boundary must wait for per-child
+re-resolution.
+
+---
+
 ## Migration
 
 Existing manifests continue to work unchanged. Zone B is empty by default.

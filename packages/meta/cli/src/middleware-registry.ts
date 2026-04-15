@@ -712,6 +712,20 @@ function createAuditManifestEntry(
   ctx.registerShutdown(async () => {
     await sink.close();
   });
+  // Loud startup warning about the streaming-audit coverage gap.
+  // The concurrent-observer contract the zone-B adapter enforces
+  // only applies to `wrapModelCall` and `wrapToolCall`; stream
+  // wrappers always run sequentially, so the built-in audit
+  // factory has to strip `wrapModelStream` to preserve the
+  // observational-only boundary. Operators who enable manifest
+  // audit must know their audit trail will not contain streaming
+  // model responses, only non-streaming ones.
+  console.warn(
+    "[koi/manifest-audit] @koi/middleware-audit enabled via manifest — streamed model calls will NOT be recorded. " +
+      "Only non-streaming wrapModelCall invocations are captured in the audit trail. " +
+      "For full streaming coverage, register the audit middleware programmatically through a custom MiddlewareRegistry " +
+      "that bypasses the zone-B adapter.",
+  );
   const underlying = createAuditMiddleware({
     sink,
     ...(options.redactRequestBodies !== undefined

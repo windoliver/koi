@@ -653,6 +653,48 @@ describe("built-in @koi/middleware-audit factory", () => {
     ).rejects.toThrow(/already claimed/);
   });
 
+  test("strips wrapModelStream and emits a coverage-gap warning", async () => {
+    // The zone-B adapter rejects any middleware that defines
+    // wrapModelStream (stream wrappers run sequentially regardless
+    // of the concurrent flag, so they can mutate provider-bound
+    // requests or yielded chunks). The audit factory works around
+    // this by stripping wrapModelStream before returning, which
+    // means manifest-configured audit does NOT cover streamed
+    // model calls. Operators must know.
+    const workspace = mkTempCwd();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string): void => {
+      warnings.push(msg);
+    };
+    let resolved: readonly KoiMiddleware[] = [];
+    try {
+      const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+      resolved = await resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "stream-warning.audit.ndjson" },
+            enabled: true,
+          },
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+    // The warning must have fired with a clear coverage-gap notice.
+    const matched = warnings.find((w) => w.includes("streamed model calls will NOT be recorded"));
+    expect(matched).toBeDefined();
+    // The resolved middleware must have wrapModelStream stripped —
+    // otherwise the zone-B adapter would have thrown.
+    expect(resolved.length).toBe(1);
+    const mw = resolved[0];
+    if (mw === undefined) throw new Error("expected resolved middleware");
+    expect(mw.wrapModelStream).toBeUndefined();
+  });
+
   test("rejects negative flushIntervalMs", async () => {
     const workspace = mkTempCwd();
     const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
