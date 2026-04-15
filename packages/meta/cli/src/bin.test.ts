@@ -324,6 +324,39 @@ describe("bin.ts", () => {
       expect(r.exitCode).toBe(2);
       expect(r.stderr).not.toContain("unknown flag");
     });
+
+    // Regression for #1729 review round 4: once the raw-argv fast-path
+    // stopped firing for subcommand invocations, strict parsers like
+    // `plugin` and `mcp` could swallow `--version` with a usage error.
+    // The dispatch short-circuit must honor --version before any parser
+    // runs, for every known command.
+    test("`koi plugin --version` prints version and exits 0", async () => {
+      const r = await runBin(["plugin", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).toBe("");
+    });
+
+    test("`koi mcp --version` prints version and exits 0", async () => {
+      const r = await runBin(["mcp", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).toBe("");
+    });
+
+    test("`koi start --version` prints version and exits 0", async () => {
+      const r = await runBin(["start", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
+
+    // --version takes precedence over --help when both appear, matching
+    // the order of the top-level fast-path checks in bin.ts.
+    test("`koi start --version --help` prints version (version wins)", async () => {
+      const r = await runBin(["start", "--version", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {
