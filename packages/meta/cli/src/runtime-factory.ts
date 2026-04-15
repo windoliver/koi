@@ -67,6 +67,7 @@ import {
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
 import type { ManifestMiddlewareEntry } from "./manifest.js";
 import {
+  canonicalizeAuditSinkPath,
   createBuiltinManifestRegistry,
   type ManifestMiddlewareContext,
   type MiddlewareRegistry,
@@ -1354,6 +1355,36 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | undefined;
     const auditPresetExtras: KoiMiddleware[] = [];
     if (config.auditNdjsonPath !== undefined) {
+      // Collision guard: refuse to start if the legacy host-level
+      // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
+      // points at the same canonical file as any enabled
+      // `@koi/middleware-audit` manifest entry. Two independent
+      // writers against the same NDJSON file would interleave
+      // records, corrupt the hash/signing chain, and break the
+      // integrity story that the manifest audit path is trying
+      // to harden. Hosts that want both paths active must target
+      // different files.
+      const legacyCanonical = canonicalizeAuditSinkPath(
+        config.auditNdjsonPath,
+        zoneBWorkingDirectory,
+      );
+      if (legacyCanonical !== undefined && config.manifestMiddleware !== undefined) {
+        for (const entry of config.manifestMiddleware) {
+          if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+          const entryPath = entry.options?.filePath;
+          if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+          const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+          if (entryCanonical === legacyCanonical) {
+            throw new Error(
+              `audit sink collision: host-level auditNdjsonPath "${config.auditNdjsonPath}" ` +
+                `resolves to the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                "Two independent writers cannot share the same NDJSON file — they would interleave " +
+                "records and corrupt the hash/signing chain. Point one path at a different file, or " +
+                "disable one of the audit surfaces.",
+            );
+          }
+        }
+      }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
       const auditMw = createAuditMiddleware({ sink: auditSink });
       auditPresetExtras.push(auditMw);

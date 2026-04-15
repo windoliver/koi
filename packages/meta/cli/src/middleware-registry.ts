@@ -720,7 +720,10 @@ function resolveAuditFilePath(filePath: string, workspaceRoot: string): string {
  * symlinked file) — that is `resolveAuditFilePath`'s job. This
  * helper only produces a stable key for equality checks.
  */
-function canonicalizeAuditSinkPath(filePath: string, workspaceRoot: string): string | undefined {
+export function canonicalizeAuditSinkPath(
+  filePath: string,
+  workspaceRoot: string,
+): string | undefined {
   const lexical = resolvePath(workspaceRoot, filePath);
   try {
     const realParent = realpathSync(dirname(lexical));
@@ -822,41 +825,61 @@ function createAuditManifestEntry(
     ctx.sharedAuditSinks.set(safeFilePath, sink);
   }
 
-  // Poison-on-failure counters: audit writes that fail are a
-  // material integrity gap. The audit queue invokes `onError`
-  // whenever `sink.log()` rejects; we count the failures per
-  // sink (shared across all middleware instances that use the
-  // same cached sink) and raise them on the shutdown hook via
-  // the dispose path. For a security/audit feature, silent
-  // record loss is worse than a loud shutdown failure.
+  // Per-resolver (per-runtime / per-session) write-failure
+  // state. The audit queue invokes `onError` whenever
+  // `sink.log()` rejects; each resolver tracks its OWN failures
+  // in a local closure so the release hook below surfaces write
+  // loss promptly for THIS resolver, independent of how many
+  // other runtimes still hold the shared sink.
   //
-  // The counters are attached to the cached sink via a weakly
-  // held shared state so parent + children's `onError`
-  // increment the same counter. `let` and the shared object are
-  // justified for explicit mutable accounting.
-  const sharedState = getOrInitAuditSinkState(sink);
+  // A prior design aggregated failures on the shared sink and
+  // only threw on the last release. That let deferred/on_demand
+  // children release their ref and return success while their
+  // own audit writes had already failed (the error was deferred
+  // to whichever runtime disposed last, or lost outright when
+  // the parent never reached dispose). Per-resolver tracking
+  // keeps the shared-writer-one-file guarantee without
+  // collapsing per-runtime integrity signals.
+  let localWriteFailures = 0;
+  let localFirstError: unknown;
 
-  // Refcounted close: EVERY resolver (parent + each per-child
-  // re-resolve) increments the refCount and registers its own
-  // release hook. The release that drops the count to zero
-  // actually closes the sink and surfaces accumulated write
-  // failures. This keeps the sink alive across parent.dispose()
-  // when deferred/on_demand children are still running in the
-  // background — whichever runtime disposes last is the one
-  // that flushes and closes.
-  sharedState.refCount += 1;
+  // Refcounted close of the shared sink: EVERY resolver (parent +
+  // each per-child re-resolve) increments refCount and registers
+  // its own release hook. Only the release that drops refCount to
+  // zero actually closes the sink. This keeps the writer alive
+  // across parent.dispose() when deferred/on_demand children are
+  // still streaming audit records through the same file.
+  const closeState = getOrInitAuditSinkCloseState(sink);
+  closeState.refCount += 1;
   ctx.registerShutdown(async () => {
-    if (sharedState.closed) {
+    // Per-runtime integrity check runs FIRST, regardless of
+    // whether this release is the one that closes the sink.
+    // A child whose own writes failed surfaces the error on its
+    // own shutdown path, not deferred to parent dispose.
+    const localFailure =
+      localWriteFailures > 0
+        ? new Error(
+            `manifest @koi/middleware-audit: ${localWriteFailures} audit write(s) failed during this session. ` +
+              "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
+              `First error: ${localFirstError instanceof Error ? localFirstError.message : String(localFirstError)}`,
+            { cause: localFirstError },
+          )
+        : undefined;
+
+    if (closeState.closed) {
       // Someone already drove refCount to zero and closed the
-      // sink in a prior release; nothing to do. Do NOT decrement
-      // again — a negative refCount would mask a double-release
-      // bug elsewhere in the runtime.
+      // sink in a prior release. Do NOT decrement again — a
+      // negative refCount would mask a double-release bug
+      // elsewhere in the runtime. Still surface this resolver's
+      // local poison if any.
+      if (localFailure !== undefined) throw localFailure;
       return;
     }
-    if (sharedState.refCount > 1) {
-      // Not the last holder: drop our ref and let a later
-      // release handle the actual close.
-      sharedState.refCount -= 1;
+    if (closeState.refCount > 1) {
+      // Not the last holder: drop our ref and let a later release
+      // handle the actual close. Still throw local poison first.
+      closeState.refCount -= 1;
+      if (localFailure !== undefined) throw localFailure;
       return;
     }
     // This release owns the close. Attempt close FIRST; only
@@ -865,16 +888,9 @@ function createAuditManifestEntry(
     // subsequent dispose attempt — the hook is still registered
     // and future runs will retry with refCount still at 1.
     await sink.close();
-    sharedState.closed = true;
-    sharedState.refCount = 0;
-    if (sharedState.writeFailures > 0) {
-      throw new Error(
-        `manifest @koi/middleware-audit: ${sharedState.writeFailures} audit write(s) failed during the session. ` +
-          "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
-          `First error: ${sharedState.firstError instanceof Error ? sharedState.firstError.message : String(sharedState.firstError)}`,
-        { cause: sharedState.firstError },
-      );
-    }
+    closeState.closed = true;
+    closeState.refCount = 0;
+    if (localFailure !== undefined) throw localFailure;
   });
 
   // Built-in audit is registered as `trusted` in the built-in
@@ -895,9 +911,9 @@ function createAuditManifestEntry(
     sink,
     redactRequestBodies: true,
     onError: (err: unknown) => {
-      sharedState.writeFailures += 1;
-      if (sharedState.firstError === undefined) {
-        sharedState.firstError = err;
+      localWriteFailures += 1;
+      if (localFirstError === undefined) {
+        localFirstError = err;
       }
     },
     // signing deliberately omitted — see parseAuditOptions for why.
@@ -905,15 +921,19 @@ function createAuditManifestEntry(
 }
 
 /**
- * Per-sink shared state used by `createAuditManifestEntry` to
- * aggregate write-failure counts across parent and all child
- * audit middleware instances that target the same cached sink.
- * Stored in a `WeakMap<AuditSink, AuditSinkSharedState>` so the
+ * Per-sink shared CLOSE state used by `createAuditManifestEntry`.
+ *
+ * Only tracks sink-lifetime accounting (refcount + closed flag)
+ * across parent and every per-child resolve that binds the same
+ * cached sink. Write-failure tracking is deliberately NOT stored
+ * here — each resolver keeps its own local counters so it can
+ * surface integrity failures on its own shutdown path rather
+ * than deferring them to whichever runtime disposes last.
+ *
+ * Stored in a `WeakMap<AuditSink, AuditSinkCloseState>` so the
  * state is released when the sink is garbage collected.
  */
-interface AuditSinkSharedState {
-  writeFailures: number;
-  firstError: unknown;
+interface AuditSinkCloseState {
   /**
    * Reference count across parent + every per-child resolve
    * that binds this cached sink. Each resolver (parent or child)
@@ -928,13 +948,13 @@ interface AuditSinkSharedState {
   closed: boolean;
 }
 
-const auditSinkSharedStates = new WeakMap<ClosableAuditSink, AuditSinkSharedState>();
+const auditSinkCloseStates = new WeakMap<ClosableAuditSink, AuditSinkCloseState>();
 
-function getOrInitAuditSinkState(sink: ClosableAuditSink): AuditSinkSharedState {
-  let state = auditSinkSharedStates.get(sink);
+function getOrInitAuditSinkCloseState(sink: ClosableAuditSink): AuditSinkCloseState {
+  let state = auditSinkCloseStates.get(sink);
   if (state === undefined) {
-    state = { writeFailures: 0, firstError: undefined, refCount: 0, closed: false };
-    auditSinkSharedStates.set(sink, state);
+    state = { refCount: 0, closed: false };
+    auditSinkCloseStates.set(sink, state);
   }
   return state;
 }
