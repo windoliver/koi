@@ -6,7 +6,7 @@
  * flush control.
  */
 
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import type { ApprovalDecision } from "@koi/core/middleware";
 import type { MainToWorkerMessage, WorkerToMainMessage } from "@koi/core/worker-protocol";
 import type { TimerHandle } from "../batcher/event-batcher.js";
@@ -406,6 +406,141 @@ describe("EngineChannel — dispose", () => {
     // Calling send() after dispose() must not add any further messages
     channel.send({ kind: "shutdown" });
     expect(worker.sent).toHaveLength(countAfterDispose);
+  });
+
+  test("dispose() surfaces stranded approvals via add_error when denial delivery fails (#1753 review r8)", async () => {
+    // Regression for round-8 finding: a failed approval_response
+    // postMessage used to be silently swallowed, leaving a worker
+    // blocked on an approval the main side had "denied" — but the
+    // denial never reached the wire. The channel now records every
+    // stranded requestId and dispatches an INTERNAL error so the
+    // operator (and the host that owns the Worker) know to
+    // terminate/escalate.
+    //
+    // The bridge handler is pinned to a never-resolving promise so
+    // the requestId stays in `pendingApprovalIds` until dispose()
+    // drives the denial path itself (without this the bridge's
+    // microtask-resolved .then() would delete the requestId and
+    // consume the denial send before dispose even runs).
+    const pendingBridge: PermissionBridge = {
+      handler: mock(() => new Promise<ApprovalDecision>(() => {})),
+      respond: mock(() => {}),
+      dispose: mock(() => {}),
+      cancelPending: mock(() => {}),
+      pendingCount: mock(() => 0),
+    };
+    const store = createStore(createInitialState());
+    const worker = makeWorker();
+    const channel = createEngineChannel(worker, {
+      store,
+      permissionBridge: pendingBridge,
+    });
+
+    worker.send({
+      kind: "approval_request",
+      requestId: "req-hang",
+      request: { toolId: "bash", input: { cmd: "ls" }, reason: "test" },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Poison every postMessage from this point so the denial cannot
+    // land on the worker.
+    worker.postMessage = (): void => {
+      throw new Error("worker unreachable");
+    };
+
+    const dispatchSpy = spyOn(store, "dispatch");
+    channel.dispose();
+
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBeGreaterThanOrEqual(1);
+    const lastError = errorCalls[errorCalls.length - 1]?.[0] as {
+      code: string;
+      message: string;
+    };
+    expect(lastError.code).toBe("INTERNAL");
+    expect(lastError.message).toContain("req-hang");
+  });
+
+  test("dispose() delivers denial responses resiliently when one postMessage throws (#1753 review r6)", async () => {
+    // Regression for round-6 finding: a single worker.postMessage
+    // failure during dispose must not strand remaining pending
+    // approvals. Before the fix, one throw during denial delivery
+    // propagated out of the try block and the rest of the
+    // pendingApprovalIds set never received their `approval_response`,
+    // leaving the worker blocked on an approval the main side had
+    // already forgotten about.
+    const decision: ApprovalDecision = { kind: "allow" };
+    const bridge = makePermissionBridge(decision);
+    const store = createStore(createInitialState());
+    const worker = makeWorker();
+    const channel = createEngineChannel(worker, { store, permissionBridge: bridge });
+
+    // Queue three pending approvals in the channel's in-flight set
+    // by sending approval_request events — the channel forwards
+    // them to the bridge and tracks the requestIds.
+    for (const requestId of ["req-a", "req-b", "req-c"]) {
+      worker.send({
+        kind: "approval_request",
+        requestId,
+        request: { toolId: "bash", input: { cmd: "ls" }, reason: "test" },
+      });
+    }
+    // Let the async bridge handler schedule its .then continuations.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Poison the second call to worker.postMessage so denial delivery
+    // for the middle request throws, but the bracketing requests must
+    // still reach the worker.
+    const origPost = worker.postMessage.bind(worker);
+    let postCallIndex = 0;
+    worker.postMessage = (msg: MainToWorkerMessage): void => {
+      postCallIndex += 1;
+      // Skip first postMessage (stream_interrupt); throw on the
+      // very next denial; let the rest through.
+      if (postCallIndex === 3) throw new Error("postMessage poisoned");
+      origPost(msg);
+    };
+
+    // Dispose must not throw out to the caller and must still
+    // attempt all remaining denials.
+    expect(() => channel.dispose()).not.toThrow();
+
+    // Count denial responses that made it to the worker.sent queue
+    // (the poisoned call is skipped; the other two must land).
+    const denials = worker.sent.filter(
+      (m) => m.kind === "approval_response" && (m as { requestId: string }).requestId !== "",
+    );
+    expect(denials.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("dispose() flips connection status to disconnected (#1753 review)", async () => {
+    // Regression for the review finding: after engine_done left the
+    // status "connected", a later dispose() used to leave the store
+    // stuck at "connected" even though the channel was torn down and
+    // no more worker traffic could arrive. /doctor would then report a
+    // healthy engine for a dead bridge.
+    const store = createStore(createInitialState());
+    const worker = makeWorker();
+    const channel = createEngineChannel(worker, {
+      store,
+      permissionBridge: makePermissionBridge({ kind: "allow" }),
+    });
+
+    worker.send({ kind: "ready" });
+    worker.send({ kind: "engine_done" });
+    await Promise.resolve();
+    expect(store.getState().connectionStatus).toBe("connected");
+
+    channel.dispose();
+    expect(store.getState().connectionStatus).toBe("disconnected");
   });
 });
 

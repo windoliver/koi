@@ -457,12 +457,45 @@ function finalizeAbandonedStream(
   store.dispatch({ kind: "engine_event", event: syntheticDone });
 }
 
+/**
+ * Outcome of a drainEngineStream run.
+ *
+ * `settled` — the stream finalized into a checkpoint-producing
+ * terminal state: happy path (real `done` event observed) or user
+ * abort with a clean synthetic done. A snapshot is guaranteed to
+ * have been written for this turn, so ALL post-turn bookkeeping is
+ * safe, including rewind-budget increment. The happy path still
+ * increments rewind; the abort path is filtered out by the existing
+ * `!signal.aborted` guard.
+ *
+ * `engine_error` — a real ENGINE_ERROR was cleanly dispatched. Trace
+ * data was captured up to the failure, so observability refresh
+ * (trajectory, audit view) must still run — operators debugging a
+ * provider failure need to see it. But no rewindable checkpoint was
+ * produced, so `postClearTurnCount` MUST NOT advance on this outcome
+ * or `/rewind` can step across a clear/resume boundary. (#1753
+ * review round 9.)
+ *
+ * `abandoned` — `resetConversation()` (or another caller) disposed
+ * the batcher mid-drain, so the turn was intentionally dropped and
+ * the session has already advanced to a new trajectory generation.
+ * Any post-turn bookkeeping at this point would write stale cost /
+ * trajectory data into the freshly reset UI. Callers MUST skip all
+ * bookkeeping on this outcome. (#1753 review round 7.)
+ *
+ * `failed` — the drain hit a fail-closed path: buffered flush threw
+ * and lost events, the finalization handler crashed, or finally had
+ * to fail-close itself. The reducer may be in an inconsistent state
+ * and callers MUST skip post-turn bookkeeping on this outcome.
+ */
+export type DrainOutcome = "settled" | "engine_error" | "abandoned" | "failed";
+
 export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
   batcher: EventBatcher<EngineEvent>,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<DrainOutcome> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
   // Track partial usage yielded as `custom` events so an aborted stream
   // (which throws instead of emitting a real terminal `done`) can still
@@ -475,6 +508,19 @@ export async function drainEngineStream(
   // double-count tokens when multiple usage updates arrive.
   let partialInputTokens = 0;
   let partialOutputTokens = 0;
+  // #1753 review: track whether the function has reached one of its
+  // intended terminal states (success, clean UI reset, user abort, or
+  // real ENGINE_ERROR with its own dispatches). If the function exits
+  // with this still false, a flush or dispatch threw somewhere we did
+  // not anticipate — the finally block below must fail closed so
+  // /doctor cannot report a healthy engine for a drain that crashed
+  // during finalization.
+  let terminalStateApplied = false;
+  // #1753 review round 4: distinguish "drain produced a coherent
+  // terminal state" from "finalization failed". Callers gate post-turn
+  // bookkeeping (rewind count, cost delta, trajectory refresh) on
+  // "settled" so a broken drain cannot advance the session.
+  let outcome: DrainOutcome = "failed";
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
@@ -490,7 +536,16 @@ export async function drainEngineStream(
       // cleanly; the caller's finally block handles connection-status reset.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
 
       // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
@@ -565,7 +620,16 @@ export async function drainEngineStream(
       // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
       if (
         event.kind === "tool_call_start" ||
@@ -590,9 +654,18 @@ export async function drainEngineStream(
     // UI can stay stuck in "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
     batcher.flushSync();
+    // Happy path: the stream completed cleanly and the final flush
+    // landed. The channel stays "connected" and the finally below is a
+    // no-op.
+    terminalStateApplied = true;
+    outcome = "settled";
   } catch (e: unknown) {
     // #1742: the batcher may have been disposed by resetConversation() while
     // the stream was still producing. Finalize the active turn before
@@ -600,9 +673,47 @@ export async function drainEngineStream(
     // with the reducer in idle/error state instead of stuck "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
-    batcher.flushSync();
+    // Flush buffered pre-error events so the UI reflects what the
+    // stream produced before it threw. If this flush itself throws,
+    // the batcher has already dropped its buffer without applying
+    // it — buffered events are lost permanently. That is exactly the
+    // partial-failure state /doctor must surface, so fail closed here
+    // instead of continuing into the clean-abort branch (#1753 review
+    // round 3).
+    try {
+      batcher.flushSync();
+    } catch (flushErr: unknown) {
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      store.dispatch({
+        kind: "add_error",
+        code: "ENGINE_ERROR",
+        message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+      });
+      terminalStateApplied = true;
+      outcome = "failed";
+      return outcome;
+    }
+    // #1753 review round 6: the batcher may have been disposed in the
+    // window between the per-iteration check and this catch-time flush
+    // (e.g. resetConversation() raced us). After dispose, `enqueue` and
+    // `flushSync` are no-ops — if we still took the abort branch, the
+    // synthetic `done` would be silently dropped and the caller would
+    // see "settled" for a turn that never finalized. Fall back to the
+    // same UI-reset path as the mid-stream dispose detector above.
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
+    }
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
     // passed a signal, (2) that signal is actually aborted at the time of
@@ -635,8 +746,28 @@ export async function drainEngineStream(
         },
       };
       batcher.enqueue(syntheticDone);
-      batcher.flushSync();
-      return;
+      try {
+        batcher.flushSync();
+        // Synthetic `done` landed: user abort is a clean interrupt,
+        // connection stays connected, finally is a no-op.
+        terminalStateApplied = true;
+        outcome = "settled";
+      } catch (flushErr: unknown) {
+        // #1753 review round 2: if the reducer/store crashes while
+        // finalizing the aborted turn, do NOT let the outer finally
+        // leave the drain looking "settled". Fail closed right here so
+        // /doctor cannot report a healthy engine for an abort that
+        // never actually finalized.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+        });
+        terminalStateApplied = true;
+        outcome = "failed";
+      }
+      return outcome;
     }
     // Real engine failure — the model call errored out. Mark the channel
     // disconnected so /doctor reflects the true last-known state, and
@@ -649,7 +780,36 @@ export async function drainEngineStream(
       code: "ENGINE_ERROR",
       message: e instanceof Error ? e.message : String(e),
     });
+    terminalStateApplied = true;
+    // #1753 review rounds 5 + 9: a cleanly dispatched ENGINE_ERROR is
+    // a *coherent* terminal state — the error toast is in the store
+    // and trace data was captured up to the failure, so trajectory /
+    // audit refresh must still run. But no rewindable checkpoint was
+    // produced for this turn, so callers gate `postClearTurnCount++`
+    // on `outcome === "settled"` specifically and skip it here.
+    outcome = "engine_error";
+  } finally {
+    // #1753 review: fail-closed cleanup. Reaching this with the flag
+    // still false means a flush or dispatch threw from a path we did
+    // not intercept above — force the channel to "disconnected" and
+    // raise an error toast so /doctor cannot report a healthy engine
+    // for a drain that crashed during finalization.
+    if (!terminalStateApplied) {
+      try {
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: "drainEngineStream finalization failed",
+        });
+      } catch {
+        // Store itself is unrecoverable — nothing left we can do
+        // from this frame. The next turn will reinitialize state.
+      }
+      outcome = "failed";
+    }
   }
+  return outcome;
 }
 
 /**
@@ -1055,7 +1215,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // middleware's finally-block append (which runs on turns that
   // already observed a `done` chunk before the caller aborted) can
   // land AFTER the truncate and silently resurrect pre-clear history.
-  let activeRunPromise: Promise<void> | null = null;
+  let activeRunPromise: Promise<DrainOutcome> | null = null;
 
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
   // Async: fetches live pricing from models.dev (5s timeout, disk cached).
@@ -2794,13 +2954,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const costBefore = cm.costUsd;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
-        await drainPromise;
+        const drainOutcome = await drainPromise;
 
-        // Count the turn for rewind boundary enforcement, but ONLY when
-        // the turn completed uninterrupted. Checkpoint capture only
-        // runs on real engine-complete turns; counting an aborted turn
-        // would let `/rewind 1` walk past the clear boundary.
-        if (rewindBoundaryActive && !controller.signal.aborted) {
+        // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
+        // layered. `abandoned` and `failed` drains cannot advance any
+        // session state, so they return early. `engine_error` is a
+        // coherent terminal state — the error is already in the store
+        // and trace data was captured up to the failure — so cost
+        // delta + trajectory refresh must still run so operators can
+        // diagnose the failure, but the rewind budget must NOT be
+        // advanced (no rewindable checkpoint was produced).
+        if (drainOutcome === "abandoned" || drainOutcome === "failed") {
+          return;
+        }
+
+        // Count the turn for rewind boundary enforcement, but ONLY
+        // when the turn completed uninterrupted AND produced a
+        // real checkpoint. Aborted turns are filtered by the signal
+        // guard; engine-errored turns are filtered by `drainOutcome
+        // === "settled"` because ENGINE_ERRORs return `"engine_error"`
+        // (#1753 review round 9).
+        if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
 
