@@ -270,6 +270,66 @@ describe("createTuiSigintHandler — idle foreground + live background (#1772)",
     expect(state.shutdownCount).toBe(0);
   });
 
+  test("stale bg-wait disarm timer cannot clobber a later turn's armed state (#1772 review r3)", () => {
+    // Adversarial-review round 3 caught that the round-2 self-disarm
+    // timer was fire-and-forget — never cancelled when the host called
+    // `complete()` at turn start or when a later SIGINT took a
+    // different branch. The stale timer would then fire mid-way
+    // through a later turn's double-tap window, silently collapsing
+    // the armed state back to idle and breaking the force-exit path.
+    //
+    // Repro:
+    //   t=0     idle+bg → Ctrl+C → hint + armed + disarm timer for t=2
+    //   t=0.5s  host calls complete() (new turn starting)
+    //   t=0.8s  new turn active; user Ctrl+C to cancel fresh stream
+    //           → handler enters fresh armed state; the round-2 disarm
+    //             timer at t=2 is STILL pending
+    //   t=1.0s  user second Ctrl+C → MUST force (inside double-tap
+    //           window of step-0.8 arm)
+    //   t=2.0s  the stale disarm timer would fire and call complete()
+    //           → without round-3's invalidation this would wipe the
+    //             armed state and turn the step-1.0 tap into a fresh
+    //             first tap that just aborts again
+    //
+    // This test drives the sequence in a tighter window (the principle
+    // is the same regardless of exact timestamps) and asserts the
+    // second Ctrl+C forces — which can only happen if the stale timer
+    // was cancelled by round-3's invalidation hook.
+    const { state, handler, timers } = makeHarness({ hasBackground: true });
+
+    // 1. Idle + bg → first tap → hint + armed + disarm timer scheduled
+    handler.handleSignal();
+    expect(state.writes.join("")).toContain("Background tasks still running");
+    const pendingAfterBgWait = timers.pending();
+    expect(pendingAfterBgWait).toBeGreaterThanOrEqual(1);
+
+    // 2. Host calls complete() at turn start — should cancel the stale
+    //    disarm timer AND reset state. After this, no bg-wait timer
+    //    should still be pending from that arm.
+    timers.advance(500);
+    handler.complete();
+    expect(timers.pending()).toBeLessThan(pendingAfterBgWait);
+
+    // 3. New foreground turn starts, user Ctrl+C to cancel.
+    state.hasBackground = false;
+    state.hasForeground = true;
+    handler.handleSignal();
+    expect(state.abortCount).toBe(1);
+    expect(state.forceCount).toBe(0);
+
+    // 4. Advance past the original bg-wait disarm deadline. If the old
+    //    timer is still live, it would fire here and call complete(),
+    //    collapsing the armed state from step 3 back to idle.
+    timers.advance(2000);
+
+    // 5. Second Ctrl+C — MUST force. This can only happen if the
+    //    step-3 armed state is still intact, i.e. the stale timer
+    //    from step 1 was properly cancelled by the host complete()
+    //    call in step 2.
+    handler.handleSignal();
+    expect(state.forceCount).toBe(1);
+  });
+
   test("after the double-tap window with no new turn, next Ctrl+C re-enters the bg-wait branch cleanly", () => {
     // Belt-and-braces: if the user ignores the first bg-hint and the bg
     // task keeps running, the NEXT Ctrl+C should re-show the hint (fresh

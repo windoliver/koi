@@ -105,11 +105,17 @@ export interface TuiSigintDeps {
  * the state-poisoning gap flagged in #1772 review round 1.
  */
 export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
-  // let: justified — forward reference so the bg-wait branch below can
-  // schedule a self-disarm timer that calls handler.complete(). The
-  // handler itself is assigned immediately after createSigintHandler
-  // returns, before any signal can fire.
-  let handlerRef: SigintHandler | undefined;
+  // let: justified — invalidation hook for the most recent bg-wait arm.
+  // Each bg-wait branch schedules a self-disarm timer; if that arm is
+  // cleared by ANY other path before the timer fires (external
+  // `complete()` at turn start, a subsequent SIGINT that takes a
+  // different branch, a force escalation, or dispose), we call through
+  // here to cancel the pending timer and mark the captured closure
+  // invalid. Without this, a stale timer from an earlier bg-wait arm
+  // can fire mid-way through a later turn's double-tap window and
+  // silently collapse the armed state back to idle — breaking the
+  // force-exit path. (#1772 review r3)
+  let invalidateCurrentBgWait: (() => void) | undefined;
 
   const handlerDeps: SigintHandlerDeps = {
     onGraceful: (): void => {
@@ -117,30 +123,58 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
         hasActiveForegroundStream: deps.hasActiveForegroundStream(),
         hasActiveBackgroundTasks: deps.hasActiveBackgroundTasks(),
       });
+      // Any graceful path that ISN'T a fresh bg-wait arm invalidates
+      // the previous bg-wait's pending self-disarm timer, so a stale
+      // timer cannot reach into this new arm and collapse it to idle
+      // mid-double-tap-window.
+      if (action.kind !== "wait-for-bg-exit-tap") {
+        invalidateCurrentBgWait?.();
+        invalidateCurrentBgWait = undefined;
+      }
       switch (action.kind) {
         case "abort-active-stream":
           deps.abortActiveStream();
           return;
-        case "wait-for-bg-exit-tap":
+        case "wait-for-bg-exit-tap": {
+          // Replace any prior bg-wait arm's pending disarm. The handler
+          // is already armed when onGraceful runs, so the incoming tap
+          // supersedes whatever arm was in flight (which had to be a
+          // bg-wait arm too — any other branch would have taken the
+          // invalidation path above).
+          invalidateCurrentBgWait?.();
           deps.write(action.hint);
-          // Self-disarm after the double-tap window. Without this, the
-          // state machine stays `armed` indefinitely and a later fresh
-          // Ctrl+C — e.g. during a new foreground turn started minutes
-          // later — is treated as the second tap of this stale sequence
-          // and forces the TUI to exit, destroying the cancellable turn.
-          // `complete()` is a no-op if the state has already moved on
-          // (e.g. a genuine second tap escalated to `forced` first), so
-          // the timer is safe to fire unconditionally.
-          deps.setTimer(() => {
-            handlerRef?.complete();
+          // Generation-scoped self-disarm. Only THIS arm's timer is
+          // allowed to complete THIS arm; a stale timer from an earlier
+          // arm whose `valid` flag was flipped to false is a no-op.
+          // let: justified — captured by both the timer callback and
+          // the invalidation hook below, written once by invalidate.
+          let valid = true;
+          const disarmTimer = deps.setTimer(() => {
+            if (valid && handlerRef !== undefined) {
+              handlerRef.complete();
+            }
           }, deps.doubleTapWindowMs);
+          invalidateCurrentBgWait = (): void => {
+            valid = false;
+            disarmTimer.cancel();
+          };
           return;
+        }
         case "shutdown":
           deps.onShutdown();
           return;
       }
     },
-    onForce: deps.onForce,
+    onForce: (): void => {
+      // Force path: invalidate any pending bg-wait arm before handing
+      // off to the host's teardown. The handler's internal state is
+      // already transitioning to `forced`, so a stale disarm timer
+      // reaching in later would be a no-op on state — but it's still
+      // hygiene to cancel the timer promptly.
+      invalidateCurrentBgWait?.();
+      invalidateCurrentBgWait = undefined;
+      deps.onForce();
+    },
     write: deps.write,
     doubleTapWindowMs: deps.doubleTapWindowMs,
     setTimer: deps.setTimer,
@@ -148,7 +182,30 @@ export function createTuiSigintHandler(deps: TuiSigintDeps): SigintHandler {
     ...(deps.now !== undefined ? { now: deps.now } : {}),
   };
 
-  const handler = createSigintHandler(handlerDeps);
-  handlerRef = handler;
-  return handler;
+  // let: justified — forward reference so the bg-wait timer callback
+  // can call `handlerRef.complete()`. Assigned immediately below,
+  // before any signal can fire.
+  let handlerRef: SigintHandler | undefined;
+  const rawHandler = createSigintHandler(handlerDeps);
+  handlerRef = rawHandler;
+
+  // Wrap `complete()` and `dispose()` so external callers (the host's
+  // onSubmit turn-start hook, the `agent:clear` reset path, etc.)
+  // also invalidate any pending bg-wait self-disarm timer. This is
+  // the closure of the round-2 fix (clearing stale arm at turn start)
+  // plus the round-3 fix (cancelling stale timers that would otherwise
+  // clobber a later turn's SIGINT state).
+  return {
+    handleSignal: rawHandler.handleSignal,
+    complete: (): void => {
+      invalidateCurrentBgWait?.();
+      invalidateCurrentBgWait = undefined;
+      rawHandler.complete();
+    },
+    dispose: (): void => {
+      invalidateCurrentBgWait?.();
+      invalidateCurrentBgWait = undefined;
+      rawHandler.dispose();
+    },
+  };
 }
