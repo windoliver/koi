@@ -1,0 +1,28 @@
+name: workspace-filter guard
+# Enforces the bun-test-filter policy from #1788. Lives in its own workflow
+# file (rather than as a step inside ci.yml) because ci.yml is a guarded
+# measurement surface for the startup-latency gate — adding a step there
+# requires the `baseline-migration` label, which is unrelated to this PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-bun-test-filter:
+    name: workspace-filter guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup
+
+      - name: Run workspace-filter guard
+        run: bun run check:bun-test-filter
