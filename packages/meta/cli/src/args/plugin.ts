@@ -18,7 +18,13 @@ const VALID_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 export interface PluginFlags extends BaseFlags {
   readonly command: "plugin";
-  readonly subcommand: PluginSubcommand;
+  /**
+   * Undefined only when `help` or `version` is also true — in that case
+   * the parser preserves invalid argv (missing/unknown subcommand) as
+   * invalid instead of coercing it to a synthetic `"list"`. Callers that
+   * branch on `subcommand` MUST check `help`/`version` first.
+   */
+  readonly subcommand: PluginSubcommand | undefined;
   readonly name: string | undefined;
   readonly path: string | undefined;
   readonly json: boolean;
@@ -63,13 +69,13 @@ export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): Plugi
     }
   }
 
-  const subcommand: PluginSubcommand =
-    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as PluginSubcommand) : "list";
+  const subcommand: PluginSubcommand | undefined =
+    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as PluginSubcommand) : undefined;
 
   // install: koi plugin install <path>       → name=undefined, path=pos[1]
   // update:  koi plugin update <name> <path> → name=pos[1], path=pos[2]
   // others:  koi plugin <sub> <name>         → name=pos[1], path=undefined
-  const name = subcommand === "install" ? undefined : positionals[1];
+  const name = subcommand === "install" || subcommand === undefined ? undefined : positionals[1];
   const path = subcommand === "install" ? positionals[1] : positionals[2];
 
   return {

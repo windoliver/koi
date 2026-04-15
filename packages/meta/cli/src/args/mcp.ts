@@ -11,7 +11,13 @@ const VALID_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "auth", "logout"
 
 export interface McpFlags extends BaseFlags {
   readonly command: "mcp";
-  readonly subcommand: McpSubcommand;
+  /**
+   * Undefined only when `help` or `version` is also true — in that case
+   * the parser preserves invalid argv (missing/unknown subcommand) as
+   * invalid instead of coercing it to a synthetic `"list"`. Callers that
+   * branch on `subcommand` MUST check `help`/`version` first.
+   */
+  readonly subcommand: McpSubcommand | undefined;
   /** Server name (required for auth, logout, debug). */
   readonly server: string | undefined;
   readonly json: boolean;
@@ -58,8 +64,8 @@ export function parseMcpFlags(rest: readonly string[], g: GlobalFlags): McpFlags
     }
   }
 
-  const subcommand: McpSubcommand =
-    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as McpSubcommand) : "list";
+  const subcommand: McpSubcommand | undefined =
+    sub !== undefined && VALID_SUBCOMMANDS.has(sub) ? (sub as McpSubcommand) : undefined;
 
   return {
     command: "mcp" as const,

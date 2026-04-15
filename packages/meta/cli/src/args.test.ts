@@ -7,6 +7,8 @@ import {
   isInitFlags,
   isKnownCommand,
   isLogsFlags,
+  isMcpFlags,
+  isPluginFlags,
   isServeFlags,
   isSessionsFlags,
   isStartFlags,
@@ -340,6 +342,38 @@ describe("parseArgs", () => {
       // mode rather than throwing — the user asked for help, not a
       // config validation pass.
       expect(f.port).toBeUndefined();
+    });
+
+    // Review round 10: parsePluginFlags and parseMcpFlags must NOT
+    // fabricate a synthetic "list" subcommand when --help/--version is
+    // present and the user supplied no subcommand. The parser preserves
+    // invalid argv as invalid; downstream callers that branch on
+    // subcommand must check flags.help/flags.version first.
+    test("parseArgs(plugin --help) returns subcommand: undefined, not list", () => {
+      const f = asFlags(isPluginFlags, ["plugin", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(plugin typo --version) returns subcommand: undefined", () => {
+      const f = asFlags(isPluginFlags, ["plugin", "typo", "--version"]);
+      expect(f.version).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(mcp --help) returns subcommand: undefined", () => {
+      const f = asFlags(isMcpFlags, ["mcp", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBeUndefined();
+    });
+
+    test("parseArgs(mcp auth --help) preserves subcommand: 'auth'", () => {
+      // auth is a real subcommand the user typed — preserve it.
+      // The missing-server check is skipped because help is set.
+      const f = asFlags(isMcpFlags, ["mcp", "auth", "--help"]);
+      expect(f.help).toBe(true);
+      expect(f.subcommand).toBe("auth");
+      expect(f.server).toBeUndefined();
     });
   });
 
