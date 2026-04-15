@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FileSystemBackend, HookConfig } from "@koi/core";
+import type { HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import {
   buildCoreProviders,
@@ -114,28 +114,11 @@ describe("buildPluginMcpSetup", () => {
 });
 
 // ---------------------------------------------------------------------------
-// mergeUserAndPluginHooks
+// buildCoreProviders — filesystem operation gating (#1777)
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// buildCoreProviders — filesystem operation gating
-// ---------------------------------------------------------------------------
-
-// Stub backend — buildCoreProviders does not call into it at assembly time
-// (createFsReadTool et al are deferred to provider.attach()), so a marker
-// object satisfies the branch under test.
-const stubBackend: FileSystemBackend = {
-  name: "stub",
-  read: async () => ({ ok: false, error: { code: "INTERNAL", message: "stub", retryable: false } }),
-  write: async () => ({
-    ok: false,
-    error: { code: "INTERNAL", message: "stub", retryable: false },
-  }),
-  edit: async () => ({ ok: false, error: { code: "INTERNAL", message: "stub", retryable: false } }),
-} as unknown as FileSystemBackend;
 
 describe("buildCoreProviders: filesystem operation gating", () => {
-  test("host default (no manifest filesystem) wires all three fs tools", () => {
+  test("host default (no filesystemOperations) wires all three fs tools", () => {
     const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
     const names = providers.map((p) => p.name);
     expect(names).toContain("fs-read");
@@ -143,13 +126,12 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-edit");
   });
 
-  test("filesystemOperations=[read] gates to read-only even without a supplied backend", () => {
+  test("filesystemOperations=[read] gates to read-only", () => {
     // Regression for #1777: hosts apply the `FileSystemConfig.operations`
     // default (`["read"]`) at the callsite before invoking this builder.
-    // `filesystemOperations` must be honored verbatim — including when no
-    // custom backend is supplied, so a manifest that sets
-    // `filesystem: { backend: local, operations: [read] }` runs read-only
-    // on the default local backend.
+    // `filesystemOperations` must be honored verbatim so a manifest that
+    // sets `filesystem: { backend: local, operations: [read] }` runs
+    // read-only on the default local backend.
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
       filesystemOperations: ["read"],
@@ -164,7 +146,6 @@ describe("buildCoreProviders: filesystem operation gating", () => {
   test("filesystemOperations=[read,write] wires only those tools", () => {
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
-      filesystem: stubBackend,
       filesystemOperations: ["read", "write"],
       includeWebFetch: false,
     });
@@ -177,7 +158,6 @@ describe("buildCoreProviders: filesystem operation gating", () => {
   test("filesystemOperations=[read,write,edit] wires all three", () => {
     const providers = buildCoreProviders({
       cwd: mkTempCwd(),
-      filesystem: stubBackend,
       filesystemOperations: ["read", "write", "edit"],
       includeWebFetch: false,
     });
@@ -186,23 +166,11 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-write");
     expect(names).toContain("fs-edit");
   });
-
-  test("no manifest, no operations: legacy host-default wires all three", () => {
-    // Ensures the "manifest defaults to read-only" logic lives at the
-    // host callsite (start.ts / tui-command.ts), not here — the
-    // host-default local path has no manifest signal and must keep all
-    // three tools wired so the permission middleware remains the gate.
-    const providers = buildCoreProviders({
-      cwd: mkTempCwd(),
-      filesystem: stubBackend,
-      includeWebFetch: false,
-    });
-    const names = providers.map((p) => p.name);
-    expect(names).toContain("fs-read");
-    expect(names).toContain("fs-write");
-    expect(names).toContain("fs-edit");
-  });
 });
+
+// ---------------------------------------------------------------------------
+// mergeUserAndPluginHooks
+// ---------------------------------------------------------------------------
 
 describe("mergeUserAndPluginHooks", () => {
   test("returns empty array when both inputs are empty", () => {

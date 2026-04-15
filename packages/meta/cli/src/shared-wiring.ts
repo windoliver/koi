@@ -26,7 +26,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   ComponentProvider,
-  FileSystemBackend,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -496,19 +495,13 @@ export interface CoreProvidersConfig {
    */
   readonly includeFilesystemTools?: boolean;
   /**
-   * Pre-resolved filesystem backend to bind `fs_read`/`fs_write`/`fs_edit`
-   * against. When omitted, the builder creates a default local backend
-   * rooted at `cwd` — matches the prior behavior for hosts that don't
-   * honor a manifest filesystem section. Non-local backends (e.g. the
-   * nexus bridge from `resolveFileSystemAsync`) must be built by the
-   * host and passed in here so the CLI owns lifecycle/dispose.
-   */
-  readonly filesystem?: FileSystemBackend | undefined;
-  /**
    * Subset of filesystem operations to expose as tools. When omitted,
-   * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Lets a
-   * manifest grant read-only access by setting
-   * `filesystem.operations: [read]`.
+   * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Hosts that
+   * honor a `manifest.filesystem.operations` gate pass the resolved
+   * list through here — the default when the manifest omits it is
+   * `["read"]` (applied at the host callsite, not here), which lets
+   * authors point the agent at an alternate backend without silently
+   * escalating mutation authority.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
   /**
@@ -542,19 +535,17 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
-    // (path-aware rules + approval handler) that gates out-of-workspace access.
-    // Hosts that want to sub a non-local backend pass it in via `filesystem`;
-    // `backend: "local"` stays on this default path so the manifest-driven
-    // local case preserves the same out-of-workspace semantics as the
-    // host-default local case.
-    const fs: FileSystemBackend =
-      config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
-    // Operation gating: `undefined` means "wire all three" (the default for
-    // host-default filesystems). Manifest-driven filesystems apply the
-    // `FileSystemConfig` contract's `["read"]` default at the host level
-    // before calling into this builder (start.ts / tui-command.ts), so by
-    // the time we see `filesystemOperations` here it's already the resolved
-    // gate — never implicitly escalated to write/edit.
+    // (path-aware rules + approval handler) that gates out-of-workspace
+    // access. Manifest-driven filesystems stay on this default local
+    // backend path — pre-resolving them via resolveFileSystem would
+    // build a local backend without `allowExternalPaths`, tightening
+    // the sandbox relative to the host-default path.
+    const fs = createLocalFileSystem(cwd, { allowExternalPaths: true });
+    // Operation gating: `undefined` means "wire all three" (the default
+    // for host-default filesystems). Manifest-driven filesystems apply
+    // the `FileSystemConfig` contract's `["read"]` default at the host
+    // level before calling into this builder, so by the time we see
+    // `filesystemOperations` here it is already the resolved gate.
     const ops = config.filesystemOperations;
     const wantRead = ops === undefined || ops.includes("read");
     const wantWrite = ops === undefined || ops.includes("write");

@@ -35,7 +35,6 @@ import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
-  FileSystemBackend,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
@@ -287,20 +286,10 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
-   * Pre-resolved filesystem backend bound into the core `fs_read`/
-   * `fs_write`/`fs_edit` providers. When omitted, the factory falls
-   * back to the default local backend rooted at `cwd`. Hosts that
-   * honor `manifest.filesystem` resolve the backend upfront (via
-   * `resolveFileSystemAsync` so the nexus local-bridge path can
-   * spawn subprocesses + wire auth notifications) and hand the
-   * resulting backend in here. The host also owns dispose — the
-   * factory never closes a backend it didn't create.
-   */
-  readonly filesystem?: FileSystemBackend | undefined;
-  /**
-   * Subset of filesystem operations to expose when `filesystem` is
-   * set via a manifest. `undefined` means "all three". Honored by
-   * `buildCoreProviders`.
+   * Subset of filesystem operations to expose (#1777). `undefined`
+   * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
+   * honor a `manifest.filesystem.operations` gate pass the resolved
+   * list through here. Honored by `buildCoreProviders`.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
 }
@@ -857,7 +846,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const coreProviders = buildCoreProviders({
     cwd,
     ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
-    ...(config.filesystem !== undefined ? { filesystem: config.filesystem } : {}),
     ...(config.filesystemOperations !== undefined
       ? { filesystemOperations: config.filesystemOperations }
       : {}),

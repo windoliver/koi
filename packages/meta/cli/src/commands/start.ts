@@ -13,21 +13,13 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type {
-  ApprovalHandler,
-  EngineEvent,
-  EngineInput,
-  FileSystemBackend,
-  FileSystemConfig,
-  InboundMessage,
-} from "@koi/core";
+import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
-import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
@@ -106,22 +98,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
-  // Deferred filesystem resolution (#1777): parse+validate here, but do
-  // NOT spawn the nexus local-bridge subprocess until after every other
-  // startup validation has passed — otherwise a subsequent early-return
-  // (unsupported `stacks: spawn`, missing API key, session resume error)
-  // would orphan the bridge before `shutdownRuntime` is in scope to
-  // dispose it.
-  // let: mutable — assigned once during manifest parsing
-  let manifestFilesystemConfig: FileSystemConfig | undefined;
-  // let: mutable — assigned by the deferred resolver just before createKoiRuntime
-  let manifestFilesystemBackend: FileSystemBackend | undefined;
+  // #1777: the manifest filesystem block is parsed+validated by
+  // `loadManifestConfig` (see manifest.ts). `koi start` supports
+  // `backend: "local"` on the host-default local backend path —
+  // `filesystem.operations` flows through as a read/write/edit gate via
+  // `buildCoreProviders`. `backend: "nexus"` is rejected at load time on
+  // this host (see the check below) because the CLI's auto-allow
+  // permission backend cannot enforce backend-aware approvals for
+  // remote/bridge storage, which would silently grant a repo-local
+  // manifest unreviewed access to data outside the workspace.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
-  // let: mutable — flipped true after `process.on("SIGINT", onSigint)`
-  // registers the handler. The filesystem notification callback
-  // consults this to decide whether SIGINT routes through the normal
-  // shutdown path (phase 2) or must dispose the bridge inline (phase 1).
-  let shutdownArmed = false;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -154,16 +140,40 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return ExitCode.FAILURE;
     }
 
-    // Stash the validated FileSystemConfig so the downstream resolver (just
-    // before createKoiRuntime) can spawn the bridge. Parsing + path
-    // anchoring has already happened in `loadManifestConfig`; we only
-    // defer the subprocess spawn, not the fail-fast-on-bad-config path.
-    // Apply the `FileSystemConfig.operations` contract's `["read"]` default
-    // at the host level so manifest-driven filesystems default to read-only
-    // even on the host-default local backend path. `buildCoreProviders`
-    // honors `filesystemOperations` verbatim — no implicit escalation.
+    // #1777: reject `backend: "nexus"` outright. The CLI's auto-allow
+    // permission backend is path-agnostic, so wiring a manifest-supplied
+    // remote/bridge filesystem would grant a repo-local manifest
+    // unreviewed read/write access to storage outside the workspace and
+    // outside the local host — a real trust-boundary regression.
+    // Backend-aware approvals + audit paths are follow-up work; the
+    // parse/validate/path-anchor plumbing in `loadManifestConfig` is
+    // already in place so this rejection is the only thing gating full
+    // nexus support here.
+    if (manifestResult.value.filesystem?.backend === "nexus") {
+      process.stderr.write(
+        "koi start: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
+          "  The CLI's auto-allow permission backend cannot enforce backend-aware\n" +
+          "  approvals, so wiring a remote/bridge filesystem from a repo-local\n" +
+          "  manifest would grant unreviewed access to storage outside the workspace.\n" +
+          "  Omit the `filesystem:` block or use `backend: local`.\n",
+      );
+      return ExitCode.FAILURE;
+    }
+
+    // Apply the `FileSystemConfig.operations` contract's `["read"]`
+    // default at the host level so manifest-driven filesystems default
+    // to read-only on the host-default local backend path.
+    // `buildCoreProviders` honors `filesystemOperations` verbatim.
+    //
+    // NOTE: `filesystem.operations` gates ONLY the `fs_read`/`fs_write`/
+    // `fs_edit` tools. The execution stack's `Bash` provider stays
+    // wired, so a model in a read-only manifest posture can still
+    // mutate the workspace via shell commands. `operations` is
+    // therefore advisory for the fs_* surface, not a hard write
+    // barrier. Manifest authors who need a true read-only posture
+    // should also pass `stacks: [notebook, rules, skills, ...]` (omit
+    // `execution`) to strip the bash provider entirely.
     if (manifestResult.value.filesystem !== undefined) {
-      manifestFilesystemConfig = manifestResult.value.filesystem;
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
 
@@ -282,188 +292,48 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
 
-  // ---------------------------------------------------------------------------
-  // 3b. Deferred filesystem resolution — LAST pre-runtime step (#1777)
-  // ---------------------------------------------------------------------------
-  //
-  // For `backend: "nexus"` we resolve here, immediately before
-  // `createKoiRuntime`, so every prior early-return path (stack-spawn
-  // rejection, API-key failure, session-resume error) has already been
-  // cleared. Spawning the bridge any earlier would orphan the python
-  // subprocess when one of those validations returns FAILURE, because
-  // `shutdownRuntime` is not yet in scope to dispose it.
-  //
-  // For `backend: "local"` (and default) we intentionally do NOT
-  // pre-resolve — `resolveFileSystem({backend:"local"})` builds a local
-  // backend without `allowExternalPaths`, which is a sandbox tightening
-  // relative to the existing host-default path. Leaving
-  // `manifestFilesystemBackend` undefined lets `buildCoreProviders`
-  // construct the usual `createLocalFileSystem(cwd, { allowExternalPaths:
-  // true })` and the permission middleware gates out-of-workspace access.
-  // The operations gate still applies via `manifestFilesystemOps`.
-  if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
-    // auth_required is handled in three phases (#1777 review rounds 6/9):
+  const runtimeHandle = await createKoiRuntime({
+    modelAdapter,
+    modelName: model,
+    approvalHandler: autoApproveHandler,
+    cwd: process.cwd(),
+    engineId: "koi-cli",
+    hostId: "koi-cli",
+    permissionBackend: createPatternPermissionBackend({
+      rules: { allow: ["*"], deny: [], ask: [] },
+    }),
+    permissionsDescription: "koi start — auto-allow",
+    // `koi start` runs without `bash_background` because main's
+    // pre-refactor `koi start` never exposed that tool. The shared
+    // execution stack wires it by default for TUI, so we explicitly
+    // opt out here.
     //
-    //   Phase 0 — resolver still awaiting the bridge mount reply.
-    //     Caller has no disposable handle yet; the callback just
-    //     records `oauthRequired`, and the post-await check below
-    //     disposes the returned backend and fails the command.
+    // `loopDetection` is left at the engine default (undefined →
+    // detector enabled) because the auto-allow permission backend
+    // makes the detector the only narrow guard against runaway
+    // mutating calls before governance caps trip.
     //
-    //   Phase 1 — resolver returned but `shutdownArmed` is false
-    //     (the sigint handler / `shutdownRuntime` are not yet
-    //     installed). Caller owns the handle. The callback disposes
-    //     the backend itself via a fire-and-forget microtask and
-    //     exits — raising SIGINT here would hit the default handler
-    //     and skip transcript flush and orphan the bridge.
-    //
-    //   Phase 2 — `shutdownArmed` is true. Safe to `SIGINT`: the
-    //     handler aborts the runtime controller and
-    //     `shutdownRuntime()` disposes the backend along with the
-    //     rest of teardown.
-    //
-    // `shutdownArmed` flips in the pre-runtime setup block further
-    // below, immediately after `process.on("SIGINT", onSigint)`
-    // registers the handler.
-    // let: mutable — set from within the subscription callback
-    let oauthRequired: { readonly provider: string; readonly user_email: string } | null = null;
-    let resolveComplete = false;
-    try {
-      const fsResult = await resolveFileSystemAsync(
-        manifestFilesystemConfig,
-        process.cwd(),
-        (n) => {
-          if (n.method !== "auth_required") return;
-          oauthRequired = { provider: n.params.provider, user_email: n.params.user_email };
-          process.stderr.write(
-            `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-              `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-          );
-          if (!resolveComplete) {
-            // Phase 0 — post-await check disposes cleanly.
-            return;
-          }
-          if (shutdownArmed) {
-            // Phase 2 — route through the normal shutdown path.
-            process.kill(process.pid, "SIGINT");
-            return;
-          }
-          // Phase 1 — sigint handler not installed yet but caller
-          // owns the handle. Dispose inline and exit so the bridge
-          // subprocess does not orphan. Dispose is async; schedule
-          // via microtask and exit after it resolves.
-          const backend = manifestFilesystemBackend;
-          void (async (): Promise<void> => {
-            try {
-              if (backend !== undefined) {
-                await backend.dispose?.();
-              }
-            } catch (fsDisposeErr) {
-              process.stderr.write(
-                `koi start: filesystem.dispose failed during auth-required abort — ${
-                  fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-                }\n`,
-              );
-            } finally {
-              process.exit(Number(ExitCode.FAILURE));
-            }
-          })();
-        },
-      );
-      manifestFilesystemBackend = fsResult.backend;
-      resolveComplete = true;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
-      return ExitCode.FAILURE;
-    }
-    if (oauthRequired !== null) {
-      // Startup-phase auth fired before the resolver returned. The caller
-      // now owns the backend — dispose it explicitly and fail the command
-      // so the python bridge subprocess does not orphan.
-      try {
-        await manifestFilesystemBackend.dispose?.();
-      } catch (fsDisposeErr) {
-        process.stderr.write(
-          `koi start: filesystem.dispose failed after auth-required abort — ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-      return ExitCode.FAILURE;
-    }
-  }
-
-  // Runtime assembly wrapped in a cleanup guard for #1777: if
-  // createKoiRuntime throws (or synchronous post-assembly setup throws
-  // before `shutdownRuntime` takes ownership), the manifest-provided
-  // filesystem backend is the only in-flight resource with an owner,
-  // and it must be disposed explicitly — `shutdownRuntime` does not
-  // exist yet, so an uncaught failure here would orphan the python
-  // bridge subprocess.
-  // let: mutable — assigned on the line below
-  let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
-  try {
-    runtimeHandle = await createKoiRuntime({
-      modelAdapter,
-      modelName: model,
-      approvalHandler: autoApproveHandler,
-      cwd: process.cwd(),
-      engineId: "koi-cli",
-      hostId: "koi-cli",
-      permissionBackend: createPatternPermissionBackend({
-        rules: { allow: ["*"], deny: [], ask: [] },
-      }),
-      permissionsDescription: "koi start — auto-allow",
-      // `koi start` runs without `bash_background` because main's
-      // pre-refactor `koi start` never exposed that tool. The shared
-      // execution stack wires it by default for TUI, so we explicitly
-      // opt out here.
-      //
-      // `loopDetection` is left at the engine default (undefined →
-      // detector enabled) because the auto-allow permission backend
-      // makes the detector the only narrow guard against runaway
-      // mutating calls before governance caps trip.
-      //
-      // The full `task_*` tool set stays wired regardless, but the
-      // `spawn` stack is filtered out below — without sub-agents to
-      // orchestrate, `task_output` polling has no reason to fire and
-      // can't trip the detector's 3-in-8 threshold. This matches
-      // main's pre-refactor `koi start` capability surface (no
-      // Spawn, no bash_background, no coordinator workflows).
-      backgroundSubprocesses: false,
-      ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
-      // When the user passes an explicit manifest.stacks, we honor
-      // it verbatim (including re-enabling `spawn` if they really
-      // want coordinator flows under `koi start`). When they don't,
-      // we filter `spawn` out of the default set so the detector
-      // stays compatible with the remaining tool surface.
-      ...(manifestStacks !== undefined
-        ? { stacks: manifestStacks }
-        : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
-      ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-      ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
-      ...(manifestFilesystemOps !== undefined
-        ? { filesystemOperations: manifestFilesystemOps }
-        : {}),
-      ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
-      getGeneration: () => transcriptGeneration,
-    });
-  } catch (assemblyErr: unknown) {
-    if (manifestFilesystemBackend !== undefined) {
-      try {
-        await manifestFilesystemBackend.dispose?.();
-      } catch (fsDisposeErr) {
-        process.stderr.write(
-          `koi start: filesystem.dispose failed during assembly-error cleanup — ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-    }
-    const msg = assemblyErr instanceof Error ? assemblyErr.message : String(assemblyErr);
-    process.stderr.write(`koi start: runtime assembly failed — ${msg}\n`);
-    return ExitCode.FAILURE;
-  }
+    // The full `task_*` tool set stays wired regardless, but the
+    // `spawn` stack is filtered out below — without sub-agents to
+    // orchestrate, `task_output` polling has no reason to fire and
+    // can't trip the detector's 3-in-8 threshold. This matches
+    // main's pre-refactor `koi start` capability surface (no
+    // Spawn, no bash_background, no coordinator workflows).
+    backgroundSubprocesses: false,
+    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+    // When the user passes an explicit manifest.stacks, we honor
+    // it verbatim (including re-enabling `spawn` if they really
+    // want coordinator flows under `koi start`). When they don't,
+    // we filter `spawn` out of the default set so the detector
+    // stays compatible with the remaining tool surface.
+    ...(manifestStacks !== undefined
+      ? { stacks: manifestStacks }
+      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
+    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+    getGeneration: () => transcriptGeneration,
+  });
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
 
@@ -556,25 +426,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }\n`,
       );
     }
-    // Dispose the manifest-provided filesystem backend AFTER runtime
-    // teardown. The fs tools created in `buildCoreProviders` capture this
-    // backend, and `runtime.dispose()` can still be awaiting in-flight
-    // tool work — closing the transport first forces transport-level
-    // failures and settle-timeout noise during session/transcript flush.
-    // Match the TUI shutdown ordering (runtime → filesystem). The factory
-    // never built this backend, so this is the only place it gets closed.
-    if (manifestFilesystemBackend !== undefined) {
-      try {
-        await manifestFilesystemBackend.dispose?.();
-      } catch (fsDisposeErr) {
-        shutdownFailed = true;
-        process.stderr.write(
-          `koi: filesystem.dispose failed — ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-    }
   };
   // Pre-populate the runtime's in-memory transcript with the resumed
   // messages so the model sees prior context on the first turn.
@@ -617,10 +468,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     sigintHandler.handleSignal();
   };
   process.on("SIGINT", onSigint);
-  // Mark the shutdown path as armed so any filesystem notification
-  // callback that fires from here onward can safely route through
-  // SIGINT → sigintHandler → controller.abort → shutdownRuntime.
-  shutdownArmed = true;
 
   const harness = createCliHarness({
     // `harnessRuntime` has a no-op `dispose`; the real shutdown

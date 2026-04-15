@@ -35,8 +35,6 @@ import { join } from "node:path";
 import type {
   AuditEntry,
   EngineEvent,
-  FileSystemBackend,
-  FileSystemConfig,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
@@ -52,7 +50,6 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import type {
@@ -700,15 +697,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
-  // Deferred filesystem resolution (#1777): parse+validate here, but do
-  // NOT spawn the nexus local-bridge subprocess until after every other
-  // startup check has passed (API config, TTY, signal-handler install).
-  // Spawning earlier would orphan the bridge when e.g. API validation
-  // fails and `process.exit(1)` fires before the TUI shutdown path exists.
-  // let: mutable — assigned once during manifest parsing
-  let manifestFilesystemConfig: FileSystemConfig | undefined;
-  // let: mutable — assigned by the deferred resolver further below
-  let manifestFilesystemBackend: FileSystemBackend | undefined;
+  // #1777: the manifest filesystem block is parsed+validated by
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
+  // `backend: "local"` on the host-default local backend path.
+  // `backend: "nexus"` is rejected here because the TUI permission
+  // middleware and checkpoint stack both assume the filesystem
+  // backend is rooted at `cwd`; approving or rewinding against a
+  // non-cwd backend would break trust-boundary and rollback
+  // invariants.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
@@ -723,33 +719,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     if (manifestResult.value.filesystem !== undefined) {
-      // #1777 review round 8: the TUI permission middleware computes
-      // approval decisions against `cwd` via `resolveFsPath(raw, cwd)`
-      // and its pre-allow tier auto-approves `fs_read` under
-      // `${cwd}/**`. A manifest-supplied nexus backend can point
-      // somewhere else entirely, so the path embedded in the approval
-      // prompt / audit trail would misrepresent where the data
-      // actually lives — a real trust-boundary break. The checkpoint
-      // stack has the same issue: `/rewind` reconstructs paths under
-      // `cwd` and would restore edits to the wrong tree (or not at
-      // all) when the fs backend is not rooted at `cwd`. Until both
-      // subsystems gain backend-aware path resolution, reject
-      // `backend: "nexus"` on `koi tui` and direct users to
-      // `koi start`, which has an auto-allow permission backend
-      // (path-agnostic) and no `/rewind` UX.
       if (manifestResult.value.filesystem.backend === "nexus") {
         process.stderr.write(
           "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
             "  The TUI permission middleware and checkpoint stack both assume the\n" +
             "  filesystem backend is rooted at the session cwd, and approving or\n" +
             "  rewinding against a non-cwd backend would break trust-boundary and\n" +
-            "  rollback invariants. Use `koi start` for nexus-backed filesystems,\n" +
-            "  or omit the `filesystem:` block and let the TUI's default local\n" +
-            "  backend run.\n",
+            "  rollback invariants. Omit the `filesystem:` block or use\n" +
+            "  `backend: local`.\n",
         );
         process.exit(1);
       }
-      manifestFilesystemConfig = manifestResult.value.filesystem;
+      // Apply the `FileSystemConfig.operations` contract's `["read"]`
+      // default at the host level. `buildCoreProviders` honors
+      // `filesystemOperations` verbatim. NOTE: this gates only the
+      // `fs_*` tools — the `execution` preset stack still contributes
+      // Bash, so a model in a read-only manifest posture can still
+      // mutate the workspace via shell commands. Manifest authors who
+      // need a true read-only posture should also omit `execution`
+      // from `manifest.stacks`.
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
   }
@@ -961,71 +949,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // resumable — matches koi start --until-pass semantics.
   const isLoopMode = flags.untilPass.length > 0;
 
-  // ---------------------------------------------------------------------------
-  // Deferred filesystem resolution — LAST pre-runtime step (#1777)
-  // ---------------------------------------------------------------------------
-  //
-  // For `backend: "nexus"` we resolve here, immediately before
-  // `createKoiRuntime`, so every earlier early-exit path (API key, TTY,
-  // signal-handler install, etc.) has already cleared. Spawning the
-  // bridge any earlier would orphan the python subprocess when a
-  // subsequent `process.exit(1)` fires before the TUI shutdown path
-  // exists. For `backend: "local"` (and default) we do NOT pre-resolve
-  // — the host-default `createLocalFileSystem(cwd, { allowExternalPaths:
-  // true })` stays on `buildCoreProviders`' default path so we preserve
-  // the existing out-of-workspace access semantics.
-  if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
-    // Two-phase auth_required handling (#1777 review round 6): the
-    // callback may fire while `resolveFileSystemAsync` is still awaiting
-    // the bridge's mount reply — at that point the caller has no
-    // disposable handle, so exiting from the callback would orphan the
-    // python bridge subprocess. Record the event instead, and the
-    // post-await check disposes cleanly. Runtime-phase auth (after the
-    // resolver has returned) can safely SIGINT through the TUI sigint
-    // handler installed further down.
-    // let: mutable — set from within the subscription callback
-    let oauthRequired: { readonly provider: string; readonly user_email: string } | null = null;
-    let resolveComplete = false;
-    try {
-      const fsResult = await resolveFileSystemAsync(
-        manifestFilesystemConfig,
-        process.cwd(),
-        (n) => {
-          if (n.method !== "auth_required") return;
-          oauthRequired = { provider: n.params.provider, user_email: n.params.user_email };
-          process.stderr.write(
-            `koi tui: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
-              `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
-          );
-          if (resolveComplete) {
-            process.kill(process.pid, "SIGINT");
-          }
-        },
-      );
-      manifestFilesystemBackend = fsResult.backend;
-      resolveComplete = true;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
-      process.exit(1);
-    }
-    if (oauthRequired !== null) {
-      // Startup-phase auth fired before the resolver returned. Dispose
-      // the backend the caller now owns so the bridge subprocess does
-      // not orphan, then exit.
-      try {
-        await manifestFilesystemBackend.dispose?.();
-      } catch (fsDisposeErr) {
-        process.stderr.write(
-          `koi tui: filesystem.dispose failed after auth-required abort — ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-      process.exit(1);
-    }
-  }
-
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
@@ -1057,7 +980,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // plugin (v1's "wire everything" posture).
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-    ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
@@ -1117,29 +1039,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       resumedMessagesToPrime = [];
     }
     return handle;
-  });
-
-  // #1777: if runtime assembly rejects, the normal `shutdown()` path may
-  // never run (it's gated on the main TUI event loop actually entering).
-  // Attach a cleanup tap that disposes the manifest-provided filesystem
-  // backend and clears the reference so a later `shutdown()` call becomes
-  // a no-op for that resource. The rejection still propagates to the
-  // `await runtimeReady` consumer for normal error reporting — this tap
-  // only guarantees the bridge subprocess gets killed.
-  runtimeReady.catch(async () => {
-    if (manifestFilesystemBackend !== undefined) {
-      const fs = manifestFilesystemBackend;
-      manifestFilesystemBackend = undefined;
-      try {
-        await fs.dispose?.();
-      } catch (fsDisposeErr) {
-        process.stderr.write(
-          `[koi tui] filesystem.dispose failed during assembly-error cleanup: ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-    }
   });
 
   // let: set once after createTuiApp resolves, read in shutdown
@@ -1855,20 +1754,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           process.stderr.write(
             `[koi tui] runtime.dispose failed during shutdown: ${
               disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
-            }\n`,
-          );
-        }
-      }
-      // Dispose the manifest-provided filesystem backend (nexus local bridge
-      // owns a python subprocess that must be torn down on exit). The factory
-      // never built this backend so this is the only place it gets closed.
-      if (manifestFilesystemBackend !== undefined) {
-        try {
-          await manifestFilesystemBackend.dispose?.();
-        } catch (fsDisposeErr) {
-          process.stderr.write(
-            `[koi tui] filesystem.dispose failed during shutdown: ${
-              fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
             }\n`,
           );
         }
