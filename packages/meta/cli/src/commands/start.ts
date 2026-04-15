@@ -329,49 +329,77 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     }
   }
 
-  const runtimeHandle = await createKoiRuntime({
-    modelAdapter,
-    modelName: model,
-    approvalHandler: autoApproveHandler,
-    cwd: process.cwd(),
-    engineId: "koi-cli",
-    hostId: "koi-cli",
-    permissionBackend: createPatternPermissionBackend({
-      rules: { allow: ["*"], deny: [], ask: [] },
-    }),
-    permissionsDescription: "koi start — auto-allow",
-    // `koi start` runs without `bash_background` because main's
-    // pre-refactor `koi start` never exposed that tool. The shared
-    // execution stack wires it by default for TUI, so we explicitly
-    // opt out here.
-    //
-    // `loopDetection` is left at the engine default (undefined →
-    // detector enabled) because the auto-allow permission backend
-    // makes the detector the only narrow guard against runaway
-    // mutating calls before governance caps trip.
-    //
-    // The full `task_*` tool set stays wired regardless, but the
-    // `spawn` stack is filtered out below — without sub-agents to
-    // orchestrate, `task_output` polling has no reason to fire and
-    // can't trip the detector's 3-in-8 threshold. This matches
-    // main's pre-refactor `koi start` capability surface (no
-    // Spawn, no bash_background, no coordinator workflows).
-    backgroundSubprocesses: false,
-    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
-    // When the user passes an explicit manifest.stacks, we honor
-    // it verbatim (including re-enabling `spawn` if they really
-    // want coordinator flows under `koi start`). When they don't,
-    // we filter `spawn` out of the default set so the detector
-    // stays compatible with the remaining tool surface.
-    ...(manifestStacks !== undefined
-      ? { stacks: manifestStacks }
-      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
-    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-    ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
-    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
-    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
-    getGeneration: () => transcriptGeneration,
-  });
+  // Runtime assembly wrapped in a cleanup guard for #1777: if
+  // createKoiRuntime throws (or synchronous post-assembly setup throws
+  // before `shutdownRuntime` takes ownership), the manifest-provided
+  // filesystem backend is the only in-flight resource with an owner,
+  // and it must be disposed explicitly — `shutdownRuntime` does not
+  // exist yet, so an uncaught failure here would orphan the python
+  // bridge subprocess.
+  // let: mutable — assigned on the line below
+  let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
+  try {
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter,
+      modelName: model,
+      approvalHandler: autoApproveHandler,
+      cwd: process.cwd(),
+      engineId: "koi-cli",
+      hostId: "koi-cli",
+      permissionBackend: createPatternPermissionBackend({
+        rules: { allow: ["*"], deny: [], ask: [] },
+      }),
+      permissionsDescription: "koi start — auto-allow",
+      // `koi start` runs without `bash_background` because main's
+      // pre-refactor `koi start` never exposed that tool. The shared
+      // execution stack wires it by default for TUI, so we explicitly
+      // opt out here.
+      //
+      // `loopDetection` is left at the engine default (undefined →
+      // detector enabled) because the auto-allow permission backend
+      // makes the detector the only narrow guard against runaway
+      // mutating calls before governance caps trip.
+      //
+      // The full `task_*` tool set stays wired regardless, but the
+      // `spawn` stack is filtered out below — without sub-agents to
+      // orchestrate, `task_output` polling has no reason to fire and
+      // can't trip the detector's 3-in-8 threshold. This matches
+      // main's pre-refactor `koi start` capability surface (no
+      // Spawn, no bash_background, no coordinator workflows).
+      backgroundSubprocesses: false,
+      ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+      // When the user passes an explicit manifest.stacks, we honor
+      // it verbatim (including re-enabling `spawn` if they really
+      // want coordinator flows under `koi start`). When they don't,
+      // we filter `spawn` out of the default set so the detector
+      // stays compatible with the remaining tool surface.
+      ...(manifestStacks !== undefined
+        ? { stacks: manifestStacks }
+        : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
+      ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+      ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
+      ...(manifestFilesystemOps !== undefined
+        ? { filesystemOperations: manifestFilesystemOps }
+        : {}),
+      ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+      getGeneration: () => transcriptGeneration,
+    });
+  } catch (assemblyErr: unknown) {
+    if (manifestFilesystemBackend !== undefined) {
+      try {
+        await manifestFilesystemBackend.dispose?.();
+      } catch (fsDisposeErr) {
+        process.stderr.write(
+          `koi start: filesystem.dispose failed during assembly-error cleanup — ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
+    }
+    const msg = assemblyErr instanceof Error ? assemblyErr.message : String(assemblyErr);
+    process.stderr.write(`koi start: runtime assembly failed — ${msg}\n`);
+    return ExitCode.FAILURE;
+  }
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
 

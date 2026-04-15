@@ -1073,6 +1073,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     return handle;
   });
 
+  // #1777: if runtime assembly rejects, the normal `shutdown()` path may
+  // never run (it's gated on the main TUI event loop actually entering).
+  // Attach a cleanup tap that disposes the manifest-provided filesystem
+  // backend and clears the reference so a later `shutdown()` call becomes
+  // a no-op for that resource. The rejection still propagates to the
+  // `await runtimeReady` consumer for normal error reporting — this tap
+  // only guarantees the bridge subprocess gets killed.
+  runtimeReady.catch(async () => {
+    if (manifestFilesystemBackend !== undefined) {
+      const fs = manifestFilesystemBackend;
+      manifestFilesystemBackend = undefined;
+      try {
+        await fs.dispose?.();
+      } catch (fsDisposeErr) {
+        process.stderr.write(
+          `[koi tui] filesystem.dispose failed during assembly-error cleanup: ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
+    }
+  });
+
   // let: set once after createTuiApp resolves, read in shutdown
   let appHandle: { readonly stop: () => Promise<void> } | null = null;
   // let: per-submit abort controller, replaced on each new stream
