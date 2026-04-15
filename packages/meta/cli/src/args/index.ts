@@ -146,11 +146,35 @@ const COMMAND_PARSERS: Readonly<Record<KnownCommand, CommandParser>> = {
 export function parseArgs(argv: readonly string[]): CliFlags {
   const globalFlags = detectGlobalFlags(argv);
   const { command, rest } = extractCommand(argv);
-  const filteredRest = rest.filter((a) => !GLOBAL_RAW_FLAGS.has(a));
+  // Strip global flags (--help/-h/--version/-V) so per-command parsers
+  // never see them as unknown options — but only before the `--` operand
+  // terminator. Tokens after `--` are literal operands (e.g.
+  // `koi plugin install -- --help` targets a plugin literally named
+  // `--help`) and must reach the parser intact.
+  const filteredRest = filterGlobalRawFlagsBeforeTerminator(rest);
 
   if (isKnownCommand(command)) {
     return COMMAND_PARSERS[command](filteredRest, globalFlags);
   }
 
   return { command, ...globalFlags };
+}
+
+function filterGlobalRawFlagsBeforeTerminator(argv: readonly string[]): readonly string[] {
+  const out: string[] = [];
+  let terminated = false;
+  for (const a of argv) {
+    if (terminated) {
+      out.push(a);
+      continue;
+    }
+    if (a === "--") {
+      terminated = true;
+      out.push(a);
+      continue;
+    }
+    if (GLOBAL_RAW_FLAGS.has(a)) continue;
+    out.push(a);
+  }
+  return out;
 }

@@ -357,6 +357,28 @@ describe("bin.ts", () => {
       expect(r.exitCode).toBe(0);
       expect(r.stdout.trim()).toBe("0.0.0");
     });
+
+    // Review round 5: `--` operand terminator must guard literal operands
+    // named `--help` / `--version`. Without this the per-command help
+    // short-circuit would swallow any token matching those names, even
+    // after an explicit `--` end-of-options marker.
+    test("`koi plugin install -- --help` does NOT short-circuit to help", async () => {
+      // With `--` honored, the plugin parser sees `install` as the
+      // subcommand and `--help` as the literal install path. It then
+      // routes into the plugin command body (not into help). Stub/command
+      // body exits 2 with a real error, not exit 0 with help.
+      const r = await runBin(["plugin", "install", "--", "--help"]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).not.toContain("koi plugin —");
+    });
+
+    test("`koi mcp auth -- --version` does NOT short-circuit to version", async () => {
+      const r = await runBin(["mcp", "auth", "--", "--version"]);
+      // Must NOT exit 0 with just "0.0.0" — that would be the
+      // version short-circuit swallowing the literal server name.
+      const trimmed = r.stdout.trim();
+      expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
+    });
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {

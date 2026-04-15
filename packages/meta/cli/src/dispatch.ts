@@ -25,7 +25,6 @@
 import {
   type CliFlags,
   COMMAND_NAMES,
-  detectGlobalFlags,
   extractCommand,
   isKnownCommand,
   isTuiFlags,
@@ -71,14 +70,20 @@ export async function runDispatch(
   // don't throw on missing required positionals and shadow a help/version
   // request with a usage error, and so parseArgs preserves its invariant
   // that a known command always yields that command's full flag shape.
+  //
+  // `--` acts as an operand terminator: tokens after it are literal
+  // operands, so e.g. `koi plugin install -- --help` must not be
+  // rewritten to "print plugin help". Only tokens before the terminator
+  // count as flag candidates here.
+  //
   // Version takes precedence over help (matches the top-level fast-path,
   // where the --version check runs first).
-  const rawGlobalFlags = detectGlobalFlags(rawArgv);
   const { command: rawCommand } = extractCommand(rawArgv);
-  if (rawGlobalFlags.version && isKnownCommand(rawCommand)) {
+  const rawHelpVersion = detectHelpVersionBeforeTerminator(rawArgv);
+  if (rawHelpVersion.version && isKnownCommand(rawCommand)) {
     return { kind: "exit", code: 0, stdout: `${version}\n` };
   }
-  if (rawGlobalFlags.help && isKnownCommand(rawCommand)) {
+  if (rawHelpVersion.help && isKnownCommand(rawCommand)) {
     // Lazy import keeps COMMAND_HELP off the cold-start path measured by
     // the startup-latency benchmark.
     const { COMMAND_HELP } = await import("./help.js");
@@ -141,4 +146,24 @@ export async function runDispatch(
     stderr += `  ${name}\n`;
   }
   return { kind: "exit", code: 1, stderr };
+}
+
+/**
+ * Scan argv for `--help`/`-h` and `--version`/`-V`, stopping at the `--`
+ * operand terminator. Used by the per-command short-circuit so literal
+ * operands like `koi plugin install -- --help` cannot be misinterpreted
+ * as a help request.
+ */
+function detectHelpVersionBeforeTerminator(argv: readonly string[]): {
+  readonly help: boolean;
+  readonly version: boolean;
+} {
+  let help = false;
+  let version = false;
+  for (const a of argv) {
+    if (a === "--") break;
+    if (a === "--help" || a === "-h") help = true;
+    else if (a === "--version" || a === "-V") version = true;
+  }
+  return { help, version };
 }

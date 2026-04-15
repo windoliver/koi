@@ -121,10 +121,17 @@ export function resolveLogFormat(flagValue: string | undefined): "text" | "json"
 }
 
 export function detectGlobalFlags(argv: readonly string[]): GlobalFlags {
-  return {
-    version: argv.some((a) => a === "--version" || a === "-V"),
-    help: argv.some((a) => a === "--help" || a === "-h"),
-  };
+  // Tokens after `--` are literal operands, not flags: `koi plugin install
+  // -- --help` targets a plugin literally named `--help`, not a help
+  // request. Stop scanning at the first terminator.
+  let version = false;
+  let help = false;
+  for (const a of argv) {
+    if (a === "--") break;
+    if (a === "--version" || a === "-V") version = true;
+    else if (a === "--help" || a === "-h") help = true;
+  }
+  return { version, help };
 }
 
 export function extractCommand(argv: readonly string[]): {
