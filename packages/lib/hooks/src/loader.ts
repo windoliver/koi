@@ -9,7 +9,7 @@ import { HOOK_EVENT_KINDS } from "@koi/core";
 import { validateWith } from "@koi/validation";
 import type { HookTier, RegisteredHook } from "./policy.js";
 import { createRegisteredHooks } from "./policy.js";
-import { hookConfigArraySchema } from "./schema.js";
+import { hookConfigArraySchema, hookConfigSchema } from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // Load result with optional warnings
@@ -153,5 +153,140 @@ export function loadRegisteredHooksWithDiagnostics(
       hooks: createRegisteredHooks(result.value.hooks, tier),
       warnings: result.value.warnings,
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Per-entry registered hooks loader — valid entries load even when peers fail
+// ---------------------------------------------------------------------------
+
+/**
+ * Classification of a per-entry load failure.
+ *
+ * - `"structural"` — the root itself is unusable (e.g. not an array). Index
+ *   is `-1` and no per-entry metadata is available.
+ * - `"schema"` — the entry failed zod validation. `failClosed` is sniffed
+ *   from the raw JSON so the host can respect operator intent.
+ * - `"duplicate"` — the entry parsed cleanly but its `name` collides with
+ *   an earlier accepted entry. Carries `failClosed` from the parsed hook.
+ */
+export type HookLoadErrorKind = "structural" | "schema" | "duplicate";
+
+/**
+ * A loader error scoped to a single hook entry (or `-1` for structural errors
+ * like "not an array"). Carries the hook's declared `name` when parseable so
+ * operators can identify which entry failed without counting array indices.
+ *
+ * `failClosed` is sniffed from the raw entry (schema failures) or lifted
+ * from the parsed hook (duplicate failures): if the operator explicitly
+ * marked an entry `failClosed: true` they have declared that hook
+ * load-critical, so callers can fail startup on that error. Absent field
+ * or a non-boolean value → `failClosed` is `undefined`.
+ *
+ * `kind` lets hosts apply coarser policy than per-entry inspection — e.g.
+ * "duplicate names are always fatal for user-tier hooks" without needing
+ * to match message strings.
+ */
+export interface HookLoadError {
+  readonly kind: HookLoadErrorKind;
+  readonly index: number;
+  readonly name?: string;
+  readonly message: string;
+  readonly failClosed?: boolean;
+}
+
+/** Result of per-entry hook loading: valid entries + per-entry errors + warnings. */
+export interface LoadRegisteredHooksPerEntryResult {
+  readonly hooks: readonly RegisteredHook[];
+  readonly errors: readonly HookLoadError[];
+  readonly warnings: readonly string[];
+}
+
+/**
+ * Per-entry variant of `loadRegisteredHooks`: validates each array element
+ * independently so one malformed hook does not discard its valid peers.
+ *
+ * Differences from `loadRegisteredHooks`:
+ * - Invalid entries are collected into `errors` (with index + declared name
+ *   when available) instead of rejecting the whole array.
+ * - Duplicate names are reported per-entry (first occurrence wins).
+ * - A non-array root is reported as a single error with `index: -1`.
+ *
+ * Callers (CLI, TUI, daemons) should surface `errors` via whatever operator
+ * channel they have — `loadRegisteredHooks`'s all-or-nothing Result is kept
+ * for strict callers (schema validators, CI).
+ */
+export function loadRegisteredHooksPerEntry(
+  raw: unknown,
+  tier: HookTier,
+): LoadRegisteredHooksPerEntryResult {
+  if (raw === undefined || raw === null) {
+    return { hooks: [], errors: [], warnings: [] };
+  }
+  if (!Array.isArray(raw)) {
+    return {
+      hooks: [],
+      errors: [
+        {
+          kind: "structural",
+          index: -1,
+          message: "Hook config must be an array of hook entries",
+        },
+      ],
+      warnings: [],
+    };
+  }
+
+  const accepted: HookConfig[] = [];
+  const errors: HookLoadError[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < raw.length; i++) {
+    const entry: unknown = raw[i];
+    const parsed = validateWith(hookConfigSchema, entry, `Hook[${i}] validation failed`);
+    if (!parsed.ok) {
+      const rawEntry =
+        typeof entry === "object" && entry !== null
+          ? (entry as { readonly name?: unknown; readonly failClosed?: unknown })
+          : undefined;
+      const rawName = rawEntry?.name;
+      const rawFailClosed = rawEntry?.failClosed;
+      errors.push({
+        kind: "schema",
+        index: i,
+        message: parsed.error.message,
+        ...(typeof rawName === "string" && rawName.length > 0 ? { name: rawName } : {}),
+        ...(typeof rawFailClosed === "boolean" ? { failClosed: rawFailClosed } : {}),
+      });
+      continue;
+    }
+
+    const hook = parsed.value;
+    if (hook.enabled === false) continue;
+
+    if (seen.has(hook.name)) {
+      // Preserve failClosed from the parsed hook: a duplicate-name entry
+      // marked failClosed:true signals the operator intended this
+      // definition to replace/tighten an earlier one; dropping it silently
+      // would leave the stale definition in place, so callers must be able
+      // to abort startup on this error (review round 2 finding).
+      errors.push({
+        kind: "duplicate",
+        index: i,
+        name: hook.name,
+        message: `Duplicate hook name "${hook.name}" — first occurrence kept, this entry skipped`,
+        ...(hook.failClosed === true ? { failClosed: true } : {}),
+      });
+      continue;
+    }
+    seen.add(hook.name);
+    accepted.push(hook);
+  }
+
+  const warnings = collectEventWarnings(accepted);
+  return {
+    hooks: createRegisteredHooks(accepted, tier),
+    errors,
+    warnings,
   };
 }

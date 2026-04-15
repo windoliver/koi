@@ -23,7 +23,7 @@
  */
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type {
   ComponentProvider,
   HookConfig,
@@ -42,7 +42,11 @@ import {
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
-import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
+import {
+  createHookMiddleware,
+  createRegisteredHooks,
+  loadRegisteredHooksPerEntry,
+} from "@koi/hooks";
 import type { McpResolver, McpServerConfig } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
@@ -70,6 +74,58 @@ export interface McpSetup {
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
 export const USER_HOOKS_CONFIG_PATH: string = join(homedir(), ".koi", "hooks.json");
+
+/**
+ * Test-only override for the resolved user hooks config path. Tests call
+ * `__setUserHooksConfigPathForTests(path)` in `beforeEach` to point the
+ * loader at a sandbox directory and reset it in `afterEach`.
+ */
+let testHookPathOverride: string | undefined;
+
+/** Test seam — never call in production code. */
+export function __setUserHooksConfigPathForTests(path: string | undefined): void {
+  testHookPathOverride = path;
+}
+
+/**
+ * Resolve the user hooks config path lazily.
+ *
+ * Resolution order:
+ * 1. Test override (`__setUserHooksConfigPathForTests`) — test-only.
+ * 2. `KOI_HOOKS_CONFIG_PATH` env var — explicit deployment override. Security-
+ *    sensitive environments (systemd units, launchd wrappers, `sudo -E`,
+ *    or any other launcher that preserves an untrusted `$HOME`) should set
+ *    this to a fixed absolute path so hook resolution bypasses home-directory
+ *    ambiguity entirely. This closes a real trust-boundary issue: Bun's
+ *    `os.homedir()` and `os.userInfo().homedir` BOTH honor `$HOME` at
+ *    process launch (unlike Node's `userInfo().homedir`), so a
+ *    launch-time HOME injection can otherwise redirect the loader to an
+ *    attacker-controlled directory.
+ * 3. `~/.koi/hooks.json` via `os.homedir()` — the default for interactive
+ *    dev sessions where the operator controls their own environment.
+ *
+ * Documentation: deployments that treat hooks as policy-bearing should
+ * either unset `$HOME` before launching koi or set `KOI_HOOKS_CONFIG_PATH`
+ * explicitly — this is called out in `phase-2-bug-bash.md`.
+ */
+function resolveUserHooksConfigPath(): string {
+  if (testHookPathOverride !== undefined) return testHookPathOverride;
+  const explicitPath = process.env.KOI_HOOKS_CONFIG_PATH;
+  if (explicitPath !== undefined && explicitPath.length > 0) {
+    // Reject relative paths: a relative KOI_HOOKS_CONFIG_PATH defeats the
+    // whole point of the trust-boundary fix by making resolution
+    // cwd-dependent. An attacker who can influence the launcher's cwd
+    // (service restart, wrapper script, etc.) could redirect the loader
+    // to an alternate hooks file (third-loop round 2 finding).
+    if (!isAbsolute(explicitPath)) {
+      throw new Error(
+        `Refusing to start: KOI_HOOKS_CONFIG_PATH="${explicitPath}" must be an absolute path. Relative paths are rejected because they depend on the launcher's working directory and defeat the purpose of pinning a hooks file.`,
+      );
+    }
+    return explicitPath;
+  }
+  return join(homedir(), ".koi", "hooks.json");
+}
 
 // ---------------------------------------------------------------------------
 // MCP wiring
@@ -149,51 +205,287 @@ export function buildPluginMcpSetup(
 
 /**
  * Load user-tier hooks from `~/.koi/hooks.json` as tier-tagged
- * `RegisteredHook`s. Returns an empty array when the file is absent,
- * unreadable, or fails schema validation — matching the prior silent-skip
- * behavior of both call sites.
+ * `RegisteredHook`s.
  *
- * When `filterAgentHooks` is true, any `kind: "agent"` hooks are removed
- * (and their names reported via the optional callback) so the caller can
- * warn the operator. Agent hooks require a spawnFn that the TUI does not
- * provide — the same filter applied before this helper existed.
+ * Loader semantics (default):
+ * - File absent → silent empty result (hooks.json is optional).
+ * - File present but unreadable / not JSON → **fatal**. We cannot inspect
+ *   the file for operator intent (a `failClosed: true` hook could be
+ *   anywhere inside), so we cannot pretend nothing was configured. This
+ *   matches the consistent reviewer recommendation across multiple
+ *   rounds: file-level corruption is too dangerous to degrade to empty.
+ * - File present, parseable, but structurally invalid (non-array root) →
+ *   **fatal** for the same reason. We cannot enumerate entries to honor
+ *   per-entry failClosed intent.
+ * - File present and parseable as an array → each entry is validated
+ *   independently via `loadRegisteredHooksPerEntry`. Invalid entries are
+ *   reported through `onLoadError` and skipped; valid peers still load.
+ *   This preserves issue #1781's intent (one bad hook doesn't nuke the
+ *   whole file) for the common case of typos/env-specific failures.
+ * - Any per-entry error (schema or duplicate) carrying `failClosed: true`
+ *   → **fatal**. The per-hook opt-in is the finer-grained fail-closed
+ *   contract for specific load-critical hooks.
+ *
+ * Strict mode (`KOI_HOOKS_STRICT=1`):
+ * Turns every remaining non-fatal path into fatal: ordinary schema
+ * errors and duplicate names abort startup even without `failClosed`.
+ * Appropriate for deployments where any hook config error must refuse
+ * to run rather than silently proceed with a reduced hook set.
+ *
+ * All diagnostics are reported through `onLoadError` BEFORE any fatal
+ * throw so operators see every broken entry, not just the first fatal.
+ * Callers that don't want startup to abort should wrap the call in try/catch.
+ *
+ * When `filterAgentHooks` is true, any `kind: "agent"` hooks are stripped
+ * from the raw array **before** per-entry validation (and their names
+ * reported via the optional callback). Pre-filtering matters: the TUI does
+ * not support agent hooks at all, so a malformed or failClosed agent hook,
+ * or a duplicate involving one, must not abort startup for a host that
+ * would have ignored the entry anyway (review round 5 finding). Agent
+ * hooks require a spawnFn that the TUI does not provide.
  */
 export async function loadUserRegisteredHooks(options: {
   readonly filterAgentHooks: boolean;
   readonly onAgentHooksFiltered?: (hookNames: readonly string[]) => void;
+  readonly onLoadError?: (message: string) => void;
 }): Promise<readonly RegisteredHook[]> {
+  const strictMode = process.env.KOI_HOOKS_STRICT === "1";
+  const path = resolveUserHooksConfigPath();
+
+  // Single-step read: attempting `file.exists()` then `file.json()` was a
+  // TOCTOU race that treated any atomic replace/delete between the two
+  // operations as fatal corruption, even on routine editor saves (review
+  // third-loop r3 finding). We now try the read directly and treat
+  // ENOENT as "file absent" (silent empty). Any other error — a real
+  // parse failure, permission issue, or concurrent truncation — is still
+  // fatal because the file existed but produced unknown content, which
+  // could have hidden a failClosed hook.
   let raw: unknown;
   try {
-    raw = await Bun.file(USER_HOOKS_CONFIG_PATH).json();
-  } catch {
-    return [];
+    raw = await Bun.file(path).json();
+  } catch (e) {
+    // Bun surfaces a missing file with an error whose `code` is "ENOENT".
+    // Guard against both the Node-style code property and a message
+    // fallback so the detection survives small runtime divergences.
+    const errCode =
+      typeof e === "object" && e !== null && "code" in e
+        ? (e as { readonly code?: unknown }).code
+        : undefined;
+    const errMsg = e instanceof Error ? e.message : String(e);
+    if (errCode === "ENOENT" || /ENOENT|no such file/i.test(errMsg)) {
+      return [];
+    }
+    const msg = `Could not read ${path}: ${errMsg}`;
+    options.onLoadError?.(msg);
+    throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
   }
-  const result = loadRegisteredHooks(raw, "user");
-  if (!result.ok) return [];
-  if (!options.filterAgentHooks) return result.value;
-  const agentHooks = result.value.filter((rh) => rh.hook.kind === "agent");
-  if (agentHooks.length > 0 && options.onAgentHooksFiltered !== undefined) {
-    options.onAgentHooksFiltered(agentHooks.map((rh) => rh.hook.name));
+
+  // Agent-hook handling for hosts that cannot run agent hooks
+  // (filterAgentHooks: true). Three cases in priority order:
+  //
+  // 1. Strict mode + any agent entry → fatal. The operator opted into
+  //    "fail on anything the loader cannot honor," and silently dropping
+  //    unsupported types under KOI_HOOKS_STRICT=1 is exactly the class of
+  //    bypass strict mode exists to prevent (review round 7 new finding).
+  //
+  // 2. Lenient mode + agent entry marked `failClosed: true` → fatal. Even
+  //    outside strict mode, the per-hook failClosed opt-in is the explicit
+  //    contract: the operator declared this hook load-critical and the
+  //    host cannot honor it, so refusing to start is the only truthful
+  //    response. This preserves the failClosed guarantee for operators
+  //    who share a hooks.json across TUI and agent-capable hosts.
+  //
+  // 3. Otherwise → silently strip the agent entries before validation and
+  //    report the names via `onAgentHooksFiltered` (round 5 behaviour).
+  //    Stripping before validation means malformed/duplicate agent entries
+  //    cannot abort startup for a host that would have ignored them anyway.
+  let effectiveRaw: unknown = raw;
+  if (options.filterAgentHooks && Array.isArray(raw)) {
+    const keptEntries: unknown[] = [];
+    // Display labels cover EVERY filtered ACTIVE agent entry — named or
+    // not — so the strict-mode gate cannot be silently bypassed by an
+    // unnamed `{kind:"agent",...}` entry. Unnamed entries fall back to
+    // `entry <index>` labels.
+    const agentLabels: string[] = [];
+    // `agentNames` is a strict subset used for the `onAgentHooksFiltered`
+    // callback, which historically receives only string names. Operators
+    // see the full list (including unnamed entries) via the strict-mode
+    // fatal message and via `onLoadError` when we surface a warning.
+    const agentNames: string[] = [];
+    const failClosedAgentLabels: string[] = [];
+    for (let i = 0; i < raw.length; i++) {
+      const entry: unknown = raw[i];
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as { readonly kind?: unknown }).kind === "agent"
+      ) {
+        // Honor `enabled: false` for agent entries: a disabled hook is
+        // the documented way for an operator to share one hooks.json
+        // across hosts that can/can't run agent hooks. Counting a
+        // disabled entry toward the strict/failClosed gates would
+        // recreate a real lockout path (third-loop r7 finding).
+        const sniffedEnabled = (entry as { readonly enabled?: unknown }).enabled;
+        const isEnabled = sniffedEnabled !== false;
+        if (!isEnabled) {
+          // Still drop it from the set passed to the per-entry loader —
+          // a disabled hook is inert by definition, no need to validate.
+          continue;
+        }
+        const sniffedName = (entry as { readonly name?: unknown }).name;
+        const displayName =
+          typeof sniffedName === "string" && sniffedName.length > 0 ? sniffedName : `entry ${i}`;
+        agentLabels.push(displayName);
+        if (typeof sniffedName === "string" && sniffedName.length > 0) {
+          agentNames.push(sniffedName);
+        }
+        if ((entry as { readonly failClosed?: unknown }).failClosed === true) {
+          failClosedAgentLabels.push(`"${displayName}"`);
+        }
+        continue;
+      }
+      keptEntries.push(entry);
+    }
+
+    // Surface named agent hooks via the legacy callback; surface unnamed
+    // ones through onLoadError so operators can still identify them.
+    if (agentNames.length > 0 && options.onAgentHooksFiltered !== undefined) {
+      options.onAgentHooksFiltered(agentNames);
+    }
+    const unnamedAgents = agentLabels.length - agentNames.length;
+    if (unnamedAgents > 0) {
+      options.onLoadError?.(
+        `${unnamedAgents} agent hook(s) without a parseable name were filtered from ${path}`,
+      );
+    }
+
+    if (strictMode && agentLabels.length > 0) {
+      throw new Error(
+        `Refusing to start: ${agentLabels.length} agent hook(s) in ${path} (${agentLabels
+          .map((l) => `"${l}"`)
+          .join(
+            ", ",
+          )}) — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries. Remove the agent entries or run via a host that supports them.`,
+      );
+    }
+    if (failClosedAgentLabels.length > 0) {
+      throw new Error(
+        `Refusing to start: agent hook(s) marked failClosed:true cannot be loaded by this host (${failClosedAgentLabels.join(
+          ", ",
+        )}). Remove failClosed from the affected entries or run via a host that supports agent hooks.`,
+      );
+    }
+
+    effectiveRaw = keptEntries;
   }
-  return result.value.filter((rh) => rh.hook.kind !== "agent");
+
+  const loaded = loadRegisteredHooksPerEntry(effectiveRaw, "user");
+  if (options.onLoadError !== undefined) {
+    for (const err of loaded.errors) {
+      const where =
+        err.index < 0
+          ? "hooks.json"
+          : err.name !== undefined
+            ? `hooks.json entry ${err.index} ("${err.name}")`
+            : `hooks.json entry ${err.index}`;
+      options.onLoadError(`${where}: ${err.message}`);
+    }
+    for (const w of loaded.warnings) {
+      options.onLoadError(`hooks.json: ${w}`);
+    }
+  }
+
+  // Structural root errors (non-array, etc.) are always fatal — even
+  // outside strict mode. We cannot enumerate entries to inspect
+  // per-entry `failClosed: true` intent, so treating them as a
+  // degraded-empty load would be a silent policy bypass.
+  const structuralErrors = loaded.errors.filter((e) => e.kind === "structural");
+  if (structuralErrors.length > 0) {
+    throw new Error(
+      `Refusing to start: ${path} is structurally invalid — ${structuralErrors
+        .map((e) => e.message)
+        .join("; ")}. Fix or remove the file before retrying.`,
+    );
+  }
+
+  // Strict mode: any remaining per-entry error (schema, duplicate)
+  // refuses startup, even without the per-hook failClosed opt-in.
+  if (strictMode && loaded.errors.length > 0) {
+    const summary = loaded.errors
+      .map((e) => {
+        const where =
+          e.index < 0
+            ? "root"
+            : e.name !== undefined
+              ? `entry ${e.index} ("${e.name}")`
+              : `entry ${e.index}`;
+        return `${where}: ${e.message}`;
+      })
+      .join("; ");
+    throw new Error(
+      `Refusing to start: ${path} has ${loaded.errors.length} hook load error(s) under KOI_HOOKS_STRICT=1 — ${summary}. Fix every entry before retrying.`,
+    );
+  }
+
+  // Lenient mode fail-closed opt-in: any load error — schema or duplicate
+  // — on an entry the operator explicitly marked `failClosed: true` aborts
+  // startup even outside strict mode. The duplicate case matters: if an
+  // operator edits a deny/audit hook in place but leaves the older copy
+  // above it, the stricter replacement is declared load-critical and the
+  // runtime must refuse to run the stale definition. Parse errors,
+  // structural root errors, ordinary schema errors, and unmarked duplicates
+  // still degrade to warnings + partial load in lenient mode so benign
+  // config mistakes cannot deny service to the TUI / CLI.
+  const failClosedErrors = loaded.errors.filter((e) => e.failClosed === true);
+  if (failClosedErrors.length > 0) {
+    const labels = failClosedErrors
+      .map((e) => (e.name !== undefined ? `"${e.name}"` : `entry ${e.index}`))
+      .join(", ");
+    throw new Error(
+      `Refusing to start: ${failClosedErrors.length} hook(s) marked failClosed:true failed to load (${labels}). Fix ${path} or remove failClosed from the affected entries.`,
+    );
+  }
+
+  // When filterAgentHooks is true, agent entries were already stripped
+  // from the raw array above; loaded.hooks never contains any. The post-
+  // filter that used to live here is redundant.
+  return loaded.hooks;
 }
 
 /**
  * Merge already-loaded user-tier hooks with plugin-provided `HookConfig`s
  * (tier-tagged as "session"), returning a single deterministic list in
- * user-then-plugin order. When `filterAgentHooks` is true, `kind: "agent"`
- * plugin hooks are silently dropped to mirror the user-hook filter applied
- * by `loadUserRegisteredHooks`.
+ * user-then-plugin order.
+ *
+ * When `filterAgentHooks` is true, `kind: "agent"` plugin hooks are
+ * silently dropped (with the names reported via `onFilteredAgentHooks`
+ * so operators know what was skipped). Unlike USER hooks, plugin hooks
+ * are auto-discovered from third-party packages the operator installed
+ * but does not directly author — letting a plugin's `failClosed: true`
+ * agent hook abort startup would mean any plugin update could brick
+ * every TUI session on hosts that cannot run agent hooks, which is a
+ * worse failure mode than the silent bypass it would prevent (review
+ * third-loop r3 finding). Operators who need strict plugin enforcement
+ * should audit their plugin set and remove unsupported plugins rather
+ * than rely on startup-fatal load behaviour here.
  */
 export function mergeUserAndPluginHooks(
   userHooks: readonly RegisteredHook[],
   pluginHookConfigs: readonly HookConfig[],
-  options: { readonly filterAgentHooks: boolean },
+  options: {
+    readonly filterAgentHooks: boolean;
+    readonly onFilteredAgentHooks?: (hookNames: readonly string[]) => void;
+  },
 ): readonly RegisteredHook[] {
-  const filteredPluginConfigs = options.filterAgentHooks
-    ? pluginHookConfigs.filter((h) => h.kind !== "agent")
-    : pluginHookConfigs;
-  const pluginRegistered = createRegisteredHooks(filteredPluginConfigs, "session");
+  let effectivePluginConfigs = pluginHookConfigs;
+  if (options.filterAgentHooks) {
+    const agentHooks = pluginHookConfigs.filter((h) => h.kind === "agent");
+    if (agentHooks.length > 0 && options.onFilteredAgentHooks !== undefined) {
+      options.onFilteredAgentHooks(agentHooks.map((h) => h.name));
+    }
+    effectivePluginConfigs = pluginHookConfigs.filter((h) => h.kind !== "agent");
+  }
+  const pluginRegistered = createRegisteredHooks(effectivePluginConfigs, "session");
   return [...userHooks, ...pluginRegistered];
 }
 

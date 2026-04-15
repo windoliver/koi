@@ -431,17 +431,30 @@ The `HookPolicy` interface (L0) controls which tiers are active:
 ### API
 
 ```typescript
-import { createRegisteredHooks, loadRegisteredHooks, applyPolicy, groupByTier } from "@koi/hooks";
+import {
+  createRegisteredHooks,
+  loadRegisteredHooks,
+  loadRegisteredHooksPerEntry,
+  applyPolicy,
+  groupByTier,
+} from "@koi/hooks";
 
 // Tag raw configs with a tier
 const userHooks = createRegisteredHooks(loadedConfigs, "user");
 const pluginHooks = createRegisteredHooks(pluginConfigs, "session");
 
-// Load and tag in one step (validates via loadHooks + tags)
-const result = loadRegisteredHooks(rawJson, "user");
+// Strict all-or-nothing load: any invalid entry rejects the whole array.
+// Use this for schema validators / CI gates that want a hard failure.
+const strict = loadRegisteredHooks(rawJson, "user");
 
-// Filter by policy
-const active = applyPolicy([...userHooks, ...pluginHooks], policy, "user");
+// Per-entry load (#1781): one bad entry does NOT nuke its valid peers.
+// Returns { hooks, errors, warnings } — each error carries a `kind`
+// discriminator ("schema" | "duplicate" | "structural"), the declared
+// `name` (when parseable), and `failClosed` (sniffed from the raw JSON
+// when true) so hosts can apply fail-closed policy per entry.
+const lenient = loadRegisteredHooksPerEntry(rawJson, "user");
+for (const err of lenient.errors) console.warn(err.message);
+const active = applyPolicy(lenient.hooks, policy, "user");
 
 // Group for phased dispatch
 const groups = groupByTier(active); // { managed, user, session }
@@ -457,7 +470,7 @@ const groups = groupByTier(active); // { managed, user, session }
 | File | Responsibility |
 |------|---------------|
 | `schema.ts` | Zod schemas for hook config validation |
-| `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]`; `loadRegisteredHooks()` — load + tag with tier |
+| `loader.ts` | `loadHooks()` — validate raw config → typed `HookConfig[]`; `loadRegisteredHooks()` — strict all-or-nothing load + tag with tier; `loadRegisteredHooksPerEntry()` — per-entry load with `HookLoadError[]` (kind: schema \| duplicate \| structural) so one bad entry doesn't nuke valid peers (#1781) |
 | `policy.ts` | `RegisteredHook`, `HookTier`, `applyPolicy()`, `groupByTier()`, `validateNoDuplicateNames()` |
 | `registry.ts` | `HookRegistry` — session-scoped registration/cleanup + hook-agent suppression + tier-phased dispatch |
 | `executor.ts` | `executeHooks()` — parallel/serial dispatch with timeout + decision parsing |
