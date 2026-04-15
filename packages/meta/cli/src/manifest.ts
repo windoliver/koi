@@ -65,6 +65,25 @@ function absolutizeMountUri(mountUri: string, manifestDir: string): string {
 }
 
 /**
+ * Scheme allowlist for host-owned nexus local-bridge mounts (#1777).
+ *
+ * Only `local://` is supported today. Other nexus-fs connector schemes
+ * (gdrive://, s3://, gmail://, etc.) require OAuth flows whose
+ * `auth_required` notifications must be routed back to the user via
+ * `transport.submitAuthCode(...)`, and neither `koi start` nor
+ * `koi tui` has a channel-aware auth handler yet. Accepting those URIs
+ * and letting them fail on first filesystem call would silently break
+ * sessions mid-turn; rejecting them deterministically at parse time
+ * gives the user a clear error before any adapter or subprocess is
+ * created.
+ */
+const SUPPORTED_NEXUS_LOCAL_BRIDGE_SCHEMES: readonly string[] = ["local://"];
+
+function isSupportedMountUri(uri: string): boolean {
+  return SUPPORTED_NEXUS_LOCAL_BRIDGE_SCHEMES.some((s) => uri.startsWith(s));
+}
+
+/**
  * Walk `filesystem.options.mountUri` (string or array of strings) and
  * anchor every relative `local://` URI to the manifest directory.
  * Rebuilds a new `FileSystemConfig` (structural clone of the touched
@@ -271,6 +290,35 @@ export async function loadManifestConfig(
     // launched from another.
     const manifestDir = dirname(resolvePath(path));
     filesystem = anchorFilesystemPaths(fsResult.value, manifestDir);
+
+    // Scheme allowlist (#1777 review round 7): reject OAuth-requiring
+    // mountUri schemes deterministically at parse time rather than
+    // silently accepting them and aborting the session on first
+    // filesystem call. Routing `auth_required` notifications back
+    // through `transport.submitAuthCode(...)` requires a channel-aware
+    // auth handler that neither host has wired yet — until then the
+    // conservative posture is "local bridge only, local:// mounts
+    // only". Hosts that add OAuth support can relax this allowlist.
+    if (filesystem.backend === "nexus" && filesystem.options !== undefined) {
+      const mountUri = (filesystem.options as Record<string, unknown>).mountUri;
+      const candidates: unknown[] =
+        typeof mountUri === "string"
+          ? [mountUri]
+          : Array.isArray(mountUri)
+            ? (mountUri as unknown[])
+            : [];
+      const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
+      if (invalid !== undefined) {
+        return {
+          ok: false,
+          error:
+            `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
+            `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
+            `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
+            `out of scope for the current manifest filesystem wiring.`,
+        };
+      }
+    }
   }
 
   return {

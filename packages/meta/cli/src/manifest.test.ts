@@ -142,7 +142,6 @@ describe("loadManifestConfig: filesystem block", () => {
         "    mountUri:",
         '      - "local://./a"',
         '      - "local:///already/absolute"',
-        '      - "gdrive://my-drive"',
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
@@ -152,7 +151,48 @@ describe("loadManifestConfig: filesystem block", () => {
     const mountUri = options.mountUri as readonly string[];
     expect(mountUri[0]).toContain(`${dir}/a`);
     expect(mountUri[1]).toBe("local:///already/absolute");
-    expect(mountUri[2]).toBe("gdrive://my-drive");
+  });
+
+  test("rejects non-local:// mountUri schemes (OAuth gate)", async () => {
+    // Regression for #1777 round 7: OAuth-requiring connector schemes
+    // must be rejected at parse time, not silently accepted and then
+    // aborting the session on first filesystem call.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        '    mountUri: "gdrive://my-drive"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("gdrive://my-drive");
+    expect(result.error).toContain("local://");
+  });
+
+  test("rejects array mountUri that mixes supported and unsupported schemes", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local:///tmp/a"',
+        '      - "s3://bucket/key"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("s3://bucket/key");
   });
 
   test("rejects filesystem that is not an object", async () => {
