@@ -42,7 +42,11 @@ import {
 import { createSystemPromptMiddleware } from "@koi/engine";
 import { createLocalFileSystem } from "@koi/fs-local";
 import type { CreateHookMiddlewareOptions, RegisteredHook } from "@koi/hooks";
-import { createHookMiddleware, createRegisteredHooks, loadRegisteredHooks } from "@koi/hooks";
+import {
+  createHookMiddleware,
+  createRegisteredHooks,
+  loadRegisteredHooksPerEntry,
+} from "@koi/hooks";
 import type { McpResolver, McpServerConfig } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
@@ -70,6 +74,19 @@ export interface McpSetup {
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
 export const USER_HOOKS_CONFIG_PATH: string = join(homedir(), ".koi", "hooks.json");
+
+/**
+ * Resolve the user hooks config path lazily. `USER_HOOKS_CONFIG_PATH` is
+ * captured at module load, but tests need to redirect `$HOME` per-test and
+ * Bun's `os.homedir()` does not re-read `process.env.HOME` between calls —
+ * it returns a snapshot taken at process startup. Consulting `HOME` first
+ * keeps test overrides working while preserving `homedir()` as the POSIX
+ * fallback for environments where `HOME` is unset.
+ */
+function resolveUserHooksConfigPath(): string {
+  const home = process.env.HOME ?? homedir();
+  return join(home, ".koi", "hooks.json");
+}
 
 // ---------------------------------------------------------------------------
 // MCP wiring
@@ -149,9 +166,18 @@ export function buildPluginMcpSetup(
 
 /**
  * Load user-tier hooks from `~/.koi/hooks.json` as tier-tagged
- * `RegisteredHook`s. Returns an empty array when the file is absent,
- * unreadable, or fails schema validation — matching the prior silent-skip
- * behavior of both call sites.
+ * `RegisteredHook`s.
+ *
+ * Loader semantics:
+ * - File absent → silent empty result (hooks.json is optional).
+ * - File present but unreadable / not JSON → `onLoadError` is invoked with a
+ *   diagnostic; empty result is returned.
+ * - File present and parseable → each entry is validated independently via
+ *   `loadRegisteredHooksPerEntry`. Invalid entries are reported through
+ *   `onLoadError` (one call per error) and skipped; valid peers still load.
+ *   This replaces the prior all-or-nothing behaviour where a single bad
+ *   entry (e.g. an http hook lacking `KOI_DEV=1`) would silently drop every
+ *   hook in the file (see issue #1781).
  *
  * When `filterAgentHooks` is true, any `kind: "agent"` hooks are removed
  * (and their names reported via the optional callback) so the caller can
@@ -161,21 +187,42 @@ export function buildPluginMcpSetup(
 export async function loadUserRegisteredHooks(options: {
   readonly filterAgentHooks: boolean;
   readonly onAgentHooksFiltered?: (hookNames: readonly string[]) => void;
+  readonly onLoadError?: (message: string) => void;
 }): Promise<readonly RegisteredHook[]> {
+  const path = resolveUserHooksConfigPath();
+  const file = Bun.file(path);
+  if (!(await file.exists())) return [];
+
   let raw: unknown;
   try {
-    raw = await Bun.file(USER_HOOKS_CONFIG_PATH).json();
-  } catch {
+    raw = await file.json();
+  } catch (e) {
+    options.onLoadError?.(`Could not read ${path}: ${e instanceof Error ? e.message : String(e)}`);
     return [];
   }
-  const result = loadRegisteredHooks(raw, "user");
-  if (!result.ok) return [];
-  if (!options.filterAgentHooks) return result.value;
-  const agentHooks = result.value.filter((rh) => rh.hook.kind === "agent");
+
+  const loaded = loadRegisteredHooksPerEntry(raw, "user");
+  if (options.onLoadError !== undefined) {
+    for (const err of loaded.errors) {
+      const where =
+        err.index < 0
+          ? "hooks.json"
+          : err.name !== undefined
+            ? `hooks.json entry ${err.index} ("${err.name}")`
+            : `hooks.json entry ${err.index}`;
+      options.onLoadError(`${where}: ${err.message}`);
+    }
+    for (const w of loaded.warnings) {
+      options.onLoadError(`hooks.json: ${w}`);
+    }
+  }
+
+  if (!options.filterAgentHooks) return loaded.hooks;
+  const agentHooks = loaded.hooks.filter((rh) => rh.hook.kind === "agent");
   if (agentHooks.length > 0 && options.onAgentHooksFiltered !== undefined) {
     options.onAgentHooksFiltered(agentHooks.map((rh) => rh.hook.name));
   }
-  return result.value.filter((rh) => rh.hook.kind !== "agent");
+  return loaded.hooks.filter((rh) => rh.hook.kind !== "agent");
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { loadHooks, loadHooksWithDiagnostics } from "./loader.js";
+import { loadHooks, loadHooksWithDiagnostics, loadRegisteredHooksPerEntry } from "./loader.js";
 
 describe("loadHooks", () => {
   it("returns typed configs for valid input", () => {
@@ -260,5 +260,114 @@ describe("loadHooksWithDiagnostics", () => {
       expect(result.value.hooks).toHaveLength(1);
       expect(result.value.warnings).toHaveLength(0);
     }
+  });
+});
+
+describe("loadRegisteredHooksPerEntry", () => {
+  it("returns empty result for undefined / null", () => {
+    for (const raw of [undefined, null]) {
+      const result = loadRegisteredHooksPerEntry(raw, "user");
+      expect(result.hooks).toHaveLength(0);
+      expect(result.errors).toHaveLength(0);
+      expect(result.warnings).toHaveLength(0);
+    }
+  });
+
+  it("reports a structural error when root is not an array", () => {
+    const result = loadRegisteredHooksPerEntry(
+      { kind: "command", name: "a", cmd: ["echo"] },
+      "user",
+    );
+    expect(result.hooks).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.index).toBe(-1);
+    expect(result.errors[0]?.message).toContain("array");
+  });
+
+  it("loads valid peers when one entry fails validation", () => {
+    // The regression: a single bad hook (empty cmd) used to drop the whole file.
+    const result = loadRegisteredHooksPerEntry(
+      [
+        { kind: "command", name: "good-1", cmd: ["echo", "a"] },
+        { kind: "command", name: "bad", cmd: [] },
+        { kind: "http", name: "good-2", url: "https://example.com" },
+      ],
+      "user",
+    );
+    expect(result.hooks.map((rh) => rh.hook.name)).toEqual(["good-1", "good-2"]);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.index).toBe(1);
+    expect(result.errors[0]?.name).toBe("bad");
+    expect(result.errors[0]?.message).toContain("Hook[1]");
+  });
+
+  it("tags loaded hooks with the given tier", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [{ kind: "command", name: "a", cmd: ["echo"] }],
+      "managed",
+    );
+    expect(result.hooks).toHaveLength(1);
+    expect(result.hooks[0]?.tier).toBe("managed");
+    expect(result.hooks[0]?.id).toBe("managed:a");
+  });
+
+  it("filters disabled entries without reporting them as errors", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [
+        { kind: "command", name: "on", cmd: ["echo"] },
+        { kind: "command", name: "off", cmd: ["echo"], enabled: false },
+      ],
+      "user",
+    );
+    expect(result.hooks.map((rh) => rh.hook.name)).toEqual(["on"]);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it("keeps the first occurrence on duplicate names and reports the dupe", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [
+        { kind: "command", name: "dupe", cmd: ["echo", "first"] },
+        { kind: "command", name: "dupe", cmd: ["echo", "second"] },
+      ],
+      "user",
+    );
+    expect(result.hooks).toHaveLength(1);
+    expect(result.hooks[0]?.hook.kind).toBe("command");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.index).toBe(1);
+    expect(result.errors[0]?.name).toBe("dupe");
+    expect(result.errors[0]?.message).toContain("Duplicate");
+  });
+
+  it("emits warnings for unknown event kinds on accepted entries", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [
+        {
+          kind: "command",
+          name: "future",
+          cmd: ["echo"],
+          filter: { events: ["future.event"] },
+        },
+      ],
+      "user",
+    );
+    expect(result.hooks).toHaveLength(1);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("future.event");
+  });
+
+  it("carries the declared name even when the entry fails type validation", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [{ kind: "command", name: "needs-cmd", cmd: [] }],
+      "user",
+    );
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.name).toBe("needs-cmd");
+  });
+
+  it("omits name when the entry has no parseable name field", () => {
+    const result = loadRegisteredHooksPerEntry([{ kind: "nope" }], "user");
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.name).toBeUndefined();
   });
 });

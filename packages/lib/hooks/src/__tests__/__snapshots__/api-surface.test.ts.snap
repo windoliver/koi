@@ -496,6 +496,37 @@ declare function loadRegisteredHooks(raw: unknown, tier: HookTier): Result<reado
  * Like \`loadRegisteredHooks\`, but also returns warnings for unknown event kinds.
  */
 declare function loadRegisteredHooksWithDiagnostics(raw: unknown, tier: HookTier): Result<LoadRegisteredHooksResult, KoiError>;
+/**
+ * A loader error scoped to a single hook entry (or \`-1\` for structural errors
+ * like "not an array"). Carries the hook's declared \`name\` when parseable so
+ * operators can identify which entry failed without counting array indices.
+ */
+interface HookLoadError {
+    readonly index: number;
+    readonly name?: string;
+    readonly message: string;
+}
+/** Result of per-entry hook loading: valid entries + per-entry errors + warnings. */
+interface LoadRegisteredHooksPerEntryResult {
+    readonly hooks: readonly RegisteredHook[];
+    readonly errors: readonly HookLoadError[];
+    readonly warnings: readonly string[];
+}
+/**
+ * Per-entry variant of \`loadRegisteredHooks\`: validates each array element
+ * independently so one malformed hook does not discard its valid peers.
+ *
+ * Differences from \`loadRegisteredHooks\`:
+ * - Invalid entries are collected into \`errors\` (with index + declared name
+ *   when available) instead of rejecting the whole array.
+ * - Duplicate names are reported per-entry (first occurrence wins).
+ * - A non-array root is reported as a single error with \`index: -1\`.
+ *
+ * Callers (CLI, TUI, daemons) should surface \`errors\` via whatever operator
+ * channel they have — \`loadRegisteredHooks\`'s all-or-nothing Result is kept
+ * for strict callers (schema validators, CI).
+ */
+declare function loadRegisteredHooksPerEntry(raw: unknown, tier: HookTier): LoadRegisteredHooksPerEntryResult;
 
 /**
  * Hook middleware — bridges @koi/hooks execution into the KoiMiddleware contract.
@@ -754,6 +785,6 @@ declare const agentHookSchema: z.ZodType<AgentHookConfig>;
 declare const promptHookSchema: z.ZodType<PromptHookConfig>;
 declare const hookConfigSchema: z.ZodType<HookConfig>;
 
-export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookRegistry, type HookTier, type HookVerdictResult, type LoadHooksResult, type LoadRegisteredHooksResult, type PayloadStatus, type PinnedUrl, type PolicyActor, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, type RegisteredHook, type TierGroups, agentHookSchema, aggregateDecisions, aggregatePostDecisions, applyPolicy, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, createRegisteredHooks, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, groupByTier, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, loadRegisteredHooks, loadRegisteredHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, tierOrder, validateHeaderValue, validateHeaders, validateHookUrl, validateNoDuplicateNames, verdictToDecision };
+export { AgentHookExecutor, type AggregatedDecision, type CreateAgentExecutorOptions, type CreateHookMiddlewareOptions, type CreateHookRegistryOptions, type CreatePromptAdapterOptions, DEFAULT_AGENT_SYSTEM_PROMPT, type DnsResolverFn, type DnsValidationResult, type EnvExpandResult, type EnvRecordExpandResult, HOOK_VERDICT_INPUT_SCHEMA, HOOK_VERDICT_TOOL_NAME, type HookExecutor, type HookLoadError, type HookRegistry, type HookTier, type HookVerdictResult, type LoadHooksResult, type LoadRegisteredHooksPerEntryResult, type LoadRegisteredHooksResult, type PayloadStatus, type PinnedUrl, type PolicyActor, PromptExecutorAdapter, RESERVED_HEADER_NAMES, type RedactedPayload, type RegisteredHook, type TierGroups, agentHookSchema, aggregateDecisions, aggregatePostDecisions, applyPolicy, buildEnvAllowSet, checkReservedHeaders, commandHookSchema, createAgentExecutor, createHookMiddleware, createHookRegistry, createRegisteredHooks, defaultHookDnsResolver, executeHooks, expandEnvVars, expandEnvVarsInRecord, extractStructure, groupByTier, hookConfigSchema, hookFilterSchema, httpHookSchema, isBlockedHookIp, loadHooks, loadHooksWithDiagnostics, loadRegisteredHooks, loadRegisteredHooksPerEntry, loadRegisteredHooksWithDiagnostics, matchEnvGlob, matchesHookFilter, mergeToolDenylist, parseVerdictOutput, pinResolvedIp, promptHookSchema, redactEventData, resolveAndValidateHookUrl, resolveFailMode, resolveTimeout, tierOrder, validateHeaderValue, validateHeaders, validateHookUrl, validateNoDuplicateNames, verdictToDecision };
 "
 `;

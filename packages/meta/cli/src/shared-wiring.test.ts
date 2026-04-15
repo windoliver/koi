@@ -1,10 +1,15 @@
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
-import { buildPluginMcpSetup, loadUserMcpSetup, mergeUserAndPluginHooks } from "./shared-wiring.js";
+import {
+  buildPluginMcpSetup,
+  loadUserMcpSetup,
+  loadUserRegisteredHooks,
+  mergeUserAndPluginHooks,
+} from "./shared-wiring.js";
 
 function mkTempCwd(): string {
   return mkdtempSync(join(tmpdir(), "koi-shared-wiring-"));
@@ -111,6 +116,104 @@ describe("buildPluginMcpSetup", () => {
 // ---------------------------------------------------------------------------
 // mergeUserAndPluginHooks
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// loadUserRegisteredHooks — per-entry loader semantics (issue #1781)
+// ---------------------------------------------------------------------------
+
+describe("loadUserRegisteredHooks", () => {
+  let fakeHome: string;
+  let origHome: string | undefined;
+
+  function writeHooksJson(body: string): void {
+    const dir = join(fakeHome, ".koi");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "hooks.json"), body, "utf8");
+  }
+
+  beforeEach(() => {
+    origHome = process.env.HOME;
+    fakeHome = mkdtempSync(join(tmpdir(), "koi-user-hooks-"));
+    process.env.HOME = fakeHome;
+  });
+
+  afterEach(() => {
+    if (origHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = origHome;
+    }
+    rmSync(fakeHome, { recursive: true, force: true });
+  });
+
+  test("returns [] silently when hooks.json is absent", async () => {
+    const errors: string[] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test("reports an error and returns [] when hooks.json is not JSON", async () => {
+    writeHooksJson("not-json");
+    const errors: string[] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Could not read");
+    expect(errors[0]).toContain("hooks.json");
+  });
+
+  test("loads valid peers when one entry is invalid (issue #1781 regression)", async () => {
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "command", name: "bad", cmd: [] }, // schema-invalid
+      ]),
+    );
+    const errors: string[] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("bad");
+  });
+
+  test("surfaces an error when root is not an array", async () => {
+    writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
+    const errors: string[] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("array");
+  });
+
+  test("filters agent hooks and fires onAgentHooksFiltered", async () => {
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "c1", cmd: ["/bin/true"] },
+        { kind: "agent", name: "a1", prompt: "verify" },
+      ]),
+    );
+    const filtered: string[][] = [];
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: true,
+      onAgentHooksFiltered: (names) => filtered.push([...names]),
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["c1"]);
+    expect(filtered).toEqual([["a1"]]);
+  });
+});
 
 describe("mergeUserAndPluginHooks", () => {
   test("returns empty array when both inputs are empty", () => {

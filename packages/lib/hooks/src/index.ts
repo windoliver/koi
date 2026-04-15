@@ -27,11 +27,17 @@ export {
 } from "./header-sanitize.js";
 export type { HookExecutor } from "./hook-executor.js";
 export { resolveFailMode, resolveTimeout, validateHookUrl } from "./hook-validation.js";
-export type { LoadHooksResult, LoadRegisteredHooksResult } from "./loader.js";
+export type {
+  HookLoadError,
+  LoadHooksResult,
+  LoadRegisteredHooksPerEntryResult,
+  LoadRegisteredHooksResult,
+} from "./loader.js";
 export {
   loadHooks,
   loadHooksWithDiagnostics,
   loadRegisteredHooks,
+  loadRegisteredHooksPerEntry,
   loadRegisteredHooksWithDiagnostics,
 } from "./loader.js";
 export type { AggregatedDecision, CreateHookMiddlewareOptions } from "./middleware.js";

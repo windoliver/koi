@@ -195,8 +195,34 @@ EOF
 ### S6 — Permissions & Hooks
 
 **Setup for Q19**: none (in-session grant exercises the same code path). The TUI has no user config file for pre-allowing tools — by design, it is configured via environment variables and CLI flags only. The `[a] Always allow <tool> this session` keystroke on the first approval modal is the mechanism for tool-granularity pre-approval within a session. See #1780 for the architectural rationale.
-**Setup for Q21**: `$KOI_HOME/.koi/hooks.json` with pre-tool-use command hook writing to `$HOOK_LOG`
-**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); see `packages/lib/hooks/src/hook-validation.ts`.
+**Setup for Q21**: `$KOI_HOME/.koi/hooks.json` with pre-tool-use command hook writing to `$HOOK_LOG`. Hooks.json is a **flat JSON array** of discriminated-union `HookConfig` entries — **not** the Claude-Code `{preToolUse: [{matcher, command}]}` shape, and there is no `KOI_TOOL_NAME` env var (the tool name is on the JSON payload read from stdin for `kind: "command"` or POST body for `kind: "http"`). Example:
+
+```json
+[
+  {
+    "kind": "command",
+    "name": "log-tool-calls",
+    "cmd": ["/bin/sh", "-c", "cat >> $HOOK_LOG"],
+    "filter": { "events": ["tool.before"] }
+  }
+]
+```
+
+See `packages/lib/hooks/src/schema.ts` for the full schema. Invalid entries are reported per-entry via `[koi tui] hooks.json: …` warnings and skipped; valid peers still load (#1781).
+
+**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); without it, the entry is rejected at load time (surfaced via `onLoadError`) and the hook never fires. See `packages/lib/hooks/src/hook-validation.ts`. Example entry:
+
+```json
+[
+  {
+    "kind": "http",
+    "name": "stub-post",
+    "url": "http://127.0.0.1:3999/hook",
+    "method": "POST",
+    "filter": { "events": ["tool.before"] }
+  }
+]
+```
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
