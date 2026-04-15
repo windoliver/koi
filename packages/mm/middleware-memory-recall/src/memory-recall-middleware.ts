@@ -22,6 +22,7 @@ import type {
   ModelRequest,
   ModelResponse,
   SessionContext,
+  SessionId,
   TurnContext,
 } from "@koi/core";
 import type { ScoredMemory } from "@koi/memory";
@@ -39,24 +40,43 @@ import type { MemoryRecallMiddlewareConfig } from "./types.js";
  * Creates a memory recall middleware with frozen snapshot + optional
  * per-turn relevance selection.
  */
-export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
-  // --- Frozen snapshot state ---
-  // let justified: cached injection message, set once on first model call per session
-  let cachedMessage: InboundMessage | undefined;
-  // let justified: whether recallMemories() has been attempted this session
-  let initialized = false;
-  // let justified: count of recalled memories for capability reporting
-  let memoryCount = 0;
-  // let justified: total token count of cached message for capability reporting
-  let tokenCount = 0;
+/** Per-session recall state — keyed by sessionId to prevent cross-session bleed. */
+interface SessionRecallState {
+  cachedMessage: InboundMessage | undefined;
+  initialized: boolean;
+  memoryCount: number;
+  tokenCount: number;
+  memoryManifest: readonly MemoryManifestEntry[];
+  frozenPaths: ReadonlySet<string>;
+  selectorNeeded: boolean;
+}
 
-  // --- Relevance state ---
-  // let justified: full manifest built during initialize(), reused per-turn
-  let memoryManifest: readonly MemoryManifestEntry[] = [];
-  // let justified: set of file paths already in the frozen snapshot (skip in relevance overlay)
-  let frozenPaths: ReadonlySet<string> = new Set();
-  // let justified: true when frozen snapshot couldn't fit all memories (selector has work to do)
-  let selectorNeeded = false;
+function createEmptyState(): SessionRecallState {
+  return {
+    cachedMessage: undefined,
+    initialized: false,
+    memoryCount: 0,
+    tokenCount: 0,
+    memoryManifest: [],
+    frozenPaths: new Set(),
+    selectorNeeded: false,
+  };
+}
+
+export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
+  // Per-session state map — prevents cross-session bleed when a single
+  // middleware instance serves multiple concurrent sessions or child agents.
+  const sessions = new Map<SessionId, SessionRecallState>();
+  // let justified: current session ID, set in onSessionStart, read in wrapModelCall
+  let activeSessionId: SessionId | undefined;
+
+  function getState(sessionId: SessionId): SessionRecallState {
+    const existing = sessions.get(sessionId);
+    if (existing !== undefined) return existing;
+    const fresh = createEmptyState();
+    sessions.set(sessionId, fresh);
+    return fresh;
+  }
 
   /**
    * Runs the recall pipeline exactly once. Sets initialized = true regardless
@@ -64,36 +84,31 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    *
    * Also builds the memory manifest for per-turn relevance selection.
    */
-  async function initialize(): Promise<void> {
-    initialized = true;
+  async function initialize(state: SessionRecallState): Promise<void> {
+    state.initialized = true;
 
     try {
       const result = await recallMemories(config.fs, config.recall);
 
       if (result.formatted.length > 0) {
-        memoryCount = result.selected.length;
-        tokenCount = estimateTokens(result.formatted);
+        state.memoryCount = result.selected.length;
+        state.tokenCount = estimateTokens(result.formatted);
 
-        cachedMessage = {
+        state.cachedMessage = {
           content: [{ kind: "text", text: result.formatted }],
           senderId: "system:memory-recall",
           timestamp: Date.now(),
         };
 
-        // Track which files are already in the frozen snapshot
-        frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
+        state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
       }
 
-      // Build manifest for relevance selector ONLY when the frozen snapshot
-      // was truncated (more memories exist than fit in the token budget).
-      // When all memories fit, the selector adds zero value — skip the
-      // second scan and the per-turn model call entirely.
       if (config.relevanceSelector !== undefined && result.truncated) {
-        selectorNeeded = true;
+        state.selectorNeeded = true;
         const scanResult = await scanMemoryDirectory(config.fs, {
           memoryDir: config.recall.memoryDir,
         });
-        memoryManifest = scanResult.memories.map((m) => ({
+        state.memoryManifest = scanResult.memories.map((m) => ({
           name: m.record.name,
           description: m.record.description,
           type: m.record.type,
@@ -136,13 +151,20 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    */
   const relevanceBudget = config.relevanceSelector?.maxTokens ?? 4000;
 
-  async function selectRelevant(request: ModelRequest): Promise<InboundMessage | undefined> {
-    if (!selectorNeeded || config.relevanceSelector === undefined || memoryManifest.length === 0) {
+  async function selectRelevant(
+    state: SessionRecallState,
+    request: ModelRequest,
+  ): Promise<InboundMessage | undefined> {
+    if (
+      !state.selectorNeeded ||
+      config.relevanceSelector === undefined ||
+      state.memoryManifest.length === 0
+    ) {
       return undefined;
     }
 
     // Only select from memories NOT already in the frozen snapshot
-    const candidates = memoryManifest.filter((m) => !frozenPaths.has(m.filePath));
+    const candidates = state.memoryManifest.filter((m) => !state.frozenPaths.has(m.filePath));
     if (candidates.length === 0) return undefined;
 
     const userMessage = extractUserMessage(request);
@@ -194,57 +216,52 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
   }
 
   /** Prepends cached memory message(s) to the request. */
-  function injectFrozenSnapshot(request: ModelRequest): ModelRequest {
-    if (cachedMessage === undefined) {
+  function injectFrozenSnapshot(state: SessionRecallState, request: ModelRequest): ModelRequest {
+    if (state.cachedMessage === undefined) {
       return request;
     }
-    return { ...request, messages: [cachedMessage, ...request.messages] };
+    return { ...request, messages: [state.cachedMessage, ...request.messages] };
   }
 
   return {
     name: "koi:memory-recall",
     priority: 310,
 
-    async onSessionStart(_ctx: SessionContext): Promise<void> {
-      cachedMessage = undefined;
-      initialized = false;
-      memoryCount = 0;
-      tokenCount = 0;
-      memoryManifest = [];
-      frozenPaths = new Set();
-      selectorNeeded = false;
+    async onSessionStart(ctx: SessionContext): Promise<void> {
+      activeSessionId = ctx.sessionId;
+      // Clear previous state for this session (fresh recall on next model call)
+      sessions.delete(ctx.sessionId);
     },
 
     describeCapabilities(): CapabilityFragment | undefined {
-      if (memoryCount === 0) {
+      const state = activeSessionId !== undefined ? sessions.get(activeSessionId) : undefined;
+      if (state === undefined || state.memoryCount === 0) {
         return undefined;
       }
       const budget = config.recall.tokenBudget ?? 8000;
       const selectorNote = config.relevanceSelector !== undefined ? " + per-turn relevance" : "";
       return {
         label: "memory-recall",
-        description: `${String(memoryCount)} memories recalled (${String(tokenCount)}/${String(budget)} tokens)${selectorNote}`,
+        description: `${String(state.memoryCount)} memories recalled (${String(state.tokenCount)}/${String(budget)} tokens)${selectorNote}`,
       };
     },
 
     async wrapModelCall(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: (request: ModelRequest) => Promise<ModelResponse>,
     ): Promise<ModelResponse> {
-      if (!initialized) {
-        await initialize();
+      activeSessionId = ctx.session.sessionId;
+      const state = getState(ctx.session.sessionId);
+      if (!state.initialized) {
+        await initialize(state);
       }
 
-      // Layer 1: frozen snapshot (stable prefix)
-      let effectiveRequest = injectFrozenSnapshot(request);
+      let effectiveRequest = injectFrozenSnapshot(state, request);
 
-      // Layer 2: per-turn relevance overlay — appended AFTER the transcript
-      // so the frozen snapshot + transcript prefix stays stable for prompt
-      // cache reuse. Turn-specific content at the end doesn't break the cache.
       if (config.relevanceSelector !== undefined) {
         try {
-          const relevantMsg = await selectRelevant(request);
+          const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
             const messages = [...effectiveRequest.messages, relevantMsg];
             effectiveRequest = { ...effectiveRequest, messages };
@@ -258,19 +275,21 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     },
 
     async *wrapModelStream(
-      _ctx: TurnContext,
+      ctx: TurnContext,
       request: ModelRequest,
       next: (request: ModelRequest) => AsyncIterable<ModelChunk>,
     ): AsyncIterable<ModelChunk> {
-      if (!initialized) {
-        await initialize();
+      activeSessionId = ctx.session.sessionId;
+      const state = getState(ctx.session.sessionId);
+      if (!state.initialized) {
+        await initialize(state);
       }
 
-      let effectiveRequest = injectFrozenSnapshot(request);
+      let effectiveRequest = injectFrozenSnapshot(state, request);
 
       if (config.relevanceSelector !== undefined) {
         try {
-          const relevantMsg = await selectRelevant(request);
+          const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
             const messages = [...effectiveRequest.messages, relevantMsg];
             effectiveRequest = { ...effectiveRequest, messages };

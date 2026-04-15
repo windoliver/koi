@@ -811,7 +811,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
     { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "memory_delete", action: "invoke", effect: "allow", source: "policy" },
+    // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   ] as const;
   // Permission backend: caller may override (koi start passes an
   // auto-allow pattern backend). Default to the TUI's tiered default
