@@ -787,6 +787,16 @@ export interface CoreProvidersConfig {
    */
   readonly includeFilesystemTools?: boolean;
   /**
+   * Subset of filesystem operations to expose as tools. When omitted,
+   * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Hosts that
+   * honor a `manifest.filesystem.operations` gate pass the resolved
+   * list through here — the default when the manifest omits it is
+   * `["read"]` (applied at the host callsite, not here), which lets
+   * authors point the agent at an alternate backend without silently
+   * escalating mutation authority.
+   */
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  /**
    * When true, wire the web_fetch tool. Defaults to `true` — hosts that
    * run in airgapped environments can pass `false` to strip network access.
    */
@@ -817,25 +827,48 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
 
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
-    // (path-aware rules + approval handler) that gates out-of-workspace access.
-    const localFs = createLocalFileSystem(cwd, { allowExternalPaths: true });
-    providers.push(
-      createSingleToolProvider({
-        name: "fs-read",
-        toolName: "fs_read",
-        createTool: () => createFsReadTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-      createSingleToolProvider({
-        name: "fs-write",
-        toolName: "fs_write",
-        createTool: () => createFsWriteTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-      createSingleToolProvider({
-        name: "fs-edit",
-        toolName: "fs_edit",
-        createTool: () => createFsEditTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-    );
+    // (path-aware rules + approval handler) that gates out-of-workspace
+    // access. Manifest-driven filesystems stay on this default local
+    // backend path — pre-resolving them via resolveFileSystem would
+    // build a local backend without `allowExternalPaths`, tightening
+    // the sandbox relative to the host-default path.
+    const fs = createLocalFileSystem(cwd, { allowExternalPaths: true });
+    // Operation gating: `undefined` means "wire all three" (the default
+    // for host-default filesystems). Manifest-driven filesystems apply
+    // the `FileSystemConfig` contract's `["read"]` default at the host
+    // level before calling into this builder, so by the time we see
+    // `filesystemOperations` here it is already the resolved gate.
+    const ops = config.filesystemOperations;
+    const wantRead = ops === undefined || ops.includes("read");
+    const wantWrite = ops === undefined || ops.includes("write");
+    const wantEdit = ops === undefined || ops.includes("edit");
+    if (wantRead) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-read",
+          toolName: "fs_read",
+          createTool: () => createFsReadTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
+    if (wantWrite) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-write",
+          toolName: "fs_write",
+          createTool: () => createFsWriteTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
+    if (wantEdit) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-edit",
+          toolName: "fs_edit",
+          createTool: () => createFsEditTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
   }
 
   if (includeWeb) {

@@ -1,0 +1,227 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadManifestConfig } from "./manifest.js";
+
+// Regression tests for #1777 — manifest.filesystem must be parsed,
+// validated, and surfaced so `koi start --manifest` / `koi tui --manifest`
+// can wire alternate filesystem backends instead of silently falling
+// through to the default local backend.
+
+describe("loadManifestConfig: filesystem block", () => {
+  let dir: string;
+  const writeManifest = (yaml: string): string => {
+    const p = join(dir, "koi.manifest.yaml");
+    writeFileSync(p, yaml);
+    return p;
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "koi-manifest-1777-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("omits filesystem when block absent", async () => {
+    const p = writeManifest(["model:", "  name: google/gemini-2.0-flash-001"].join("\n"));
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.filesystem).toBeUndefined();
+  });
+
+  test("parses filesystem.backend: local", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "filesystem:", "  backend: local"].join(
+        "\n",
+      ),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.filesystem).toEqual({ backend: "local" });
+  });
+
+  test("parses filesystem.backend: nexus with absolute local bridge options", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        '    mountUri: "local:///tmp/koi-test-mount"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.filesystem).toEqual({
+      backend: "nexus",
+      options: {
+        transport: "local",
+        // Absolute `local:///...` passes through unchanged.
+        mountUri: "local:///tmp/koi-test-mount",
+      },
+    });
+  });
+
+  test("rejects invalid filesystem.backend enum", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: quantum-drive",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("filesystem");
+    expect(result.error).toContain("backend");
+  });
+
+  test("rejects filesystem with unknown top-level key", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: local",
+        "  unknownKey: 1",
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.toLowerCase()).toContain("filesystem");
+  });
+
+  test("anchors relative local:// mountUri to the manifest directory, not process.cwd", async () => {
+    // Regression for #1777 round 3: a shared manifest checked into repo A
+    // must not silently target repo B when `koi start` is launched from
+    // a different shell cwd. Relative `local://./path` resolves against
+    // the manifest file's directory, not `process.cwd()`.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        '    mountUri: "local://./workspace"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const options = (result.value.filesystem?.options ?? {}) as Record<string, unknown>;
+    const mountUri = options.mountUri as string;
+    expect(mountUri.startsWith("local:///")).toBe(true);
+    expect(mountUri).toContain("/workspace");
+    // The anchor must be the manifest directory (a temp dir), not the
+    // test runner's cwd.
+    expect(mountUri).toContain(dir);
+    expect(mountUri).not.toBe("local://./workspace");
+  });
+
+  test("anchors single-entry array mountUri", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local://./a"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const options = (result.value.filesystem?.options ?? {}) as Record<string, unknown>;
+    const mountUri = options.mountUri as readonly string[];
+    expect(mountUri[0]).toContain(`${dir}/a`);
+  });
+
+  test("rejects multi-mount arrays (runtime does not support them yet)", async () => {
+    // Regression for #1777 round 9: the runtime `resolveFileSystemAsync`
+    // throws on multi-mount local-bridge configs. Fail fast at parse
+    // time instead of at runtime assembly.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local:///tmp/a"',
+        '      - "local:///tmp/b"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.toLowerCase()).toContain("multi-mount");
+  });
+
+  test("rejects non-local:// mountUri schemes (OAuth gate)", async () => {
+    // Regression for #1777 round 7: OAuth-requiring connector schemes
+    // must be rejected at parse time, not silently accepted and then
+    // aborting the session on first filesystem call.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        '    mountUri: "gdrive://my-drive"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("gdrive://my-drive");
+    expect(result.error).toContain("local://");
+  });
+
+  test("rejects array mountUri containing unsupported scheme", async () => {
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "s3://bucket/key"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("s3://bucket/key");
+  });
+
+  test("rejects filesystem that is not an object", async () => {
+    const p = writeManifest(
+      ["model:", "  name: google/gemini-2.0-flash-001", "filesystem: nope"].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.toLowerCase()).toContain("filesystem");
+  });
+});

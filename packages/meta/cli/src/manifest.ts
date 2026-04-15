@@ -38,7 +38,75 @@
  *                                  #   per-host.
  */
 
+import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { loadConfig } from "@koi/config";
+import type { FileSystemConfig } from "@koi/core";
+import { validateFileSystemConfig } from "@koi/runtime";
+
+/**
+ * Absolutize a `local://` mountUri against the manifest directory so relative
+ * paths anchor to the manifest file, not the CLI shell cwd. Non-`local://`
+ * URIs (nexus HTTP endpoints, gdrive://, s3://, etc.) are passed through
+ * unchanged — only the local scheme has a filesystem-path semantic that can
+ * silently retarget based on the launching shell.
+ *
+ * Examples (manifestDir = `/home/alice/repo-a`):
+ *   `local://./workspace`           → `local:///home/alice/repo-a/workspace`
+ *   `local://workspace`             → `local:///home/alice/repo-a/workspace`
+ *   `local:///etc/config`           → `local:///etc/config` (already absolute)
+ *   `gdrive://my-drive`             → `gdrive://my-drive` (not local)
+ */
+function absolutizeMountUri(mountUri: string, manifestDir: string): string {
+  const prefix = "local://";
+  if (!mountUri.startsWith(prefix)) return mountUri;
+  const path = mountUri.slice(prefix.length);
+  if (isAbsolute(path)) return mountUri;
+  return `${prefix}${resolvePath(manifestDir, path)}`;
+}
+
+/**
+ * Scheme allowlist for host-owned nexus local-bridge mounts (#1777).
+ *
+ * Only `local://` is supported today. Other nexus-fs connector schemes
+ * (gdrive://, s3://, gmail://, etc.) require OAuth flows whose
+ * `auth_required` notifications must be routed back to the user via
+ * `transport.submitAuthCode(...)`, and neither `koi start` nor
+ * `koi tui` has a channel-aware auth handler yet. Accepting those URIs
+ * and letting them fail on first filesystem call would silently break
+ * sessions mid-turn; rejecting them deterministically at parse time
+ * gives the user a clear error before any adapter or subprocess is
+ * created.
+ */
+const SUPPORTED_NEXUS_LOCAL_BRIDGE_SCHEMES: readonly string[] = ["local://"];
+
+function isSupportedMountUri(uri: string): boolean {
+  return SUPPORTED_NEXUS_LOCAL_BRIDGE_SCHEMES.some((s) => uri.startsWith(s));
+}
+
+/**
+ * Walk `filesystem.options.mountUri` (string or array of strings) and
+ * anchor every relative `local://` URI to the manifest directory.
+ * Rebuilds a new `FileSystemConfig` (structural clone of the touched
+ * fields) so the input stays immutable.
+ */
+function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): FileSystemConfig {
+  const options = config.options;
+  if (options === undefined || typeof options !== "object") return config;
+  const mountUri = (options as Record<string, unknown>).mountUri;
+  if (mountUri === undefined) return config;
+  let nextMountUri: unknown;
+  if (typeof mountUri === "string") {
+    nextMountUri = absolutizeMountUri(mountUri, manifestDir);
+  } else if (Array.isArray(mountUri) && mountUri.every((u) => typeof u === "string")) {
+    nextMountUri = (mountUri as string[]).map((u) => absolutizeMountUri(u, manifestDir));
+  } else {
+    return config;
+  }
+  return {
+    ...config,
+    options: { ...(options as Record<string, unknown>), mountUri: nextMountUri },
+  };
+}
 
 export interface ManifestConfig {
   readonly modelName: string;
@@ -85,6 +153,18 @@ export interface ManifestConfig {
    * otherwise be missing). See `runtime-factory.ts`.
    */
   readonly backgroundSubprocesses: boolean | undefined;
+  /**
+   * Optional filesystem backend configuration. When set, the host
+   * resolves it via `@koi/runtime`'s `resolveFileSystemAsync` (for
+   * the nexus+local-bridge path) or `resolveFileSystem` (for
+   * `backend: "local"` and plain nexus HTTP) and wires the resulting
+   * FileSystemBackend into the core `fs_read`/`fs_write`/`fs_edit`
+   * providers. When `undefined`, the host falls back to the default
+   * local backend rooted at `cwd`. Malformed config (unknown backend,
+   * missing `mountUri`, etc.) is rejected here so the CLI fails fast
+   * before any adapter/subprocess is created.
+   */
+  readonly filesystem: FileSystemConfig | undefined;
 }
 
 /**
@@ -188,6 +268,72 @@ export async function loadManifestConfig(
     backgroundSubprocesses = bgSubsRaw;
   }
 
+  let filesystem: FileSystemConfig | undefined;
+  const fsRaw = raw.filesystem;
+  if (fsRaw !== undefined) {
+    if (typeof fsRaw !== "object" || fsRaw === null || Array.isArray(fsRaw)) {
+      return {
+        ok: false,
+        error: "manifest.filesystem must be an object with keys: backend, options, operations",
+      };
+    }
+    const fsResult = validateFileSystemConfig(fsRaw);
+    if (!fsResult.ok) {
+      return {
+        ok: false,
+        error: `manifest.filesystem: ${fsResult.error.message}`,
+      };
+    }
+    // Anchor relative `local://` mountUris to the manifest directory so
+    // they do NOT silently retarget against the CLI shell cwd when a
+    // shared manifest is checked into one repo and the command is
+    // launched from another.
+    const manifestDir = dirname(resolvePath(path));
+    filesystem = anchorFilesystemPaths(fsResult.value, manifestDir);
+
+    // Scheme allowlist (#1777 review round 7): reject OAuth-requiring
+    // mountUri schemes deterministically at parse time rather than
+    // silently accepting them and aborting the session on first
+    // filesystem call. Routing `auth_required` notifications back
+    // through `transport.submitAuthCode(...)` requires a channel-aware
+    // auth handler that neither host has wired yet — until then the
+    // conservative posture is "local bridge only, local:// mounts
+    // only". Hosts that add OAuth support can relax this allowlist.
+    if (filesystem.backend === "nexus" && filesystem.options !== undefined) {
+      const mountUri = (filesystem.options as Record<string, unknown>).mountUri;
+      const candidates: unknown[] =
+        typeof mountUri === "string"
+          ? [mountUri]
+          : Array.isArray(mountUri)
+            ? (mountUri as unknown[])
+            : [];
+      // Runtime `resolveFileSystemAsync` rejects multi-mount local-bridge
+      // configs because createNexusFileSystem accepts only one mountPoint
+      // prefix (#1777 review round 9). Validating the runtime invariant
+      // at parse time turns "looks valid, fails later on startup" into a
+      // clean error before any subprocess spawn.
+      if (candidates.length > 1) {
+        return {
+          ok: false,
+          error:
+            "manifest.filesystem.options.mountUri may declare at most one URI on this host. " +
+            "Multi-mount local-bridge configs are not yet supported by the runtime resolver.",
+        };
+      }
+      const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
+      if (invalid !== undefined) {
+        return {
+          ok: false,
+          error:
+            `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
+            `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
+            `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
+            `out of scope for the current manifest filesystem wiring.`,
+        };
+      }
+    }
+  }
+
   return {
     ok: true,
     value: {
@@ -196,6 +342,7 @@ export async function loadManifestConfig(
       stacks,
       plugins,
       backgroundSubprocesses,
+      filesystem,
     },
   };
 }

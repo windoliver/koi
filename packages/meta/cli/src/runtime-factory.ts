@@ -285,6 +285,13 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditNdjsonPath?: string | undefined;
+  /**
+   * Subset of filesystem operations to expose (#1777). `undefined`
+   * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
+   * honor a `manifest.filesystem.operations` gate pass the resolved
+   * list through here. Honored by `buildCoreProviders`.
+   */
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -849,6 +856,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const coreProviders = buildCoreProviders({
     cwd,
     ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
+    ...(config.filesystemOperations !== undefined
+      ? { filesystemOperations: config.filesystemOperations }
+      : {}),
   });
 
   // --- @koi/skills-runtime + @koi/skill-tool: on-demand skill discovery and loading ---
