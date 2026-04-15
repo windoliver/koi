@@ -332,15 +332,14 @@ describe("isDrifting", () => {
 });
 
 describe("computeNextInterval", () => {
-  it("doubles interval when not drifting", () => {
-    expect(computeNextInterval(5, false, 5, 20)).toBe(10);
+  it("always returns baseInterval (exponential backoff removed)", () => {
+    // Issue 2 fix: exponential backoff removed. computeNextInterval
+    // always returns baseInterval regardless of drifting or current interval.
+    expect(computeNextInterval(5, false, 5, 20)).toBe(5);
+    expect(computeNextInterval(15, false, 5, 20)).toBe(5);
   });
 
-  it("caps at maxInterval", () => {
-    expect(computeNextInterval(15, false, 5, 20)).toBe(20);
-  });
-
-  it("resets to baseInterval when drifting", () => {
+  it("returns baseInterval when drifting", () => {
     expect(computeNextInterval(20, true, 5, 20)).toBe(5);
   });
 });
@@ -541,10 +540,10 @@ describe("createGoalMiddleware", () => {
     expect(injected).toBe(true);
     await mw.onAfterTurn?.(ctx0);
 
-    // Turn 1: should NOT inject (interval=4 after doubling from 2, only 1 turn since reminder)
+    // Turn 1: should NOT inject (interval=2, only 1 turn since reminder)
     const ctx1 = makeTurnCtx(session, {
       turnIndex: 1,
-      messages: [makeTextMessage("Still on auth")],
+      messages: [makeTextMessage("Working on auth module"), makeTextMessage("Continuing work")],
     });
     await mw.onBeforeTurn?.(ctx1);
     injected = false;
@@ -1734,5 +1733,279 @@ describe("callbackTimeoutMs validation", () => {
         onCallbackError: {} as unknown as undefined,
       }).ok,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 9: Multi-turn drift regression test (Q136 scenario)
+// ---------------------------------------------------------------------------
+
+describe("multi-turn drift re-injection", () => {
+  it("re-injects goals within baseInterval turns after drift begins", async () => {
+    // Simulates the Q136 bug: after a successful first turn, 5 off-topic
+    // turns should trigger goal re-injection. With baseInterval=3 and
+    // drift detection decoupled from injection, the middleware should
+    // detect drift on every turn and force re-injection promptly.
+    const mw = createGoalMiddleware({
+      objectives: ["Write unit tests for the math module"],
+      baseInterval: 3,
+      maxInterval: 20,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: goals inject, agent responds on-topic → not drifting
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("What are my current goals?")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    let injected = false;
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async (req) => {
+      injected = req.messages.some((m) => m.senderId === "system:goal");
+      return makeModelResponse("Your goals are: Write unit tests for the math module.");
+    });
+    expect(injected).toBe(true);
+    await mw.onAfterTurn?.(ctx0);
+
+    // Turns 1-5: completely off-topic weather prompts (drift)
+    const injections: boolean[] = [];
+    for (let i = 1; i <= 5; i++) {
+      const ctx = makeTurnCtx(session, {
+        turnIndex: i,
+        messages: [makeTextMessage("Tell me about the weather")],
+      });
+      await mw.onBeforeTurn?.(ctx);
+      let turnInjected = false;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
+        turnInjected = req.messages.some((m) => m.senderId === "system:goal");
+        return makeModelResponse("The weather today is sunny and warm.");
+      });
+      injections.push(turnInjected);
+      await mw.onAfterTurn?.(ctx);
+    }
+
+    // At least one re-injection should have occurred within 5 off-topic turns.
+    // With baseInterval=3 and drift detection every turn, injection should
+    // happen at or before turn 3.
+    expect(injections.some((v) => v)).toBe(true);
+  });
+
+  it("drift detected every turn forces re-injection on next turn", async () => {
+    // After drift is detected, forceInjectNextTurn should be set,
+    // causing immediate re-injection regardless of interval.
+    const mw = createGoalMiddleware({
+      objectives: ["Implement authentication"],
+      baseInterval: 10, // large interval to prove force-inject overrides it
+      maxInterval: 20,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: inject, on-topic response
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("Start authentication work")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () =>
+      makeModelResponse("Starting authentication implementation now."),
+    );
+    await mw.onAfterTurn?.(ctx0);
+
+    // Turn 1: off-topic (drift should be detected in onAfterTurn)
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("Tell me a joke about cats")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async () =>
+      makeModelResponse("Why did the cat sit on the computer? To keep an eye on the mouse!"),
+    );
+    await mw.onAfterTurn?.(ctx1);
+
+    // Turn 2: should force-inject because drift was detected on turn 1,
+    // despite baseInterval=10 meaning normal cadence wouldn't inject until turn 10
+    const ctx2 = makeTurnCtx(session, {
+      turnIndex: 2,
+      messages: [makeTextMessage("Another joke please")],
+    });
+    await mw.onBeforeTurn?.(ctx2);
+    let injectedOnTurn2 = false;
+    await mw.wrapModelCall?.(ctx2, makeModelRequest(), async (req) => {
+      injectedOnTurn2 = req.messages.some((m) => m.senderId === "system:goal");
+      return makeModelResponse("ok");
+    });
+    expect(injectedOnTurn2).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 10: User-message keyword-triggered injection
+// ---------------------------------------------------------------------------
+
+describe("user-message keyword-triggered injection", () => {
+  it("force-injects goals when user message contains goal keywords", async () => {
+    const mw = createGoalMiddleware({
+      objectives: ["Write unit tests for the math module"],
+      baseInterval: 100, // very large to prove keyword match overrides cadence
+      maxInterval: 200,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: normal injection (first turn)
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("Hello")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("Hi there."));
+    await mw.onAfterTurn?.(ctx0);
+
+    // Turn 1: user mentions goal keywords ("tests", "math") — should trigger injection
+    // despite baseInterval=100 meaning normal cadence wouldn't inject until turn 100
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [makeTextMessage("I've finished writing all the tests for the math module")],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    let injectedOnTurn1 = false;
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async (req) => {
+      injectedOnTurn1 = req.messages.some((m) => m.senderId === "system:goal");
+      return makeModelResponse("ok");
+    });
+    expect(injectedOnTurn1).toBe(true);
+  });
+
+  it("does not force-inject when user message has no goal keywords and not drifting", async () => {
+    const mw = createGoalMiddleware({
+      objectives: ["Write unit tests for the math module"],
+      baseInterval: 100,
+      maxInterval: 200,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: first turn injection, on-topic so drift is NOT detected
+    const ctx0 = makeTurnCtx(session, {
+      turnIndex: 0,
+      messages: [makeTextMessage("Let me write some unit tests for the math module")],
+    });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () =>
+      makeModelResponse("Starting tests for math module."),
+    );
+    await mw.onAfterTurn?.(ctx0);
+
+    // Turn 1: completely unrelated message, no keywords — but since turn 0
+    // was on-topic and interval=100, there's no force-inject from drift
+    // (drift on turn 1 will set forceInjectNextTurn for turn 2, but turn 1
+    // itself should not inject)
+    const ctx1 = makeTurnCtx(session, {
+      turnIndex: 1,
+      messages: [
+        makeTextMessage("Let me write some unit tests for the math module"),
+        makeTextMessage("What is the weather today?"),
+      ],
+    });
+    await mw.onBeforeTurn?.(ctx1);
+    let injectedOnTurn1 = false;
+    await mw.wrapModelCall?.(ctx1, makeModelRequest(), async (req) => {
+      injectedOnTurn1 = req.messages.some((m) => m.senderId === "system:goal");
+      return makeModelResponse("ok");
+    });
+    // Should NOT inject — no user keywords in latest message, interval not reached,
+    // and previous turn was on-topic so forceInjectNextTurn was not set
+    expect(injectedOnTurn1).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 11: pendingDrift fail-safe interval override
+// ---------------------------------------------------------------------------
+
+describe("pendingDrift fail-safe interval override", () => {
+  it("uses baseInterval instead of currentInterval when drift callbacks are in-flight", async () => {
+    // When pendingDrift > 0 (a drift callback is still running), the
+    // effective interval should fall back to baseInterval to prevent a
+    // stale large interval from suppressing reminders.
+    let driftGate: (() => void) | undefined;
+    const mw = createGoalMiddleware({
+      objectives: ["Write tests"],
+      baseInterval: 2,
+      maxInterval: 20,
+      isDrifting: async (_input, ctx) => {
+        if (ctx.turnIndex === 0) {
+          // Hold turn 0's drift callback open to simulate slow callback
+          await new Promise<void>((resolve) => {
+            driftGate = resolve;
+          });
+        }
+        return false; // not drifting
+      },
+    });
+
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: inject + start slow drift callback (pendingDrift becomes 1)
+    const ctx0 = makeTurnCtx(session, { turnIndex: 0 });
+    await mw.onBeforeTurn?.(ctx0);
+    await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("x"));
+    const after0 = mw.onAfterTurn?.(ctx0); // starts but doesn't resolve (drift callback hangs)
+
+    // Turn 2: while drift callback is in-flight (pendingDrift > 0),
+    // effective interval should be baseInterval=2, NOT the backed-off
+    // currentInterval. turnsSinceReminder=2 >= baseInterval=2 → inject.
+    const ctx2 = makeTurnCtx(session, { turnIndex: 2 });
+    await mw.onBeforeTurn?.(ctx2);
+    let injectedOnTurn2 = false;
+    await mw.wrapModelCall?.(ctx2, makeModelRequest(), async (req) => {
+      injectedOnTurn2 = req.messages.some((m) => m.senderId === "system:goal");
+      return makeModelResponse("x");
+    });
+
+    // Release the gate and clean up
+    driftGate?.();
+    await after0;
+    await mw.onAfterTurn?.(ctx2);
+
+    expect(injectedOnTurn2).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue 12: baseInterval=1 boundary test
+// ---------------------------------------------------------------------------
+
+describe("baseInterval=1 boundary", () => {
+  it("injects goals on every turn when baseInterval is 1", async () => {
+    const mw = createGoalMiddleware({
+      objectives: ["Build feature"],
+      baseInterval: 1,
+      maxInterval: 1,
+    });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    const injections: boolean[] = [];
+    for (let i = 0; i < 5; i++) {
+      const ctx = makeTurnCtx(session, {
+        turnIndex: i,
+        messages: [makeTextMessage("Working on feature")],
+      });
+      await mw.onBeforeTurn?.(ctx);
+      let injected = false;
+      await mw.wrapModelCall?.(ctx, makeModelRequest(), async (req) => {
+        injected = req.messages.some((m) => m.senderId === "system:goal");
+        return makeModelResponse("Still building the feature.");
+      });
+      injections.push(injected);
+      await mw.onAfterTurn?.(ctx);
+    }
+
+    // Every turn should inject when baseInterval=1
+    expect(injections).toEqual([true, true, true, true, true]);
   });
 });

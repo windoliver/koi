@@ -20,12 +20,12 @@ export {
   MAX_CALLBACK_TIMEOUT_MS,
   validateGoalConfig,
 } from "./config.js";
+export { createGoalMiddleware } from "./goal.js";
 export {
   computeNextInterval,
-  createGoalMiddleware,
   detectCompletions,
   extractKeywords,
   isDrifting,
   normalizeText,
   renderGoalBlock,
-} from "./goal.js";
+} from "./goal-helpers.js";

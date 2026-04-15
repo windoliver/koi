@@ -30,11 +30,28 @@ import {
   DEFAULT_GOAL_HEADER,
   DEFAULT_MAX_INTERVAL,
   type DriftUserMessage,
-  type GoalItem,
   type GoalItemWithId,
   type GoalMiddlewareConfig,
   validateGoalConfig,
 } from "./config.js";
+import {
+  computeNextInterval,
+  detectCompletions,
+  extractKeywords,
+  isDrifting,
+  renderGoalBlock,
+  userMessageContainsKeywords,
+} from "./goal-helpers.js";
+
+// Re-export pure helpers for public API
+export {
+  computeNextInterval,
+  detectCompletions,
+  extractKeywords,
+  isDrifting,
+  normalizeText,
+  renderGoalBlock,
+} from "./goal-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -42,6 +59,9 @@ import {
 
 /** Max user messages buffered across turns for the isDrifting callback. */
 const MESSAGE_BUFFER_SIZE = 10;
+
+/** Safety bound for per-turn state Map to prevent unbounded growth on crash. */
+const MAX_CONCURRENT_TURNS = 5;
 
 /**
  * State scoped to a single turn. Keyed by `ctx.turnId` so that overlapping
@@ -69,6 +89,8 @@ interface PerTurnState {
 
 interface GoalSessionState {
   readonly items: readonly GoalItemWithId[];
+  /** Pre-computed keywords per goal item text (memoized at session start). */
+  readonly keywordsPerItem: ReadonlyMap<string, ReadonlySet<string>>;
   readonly currentInterval: number;
   readonly lastReminderTurn: number;
   /** Rolling buffer of user-facing messages (sanitized). Used by isDrifting callback. */
@@ -94,188 +116,10 @@ interface GoalSessionState {
   /**
    * When `true`, the next `onBeforeTurn` forces goal injection
    * regardless of cadence. Set after a stop-gate blocked turn so the
-   * retry turn (whatever its index) still injects the goal block.
+   * retry turn (whatever its index) still injects the goal block,
+   * OR after drift is detected on any turn (Issue 1 fix).
    */
   forceInjectNextTurn: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Pure helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Normalize text for keyword extraction and matching.
- *
- * Splits identifier boundaries so that short acronyms participate in
- * matching when they appear as distinct segments:
- *
- * - camelCase boundary (lower→upper) becomes a space: `fixCiPipeline`
- *   → `fix ci pipeline`.
- * - Common separators `_`, `-`, `/` become spaces: `fix_ci_pipeline`,
- *   `fix-ci-pipeline`, `src/fix/ci/runner.ts` all tokenize their parts.
- * - `.` is preserved (stripped, not split) so dotted versions like
- *   `Release v1.2.3` keep `v123` as a distinguishing token instead of
- *   collapsing to a bare `release` keyword.
- *
- * Remaining punctuation is stripped, then lowercased.
- */
-export function normalizeText(text: string): string {
-  return text
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/[_\-/]/g, " ")
-    .replace(/[^a-zA-Z0-9\s]/g, "")
-    .toLowerCase();
-}
-
-/**
- * Extract keywords from objective text for matching.
- *
- * All non-empty tokens are kept, including short acronyms and numerals.
- * Short tokens would previously be dropped when a long word was present
- * in the same objective, but that erases distinguishing segments of
- * compound objectives like "iOS support" or "CI/CD pipeline" — leaving
- * only "support"/"pipeline" as generic keywords that false-trigger on
- * unrelated completion text. Keeping every token raises the majority
- * threshold and preserves acronyms as distinguishing signals.
- *
- * Match-time strictness is handled in matchesToken (exact for <=2,
- * prefix+bounded-suffix for 3, substring for >=4) so short tokens
- * cannot silently match inside longer words.
- */
-export function extractKeywords(objectives: readonly string[]): ReadonlySet<string> {
-  const result = new Set<string>();
-  for (const obj of objectives) {
-    for (const word of normalizeText(obj).split(/\s+/)) {
-      if (word.length > 0) result.add(word);
-    }
-  }
-  return result;
-}
-
-/** Tokenize normalized text into a set of words for token-based matching. */
-function tokenizeNormalized(normalized: string): ReadonlySet<string> {
-  const tokens = new Set<string>();
-  for (const t of normalized.split(/\s+/)) {
-    if (t.length > 0) tokens.add(t);
-  }
-  return tokens;
-}
-
-/**
- * Check whether a keyword matches within a set of tokens.
- *
- * Three-tier rule balances inflection tolerance against false-positive
- * risk as keyword length shrinks:
- *
- * - len <= 2 (e.g. "ci", "ui", "7"): exact token equality — prevents
- *   "ci" matching inside "cinema".
- * - len === 3 (e.g. "fix", "add", "api"): exact OR token-prefix with a
- *   bounded inflection suffix (<=3 chars). "fix" satisfies "fixing"
- *   (+ing), "fixed" (+ed), "fixups" (+ups), but not "additional" (+7)
- *   or "addressing" (+7). This handles common inflection without
- *   letting short verb roots swallow unrelated long words.
- * - len >= 4 (e.g. "write", "trajectory"): substring within any token —
- *   handles inflections and camelCase identifiers like
- *   "recordedTrajectoryPath" that don't get split by normalization.
- */
-const MAX_INFLECTION_SUFFIX = 3;
-function matchesToken(keyword: string, tokens: ReadonlySet<string>): boolean {
-  if (keyword.length <= 2) {
-    return tokens.has(keyword);
-  }
-  if (keyword.length === 3) {
-    for (const t of tokens) {
-      if (t === keyword) return true;
-      if (t.startsWith(keyword) && t.length - keyword.length <= MAX_INFLECTION_SUFFIX) {
-        return true;
-      }
-    }
-    return false;
-  }
-  for (const t of tokens) {
-    if (t.includes(keyword)) return true;
-  }
-  return false;
-}
-
-/** Render a markdown todo block from goal items. */
-export function renderGoalBlock(items: readonly GoalItem[], header: string): string {
-  const lines = [header, ""];
-  for (const item of items) {
-    const mark = item.completed ? "x" : " ";
-    lines.push(`- [${mark}] ${item.text}`);
-  }
-  return lines.join("\n");
-}
-
-const COMPLETION_SIGNALS = /\b(?:completed|done|finished|accomplished)\b|\[x\]|✓|✅/i;
-
-/**
- * Detect which objectives were completed based on response text.
- *
- * Requires a completion signal AND a majority of the objective's keywords
- * (>= 50%, minimum 2 if the objective has 2+ keywords) to match. This
- * prevents false positives from single generic words like "write" or
- * "integration" appearing in unrelated completion text.
- */
-export function detectCompletions<T extends GoalItem>(
-  responseText: string,
-  items: readonly T[],
-): readonly T[] {
-  if (!COMPLETION_SIGNALS.test(responseText)) {
-    return items;
-  }
-
-  const textTokens = tokenizeNormalized(normalizeText(responseText));
-  return items.map((item) => {
-    if (item.completed) return item;
-    const keywords = extractKeywords([item.text]);
-    if (keywords.size === 0) return item;
-
-    // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
-    const matchCount = [...keywords].filter((kw) => matchesToken(kw, textTokens)).length;
-    // Require majority match: at least half the keywords, minimum 2 if available
-    const threshold = keywords.size === 1 ? 1 : Math.max(2, Math.ceil(keywords.size / 2));
-    if (matchCount >= threshold) {
-      return { ...item, completed: true };
-    }
-    return item;
-  });
-}
-
-/** Check if the agent is drifting from goals based on recent messages. */
-export function isDrifting(
-  messages: readonly InboundMessage[],
-  keywords: ReadonlySet<string>,
-): boolean {
-  if (keywords.size === 0) return false;
-  const recent = messages.slice(-3);
-  const textTokens = tokenizeNormalized(
-    normalizeText(
-      recent
-        .map((m) =>
-          m.content
-            .filter((b): b is { readonly kind: "text"; readonly text: string } => b.kind === "text")
-            .map((b) => b.text)
-            .join(" "),
-        )
-        .join(" "),
-    ),
-  );
-
-  // Word-boundary match: exact for short keywords, prefix for >=3-char keywords.
-  return ![...keywords].some((kw) => matchesToken(kw, textTokens));
-}
-
-/** Compute next interval based on drift. */
-export function computeNextInterval(
-  currentInterval: number,
-  drifting: boolean,
-  baseInterval: number,
-  maxInterval: number,
-): number {
-  if (drifting) return baseInterval;
-  return Math.min(currentInterval * 2, maxInterval);
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +154,26 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   // synchronous onComplete contract.
   const bufferResponses = deferCompletions || config.isDrifting !== undefined;
 
+  // ---------------------------------------------------------------------------
+  // Issue 6: Centralized session state update helper
+  // ---------------------------------------------------------------------------
+
+  /** Read-modify-write session state atomically. Returns the updated state or undefined if session missing. */
+  function updateSession(
+    sid: SessionId,
+    updater: (state: GoalSessionState) => Partial<GoalSessionState>,
+  ): GoalSessionState | undefined {
+    const current = sessions.get(sid);
+    if (!current) return undefined;
+    const updated = { ...current, ...updater(current) };
+    sessions.set(sid, updated);
+    return updated;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Completion detection helpers
+  // ---------------------------------------------------------------------------
+
   /**
    * Apply heuristic completion detection to a single response text.
    * Monotonic: completed objectives never revert to pending.
@@ -317,15 +181,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
    * failures cannot leave stale state.
    */
   function applyHeuristicCompletions(sid: SessionId, text: string): void {
-    // Always read the latest state from the map to avoid stale snapshots
     const current = sessions.get(sid);
     if (!current) return;
 
-    const detected = detectCompletions(text, current.items);
+    const detected = detectCompletions(text, current.items, current.keywordsPerItem);
     const merged = mergeByPosition(current.items, detected);
 
-    // Persist state BEFORE invoking callbacks
-    sessions.set(sid, { ...current, items: merged });
+    updateSession(sid, () => ({ items: merged }));
     fireOnCompleteForTransitions(current.items, merged);
   }
 
@@ -336,8 +198,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   function processHeuristicCompletions(sid: SessionId, entries: readonly string[]): void {
     const current = sessions.get(sid);
     if (!current) return;
-    const next = applyHeuristicFallback(current.items, entries);
-    sessions.set(sid, { ...current, items: next });
+    const next = applyHeuristicFallback(current.items, entries, current.keywordsPerItem);
+    updateSession(sid, () => ({ items: next }));
     fireOnCompleteForTransitions(current.items, next);
   }
 
@@ -386,38 +248,37 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Drift detection helpers
+  // ---------------------------------------------------------------------------
+
   /**
    * Atomically adjust `pendingDrift` on the current session-state entry.
    * Always reads the latest value via `sessions.get` and writes via
-   * `sessions.set` so callers can't decrement against a stale snapshot
-   * that may have been replaced by a spread-clone elsewhere.
+   * `updateSession` so callers can't decrement against a stale snapshot.
    */
   function adjustPendingDrift(sid: SessionId, delta: number): void {
-    const latest = sessions.get(sid);
-    if (!latest) return;
-    const next = Math.max(0, latest.pendingDrift + delta);
-    sessions.set(sid, { ...latest, pendingDrift: next });
+    updateSession(sid, (s) => ({ pendingDrift: Math.max(0, s.pendingDrift + delta) }));
   }
 
   /**
    * Evaluate drift for this turn, using the callback if configured.
    * On callback error/timeout, fail-safe to drifting=true so reminders
-   * fire more aggressively (v1 semantics). On upstream abort, returns
-   * undefined to signal the caller to skip interval updates entirely.
+   * fire more aggressively. On upstream abort, returns undefined to
+   * signal the caller to skip interval updates entirely.
    */
   async function resolveDrift(
     state: GoalSessionState,
     turn: PerTurnState,
     ctx: TurnContext,
   ): Promise<boolean | undefined> {
+    const sid = ctx.session.sessionId;
     if (config.isDrifting) {
-      adjustPendingDrift(ctx.session.sessionId, 1);
+      adjustPendingDrift(sid, 1);
       try {
         const outcome = await invokeIsDriftingCallback(
           config.isDrifting,
           {
-            // Use the per-turn snapshot (captured at onBeforeTurn) so turn N
-            // cannot observe turn N+1's appended messages under overlap.
             userMessages: cloneMessages(turn.userMessagesSnapshot),
             responseTexts: turn.responseBuffer.slice(),
             items: cloneItems(state.items),
@@ -425,23 +286,19 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
           { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
         );
         if (outcome.ok) return outcome.value;
-        if (outcome.reason === "aborted") return undefined; // skip interval update
+        if (outcome.reason === "aborted") return undefined;
         return true; // fail-safe on timeout/error
       } finally {
-        adjustPendingDrift(ctx.session.sessionId, -1);
+        adjustPendingDrift(sid, -1);
       }
     }
-    // Heuristic default: unchanged from pre-callback behavior — uses
-    // ctx.messages exactly as before. Callers needing richer context
-    // should provide an `isDrifting` callback.
     return isDrifting(ctx.messages, allKeywords);
   }
 
   /**
    * Invoke the user's detectCompletions callback with the turn's buffered
-   * response texts. On error/timeout, fall back to heuristic (monotonic,
-   * safer to miss a completion than falsely complete). Merges results by
-   * ID and fires onComplete for transitions.
+   * response texts. On error/timeout, fall back to heuristic. Merges
+   * results by ID and fires onComplete for transitions.
    */
   async function processDeferredCompletions(
     state: GoalSessionState,
@@ -449,12 +306,9 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     ctx: TurnContext,
   ): Promise<void> {
     if (!config.detectCompletions || entries.length === 0) return;
+    const sid = ctx.session.sessionId;
 
-    // Refresh session state immediately before invoking the callback so
-    // the items passed in reflect any updates from prior-turn callbacks
-    // that just resolved via the per-session pendingWork chain.
-    const current = sessions.get(ctx.session.sessionId) ?? state;
-
+    const current = sessions.get(sid) ?? state;
     const outcome = await invokeDetectCompletionsCallback(
       config.detectCompletions,
       entries.slice(),
@@ -462,22 +316,16 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       { timeoutMs: callbackTimeoutMs, ctx, onError: config.onCallbackError },
     );
 
-    // Upstream abort: the run was cancelled — do not mutate goal state or
-    // fire onComplete side effects. The documented cancellation contract
-    // is that completions from the aborted turn are lost.
     if (!outcome.ok && outcome.reason === "aborted") return;
 
-    // Re-read session state after the await: another turn for the same
-    // session may have run during the callback (up to callbackTimeoutMs),
-    // and we must not roll back its buffer/flag fields.
-    const latest = sessions.get(ctx.session.sessionId);
+    const latest = sessions.get(sid);
     if (!latest) return;
 
     const next = outcome.ok
       ? mergeByIds(latest.items, outcome.value)
-      : applyHeuristicFallback(latest.items, entries);
+      : applyHeuristicFallback(latest.items, entries, latest.keywordsPerItem);
 
-    sessions.set(ctx.session.sessionId, { ...latest, items: next });
+    updateSession(sid, () => ({ items: next }));
     fireOnCompleteForTransitions(latest.items, next);
   }
 
@@ -485,114 +333,130 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
   function applyHeuristicFallback(
     items: readonly GoalItemWithId[],
     entries: readonly string[],
+    keywordsPerItem?: ReadonlyMap<string, ReadonlySet<string>>,
   ): readonly GoalItemWithId[] {
     let acc = items;
     for (const text of entries) {
-      const detected = detectCompletions(text, acc);
+      const detected = detectCompletions(text, acc, keywordsPerItem);
       acc = mergeByPosition(acc, detected);
     }
     return acc;
   }
 
-  /**
-   * Defensive clone of session items before exposing to user callbacks.
-   * Readonly is only enforced at type level; without cloning, a buggy or
-   * malicious callback could mutate session state in place.
-   */
+  // ---------------------------------------------------------------------------
+  // Defensive cloning for callback trust boundary
+  // ---------------------------------------------------------------------------
+
   function cloneItems(items: readonly GoalItemWithId[]): readonly GoalItemWithId[] {
     return items.map((i) => ({ id: i.id, text: i.text, completed: i.completed }));
   }
 
-  /**
-   * Defensive deep-clone of user-messages buffer before exposing to
-   * callbacks. Prevents callback-side mutation from poisoning the
-   * session-state buffer for subsequent turns.
-   */
   function cloneMessages(messages: readonly DriftUserMessage[]): readonly DriftUserMessage[] {
-    return messages.map((m) => ({
-      senderId: m.senderId,
-      timestamp: m.timestamp,
-      text: m.text,
-    }));
+    return messages.map((m) => ({ senderId: m.senderId, timestamp: m.timestamp, text: m.text }));
   }
+
+  // ---------------------------------------------------------------------------
+  // Issue 5: Shared injection logic (DRY wrapModelCall / wrapModelStream)
+  // ---------------------------------------------------------------------------
+
+  /** Prepare injection: consume flag, render goal block, build enriched request, report decision. */
+  function prepareInjection(
+    sid: SessionId,
+    state: GoalSessionState,
+    ctx: TurnContext,
+    request: ModelRequest,
+  ): { readonly enrichedRequest: ModelRequest; readonly goalBlock: string | undefined } {
+    const turnKey = String(ctx.turnId);
+    const inject = consumeInjection(sid, turnKey, ctx.turnIndex);
+    const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
+
+    if (goalBlock !== undefined) {
+      ctx.reportDecision?.({
+        turnIndex: ctx.turnIndex,
+        objectives: state.items.map((i) => ({ text: i.text, completed: i.completed })),
+        completedCount: state.items.filter((i) => i.completed).length,
+        totalCount: state.items.length,
+        messageCount: request.messages.length,
+        goalBlock,
+      });
+    }
+
+    const enrichedRequest =
+      goalBlock !== undefined
+        ? { ...request, messages: [buildGoalMessage(goalBlock), ...request.messages] }
+        : request;
+
+    return { enrichedRequest, goalBlock };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Turn callback processing
+  // ---------------------------------------------------------------------------
 
   /**
    * Core callback-processing body — runs serialized via `state.pendingWork`.
    * Handles deferred completions + drift + interval update for one turn.
+   *
+   * Issue 1 fix: drift is evaluated on EVERY turn (not just injection turns)
+   * so that off-topic drift is detected promptly and forceInjectNextTurn
+   * is set for the following turn.
    */
   async function processTurnCallbacks(
     state: GoalSessionState,
     turn: PerTurnState,
     ctx: TurnContext,
   ): Promise<void> {
+    const sid = ctx.session.sessionId;
     const blocked = ctx.stopBlocked === true;
 
     // Stop-gate vetoed turn: roll back the synchronous lastReminderTurn
-    // advance AND set forceInjectNextTurn so the retry turn (at whatever
-    // turnIndex the engine assigns) still re-injects the goal block.
+    // advance AND set forceInjectNextTurn so the retry turn still injects.
     if (blocked && turn.injectedThisTurn) {
-      const latest = sessions.get(ctx.session.sessionId);
-      if (latest) {
-        const rolledBack =
-          latest.lastReminderTurn === ctx.turnIndex
-            ? turn.previousLastReminderTurn
-            : latest.lastReminderTurn;
-        sessions.set(ctx.session.sessionId, {
-          ...latest,
-          lastReminderTurn: rolledBack,
-          forceInjectNextTurn: true,
-        });
-      }
+      updateSession(sid, (s) => ({
+        lastReminderTurn:
+          s.lastReminderTurn === ctx.turnIndex ? turn.previousLastReminderTurn : s.lastReminderTurn,
+        forceInjectNextTurn: true,
+      }));
     }
 
-    // Process buffered response texts. Blocked turns drop the last
-    // entry (the vetoed final response).
+    // Process buffered response texts. Blocked turns drop the last entry.
     if (bufferResponses) {
       const entries = blocked ? turn.responseBuffer.slice(0, -1) : turn.responseBuffer.slice();
       if (deferCompletions) {
         await processDeferredCompletions(state, entries, ctx);
       } else if (entries.length > 0) {
-        // isDrifting-only mode: heuristic was NOT run inline; run now
-        // at turn boundary with stop-gate awareness.
-        processHeuristicCompletions(ctx.session.sessionId, entries);
+        processHeuristicCompletions(sid, entries);
       }
     }
 
     if (blocked) return;
 
-    if (turn.injectedThisTurn) {
-      // Re-read session state so drift evaluation sees the post-deferred-
-      // completions item status, not the stale snapshot from turn start.
-      const refreshed = sessions.get(ctx.session.sessionId) ?? state;
-      const drifting = await resolveDrift(refreshed, turn, ctx);
-      if (drifting === undefined) return; // upstream abort: skip interval update
+    // Issue 1 fix: evaluate drift on EVERY turn, not just injection turns.
+    // When drift is detected, set forceInjectNextTurn so goals are re-injected
+    // on the very next turn regardless of interval cadence.
+    const refreshed = sessions.get(sid) ?? state;
+    const drifting = await resolveDrift(refreshed, turn, ctx);
+    if (drifting === undefined) return; // upstream abort: skip update
 
-      const nextInterval = computeNextInterval(
-        refreshed.currentInterval,
-        drifting,
-        baseInterval,
-        maxInterval,
-      );
-      const latest = sessions.get(ctx.session.sessionId) ?? refreshed;
-      // lastReminderTurn was already advanced synchronously in
-      // consumeInjection; here we only settle currentInterval based on
-      // the (possibly async) drift judge result.
-      sessions.set(ctx.session.sessionId, {
-        ...latest,
-        currentInterval: nextInterval,
-      });
-    }
+    const nextInterval = computeNextInterval(
+      refreshed.currentInterval,
+      drifting,
+      baseInterval,
+      maxInterval,
+    );
+
+    updateSession(sid, () => ({
+      currentInterval: nextInterval,
+      // Force injection on next turn when drifting (Issue 1 core fix)
+      ...(drifting ? { forceInjectNextTurn: true } : {}),
+    }));
   }
 
   /**
    * Consume shouldInject on first model call in a turn. Returns whether to inject.
    *
-   * Advances `lastReminderTurn` synchronously here (CAS: never
-   * decreases) so the next turn's `onBeforeTurn` sees the injection
-   * immediately, preventing double-injection in drift-only mode where
-   * `onBeforeTurn` does not await the prior turn's drift callback.
-   * Interval adjustment still lands later in `processTurnCallbacks`
-   * based on the drift judge's decision.
+   * Advances `lastReminderTurn` synchronously (CAS: never decreases) so
+   * the next turn's `onBeforeTurn` sees the injection immediately.
    */
   function consumeInjection(sid: SessionId, turnIdStr: string, turnIndex: number): boolean {
     const state = sessions.get(sid);
@@ -601,7 +465,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     turn.shouldInject = false;
     turn.injectedThisTurn = true;
     if (turnIndex > state.lastReminderTurn) {
-      sessions.set(sid, { ...state, lastReminderTurn: turnIndex });
+      updateSession(sid, () => ({ lastReminderTurn: turnIndex }));
     }
     return true;
   }
@@ -611,7 +475,8 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     priority: 340,
 
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
-      const state = sessions.get(ctx.session.sessionId);
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
       if (!state) return undefined;
       const completed = state.items.filter((i) => i.completed).length;
       return {
@@ -621,13 +486,20 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async onSessionStart(ctx) {
+      const sid = ctx.sessionId;
       const items: readonly GoalItemWithId[] = config.objectives.map((text, index) => ({
         id: `goal-${String(index)}`,
         text,
         completed: false,
       }));
-      sessions.set(ctx.sessionId, {
+      // Issue 13: memoize keywords per goal item at session start
+      const keywordsPerItem = new Map<string, ReadonlySet<string>>();
+      for (const item of items) {
+        keywordsPerItem.set(item.text, extractKeywords([item.text]));
+      }
+      sessions.set(sid, {
         items,
+        keywordsPerItem,
         currentInterval: baseInterval,
         lastReminderTurn: -1,
         userMessageBuffer: [],
@@ -639,37 +511,42 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async onBeforeTurn(ctx) {
-      const state = sessions.get(ctx.session.sessionId);
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
       if (!state) return;
 
-      // Only block on prior turns when `detectCompletions` is configured —
-      // item state mutation must be visible before this turn renders the
-      // goal-injection block. Drift-only callbacks do NOT block the next
-      // turn: interval updates land best-effort via CAS and at worst are
-      // one turn late, which is preferable to a session-wide latency
-      // cliff when the drift judge is slow or remote.
+      // Only block on prior turns when `detectCompletions` is configured
       if (deferCompletions) await state.pendingWork;
 
       // Append sanitized user-authored text messages into rolling buffer
-      // FIRST, then snapshot it for this turn. The snapshot captures a
-      // stable view so later turns cannot mutate what this turn sees.
       const sanitized = sanitizeUserMessages(ctx.messages);
       for (const m of sanitized) state.userMessageBuffer.push(m);
       const excess = state.userMessageBuffer.length - MESSAGE_BUFFER_SIZE;
       if (excess > 0) state.userMessageBuffer.splice(0, excess);
 
+      // Issue 15: evict stale per-turn entries if over safety bound
+      if (state.turns.size >= MAX_CONCURRENT_TURNS) {
+        const oldest = state.turns.keys().next().value;
+        if (oldest !== undefined) state.turns.delete(oldest);
+      }
+
       const turnsSinceReminder = ctx.turnIndex - state.lastReminderTurn;
-      // Fail-safe: if any drift callbacks are in flight, we haven't yet
-      // confirmed whether to back off — treat the effective interval as
-      // `baseInterval` so reminders don't go silent during a stall.
       const effectiveInterval = state.pendingDrift > 0 ? baseInterval : state.currentInterval;
       const force = state.forceInjectNextTurn;
       if (force) {
-        sessions.set(ctx.session.sessionId, { ...state, forceInjectNextTurn: false });
+        updateSession(sid, () => ({ forceInjectNextTurn: false }));
       }
+
+      // Issue 3: force-inject when user message contains goal keywords
+      const userMentionsGoals = userMessageContainsKeywords(ctx.messages, allKeywords);
+
       const turn: PerTurnState = {
         turnIndex: ctx.turnIndex,
-        shouldInject: force || turnsSinceReminder >= effectiveInterval || ctx.turnIndex === 0,
+        shouldInject:
+          force ||
+          userMentionsGoals ||
+          turnsSinceReminder >= effectiveInterval ||
+          ctx.turnIndex === 0,
         injectedThisTurn: false,
         responseBuffer: [],
         userMessagesSnapshot: cloneMessages(state.userMessageBuffer),
@@ -679,22 +556,16 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async onAfterTurn(ctx) {
-      const state = sessions.get(ctx.session.sessionId);
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
       if (!state) return;
       const turnKey = String(ctx.turnId);
       const turn = state.turns.get(turnKey);
       if (!turn) return;
 
-      // Always remove our per-turn state before any await so a sibling
-      // turn cannot observe it.
+      // Always remove per-turn state before any await
       state.turns.delete(turnKey);
 
-      // Enqueue this turn's callback processing on the per-session
-      // pendingWork chain. Returning the chained promise ensures the
-      // engine awaits until this turn's work finishes before emitting
-      // turn_end. onBeforeTurn for any subsequent turn will also await
-      // this promise, guaranteeing later prompt injection sees updated
-      // items.
       const work = state.pendingWork.then(() => processTurnCallbacks(state, turn, ctx));
       state.pendingWork = work.catch(() => {
         // Swallow: errors already routed through onCallbackError hook.
@@ -703,42 +574,21 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
     },
 
     async wrapModelCall(ctx, request, next) {
-      const state = sessions.get(ctx.session.sessionId);
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
       if (!state) return next(request);
-      const turnKey = String(ctx.turnId);
 
-      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
-      const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
-      // Only report when goal block is actually injected (not passthrough turns)
-      if (goalBlock !== undefined) {
-        ctx.reportDecision?.({
-          turnIndex: ctx.turnIndex,
-          objectives: state.items.map((i) => ({
-            text: i.text,
-            completed: i.completed,
-          })),
-          completedCount: state.items.filter((i) => i.completed).length,
-          totalCount: state.items.length,
-          messageCount: request.messages.length,
-          goalBlock,
-        });
-      }
-      const enrichedRequest =
-        goalBlock !== undefined
-          ? {
-              ...request,
-              messages: [buildGoalMessage(goalBlock), ...request.messages],
-            }
-          : request;
-
+      // Issue 5: shared injection logic
+      const { enrichedRequest } = prepareInjection(sid, state, ctx, request);
       const response: ModelResponse = await next(enrichedRequest);
 
       if (bufferResponses) {
+        const turnKey = String(ctx.turnId);
         const currentTurn = state.turns.get(turnKey);
         if (currentTurn) currentTurn.responseBuffer.push(response.content);
       }
       if (!deferCompletions && !bufferResponses) {
-        applyHeuristicCompletions(ctx.session.sessionId, response.content);
+        applyHeuristicCompletions(sid, response.content);
       }
 
       return response;
@@ -749,57 +599,28 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
       request: ModelRequest,
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
-      const state = sessions.get(ctx.session.sessionId);
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
       if (!state) {
         yield* next(request);
         return;
       }
 
+      // Issue 5: shared injection logic
+      const { enrichedRequest } = prepareInjection(sid, state, ctx, request);
       const turnKey = String(ctx.turnId);
-      const inject = consumeInjection(ctx.session.sessionId, turnKey, ctx.turnIndex);
-      const goalBlock = inject ? renderGoalBlock(state.items, header) : undefined;
-      // Only report when goal block is actually injected (not passthrough turns)
-      if (goalBlock !== undefined) {
-        ctx.reportDecision?.({
-          turnIndex: ctx.turnIndex,
-          objectives: state.items.map((i) => ({
-            text: i.text,
-            completed: i.completed,
-          })),
-          completedCount: state.items.filter((i) => i.completed).length,
-          totalCount: state.items.length,
-          messageCount: request.messages.length,
-          goalBlock,
-        });
-      }
-      const enrichedRequest =
-        goalBlock !== undefined
-          ? {
-              ...request,
-              messages: [buildGoalMessage(goalBlock), ...request.messages],
-            }
-          : request;
 
       // Buffer streamed text for completion detection.
       // Flush eagerly on the terminal `done` chunk BEFORE yielding it —
       // `consumeModelStream` calls iterator.return() after processing `done`,
       // which aborts this generator before the `for await` loop can exit
-      // naturally. Eager flush ensures the responseBuffer is populated even
-      // when the consumer returns early (#1530).
-      //
-      // Text is buffered for ALL turns including tool-use turns (matching
-      // wrapModelCall semantics where response.content is always recorded).
-      // Only error-class stop reasons skip the flush — length/truncation,
-      // provider blocks, and explicit errors represent failed turns whose
-      // partial text must not be scored as completion evidence.
+      // naturally (#1530).
       let bufferedText = "";
       for await (const chunk of next(enrichedRequest)) {
         if (chunk.kind === "text_delta") {
           bufferedText += chunk.delta;
         } else if (chunk.kind === "done") {
           const stopReason = chunk.response.stopReason;
-          // Skip error-class stop reasons: length (truncated),
-          // hook_blocked (provider-level denial), and error (failed terminal).
           const isErrorClass =
             stopReason === "length" || stopReason === "hook_blocked" || stopReason === "error";
           if (!isErrorClass) {
@@ -811,7 +632,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): KoiMiddlewar
               if (turn) turn.responseBuffer.push(bufferedText);
             }
             if (!deferCompletions && !bufferResponses) {
-              applyHeuristicCompletions(ctx.session.sessionId, bufferedText);
+              applyHeuristicCompletions(sid, bufferedText);
             }
           }
         }
