@@ -9,7 +9,9 @@
  *   3. On each batch flush: dispatches events to the store in order
  *   4. Forwards approval_request to the PermissionBridge and posts the
  *      resolved decision back as an approval_response
- *   5. Updates connection status on ready / engine_done / engine_error
+ *   5. Updates connection status on ready / engine_error / worker onerror
+ *      (engine_done is a healthy end-of-turn signal and leaves the connection
+ *      status untouched — the worker is still alive and ready for the next turn)
  *
  * The store's own queueMicrotask batching coalesces the N dispatches from
  * one flush into a single Solid re-render, keeping the UI at ≈60fps.
@@ -133,12 +135,14 @@ export function createEngineChannel(
       }
 
       case "engine_done":
-        // Flush any buffered engine_events synchronously before updating
-        // connection status. Without this, the last text/tool deltas can be
-        // overtaken by the disconnected status when they arrive in the same
-        // message burst as engine_done.
+        // Turn finished normally — the worker is still alive and ready for
+        // the next turn, so connection status stays "connected". Flushing
+        // the batcher here guarantees that buffered text/tool deltas from
+        // the same burst are applied before any later action observes the
+        // post-turn state. (#1753: /doctor previously reported
+        // "disconnected" after a successful turn because this arm dispatched
+        // set_connection_status:disconnected on every healthy end-of-turn.)
         batcher.flushSync();
-        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
         break;
 
       case "engine_error":

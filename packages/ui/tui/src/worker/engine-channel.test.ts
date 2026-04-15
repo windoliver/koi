@@ -93,7 +93,7 @@ describe("EngineChannel — connection status", () => {
     channel.dispose();
   });
 
-  test("engine_done sets status to disconnected", async () => {
+  test("engine_done leaves status connected (healthy end-of-turn, #1753)", async () => {
     const store = createStore(createInitialState());
     const worker = makeWorker();
     const channel = createEngineChannel(worker, {
@@ -105,7 +105,10 @@ describe("EngineChannel — connection status", () => {
     worker.send({ kind: "engine_done" });
     await Promise.resolve();
 
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    // Regression: engine_done used to mark the channel "disconnected",
+    // which caused /doctor to report a false-negative connection state
+    // after every successful turn.
+    expect(store.getState().connectionStatus).toBe("connected");
     channel.dispose();
   });
 
@@ -192,7 +195,7 @@ describe("EngineChannel — event batching", () => {
     channel.dispose();
   });
 
-  test("engine_done flushes buffered events before disconnecting", async () => {
+  test("engine_done flushes buffered events and preserves connected status", async () => {
     const timer = makeTimerStub();
     const store = createStore(createInitialState());
     const worker = makeWorker();
@@ -202,18 +205,21 @@ describe("EngineChannel — event batching", () => {
       batcherOptions: { scheduleTimeout: timer.schedule, cancelTimeout: timer.cancel },
     });
 
-    // Simulate a burst: events + done in the same synchronous tick
+    // Simulate a healthy turn: ready → buffered events → engine_done arrives
+    // before the batcher timer fires.
+    worker.send({ kind: "ready" });
     worker.send({ kind: "engine_event", event: { kind: "turn_start", turnIndex: 0 } });
     worker.send({ kind: "engine_event", event: { kind: "text_delta", delta: "last" } });
-    worker.send({ kind: "engine_done" }); // arrives before batcher timer fires
+    worker.send({ kind: "engine_done" });
 
-    // engine_done must have flushed the batcher synchronously
+    // engine_done must have flushed the batcher synchronously.
     await Promise.resolve();
     const state = store.getState();
-    // Buffered events were applied before connection status changed
     expect(state.messages).toHaveLength(1);
     expect(state.messages[0]?.kind).toBe("assistant");
-    expect(state.connectionStatus).toBe("disconnected");
+    // #1753: engine_done is a healthy end-of-turn signal — the channel
+    // remains "connected" so /doctor reports accurate status.
+    expect(state.connectionStatus).toBe("connected");
     channel.dispose();
   });
 });
