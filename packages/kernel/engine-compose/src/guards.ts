@@ -926,15 +926,20 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       }
 
       // 6. Execute spawn:
-      //    - directChildren always decrements (the child's slot is freed
-      //      when this tool call unwinds, success or failure).
-      //    - spawnsThisTurn decrements only on failure — a spawn that
-      //      didn't run should not consume the per-turn burst budget.
+      //    - directChildren always decrements (the in-flight slot is
+      //      freed when this tool call unwinds, success or failure).
+      //    - spawnsThisTurn is NOT refunded on throw. Rationale: by the
+      //      time we reach this try block, all guard pre-flight checks
+      //      (depth, fan-out, governance) have already passed, meaning
+      //      the request cleared our admission gate and the downstream
+      //      spawn executor (which may launch the child before later
+      //      reporting failure) has taken over. A thrown error no longer
+      //      means "nothing launched" — e.g. a child that starts and
+      //      then fails during its own run still counts against the
+      //      per-turn burst budget. Refunding would let a parent spam
+      //      failing spawns past the cap.
       try {
         return await next(request);
-      } catch (e: unknown) {
-        spawnsThisTurn--;
-        throw e;
       } finally {
         directChildren--;
       }

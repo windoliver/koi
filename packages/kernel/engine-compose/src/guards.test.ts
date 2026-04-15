@@ -1044,43 +1044,77 @@ describe("createSpawnGuard", () => {
   // Optimistic locking — failure path (#8A, #9A)
   // -------------------------------------------------------------------------
 
-  test("rolls back fan-out counter when next() throws", async () => {
+  test("concurrent slot is released when a spawn throws", async () => {
+    // The in-flight (directChildren) counter must be released when the
+    // tool call unwinds regardless of success/failure — otherwise a
+    // failed spawn would permanently hold a concurrent slot. The per-turn
+    // burst counter is NOT refunded (see #1793 adversarial review): by
+    // the time the spawn executor fails, the child may already have
+    // launched, so failures count against the burst budget.
     const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
     const failingNext: ToolNext = mock(() => Promise.reject(new Error("spawn failed")));
-    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
 
-    // Failing spawn should not consume fan-out
+    // One failed spawn consumes one per-turn slot, but frees its
+    // concurrent slot.
     await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow(
       "spawn failed",
     );
 
-    // Both fan-out slots should still be available
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    expect(succeedingNext).toHaveBeenCalledTimes(2);
+    // A second concurrent in-flight spawn must still be admissible
+    // (concurrent cap is 2, in-flight count is 0 after the failure).
+    const d1 = deferredToolNext();
+    const p1 = wrap(ctx, mockToolRequest("forge_agent"), d1.next);
+
+    // Third call: per-turn budget is 2/2 (1 failed + 1 in-flight),
+    // so this must throw.
+    try {
+      await wrap(ctx, mockToolRequest("forge_agent"), () => Promise.resolve(mockToolResponse()));
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("RATE_LIMIT");
+        expect(e.message).toContain("Max fan-out exceeded");
+      }
+    }
+
+    d1.resolve();
+    await p1;
   });
 
-  test("multiple failures don't accumulate phantom counts", async () => {
-    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 5 } });
+  test("failed spawns consume per-turn burst budget (#1793)", async () => {
+    // Regression: earlier revisions refunded the per-turn burst budget on
+    // every thrown spawn. This is unsafe because the synchronous spawn
+    // path launches the child first and only later throws on child-run
+    // failure — so a parent could spam failing spawns past the cap while
+    // children were actually running. Keep failures counted.
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 3 } });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
-    const failingNext: ToolNext = mock(() => Promise.reject(new Error("fail")));
+    const failingNext: ToolNext = mock(() => Promise.reject(new Error("child crashed")));
 
-    // 5 failures should not consume any fan-out slots
-    for (let i = 0; i < 5; i++) {
-      await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow("fail");
+    for (let i = 0; i < 3; i++) {
+      await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow(
+        "child crashed",
+      );
     }
 
-    // All fan-out slots should still be available after failures
-    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    for (let i = 0; i < 5; i++) {
-      await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    // 4th attempt must be rejected — per-turn budget is 3/3.
+    try {
+      await wrap(ctx, mockToolRequest("forge_agent"), failingNext);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("RATE_LIMIT");
+        expect(e.message).toContain("Max fan-out exceeded");
+        expect(e.message).toContain("in this turn");
+      }
     }
-    expect(succeedingNext).toHaveBeenCalledTimes(5);
   });
 
   // -------------------------------------------------------------------------
