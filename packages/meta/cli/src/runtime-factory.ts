@@ -1167,37 +1167,37 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // session id as their prefix. Fall back to a neutral label
         // on the (normally unreachable) pre-assignment path.
         const liveParentSessionId = runtimeForRotation?.sessionId ?? "parent-session";
-        // Per-child registerShutdown is child-scoped: any hook a
-        // factory registers here is fired IMMEDIATELY if the
-        // spawn fails after resolution (see try/catch below).
-        // Hooks that survive to the success path are owned by the
-        // spawned child runtime and should cleanup via middleware
-        // lifecycle hooks (`onSessionEnd`) rather than runtime
-        // dispose, because the child runtime has its own lifecycle
-        // boundary. Registering to the parent's shutdown list
-        // would leak one hook per spawn until parent dispose.
+        // Per-child registerShutdown FAILS CLOSED. Hooks attached
+        // here would either leak onto the parent's shutdown array
+        // (accumulating one per spawn until parent dispose) or
+        // need their own child-lifecycle wiring that doesn't exist
+        // yet. The safe contract: any manifest factory that wants
+        // per-child cleanup must use middleware lifecycle hooks
+        // (`onSessionEnd`) on the returned middleware itself,
+        // which fire at child session end naturally. Calling
+        // registerShutdown during a per-child resolve throws so
+        // the caller learns about the wrong pattern at assembly
+        // time, not at runtime.
         //
-        // For file-backed factories that use `sharedAuditSinks`,
-        // the cache hit avoids any new registration at all (see
-        // createAuditManifestEntry). Factories that DO allocate
-        // per-child resources must wire their cleanup into the
-        // middleware's own onSessionEnd — registerShutdown in
-        // this path is intentionally a no-op so the parent
-        // shutdown chain cannot accumulate leaked child hooks.
-        // The no-op is documented in docs/L2/manifest.md.
+        // The built-in @koi/middleware-audit factory checks
+        // `sharedAuditSinks` first; a cache hit skips any
+        // registerShutdown call entirely, and the first resolve
+        // (the parent's) is the only one to register cleanup.
+        // This throw is therefore unreachable from built-ins and
+        // is a defensive guardrail for third-party factories.
         return resolveManifestMiddleware(config.manifestMiddleware, manifestMiddlewareRegistry, {
           sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
           hostId,
           workingDirectory: zoneBWorkingDirectory,
           stackExports: earlyContribution.exports,
           registerShutdown: (_fn) => {
-            // Intentional no-op for per-child resolution. Built-in
-            // audit is the only factory that calls registerShutdown,
-            // and it only calls it when `sinkIsNew`. The cache hit
-            // for per-child resolution means this branch is never
-            // exercised from the built-in. Third-party factories
-            // that call registerShutdown during per-child mode
-            // should use middleware-lifecycle cleanup instead.
+            throw new Error(
+              "manifest middleware factory called registerShutdown() during per-child resolution. " +
+                "Per-child cleanup cannot leak onto the parent runtime's shutdown chain (it would accumulate " +
+                "one hook per spawn). Use middleware lifecycle hooks on the returned KoiMiddleware (e.g. " +
+                "onSessionEnd) to release per-child resources, or check ctx.sharedAuditSinks for a cached " +
+                "resource before allocating a new one.",
+            );
           },
           sharedAuditSinks,
         });

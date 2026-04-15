@@ -302,7 +302,40 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       return { ok: false, error: validation.error };
     }
 
-    // 4. Build middleware: inherited + per-child freshly-resolved + system prompt injection
+    // 6. Resolve delivery policy: request override > base default > manifest > streaming
+    //    Resolved BEFORE middleware building so the delivery-mode validation
+    //    gate below can reject invalid non-streaming spawns without paying
+    //    for per-child middleware resolution.
+    const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
+
+    // 6b. Delivery-mode sink validation — fail fast before middleware build.
+    //     on_demand needs a ReportStore; deferred needs the parent inbox.
+    //     Without the appropriate sink the child runs but output is silently lost.
+    //     Validated up front so rejected spawns cost zero per-child resources.
+    if (policy.kind === "on_demand" && options.reportStore === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
+          retryable: false,
+        },
+      };
+    }
+    if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
+          retryable: false,
+        },
+      };
+    }
+
+    // 7. Build middleware: inherited + per-child freshly-resolved + system prompt injection
     //
     // Per-child middleware resolution is deferred until AFTER every
     // validation gate above returns ok. Resolution may allocate
@@ -347,9 +380,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       },
     };
 
-    // 6. Resolve delivery policy: request override > base default > manifest > streaming
-    const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
-
     // 7. Wrap in agent context for identity isolation
     const agentContext = {
       agentId: request.agentId ?? `spawn-${manifest.name}-${Date.now()}`,
@@ -361,31 +391,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     The real output flows to the parent's inbox or ReportStore per policy.
     //     Return immediately — the SpawnResult output will be empty for async delivery.
     if (policy.kind !== "streaming") {
-      // Fail fast: non-streaming delivery requires a sink for the result.
-      // on_demand needs a ReportStore; deferred needs the parent inbox.
-      // Without the appropriate sink the child runs but output is silently lost.
-      if (policy.kind === "on_demand" && options.reportStore === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
-            retryable: false,
-          },
-        };
-      }
-      if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
-            retryable: false,
-          },
-        };
-      }
       return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
         // Wrap spawnChildAgent() so slot-acquisition, governance, assembly, and
         // cancellation failures all return SpawnResult instead of throwing.
