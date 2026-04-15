@@ -1355,28 +1355,41 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     //      onSessionEnd called.
     // On dispose failure we therefore leave manifest hooks registered
     // so a subsequent successful retry can still fire them.
+    //
+    // The wrapper uses a Proxy so live getters on the underlying
+    // runtime (notably `sessionId`, which is a getter that changes
+    // after `cycleSession()` or `rebindSessionId()`) are forwarded
+    // through `Reflect.get` instead of being snapshotted by
+    // object-spread. An object-spread wrapper would copy the value
+    // of the sessionId getter at construction time and freeze it,
+    // breaking every post-reset/rebind caller that later reads
+    // `runtimeHandle.runtime.sessionId` to locate transcript or
+    // checkpoint state for the current session.
     const engineDispose = runtime.dispose.bind(runtime);
-    const wrappedRuntime: typeof runtime = {
-      ...runtime,
-      dispose: async (): Promise<void> => {
-        await engineDispose();
-        // Only reached if engineDispose resolved cleanly. Fire
-        // manifest-middleware cleanup in reverse registration order.
-        // Each hook is awaited so the audit sink's final flush +
-        // writer.end() complete before dispose resolves.
-        for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
-          try {
-            await hook();
-          } catch (hookErr) {
-            console.warn(
-              `[koi/${hostId}] manifest-middleware shutdown hook failed during dispose: ${
-                hookErr instanceof Error ? hookErr.message : String(hookErr)
-              }`,
-            );
-          }
+    const wrappedDispose = async (): Promise<void> => {
+      await engineDispose();
+      // Only reached if engineDispose resolved cleanly. Fire
+      // manifest-middleware cleanup in reverse registration order.
+      // Each hook is awaited so the audit sink's final flush +
+      // writer.end() complete before dispose resolves.
+      for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+        try {
+          await hook();
+        } catch (hookErr) {
+          console.warn(
+            `[koi/${hostId}] manifest-middleware shutdown hook failed during dispose: ${
+              hookErr instanceof Error ? hookErr.message : String(hookErr)
+            }`,
+          );
         }
-      },
+      }
     };
+    const wrappedRuntime: typeof runtime = new Proxy(runtime, {
+      get(target, prop, receiver): unknown {
+        if (prop === "dispose") return wrappedDispose;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
 
     // Handle is about to be constructed and returned. Flip the flag
     // so the outer catch below treats a successful return as "ownership

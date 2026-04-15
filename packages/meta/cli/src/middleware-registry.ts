@@ -16,7 +16,7 @@
  */
 
 import { lstatSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
 import { createAuditMiddleware } from "@koi/middleware-audit";
@@ -181,6 +181,14 @@ export async function resolveManifestMiddleware(
   // any later verification meaningless. Runs BEFORE any factory
   // so no resources leak on the rejection path.
   //
+  // Canonicalization is symlink-aware: we resolve the real parent
+  // directory via `realpathSync` and join it with the basename.
+  // Two in-tree aliases such as `logs/a.audit.ndjson` and
+  // `real-logs/a.audit.ndjson` (where `logs` is a symlink to
+  // `real-logs`) collapse to the same canonical key and are
+  // correctly rejected as duplicates. Lexical resolvePath alone
+  // would treat them as distinct.
+  //
   // This check is limited to the one built-in that opens a file
   // (`@koi/middleware-audit`). Other built-ins that don't allocate
   // file resources don't need dedup.
@@ -195,11 +203,14 @@ export async function resolveManifestMiddleware(
       // error; skip dedup so we don't mask it.
       continue;
     }
-    // Canonical key = absolute path resolved against the runtime's
-    // workspace. The factory later rejects absolute, traversed, and
-    // symlinked paths; here we only need enough canonicalization
-    // to equate two manifest entries that name the same file.
-    const canonical = resolvePath(ctx.workingDirectory, rawFilePath);
+    const canonical = canonicalizeAuditSinkPath(rawFilePath, ctx.workingDirectory);
+    if (canonical === undefined) {
+      // Parent dir realpath failed (e.g. ENOENT on a subdirectory
+      // that doesn't exist yet). Let the factory's own validation
+      // surface the clearer error during resolution instead of
+      // masking it here.
+      continue;
+    }
     if (claimedAuditPaths.has(canonical)) {
       throw new Error(
         `@koi/middleware-audit: filePath "${rawFilePath}" is already claimed by an earlier manifest entry in this session. ` +
@@ -479,6 +490,32 @@ function resolveAuditFilePath(filePath: string, workspaceRoot: string): string {
   }
 
   return lexicalResolved;
+}
+
+/**
+ * Compute a symlink-aware canonical key for an audit sink path so
+ * `resolveManifestMiddleware` can dedup multiple entries that name
+ * the same real file through different in-tree aliases.
+ *
+ * Resolves the parent directory via `realpathSync`, then joins with
+ * the basename (lstat on the file itself is deliberately skipped
+ * because the file may not exist yet on first run). Returns
+ * `undefined` if the parent cannot be resolved (ENOENT, EACCES,
+ * etc.) so the caller can skip dedup and let the factory's own
+ * validation surface the clearer error.
+ *
+ * Does not enforce policy (absolute/traversal/workspace escape/
+ * symlinked file) — that is `resolveAuditFilePath`'s job. This
+ * helper only produces a stable key for equality checks.
+ */
+function canonicalizeAuditSinkPath(filePath: string, workspaceRoot: string): string | undefined {
+  const lexical = resolvePath(workspaceRoot, filePath);
+  try {
+    const realParent = realpathSync(dirname(lexical));
+    return resolvePath(realParent, basename(lexical));
+  } catch {
+    return undefined;
+  }
 }
 
 function parseAuditOptions(

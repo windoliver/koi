@@ -598,6 +598,38 @@ describe("built-in @koi/middleware-audit factory", () => {
     ).rejects.toThrow(/already claimed by an earlier manifest entry/);
   });
 
+  test("collision check resolves in-tree symlink aliases to the same canonical path", async () => {
+    // Codex round 3: lexical dedup alone missed two entries that
+    // named the same real file through different in-tree aliases
+    // (e.g. `logs/a.audit.ndjson` and `real-logs/a.audit.ndjson`
+    // where `logs` is a symlink to `real-logs`). Both entries
+    // would pass resolveAuditFilePath's symlink check (parent
+    // realpath stays in-tree), but the lexical dedup treated them
+    // as distinct and opened two writers.
+    const workspace = mkTempCwd();
+    mkdirSync(join(workspace, "real-logs"));
+    symlinkSync(join(workspace, "real-logs"), join(workspace, "logs"));
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    await expect(
+      resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "real-logs/symalias.audit.ndjson" },
+            enabled: true,
+          },
+          {
+            name: "@koi/middleware-audit",
+            options: { filePath: "logs/symalias.audit.ndjson" },
+            enabled: true,
+          },
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      ),
+    ).rejects.toThrow(/already claimed/);
+  });
+
   test("collision check normalizes `./foo` vs `foo` to the same canonical path", async () => {
     const workspace = mkTempCwd();
     const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });

@@ -104,6 +104,25 @@ describe("createKoiRuntime — assembly", () => {
     expect(typeof runtimeHandle.runtime.sessionId).toBe("string");
     expect(runtimeHandle.runtime.sessionId.length).toBeGreaterThan(0);
   });
+
+  test("wrapped runtime forwards the sessionId getter live after cycleSession", async () => {
+    // Codex round-loop-2 round 3: the wrapper previously used
+    // `{...runtime, dispose}` which snapshotted the sessionId
+    // getter at construction time, so post-cycleSession reads
+    // returned the stale id. A Proxy wrapper forwards the getter
+    // live. This is the regression test.
+    runtimeHandle = await createKoiRuntime(makeConfig());
+    const initialId = runtimeHandle.runtime.sessionId;
+    expect(typeof initialId).toBe("string");
+    // Only exercise rotation if the runtime exposes cycleSession.
+    if (runtimeHandle.runtime.cycleSession !== undefined) {
+      await runtimeHandle.runtime.cycleSession();
+      const rotatedId = runtimeHandle.runtime.sessionId;
+      expect(typeof rotatedId).toBe("string");
+      expect(rotatedId.length).toBeGreaterThan(0);
+      expect(rotatedId).not.toBe(initialId);
+    }
+  });
 });
 
 describe("createKoiRuntime — trajectory steps", () => {
