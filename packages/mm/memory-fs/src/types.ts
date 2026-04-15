@@ -19,7 +19,7 @@ export interface MemoryListFilter {
 }
 
 /** Operations that can surface an index rebuild error. */
-export type MemoryStoreOperation = "write" | "update" | "delete" | "rebuild";
+export type MemoryStoreOperation = "write" | "update" | "upsert" | "delete" | "rebuild";
 
 /**
  * Index-error callback. Invoked whenever MEMORY.md rebuild fails after a
@@ -66,6 +66,23 @@ export interface DeleteResult {
   readonly indexError?: unknown;
 }
 
+/** Result of an atomic upsert (name+type lookup + Jaccard dedup + write/update). */
+export type UpsertResult =
+  | { readonly action: "created"; readonly record: MemoryRecord; readonly indexError?: unknown }
+  | { readonly action: "updated"; readonly record: MemoryRecord; readonly indexError?: unknown }
+  | {
+      readonly action: "conflict";
+      readonly existing: MemoryRecord;
+      readonly indexError?: unknown;
+    }
+  | {
+      readonly action: "skipped";
+      readonly record: MemoryRecord;
+      readonly duplicateOf: MemoryRecordId;
+      readonly similarity: number;
+      readonly indexError?: unknown;
+    };
+
 /** Configuration for creating a MemoryStore. */
 export interface MemoryStoreConfig {
   /** Resolved absolute path to the memory directory. */
@@ -107,4 +124,18 @@ export interface MemoryStore {
    * performed after each mutation).
    */
   readonly rebuildIndex: () => Promise<void>;
+  /**
+   * Atomic name+type upsert — runs the full check+write inside the
+   * per-directory lock.
+   *
+   * Flow (all inside `withDirLock()`):
+   * 1. Scan existing records.
+   * 2. Name+type match → conflict (force=false) or update (force=true).
+   * 3. Jaccard content dedup → skip if similar record exists.
+   * 4. Write new record.
+   */
+  readonly upsert: (
+    input: MemoryRecordInput,
+    opts: { readonly force: boolean },
+  ) => Promise<UpsertResult>;
 }
