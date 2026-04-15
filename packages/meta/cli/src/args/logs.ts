@@ -30,10 +30,22 @@ export function parseLogsFlags(rest: readonly string[], g: GlobalFlags): LogsFla
     },
     "logs",
   );
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "logs" as const,
+      version: versionRequested,
+      help: helpRequested,
+      manifest: values.manifest ?? positionals[0],
+      follow: false,
+      lines: 50,
+    };
+  }
   return {
     command: "logs" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     follow: values.follow ?? false,
     lines:

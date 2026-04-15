@@ -30,10 +30,22 @@ export function parseStatusFlags(rest: readonly string[], g: GlobalFlags): Statu
     },
     "status",
   );
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "status" as const,
+      version: versionRequested,
+      help: helpRequested,
+      manifest: values.manifest ?? positionals[0],
+      timeout: undefined,
+      json: false,
+    };
+  }
   return {
     command: "status" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     timeout:
       values.timeout !== undefined

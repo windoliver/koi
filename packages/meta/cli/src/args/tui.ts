@@ -82,6 +82,26 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     "tui",
   );
 
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "tui" as const,
+      version: versionRequested,
+      help: helpRequested,
+      agent: values.agent,
+      session: values.session,
+      resume: values.resume,
+      manifest: values.manifest,
+      goal: [],
+      untilPass: [],
+      maxIter: DEFAULT_MAX_ITER,
+      verifierTimeoutMs: DEFAULT_VERIFIER_TIMEOUT_MS,
+      allowSideEffects: false,
+      verifierInheritEnv: false,
+    };
+  }
+
   const untilPass = values["until-pass"] ?? [];
   if (untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");

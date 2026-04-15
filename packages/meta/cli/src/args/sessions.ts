@@ -29,10 +29,22 @@ export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): Ses
     "sessions",
   );
   const sub = positionals[0];
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "sessions" as const,
+      version: versionRequested,
+      help: helpRequested,
+      subcommand: sub === "list" ? ("list" as const) : undefined,
+      manifest: values.manifest,
+      limit: 20,
+    };
+  }
   return {
     command: "sessions" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     subcommand: sub === "list" ? ("list" as const) : undefined,
     manifest: values.manifest,
     limit:

@@ -135,6 +135,34 @@ export function parseStartFlags(rest: readonly string[], g: GlobalFlags): StartF
     "start",
   );
 
+  // Help/version escape hatch: return a shape-complete StartFlags with
+  // safe defaults before running any semantic validators. Dispatch
+  // exits immediately on help/version, so fields like mode/logFormat
+  // are never consulted — but they must type-check.
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "start" as const,
+      version: versionRequested,
+      help: helpRequested,
+      manifest: values.manifest ?? positionals[0],
+      mode: { kind: "interactive" },
+      resume: values.resume,
+      verbose: false,
+      dryRun: false,
+      logFormat: "text",
+      noTui: false,
+      contextWindow: DEFAULT_CONTEXT_WINDOW,
+      untilPass: [],
+      maxIter: DEFAULT_MAX_ITER,
+      verifierTimeoutMs: DEFAULT_VERIFIER_TIMEOUT_MS,
+      workingDir: undefined,
+      allowSideEffects: false,
+      verifierInheritEnv: false,
+    };
+  }
+
   const untilPass = values["until-pass"] ?? [];
   if (untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");

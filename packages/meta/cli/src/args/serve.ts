@@ -33,10 +33,24 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
     },
     "serve",
   );
+  const helpRequested = values.help ?? g.help;
+  const versionRequested = values.version ?? g.version;
+  if (helpRequested || versionRequested) {
+    return {
+      command: "serve" as const,
+      version: versionRequested,
+      help: helpRequested,
+      manifest: values.manifest ?? positionals[0],
+      port: undefined,
+      verbose: false,
+      logFormat: "text",
+    };
+  }
+
   return {
     command: "serve" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
     port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
     verbose: values.verbose ?? false,

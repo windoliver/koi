@@ -438,6 +438,41 @@ describe("bin.ts", () => {
     // in args.test.ts — the bin.ts spawn path can't express this case
     // because bun itself consumes the first `--` from the invocation
     // argv before the shim's raw argv is assembled.
+
+    // Review round 8: help/version must bypass semantic validators,
+    // not just unknown-flag rejection. Before the parser early-return,
+    // malformed value combinations (invalid --log-format, out-of-range
+    // --port, bad safety combos) threw a ParseError and exit 1 before
+    // the help/version exit path could serve its output.
+    test("`koi start --help --log-format bogus` still serves help", async () => {
+      const r = await runBin(["start", "--help", "--log-format", "bogus"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+    });
+
+    test("`koi serve --version --port 99999` still prints version", async () => {
+      const r = await runBin(["serve", "--version", "--port", "99999"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
+
+    test("`koi start --help --until-pass x` skips safety-combo validation", async () => {
+      const r = await runBin(["start", "--help", "--until-pass", "bun"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+    });
+
+    test("`koi deploy --help --port 99999` still serves help", async () => {
+      const r = await runBin(["deploy", "--help", "--port", "99999"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi deploy —");
+    });
+
+    test("`koi sessions --help --limit 0` still serves help", async () => {
+      const r = await runBin(["sessions", "--help", "--limit", "0"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi sessions —");
+    });
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {
