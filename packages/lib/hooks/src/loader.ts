@@ -164,11 +164,19 @@ export function loadRegisteredHooksWithDiagnostics(
  * A loader error scoped to a single hook entry (or `-1` for structural errors
  * like "not an array"). Carries the hook's declared `name` when parseable so
  * operators can identify which entry failed without counting array indices.
+ *
+ * `failClosed` is sniffed from the raw entry independently of schema
+ * validation: if the operator explicitly marked an entry `failClosed: true`
+ * they have declared that hook load-critical, so callers can fail startup on
+ * that error even when the rest of the schema is invalid. Absent field or a
+ * non-boolean value → `failClosed` is `undefined` (best-effort partial load
+ * is acceptable).
  */
 export interface HookLoadError {
   readonly index: number;
   readonly name?: string;
   readonly message: string;
+  readonly failClosed?: boolean;
 }
 
 /** Result of per-entry hook loading: valid entries + per-entry errors + warnings. */
@@ -220,14 +228,17 @@ export function loadRegisteredHooksPerEntry(
     const entry: unknown = raw[i];
     const parsed = validateWith(hookConfigSchema, entry, `Hook[${i}] validation failed`);
     if (!parsed.ok) {
-      const rawName =
-        typeof entry === "object" && entry !== null && "name" in entry
-          ? (entry as { readonly name: unknown }).name
+      const rawEntry =
+        typeof entry === "object" && entry !== null
+          ? (entry as { readonly name?: unknown; readonly failClosed?: unknown })
           : undefined;
+      const rawName = rawEntry?.name;
+      const rawFailClosed = rawEntry?.failClosed;
       errors.push({
         index: i,
         message: parsed.error.message,
         ...(typeof rawName === "string" && rawName.length > 0 ? { name: rawName } : {}),
+        ...(typeof rawFailClosed === "boolean" ? { failClosed: rawFailClosed } : {}),
       });
       continue;
     }

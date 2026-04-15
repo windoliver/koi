@@ -179,6 +179,13 @@ export function buildPluginMcpSetup(
  *   entry (e.g. an http hook lacking `KOI_DEV=1`) would silently drop every
  *   hook in the file (see issue #1781).
  *
+ * Fail-closed opt-in: if any invalid entry has `failClosed: true` in the raw
+ * JSON, the operator has explicitly declared that hook load-critical — this
+ * function emits the normal per-entry diagnostics via `onLoadError` AND then
+ * throws an Error so the caller aborts startup rather than running with a
+ * reduced policy. Non-fail-closed invalid entries still partial-load (#1781).
+ * Callers that don't want startup to abort should wrap the call in try/catch.
+ *
  * When `filterAgentHooks` is true, any `kind: "agent"` hooks are removed
  * (and their names reported via the optional callback) so the caller can
  * warn the operator. Agent hooks require a spawnFn that the TUI does not
@@ -215,6 +222,20 @@ export async function loadUserRegisteredHooks(options: {
     for (const w of loaded.warnings) {
       options.onLoadError(`hooks.json: ${w}`);
     }
+  }
+
+  // Fail-closed opt-in (respects the operator's declared intent, addresses
+  // the architectural concern that partial loading weakens enforcement):
+  // if any invalid entry was marked `failClosed: true`, abort startup rather
+  // than run with a reduced policy.
+  const failClosedErrors = loaded.errors.filter((e) => e.failClosed === true);
+  if (failClosedErrors.length > 0) {
+    const labels = failClosedErrors
+      .map((e) => (e.name !== undefined ? `"${e.name}"` : `entry ${e.index}`))
+      .join(", ");
+    throw new Error(
+      `Refusing to start: ${failClosedErrors.length} hook(s) marked failClosed:true failed to load (${labels}). Fix ${path} or remove failClosed from the affected entries.`,
+    );
   }
 
   if (!options.filterAgentHooks) return loaded.hooks;

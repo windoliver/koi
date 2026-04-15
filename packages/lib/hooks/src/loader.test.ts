@@ -370,4 +370,27 @@ describe("loadRegisteredHooksPerEntry", () => {
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.name).toBeUndefined();
   });
+
+  it("sniffs failClosed:true from invalid entries so callers can honor it", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [{ kind: "command", name: "deny", cmd: [], failClosed: true }],
+      "user",
+    );
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]?.failClosed).toBe(true);
+    expect(result.errors[0]?.name).toBe("deny");
+  });
+
+  it("leaves failClosed undefined when absent or non-boolean", () => {
+    const result = loadRegisteredHooksPerEntry(
+      [
+        { kind: "command", name: "no-flag", cmd: [] },
+        { kind: "command", name: "bad-type", cmd: [], failClosed: "yes" },
+      ],
+      "user",
+    );
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0]?.failClosed).toBeUndefined();
+    expect(result.errors[1]?.failClosed).toBeUndefined();
+  });
 });

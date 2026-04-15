@@ -500,11 +500,19 @@ declare function loadRegisteredHooksWithDiagnostics(raw: unknown, tier: HookTier
  * A loader error scoped to a single hook entry (or \`-1\` for structural errors
  * like "not an array"). Carries the hook's declared \`name\` when parseable so
  * operators can identify which entry failed without counting array indices.
+ *
+ * \`failClosed\` is sniffed from the raw entry independently of schema
+ * validation: if the operator explicitly marked an entry \`failClosed: true\`
+ * they have declared that hook load-critical, so callers can fail startup on
+ * that error even when the rest of the schema is invalid. Absent field or a
+ * non-boolean value → \`failClosed\` is \`undefined\` (best-effort partial load
+ * is acceptable).
  */
 interface HookLoadError {
     readonly index: number;
     readonly name?: string;
     readonly message: string;
+    readonly failClosed?: boolean;
 }
 /** Result of per-entry hook loading: valid entries + per-entry errors + warnings. */
 interface LoadRegisteredHooksPerEntryResult {

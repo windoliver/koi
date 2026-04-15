@@ -198,6 +198,39 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors[0]).toContain("array");
   });
 
+  test("aborts startup when a failClosed entry fails to load", async () => {
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "command", name: "deny", cmd: [], failClosed: true },
+      ]),
+    );
+    const errors: string[] = [];
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start/);
+    // Diagnostics for the failed entry must fire before the throw so operators
+    // see which hook broke, not just the fatal message.
+    expect(errors.some((m) => m.includes('"deny"'))).toBe(true);
+  });
+
+  test("does not abort when invalid entries have no failClosed flag", async () => {
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "command", name: "bad", cmd: [] },
+      ]),
+    );
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: () => {},
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["good"]);
+  });
+
   test("filters agent hooks and fires onAgentHooksFiltered", async () => {
     writeHooksJson(
       JSON.stringify([
