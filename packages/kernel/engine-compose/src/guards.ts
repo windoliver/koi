@@ -11,7 +11,6 @@ import type {
   Agent,
   GovernanceController,
   InboundMessage,
-  KoiErrorCode,
   KoiMiddleware,
   ModelChunk,
   ModelRequest,
@@ -35,21 +34,6 @@ import {
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
 } from "./guard-types.js";
-
-/**
- * Error codes that reliably indicate the spawn was rejected BEFORE any
- * child was admitted/launched. Used to refund the per-turn burst budget
- * on pre-admission failures so a parent isn't penalised for resolver,
- * validation, or permission errors. Post-admission failures (TIMEOUT,
- * INTERNAL, EXTERNAL, child-run crashes) keep the spawn counted.
- */
-const PRE_ADMISSION_SPAWN_ERROR_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
-  "VALIDATION",
-  "NOT_FOUND",
-  "PERMISSION",
-  "RATE_LIMIT",
-  "AUTH_REQUIRED",
-]);
 
 // ---------------------------------------------------------------------------
 // Shared validation helper
@@ -944,22 +928,19 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       // 6. Execute spawn:
       //    - directChildren always decrements (the in-flight slot is
       //      freed when this tool call unwinds, success or failure).
-      //    - spawnsThisTurn is refunded ONLY when the downstream error
-      //      reliably indicates the child was never admitted — resolver
-      //      NOT_FOUND, VALIDATION, PERMISSION, RATE_LIMIT, AUTH_REQUIRED
-      //      from any middleware before the spawn executor touched the
-      //      child. Post-admission errors (child crashed mid-run, etc.)
-      //      keep the burst consumed: otherwise a parent could spam
-      //      failing children past the cap while they were actually
-      //      running. Plain `Error` from `next()` is treated as
-      //      post-admission (safer default — don't refund).
+      //    - spawnsThisTurn is NEVER refunded: we cannot safely tell
+      //      pre-admission failures apart from post-admission ones by
+      //      error code alone. A spawned child that was already
+      //      admitted can fail later with PERMISSION / RATE_LIMIT /
+      //      AUTH_REQUIRED, and those codes would propagate verbatim
+      //      from the child back to the parent — refunding on code
+      //      would let a parent spam children that fail quickly and
+      //      bypass the cap (#1793). The tradeoff is that pre-admission
+      //      validation errors (malformed agent name, bad args) also
+      //      consume budget — bounded to maxFanOut per turn, recoverable
+      //      on the next turn. Governance safety wins over UX.
       try {
         return await next(request);
-      } catch (e: unknown) {
-        if (e instanceof KoiRuntimeError && PRE_ADMISSION_SPAWN_ERROR_CODES.has(e.code)) {
-          spawnsThisTurn--;
-        }
-        throw e;
       } finally {
         directChildren--;
       }
