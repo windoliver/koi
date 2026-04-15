@@ -120,6 +120,7 @@ describe("buildPluginMcpSetup", () => {
 describe("loadUserRegisteredHooks", () => {
   let fakeHome: string;
   let origHome: string | undefined;
+  let origStrict: string | undefined;
 
   function writeHooksJson(body: string): void {
     const dir = join(fakeHome, ".koi");
@@ -129,8 +130,11 @@ describe("loadUserRegisteredHooks", () => {
 
   beforeEach(() => {
     origHome = process.env.HOME;
+    origStrict = process.env.KOI_HOOKS_STRICT;
     fakeHome = mkdtempSync(join(tmpdir(), "koi-user-hooks-"));
     process.env.HOME = fakeHome;
+    // Default every test to lenient mode; strict-mode tests opt in explicitly.
+    delete process.env.KOI_HOOKS_STRICT;
   });
 
   afterEach(() => {
@@ -138,6 +142,11 @@ describe("loadUserRegisteredHooks", () => {
       delete process.env.HOME;
     } else {
       process.env.HOME = origHome;
+    }
+    if (origStrict === undefined) {
+      delete process.env.KOI_HOOKS_STRICT;
+    } else {
+      process.env.KOI_HOOKS_STRICT = origStrict;
     }
     rmSync(fakeHome, { recursive: true, force: true });
   });
@@ -241,6 +250,74 @@ describe("loadUserRegisteredHooks", () => {
     });
     expect(hooks).toHaveLength(1);
     expect(errors.some((m) => m.includes("Duplicate"))).toBe(true);
+  });
+
+  // ---------- KOI_HOOKS_STRICT=1 (policy-bearing mode) ----------
+
+  test("strict mode: parse errors abort startup", async () => {
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson("not-json");
+    const errors: string[] = [];
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1/);
+    expect(errors.some((m) => m.includes("Could not read"))).toBe(true);
+  });
+
+  test("strict mode: non-array root aborts startup", async () => {
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: () => {},
+      }),
+    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1.*root.*array/);
+  });
+
+  test("strict mode: ordinary schema error aborts startup", async () => {
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "command", name: "bad", cmd: [] },
+      ]),
+    );
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: () => {},
+      }),
+    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1.*"bad"/);
+  });
+
+  test("strict mode: unmarked duplicate aborts startup", async () => {
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "dup", cmd: ["/bin/true"] },
+        { kind: "command", name: "dup", cmd: ["/bin/true"] },
+      ]),
+    );
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: () => {},
+      }),
+    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1.*"dup"/);
+  });
+
+  test("strict mode: clean file loads normally", async () => {
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(JSON.stringify([{ kind: "command", name: "clean", cmd: ["/bin/true"] }]));
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: () => {},
+    });
+    expect(hooks.map((rh) => rh.hook.name)).toEqual(["clean"]);
   });
 
   test("aborts startup when a failClosed entry fails to load", async () => {

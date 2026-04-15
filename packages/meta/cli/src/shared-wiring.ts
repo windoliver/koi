@@ -168,27 +168,30 @@ export function buildPluginMcpSetup(
  * Load user-tier hooks from `~/.koi/hooks.json` as tier-tagged
  * `RegisteredHook`s.
  *
- * Loader semantics:
+ * Loader semantics (lenient — default):
  * - File absent → silent empty result (hooks.json is optional).
  * - File present but unreadable / not JSON → `onLoadError` is invoked with a
- *   diagnostic; empty result is returned (non-fatal). hooks.json is edited
- *   by humans/tools and can be momentarily invalid during writes; locking
- *   operators out of the TUI because an editor dropped a partial write
- *   would be worse than best-effort degraded loading (review round 6).
+ *   diagnostic; empty result is returned. hooks.json is edited by humans
+ *   and can be momentarily invalid during writes; locking operators out of
+ *   the TUI on transient editor partial writes is worse than best-effort
+ *   degraded loading for an optional per-user config.
  * - File present and parseable → each entry is validated independently via
  *   `loadRegisteredHooksPerEntry`. Invalid entries are reported through
- *   `onLoadError` (one call per error) and skipped; valid peers still load.
- *   This replaces the prior all-or-nothing behaviour where a single bad
- *   entry (e.g. an http hook lacking `KOI_DEV=1`) would silently drop every
- *   hook in the file (see issue #1781).
+ *   `onLoadError` and skipped; valid peers still load. This replaces the
+ *   prior all-or-nothing behaviour where a single bad entry (e.g. an http
+ *   hook lacking `KOI_DEV=1`) would silently drop every hook (issue #1781).
+ * - Any error (schema or duplicate) carrying `failClosed: true` → abort.
+ *   The per-hook opt-in is the primary fail-closed contract.
  *
- * Host-level fatal policy: only `schema` errors on entries that the
- * operator explicitly marked `failClosed: true` abort startup. Every other
- * failure mode (parse error, structural root error, duplicate name,
- * ordinary schema error) degrades to a warning + partial/empty load so a
- * benign config mistake cannot deny service to `koi tui` / `koi start`.
- * The `failClosed` opt-in is the sole mechanism operators use to say
- * "this hook must be loaded or I want the process to refuse to start."
+ * Strict mode (`KOI_HOOKS_STRICT=1`):
+ * When this env var is set, hooks.json is treated as policy-bearing
+ * configuration that must load cleanly or startup must refuse. ANY load
+ * failure becomes fatal: parse errors, structural root errors, duplicate
+ * names, and schema failures regardless of `failClosed`. This is the mode
+ * operators choose when a corrupt or transient file would be
+ * indistinguishable from a silent policy bypass in their environment.
+ * Lenient mode remains the default so developer workflows are not locked
+ * out by editor transients.
  *
  * All diagnostics are reported through `onLoadError` BEFORE any fatal
  * throw so operators see every broken entry, not just the first fatal.
@@ -207,6 +210,7 @@ export async function loadUserRegisteredHooks(options: {
   readonly onAgentHooksFiltered?: (hookNames: readonly string[]) => void;
   readonly onLoadError?: (message: string) => void;
 }): Promise<readonly RegisteredHook[]> {
+  const strictMode = process.env.KOI_HOOKS_STRICT === "1";
   const path = resolveUserHooksConfigPath();
   const file = Bun.file(path);
   if (!(await file.exists())) return [];
@@ -215,14 +219,19 @@ export async function loadUserRegisteredHooks(options: {
   try {
     raw = await file.json();
   } catch (e) {
-    // File exists but cannot be read/parsed. Degrade to empty load + warn:
-    // hooks.json is an optional per-user config that can be momentarily
-    // invalid during an editor write or merge conflict, and aborting every
-    // TUI/CLI invocation on the machine would be a worse failure mode than
-    // silent hook loss (review round 6). Operators who need fail-closed
-    // behaviour mark individual hooks `failClosed: true`.
+    // File exists but cannot be read/parsed. In lenient mode (default),
+    // degrade to empty load + warn so editor transients don't lock the
+    // operator out. In strict mode (KOI_HOOKS_STRICT=1), the file is
+    // policy-bearing and any load failure must refuse startup — a corrupt
+    // file is indistinguishable from a silent policy bypass.
     const detail = e instanceof Error ? e.message : String(e);
-    options.onLoadError?.(`Could not read ${path}: ${detail}`);
+    const msg = `Could not read ${path}: ${detail}`;
+    options.onLoadError?.(msg);
+    if (strictMode) {
+      throw new Error(
+        `Refusing to start: ${msg}. KOI_HOOKS_STRICT=1 is set — fix or remove the file before retrying.`,
+      );
+    }
     return [];
   }
 
@@ -271,15 +280,35 @@ export async function loadUserRegisteredHooks(options: {
     }
   }
 
-  // Fail-closed opt-in is the only fatal path: any load error — schema
-  // failure OR duplicate-name failure — on an entry the operator explicitly
-  // marked `failClosed: true` aborts startup. The duplicate case matters:
-  // if an operator edits a deny/audit hook in place but forgets to remove
-  // the older copy, the stricter replacement is declared load-critical and
-  // the runtime must refuse to run the stale definition (review round 7
-  // finding). Structural root errors, ordinary schema errors, and
-  // unmarked duplicate names still degrade to warnings + partial load so
-  // benign config mistakes cannot deny service to the TUI / CLI (round 6).
+  // Strict mode: any load error (parse, structural, duplicate, schema)
+  // refuses startup. hooks.json is policy-bearing under KOI_HOOKS_STRICT=1
+  // and a corrupt/invalid file is indistinguishable from a silent bypass.
+  if (strictMode && loaded.errors.length > 0) {
+    const summary = loaded.errors
+      .map((e) => {
+        const where =
+          e.index < 0
+            ? "root"
+            : e.name !== undefined
+              ? `entry ${e.index} ("${e.name}")`
+              : `entry ${e.index}`;
+        return `${where}: ${e.message}`;
+      })
+      .join("; ");
+    throw new Error(
+      `Refusing to start: ${path} has ${loaded.errors.length} hook load error(s) under KOI_HOOKS_STRICT=1 — ${summary}. Fix every entry before retrying.`,
+    );
+  }
+
+  // Lenient mode fail-closed opt-in: any load error — schema or duplicate
+  // — on an entry the operator explicitly marked `failClosed: true` aborts
+  // startup even outside strict mode. The duplicate case matters: if an
+  // operator edits a deny/audit hook in place but leaves the older copy
+  // above it, the stricter replacement is declared load-critical and the
+  // runtime must refuse to run the stale definition. Parse errors,
+  // structural root errors, ordinary schema errors, and unmarked duplicates
+  // still degrade to warnings + partial load in lenient mode so benign
+  // config mistakes cannot deny service to the TUI / CLI.
   const failClosedErrors = loaded.errors.filter((e) => e.failClosed === true);
   if (failClosedErrors.length > 0) {
     const labels = failClosedErrors

@@ -222,6 +222,10 @@ EOF
 
 See `packages/lib/hooks/src/schema.ts` for the full schema. Invalid entries are reported per-entry via `[koi tui] hooks.json: …` warnings and skipped; valid peers still load (#1781).
 
+Two loading modes exist:
+- **Lenient (default)**: parse errors, structural root errors, duplicate names, and ordinary schema errors all warn + skip; only entries explicitly marked `failClosed: true` abort startup on load failure. Appropriate for interactive dev sessions where an editor transient shouldn't lock the operator out.
+- **Strict (`KOI_HOOKS_STRICT=1`)**: any load failure (parse, structural, duplicate, schema, failClosed) aborts startup with `Refusing to start: … under KOI_HOOKS_STRICT=1`. Appropriate for deployments where hooks are policy-bearing and a corrupt file is indistinguishable from a silent bypass.
+
 **Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); without it, the entry is rejected at load time (surfaced via `onLoadError`) and the hook never fires. See `packages/lib/hooks/src/hook-validation.ts`. Example entry:
 
 ```json
