@@ -38,9 +38,56 @@
  *                                  #   per-host.
  */
 
+import { dirname, isAbsolute, resolve as resolvePath } from "node:path";
 import { loadConfig } from "@koi/config";
 import type { FileSystemConfig } from "@koi/core";
 import { validateFileSystemConfig } from "@koi/runtime";
+
+/**
+ * Absolutize a `local://` mountUri against the manifest directory so relative
+ * paths anchor to the manifest file, not the CLI shell cwd. Non-`local://`
+ * URIs (nexus HTTP endpoints, gdrive://, s3://, etc.) are passed through
+ * unchanged — only the local scheme has a filesystem-path semantic that can
+ * silently retarget based on the launching shell.
+ *
+ * Examples (manifestDir = `/home/alice/repo-a`):
+ *   `local://./workspace`           → `local:///home/alice/repo-a/workspace`
+ *   `local://workspace`             → `local:///home/alice/repo-a/workspace`
+ *   `local:///etc/config`           → `local:///etc/config` (already absolute)
+ *   `gdrive://my-drive`             → `gdrive://my-drive` (not local)
+ */
+function absolutizeMountUri(mountUri: string, manifestDir: string): string {
+  const prefix = "local://";
+  if (!mountUri.startsWith(prefix)) return mountUri;
+  const path = mountUri.slice(prefix.length);
+  if (isAbsolute(path)) return mountUri;
+  return `${prefix}${resolvePath(manifestDir, path)}`;
+}
+
+/**
+ * Walk `filesystem.options.mountUri` (string or array of strings) and
+ * anchor every relative `local://` URI to the manifest directory.
+ * Rebuilds a new `FileSystemConfig` (structural clone of the touched
+ * fields) so the input stays immutable.
+ */
+function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): FileSystemConfig {
+  const options = config.options;
+  if (options === undefined || typeof options !== "object") return config;
+  const mountUri = (options as Record<string, unknown>).mountUri;
+  if (mountUri === undefined) return config;
+  let nextMountUri: unknown;
+  if (typeof mountUri === "string") {
+    nextMountUri = absolutizeMountUri(mountUri, manifestDir);
+  } else if (Array.isArray(mountUri) && mountUri.every((u) => typeof u === "string")) {
+    nextMountUri = (mountUri as string[]).map((u) => absolutizeMountUri(u, manifestDir));
+  } else {
+    return config;
+  }
+  return {
+    ...config,
+    options: { ...(options as Record<string, unknown>), mountUri: nextMountUri },
+  };
+}
 
 export interface ManifestConfig {
   readonly modelName: string;
@@ -218,7 +265,12 @@ export async function loadManifestConfig(
         error: `manifest.filesystem: ${fsResult.error.message}`,
       };
     }
-    filesystem = fsResult.value;
+    // Anchor relative `local://` mountUris to the manifest directory so
+    // they do NOT silently retarget against the CLI shell cwd when a
+    // shared manifest is checked into one repo and the command is
+    // launched from another.
+    const manifestDir = dirname(resolvePath(path));
+    filesystem = anchorFilesystemPaths(fsResult.value, manifestDir);
   }
 
   return {

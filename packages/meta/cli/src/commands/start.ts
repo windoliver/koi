@@ -425,22 +425,6 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }\n`,
       );
     }
-    // Dispose the manifest-provided filesystem backend (nexus local bridge
-    // owns a python subprocess + auth subscription that must be torn down
-    // before process exit). The factory never built this backend, so this
-    // is the only place it gets closed.
-    if (manifestFilesystemBackend !== undefined) {
-      try {
-        await manifestFilesystemBackend.dispose?.();
-      } catch (fsDisposeErr) {
-        shutdownFailed = true;
-        process.stderr.write(
-          `koi: filesystem.dispose failed — ${
-            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
-          }\n`,
-        );
-      }
-    }
     try {
       await runtime.dispose?.();
     } catch (disposeErr) {
@@ -457,6 +441,25 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
         }\n`,
       );
+    }
+    // Dispose the manifest-provided filesystem backend AFTER runtime
+    // teardown. The fs tools created in `buildCoreProviders` capture this
+    // backend, and `runtime.dispose()` can still be awaiting in-flight
+    // tool work — closing the transport first forces transport-level
+    // failures and settle-timeout noise during session/transcript flush.
+    // Match the TUI shutdown ordering (runtime → filesystem). The factory
+    // never built this backend, so this is the only place it gets closed.
+    if (manifestFilesystemBackend !== undefined) {
+      try {
+        await manifestFilesystemBackend.dispose?.();
+      } catch (fsDisposeErr) {
+        shutdownFailed = true;
+        process.stderr.write(
+          `koi: filesystem.dispose failed — ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
     }
   };
   // Pre-populate the runtime's in-memory transcript with the resumed
