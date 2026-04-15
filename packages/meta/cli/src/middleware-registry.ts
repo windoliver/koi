@@ -51,32 +51,42 @@ export class CoreMiddlewareBlockedError extends Error {
  * priority within a tier. The real security / core layer ordering
  * after sort is:
  *
- *   exfiltration-guard  intercept  priority 50    (outermost)
+ *   exfiltration-guard  intercept  priority  50   (outermost)
  *   permissions         intercept  priority 100
+ *   ──────────── zone B slot: resolve / 80 ─────────────
  *   system-prompt       resolve    priority 100
  *   goal                resolve    priority 340
  *   hooks               resolve    priority 400
- *   ──────────── zone B slot: resolve / 500 ─────────────
  *   model-router        resolve    priority 900
  *   session-transcript  observe    priority 200
+ *   audit (stack)       observe    priority 300
  *
- * Zone B lands at `resolve / 500` — strictly INSIDE every security
- * layer (exfiltration-guard, permissions, hooks), strictly INSIDE
- * the prompt / goal layers (so repo-authored middleware sees the
- * final model-facing request with injected prompt and goal text),
- * and strictly OUTSIDE model-router and session-transcript (so
- * routing and transcript recording happen after zone B logic).
+ * Zone B lands at `resolve / 80` — strictly INSIDE every intercept-
+ * phase security layer (exfiltration-guard, permissions) but
+ * strictly OUTSIDE every resolve-phase core layer (system-prompt,
+ * goal, hooks, model-router). This is the critical trust-boundary
+ * fix: if zone B ran AFTER system-prompt injection (which the
+ * previous resolve/500 slot did), any repo-authored middleware
+ * with `wrapModelCall`/`wrapModelStream` could overwrite or strip
+ * the trusted system prompt after the host had injected it.
+ * Placing zone B outside system-prompt means:
  *
- * The value is forced here so a manifest entry that declared
- * `phase: "intercept"` at a lower priority cannot leapfrog the
- * security layers once `sortMiddlewareByPhase` runs. This closes
- * the execution-order gap Codex rounds 2 and 5 caught: the array
- * order in `composeRuntimeMiddleware` is irrelevant; sort order is
- * what matters, and it is fixed here regardless of what the
- * factory returned.
+ *   1. Zone B sees the already-gated-and-redacted request from
+ *      the intercept-phase security layers (no raw secrets), and
+ *   2. Zone B cannot modify the final system-channel instructions
+ *      the model receives — system-prompt, goal, and hooks all
+ *      run INSIDE zone B on the onion's way down, so their
+ *      outputs are invisible to zone B's wrap callbacks.
+ *
+ * The value is forced so a manifest entry that declared
+ * `phase: "intercept"` or a different priority cannot leapfrog
+ * either the security guard above or the trusted runtime layers
+ * below. `sortMiddlewareByPhase` runs after composition; the
+ * array order in `composeRuntimeMiddleware` is irrelevant and
+ * the forced slot here is the ONLY thing that matters.
  */
 const ZONE_B_PHASE: MiddlewarePhase = "resolve";
-const ZONE_B_PRIORITY = 500;
+const ZONE_B_PRIORITY = 80;
 
 /**
  * Context passed to every manifest middleware factory. Intentionally

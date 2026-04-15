@@ -823,13 +823,17 @@ describe("resolveManifestMiddleware", () => {
 // ---------------------------------------------------------------------------
 // Zone B phase/priority enforcement — execution-time security invariant
 //
-// Codex round-2 finding #2: the engine's sortMiddlewareByPhase
-// re-orders middleware by (phase, priority) before execution. A
-// manifest entry declaring `phase: "intercept"` with a low priority
-// could otherwise leapfrog exfiltration-guard/permissions. The
-// resolver rewrites every zone B entry to a fixed observe/900 slot
-// so that after sort, every zone B middleware provably runs strictly
-// after all intercept- and resolve-phase layers.
+// The engine's sortMiddlewareByPhase re-orders middleware by
+// (phase, priority) before execution. A manifest entry declaring
+// `phase: "intercept"` with a low priority could otherwise leapfrog
+// exfiltration-guard/permissions. The resolver rewrites every zone
+// B entry to a fixed slot (resolve/80) so that after sort:
+//
+//   - zone B runs AFTER every intercept-phase layer (security guard)
+//   - zone B runs BEFORE every resolve-phase core layer
+//     (system-prompt, goal, hooks, model-router), so repo-authored
+//     middleware cannot mutate the final system-channel
+//     instructions the model receives.
 // ---------------------------------------------------------------------------
 
 describe("resolveManifestMiddleware — phase/priority forced slot", () => {
@@ -844,7 +848,7 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     return { name, phase, priority } as unknown as KoiMiddleware;
   }
 
-  test("forces phase: observe and priority: 900 on resolved zone B entries", async () => {
+  test("forces phase: resolve and priority: 80 on resolved zone B entries", async () => {
     const registry = new MiddlewareRegistry();
     // A hostile factory that tries to declare intercept phase at a
     // very low priority to leapfrog the security layers.
@@ -860,10 +864,10 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     // zone B slot. Without this, the engine sort would run the
     // attacker's middleware before exfiltration-guard.
     expect(mw?.phase).toBe("resolve");
-    expect(mw?.priority).toBe(500);
+    expect(mw?.priority).toBe(80);
   });
 
-  test("zone B lands between hooks and model-router after the real engine sort", async () => {
+  test("zone B lands between intercept security and resolve core layers after engine sort", async () => {
     // Reproduce the engine's sort from
     // `packages/kernel/engine-compose/src/compose.ts`.
     const PHASE_TIER: Record<string, number> = { intercept: 0, resolve: 1, observe: 2 };
@@ -913,15 +917,15 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     ]);
     const names = sorted.map((mw) => mw.name);
 
-    // Security layers must come before zone B after sort.
+    // Zone B runs AFTER intercept-phase security layers.
     expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("exfiltration-guard"));
     expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("permissions"));
-    expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("system-prompt"));
-    expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("goal"));
-    expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("hooks"));
-    // Zone B must run BEFORE model-router and session-transcript so
-    // it sees the final prompt-injected request and its effects can
-    // still be observed by the transcript layer.
+    // Zone B runs BEFORE every resolve-phase core layer, so
+    // repo-authored middleware cannot modify the final system
+    // prompt, goal, hooks, or routing decisions.
+    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("system-prompt"));
+    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("goal"));
+    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("hooks"));
     expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("model-router"));
     expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("session-transcript"));
   });
@@ -959,7 +963,7 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     if (mw === undefined) throw new Error("expected resolved middleware");
     expect(mw.name).toBe("custom-private");
     expect(mw.phase).toBe("resolve");
-    expect(mw.priority).toBe(500);
+    expect(mw.priority).toBe(80);
     // Hook invocations must route to the inner instance so private
     // fields remain reachable. Calling twice proves the counter
     // mutates the same instance (not a snapshotted clone).
@@ -985,7 +989,7 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     );
     for (const mw of resolved) {
       expect(mw.phase).toBe("resolve");
-      expect(mw.priority).toBe(500);
+      expect(mw.priority).toBe(80);
     }
     expect(resolved.map((mw) => mw.name)).toEqual(["x", "y", "z"]);
   });

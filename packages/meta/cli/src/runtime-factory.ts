@@ -1380,32 +1380,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // no-op on second call; the wrapped dispose must preserve that
     // contract, otherwise retry/idempotent shutdown paths would
     // re-call `sink.close()` on an already-ended writer and throw.
-    // `let` is justified because the flag is set exactly once on
-    // the first successful cleanup pass.
-    let manifestCleanupDone = false;
+    //
+    // Tracking is per-hook rather than a single global flag: a
+    // transient failure on one hook (e.g. a flaky audit flush)
+    // must be retryable on the next dispose() while already-
+    // successful hooks stay latched and do not re-run. A single
+    // global flag would either:
+    //   - mark cleanup done on any partial completion, silently
+    //     dropping the failed hook forever (data loss), or
+    //   - leave cleanup unmarked, re-running ALL hooks (including
+    //     successful ones) and risking double-close on the
+    //     already-ended writers.
+    // Per-hook tracking gives precise retry semantics.
+    const completedManifestHooks = new WeakSet<() => Promise<void> | void>();
     const wrappedDispose = async (): Promise<void> => {
       await engineDispose();
-      // Only reached if engineDispose resolved cleanly. Skip on
-      // second and subsequent calls — dispose must be idempotent.
-      if (manifestCleanupDone) {
-        return;
-      }
       // Fire manifest-middleware cleanup in reverse registration
-      // order. Each hook is awaited so the audit sink's final
-      // flush + writer.end() complete before dispose resolves.
+      // order, skipping hooks that already ran successfully. Each
+      // surviving hook is awaited so audit sinks' final flush +
+      // writer.end() complete before dispose resolves.
       //
       // Cleanup failures are aggregated into a single error and
-      // thrown after all hooks have been attempted. Audit and
-      // similar file-backed middleware treat finalization as a
-      // correctness/security property: silently downgrading a
+      // thrown after every unfinished hook has been attempted.
+      // Audit and similar file-backed middleware treat finalization
+      // as a correctness/security property: silently downgrading a
       // failed flush to a successful shutdown would let buffered
       // records never hit disk while the host reports success.
-      // Hooks are latched as done BEFORE the throw so a retry
-      // dispose does not re-run already-executed cleanup.
+      // Hooks that succeed mid-pass are marked complete BEFORE the
+      // throw so a retry dispose() re-runs only the ones that
+      // failed.
       const hookErrors: unknown[] = [];
       for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+        if (completedManifestHooks.has(hook)) {
+          continue;
+        }
         try {
           await hook();
+          completedManifestHooks.add(hook);
         } catch (hookErr) {
           console.warn(
             `[koi/${hostId}] manifest-middleware shutdown hook failed during dispose: ${
@@ -1415,13 +1426,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           hookErrors.push(hookErr);
         }
       }
-      manifestCleanupDone = true;
       if (hookErrors.length > 0) {
         throw new AggregateError(
           hookErrors,
           `manifest-middleware shutdown had ${hookErrors.length} failure(s) during runtime.dispose. ` +
             "Audit sinks or other file-backed cleanup may not have fully flushed — treat shutdown as failed " +
-            "and surface this error to the host's shutdown-reporting path.",
+            "and surface this error to the host's shutdown-reporting path. A subsequent runtime.dispose() call " +
+            "will retry the failed hooks without re-running the ones that already completed.",
         );
       }
     };

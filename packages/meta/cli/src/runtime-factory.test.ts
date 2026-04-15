@@ -504,9 +504,9 @@ describe("createKoiRuntime — zone B manifest middleware", () => {
   });
 
   test("manifest middleware cleanup failure propagates as AggregateError from dispose()", async () => {
-    // Codex round-loop-2 round 5 finding #3: cleanup failures
-    // were previously downgraded to warnings, letting audit flush
-    // failures appear as successful shutdown. dispose now throws.
+    // Cleanup failures are aggregated into a dispose() throw so
+    // audit flush errors surface as failed shutdown instead of
+    // silent success.
     const registry = new MiddlewareRegistry();
     registry.register("test/failing-cleanup", (_entry, ctx) => {
       ctx.registerShutdown(async () => {
@@ -523,9 +523,59 @@ describe("createKoiRuntime — zone B manifest middleware", () => {
     await expect(handle.runtime.dispose()).rejects.toThrow(
       /manifest-middleware shutdown had 1 failure/,
     );
-    // After a failing cleanup, a second dispose should NOT re-run
-    // hooks (they are latched as done) and must be a clean no-op.
+    runtimeHandle = null;
+  });
+
+  test("dispose() retries failed manifest cleanup hooks on subsequent calls", async () => {
+    // Codex round-loop-2 round 6 finding #2: a single global
+    // "cleanup done" flag was too coarse — a transient hook
+    // failure was latched forever and never retried. Per-hook
+    // tracking means a hook that fails once can still succeed on
+    // a later dispose(). Verify with a hook that fails the first
+    // time and succeeds the second, and a sibling hook that
+    // always succeeds (must not be re-run).
+    let attemptsFailing = 0;
+    let attemptsAlwaysOk = 0;
+    const registry = new MiddlewareRegistry();
+    registry.register("test/flaky", (_entry, ctx) => {
+      ctx.registerShutdown(() => {
+        attemptsFailing += 1;
+        if (attemptsFailing === 1) {
+          throw new Error("transient flush failure");
+        }
+      });
+      return stubManifestMiddleware("flaky");
+    });
+    registry.register("test/always-ok", (_entry, ctx) => {
+      ctx.registerShutdown(() => {
+        attemptsAlwaysOk += 1;
+      });
+      return stubManifestMiddleware("always-ok");
+    });
+    const handle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [
+        { name: "test/flaky", options: undefined, enabled: true },
+        { name: "test/always-ok", options: undefined, enabled: true },
+      ],
+    });
+    // First dispose: flaky throws, always-ok succeeds once.
+    await expect(handle.runtime.dispose()).rejects.toThrow(
+      /manifest-middleware shutdown had 1 failure/,
+    );
+    expect(attemptsFailing).toBe(1);
+    expect(attemptsAlwaysOk).toBe(1);
+    // Second dispose: flaky retried (now succeeds), always-ok
+    // NOT re-run because it was already latched as complete.
     await expect(handle.runtime.dispose()).resolves.toBeUndefined();
+    expect(attemptsFailing).toBe(2);
+    expect(attemptsAlwaysOk).toBe(1);
+    // Third dispose: everything already complete, clean no-op.
+    await expect(handle.runtime.dispose()).resolves.toBeUndefined();
+    expect(attemptsFailing).toBe(2);
+    expect(attemptsAlwaysOk).toBe(1);
     runtimeHandle = null;
   });
 
