@@ -17,15 +17,18 @@
  *      whether a manifest was used, so these callers get the same
  *      safety.
  *
- * Opt-outs are structured and per-layer via `TrustedHostConfig`. Each
- * opt-out is logged at startup with a bright warning. There is no
- * single "trust everything" boolean — every relaxation of the
- * security baseline is named and auditable.
+ * Opt-outs are deliberately NOT supported here. An earlier design
+ * exposed a `trustedHost` surface that let hosts relax the baseline
+ * via per-layer flags, but the flags were never wired into runtime
+ * assembly, which meant the API advertised behavior the runtime did
+ * not provide. The whole opt-out path has been removed until there
+ * is a genuine end-to-end implementation. Hosts that need a
+ * headless/CI posture today construct the runtime with a custom
+ * middleware list + pre-composed security stance, bypassing this
+ * enforcer.
  */
 
 import type { KoiMiddleware } from "@koi/core";
-
-import type { TrustedHostConfig } from "./manifest.js";
 
 /**
  * Canonical names of the three required security layers, matching the
@@ -49,19 +52,9 @@ export interface EnforceRequiredOptions {
    * bash, etc.). Terminal-capable runtimes require the full security
    * baseline including `permissions` and `exfiltration-guard`. Headless
    * runtimes (e.g. embedded analysis agents) may be allowed to boot
-   * without the terminal-only layers, but `hook` is always required.
+   * without the terminal-only layers, but `hooks` is always required.
    */
   readonly terminalCapable: boolean;
-  /**
-   * Structured opt-outs. Missing (or `undefined`) is the safe default:
-   * every layer stays required.
-   */
-  readonly trustedHost: TrustedHostConfig | undefined;
-  /**
-   * Sink for opt-out warnings. Defaults to `console.warn`. Tests pass
-   * a spy to assert the warning was emitted.
-   */
-  readonly warn?: (message: string) => void;
 }
 
 export class RequiredMiddlewareError extends Error {
@@ -71,8 +64,7 @@ export class RequiredMiddlewareError extends Error {
   constructor(missing: readonly string[], terminalCapable: boolean) {
     super(
       `required middleware missing from composed chain: ${missing.join(", ")} (terminalCapable=${terminalCapable}). ` +
-        `core layers cannot be omitted via manifest — if you are constructing the chain programmatically, include the required layer, ` +
-        `or set the corresponding trustedHost opt-out with an explicit security review.`,
+        "core layers cannot be omitted via manifest — if you are constructing the chain programmatically, include the required layer.",
     );
     this.missing = missing;
     this.terminalCapable = terminalCapable;
@@ -82,45 +74,27 @@ export class RequiredMiddlewareError extends Error {
 /**
  * Assert that every required middleware layer is present in the
  * composed chain. Throws `RequiredMiddlewareError` if a required
- * layer is missing without the corresponding `trustedHost` opt-out.
- *
- * Side effects:
- *   - Emits a startup warning to `options.warn` (default: console.warn)
- *     for each opt-out that is active. This is the audit trail for
- *     runs where a security layer is intentionally disabled.
+ * layer is missing.
  */
 export function enforceRequiredMiddleware(
   chain: readonly KoiMiddleware[],
   options: EnforceRequiredOptions,
 ): void {
-  const { terminalCapable, trustedHost } = options;
-  const warn = options.warn ?? ((m: string) => console.warn(m));
+  const { terminalCapable } = options;
   const present = new Set(chain.map((mw) => mw.name));
 
   const missing: string[] = [];
 
-  // `hooks` is always required — it's the dispatch surface for plugins
-  // and has no corresponding opt-out.
+  // `hooks` is always required — it's the dispatch surface for plugins.
   if (!present.has(REQUIRED_MIDDLEWARE_NAMES.hooks)) {
     missing.push(REQUIRED_MIDDLEWARE_NAMES.hooks);
   }
 
   if (terminalCapable) {
-    const permissionsOptOut = trustedHost?.disablePermissions === true;
-    if (permissionsOptOut) {
-      warn(
-        "[trustedHost] permissions middleware DISABLED — tool calls will not be gated by the permission backend. This run requires a security review.",
-      );
-    } else if (!present.has(REQUIRED_MIDDLEWARE_NAMES.permissions)) {
+    if (!present.has(REQUIRED_MIDDLEWARE_NAMES.permissions)) {
       missing.push(REQUIRED_MIDDLEWARE_NAMES.permissions);
     }
-
-    const exfiltrationGuardOptOut = trustedHost?.disableExfiltrationGuard === true;
-    if (exfiltrationGuardOptOut) {
-      warn(
-        "[trustedHost] exfiltration-guard middleware DISABLED — secret scanning of tool inputs and model outputs is off. This run requires a security review.",
-      );
-    } else if (!present.has(REQUIRED_MIDDLEWARE_NAMES.exfiltrationGuard)) {
+    if (!present.has(REQUIRED_MIDDLEWARE_NAMES.exfiltrationGuard)) {
       missing.push(REQUIRED_MIDDLEWARE_NAMES.exfiltrationGuard);
     }
   }

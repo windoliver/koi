@@ -65,7 +65,7 @@ import {
   composeRuntimeMiddleware,
 } from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
-import type { ManifestMiddlewareEntry, TrustedHostConfig } from "./manifest.js";
+import type { ManifestMiddlewareEntry } from "./manifest.js";
 import {
   createBuiltinManifestRegistry,
   type MiddlewareRegistry,
@@ -211,21 +211,11 @@ export interface KoiRuntimeConfig {
    *
    * Repo-authored `koi.yaml` cannot flip this flag — it is passed
    * programmatically by the host (CLI flag, env var, or
-   * out-of-band policy). The rationale is the same as
-   * `TrustedHostConfig`: letting committed manifests trigger
+   * out-of-band policy). Letting committed manifests trigger
    * filesystem side effects is a trust-boundary regression we
    * deliberately avoid.
    */
   readonly allowManifestFileSinks?: boolean | undefined;
-  /**
-   * Structured opt-outs for security-critical zone C layers.
-   * Omitting this block is the safe default — every required layer
-   * stays active. Enabling an opt-out logs a bright startup warning
-   * and is the only path to boot without that layer. There is no
-   * single "trust everything" boolean; every relaxation is named
-   * and auditable.
-   */
-  readonly trustedHost?: TrustedHostConfig | undefined;
   /**
    * Engine loop-detection override. Passed verbatim to `createKoi`.
    *
@@ -1210,15 +1200,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
     // --- Required-set invariant: refuse to boot with a gutted chain ---
     // Runs after composition so it checks the actually-assembled list,
-    // not the intended inputs. This is the last line of defense against
-    // a programmatic caller that constructs a chain without the core
-    // security layers. Terminal-capable runtimes (koi tui, koi start)
-    // always require hook + permissions + exfiltration-guard unless the
-    // caller sets the matching `trustedHost` opt-out with security
-    // review. See `required-middleware.ts` for the per-layer rules.
+    // not the intended inputs. This is the last line of defense
+    // against a programmatic caller that constructs a chain without
+    // the core security layers. Terminal-capable runtimes (koi tui,
+    // koi start) always require hooks + permissions +
+    // exfiltration-guard. See `required-middleware.ts`.
     enforceRequiredMiddleware(allMiddleware, {
       terminalCapable: true,
-      trustedHost: config.trustedHost,
     });
     // Wrap every middleware with the trace wrapper when the observability
     // stack is active (provides `trajectoryStore`). When the stack is

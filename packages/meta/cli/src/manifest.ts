@@ -169,29 +169,6 @@ export interface ManifestMiddlewareEntry {
   readonly enabled: boolean;
 }
 
-/**
- * Narrow, auditable opt-outs for security-critical zone-C layers.
- *
- * **Host-controlled only.** This config is NOT accepted from manifest
- * YAML — the manifest loader rejects any top-level `trustedHost:`
- * field with a clear error directing users to host configuration.
- * The rationale: `koi.yaml` is repository content, so letting a
- * committed manifest disable `permissions` or `exfiltration-guard`
- * would let anyone with write access to the repo silently downgrade
- * the security posture of every developer who opens the project.
- *
- * Hosts that genuinely need to relax the baseline (e.g. a sandboxed
- * CI runner with compensating controls) pass a `TrustedHostConfig`
- * programmatically to `createKoiRuntime`, typically threaded from a
- * CLI flag, environment variable, or an out-of-band policy store
- * that cannot be set by repository content. Every enabled opt-out
- * logs a bright startup warning.
- */
-export interface TrustedHostConfig {
-  readonly disableExfiltrationGuard: boolean;
-  readonly disablePermissions: boolean;
-}
-
 export interface ManifestConfig {
   readonly modelName: string;
   readonly instructions: string | undefined;
@@ -373,21 +350,23 @@ export async function loadManifestConfig(
     return middlewareResult;
   }
 
-  // Security baseline opt-outs are NOT accepted from manifest YAML.
-  // `koi.yaml` is repository content; letting a committed manifest
-  // disable `permissions` or `exfiltration-guard` would let anyone
-  // with repo write access silently downgrade the security posture
-  // of every developer who opens the project. Hosts that genuinely
-  // need to relax the baseline configure it out-of-band (CLI flag,
-  // env var, or policy store) directly into `createKoiRuntime`.
+  // `trustedHost` is not an accepted manifest field. Earlier
+  // designs exposed a per-layer security opt-out surface here, but
+  // the runtime factory never actually omitted the corresponding
+  // middleware, so the API advertised behavior it did not provide.
+  // The entire surface has been removed rather than ship a no-op.
+  // Reject the field at the loader with a clear message so
+  // existing manifests that tried to use it fail fast instead of
+  // silently losing configuration.
   if (raw.trustedHost !== undefined) {
     return {
       ok: false,
       error:
-        "manifest.trustedHost is not accepted in koi.yaml — security baseline opt-outs " +
-        "(disablePermissions, disableExfiltrationGuard) must be configured by the host " +
-        "(CLI flag, env var, or out-of-band policy), not by repository content. " +
-        "See docs/L2/manifest.md for the rationale.",
+        "manifest.trustedHost is not a supported field. The per-layer security opt-outs " +
+        "(disablePermissions, disableExfiltrationGuard) that were previously documented here " +
+        "were never wired into runtime assembly and have been removed. Hosts that need a " +
+        "headless/CI posture without permissions or exfiltration-guard must construct the " +
+        "runtime with a custom middleware list programmatically.",
     };
   }
 

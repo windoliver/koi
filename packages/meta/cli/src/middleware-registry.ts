@@ -315,6 +315,26 @@ export async function resolveManifestMiddleware(
  * is no `this` to preserve.
  */
 function adaptToZoneBSlot(inner: KoiMiddleware): KoiMiddleware {
+  // Fail closed on manifest middleware that defines
+  // `wrapModelStream`. Stream wrappers ignore the `concurrent`
+  // flag (the engine compose docs are explicit: concurrent
+  // observation is not supported for streaming because observers
+  // cannot meaningfully inspect an independent copy of an async
+  // iterable). That means a stream wrapper at zone B's slot still
+  // runs in the normal onion and can rewrite the request or
+  // yielded chunks, bypassing the trust-boundary guarantee this
+  // adapter is supposed to enforce. No built-in manifest
+  // middleware implements `wrapModelStream` today; future
+  // mutating stream observers must register through a different
+  // host-owned path, not through manifest content.
+  if (typeof inner.wrapModelStream === "function") {
+    throw new Error(
+      `manifest middleware "${inner.name}" implements wrapModelStream, which is not allowed for zone-B entries. ` +
+        "Stream wrappers always run sequentially in the onion and can mutate provider-bound requests or yielded chunks, " +
+        "which breaks the observational-only guarantee that repo-authored manifest middleware runs under. " +
+        "Register stream observers programmatically through a custom host wiring instead.",
+    );
+  }
   return {
     name: inner.name,
     phase: ZONE_B_PHASE,
@@ -335,9 +355,10 @@ function adaptToZoneBSlot(inner: KoiMiddleware): KoiMiddleware {
     ...(inner.wrapModelCall !== undefined
       ? { wrapModelCall: inner.wrapModelCall.bind(inner) }
       : {}),
-    ...(inner.wrapModelStream !== undefined
-      ? { wrapModelStream: inner.wrapModelStream.bind(inner) }
-      : {}),
+    // wrapModelStream is intentionally NOT forwarded — the
+    // pre-check above rejects any inner that defines it, so this
+    // branch is unreachable. Keeping the explicit omission
+    // documents the contract.
     ...(inner.wrapToolCall !== undefined ? { wrapToolCall: inner.wrapToolCall.bind(inner) } : {}),
     ...(inner.onPermissionDecision !== undefined
       ? { onPermissionDecision: inner.onPermissionDecision.bind(inner) }
@@ -687,16 +708,39 @@ function createAuditManifestEntry(
   // Register the sink's close() with the runtime's shutdown chain
   // so the file writer and flush timer are released on dispose.
   // Without this, every runtime using manifest audit leaks its
-  // writer and timer until process exit — see Codex round 9
-  // finding #2.
+  // writer and timer until process exit.
   ctx.registerShutdown(async () => {
     await sink.close();
   });
-  return createAuditMiddleware({
+  const underlying = createAuditMiddleware({
     sink,
     ...(options.redactRequestBodies !== undefined
       ? { redactRequestBodies: options.redactRequestBodies }
       : {}),
     // signing deliberately omitted — see parseAuditOptions for why.
   });
+
+  // Strip `wrapModelStream` before handing the middleware to the
+  // zone-B adapter. The concurrent-observer contract the adapter
+  // enforces only applies to `wrapModelCall` and `wrapToolCall`;
+  // the engine always runs stream wrappers sequentially in the
+  // onion regardless of the `concurrent` flag, so a stream
+  // wrapper in zone B would be able to mutate provider-bound
+  // requests or yielded chunks. `adaptToZoneBSlot` fails closed
+  // on any inner that defines `wrapModelStream` to preserve the
+  // observational-only trust boundary.
+  //
+  // Audit's actual stream wrapper is a pure pass-through (it
+  // forwards chunks verbatim and records them on `done`), but
+  // asserting that at runtime is not practical. Dropping the
+  // hook means manifest-configured audit captures only non-
+  // streaming model calls. Hosts that need streaming audit
+  // records register the middleware programmatically through a
+  // custom MiddlewareRegistry, which bypasses the zone-B adapter
+  // and gives them full sequential access.
+  //
+  // `createAuditMiddleware` returns a plain object literal (no
+  // class, no private fields), so object-spread is safe here.
+  const { wrapModelStream: _omitStream, ...publicView } = underlying;
+  return publicView as KoiMiddleware;
 }

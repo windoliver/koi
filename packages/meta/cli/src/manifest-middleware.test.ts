@@ -214,8 +214,8 @@ trustedHost:
     const result = await loadManifestConfig(path);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("trustedHost is not accepted");
-    expect(result.error).toContain("host");
+    expect(result.error).toContain("trustedHost is not a supported field");
+    expect(result.error).toContain("programmatically");
   });
 
   test("rejects trustedHost even when empty", async () => {
@@ -224,7 +224,7 @@ trustedHost:
     const result = await loadManifestConfig(path);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("trustedHost is not accepted");
+    expect(result.error).toContain("trustedHost is not a supported field");
   });
 
   test("rejects trustedHost when explicitly set to false", async () => {
@@ -239,7 +239,7 @@ trustedHost:
     const result = await loadManifestConfig(path);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("trustedHost is not accepted");
+    expect(result.error).toContain("trustedHost is not a supported field");
   });
 
   test("manifest without trustedHost passes", async () => {
@@ -1015,41 +1015,25 @@ describe("enforceRequiredMiddleware", () => {
       stubMiddleware("permissions"),
       stubMiddleware("exfiltration-guard"),
     ];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: undefined,
-      }),
-    ).not.toThrow();
+    expect(() => enforceRequiredMiddleware(chain, { terminalCapable: true })).not.toThrow();
   });
 
   test("accepts chain with just hook (headless, non-terminal)", () => {
     const chain = [stubMiddleware("hooks")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: false,
-        trustedHost: undefined,
-      }),
-    ).not.toThrow();
+    expect(() => enforceRequiredMiddleware(chain, { terminalCapable: false })).not.toThrow();
   });
 
   test("throws when hooks is missing (always required)", () => {
     const chain = [stubMiddleware("permissions"), stubMiddleware("exfiltration-guard")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: undefined,
-      }),
-    ).toThrow(RequiredMiddlewareError);
+    expect(() => enforceRequiredMiddleware(chain, { terminalCapable: true })).toThrow(
+      RequiredMiddlewareError,
+    );
   });
 
   test("throws when permissions is missing on terminal-capable runtime", () => {
     const chain = [stubMiddleware("hooks"), stubMiddleware("exfiltration-guard")];
     try {
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: undefined,
-      });
+      enforceRequiredMiddleware(chain, { terminalCapable: true });
       throw new Error("should have thrown");
     } catch (e) {
       expect(e).toBeInstanceOf(RequiredMiddlewareError);
@@ -1061,10 +1045,7 @@ describe("enforceRequiredMiddleware", () => {
   test("throws when exfiltration-guard is missing on terminal-capable runtime", () => {
     const chain = [stubMiddleware("hooks"), stubMiddleware("permissions")];
     try {
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: undefined,
-      });
+      enforceRequiredMiddleware(chain, { terminalCapable: true });
       throw new Error("should have thrown");
     } catch (e) {
       const err = e as RequiredMiddlewareError;
@@ -1072,78 +1053,15 @@ describe("enforceRequiredMiddleware", () => {
     }
   });
 
-  test("trustedHost.disableExfiltrationGuard allows missing exfiltration-guard and logs warning", () => {
-    const warnings: string[] = [];
-    const chain = [stubMiddleware("hooks"), stubMiddleware("permissions")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: { disableExfiltrationGuard: true, disablePermissions: false },
-        warn: (m) => warnings.push(m),
-      }),
-    ).not.toThrow();
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain("exfiltration-guard");
-    expect(warnings[0]).toContain("DISABLED");
-    expect(warnings[0]).toContain("security review");
-  });
-
-  test("trustedHost.disablePermissions allows missing permissions and logs warning", () => {
-    const warnings: string[] = [];
-    const chain = [stubMiddleware("hooks"), stubMiddleware("exfiltration-guard")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: { disableExfiltrationGuard: false, disablePermissions: true },
-        warn: (m) => warnings.push(m),
-      }),
-    ).not.toThrow();
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain("permissions");
-    expect(warnings[0]).toContain("DISABLED");
-  });
-
-  test("trustedHost cannot opt out of hooks", () => {
-    const chain = [stubMiddleware("permissions"), stubMiddleware("exfiltration-guard")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: { disableExfiltrationGuard: true, disablePermissions: true },
-        warn: () => {},
-      }),
-    ).toThrow(RequiredMiddlewareError);
-  });
-
-  test("both opt-outs active → two warnings and no throw even with only hook present", () => {
-    const warnings: string[] = [];
-    const chain = [stubMiddleware("hooks")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: { disableExfiltrationGuard: true, disablePermissions: true },
-        warn: (m) => warnings.push(m),
-      }),
-    ).not.toThrow();
-    expect(warnings.length).toBe(2);
-  });
-
   test("headless runtime does not require permissions or exfiltration-guard", () => {
     const chain = [stubMiddleware("hooks")];
-    expect(() =>
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: false,
-        trustedHost: undefined,
-      }),
-    ).not.toThrow();
+    expect(() => enforceRequiredMiddleware(chain, { terminalCapable: false })).not.toThrow();
   });
 
   test("missing multiple layers reports all in error", () => {
     const chain: readonly KoiMiddleware[] = [];
     try {
-      enforceRequiredMiddleware(chain, {
-        terminalCapable: true,
-        trustedHost: undefined,
-      });
+      enforceRequiredMiddleware(chain, { terminalCapable: true });
       throw new Error("should have thrown");
     } catch (e) {
       const err = e as RequiredMiddlewareError;
