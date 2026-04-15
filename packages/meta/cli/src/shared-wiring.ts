@@ -76,12 +76,9 @@ export interface McpSetup {
 export const USER_HOOKS_CONFIG_PATH: string = join(homedir(), ".koi", "hooks.json");
 
 /**
- * Test-only override for the resolved user hooks config path. The runtime
- * path always comes from `os.homedir()` so that an attacker-controlled
- * `$HOME` (in `sudo`, launchd, or similar env-preserving wrappers) cannot
- * redirect or bypass user policy hooks (review round 9 finding). Tests
- * call `__setUserHooksConfigPathForTests(path)` in `beforeEach` to point
- * the loader at a sandbox directory and reset it in `afterEach`.
+ * Test-only override for the resolved user hooks config path. Tests call
+ * `__setUserHooksConfigPathForTests(path)` in `beforeEach` to point the
+ * loader at a sandbox directory and reset it in `afterEach`.
  */
 let testHookPathOverride: string | undefined;
 
@@ -91,12 +88,30 @@ export function __setUserHooksConfigPathForTests(path: string | undefined): void
 }
 
 /**
- * Resolve the user hooks config path lazily. Production uses `os.homedir()`
- * exclusively (does NOT read `process.env.HOME`, which is attacker-
- * controllable); tests inject a sandbox path via the test seam above.
+ * Resolve the user hooks config path lazily.
+ *
+ * Resolution order:
+ * 1. Test override (`__setUserHooksConfigPathForTests`) — test-only.
+ * 2. `KOI_HOOKS_CONFIG_PATH` env var — explicit deployment override. Security-
+ *    sensitive environments (systemd units, launchd wrappers, `sudo -E`,
+ *    or any other launcher that preserves an untrusted `$HOME`) should set
+ *    this to a fixed absolute path so hook resolution bypasses home-directory
+ *    ambiguity entirely. This closes a real trust-boundary issue: Bun's
+ *    `os.homedir()` and `os.userInfo().homedir` BOTH honor `$HOME` at
+ *    process launch (unlike Node's `userInfo().homedir`), so a
+ *    launch-time HOME injection can otherwise redirect the loader to an
+ *    attacker-controlled directory.
+ * 3. `~/.koi/hooks.json` via `os.homedir()` — the default for interactive
+ *    dev sessions where the operator controls their own environment.
+ *
+ * Documentation: deployments that treat hooks as policy-bearing should
+ * either unset `$HOME` before launching koi or set `KOI_HOOKS_CONFIG_PATH`
+ * explicitly — this is called out in `phase-2-bug-bash.md`.
  */
 function resolveUserHooksConfigPath(): string {
   if (testHookPathOverride !== undefined) return testHookPathOverride;
+  const explicitPath = process.env.KOI_HOOKS_CONFIG_PATH;
+  if (explicitPath !== undefined && explicitPath.length > 0) return explicitPath;
   return join(homedir(), ".koi", "hooks.json");
 }
 
@@ -180,30 +195,30 @@ export function buildPluginMcpSetup(
  * Load user-tier hooks from `~/.koi/hooks.json` as tier-tagged
  * `RegisteredHook`s.
  *
- * Loader semantics (lenient — default):
+ * Loader semantics (default):
  * - File absent → silent empty result (hooks.json is optional).
- * - File present but unreadable / not JSON → `onLoadError` is invoked with a
- *   diagnostic; empty result is returned. hooks.json is edited by humans
- *   and can be momentarily invalid during writes; locking operators out of
- *   the TUI on transient editor partial writes is worse than best-effort
- *   degraded loading for an optional per-user config.
- * - File present and parseable → each entry is validated independently via
- *   `loadRegisteredHooksPerEntry`. Invalid entries are reported through
- *   `onLoadError` and skipped; valid peers still load. This replaces the
- *   prior all-or-nothing behaviour where a single bad entry (e.g. an http
- *   hook lacking `KOI_DEV=1`) would silently drop every hook (issue #1781).
- * - Any error (schema or duplicate) carrying `failClosed: true` → abort.
- *   The per-hook opt-in is the primary fail-closed contract.
+ * - File present but unreadable / not JSON → **fatal**. We cannot inspect
+ *   the file for operator intent (a `failClosed: true` hook could be
+ *   anywhere inside), so we cannot pretend nothing was configured. This
+ *   matches the consistent reviewer recommendation across multiple
+ *   rounds: file-level corruption is too dangerous to degrade to empty.
+ * - File present, parseable, but structurally invalid (non-array root) →
+ *   **fatal** for the same reason. We cannot enumerate entries to honor
+ *   per-entry failClosed intent.
+ * - File present and parseable as an array → each entry is validated
+ *   independently via `loadRegisteredHooksPerEntry`. Invalid entries are
+ *   reported through `onLoadError` and skipped; valid peers still load.
+ *   This preserves issue #1781's intent (one bad hook doesn't nuke the
+ *   whole file) for the common case of typos/env-specific failures.
+ * - Any per-entry error (schema or duplicate) carrying `failClosed: true`
+ *   → **fatal**. The per-hook opt-in is the finer-grained fail-closed
+ *   contract for specific load-critical hooks.
  *
  * Strict mode (`KOI_HOOKS_STRICT=1`):
- * When this env var is set, hooks.json is treated as policy-bearing
- * configuration that must load cleanly or startup must refuse. ANY load
- * failure becomes fatal: parse errors, structural root errors, duplicate
- * names, and schema failures regardless of `failClosed`. This is the mode
- * operators choose when a corrupt or transient file would be
- * indistinguishable from a silent policy bypass in their environment.
- * Lenient mode remains the default so developer workflows are not locked
- * out by editor transients.
+ * Turns every remaining non-fatal path into fatal: ordinary schema
+ * errors and duplicate names abort startup even without `failClosed`.
+ * Appropriate for deployments where any hook config error must refuse
+ * to run rather than silently proceed with a reduced hook set.
  *
  * All diagnostics are reported through `onLoadError` BEFORE any fatal
  * throw so operators see every broken entry, not just the first fatal.
@@ -231,20 +246,17 @@ export async function loadUserRegisteredHooks(options: {
   try {
     raw = await file.json();
   } catch (e) {
-    // File exists but cannot be read/parsed. In lenient mode (default),
-    // degrade to empty load + warn so editor transients don't lock the
-    // operator out. In strict mode (KOI_HOOKS_STRICT=1), the file is
-    // policy-bearing and any load failure must refuse startup — a corrupt
-    // file is indistinguishable from a silent policy bypass.
+    // File exists but cannot be read/parsed. This is now fatal by default:
+    // a corrupt file could have declared failClosed hooks we cannot
+    // inspect, so degrading to an empty hook set is indistinguishable from
+    // a silent policy bypass. Operators whose workflows cannot tolerate
+    // this (e.g., editors doing unsynchronized partial writes) should
+    // either fix their editor to use atomic writes (`write → fsync →
+    // rename`) or remove the file entirely while editing.
     const detail = e instanceof Error ? e.message : String(e);
     const msg = `Could not read ${path}: ${detail}`;
     options.onLoadError?.(msg);
-    if (strictMode) {
-      throw new Error(
-        `Refusing to start: ${msg}. KOI_HOOKS_STRICT=1 is set — fix or remove the file before retrying.`,
-      );
-    }
-    return [];
+    throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
   }
 
   // Agent-hook handling for hosts that cannot run agent hooks
@@ -350,9 +362,21 @@ export async function loadUserRegisteredHooks(options: {
     }
   }
 
-  // Strict mode: any load error (parse, structural, duplicate, schema)
-  // refuses startup. hooks.json is policy-bearing under KOI_HOOKS_STRICT=1
-  // and a corrupt/invalid file is indistinguishable from a silent bypass.
+  // Structural root errors (non-array, etc.) are always fatal — even
+  // outside strict mode. We cannot enumerate entries to inspect
+  // per-entry `failClosed: true` intent, so treating them as a
+  // degraded-empty load would be a silent policy bypass.
+  const structuralErrors = loaded.errors.filter((e) => e.kind === "structural");
+  if (structuralErrors.length > 0) {
+    throw new Error(
+      `Refusing to start: ${path} is structurally invalid — ${structuralErrors
+        .map((e) => e.message)
+        .join("; ")}. Fix or remove the file before retrying.`,
+    );
+  }
+
+  // Strict mode: any remaining per-entry error (schema, duplicate)
+  // refuses startup, even without the per-hook failClosed opt-in.
   if (strictMode && loaded.errors.length > 0) {
     const summary = loaded.errors
       .map((e) => {

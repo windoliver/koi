@@ -159,21 +159,19 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors).toEqual([]);
   });
 
-  test("degrades to warning + empty load when hooks.json cannot be parsed", async () => {
-    // A truncated write, merge conflict, or transient editor save must not
-    // lock the operator out of `koi tui` / `koi start`. Partial/empty load
-    // is preferable to a machine-wide outage for an optional per-user config
-    // (review round 6). Operators who need fail-closed behaviour mark
-    // individual hooks `failClosed: true`.
+  test("aborts startup when hooks.json cannot be parsed (fail-closed default)", async () => {
+    // File-level corruption cannot be treated as "no hooks configured" —
+    // a failClosed hook could be in the file and we cannot see it, so the
+    // only safe response is to refuse startup (third-loop review round 1).
     writeHooksJson("not-json");
     const errors: string[] = [];
-    const hooks = await loadUserRegisteredHooks({
-      filterAgentHooks: false,
-      onLoadError: (m) => errors.push(m),
-    });
-    expect(hooks).toEqual([]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("Could not read");
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*Could not read/);
+    expect(errors.some((m) => m.includes("Could not read"))).toBe(true);
   });
 
   test("loads valid peers when one entry is invalid (issue #1781 regression)", async () => {
@@ -193,17 +191,18 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors[0]).toContain("bad");
   });
 
-  test("degrades to warning + empty load when hooks.json root is not an array", async () => {
-    // Structural root errors are treated as non-fatal for availability
-    // reasons (round 6): better to warn and start empty than to lock the
-    // operator out on a malformed optional config.
+  test("aborts startup when hooks.json root is not an array (fail-closed default)", async () => {
+    // Non-array roots cannot be enumerated for per-entry failClosed intent,
+    // so we cannot tell whether a critical hook was meant to be present.
+    // Same reasoning as the parse-failure branch.
     writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
     const errors: string[] = [];
-    const hooks = await loadUserRegisteredHooks({
-      filterAgentHooks: false,
-      onLoadError: (m) => errors.push(m),
-    });
-    expect(hooks).toEqual([]);
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*structurally invalid/);
     expect(errors.some((m) => m.includes("array"))).toBe(true);
   });
 
@@ -250,31 +249,44 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors.some((m) => m.includes("Duplicate"))).toBe(true);
   });
 
-  // ---------- KOI_HOOKS_STRICT=1 (policy-bearing mode) ----------
-
-  test("strict mode: parse errors abort startup", async () => {
-    process.env.KOI_HOOKS_STRICT = "1";
-    writeHooksJson("not-json");
-    const errors: string[] = [];
-    await expect(
-      loadUserRegisteredHooks({
-        filterAgentHooks: false,
-        onLoadError: (m) => errors.push(m),
-      }),
-    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1/);
-    expect(errors.some((m) => m.includes("Could not read"))).toBe(true);
-  });
-
-  test("strict mode: non-array root aborts startup", async () => {
-    process.env.KOI_HOOKS_STRICT = "1";
-    writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
-    await expect(
-      loadUserRegisteredHooks({
+  test("KOI_HOOKS_CONFIG_PATH pins loader path regardless of HOME", async () => {
+    // Deployment-override trust-boundary fix: HOME-preserving launchers
+    // (sudo -E, launchd, etc.) should be able to pin the hook file to a
+    // fixed absolute path.
+    const altDir = mkdtempSync(join(tmpdir(), "koi-hooks-override-"));
+    const altPath = join(altDir, "fixed-hooks.json");
+    writeFileSync(
+      altPath,
+      JSON.stringify([{ kind: "command", name: "pinned", cmd: ["/bin/true"] }]),
+      "utf8",
+    );
+    // Unset the test seam so the real env-var path is exercised.
+    __setUserHooksConfigPathForTests(undefined);
+    const origPath = process.env.KOI_HOOKS_CONFIG_PATH;
+    process.env.KOI_HOOKS_CONFIG_PATH = altPath;
+    try {
+      const hooks = await loadUserRegisteredHooks({
         filterAgentHooks: false,
         onLoadError: () => {},
-      }),
-    ).rejects.toThrow(/Refusing to start.*KOI_HOOKS_STRICT=1.*root.*array/);
+      });
+      expect(hooks.map((rh) => rh.hook.name)).toEqual(["pinned"]);
+    } finally {
+      if (origPath === undefined) {
+        delete process.env.KOI_HOOKS_CONFIG_PATH;
+      } else {
+        process.env.KOI_HOOKS_CONFIG_PATH = origPath;
+      }
+      // Restore the test seam for the next test's beforeEach.
+      __setUserHooksConfigPathForTests(join(fakeHome, ".koi", "hooks.json"));
+      rmSync(altDir, { recursive: true, force: true });
+    }
   });
+
+  // ---------- KOI_HOOKS_STRICT=1 (tightens per-entry handling) ----------
+  //
+  // Parse failures and structural root errors are now fatal regardless of
+  // strict mode — see the default-mode tests above. Strict mode exists to
+  // turn ORDINARY per-entry schema errors and duplicate names fatal too.
 
   test("strict mode: ordinary schema error aborts startup", async () => {
     process.env.KOI_HOOKS_STRICT = "1";
