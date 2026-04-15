@@ -2296,33 +2296,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               }),
             );
 
-            // If runtime is ready, enrich with live tool counts
+            // Show immediately from Keychain state — no blocking.
+            store.dispatch({ kind: "set_mcp_status", servers });
+            store.dispatch({ kind: "set_view", view: "mcp" });
+
+            // Background: enrich with live tool counts if runtime is ready.
+            // Does NOT block the view — user sees instant status, then
+            // tool counts update asynchronously.
             if (runtimeHandle !== null) {
-              const live = await runtimeHandle.getMcpStatus();
-              const liveMap = new Map(live.map((s) => [s.name, s]));
-              for (let i = 0; i < servers.length; i++) {
-                const entry = servers[i];
-                if (entry === undefined) continue;
-                const l = liveMap.get(entry.name);
-                if (l !== undefined) {
+              void (async () => {
+                const live = await runtimeHandle?.getMcpStatus();
+                if (live === undefined) return;
+                const liveMap = new Map(live.map((s) => [s.name, s]));
+                const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
+                  const l = liveMap.get(entry.name);
+                  if (l === undefined) return entry;
                   const liveStatus: "connected" | "needs-auth" | "error" =
                     l.failureCode === undefined
                       ? "connected"
                       : l.failureCode === "AUTH_REQUIRED"
                         ? "needs-auth"
                         : "error";
-                  servers[i] = {
+                  return {
                     name: l.name,
                     status: liveStatus,
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
-                }
-              }
+                });
+                store.dispatch({ kind: "set_mcp_status", servers: enriched });
+              })();
             }
-
-            store.dispatch({ kind: "set_mcp_status", servers });
-            store.dispatch({ kind: "set_view", view: "mcp" });
           })();
           break;
         case "nav:mcp-auth":

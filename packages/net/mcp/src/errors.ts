@@ -70,10 +70,13 @@ const MESSAGE_PATTERNS: readonly ErrorPattern[] = [
   { pattern: /ECONNR(ESET|EFUSED)/, code: "EXTERNAL", retryable: true },
   { pattern: /EPIPE/, code: "EXTERNAL", retryable: true },
   { pattern: /socket hang up/i, code: "EXTERNAL", retryable: true },
-  { pattern: /unauthorized/i, code: "AUTH_REQUIRED", retryable: true },
+  // Structured 401 signals — safe to trigger re-auth. Unstructured
+  // "unauthorized" stays as PERMISSION to avoid wiping valid credentials
+  // on scope/ACL denials from proxies.
   { pattern: /HTTP 401/i, code: "AUTH_REQUIRED", retryable: true },
   { pattern: /invalid_token/i, code: "AUTH_REQUIRED", retryable: true },
   { pattern: /authentication required/i, code: "AUTH_REQUIRED", retryable: true },
+  { pattern: /unauthorized/i, code: "PERMISSION", retryable: false },
   { pattern: /forbidden/i, code: "PERMISSION", retryable: false },
   { pattern: /not.?found/i, code: "NOT_FOUND", retryable: false },
   { pattern: /unknown tool/i, code: "NOT_FOUND", retryable: false },

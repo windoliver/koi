@@ -147,14 +147,23 @@ export async function loadUserMcpSetup(
   cwd: string,
   skillsRuntime: SkillsRuntime | undefined,
 ): Promise<McpSetup | undefined> {
-  // Search order: project root first, then user home fallback (~/.koi/.mcp.json).
-  const candidates = [join(cwd, ".mcp.json"), join(homedir(), ".koi", ".mcp.json")];
-  let result: Awaited<ReturnType<typeof loadMcpJsonFile>> | undefined;
-  for (const p of candidates) {
-    const r = await loadMcpJsonFile(p);
-    if (r.ok) {
-      result = r;
-      break;
+  // Project-local .mcp.json takes priority. Only fall back to
+  // ~/.koi/.mcp.json when the project file is truly absent (NOT_FOUND),
+  // not when it exists but is invalid — that would silently mask
+  // misconfigurations and cross the repo/user boundary.
+  const projectPath = join(cwd, ".mcp.json");
+  const projectResult = await loadMcpJsonFile(projectPath);
+  let result: typeof projectResult | undefined;
+  if (projectResult.ok) {
+    result = projectResult;
+  } else {
+    // Only fall back if the project file doesn't exist at all.
+    // loadMcpJsonFile returns error.code "NOT_FOUND" for missing files
+    // vs "VALIDATION" or "EXTERNAL" for parse/schema failures.
+    const isAbsent = projectResult.error.code === "NOT_FOUND";
+    if (isAbsent) {
+      const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+      if (homeResult.ok) result = homeResult;
     }
   }
   if (result === undefined || !result.ok) return undefined;
