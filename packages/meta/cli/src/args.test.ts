@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { CliFlags } from "./args.js";
 import {
+  detectGlobalFlags,
   isDeployFlags,
   isDoctorFlags,
   isInitFlags,
@@ -291,6 +292,33 @@ describe("parseArgs", () => {
       expect(f.untilPass).toEqual([]);
       expect(typeof f.maxIter).toBe("number");
       expect(typeof f.contextWindow).toBe("number");
+    });
+
+    // Review round 7: detectGlobalFlags and parseArgs must both honor
+    // the `--` operand terminator, so `koi -- --version` treats
+    // `--version` as a literal operand rather than a version probe.
+    // Covered here as a unit test because bun spawn itself consumes
+    // the first `--` from the invocation argv, so bin.test.ts cannot
+    // express this case end-to-end.
+    test("detectGlobalFlags stops at `--` terminator", () => {
+      expect(detectGlobalFlags(["--", "--version"])).toEqual({ help: false, version: false });
+      expect(detectGlobalFlags(["--", "--help"])).toEqual({ help: false, version: false });
+      expect(detectGlobalFlags(["--version", "--"])).toEqual({ help: false, version: true });
+      expect(detectGlobalFlags(["--help", "--"])).toEqual({ help: true, version: false });
+    });
+
+    test("parseArgs respects `--` terminator for top-level flags", () => {
+      // `koi -- --version` → no command, globalFlags stop at --, no help/version
+      expect(parseArgs(["--", "--version"])).toEqual({
+        command: undefined,
+        help: false,
+        version: false,
+      });
+      expect(parseArgs(["--", "--help"])).toEqual({
+        command: undefined,
+        help: false,
+        version: false,
+      });
     });
   });
 

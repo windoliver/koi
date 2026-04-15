@@ -83,10 +83,20 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
     readonly tokens: ReadonlyArray<ParseToken>;
   };
 
-  const knownFlags = new Set(Object.keys(config.options));
-  for (const token of parseResult.tokens) {
-    if (token.kind === "option" && !knownFlags.has(token.name)) {
-      throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
+  // --help and --version are an escape hatch: when either is parsed as a
+  // real option (not consumed as a preceding string-option value), skip
+  // unknown-flag rejection so malformed tails like
+  // `koi start --help --typo` still reach the help/version exit path
+  // rather than erroring out with "unknown flag --typo".
+  const helpOrVersionRequested =
+    parseResult.values.help === true || parseResult.values.version === true;
+
+  if (!helpOrVersionRequested) {
+    const knownFlags = new Set(Object.keys(config.options));
+    for (const token of parseResult.tokens) {
+      if (token.kind === "option" && !knownFlags.has(token.name)) {
+        throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
+      }
     }
   }
 

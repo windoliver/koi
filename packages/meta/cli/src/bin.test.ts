@@ -407,6 +407,37 @@ describe("bin.ts", () => {
       const r = await runBin(["serve", "--manifest", "--help"]);
       expect(r.stdout).not.toContain("koi serve —");
     });
+
+    // Review round 7: --help and --version must still win over malformed
+    // trailing flags. Before this guard, `koi start --help --typo` errored
+    // with "unknown flag --typo" instead of serving help — a regression
+    // from the old raw-argv fast-path that blocked the escape hatch this
+    // PR is trying to provide.
+    test("`koi start --help --typo` still serves help (malformed tail ignored)", async () => {
+      const r = await runBin(["start", "--help", "--typo"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("`koi start --version --typo` still prints version", async () => {
+      const r = await runBin(["start", "--version", "--typo"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("`koi plugin --help --bogus` still serves plugin help", async () => {
+      const r = await runBin(["plugin", "--help", "--bogus"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi plugin —");
+    });
+
+    // Review round 7: the top-level fast-path must also honor `--`.
+    // `koi -- --version` is tested as a unit test against detectGlobalFlags
+    // in args.test.ts — the bin.ts spawn path can't express this case
+    // because bun itself consumes the first `--` from the invocation
+    // argv before the shim's raw argv is assembled.
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {

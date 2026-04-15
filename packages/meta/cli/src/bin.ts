@@ -44,19 +44,31 @@ Global flags:
 const rawArgv = process.argv.slice(2);
 
 // Fast-path: top-level --version / --help exit before loading dispatch.
-// Only trigger when no subcommand precedes the flag — `koi start --help`
-// must reach dispatch so it can print the per-command help block (#1729).
-// A subcommand is detected by "first arg exists and is not a flag".
+// Three gates, all must pass:
+//   1. No subcommand precedes the flag — `koi start --help` must reach
+//      dispatch so it can print the per-command help block (#1729).
+//   2. The flag appears before any `--` operand terminator — `koi --
+//      --version` is a literal operand request, not a version probe.
+//   3. The flag is actually present.
+// Subcommand detection: "first arg exists and is not a flag".
 const firstArg = rawArgv[0];
 const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
 
 if (!hasSubcommand) {
-  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+  let wantsVersion = false;
+  let wantsHelp = false;
+  for (const a of rawArgv) {
+    if (a === "--") break;
+    if (a === "--version" || a === "-V") wantsVersion = true;
+    else if (a === "--help" || a === "-h") wantsHelp = true;
+  }
+
+  if (wantsVersion) {
     process.stdout.write(`${VERSION}\n`);
     process.exit(0);
   }
 
-  if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
+  if (wantsHelp) {
     process.stdout.write(HELP);
     process.exit(0);
   }
