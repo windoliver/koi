@@ -723,6 +723,32 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     if (manifestResult.value.filesystem !== undefined) {
+      // #1777 review round 8: the TUI permission middleware computes
+      // approval decisions against `cwd` via `resolveFsPath(raw, cwd)`
+      // and its pre-allow tier auto-approves `fs_read` under
+      // `${cwd}/**`. A manifest-supplied nexus backend can point
+      // somewhere else entirely, so the path embedded in the approval
+      // prompt / audit trail would misrepresent where the data
+      // actually lives — a real trust-boundary break. The checkpoint
+      // stack has the same issue: `/rewind` reconstructs paths under
+      // `cwd` and would restore edits to the wrong tree (or not at
+      // all) when the fs backend is not rooted at `cwd`. Until both
+      // subsystems gain backend-aware path resolution, reject
+      // `backend: "nexus"` on `koi tui` and direct users to
+      // `koi start`, which has an auto-allow permission backend
+      // (path-agnostic) and no `/rewind` UX.
+      if (manifestResult.value.filesystem.backend === "nexus") {
+        process.stderr.write(
+          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
+            "  The TUI permission middleware and checkpoint stack both assume the\n" +
+            "  filesystem backend is rooted at the session cwd, and approving or\n" +
+            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
+            "  rollback invariants. Use `koi start` for nexus-backed filesystems,\n" +
+            "  or omit the `filesystem:` block and let the TUI's default local\n" +
+            "  backend run.\n",
+        );
+        process.exit(1);
+      }
       manifestFilesystemConfig = manifestResult.value.filesystem;
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
