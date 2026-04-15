@@ -34,6 +34,34 @@ describe("detectViolations — positive cases", () => {
     expect(v).toHaveLength(1);
   });
 
+  test("flags `bun --cwd <dir> test --filter=<pkg>` (space-separated value)", () => {
+    const v = detectViolations(
+      "a.md",
+      "bun --cwd packages/meta/runtime test --filter=@koi/runtime",
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags `bun -c <file> test --filter=<pkg>` (short value flag)", () => {
+    const v = detectViolations("a.md", "bun -c bunfig.toml test --filter=@koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags inline Markdown code: `bun test --filter=<pkg>`", () => {
+    const v = detectViolations("a.md", "Run `bun test --filter=@koi/runtime` from the root.");
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags double-quoted command", () => {
+    const v = detectViolations("a.sh", '"bun test --filter=@koi/runtime"');
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags single-quoted command", () => {
+    const v = detectViolations("a.sh", "'bun test --filter=@koi/runtime'");
+    expect(v).toHaveLength(1);
+  });
+
   test("flags `bun test --filter @koi/runtime` (space-separated --filter value)", () => {
     const v = detectViolations("a.md", "bun test --filter @koi/runtime");
     expect(v).toHaveLength(1);

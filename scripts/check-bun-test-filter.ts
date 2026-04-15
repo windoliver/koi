@@ -78,28 +78,71 @@ function joinContinuations(content: string): LogicalLine[] {
 /**
  * Token-aware detection of `bun [opts] test [args] --filter ...`.
  *
+/**
+ * Bun-level flags that consume a following argv token as their value.
+ * When skipping these during a walk, also skip the next token so the
+ * value does not get mistaken for a subcommand.
+ */
+const VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--cwd",
+  "--config",
+  "-c",
+  "--port",
+  "--define",
+  "--external",
+  "--loader",
+  "--require",
+  "-r",
+  "--target",
+  "--format",
+  "--inspect",
+  "--inspect-brk",
+  "--inspect-wait",
+  "--max-old-space-size",
+  "--banner",
+  "--footer",
+  "--main-fields",
+]);
+
+/**
+ * Strip Markdown / shell decoration characters that interfere with simple
+ * whitespace tokenization. Backticks, single quotes, and double quotes are
+ * replaced with spaces so that ``bun test --filter=foo`` (inline code) and
+ * `"bun test --filter=foo"` (quoted) tokenize the same as the bare command.
+ */
+function normalizeLine(line: string): string {
+  return line.replace(/[`'"]/g, " ");
+}
+
+/**
  * Algorithm:
- *   1. Tokenize the logical line on whitespace.
- *   2. For each `bun` token, walk forward through flag tokens (starting
- *      with `-`) until the first non-flag token.
- *   3. If that token is exactly `test`, look at all later tokens for
- *      `--filter` or `--filter=...` — if found, it is a violation.
- *   4. Any other non-flag landing token (`run`, `x`, `install`, etc.) ends
+ *   1. Normalize markdown/shell decoration characters out of the line.
+ *   2. Tokenize the logical line on whitespace.
+ *   3. For each `bun` token, walk forward through flag tokens (starting
+ *      with `-`). For each flag, also skip the next token if the flag is
+ *      in VALUE_FLAGS and lacks `=value`.
+ *   4. If the next non-flag token is exactly `test`, look at all later
+ *      tokens for `--filter` or `--filter=...` — if found, it is a
+ *      violation.
+ *   5. Any other non-flag landing token (`run`, `x`, `install`, etc.) ends
  *      the search for that `bun` occurrence.
- *
- * Known limitation: space-separated flag values like `bun --cwd <dir> test`
- * are not supported (the `<dir>` token will abandon the search). Use the
- * `=` form (`bun --cwd=<dir> test`) if that combination ever appears in
- * docs or scripts. In practice Bun-level flags before `test` are rare.
  */
 function isBunTestWithFilter(line: string): boolean {
-  const tokens = line.match(/\S+/g) ?? [];
+  const tokens = normalizeLine(line).match(/\S+/g) ?? [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] !== "bun") continue;
     let j = i + 1;
     while (j < tokens.length) {
       const tok = tokens[j] ?? "";
       if (tok.startsWith("-")) {
+        if (tok.includes("=")) {
+          j++;
+          continue;
+        }
+        if (VALUE_FLAGS.has(tok)) {
+          j += 2;
+          continue;
+        }
         j++;
         continue;
       }
