@@ -107,6 +107,7 @@ export const spawnStack: PresetStack = {
       LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory
     ] as
       | ((childCtx: {
+          readonly childRunId: string;
           readonly parentSessionId: string;
           readonly parentAgentId: string;
         }) => Promise<readonly KoiMiddleware[]>)

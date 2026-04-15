@@ -21,6 +21,14 @@ import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware, MiddlewarePhase } from "@koi/core";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 
+/**
+ * Closable audit sink as returned by `createNdjsonAuditSink`.
+ * `@koi/core`'s `AuditSink` type does not include `close()`;
+ * that's added by the NDJSON implementation and is what the
+ * shared-sink cache needs to call on runtime dispose.
+ */
+type ClosableAuditSink = ReturnType<typeof createNdjsonAuditSink>;
+
 import { CORE_MIDDLEWARE_BLOCKLIST, type ManifestMiddlewareEntry } from "./manifest.js";
 
 /**
@@ -132,6 +140,24 @@ export interface ManifestMiddlewareContext {
   readonly workingDirectory: string;
   readonly stackExports: Readonly<Record<string, unknown>>;
   readonly registerShutdown: (fn: () => Promise<void> | void) => void;
+  /**
+   * Runtime-wide cache of already-opened file-backed sinks,
+   * keyed by canonical absolute path. Audit (and any other
+   * file-backed) factories check this cache before opening a
+   * new writer so multiple resolve passes — parent + every
+   * spawned child's re-resolution — share ONE writer per file
+   * instead of opening independent writers that interleave into
+   * the same NDJSON trail. Each child still gets its own
+   * middleware instance (own queue, own lifecycle hooks), but
+   * they all serialize through the cached sink.
+   *
+   * The cache's lifetime is the runtime handle; the first
+   * resolver that opens a sink also registers the close() hook
+   * with `registerShutdown`, and subsequent resolvers that
+   * reuse the cached sink do NOT re-register the close hook.
+   * `runtime.dispose()` closes each sink exactly once.
+   */
+  readonly sharedAuditSinks: Map<string, ClosableAuditSink>;
 }
 
 export type ManifestMiddlewareFactory = (
@@ -768,35 +794,66 @@ function createAuditManifestEntry(
 ): KoiMiddleware {
   const options = parseAuditOptions(entry.options);
   const safeFilePath = resolveAuditFilePath(options.filePath, ctx.workingDirectory);
-  const sink = createNdjsonAuditSink({
-    filePath: safeFilePath,
-    ...(options.flushIntervalMs !== undefined ? { flushIntervalMs: options.flushIntervalMs } : {}),
-  });
 
-  // Poison-on-failure: audit writes that fail are a material
-  // integrity gap. The audit queue invokes `onError` whenever
-  // `sink.log()` rejects; we count the failures and stash the
-  // first error, then raise them on the shutdown hook via the
-  // dispose path. For a security/audit feature, silent record
-  // loss is worse than a loud shutdown failure — hosts cannot
-  // mistake a degraded trail for a complete one.
-  // `let` is justified — these are explicit mutable counters.
-  let auditWriteFailures = 0;
-  let firstAuditError: unknown;
+  // Shared-sink cache: parent resolve + every spawned child's
+  // re-resolve hits this path for the same canonical filePath.
+  // The first resolver opens the sink and registers close() with
+  // the runtime's shutdown chain. Subsequent resolvers (child
+  // spawns) reuse the cached sink so there is exactly ONE writer
+  // per file in the runtime — interleaved records from parent
+  // and children are fine because each record carries its own
+  // sessionId tag, but independent writers would duplicate the
+  // file writer + flush timer + hash chain and corrupt output.
+  // The cache key is the canonical absolute path; each child
+  // still gets its own audit middleware instance (own queue,
+  // own onSessionStart/End hooks) routed through the shared
+  // sink.
+  const cachedSink = ctx.sharedAuditSinks.get(safeFilePath);
+  const sinkIsNew = cachedSink === undefined;
+  const sink: ClosableAuditSink =
+    cachedSink ??
+    createNdjsonAuditSink({
+      filePath: safeFilePath,
+      ...(options.flushIntervalMs !== undefined
+        ? { flushIntervalMs: options.flushIntervalMs }
+        : {}),
+    });
+  if (sinkIsNew) {
+    ctx.sharedAuditSinks.set(safeFilePath, sink);
+  }
 
-  ctx.registerShutdown(async () => {
-    // Close the sink first so any in-flight writes drain before
-    // we inspect the counters.
-    await sink.close();
-    if (auditWriteFailures > 0) {
-      throw new Error(
-        `manifest @koi/middleware-audit: ${auditWriteFailures} audit write(s) failed during the session. ` +
-          "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
-          `First error: ${firstAuditError instanceof Error ? firstAuditError.message : String(firstAuditError)}`,
-        { cause: firstAuditError },
-      );
-    }
-  });
+  // Poison-on-failure counters: audit writes that fail are a
+  // material integrity gap. The audit queue invokes `onError`
+  // whenever `sink.log()` rejects; we count the failures per
+  // sink (shared across all middleware instances that use the
+  // same cached sink) and raise them on the shutdown hook via
+  // the dispose path. For a security/audit feature, silent
+  // record loss is worse than a loud shutdown failure.
+  //
+  // The counters are attached to the cached sink via a weakly
+  // held shared state so parent + children's `onError`
+  // increment the same counter. `let` and the shared object are
+  // justified for explicit mutable accounting.
+  const sharedState = getOrInitAuditSinkState(sink);
+
+  if (sinkIsNew) {
+    // Only the first resolver that opens this sink registers
+    // the close + failure-check hook. Subsequent resolvers
+    // re-use the cached sink without re-registering close
+    // (otherwise the dispose chain would try to close an
+    // already-ended writer).
+    ctx.registerShutdown(async () => {
+      await sink.close();
+      if (sharedState.writeFailures > 0) {
+        throw new Error(
+          `manifest @koi/middleware-audit: ${sharedState.writeFailures} audit write(s) failed during the session. ` +
+            "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
+            `First error: ${sharedState.firstError instanceof Error ? sharedState.firstError.message : String(sharedState.firstError)}`,
+          { cause: sharedState.firstError },
+        );
+      }
+    });
+  }
 
   // Built-in audit is registered as `trusted` in the built-in
   // registry, which means the resolver skips the zone-B adapter
@@ -816,11 +873,34 @@ function createAuditManifestEntry(
     sink,
     redactRequestBodies: true,
     onError: (err: unknown) => {
-      auditWriteFailures += 1;
-      if (firstAuditError === undefined) {
-        firstAuditError = err;
+      sharedState.writeFailures += 1;
+      if (sharedState.firstError === undefined) {
+        sharedState.firstError = err;
       }
     },
     // signing deliberately omitted — see parseAuditOptions for why.
   });
+}
+
+/**
+ * Per-sink shared state used by `createAuditManifestEntry` to
+ * aggregate write-failure counts across parent and all child
+ * audit middleware instances that target the same cached sink.
+ * Stored in a `WeakMap<AuditSink, AuditSinkSharedState>` so the
+ * state is released when the sink is garbage collected.
+ */
+interface AuditSinkSharedState {
+  writeFailures: number;
+  firstError: unknown;
+}
+
+const auditSinkSharedStates = new WeakMap<ClosableAuditSink, AuditSinkSharedState>();
+
+function getOrInitAuditSinkState(sink: ClosableAuditSink): AuditSinkSharedState {
+  let state = auditSinkSharedStates.get(sink);
+  if (state === undefined) {
+    state = { writeFailures: 0, firstError: undefined };
+    auditSinkSharedStates.set(sink, state);
+  }
+  return state;
 }

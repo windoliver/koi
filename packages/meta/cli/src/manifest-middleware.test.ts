@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { KoiMiddleware } from "@koi/core";
 
 import {
@@ -45,6 +46,7 @@ function stubCtx(overrides: Partial<ManifestMiddlewareContext> = {}): ManifestMi
     workingDirectory: "/tmp",
     stackExports: {},
     registerShutdown: () => {},
+    sharedAuditSinks: new Map(),
     ...overrides,
   };
 }
@@ -668,6 +670,96 @@ describe("built-in @koi/middleware-audit factory", () => {
         stubCtx({ workingDirectory: workspace }),
       ),
     ).rejects.toThrow(/already claimed/);
+  });
+
+  test("shares one sink across parent and multiple spawned children via sharedAuditSinks", async () => {
+    // Codex round-loop-3 round 1: per-child re-resolution must
+    // not open a fresh NDJSON writer per spawn (interleaved
+    // independent writers would corrupt the file). The audit
+    // factory checks ctx.sharedAuditSinks and reuses the cached
+    // sink when the canonical path matches. Verify that two
+    // resolves against the same cache produce distinct
+    // middleware instances but route through a single sink.
+    const workspace = mkTempCwd();
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    const sharedSinks = new Map<string, ReturnType<typeof createNdjsonAuditSink>>();
+
+    // Parent resolve.
+    const parentResolved = await resolveManifestMiddleware(
+      [
+        {
+          name: "@koi/middleware-audit",
+          options: { filePath: "shared.audit.ndjson" },
+          enabled: true,
+        },
+      ],
+      registry,
+      stubCtx({ workingDirectory: workspace, sharedAuditSinks: sharedSinks }),
+    );
+
+    // Simulate a second per-child resolve against the same cache.
+    const childResolved = await resolveManifestMiddleware(
+      [
+        {
+          name: "@koi/middleware-audit",
+          options: { filePath: "shared.audit.ndjson" },
+          enabled: true,
+        },
+      ],
+      registry,
+      stubCtx({
+        workingDirectory: workspace,
+        sharedAuditSinks: sharedSinks,
+        sessionId: "parent/child:agentXYZ:run-1",
+      }),
+    );
+
+    // Both resolves produced middleware. Distinct instances.
+    expect(parentResolved.length).toBe(1);
+    expect(childResolved.length).toBe(1);
+    expect(parentResolved[0]).not.toBe(childResolved[0]);
+    // The shared sinks map has exactly ONE entry — one writer for
+    // the canonical path regardless of how many times we resolved.
+    expect(sharedSinks.size).toBe(1);
+  });
+
+  test("sibling children collapse onto distinct sessions via per-child runId", async () => {
+    // Codex round-loop-3 round 1 finding #1: the engine spawn
+    // code now generates a unique childRunId per spawn so
+    // sibling children cannot share a derived session id. This
+    // test exercises the resolver's per-child context shape:
+    // resolving twice with different sessionIds produces
+    // middleware wearing the distinct ids.
+    const workspace = mkTempCwd();
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    const sharedSinks = new Map<string, ReturnType<typeof createNdjsonAuditSink>>();
+    const seenSessionIds: string[] = [];
+    // Register an observer that records the sessionId from the
+    // context it was invoked with.
+    registry.register("test/capture-session", (_entry, childCtx) => {
+      seenSessionIds.push(childCtx.sessionId);
+      return stubMiddleware("capture");
+    });
+    await resolveManifestMiddleware(
+      [{ name: "test/capture-session", options: undefined, enabled: true }],
+      registry,
+      stubCtx({
+        workingDirectory: workspace,
+        sharedAuditSinks: sharedSinks,
+        sessionId: "parent/child:A:run-a",
+      }),
+    );
+    await resolveManifestMiddleware(
+      [{ name: "test/capture-session", options: undefined, enabled: true }],
+      registry,
+      stubCtx({
+        workingDirectory: workspace,
+        sharedAuditSinks: sharedSinks,
+        sessionId: "parent/child:A:run-b",
+      }),
+    );
+    expect(seenSessionIds).toEqual(["parent/child:A:run-a", "parent/child:A:run-b"]);
+    expect(seenSessionIds[0]).not.toBe(seenSessionIds[1]);
   });
 
   test("trusted built-in audit bypasses the zone-B adapter and keeps wrapModelStream", async () => {

@@ -68,6 +68,7 @@ import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.
 import type { ManifestMiddlewareEntry } from "./manifest.js";
 import {
   createBuiltinManifestRegistry,
+  type ManifestMiddlewareContext,
   type MiddlewareRegistry,
   resolveManifestMiddleware,
 } from "./middleware-registry.js";
@@ -1066,6 +1067,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `let` is justified because the flag is mutated at the success
   // exit point.
   let handleOwnershipTransferred = false;
+  // Runtime-wide shared sink cache for file-backed manifest
+  // middleware. Parent resolve + every per-child re-resolution
+  // share this map so a single NDJSON writer serves one canonical
+  // filePath regardless of how many spawns run. See the block
+  // comment on `ManifestMiddlewareContext.sharedAuditSinks` for
+  // why independent writers per child would corrupt the trail.
+  const sharedAuditSinks: ManifestMiddlewareContext["sharedAuditSinks"] = new Map();
   let zoneBMiddleware: readonly KoiMiddleware[];
   try {
     zoneBMiddleware = await resolveManifestMiddleware(
@@ -1079,6 +1087,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         registerShutdown: (fn) => {
           manifestMiddlewareShutdownHooks.push(fn);
         },
+        sharedAuditSinks,
       },
     );
   } catch (err) {
@@ -1122,15 +1131,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // re-runs `resolveManifestMiddleware` with a fresh context so
     // the child gets its own middleware instances (own audit
     // queue, own lifecycle hooks) rather than sharing the parent's
-    // mutable state. The child context's sessionId is derived from
-    // the spawn ctx so records can be distinguished from the
-    // parent's trail. Cleanup callbacks registered during per-
-    // child resolution are collected into the same
-    // manifestMiddlewareShutdownHooks array as the parent's —
-    // runtime.dispose() fires all of them in reverse order,
-    // closing per-child sinks before the parent's.
+    // mutable state. The child context's sessionId includes a
+    // unique per-spawn `childRunId` so sibling children never
+    // collapse onto one derived identifier.
+    //
+    // The shared-sink cache (created above, captured in closure)
+    // is passed to every per-child resolve too. File-backed
+    // middleware (audit) checks the cache and reuses the parent's
+    // already-open writer instead of opening a new one per child.
+    // One writer per canonical file → no interleaved independent
+    // writers → no corrupted hash chains. Each child still gets
+    // its own middleware instance (own queue, own lifecycle
+    // hooks) routed through the shared sink.
+    //
+    // Cleanup callbacks: only the FIRST resolver to open a sink
+    // registers the close hook. Per-child resolutions that reuse
+    // the cached sink do NOT re-register close, so the dispose
+    // chain closes each sink exactly once.
     const buildPerChildManifestMiddlewareFactory = ():
       | ((childCtx: {
+          readonly childRunId: string;
           readonly parentSessionId: string;
           readonly parentAgentId: string;
         }) => Promise<readonly KoiMiddleware[]>)
@@ -1140,13 +1160,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       }
       return async (childCtx) => {
         return resolveManifestMiddleware(config.manifestMiddleware, manifestMiddlewareRegistry, {
-          sessionId: `${childCtx.parentSessionId}/child:${childCtx.parentAgentId}`,
+          sessionId: `${childCtx.parentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
           hostId,
           workingDirectory: zoneBWorkingDirectory,
           stackExports: earlyContribution.exports,
           registerShutdown: (fn) => {
             manifestMiddlewareShutdownHooks.push(fn);
           },
+          sharedAuditSinks,
         });
       };
     };

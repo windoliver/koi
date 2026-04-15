@@ -70,12 +70,18 @@ export interface CreateAgentSpawnFnOptions {
    * gets its own middleware state (its own audit queue, its own
    * lifecycle hooks) rather than sharing mutable parent state.
    *
+   * The factory receives a unique `childRunId` per invocation so
+   * sibling spawns from the same parent do not collapse onto one
+   * derived session identifier. The parent's own identity is
+   * also threaded through for audit correlation.
+   *
    * The resulting middleware is appended to the inherited chain
    * before `systemPrompt` is injected. Return an empty array when
    * there is nothing to add.
    */
   readonly perChildMiddlewareFactory?:
     | ((childCtx: {
+        readonly childRunId: string;
         readonly parentSessionId: string;
         readonly parentAgentId: string;
       }) => Promise<readonly KoiMiddleware[]>)
@@ -263,7 +269,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     // 4. Build middleware: inherited + per-child freshly-resolved + system prompt injection
     const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
     if (perChildMiddlewareFactory !== undefined) {
+      // Unique per-spawn id so sibling children from the same
+      // parent never collapse onto one derived session label.
+      const childRunId = crypto.randomUUID();
       const perChildMiddleware = await perChildMiddlewareFactory({
+        childRunId,
         parentSessionId: base.parentAgent.manifest.name,
         parentAgentId: base.parentAgent.pid.id,
       });
