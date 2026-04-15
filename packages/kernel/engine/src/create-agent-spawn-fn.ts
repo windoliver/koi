@@ -348,10 +348,28 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       // Unique per-spawn id so sibling children from the same
       // parent never collapse onto one derived session label.
       const childRunId = crypto.randomUUID();
-      const perChildMiddleware = await perChildMiddlewareFactory({
-        childRunId,
-        parentAgentId: base.parentAgent.pid.id,
-      });
+      // Convert factory throws into a structured SpawnResult error
+      // rather than letting them escape the SpawnFn contract. A
+      // throwing factory would otherwise abort the parent turn and
+      // bypass all the caller machinery that expects the `{ ok:
+      // false, error }` shape for assembly-time spawn failures.
+      let perChildMiddleware: readonly KoiMiddleware[];
+      try {
+        perChildMiddleware = await perChildMiddlewareFactory({
+          childRunId,
+          parentAgentId: base.parentAgent.pid.id,
+        });
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `Per-child middleware factory failed for "${request.agentName}": ${message}`,
+            retryable: false,
+          },
+        };
+      }
       childMiddleware.push(...perChildMiddleware);
     }
     if (systemPrompt !== undefined) {
