@@ -33,8 +33,8 @@ export function parseDeployFlags(rest: readonly string[], g: GlobalFlags): Deplo
     },
     "deploy",
   );
-  const helpRequested = values.help ?? g.help;
-  const versionRequested = values.version ?? g.version;
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
   const skipValidators = helpRequested || versionRequested;
   return {
     command: "deploy" as const,

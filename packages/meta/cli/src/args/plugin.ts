@@ -53,8 +53,8 @@ export function parsePluginFlags(rest: readonly string[], g: GlobalFlags): Plugi
     "plugin",
   );
 
-  const helpRequested = values.help ?? g.help;
-  const versionRequested = values.version ?? g.version;
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
   const sub = positionals[0];
 
   // When --help or --version is present, defer the subcommand-required

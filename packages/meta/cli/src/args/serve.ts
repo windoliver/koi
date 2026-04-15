@@ -33,8 +33,8 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
     },
     "serve",
   );
-  const helpRequested = values.help ?? g.help;
-  const versionRequested = values.version ?? g.version;
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
   const skipValidators = helpRequested || versionRequested;
 
   return {

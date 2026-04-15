@@ -29,8 +29,8 @@ export function parseSessionsFlags(rest: readonly string[], g: GlobalFlags): Ses
     "sessions",
   );
   const sub = positionals[0];
-  const helpRequested = values.help ?? g.help;
-  const versionRequested = values.version ?? g.version;
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
   const skipValidators = helpRequested || versionRequested;
   return {
     command: "sessions" as const,

@@ -40,8 +40,8 @@ export function parseInitFlags(rest: readonly string[], g: GlobalFlags): InitFla
   return {
     command: "init" as const,
     directory: positionals[0],
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: values.version ?? false,
+    help: values.help ?? false,
     yes: values.yes ?? false,
     name: values.name,
     template: values.template,

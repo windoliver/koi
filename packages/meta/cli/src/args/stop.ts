@@ -26,8 +26,8 @@ export function parseStopFlags(rest: readonly string[], g: GlobalFlags): StopFla
   );
   return {
     command: "stop" as const,
-    version: values.version ?? g.version,
-    help: values.help ?? g.help,
+    version: values.version ?? false,
+    help: values.help ?? false,
     manifest: values.manifest ?? positionals[0],
   };
 }
