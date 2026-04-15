@@ -291,37 +291,43 @@ manifest is provided, so programmatic callers get the same safety.
 
 ---
 
+## Trusted built-ins
+
+Most manifest middleware flows through the **zone-B adapter**
+(`adaptToZoneBSlot` in `packages/meta/cli/src/middleware-registry.ts`).
+The adapter forces every resolved entry into a fixed slot
+(`phase: "observe"`, `priority: 500`, `concurrent: true`) and
+rejects any entry that defines `wrapModelStream`, because the
+engine's concurrent-observer scheduling only applies to
+`wrapModelCall`/`wrapToolCall` — stream wrappers always run
+sequentially and could otherwise mutate provider-bound traffic.
+
+**Trusted built-ins** (currently only `@koi/middleware-audit`) are
+registered with `{ trusted: true }` and bypass the adapter. Their
+code is owned and audited by the koi repo, so they run in their
+native (phase, priority) slot with the full middleware interface
+exposed, including `wrapModelStream`. That makes the audit trail
+complete across streaming and non-streaming model calls.
+
+The trust boundary trusted entries relax is **middleware code
+might mutate** — not **manifest config might extract data**.
+Trusted built-ins are still responsible for scrubbing their own
+records: the audit factory forces `redactRequestBodies: true`
+regardless of what the caller sets, so repo-authored config
+cannot persist host-injected system prompt / goal / hook content
+into an in-workspace NDJSON file.
+
+Third-party or plugin-registered middleware goes through the
+zone-B adapter unchanged.
+
+---
+
 ## Known limitations (this release)
 
-Zone B ships with two tracked gaps that operators must understand
+Zone B ships with one tracked gap that operators must understand
 before enabling manifest middleware in production:
 
-### 1. Streamed model calls are NOT audited
-
-The zone-B adapter forces `concurrent: true` to keep manifest
-middleware observational-only, but the engine's concurrent-observer
-scheduling applies only to `wrapModelCall` and `wrapToolCall`.
-Stream wrappers (`wrapModelStream`) always run sequentially in the
-onion and could mutate provider-bound requests or yielded chunks,
-so the adapter fails closed on any middleware that declares one.
-
-The built-in `@koi/middleware-audit` factory works around this by
-stripping `wrapModelStream` from its returned middleware, which
-means:
-
-- Non-streaming model calls ARE recorded in the NDJSON sink.
-- Streaming model calls are NOT recorded — streamed responses
-  pass through the chain without touching the manifest audit.
-- A loud startup warning fires on every resolution:
-  `[koi/manifest-audit] ... streamed model calls will NOT be recorded.`
-
-Hosts that need a complete audit trail (streaming + non-streaming)
-must register audit programmatically via a custom
-`MiddlewareRegistry`, bypassing zone B and using the full sequential
-`wrapModelStream` path. Main's `@koi/runtime` wiring already does
-this via the observability stack.
-
-### 2. Spawn is incompatible with manifest middleware
+### Spawn is incompatible with manifest middleware
 
 Delegated child agents cannot inherit manifest-declared middleware
 instances safely: sharing a parent's audit queue or signing chain

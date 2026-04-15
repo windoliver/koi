@@ -670,46 +670,35 @@ describe("built-in @koi/middleware-audit factory", () => {
     ).rejects.toThrow(/already claimed/);
   });
 
-  test("strips wrapModelStream and emits a coverage-gap warning", async () => {
-    // The zone-B adapter rejects any middleware that defines
-    // wrapModelStream (stream wrappers run sequentially regardless
-    // of the concurrent flag, so they can mutate provider-bound
-    // requests or yielded chunks). The audit factory works around
-    // this by stripping wrapModelStream before returning, which
-    // means manifest-configured audit does NOT cover streamed
-    // model calls. Operators must know.
+  test("trusted built-in audit bypasses the zone-B adapter and keeps wrapModelStream", async () => {
+    // Codex round-loop-2 round 10 follow-up: manifest audit is
+    // now registered as a trusted built-in. The resolver skips
+    // the zone-B adapter for trusted entries, so the audit
+    // middleware retains its native observe/300 slot AND keeps
+    // `wrapModelStream`, which means streaming AND non-streaming
+    // model calls are both captured in the NDJSON trail.
     const workspace = mkTempCwd();
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (msg: string): void => {
-      warnings.push(msg);
-    };
-    let resolved: readonly KoiMiddleware[] = [];
-    try {
-      const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
-      resolved = await resolveManifestMiddleware(
-        [
-          {
-            name: "@koi/middleware-audit",
-            options: { filePath: "stream-warning.audit.ndjson" },
-            enabled: true,
-          },
-        ],
-        registry,
-        stubCtx({ workingDirectory: workspace }),
-      );
-    } finally {
-      console.warn = originalWarn;
-    }
-    // The warning must have fired with a clear coverage-gap notice.
-    const matched = warnings.find((w) => w.includes("streamed model calls will NOT be recorded"));
-    expect(matched).toBeDefined();
-    // The resolved middleware must have wrapModelStream stripped —
-    // otherwise the zone-B adapter would have thrown.
+    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+    const resolved = await resolveManifestMiddleware(
+      [
+        {
+          name: "@koi/middleware-audit",
+          options: { filePath: "streaming-covered.audit.ndjson" },
+          enabled: true,
+        },
+      ],
+      registry,
+      stubCtx({ workingDirectory: workspace }),
+    );
     expect(resolved.length).toBe(1);
     const mw = resolved[0];
     if (mw === undefined) throw new Error("expected resolved middleware");
-    expect(mw.wrapModelStream).toBeUndefined();
+    // Native audit slot, NOT the zone-B adapter's observe/500/concurrent.
+    expect(mw.name).toBe("audit");
+    expect(mw.phase).toBe("observe");
+    expect(mw.priority).toBe(300);
+    // wrapModelStream is preserved so streaming audit works.
+    expect(typeof mw.wrapModelStream).toBe("function");
   });
 
   test("rejects negative flushIntervalMs", async () => {

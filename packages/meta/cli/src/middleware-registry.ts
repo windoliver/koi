@@ -140,20 +140,56 @@ export type ManifestMiddlewareFactory = (
 ) => Promise<KoiMiddleware> | KoiMiddleware;
 
 /**
+ * Options for `MiddlewareRegistry.register`.
+ */
+export interface RegisterOptions {
+  /**
+   * When `true`, the resolver returns the factory's result verbatim
+   * and does NOT wrap it in the zone-B `adaptToZoneBSlot` adapter.
+   * Trusted registrations retain their native `phase`/`priority`
+   * and can expose the full middleware interface including
+   * `wrapModelStream`.
+   *
+   * Only set this for middleware whose source code is owned and
+   * audited by the koi repo (i.e. built-ins registered from
+   * `createBuiltinManifestRegistry`). Plugin or host registrations
+   * of third-party middleware should leave this unset so the
+   * zone-B adapter's concurrent-observer protection still applies.
+   *
+   * The trust boundary this flag relaxes is the "repo-authored
+   * middleware code might mutate" concern — it does NOT relax the
+   * "repo-authored manifest CONFIG might extract data" concern.
+   * Trusted built-ins are still responsible for scrubbing their
+   * own records (e.g. `@koi/middleware-audit` forces
+   * `redactRequestBodies: true` at the factory level).
+   */
+  readonly trusted?: boolean;
+}
+
+interface RegistryEntry {
+  readonly factory: ManifestMiddlewareFactory;
+  readonly trusted: boolean;
+}
+
+/**
  * Mutable registry of name → factory. Registration is an
  * append-only operation in practice; duplicate registration of the
  * same name replaces the previous factory (plugins can override
  * built-ins explicitly if they want to).
  */
 export class MiddlewareRegistry {
-  readonly #entries = new Map<string, ManifestMiddlewareFactory>();
+  readonly #entries = new Map<string, RegistryEntry>();
 
-  register(name: string, factory: ManifestMiddlewareFactory): void {
-    this.#entries.set(name, factory);
+  register(name: string, factory: ManifestMiddlewareFactory, options?: RegisterOptions): void {
+    this.#entries.set(name, { factory, trusted: options?.trusted === true });
   }
 
   get(name: string): ManifestMiddlewareFactory | undefined {
-    return this.#entries.get(name);
+    return this.#entries.get(name)?.factory;
+  }
+
+  isTrusted(name: string): boolean {
+    return this.#entries.get(name)?.trusted === true;
   }
 
   has(name: string): boolean {
@@ -268,25 +304,26 @@ export async function resolveManifestMiddleware(
       throw new UnknownManifestMiddlewareError(entry.name, registry.names());
     }
     const fromFactory = await factory(entry, ctx);
-    // Force zone-B phase + priority regardless of what the factory
-    // declared. This is the execution-time security invariant: the
-    // engine's `sortMiddlewareByPhase` would otherwise re-order
-    // middleware and a manifest entry with `phase: "intercept"` and
-    // a low priority could leapfrog the security layers. By rewriting
-    // the slot at resolution time, every zone B entry provably runs
-    // after `exfiltration-guard`, `permissions`, and `hooks`.
-    // Zone-B slot normalization uses a delegating adapter rather
-    // than cloning the factory's result. Cloning (Object.create or
-    // object-spread) cannot preserve JavaScript private fields
-    // (`#foo` / internal slots), so any host/plugin middleware
-    // implemented as a class with private state would resolve
-    // successfully and then throw the first time a prototype
-    // method touched that state. The adapter keeps the original
-    // object identity alive: every hook invocation routes through
-    // `.bind(fromFactory)` so method calls execute against the
-    // untouched instance with its private fields intact. Only the
-    // adapter's outer `phase` and `priority` are visible to the
-    // engine's sort, which is exactly the zone-B slot guarantee.
+    if (registry.isTrusted(entry.name)) {
+      // Trusted built-ins bypass the zone-B adapter entirely.
+      // They retain their native `phase`/`priority` and may
+      // expose the full middleware interface including
+      // `wrapModelStream`, because we own and audit the source
+      // code. The trust boundary this relaxes is "middleware
+      // code might mutate" — the built-in factories are still
+      // responsible for scrubbing their own records (e.g. audit
+      // forces redactRequestBodies).
+      resolved.push(fromFactory);
+      continue;
+    }
+    // Untrusted registrations go through the delegating adapter:
+    // phase/priority are forced to the zone-B slot, `concurrent`
+    // is forced true, and `wrapModelStream` is rejected. The
+    // adapter uses `.bind(fromFactory)` so method calls still
+    // execute against the original instance with its private
+    // fields (`#foo` / internal slots) intact — cloning
+    // strategies (Object.create or object-spread) would lose
+    // those.
     resolved.push(adaptToZoneBSlot(fromFactory));
   }
   return resolved;
@@ -447,7 +484,20 @@ export function createBuiltinManifestRegistry(
 ): MiddlewareRegistry {
   const registry = new MiddlewareRegistry();
   if (options.allowFileBackedSinks === true) {
-    registry.register("@koi/middleware-audit", createAuditManifestEntry);
+    // Built-in audit is registered as `trusted`, which makes the
+    // resolver skip the zone-B adapter for this entry. The audit
+    // middleware runs in its native `observe/300` slot with full
+    // wrapModelCall + wrapModelStream coverage, so both streaming
+    // and non-streaming model calls end up in the NDJSON trail.
+    // We can trust the middleware code because the koi repo owns
+    // and audits it — the zone-B adapter's concurrent-observer
+    // protection exists to defend against third-party / untrusted
+    // middleware code. Repo-authored manifest CONFIG is still
+    // constrained by the factory itself (forced redactRequestBodies,
+    // path validation, signing rejection, dedup).
+    registry.register("@koi/middleware-audit", createAuditManifestEntry, {
+      trusted: true,
+    });
   }
   return registry;
 }
@@ -729,52 +779,23 @@ function createAuditManifestEntry(
   ctx.registerShutdown(async () => {
     await sink.close();
   });
-  // Loud startup warning about the streaming-audit coverage gap.
-  // The concurrent-observer contract the zone-B adapter enforces
-  // only applies to `wrapModelCall` and `wrapToolCall`; stream
-  // wrappers always run sequentially, so the built-in audit
-  // factory has to strip `wrapModelStream` to preserve the
-  // observational-only boundary. Operators who enable manifest
-  // audit must know their audit trail will not contain streaming
-  // model responses, only non-streaming ones.
-  console.warn(
-    "[koi/manifest-audit] @koi/middleware-audit enabled via manifest — streamed model calls will NOT be recorded. " +
-      "Only non-streaming wrapModelCall invocations are captured in the audit trail. " +
-      "For full streaming coverage, register the audit middleware programmatically through a custom MiddlewareRegistry " +
-      "that bypasses the zone-B adapter.",
-  );
-  const underlying = createAuditMiddleware({
+  // Built-in audit is registered as `trusted` in the built-in
+  // registry, which means the resolver skips the zone-B adapter
+  // and returns this middleware verbatim. The audit middleware
+  // runs in its native `observe/300` slot with both wrapModelCall
+  // AND wrapModelStream covering streaming and non-streaming
+  // model calls.
+  //
+  // `redactRequestBodies` is forced `true` regardless of caller
+  // input (see AuditManifestOptions block comment). Zone B runs
+  // after system-prompt / goal / hooks / model-router injection,
+  // so an un-redacted dump would let a repo-authored manifest
+  // extract host-injected trusted content from the NDJSON file.
+  // Hosts that need un-redacted bodies register audit
+  // programmatically via a custom MiddlewareRegistry.
+  return createAuditMiddleware({
     sink,
-    // redactRequestBodies is forced true regardless of caller
-    // input — see AuditManifestOptions for the trust-boundary
-    // rationale. Manifest-configured audit captures request
-    // metadata only; full bodies require programmatic
-    // registration.
     redactRequestBodies: true,
     // signing deliberately omitted — see parseAuditOptions for why.
   });
-
-  // Strip `wrapModelStream` before handing the middleware to the
-  // zone-B adapter. The concurrent-observer contract the adapter
-  // enforces only applies to `wrapModelCall` and `wrapToolCall`;
-  // the engine always runs stream wrappers sequentially in the
-  // onion regardless of the `concurrent` flag, so a stream
-  // wrapper in zone B would be able to mutate provider-bound
-  // requests or yielded chunks. `adaptToZoneBSlot` fails closed
-  // on any inner that defines `wrapModelStream` to preserve the
-  // observational-only trust boundary.
-  //
-  // Audit's actual stream wrapper is a pure pass-through (it
-  // forwards chunks verbatim and records them on `done`), but
-  // asserting that at runtime is not practical. Dropping the
-  // hook means manifest-configured audit captures only non-
-  // streaming model calls. Hosts that need streaming audit
-  // records register the middleware programmatically through a
-  // custom MiddlewareRegistry, which bypasses the zone-B adapter
-  // and gives them full sequential access.
-  //
-  // `createAuditMiddleware` returns a plain object literal (no
-  // class, no private fields), so object-spread is safe here.
-  const { wrapModelStream: _omitStream, ...publicView } = underlying;
-  return publicView as KoiMiddleware;
 }
