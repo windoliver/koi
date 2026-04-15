@@ -6,10 +6,24 @@ import { createJsonRpcConnection, createMessageParser, writeMessage } from "./js
 // Helpers
 // ---------------------------------------------------------------------------
 
+const textEncoder = new TextEncoder();
+
+function concatU8(parts: readonly Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const p of parts) total += p.byteLength;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.byteLength;
+  }
+  return out;
+}
+
 function encodeMessage(message: JsonRpcMessage): Uint8Array {
   const body = JSON.stringify(message);
   const header = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n`;
-  return Buffer.from(header + body);
+  return textEncoder.encode(header + body);
 }
 
 /**
@@ -147,15 +161,13 @@ describe("createMessageParser", () => {
     const messages: JsonRpcMessage[] = [];
     const parse = createMessageParser((msg) => messages.push(msg));
 
-    const encoded = Buffer.from(encodeMessage({ jsonrpc: "2.0", id: 1, method: "test" })).toString(
-      "utf-8",
-    );
-    const mid = Math.floor(encoded.length / 2);
+    const encoded = encodeMessage({ jsonrpc: "2.0", id: 1, method: "test" });
+    const mid = Math.floor(encoded.byteLength / 2);
 
-    parse(Buffer.from(encoded.slice(0, mid)));
+    parse(encoded.slice(0, mid));
     expect(messages).toHaveLength(0);
 
-    parse(Buffer.from(encoded.slice(mid)));
+    parse(encoded.slice(mid));
     expect(messages).toHaveLength(1);
   });
 
@@ -163,9 +175,9 @@ describe("createMessageParser", () => {
     const messages: JsonRpcMessage[] = [];
     const parse = createMessageParser((msg) => messages.push(msg));
 
-    const msg1 = Buffer.from(encodeMessage({ jsonrpc: "2.0", id: 1, method: "first" }));
-    const msg2 = Buffer.from(encodeMessage({ jsonrpc: "2.0", id: 2, method: "second" }));
-    const combined = Buffer.concat([msg1, msg2]);
+    const msg1 = encodeMessage({ jsonrpc: "2.0", id: 1, method: "first" });
+    const msg2 = encodeMessage({ jsonrpc: "2.0", id: 2, method: "second" });
+    const combined = concatU8([msg1, msg2]);
 
     parse(combined);
 
@@ -176,7 +188,7 @@ describe("createMessageParser", () => {
     const messages: JsonRpcMessage[] = [];
     const parse = createMessageParser((msg) => messages.push(msg));
 
-    parse(Buffer.from("Content-Length: 3\r\n\r\nbad"));
+    parse(textEncoder.encode("Content-Length: 3\r\n\r\nbad"));
 
     expect(messages).toHaveLength(0);
   });
@@ -185,9 +197,9 @@ describe("createMessageParser", () => {
     const messages: JsonRpcMessage[] = [];
     const parse = createMessageParser((msg) => messages.push(msg));
 
-    const noLength = Buffer.from("X-Custom: header\r\n\r\n");
+    const noLength = textEncoder.encode("X-Custom: header\r\n\r\n");
     const valid = encodeMessage({ jsonrpc: "2.0", method: "test" });
-    parse(Buffer.concat([noLength, valid]));
+    parse(concatU8([noLength, valid]));
 
     expect(messages).toHaveLength(1);
   });
