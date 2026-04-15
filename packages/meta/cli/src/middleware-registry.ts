@@ -44,7 +44,8 @@ export class CoreMiddlewareBlockedError extends Error {
 }
 
 /**
- * Forced phase + priority for every resolved zone-B middleware.
+ * Forced phase + priority + concurrent mode for every resolved
+ * zone-B middleware.
  *
  * The engine's `sortMiddlewareByPhase` orders middleware by tier
  * (intercept=0 < resolve=1 < observe=2) and then by ascending
@@ -53,40 +54,58 @@ export class CoreMiddlewareBlockedError extends Error {
  *
  *   exfiltration-guard  intercept  priority  50   (outermost)
  *   permissions         intercept  priority 100
- *   ──────────── zone B slot: resolve / 80 ─────────────
  *   system-prompt       resolve    priority 100
  *   goal                resolve    priority 340
  *   hooks               resolve    priority 400
  *   model-router        resolve    priority 900
  *   session-transcript  observe    priority 200
  *   audit (stack)       observe    priority 300
+ *   ──────────── zone B slot: observe / 500 (concurrent) ─────────────
  *
- * Zone B lands at `resolve / 80` — strictly INSIDE every intercept-
- * phase security layer (exfiltration-guard, permissions) but
- * strictly OUTSIDE every resolve-phase core layer (system-prompt,
- * goal, hooks, model-router). This is the critical trust-boundary
- * fix: if zone B ran AFTER system-prompt injection (which the
- * previous resolve/500 slot did), any repo-authored middleware
- * with `wrapModelCall`/`wrapModelStream` could overwrite or strip
- * the trusted system prompt after the host had injected it.
- * Placing zone B outside system-prompt means:
+ * Zone B lands at `observe / 500` and is forced to run in
+ * concurrent-observer mode (`concurrent: true`). This closes
+ * the two competing requirements Codex flagged across rounds:
  *
- *   1. Zone B sees the already-gated-and-redacted request from
- *      the intercept-phase security layers (no raw secrets), and
- *   2. Zone B cannot modify the final system-channel instructions
- *      the model receives — system-prompt, goal, and hooks all
- *      run INSIDE zone B on the onion's way down, so their
- *      outputs are invisible to zone B's wrap callbacks.
+ *   1. Zone B must not mutate trusted runtime layers. Concurrent
+ *      observe-phase scheduling means `wrapModelCall` and
+ *      `wrapToolCall` run IN PARALLEL with the next handler
+ *      instead of wrapping it. The middleware sees the request
+ *      and response but cannot rewrite what reaches the next
+ *      layer — the engine already dispatched to the real next
+ *      before the observer ran. Errors thrown by the observer
+ *      are silently swallowed by the engine and do not
+ *      propagate into the real chain.
  *
- * The value is forced so a manifest entry that declared
- * `phase: "intercept"` or a different priority cannot leapfrog
- * either the security guard above or the trusted runtime layers
- * below. `sortMiddlewareByPhase` runs after composition; the
- * array order in `composeRuntimeMiddleware` is irrelevant and
- * the forced slot here is the ONLY thing that matters.
+ *   2. Zone B must see the final provider-bound request. Observe
+ *      tier runs AFTER every intercept and resolve layer, so by
+ *      the time a zone-B observer is invoked the request has
+ *      already passed through exfiltration-guard, permissions,
+ *      system-prompt, goal, hooks, and model-router. Audit
+ *      middleware now records the actual payload the provider
+ *      received, not a pre-injection snapshot.
+ *
+ * Tradeoffs accepted:
+ *   - `wrapModelStream` always runs sequentially regardless of
+ *     `concurrent` (concurrent stream observation is not
+ *     supported, per the engine's KoiMiddleware interface).
+ *     Stream observers can still mutate. Today no built-in
+ *     manifest middleware implements `wrapModelStream`, and the
+ *     adapter wraps stream hooks through the same bind path so
+ *     future entries inherit standard middleware semantics.
+ *   - Intercept-phase hooks (`onSessionStart`, `onPermissionDecision`,
+ *     etc.) are not affected by `concurrent` — those semantics
+ *     are advisory only for the two wrap hooks.
+ *
+ * The value is forced so a manifest entry that declared a
+ * different phase or priority cannot leapfrog either the security
+ * guard above or the trusted runtime layers below.
+ * `sortMiddlewareByPhase` runs after composition; the array order
+ * in `composeRuntimeMiddleware` is irrelevant and the forced slot
+ * here is the ONLY thing that matters.
  */
-const ZONE_B_PHASE: MiddlewarePhase = "resolve";
-const ZONE_B_PRIORITY = 80;
+const ZONE_B_PHASE: MiddlewarePhase = "observe";
+const ZONE_B_PRIORITY = 500;
+const ZONE_B_CONCURRENT = true;
 
 /**
  * Context passed to every manifest middleware factory. Intentionally
@@ -300,7 +319,12 @@ function adaptToZoneBSlot(inner: KoiMiddleware): KoiMiddleware {
     name: inner.name,
     phase: ZONE_B_PHASE,
     priority: ZONE_B_PRIORITY,
-    ...(inner.concurrent !== undefined ? { concurrent: inner.concurrent } : {}),
+    // Force concurrent observer mode regardless of what the inner
+    // declared. See the block comment on ZONE_B_CONCURRENT for the
+    // full rationale: this is how we keep zone-B middleware purely
+    // observational (`wrapModelCall`/`wrapToolCall` run in parallel
+    // with the real next handler instead of wrapping it).
+    concurrent: ZONE_B_CONCURRENT,
     ...(inner.onSessionStart !== undefined
       ? { onSessionStart: inner.onSessionStart.bind(inner) }
       : {}),

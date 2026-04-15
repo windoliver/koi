@@ -848,7 +848,7 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     return { name, phase, priority } as unknown as KoiMiddleware;
   }
 
-  test("forces phase: resolve and priority: 80 on resolved zone B entries", async () => {
+  test("forces phase: observe, priority: 500, concurrent: true on resolved zone B entries", async () => {
     const registry = new MiddlewareRegistry();
     // A hostile factory that tries to declare intercept phase at a
     // very low priority to leapfrog the security layers.
@@ -863,11 +863,12 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     // The resolver MUST have rewritten phase/priority to the forced
     // zone B slot. Without this, the engine sort would run the
     // attacker's middleware before exfiltration-guard.
-    expect(mw?.phase).toBe("resolve");
-    expect(mw?.priority).toBe(80);
+    expect(mw?.phase).toBe("observe");
+    expect(mw?.priority).toBe(500);
+    expect(mw?.concurrent).toBe(true);
   });
 
-  test("zone B lands between intercept security and resolve core layers after engine sort", async () => {
+  test("zone B lands innermost (observe tier) after engine sort so it sees the final request", async () => {
     // Reproduce the engine's sort from
     // `packages/kernel/engine-compose/src/compose.ts`.
     const PHASE_TIER: Record<string, number> = { intercept: 0, resolve: 1, observe: 2 };
@@ -917,17 +918,24 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     ]);
     const names = sorted.map((mw) => mw.name);
 
-    // Zone B runs AFTER intercept-phase security layers.
-    expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("exfiltration-guard"));
-    expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf("permissions"));
-    // Zone B runs BEFORE every resolve-phase core layer, so
-    // repo-authored middleware cannot modify the final system
-    // prompt, goal, hooks, or routing decisions.
-    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("system-prompt"));
-    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("goal"));
-    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("hooks"));
-    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("model-router"));
-    expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("session-transcript"));
+    // Zone B at observe/500 runs AFTER every intercept and
+    // resolve layer (security guards, system-prompt, goal, hooks,
+    // model-router) and AFTER session-transcript at observe/200.
+    // This means an audit or observer middleware sees the final
+    // provider-bound request the model actually received, not a
+    // pre-injection snapshot. Combined with `concurrent: true`,
+    // the middleware cannot mutate — it only observes.
+    for (const innerName of [
+      "exfiltration-guard",
+      "permissions",
+      "system-prompt",
+      "goal",
+      "hooks",
+      "model-router",
+      "session-transcript",
+    ]) {
+      expect(names.indexOf("hostile")).toBeGreaterThan(names.indexOf(innerName));
+    }
   });
 
   test("adapter preserves class-based private state via bound hook delegation", async () => {
@@ -962,8 +970,8 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     const mw = resolved[0];
     if (mw === undefined) throw new Error("expected resolved middleware");
     expect(mw.name).toBe("custom-private");
-    expect(mw.phase).toBe("resolve");
-    expect(mw.priority).toBe(80);
+    expect(mw.phase).toBe("observe");
+    expect(mw.priority).toBe(500);
     // Hook invocations must route to the inner instance so private
     // fields remain reachable. Calling twice proves the counter
     // mutates the same instance (not a snapshotted clone).
@@ -988,8 +996,9 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
       stubCtx(),
     );
     for (const mw of resolved) {
-      expect(mw.phase).toBe("resolve");
-      expect(mw.priority).toBe(80);
+      expect(mw.phase).toBe("observe");
+      expect(mw.priority).toBe(500);
+      expect(mw.concurrent).toBe(true);
     }
     expect(resolved.map((mw) => mw.name)).toEqual(["x", "y", "z"]);
   });
