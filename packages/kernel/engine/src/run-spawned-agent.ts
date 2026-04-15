@@ -10,7 +10,6 @@ import { KoiRuntimeError } from "@koi/errors";
 
 import type { OutputCollector } from "./output-collector.js";
 import { spawnChildAgent } from "./spawn-child.js";
-import { markPreAdmission, stripPreAdmission } from "./spawn-pre-admission.js";
 import type { SpawnChildOptions } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -47,48 +46,32 @@ export interface RunSpawnedAgentOptions {
 export async function runSpawnedAgent(options: RunSpawnedAgentOptions): Promise<SpawnResult> {
   const { spawnOptions, input, collector, onBeforeRun, onAfterRun } = options;
 
-  // spawnChildAgent() covers slot acquisition, governance, and assembly —
-  // everything BEFORE the child process actually runs. Failures here are
-  // pre-admission and should refund the parent's per-turn fan-out budget
-  // via the spawn-pre-admission marker (#1793). Failures after this point
-  // (runtime.run) are post-admission and must keep consuming budget.
-  let runtime: Awaited<ReturnType<typeof spawnChildAgent>>["runtime"];
-  let handle: Awaited<ReturnType<typeof spawnChildAgent>>["handle"];
   try {
-    ({ runtime, handle } = await spawnChildAgent(spawnOptions));
-  } catch (e: unknown) {
-    if (e instanceof KoiRuntimeError) {
-      return { ok: false, error: markPreAdmission(e.toKoiError()) };
-    }
-    const message = e instanceof Error ? e.message : String(e);
-    return {
-      ok: false,
-      error: markPreAdmission({
-        code: "INTERNAL",
-        message: `Spawn failed: ${message}`,
-        retryable: false,
-      }),
-    };
-  }
+    const { runtime, handle } = await spawnChildAgent(spawnOptions);
+    const childSessionId = runtime.sessionId;
 
-  const childSessionId = runtime.sessionId;
-  onBeforeRun?.(childSessionId);
+    onBeforeRun?.(childSessionId);
 
-  try {
-    for await (const event of runtime.run(input)) {
-      collector.observe(event);
+    try {
+      for await (const event of runtime.run(input)) {
+        collector.observe(event);
+      }
+
+      return { ok: true, output: collector.output() };
+    } finally {
+      onAfterRun?.(childSessionId);
+      // Terminate via handle first (releases ledger + revokes delegation
+      // in registry-backed spawns), then dispose the runtime.
+      handle.terminate();
+      await handle.waitForCompletion();
+      await runtime.dispose();
     }
-    return { ok: true, output: collector.output() };
   } catch (e: unknown) {
-    // Post-admission: the child was successfully assembled and started
-    // running. Preserve structured KoiError fields but strip any
-    // `context.preAdmission` marker a child may have forged — the
-    // parent's spawn guard treats that flag as authoritative, so
-    // allowing it to cross the child→parent boundary would let a
-    // malicious or buggy child refund the parent's per-turn fan-out
-    // budget and bypass the cap (#1793).
+    // Preserve structured KoiError fields (code, retryable, context) from KoiRuntimeError.
+    // Flattening to INTERNAL would erase RATE_LIMIT, PERMISSION, TIMEOUT, etc. and their
+    // retryability — callers would lose all signal for governance/capacity failures.
     if (e instanceof KoiRuntimeError) {
-      return { ok: false, error: stripPreAdmission(e.toKoiError()) };
+      return { ok: false, error: e.toKoiError() };
     }
     const message = e instanceof Error ? e.message : String(e);
     return {
@@ -99,13 +82,6 @@ export async function runSpawnedAgent(options: RunSpawnedAgentOptions): Promise<
         retryable: false,
       },
     };
-  } finally {
-    onAfterRun?.(childSessionId);
-    // Terminate via handle first (releases ledger + revokes delegation
-    // in registry-backed spawns), then dispose the runtime.
-    handle.terminate();
-    await handle.waitForCompletion();
-    await runtime.dispose();
   }
 }
 

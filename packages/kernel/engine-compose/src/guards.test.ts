@@ -1085,33 +1085,38 @@ describe("createSpawnGuard", () => {
     await p1;
   });
 
-  test("per-turn budget is refunded on tagged pre-admission errors (#1793)", async () => {
-    // Pre-admission failures (resolver NOT_FOUND, VALIDATION, PERMISSION,
-    // etc.) that the spawn pipeline explicitly tags with
-    // context.preAdmission=true should NOT consume the per-turn burst
-    // budget — the child was never actually admitted.
-    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
+  test("per-turn cap bounds failing spawn attempts — no DoS on admission path (#1793)", async () => {
+    // Adversarial review round 9: even "pre-admission" failures (malformed
+    // args, resolver NOT_FOUND, permission rejections) must count against
+    // the cap. Otherwise a turn could issue arbitrarily many expensive
+    // spawn attempts as long as each one fails before admission,
+    // reopening a DoS vector on the exact unhappy path this guard exists
+    // to contain. The UX tradeoff — malformed spawns burn the per-turn
+    // budget — is bounded to maxFanOut per turn and recoverable on the
+    // next turn. Governance safety wins over UX.
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 3 } });
     const wrap = getToolWrap(guard);
     const ctx = mockTurnContext();
 
-    const preAdmissionError = (): Promise<never> =>
-      Promise.reject(
-        KoiRuntimeError.from("NOT_FOUND", "agent not found", {
-          context: { preAdmission: true },
-        }),
-      );
-    const preAdmissionNext: ToolNext = mock(preAdmissionError);
+    const failingNext: ToolNext = mock(() =>
+      Promise.reject(KoiRuntimeError.from("NOT_FOUND", "agent not found")),
+    );
 
-    // Three pre-admission failures — all refunded.
-    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
-    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
-    await expect(wrap(ctx, mockToolRequest("forge_agent"), preAdmissionNext)).rejects.toThrow();
+    for (let i = 0; i < 3; i++) {
+      await expect(wrap(ctx, mockToolRequest("forge_agent"), failingNext)).rejects.toThrow();
+    }
 
-    // Two valid spawns must now succeed — the budget was refunded.
-    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
-    expect(succeedingNext).toHaveBeenCalledTimes(2);
+    // 4th attempt must be rejected — cap hit regardless of error type.
+    try {
+      await wrap(ctx, mockToolRequest("forge_agent"), failingNext);
+      expect.unreachable("should have thrown");
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(KoiRuntimeError);
+      if (e instanceof KoiRuntimeError) {
+        expect(e.code).toBe("RATE_LIMIT");
+        expect(e.message).toContain("in this turn");
+      }
+    }
   });
 
   test("child-propagated KoiRuntimeError codes still consume burst budget (#1793)", async () => {

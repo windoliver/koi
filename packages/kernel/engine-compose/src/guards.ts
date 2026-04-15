@@ -927,28 +927,20 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
       // 6. Execute spawn:
       //    - directChildren always decrements (the in-flight slot is
-      //      freed when this tool call unwinds, success or failure).
-      //    - spawnsThisTurn is refunded ONLY when the caught error is
-      //      explicitly tagged `context.preAdmission === true` by the
-      //      spawn pipeline. Using an explicit marker (not an error
-      //      code heuristic) is necessary because child-run failures
-      //      can propagate PERMISSION / RATE_LIMIT / AUTH_REQUIRED
-      //      verbatim from the child back to the parent — refunding
-      //      on code alone would let a parent spam fast-failing
-      //      children and bypass the cap. The spawn tool and spawn
-      //      factory set the marker on failures that happen before
-      //      any child is admitted (arg parsing, resolver errors,
-      //      permission subset checks, delivery validation).
+      //      freed when this tool call unwinds).
+      //    - spawnsThisTurn is NEVER refunded. This is deliberate:
+      //      attempting to differentiate pre-admission from post-
+      //      admission failures (by error code, or by a tagged
+      //      context flag) either lets a parent spam fast-failing
+      //      children past the cap (child-propagated codes) or lets
+      //      a parent spam pre-admission validation errors without
+      //      any per-turn bound (unbounded DoS on the admission
+      //      path). Counting every spawn attempt against the cap
+      //      closes both bypasses. The UX tradeoff — malformed
+      //      spawns burn the per-turn budget — is bounded to
+      //      maxFanOut per turn and recoverable on the next turn.
       try {
         return await next(request);
-      } catch (e: unknown) {
-        if (
-          e instanceof KoiRuntimeError &&
-          (e.context as { readonly preAdmission?: unknown })?.preAdmission === true
-        ) {
-          spawnsThisTurn--;
-        }
-        throw e;
       } finally {
         directChildren--;
       }

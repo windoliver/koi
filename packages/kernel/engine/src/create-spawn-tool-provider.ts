@@ -341,10 +341,7 @@ function parseNonNegativeInt(value: unknown, field: string): number {
     throw KoiRuntimeError.from(
       "VALIDATION",
       `Spawn tool argument "${field}" must be a non-negative integer (0 = disable), got: ${String(value)}`,
-      // preAdmission: arg parsing happens before the spawn factory is
-      // called — no child was admitted, so the per-turn fan-out budget
-      // should be refunded by the spawn guard (#1793).
-      { retryable: false, context: { preAdmission: true } },
+      { retryable: false },
     );
   }
   return n;
@@ -360,7 +357,7 @@ function parsePositiveInt(value: unknown, field: string): number {
     throw KoiRuntimeError.from(
       "VALIDATION",
       `Spawn tool argument "${field}" must be a positive integer, got: ${String(value)}`,
-      { retryable: false, context: { preAdmission: true } },
+      { retryable: false },
     );
   }
   return n;
