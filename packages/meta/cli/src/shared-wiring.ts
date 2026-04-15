@@ -26,6 +26,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
   ComponentProvider,
+  FileSystemBackend,
   HookConfig,
   InboundMessage,
   KoiMiddleware,
@@ -495,6 +496,22 @@ export interface CoreProvidersConfig {
    */
   readonly includeFilesystemTools?: boolean;
   /**
+   * Pre-resolved filesystem backend to bind `fs_read`/`fs_write`/`fs_edit`
+   * against. When omitted, the builder creates a default local backend
+   * rooted at `cwd` — matches the prior behavior for hosts that don't
+   * honor a manifest filesystem section. Non-local backends (e.g. the
+   * nexus bridge from `resolveFileSystemAsync`) must be built by the
+   * host and passed in here so the CLI owns lifecycle/dispose.
+   */
+  readonly filesystem?: FileSystemBackend | undefined;
+  /**
+   * Subset of filesystem operations to expose as tools. When omitted,
+   * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Lets a
+   * manifest grant read-only access by setting
+   * `filesystem.operations: [read]`.
+   */
+  readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  /**
    * When true, wire the web_fetch tool. Defaults to `true` — hosts that
    * run in airgapped environments can pass `false` to strip network access.
    */
@@ -526,24 +543,39 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   if (includeFs) {
     // allowExternalPaths: the runtime has a real permission middleware
     // (path-aware rules + approval handler) that gates out-of-workspace access.
-    const localFs = createLocalFileSystem(cwd, { allowExternalPaths: true });
-    providers.push(
-      createSingleToolProvider({
-        name: "fs-read",
-        toolName: "fs_read",
-        createTool: () => createFsReadTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-      createSingleToolProvider({
-        name: "fs-write",
-        toolName: "fs_write",
-        createTool: () => createFsWriteTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-      createSingleToolProvider({
-        name: "fs-edit",
-        toolName: "fs_edit",
-        createTool: () => createFsEditTool(localFs, "fs", DEFAULT_UNSANDBOXED_POLICY),
-      }),
-    );
+    const fs: FileSystemBackend =
+      config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    const ops = config.filesystemOperations;
+    const wantRead = ops === undefined || ops.includes("read");
+    const wantWrite = ops === undefined || ops.includes("write");
+    const wantEdit = ops === undefined || ops.includes("edit");
+    if (wantRead) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-read",
+          toolName: "fs_read",
+          createTool: () => createFsReadTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
+    if (wantWrite) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-write",
+          toolName: "fs_write",
+          createTool: () => createFsWriteTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
+    if (wantEdit) {
+      providers.push(
+        createSingleToolProvider({
+          name: "fs-edit",
+          toolName: "fs_edit",
+          createTool: () => createFsEditTool(fs, "fs", DEFAULT_UNSANDBOXED_POLICY),
+        }),
+      );
+    }
   }
 
   if (includeWeb) {

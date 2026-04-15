@@ -35,6 +35,7 @@ import { join } from "node:path";
 import type {
   AuditEntry,
   EngineEvent,
+  FileSystemBackend,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
@@ -50,6 +51,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import type {
@@ -697,6 +699,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
+  let manifestFilesystemBackend: FileSystemBackend | undefined;
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -708,6 +712,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
+
+    // Resolve filesystem backend upfront so malformed nexus configs fail fast
+    // before TUI allocations / renderer startup. The nexus local-bridge path
+    // spawns the python subprocess here. The TUI doesn't wire an OAuth
+    // notification handler in this pass — remote OAuth flows would need a
+    // channel-aware handler threaded in after createCliChannel / TUI store.
+    if (manifestResult.value.filesystem !== undefined) {
+      try {
+        const fsResult = await resolveFileSystemAsync(
+          manifestResult.value.filesystem,
+          process.cwd(),
+        );
+        manifestFilesystemBackend = fsResult.backend;
+        manifestFilesystemOps = fsResult.operations;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`koi tui: invalid manifest.filesystem — ${msg}\n`);
+        process.exit(1);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -948,6 +972,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // plugin (v1's "wire everything" posture).
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
@@ -1721,6 +1747,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           process.stderr.write(
             `[koi tui] runtime.dispose failed during shutdown: ${
               disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+            }\n`,
+          );
+        }
+      }
+      // Dispose the manifest-provided filesystem backend (nexus local bridge
+      // owns a python subprocess that must be torn down on exit). The factory
+      // never built this backend so this is the only place it gets closed.
+      if (manifestFilesystemBackend !== undefined) {
+        try {
+          await manifestFilesystemBackend.dispose?.();
+        } catch (fsDisposeErr) {
+          process.stderr.write(
+            `[koi tui] filesystem.dispose failed during shutdown: ${
+              fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
             }\n`,
           );
         }

@@ -13,13 +13,20 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
+import type {
+  ApprovalHandler,
+  EngineEvent,
+  EngineInput,
+  FileSystemBackend,
+  InboundMessage,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
@@ -98,6 +105,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
+  let manifestFilesystemBackend: FileSystemBackend | undefined;
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -128,6 +137,26 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "  once this field is removed.\n",
       );
       return ExitCode.FAILURE;
+    }
+
+    // Resolve filesystem backend upfront so malformed nexus configs fail fast
+    // before any adapter/subprocess is created. The local path is synchronous;
+    // the nexus local-bridge path spawns the python subprocess and wires auth
+    // notifications — we omit the notification handler here because `koi start`
+    // has no interactive approval UI for OAuth, matching the auto-allow posture.
+    if (manifestResult.value.filesystem !== undefined) {
+      try {
+        const fsResult = await resolveFileSystemAsync(
+          manifestResult.value.filesystem,
+          process.cwd(),
+        );
+        manifestFilesystemBackend = fsResult.backend;
+        manifestFilesystemOps = fsResult.operations;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`koi start: invalid manifest.filesystem — ${msg}\n`);
+        return ExitCode.FAILURE;
+      }
     }
 
     if (
@@ -282,6 +311,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       ? { stacks: manifestStacks }
       : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
   });
@@ -359,6 +390,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           shutdownErr instanceof Error ? shutdownErr.message : String(shutdownErr)
         }\n`,
       );
+    }
+    // Dispose the manifest-provided filesystem backend (nexus local bridge
+    // owns a python subprocess + auth subscription that must be torn down
+    // before process exit). The factory never built this backend, so this
+    // is the only place it gets closed.
+    if (manifestFilesystemBackend !== undefined) {
+      try {
+        await manifestFilesystemBackend.dispose?.();
+      } catch (fsDisposeErr) {
+        shutdownFailed = true;
+        process.stderr.write(
+          `koi: filesystem.dispose failed — ${
+            fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+          }\n`,
+        );
+      }
     }
     try {
       await runtime.dispose?.();

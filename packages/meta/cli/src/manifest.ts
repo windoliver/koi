@@ -39,6 +39,8 @@
  */
 
 import { loadConfig } from "@koi/config";
+import type { FileSystemConfig } from "@koi/core";
+import { validateFileSystemConfig } from "@koi/runtime";
 
 export interface ManifestConfig {
   readonly modelName: string;
@@ -85,6 +87,18 @@ export interface ManifestConfig {
    * otherwise be missing). See `runtime-factory.ts`.
    */
   readonly backgroundSubprocesses: boolean | undefined;
+  /**
+   * Optional filesystem backend configuration. When set, the host
+   * resolves it via `@koi/runtime`'s `resolveFileSystemAsync` (for
+   * the nexus+local-bridge path) or `resolveFileSystem` (for
+   * `backend: "local"` and plain nexus HTTP) and wires the resulting
+   * FileSystemBackend into the core `fs_read`/`fs_write`/`fs_edit`
+   * providers. When `undefined`, the host falls back to the default
+   * local backend rooted at `cwd`. Malformed config (unknown backend,
+   * missing `mountUri`, etc.) is rejected here so the CLI fails fast
+   * before any adapter/subprocess is created.
+   */
+  readonly filesystem: FileSystemConfig | undefined;
 }
 
 /**
@@ -188,6 +202,25 @@ export async function loadManifestConfig(
     backgroundSubprocesses = bgSubsRaw;
   }
 
+  let filesystem: FileSystemConfig | undefined;
+  const fsRaw = raw.filesystem;
+  if (fsRaw !== undefined) {
+    if (typeof fsRaw !== "object" || fsRaw === null || Array.isArray(fsRaw)) {
+      return {
+        ok: false,
+        error: "manifest.filesystem must be an object with keys: backend, options, operations",
+      };
+    }
+    const fsResult = validateFileSystemConfig(fsRaw);
+    if (!fsResult.ok) {
+      return {
+        ok: false,
+        error: `manifest.filesystem: ${fsResult.error.message}`,
+      };
+    }
+    filesystem = fsResult.value;
+  }
+
   return {
     ok: true,
     value: {
@@ -196,6 +229,7 @@ export async function loadManifestConfig(
       stacks,
       plugins,
       backgroundSubprocesses,
+      filesystem,
     },
   };
 }
