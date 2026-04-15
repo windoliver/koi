@@ -307,6 +307,19 @@ export async function loadManifestConfig(
           : Array.isArray(mountUri)
             ? (mountUri as unknown[])
             : [];
+      // Runtime `resolveFileSystemAsync` rejects multi-mount local-bridge
+      // configs because createNexusFileSystem accepts only one mountPoint
+      // prefix (#1777 review round 9). Validating the runtime invariant
+      // at parse time turns "looks valid, fails later on startup" into a
+      // clean error before any subprocess spawn.
+      if (candidates.length > 1) {
+        return {
+          ok: false,
+          error:
+            "manifest.filesystem.options.mountUri may declare at most one URI on this host. " +
+            "Multi-mount local-bridge configs are not yet supported by the runtime resolver.",
+        };
+      }
       const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
       if (invalid !== undefined) {
         return {

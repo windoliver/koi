@@ -117,6 +117,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // let: mutable — assigned by the deferred resolver just before createKoiRuntime
   let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  // let: mutable — flipped true after `process.on("SIGINT", onSigint)`
+  // registers the handler. The filesystem notification callback
+  // consults this to decide whether SIGINT routes through the normal
+  // shutdown path (phase 2) or must dispose the bridge inline (phase 1).
+  let shutdownArmed = false;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -297,21 +302,28 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // true })` and the permission middleware gates out-of-workspace access.
   // The operations gate still applies via `manifestFilesystemOps`.
   if (manifestFilesystemConfig !== undefined && manifestFilesystemConfig.backend === "nexus") {
-    // auth_required is handled in two phases (#1777 review round 6):
+    // auth_required is handled in three phases (#1777 review rounds 6/9):
     //
-    //   Startup — while `resolveFileSystemAsync` is still awaiting the
-    //     bridge's mount reply, the caller does NOT yet own a
-    //     disposable handle. Exiting from the callback here would
-    //     terminate before `manifestFilesystemBackend` is assigned,
-    //     orphaning the python bridge subprocess. The callback records
-    //     the event and the post-await check below disposes the
-    //     returned backend cleanly.
+    //   Phase 0 — resolver still awaiting the bridge mount reply.
+    //     Caller has no disposable handle yet; the callback just
+    //     records `oauthRequired`, and the post-await check below
+    //     disposes the returned backend and fails the command.
     //
-    //   Runtime — once the resolver has returned, the backend is in
-    //     scope and the sigint handler / shutdownRuntime will be
-    //     installed below. At that point it is safe to raise SIGINT
-    //     from the callback: the sigint handler aborts the runtime
-    //     controller and `shutdownRuntime()` disposes the backend.
+    //   Phase 1 — resolver returned but `shutdownArmed` is false
+    //     (the sigint handler / `shutdownRuntime` are not yet
+    //     installed). Caller owns the handle. The callback disposes
+    //     the backend itself via a fire-and-forget microtask and
+    //     exits — raising SIGINT here would hit the default handler
+    //     and skip transcript flush and orphan the bridge.
+    //
+    //   Phase 2 — `shutdownArmed` is true. Safe to `SIGINT`: the
+    //     handler aborts the runtime controller and
+    //     `shutdownRuntime()` disposes the backend along with the
+    //     rest of teardown.
+    //
+    // `shutdownArmed` flips in the pre-runtime setup block further
+    // below, immediately after `process.on("SIGINT", onSigint)`
+    // registers the handler.
     // let: mutable — set from within the subscription callback
     let oauthRequired: { readonly provider: string; readonly user_email: string } | null = null;
     let resolveComplete = false;
@@ -326,11 +338,35 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
             `koi start: manifest filesystem requires OAuth (${n.params.provider} / ${n.params.user_email}) but this host has no interactive auth channel.\n` +
               `  Use a filesystem backend that does not require OAuth, or run under a host that wires auth_required notifications.\n`,
           );
-          if (resolveComplete) {
-            // Runtime-phase: safe — sigintHandler + shutdownRuntime exist.
-            process.kill(process.pid, "SIGINT");
+          if (!resolveComplete) {
+            // Phase 0 — post-await check disposes cleanly.
+            return;
           }
-          // Startup-phase: post-await check below disposes cleanly.
+          if (shutdownArmed) {
+            // Phase 2 — route through the normal shutdown path.
+            process.kill(process.pid, "SIGINT");
+            return;
+          }
+          // Phase 1 — sigint handler not installed yet but caller
+          // owns the handle. Dispose inline and exit so the bridge
+          // subprocess does not orphan. Dispose is async; schedule
+          // via microtask and exit after it resolves.
+          const backend = manifestFilesystemBackend;
+          void (async (): Promise<void> => {
+            try {
+              if (backend !== undefined) {
+                await backend.dispose?.();
+              }
+            } catch (fsDisposeErr) {
+              process.stderr.write(
+                `koi start: filesystem.dispose failed during auth-required abort — ${
+                  fsDisposeErr instanceof Error ? fsDisposeErr.message : String(fsDisposeErr)
+                }\n`,
+              );
+            } finally {
+              process.exit(Number(ExitCode.FAILURE));
+            }
+          })();
         },
       );
       manifestFilesystemBackend = fsResult.backend;
@@ -581,6 +617,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     sigintHandler.handleSignal();
   };
   process.on("SIGINT", onSigint);
+  // Mark the shutdown path as armed so any filesystem notification
+  // callback that fires from here onward can safely route through
+  // SIGINT → sigintHandler → controller.abort → shutdownRuntime.
+  shutdownArmed = true;
 
   const harness = createCliHarness({
     // `harnessRuntime` has a no-op `dispose`; the real shutdown

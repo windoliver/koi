@@ -130,7 +130,7 @@ describe("loadManifestConfig: filesystem block", () => {
     expect(mountUri).not.toBe("local://./workspace");
   });
 
-  test("absolutizes array form of mountUri element-wise", async () => {
+  test("anchors single-entry array mountUri", async () => {
     const p = writeManifest(
       [
         "model:",
@@ -141,7 +141,6 @@ describe("loadManifestConfig: filesystem block", () => {
         "    transport: local",
         "    mountUri:",
         '      - "local://./a"',
-        '      - "local:///already/absolute"',
       ].join("\n"),
     );
     const result = await loadManifestConfig(p);
@@ -150,7 +149,29 @@ describe("loadManifestConfig: filesystem block", () => {
     const options = (result.value.filesystem?.options ?? {}) as Record<string, unknown>;
     const mountUri = options.mountUri as readonly string[];
     expect(mountUri[0]).toContain(`${dir}/a`);
-    expect(mountUri[1]).toBe("local:///already/absolute");
+  });
+
+  test("rejects multi-mount arrays (runtime does not support them yet)", async () => {
+    // Regression for #1777 round 9: the runtime `resolveFileSystemAsync`
+    // throws on multi-mount local-bridge configs. Fail fast at parse
+    // time instead of at runtime assembly.
+    const p = writeManifest(
+      [
+        "model:",
+        "  name: google/gemini-2.0-flash-001",
+        "filesystem:",
+        "  backend: nexus",
+        "  options:",
+        "    transport: local",
+        "    mountUri:",
+        '      - "local:///tmp/a"',
+        '      - "local:///tmp/b"',
+      ].join("\n"),
+    );
+    const result = await loadManifestConfig(p);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.toLowerCase()).toContain("multi-mount");
   });
 
   test("rejects non-local:// mountUri schemes (OAuth gate)", async () => {
@@ -175,7 +196,7 @@ describe("loadManifestConfig: filesystem block", () => {
     expect(result.error).toContain("local://");
   });
 
-  test("rejects array mountUri that mixes supported and unsupported schemes", async () => {
+  test("rejects array mountUri containing unsupported scheme", async () => {
     const p = writeManifest(
       [
         "model:",
@@ -185,7 +206,6 @@ describe("loadManifestConfig: filesystem block", () => {
         "  options:",
         "    transport: local",
         "    mountUri:",
-        '      - "local:///tmp/a"',
         '      - "s3://bucket/key"',
       ].join("\n"),
     );
