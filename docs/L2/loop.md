@@ -288,11 +288,12 @@ If you need `bun typecheck && bun test`, use `createCompositeGate([...])`. It ru
 The `--until-pass` flag is repeatable — each occurrence contributes one argv token. This means verifier commands with their own flags are expressed as a sequence of `--until-pass` invocations:
 
 ```bash
-# bun test with a --filter argument
+# bun run test --filter=<pkg> (Turborepo workspace selector)
 koi start -p "fix the test" \
   --until-pass bun \
+  --until-pass run \
   --until-pass test \
-  --until-pass --filter=foo \
+  --until-pass --filter=@koi/runtime \
   --allow-side-effects
 
 # pytest with multiple flags

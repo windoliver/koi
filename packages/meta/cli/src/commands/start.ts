@@ -98,6 +98,16 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   let manifestInstructions: string | undefined;
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
+  // #1777: the manifest filesystem block is parsed+validated by
+  // `loadManifestConfig` (see manifest.ts). `koi start` supports
+  // `backend: "local"` on the host-default local backend path —
+  // `filesystem.operations` flows through as a read/write/edit gate via
+  // `buildCoreProviders`. `backend: "nexus"` is rejected at load time on
+  // this host (see the check below) because the CLI's auto-allow
+  // permission backend cannot enforce backend-aware approvals for
+  // remote/bridge storage, which would silently grant a repo-local
+  // manifest unreviewed access to data outside the workspace.
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -128,6 +138,43 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
           "  once this field is removed.\n",
       );
       return ExitCode.FAILURE;
+    }
+
+    // #1777: reject `backend: "nexus"` outright. The CLI's auto-allow
+    // permission backend is path-agnostic, so wiring a manifest-supplied
+    // remote/bridge filesystem would grant a repo-local manifest
+    // unreviewed read/write access to storage outside the workspace and
+    // outside the local host — a real trust-boundary regression.
+    // Backend-aware approvals + audit paths are follow-up work; the
+    // parse/validate/path-anchor plumbing in `loadManifestConfig` is
+    // already in place so this rejection is the only thing gating full
+    // nexus support here.
+    if (manifestResult.value.filesystem?.backend === "nexus") {
+      process.stderr.write(
+        "koi start: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
+          "  The CLI's auto-allow permission backend cannot enforce backend-aware\n" +
+          "  approvals, so wiring a remote/bridge filesystem from a repo-local\n" +
+          "  manifest would grant unreviewed access to storage outside the workspace.\n" +
+          "  Omit the `filesystem:` block or use `backend: local`.\n",
+      );
+      return ExitCode.FAILURE;
+    }
+
+    // Apply the `FileSystemConfig.operations` contract's `["read"]`
+    // default at the host level so manifest-driven filesystems default
+    // to read-only on the host-default local backend path.
+    // `buildCoreProviders` honors `filesystemOperations` verbatim.
+    //
+    // NOTE: `filesystem.operations` gates ONLY the `fs_read`/`fs_write`/
+    // `fs_edit` tools. The execution stack's `Bash` provider stays
+    // wired, so a model in a read-only manifest posture can still
+    // mutate the workspace via shell commands. `operations` is
+    // therefore advisory for the fs_* surface, not a hard write
+    // barrier. Manifest authors who need a true read-only posture
+    // should also pass `stacks: [notebook, rules, skills, ...]` (omit
+    // `execution`) to strip the bash provider entirely.
+    if (manifestResult.value.filesystem !== undefined) {
+      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
 
     if (
@@ -244,6 +291,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // entry to the JSONL session log, so a later `koi start --resume <id>`
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
+
   const runtimeHandle = await createKoiRuntime({
     modelAdapter,
     modelName: model,
@@ -282,6 +330,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       ? { stacks: manifestStacks }
       : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
   });

@@ -6,6 +6,7 @@ import type { HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import {
   __setUserHooksConfigPathForTests,
+  buildCoreProviders,
   buildPluginMcpSetup,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
@@ -111,6 +112,61 @@ describe("buildPluginMcpSetup", () => {
     expect(setup?.bridge).toBeUndefined();
     expect(setup?.provider).toBeDefined();
     setup?.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildCoreProviders — filesystem operation gating (#1777)
+// ---------------------------------------------------------------------------
+
+describe("buildCoreProviders: filesystem operation gating", () => {
+  test("host default (no filesystemOperations) wires all three fs tools", () => {
+    const providers = buildCoreProviders({ cwd: mkTempCwd(), includeWebFetch: false });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).toContain("fs-edit");
+  });
+
+  test("filesystemOperations=[read] gates to read-only", () => {
+    // Regression for #1777: hosts apply the `FileSystemConfig.operations`
+    // default (`["read"]`) at the callsite before invoking this builder.
+    // `filesystemOperations` must be honored verbatim so a manifest that
+    // sets `filesystem: { backend: local, operations: [read] }` runs
+    // read-only on the default local backend.
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystemOperations: ["read"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).not.toContain("fs-write");
+    expect(names).not.toContain("fs-edit");
+  });
+
+  test("filesystemOperations=[read,write] wires only those tools", () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystemOperations: ["read", "write"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).not.toContain("fs-edit");
+  });
+
+  test("filesystemOperations=[read,write,edit] wires all three", () => {
+    const providers = buildCoreProviders({
+      cwd: mkTempCwd(),
+      filesystemOperations: ["read", "write", "edit"],
+      includeWebFetch: false,
+    });
+    const names = providers.map((p) => p.name);
+    expect(names).toContain("fs-read");
+    expect(names).toContain("fs-write");
+    expect(names).toContain("fs-edit");
   });
 });
 

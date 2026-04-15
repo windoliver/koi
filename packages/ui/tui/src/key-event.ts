@@ -26,6 +26,10 @@ export function isCtrlP(key: KeyEvent): boolean {
   return key.ctrl && key.name === "p";
 }
 
+export function isCtrlN(key: KeyEvent): boolean {
+  return key.ctrl && key.name === "n";
+}
+
 export function isCtrlJ(key: KeyEvent): boolean {
   return key.ctrl && key.name === "j";
 }

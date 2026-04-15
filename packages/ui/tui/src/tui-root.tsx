@@ -2,7 +2,7 @@
  * TuiRoot — top-level TUI component composing views, modals, and the status bar.
  *
  * Architecture decisions implemented:
- * - 1A  Two-layer keyboard: root owns Ctrl+P / Ctrl+C / Esc globally.
+ * - 1A  Two-layer keyboard: root owns Ctrl+P / Ctrl+N / Ctrl+C / Esc globally.
  *       Modals receive focused={true} and own their internal keys via useKeyboard.
  * - 2A  layoutTier is read from store state (set by createTuiApp resize listener).
  * - 3A  Single modal slot (TuiModal | null). One modal at a time.
@@ -29,7 +29,6 @@ import { HelpView } from "./components/HelpView.js";
 import { PermissionPrompt } from "./components/PermissionPrompt.js";
 import { SessionPicker } from "./components/SessionPicker.js";
 import { SessionRename } from "./components/SessionRename.js";
-import { SessionsView } from "./components/SessionsView.js";
 import { CostDashboardView } from "./components/CostDashboardView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
@@ -53,7 +52,6 @@ import {
  * system:*) are forwarded via onCommand.
  */
 const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
-  "nav:sessions": "sessions",
   "nav:doctor": "doctor",
   "nav:help": "help",
   "nav:agents": "agents",
@@ -154,6 +152,16 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
     on(agentStatus, (status, prevStatus) => {
       if (prevStatus === "processing" && status === "idle") {
         props.onTurnComplete?.();
+      }
+    }),
+  );
+
+  // Refresh session list whenever the session-picker modal opens, regardless
+  // of which component opened it (command palette, /sessions, SpawnBlock click).
+  createEffect(
+    on(modal, (m) => {
+      if (m?.kind === "session-picker") {
+        props.onCommand("session:sessions", "");
       }
     }),
   );
@@ -288,6 +296,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           setViewSignal("conversation");
         }
       },
+      onNewSession: () => {
+        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:new");
+        if (cmd !== undefined) handleCommandSelect(cmd);
+      },
     });
   });
 
@@ -295,6 +307,11 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
   const dismissModal = (): void => {
     store.dispatch({ kind: "set_modal", modal: null });
+  };
+
+  /** Open the session picker. The createEffect above auto-refreshes the list. */
+  const openSessionPicker = (): void => {
+    store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
   };
 
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
@@ -306,8 +323,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       return;
     }
     // session:resume opens the session picker modal inline — host is not involved.
-    if (cmd.id === "session:resume") {
-      store.dispatch({ kind: "set_modal", modal: { kind: "session-picker" } });
+    if (cmd.id === "session:sessions") {
+      openSessionPicker();
       return;
     }
     if (cmd.id === "session:rename") {
@@ -341,10 +358,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   };
 
   const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
-    process.stderr.write(`[tui-slash-select] cmd.name=${cmd.name} args="${args}"\n`);
     store.dispatch({ kind: "set_slash_query", query: null });
     const commandDef = findCommandBySlashName(cmd.name);
-    process.stderr.write(`[tui-slash-select] commandDef=${commandDef?.id ?? "NOT FOUND"}\n`);
     if (commandDef !== undefined) {
       handleCommandSelect(commandDef, args);
     }
@@ -369,9 +384,6 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
             syntaxStyle={props.syntaxStyle}
             treeSitterClient={props.treeSitterClient}
           />
-        </Match>
-        <Match when={viewSignal() === "sessions"}>
-          <SessionsView />
         </Match>
         <Match when={viewSignal() === "doctor"}>
           <DoctorView />

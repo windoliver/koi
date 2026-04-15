@@ -29,9 +29,10 @@
  */
 
 import { writeSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
   EngineEvent,
@@ -42,6 +43,9 @@ import type {
   SessionTranscript,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { formatCost, formatTokens } from "@koi/core/cost-tracker";
+import type { DisplayableResumedMessage } from "@koi/core/message";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -52,6 +56,7 @@ import {
 } from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -104,6 +109,55 @@ const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 const SESSION_NAME_MAX = 60;
 /** Maximum characters for session preview (last message) in session picker. */
 const SESSION_PREVIEW_MAX = 80;
+
+// ---------------------------------------------------------------------------
+// Slash-command helpers (system:model, system:cost, session:export, etc.)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatch a system-generated notice as a synthetic user message.
+ *
+ * Used by /model, /cost, /tokens, /compact, /export, /zoom to surface
+ * slash-command output in the conversation stream without polluting the
+ * runtime.transcript (which feeds the next model call). Mirrors the fork
+ * notice pattern (see the `add_user_message` dispatch in the fork flow).
+ */
+function dispatchNotice(store: TuiStore, tag: string, text: string): void {
+  store.dispatch({
+    kind: "add_user_message",
+    id: `${tag}-${Date.now()}`,
+    blocks: [{ kind: "text", text }],
+  });
+}
+
+/** Render a displayable transcript as a Markdown document for /export. */
+export function renderTranscriptMarkdown(
+  messages: readonly DisplayableResumedMessage[],
+  info: { readonly sessionId: string; readonly modelName: string; readonly provider: string },
+): string {
+  const lines: string[] = [];
+  lines.push(`# Koi Session ${info.sessionId}`);
+  lines.push("");
+  lines.push(`- **Model**: ${info.modelName}`);
+  lines.push(`- **Provider**: ${info.provider}`);
+  lines.push(`- **Exported**: ${new Date().toISOString()}`);
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  for (const msg of messages) {
+    lines.push(msg.role === "user" ? "## User" : "## Assistant");
+    lines.push("");
+    for (const block of msg.content) {
+      if (block.kind === "text") {
+        lines.push(block.text);
+      } else {
+        lines.push(`_[${block.kind} block]_`);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Trajectory step mapping
@@ -697,6 +751,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestStacks: readonly string[] | undefined;
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
+  // #1777: the manifest filesystem block is parsed+validated by
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
+  // `backend: "local"` on the host-default local backend path.
+  // `backend: "nexus"` is rejected here because the TUI permission
+  // middleware and checkpoint stack both assume the filesystem
+  // backend is rooted at `cwd`; approving or rewinding against a
+  // non-cwd backend would break trust-boundary and rollback
+  // invariants.
+  let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -708,6 +771,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
+
+    if (manifestResult.value.filesystem !== undefined) {
+      if (manifestResult.value.filesystem.backend === "nexus") {
+        process.stderr.write(
+          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
+            "  The TUI permission middleware and checkpoint stack both assume the\n" +
+            "  filesystem backend is rooted at the session cwd, and approving or\n" +
+            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
+            "  rollback invariants. Omit the `filesystem:` block or use\n" +
+            "  `backend: local`.\n",
+        );
+        process.exit(1);
+      }
+      // Apply the `FileSystemConfig.operations` contract's `["read"]`
+      // default at the host level. `buildCoreProviders` honors
+      // `filesystemOperations` verbatim. NOTE: this gates only the
+      // `fs_*` tools — the `execution` preset stack still contributes
+      // Bash, so a model in a read-only manifest posture can still
+      // mutate the workspace via shell commands. Manifest authors who
+      // need a true read-only posture should also omit `execution`
+      // from `manifest.stacks`.
+      manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -948,6 +1034,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // plugin (v1's "wire everything" posture).
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
@@ -1322,13 +1409,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   //
   // `truncatePersistedTranscript` controls whether the on-disk
   // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
-  // state. agent:clear / session:new pass `true` because the
-  // durable transcript is exactly what the user wants erased.
-  // Session switching must NOT pass `true` — the live JSONL
-  // belongs to the startup session id and must survive the switch,
-  // otherwise any work done before the pick is destroyed and the
-  // post-quit resume hint points at a file whose identity no
-  // longer matches that work.
+  // state. agent:clear passes `true` because the durable
+  // transcript is exactly what the user wants erased.
+  // session:new passes `false` — the old transcript is preserved
+  // so it remains resumable via /sessions; the caller rotates
+  // `tuiSessionId` after the reset so new turns write to a
+  // separate file. Session switching also passes `false` — the
+  // live JSONL belongs to the startup session id and must survive
+  // the switch.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
     // Bump the reset generation BEFORE any other state changes
     // so older async reset IIFEs can detect that they've been
@@ -1390,7 +1478,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // history. Await the drain first, then truncate.
     const inflightRun = activeRunPromise;
     const shouldTruncate = options.truncatePersistedTranscript;
-    // A `/clear` / `/new` issued during the startup resume window
+    // A `/clear` issued during the startup resume window
     // (before createKoiRuntime has resolved) still has to honor
     // the privacy boundary. Clearing the prime array is synchronous
     // and safe regardless of runtime readiness.
@@ -2229,11 +2317,261 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             break;
           }
-          rewindBoundaryActive = true;
-          clearedThisProcess = true;
-          postClearTurnCount = 0;
-          resetConversation({ truncatePersistedTranscript: true });
+          // Unlike /clear, /new preserves the current transcript on disk
+          // so it remains resumable via /sessions. After the reset barrier
+          // resolves, rotate tuiSessionId and rebind the engine so new
+          // turns write to a separate JSONL file.
+          //
+          // Cleared-session bookkeeping (rewindBoundaryActive, clearedThisProcess,
+          // postClearTurnCount) is deferred to the success path so a failed
+          // /new doesn't suppress the shutdown resume hint for the old session.
+          void (async (): Promise<void> => {
+            resetConversation({ truncatePersistedTranscript: false });
+            const resetOk = await resetBarrier;
+            if (!resetOk || lastResetFailed) {
+              store.dispatch({
+                kind: "add_error",
+                code: "NEW_SESSION_FAILED",
+                message:
+                  "New session failed: session reset did not complete. " +
+                  "Restart koi tui to recover.",
+              });
+              return;
+            }
+            // Rebind the engine BEFORE updating tuiSessionId so a
+            // rebind failure never leaves the host pointing at a UUID
+            // the runtime doesn't know about (fail-closed contract).
+            const newSid = sessionId(crypto.randomUUID());
+            if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(newSid as string);
+              } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the next turn can't
+                // append to the old session with stale context.
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "NEW_SESSION_FAILED",
+                  message: `New session failed: cannot rebind runtime: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
+            // Rebind succeeded — safe to update host-side session ids
+            // and mark the session boundary.
+            rewindBoundaryActive = true;
+            clearedThisProcess = true;
+            postClearTurnCount = 0;
+            // Clear stale failure latches: a prior /clear failure on
+            // the OLD session must not poison the fresh session.
+            clearPersistFailed = false;
+            lastResetFailed = false;
+            tuiSessionId = newSid;
+            viewedSessionId = newSid;
+            costBridge.setSession(newSid as string, modelName, provider);
+            store.dispatch({
+              kind: "set_session_info",
+              modelName,
+              provider,
+              sessionName: "",
+              sessionId: newSid,
+            });
+            // Refresh session list so the old session appears in /sessions.
+            void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+              store.dispatch({ kind: "set_session_list", sessions });
+            });
+          })();
           break;
+        case "session:sessions":
+          // Refresh the session list every time the picker opens so
+          // sessions saved by a recent Ctrl+N appear immediately.
+          void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+            store.dispatch({ kind: "set_session_list", sessions });
+          });
+          break;
+        case "system:model": {
+          const lines = [`Model: ${modelName}`, `Provider: ${provider}`];
+          if (fallbackModels.length > 0) {
+            lines.push(`Fallback: ${fallbackModels.join(", ")}`);
+          }
+          dispatchNotice(store, "model-info", `[${lines.join(" · ")}]`);
+          break;
+        }
+        case "system:cost": {
+          // The cost aggregator is populated from live engine "done" events
+          // in this TUI process only — resumed sessions do NOT backfill
+          // historical spend. Scope the copy to "this process" so users
+          // reading the notice do not mistake zero for whole-session total
+          // after `koi tui --resume <id>`.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const totalIn = breakdown.byModel.reduce((s, m) => s + m.totalInputTokens, 0);
+          const totalOut = breakdown.byModel.reduce((s, m) => s + m.totalOutputTokens, 0);
+          if (totalIn === 0 && totalOut === 0) {
+            dispatchNotice(store, "cost-info", "[Cost (this process): no model calls yet]");
+          } else {
+            dispatchNotice(
+              store,
+              "cost-info",
+              `[Cost (this process): ${formatCost(breakdown.totalCostUsd)} — ` +
+                `${formatTokens(totalIn)} in / ${formatTokens(totalOut)} out tokens]`,
+            );
+          }
+          break;
+        }
+        case "system:tokens": {
+          // Process-local accounting — see the comment on system:cost above.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const lines: string[] = ["[Token usage (this process)]"];
+          if (breakdown.byModel.length === 0) {
+            lines.push("  (no model calls yet)");
+          } else {
+            for (const m of breakdown.byModel) {
+              lines.push(
+                `  ${m.model}: ${formatTokens(m.totalInputTokens)} in / ` +
+                  `${formatTokens(m.totalOutputTokens)} out ` +
+                  `(${m.callCount} call${m.callCount === 1 ? "" : "s"}, ` +
+                  `${formatCost(m.totalCostUsd)})`,
+              );
+            }
+          }
+          const ips = costBridge.tokenRate.inputPerSecond();
+          const ops = costBridge.tokenRate.outputPerSecond();
+          if (ips > 0 || ops > 0) {
+            lines.push(`  rate: ${ips.toFixed(1)} in/s · ${ops.toFixed(1)} out/s`);
+          }
+          dispatchNotice(store, "tokens-info", lines.join("\n"));
+          break;
+        }
+        case "agent:compact":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "COMPACT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            // Snapshot current transcript. microcompact is pure — we splice the
+            // result back into runtimeHandle.transcript below. /compact is a
+            // user-initiated command between turns, so there are no concurrent
+            // writers and the snapshot can't race with new appends.
+            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+            if (snapshot.length === 0) {
+              dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+              return;
+            }
+            const originalTokens = await Promise.resolve(
+              HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
+            );
+            // Halve the current budget, or 4k, whichever is larger. Preserves
+            // the 6 most recent messages so the active thread stays coherent.
+            const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
+            const preserveRecent = 6;
+            const result = await microcompact(
+              snapshot,
+              targetTokens,
+              preserveRecent,
+              HEURISTIC_ESTIMATOR,
+              modelName,
+            );
+            if (result.strategy === "noop") {
+              dispatchNotice(
+                store,
+                "compact-info",
+                `[Compact: already compact (${result.compactedTokens} tokens)]`,
+              );
+              return;
+            }
+            runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
+            const dropped = snapshot.length - result.messages.length;
+            const partial = result.strategy === "micro-truncate-partial";
+            // UI-only notice: the dropped messages are gone from the model's
+            // view. We deliberately do NOT insert a transcript marker —
+            // pinned markers accumulate across repeat /compact calls (pair
+            // rescue keeps them even when nothing else can be dropped), and
+            // a `system:*` senderId would leak a hidden privileged prompt
+            // into every subsequent turn while being filtered from /export
+            // and resume surfaces. The user-facing notice below is the
+            // durable record; /trajectory can surface compactions separately
+            // if needed later.
+            dispatchNotice(
+              store,
+              "compact-info",
+              `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
+                `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
+                `${partial ? " (partial — still above target)" : ""}]`,
+            );
+          })();
+          break;
+        case "session:export":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const displayable = filterResumedMessagesForDisplay(runtimeHandle.transcript);
+            if (displayable.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_EMPTY",
+                message: "Nothing to export — no user or assistant messages in this session.",
+              });
+              return;
+            }
+            const engineSid = String(runtimeHandle.runtime.sessionId);
+            const md = renderTranscriptMarkdown(displayable, {
+              sessionId: engineSid,
+              modelName,
+              provider,
+            });
+            const trimmed = args.trim();
+            const defaultName = `koi-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+            const target = trimmed.length > 0 ? trimmed : defaultName;
+            const filePath = isAbsolute(target) ? target : join(process.cwd(), target);
+            try {
+              await writeFile(filePath, md, "utf8");
+            } catch (err) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_WRITE_FAILED",
+                message: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return;
+            }
+            dispatchNotice(store, "export-info", `[Exported session to ${filePath}]`);
+          })();
+          break;
+        case "system:zoom": {
+          const current = store.getState().zoomLevel;
+          // let: justified — next level computed from one of two branches
+          let next = current;
+          const trimmed = args.trim();
+          if (trimmed.length > 0) {
+            const parsed = Number(trimmed);
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "ZOOM_INVALID_ARGS",
+                message: `Usage: /zoom [level] — level must be a positive number (got "${trimmed}").`,
+              });
+              break;
+            }
+            next = parsed;
+          } else {
+            // No arg: cycle 1 → 1.25 → 1.5 → 1.
+            next = current >= 1.5 ? 1 : Math.round((current + 0.25) * 100) / 100;
+          }
+          store.dispatch({ kind: "set_zoom", level: next });
+          dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
+          break;
+        }
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
@@ -2411,12 +2749,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
 
-          // Step 3: hydrate memory + UI from the validated target.
-          // The picked session is loaded into the runtime's
-          // in-memory transcript (read-only preview mode); the JSONL
-          // is NOT copied on disk. To durably continue the picked
-          // session, quit and relaunch with `koi tui --resume <id>`.
+          // Step 3: rebind BEFORE hydrating transcript so a rebind
+          // failure never leaves stale messages in the runtime's
+          // in-memory transcript (fail-closed contract).
           if (runtimeHandle !== null) {
+            if (runtimeHandle.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(selectedId);
+              } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the blank post-reset
+                // runtime can't accept turns against the old session.
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message: `Cannot resume session: rebind failed: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
+            // Rebind succeeded — safe to hydrate transcript.
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
             }
@@ -2425,25 +2779,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             kind: "load_history",
             messages: resumeResult.value.messages,
           });
-          // Lock the session into read-only picker mode. Subsequent
-          // submissions and `/rewind` are refused because the runtime
-          // still routes writes to the startup session id and the
-          // checkpoint chain still belongs to that session — allowing
-          // mutation would silently mix the picked conversation with
-          // the startup archive and let `/rewind` walk across the
-          // pick boundary. The user is pointed at
-          // `koi tui --resume <pickedId>` as the correct way to
-          // durably continue the picked session.
-          //
-          // Rotate the VIEWED session id so the status-bar chip,
-          // the post-quit resume hint, and every picker-mode
-          // guard all use the conversation on screen. The runtime
-          // routing key stays `tuiSessionId`. Because
-          // `isInPickerMode()` is derived from
-          // `viewedSessionId !== tuiSessionId`, the read-only
-          // guards auto-enable here AND auto-disable again the
-          // moment the user picks the startup session back.
+          // Fully switch to the selected session — update both
+          // tuiSessionId and viewedSessionId so isInPickerMode()
+          // returns false and the session is writable. New turns
+          // append to the selected session's JSONL file via the
+          // rebind above.
+          tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          rewindBoundaryActive = true;
+          clearedThisProcess = false;
+          postClearTurnCount = 0;
+          // Only clear lastResetFailed — the picker reset succeeded.
+          // Do NOT clear clearPersistFailed: if a prior /clear failed
+          // on a different session, that session's JSONL is still
+          // contaminated and the latch must stay sticky so switching
+          // back to it blocks writes (pre-existing safety contract).
+          lastResetFailed = false;
+          costBridge.setSession(targetSid as string, modelName, provider);
           store.dispatch({
             kind: "set_session_info",
             modelName,

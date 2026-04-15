@@ -67,13 +67,6 @@ describe("TuiRoot — view routing", () => {
     renderer.destroy();
   });
 
-  test("sessions view renders Sessions heading", async () => {
-    const { captureCharFrame, renderer } = await renderRoot({ activeView: "sessions" });
-    const frame = captureCharFrame();
-    expect(frame).toContain("Sessions");
-    renderer.destroy();
-  });
-
   test("doctor view renders System Health heading", async () => {
     const { captureCharFrame, renderer } = await renderRoot({ activeView: "doctor" });
     const frame = captureCharFrame();
@@ -154,7 +147,6 @@ describe("TuiRoot — modal overlay", () => {
 
 describe("resolveNavCommand", () => {
   test("nav commands return the target TuiView", () => {
-    expect(resolveNavCommand("nav:sessions")).toBe("sessions");
     expect(resolveNavCommand("nav:doctor")).toBe("doctor");
     expect(resolveNavCommand("nav:help")).toBe("help");
     expect(resolveNavCommand("nav:trajectory")).toBe("trajectory");
