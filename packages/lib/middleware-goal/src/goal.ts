@@ -150,6 +150,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
   let allKeywords = extractKeywords(config.objectives);
   let nextGoalIndex = config.objectives.length;
   const sessions = new Map<SessionId, GoalSessionState>();
+  // Goals added via controller before any session starts (pre-session buffer).
+  // Merged into the session on onSessionStart, then cleared.
+  const pendingItems: GoalItemWithId[] = config.objectives.map((text, index) => ({
+    id: `goal-${String(index)}`,
+    text,
+    completed: false,
+  }));
   const deferCompletions = config.detectCompletions !== undefined;
   // Buffer response text when either callback is configured. isDrifting
   // needs recent responses in its DriftJudgeInput; detectCompletions
@@ -487,13 +494,15 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
     add(text: string): string | undefined {
       const trimmed = text.trim();
       if (trimmed.length === 0) return undefined;
-      // Update all active sessions
+
+      const id = `goal-${String(nextGoalIndex)}`;
+      const newItem: GoalItemWithId = { id, text: trimmed, completed: false };
+
+      // Update active sessions if any exist
+      let updated = false;
       for (const [sid, state] of sessions) {
-        // Skip if already exists
         if (state.items.some((i) => i.text === trimmed)) return undefined;
-        const id = `goal-${String(nextGoalIndex)}`;
         nextGoalIndex += 1;
-        const newItem: GoalItemWithId = { id, text: trimmed, completed: false };
         const newItems = [...state.items, newItem];
         const newKeywords = new Map(state.keywordsPerItem);
         newKeywords.set(trimmed, extractKeywords([trimmed]));
@@ -503,16 +512,25 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
           forceInjectNextTurn: true,
         }));
         recomputeKeywords(newItems);
-        return id;
+        updated = true;
       }
-      // No active session — store for next session start
-      nextGoalIndex += 1;
-      return `goal-${String(nextGoalIndex - 1)}`;
+
+      // No active session — buffer for next onSessionStart
+      if (!updated) {
+        if (pendingItems.some((i) => i.text === trimmed)) return undefined;
+        nextGoalIndex += 1;
+        pendingItems.push(newItem);
+        recomputeKeywords(pendingItems);
+      }
+
+      return id;
     },
 
     remove(text: string): boolean {
       const trimmed = text.trim();
       let found = false;
+
+      // Remove from active sessions
       for (const [sid, state] of sessions) {
         const idx = state.items.findIndex((i) => i.text === trimmed);
         if (idx === -1) continue;
@@ -527,15 +545,24 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
         }));
         recomputeKeywords(newItems);
       }
+
+      // Also remove from pending buffer
+      const pendingIdx = pendingItems.findIndex((i) => i.text === trimmed);
+      if (pendingIdx !== -1) {
+        pendingItems.splice(pendingIdx, 1);
+        found = true;
+        if (sessions.size === 0) recomputeKeywords(pendingItems);
+      }
+
       return found;
     },
 
     list(): readonly GoalItemWithId[] {
-      // Return items from first active session (TUI is single-session)
+      // Return from active session if exists, otherwise from pending buffer
       for (const state of sessions.values()) {
         return state.items;
       }
-      return [];
+      return pendingItems;
     },
 
     clear(): void {
@@ -546,6 +573,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
           forceInjectNextTurn: false,
         }));
       }
+      pendingItems.splice(0);
       allKeywords = new Set();
     },
   };
@@ -571,16 +599,16 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
 
     async onSessionStart(ctx) {
       const sid = ctx.sessionId;
-      const items: readonly GoalItemWithId[] = config.objectives.map((text, index) => ({
-        id: `goal-${String(index)}`,
-        text,
-        completed: false,
-      }));
-      // Issue 13: memoize keywords per goal item at session start
+      // Merge pending items (added via controller before session start)
+      // with any remaining config objectives not already in pending.
+      const items: readonly GoalItemWithId[] = [...pendingItems];
       const keywordsPerItem = new Map<string, ReadonlySet<string>>();
       for (const item of items) {
         keywordsPerItem.set(item.text, extractKeywords([item.text]));
       }
+      // Clear pending buffer — items now owned by the session
+      pendingItems.splice(0);
+      allKeywords = extractKeywords(items.map((i) => i.text));
       sessions.set(sid, {
         items,
         keywordsPerItem,
@@ -590,7 +618,7 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
         turns: new Map(),
         pendingWork: Promise.resolve(),
         pendingDrift: 0,
-        forceInjectNextTurn: false,
+        forceInjectNextTurn: items.length > 0,
       });
     },
 
