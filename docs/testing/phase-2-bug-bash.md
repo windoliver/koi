@@ -207,8 +207,49 @@ EOF
 ### S6 — Permissions & Hooks
 
 **Setup for Q19**: none (in-session grant exercises the same code path). The TUI has no user config file for pre-allowing tools — by design, it is configured via environment variables and CLI flags only. The `[a] Always allow <tool> this session` keystroke on the first approval modal is the mechanism for tool-granularity pre-approval within a session. See #1780 for the architectural rationale.
-**Setup for Q21**: `$KOI_HOME/.koi/hooks.json` with pre-tool-use command hook writing to `$HOOK_LOG`
-**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); see `packages/lib/hooks/src/hook-validation.ts`.
+**Setup for Q21**: `$KOI_HOME/.koi/hooks.json` with pre-tool-use command hook writing to `$HOOK_LOG`. Hooks.json is a **flat JSON array** of discriminated-union `HookConfig` entries — **not** the Claude-Code `{preToolUse: [{matcher, command}]}` shape, and there is no `KOI_TOOL_NAME` env var (the tool name is on the JSON payload read from stdin for `kind: "command"` or POST body for `kind: "http"`). Example:
+
+```json
+[
+  {
+    "kind": "command",
+    "name": "log-tool-calls",
+    "cmd": ["/bin/sh", "-c", "cat >> $HOOK_LOG"],
+    "filter": { "events": ["tool.before"] }
+  }
+]
+```
+
+See `packages/lib/hooks/src/schema.ts` for the full schema. Invalid entries are reported per-entry via `[koi tui] hooks.json: …` warnings and skipped; valid peers still load (#1781).
+
+Loader policy:
+
+| Failure mode | Default | `KOI_HOOKS_STRICT=1` |
+|---|---|---|
+| File absent | silent empty | silent empty |
+| File unreadable / not JSON | **fatal** | **fatal** |
+| Non-array root | **fatal** | **fatal** |
+| Per-entry schema error (no `failClosed`) | warn + skip | **fatal** |
+| Per-entry duplicate name (no `failClosed`) | warn + keep first | **fatal** |
+| Per-entry with `failClosed: true` | **fatal** | **fatal** |
+
+Rationale: file-level corruption can hide a `failClosed` hook that the operator intended to be load-critical, so refusing startup is the only truthful response. Per-entry errors (typos, env-specific validation failures) degrade to warnings in the default path so one bad hook doesn't nuke the whole file (issue #1781) — operators who want zero tolerance set `KOI_HOOKS_STRICT=1`.
+
+**Trust-boundary note**: Bun's `os.homedir()` honors `$HOME` at process launch. Deployments that run koi via `sudo -E`, launchd, or any env-preserving wrapper should set `KOI_HOOKS_CONFIG_PATH=/absolute/path/to/hooks.json` to bypass home-directory ambiguity and pin the loader to a fixed path.
+
+**Setup for Q22**: Bun stub server on per-tester `$HOOK_PORT`, hooks.json POSTing to it. Requires `KOI_DEV=1` or `NODE_ENV=development` in the TUI environment so the HTTP hook URL validator accepts loopback (`http://127.0.0.1:...`); without it, the entry is rejected at load time (surfaced via `onLoadError`) and the hook never fires. See `packages/lib/hooks/src/hook-validation.ts`. Example entry:
+
+```json
+[
+  {
+    "kind": "http",
+    "name": "stub-post",
+    "url": "http://127.0.0.1:3999/hook",
+    "method": "POST",
+    "filter": { "events": ["tool.before"] }
+  }
+]
+```
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
