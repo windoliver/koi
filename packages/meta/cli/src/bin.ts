@@ -44,31 +44,29 @@ Global flags:
 const rawArgv = process.argv.slice(2);
 
 // Fast-path: top-level --version / --help exit before loading dispatch.
-// Three gates, all must pass:
-//   1. No subcommand precedes the flag — `koi start --help` must reach
-//      dispatch so it can print the per-command help block (#1729).
-//   2. The flag appears before any `--` operand terminator — `koi --
-//      --version` is a literal operand request, not a version probe.
-//   3. The flag is actually present.
-// Subcommand detection: "first arg exists and is not a flag".
+// Only triggers when no subcommand precedes the flag — `koi start --help`
+// must reach dispatch so it can print the per-command help block (#1729).
+// A subcommand is detected by "first arg exists and is not a flag".
+//
+// NOTE on `--`: a top-level `koi -- --version` ought to treat --version
+// as a literal operand, not a version probe, but we cannot prove that
+// path end-to-end: Bun itself consumes the first `--` from its argv
+// before the shim is invoked, so a dev-mode test via `bun bin.ts --
+// --version` is indistinguishable from `bun bin.ts --version`. Rather
+// than ship behavior we can't verify, the fast-path keeps the simpler
+// includes() scan and does not claim `--` support at the top level.
+// Subcommand-level `--` (e.g. `koi plugin install -- --help`) IS
+// honored by parseArgs / typedParseArgs and is regression-tested.
 const firstArg = rawArgv[0];
 const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
 
 if (!hasSubcommand) {
-  let wantsVersion = false;
-  let wantsHelp = false;
-  for (const a of rawArgv) {
-    if (a === "--") break;
-    if (a === "--version" || a === "-V") wantsVersion = true;
-    else if (a === "--help" || a === "-h") wantsHelp = true;
-  }
-
-  if (wantsVersion) {
+  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
     process.stdout.write(`${VERSION}\n`);
     process.exit(0);
   }
 
-  if (wantsHelp) {
+  if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
     process.stdout.write(HELP);
     process.exit(0);
   }

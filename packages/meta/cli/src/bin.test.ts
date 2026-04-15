@@ -441,11 +441,11 @@ describe("bin.ts", () => {
       expect(r.stdout).toContain("koi plugin —");
     });
 
-    // Review round 7: the top-level fast-path must also honor `--`.
-    // `koi -- --version` is tested as a unit test against detectGlobalFlags
-    // in args.test.ts — the bin.ts spawn path can't express this case
-    // because bun itself consumes the first `--` from the invocation
-    // argv before the shim's raw argv is assembled.
+    // The top-level fast-path does NOT claim `--` support: Bun eats the
+    // first `--` from argv, so we can't verify `koi -- --version`
+    // end-to-end in dev. Subcommand-level `--` (e.g.
+    // `koi plugin install -- --help`) is honored by parseArgs and is
+    // covered by the plugin test above.
 
     // Review round 8: help/version must bypass semantic validators,
     // not just unknown-flag rejection. Before the parser early-return,
