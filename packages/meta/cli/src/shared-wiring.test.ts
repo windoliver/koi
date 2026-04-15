@@ -330,6 +330,29 @@ describe("loadUserRegisteredHooks", () => {
     ).rejects.toThrow(/Refusing to start.*agent hook.*KOI_HOOKS_STRICT=1/);
   });
 
+  test("strict mode: unnamed agent entry also aborts (review round 8 new)", async () => {
+    // Regression: an agent entry without a parseable `name` used to slip
+    // through the strict-mode gate because it didn't populate `agentNames`.
+    // The gate now counts every filtered agent-kind entry.
+    process.env.KOI_HOOKS_STRICT = "1";
+    writeHooksJson(
+      JSON.stringify([
+        { kind: "command", name: "good", cmd: ["/bin/true"] },
+        { kind: "agent", prompt: "deny" }, // no name
+        { kind: "agent", name: 7, prompt: "deny" }, // non-string name
+      ]),
+    );
+    const errors: string[] = [];
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: () => {},
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*2 agent hook.*KOI_HOOKS_STRICT=1/);
+    expect(errors.some((m) => m.includes("without a parseable name"))).toBe(true);
+  });
+
   test("lenient mode: failClosed:true agent entry aborts even under filterAgentHooks", async () => {
     // The per-hook failClosed opt-in is an explicit contract — even
     // outside strict mode, an agent hook marked load-critical cannot be

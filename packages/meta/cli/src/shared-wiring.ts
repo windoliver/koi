@@ -257,6 +257,15 @@ export async function loadUserRegisteredHooks(options: {
   let effectiveRaw: unknown = raw;
   if (options.filterAgentHooks && Array.isArray(raw)) {
     const keptEntries: unknown[] = [];
+    // Display labels cover EVERY filtered agent entry — named or not —
+    // so the strict-mode gate cannot be silently bypassed by an unnamed
+    // `{kind:"agent",...}` entry (review round 8 new finding). Unnamed
+    // entries fall back to `entry <index>` labels.
+    const agentLabels: string[] = [];
+    // `agentNames` is a strict subset used for the `onAgentHooksFiltered`
+    // callback, which historically receives only string names. Operators
+    // see the full list (including unnamed entries) via the strict-mode
+    // fatal message and via `onLoadError` when we surface a warning.
     const agentNames: string[] = [];
     const failClosedAgentLabels: string[] = [];
     for (let i = 0; i < raw.length; i++) {
@@ -269,6 +278,7 @@ export async function loadUserRegisteredHooks(options: {
         const sniffedName = (entry as { readonly name?: unknown }).name;
         const displayName =
           typeof sniffedName === "string" && sniffedName.length > 0 ? sniffedName : `entry ${i}`;
+        agentLabels.push(displayName);
         if (typeof sniffedName === "string" && sniffedName.length > 0) {
           agentNames.push(sniffedName);
         }
@@ -280,16 +290,25 @@ export async function loadUserRegisteredHooks(options: {
       keptEntries.push(entry);
     }
 
-    // Surface the agent-hook names to the caller BEFORE any fatal throw so
-    // operators see the full list of unsupported entries, not just the
-    // first one that triggered abortion.
+    // Surface named agent hooks via the legacy callback; surface unnamed
+    // ones through onLoadError so operators can still identify them.
     if (agentNames.length > 0 && options.onAgentHooksFiltered !== undefined) {
       options.onAgentHooksFiltered(agentNames);
     }
+    const unnamedAgents = agentLabels.length - agentNames.length;
+    if (unnamedAgents > 0) {
+      options.onLoadError?.(
+        `${unnamedAgents} agent hook(s) without a parseable name were filtered from ${path}`,
+      );
+    }
 
-    if (strictMode && agentNames.length > 0) {
+    if (strictMode && agentLabels.length > 0) {
       throw new Error(
-        `Refusing to start: ${agentNames.length} agent hook(s) in ${path} — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries. Remove the agent entries or run via a host that supports them.`,
+        `Refusing to start: ${agentLabels.length} agent hook(s) in ${path} (${agentLabels
+          .map((l) => `"${l}"`)
+          .join(
+            ", ",
+          )}) — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries. Remove the agent entries or run via a host that supports them.`,
       );
     }
     if (failClosedAgentLabels.length > 0) {
