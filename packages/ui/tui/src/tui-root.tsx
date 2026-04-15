@@ -341,10 +341,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   };
 
   const handleSlashSelect = (cmd: SlashCommand, args: string): void => {
-    process.stderr.write(`[tui-slash-select] cmd.name=${cmd.name} args="${args}"\n`);
     store.dispatch({ kind: "set_slash_query", query: null });
     const commandDef = findCommandBySlashName(cmd.name);
-    process.stderr.write(`[tui-slash-select] commandDef=${commandDef?.id ?? "NOT FOUND"}\n`);
     if (commandDef !== undefined) {
       handleCommandSelect(commandDef, args);
     }
