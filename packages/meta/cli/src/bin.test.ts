@@ -291,6 +291,39 @@ describe("bin.ts", () => {
       expect(r.stdout).toContain("--prompt");
       expect(r.stdout).toContain("--until-pass");
     });
+
+    // Parser/help parity: every command that accepts a positional
+    // manifest in its parser must advertise that positional in its
+    // help usage line. Regression for the review that caught `koi stop`
+    // missing `[manifest]` in its usage text.
+    const POSITIONAL_MANIFEST_COMMANDS = [
+      "start",
+      "serve",
+      "logs",
+      "status",
+      "doctor",
+      "stop",
+      "deploy",
+    ] as const;
+
+    for (const cmd of POSITIONAL_MANIFEST_COMMANDS) {
+      test(`\`koi ${cmd} --help\` usage line advertises [manifest] positional`, async () => {
+        const r = await runBin([cmd, "--help"]);
+        expect(r.exitCode).toBe(0);
+        const usageLine = r.stdout
+          .split("\n")
+          .find((l) => l.includes(`koi ${cmd}`) && l.includes("[manifest]"));
+        expect(usageLine).toBeDefined();
+      });
+    }
+
+    test("`koi stop <manifest>` is accepted (parser parity with help)", async () => {
+      // If stop's parser rejected the positional, this would exit 1
+      // with "unknown flag" or similar. Stub commands exit 2.
+      const r = await runBin(["stop", "./agent.yaml"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
   });
 
   describe("start command — new flags (Phase 2i-3)", () => {

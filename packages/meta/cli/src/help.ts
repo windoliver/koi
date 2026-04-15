@@ -132,10 +132,10 @@ Options:
 const stopHelp = `koi stop — Stop the running service
 
 Usage:
-  koi stop [options]
+  koi stop [manifest] [options]
 
 Options:
-      --manifest <path>  Path to koi.yaml
+      --manifest <path>  Path to koi.yaml (overrides positional)
   -h, --help             Show this help
 `;
 
