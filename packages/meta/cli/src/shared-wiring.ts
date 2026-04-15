@@ -170,12 +170,11 @@ export function buildPluginMcpSetup(
  *
  * Loader semantics:
  * - File absent → silent empty result (hooks.json is optional).
- * - File present but unreadable / not JSON → **fatal**. Because the file's
- *   contents are unknown, we cannot tell whether the operator had declared
- *   any `failClosed:true` hooks in it; silently treating corruption as
- *   "no hooks configured" is the exact class of silent policy bypass this
- *   function exists to close. `onLoadError` is called with the diagnostic
- *   and then the function throws to abort startup.
+ * - File present but unreadable / not JSON → `onLoadError` is invoked with a
+ *   diagnostic; empty result is returned (non-fatal). hooks.json is edited
+ *   by humans/tools and can be momentarily invalid during writes; locking
+ *   operators out of the TUI because an editor dropped a partial write
+ *   would be worse than best-effort degraded loading (review round 6).
  * - File present and parseable → each entry is validated independently via
  *   `loadRegisteredHooksPerEntry`. Invalid entries are reported through
  *   `onLoadError` (one call per error) and skipped; valid peers still load.
@@ -183,19 +182,16 @@ export function buildPluginMcpSetup(
  *   entry (e.g. an http hook lacking `KOI_DEV=1`) would silently drop every
  *   hook in the file (see issue #1781).
  *
- * Host-level fatal policy:
- * - `structural` errors (non-array root, etc.) → abort. We can't inspect
- *   individual entries for failClosed intent.
- * - `duplicate` name errors → abort. "First occurrence wins" would silently
- *   keep a stale definition when the operator intended the later entry to
- *   replace/tighten it. Making these fatal is safer than guessing intent.
- * - `schema` errors with `failClosed: true` → abort. The operator explicitly
- *   declared this hook load-critical.
- * - `schema` errors without `failClosed` → partial-load (issue #1781): the
- *   valid peers still load and the error is surfaced via `onLoadError`.
+ * Host-level fatal policy: only `schema` errors on entries that the
+ * operator explicitly marked `failClosed: true` abort startup. Every other
+ * failure mode (parse error, structural root error, duplicate name,
+ * ordinary schema error) degrades to a warning + partial/empty load so a
+ * benign config mistake cannot deny service to `koi tui` / `koi start`.
+ * The `failClosed` opt-in is the sole mechanism operators use to say
+ * "this hook must be loaded or I want the process to refuse to start."
  *
- * All diagnostics are reported through `onLoadError` BEFORE any abort
- * throws so operators see every broken entry, not just the first fatal.
+ * All diagnostics are reported through `onLoadError` BEFORE any fatal
+ * throw so operators see every broken entry, not just the first fatal.
  * Callers that don't want startup to abort should wrap the call in try/catch.
  *
  * When `filterAgentHooks` is true, any `kind: "agent"` hooks are stripped
@@ -219,13 +215,15 @@ export async function loadUserRegisteredHooks(options: {
   try {
     raw = await file.json();
   } catch (e) {
-    // File exists but cannot be read or parsed. We have no way to know
-    // whether it declared any failClosed:true hooks, so fail closed rather
-    // than silently proceed with an empty hook set (review round 2 finding).
+    // File exists but cannot be read/parsed. Degrade to empty load + warn:
+    // hooks.json is an optional per-user config that can be momentarily
+    // invalid during an editor write or merge conflict, and aborting every
+    // TUI/CLI invocation on the machine would be a worse failure mode than
+    // silent hook loss (review round 6). Operators who need fail-closed
+    // behaviour mark individual hooks `failClosed: true`.
     const detail = e instanceof Error ? e.message : String(e);
-    const msg = `Could not read ${path}: ${detail}`;
-    options.onLoadError?.(msg);
-    throw new Error(`Refusing to start: ${msg}. Fix or remove the file before retrying.`);
+    options.onLoadError?.(`Could not read ${path}: ${detail}`);
+    return [];
   }
 
   // Pre-filter agent entries when the host cannot run them: stripping them
@@ -273,33 +271,12 @@ export async function loadUserRegisteredHooks(options: {
     }
   }
 
-  // Structural root errors (non-array, etc.) are fatal: we cannot inspect
-  // individual entries to see whether any were marked failClosed:true, and
-  // an object-shaped root that contained a failClosed hook would otherwise
-  // silently start the TUI with zero user hooks (review round 3 finding).
-  const structuralErrors = loaded.errors.filter((e) => e.kind === "structural");
-  if (structuralErrors.length > 0) {
-    throw new Error(
-      `Refusing to start: ${path} is structurally invalid — ${structuralErrors
-        .map((e) => e.message)
-        .join("; ")}. Fix or remove the file before retrying.`,
-    );
-  }
-
-  // Duplicate-name errors are fatal: "first occurrence wins" would silently
-  // leave a stale definition in place when an operator intended the later
-  // entry to replace or tighten it, and that is indistinguishable from a
-  // policy bypass for audit/deny hooks (review round 4 finding).
-  const duplicateErrors = loaded.errors.filter((e) => e.kind === "duplicate");
-  if (duplicateErrors.length > 0) {
-    const labels = duplicateErrors.map((e) => `"${e.name}"`).join(", ");
-    throw new Error(
-      `Refusing to start: duplicate hook name(s) ${labels} in ${path}. Hook names must be unique per file — rename or remove the duplicate entries before retrying.`,
-    );
-  }
-
-  // Fail-closed opt-in: invalid schema entries marked failClosed:true abort
-  // startup; ordinary schema errors partial-load per issue #1781.
+  // Fail-closed opt-in is the only fatal path: schema-invalid entries that
+  // the operator explicitly marked `failClosed: true` abort startup.
+  // Structural root errors, duplicate names, and ordinary schema errors
+  // degrade to warnings + partial load so benign config mistakes (typos,
+  // partial writes, merge-conflict artifacts) cannot deny service to the
+  // TUI / CLI (review round 6).
   const failClosedErrors = loaded.errors.filter(
     (e) => e.kind === "schema" && e.failClosed === true,
   );

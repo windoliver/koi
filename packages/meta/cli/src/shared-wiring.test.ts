@@ -152,19 +152,21 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors).toEqual([]);
   });
 
-  test("aborts startup when hooks.json exists but cannot be parsed (fail closed)", async () => {
-    // A truncated write, merge conflict, or corrupt file must not degrade to
-    // "no hooks configured" — the file may have declared failClosed hooks
-    // and we cannot know (review round 2 finding).
+  test("degrades to warning + empty load when hooks.json cannot be parsed", async () => {
+    // A truncated write, merge conflict, or transient editor save must not
+    // lock the operator out of `koi tui` / `koi start`. Partial/empty load
+    // is preferable to a machine-wide outage for an optional per-user config
+    // (review round 6). Operators who need fail-closed behaviour mark
+    // individual hooks `failClosed: true`.
     writeHooksJson("not-json");
     const errors: string[] = [];
-    await expect(
-      loadUserRegisteredHooks({
-        filterAgentHooks: false,
-        onLoadError: (m) => errors.push(m),
-      }),
-    ).rejects.toThrow(/Refusing to start.*Could not read/);
-    expect(errors.some((m) => m.includes("Could not read"))).toBe(true);
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("Could not read");
   });
 
   test("loads valid peers when one entry is invalid (issue #1781 regression)", async () => {
@@ -184,39 +186,36 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors[0]).toContain("bad");
   });
 
-  test("aborts startup when hooks.json root is not an array (fail closed)", async () => {
-    // Object-shaped root cannot be inspected for failClosed entries, so the
-    // safe default is abort — otherwise an object root containing a
-    // failClosed hook would silently start the TUI with zero user hooks
-    // (review round 3 finding).
-    writeHooksJson(JSON.stringify({ kind: "command", name: "deny", cmd: [], failClosed: true }));
+  test("degrades to warning + empty load when hooks.json root is not an array", async () => {
+    // Structural root errors are treated as non-fatal for availability
+    // reasons (round 6): better to warn and start empty than to lock the
+    // operator out on a malformed optional config.
+    writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
     const errors: string[] = [];
-    await expect(
-      loadUserRegisteredHooks({
-        filterAgentHooks: false,
-        onLoadError: (m) => errors.push(m),
-      }),
-    ).rejects.toThrow(/Refusing to start.*structurally invalid/);
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toEqual([]);
     expect(errors.some((m) => m.includes("array"))).toBe(true);
   });
 
-  test("aborts startup on duplicate hook names (review round 4 finding)", async () => {
-    // "First occurrence wins" would silently keep a stale definition when
-    // an operator intended the later entry to replace or tighten it.
+  test("keeps first occurrence on duplicate hook names and warns (issue #1781 availability)", async () => {
+    // Duplicate names warn but do not abort startup. Operators who want a
+    // failing duplicate to be fatal mark the entry `failClosed: true`.
     writeHooksJson(
       JSON.stringify([
-        { kind: "command", name: "deny", cmd: ["/bin/true"] },
-        { kind: "command", name: "deny", cmd: ["/bin/strict"] },
+        { kind: "command", name: "audit", cmd: ["/bin/true"] },
+        { kind: "command", name: "audit", cmd: ["/bin/strict"] },
       ]),
     );
     const errors: string[] = [];
-    await expect(
-      loadUserRegisteredHooks({
-        filterAgentHooks: false,
-        onLoadError: (m) => errors.push(m),
-      }),
-    ).rejects.toThrow(/Refusing to start.*duplicate hook name/);
-    expect(errors.some((m) => m.includes('"deny"'))).toBe(true);
+    const hooks = await loadUserRegisteredHooks({
+      filterAgentHooks: false,
+      onLoadError: (m) => errors.push(m),
+    });
+    expect(hooks).toHaveLength(1);
+    expect(errors.some((m) => m.includes("Duplicate"))).toBe(true);
   });
 
   test("aborts startup when a failClosed entry fails to load", async () => {
