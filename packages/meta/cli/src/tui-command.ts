@@ -2222,13 +2222,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             break;
           }
-          rewindBoundaryActive = true;
-          clearedThisProcess = true;
-          postClearTurnCount = 0;
           // Unlike /clear, /new preserves the current transcript on disk
           // so it remains resumable via /sessions. After the reset barrier
           // resolves, rotate tuiSessionId and rebind the engine so new
           // turns write to a separate JSONL file.
+          //
+          // Cleared-session bookkeeping (rewindBoundaryActive, clearedThisProcess,
+          // postClearTurnCount) is deferred to the success path so a failed
+          // /new doesn't suppress the shutdown resume hint for the old session.
           void (async (): Promise<void> => {
             resetConversation({ truncatePersistedTranscript: false });
             const resetOk = await resetBarrier;
@@ -2263,7 +2264,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 return;
               }
             }
-            // Rebind succeeded — safe to update host-side session ids.
+            // Rebind succeeded — safe to update host-side session ids
+            // and mark the session boundary.
+            rewindBoundaryActive = true;
+            clearedThisProcess = true;
+            postClearTurnCount = 0;
             // Clear stale failure latches: a prior /clear failure on
             // the OLD session must not poison the fresh session.
             clearPersistFailed = false;
@@ -2508,8 +2513,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
-          // Clear stale failure latches from the prior session.
-          clearPersistFailed = false;
+          // Only clear lastResetFailed — the picker reset succeeded.
+          // Do NOT clear clearPersistFailed: if a prior /clear failed
+          // on a different session, that session's JSONL is still
+          // contaminated and the latch must stay sticky so switching
+          // back to it blocks writes (pre-existing safety contract).
           lastResetFailed = false;
           costBridge.setSession(targetSid as string, modelName, provider);
           store.dispatch({
