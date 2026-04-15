@@ -380,32 +380,40 @@ describe("bin.ts", () => {
       expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
     });
 
-    // Review round 6: string option values must not be misclassified
-    // as global help/version. node:util's option-arity awareness
-    // guarantees this once the parsers own --help/--version themselves.
-    test("`koi start --prompt --help` treats --help as --prompt value, NOT a help request", async () => {
-      // If this ran as a help short-circuit, stdout would contain the
-      // start help banner. Instead, the prompt value is "--help" and
-      // start either runs (exits 2 on no API key) or errors out —
-      // never exits 0 with the help banner.
+    // Safety-first: a bare `--help`/`--version` token consumed as the
+    // value of a preceding string option (e.g. a missing-value typo)
+    // must short-circuit to help/version output, not run the command.
+    // Running `koi start` with prompt="--help" would trigger model/tool
+    // execution — the kind of side effect a typo should never produce.
+    // Users who genuinely want a literal `--help` operand can pass it
+    // inline with `=` (e.g. `--prompt=--help`) or after `--`.
+    test("`koi start --prompt --help` short-circuits to help (safety over option arity)", async () => {
       const r = await runBin(["start", "--prompt", "--help"], { OPENROUTER_API_KEY: "" });
-      expect(r.stdout).not.toContain("koi start —");
-      // Accept any non-help exit: real start invocation fails because
-      // no @koi/core built in this worktree (exit 2 module-load error).
-      expect(r.exitCode).not.toBe(0);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
     });
 
-    test("`koi start --prompt --version` treats --version as --prompt value", async () => {
+    test("`koi start --prompt --version` short-circuits to version", async () => {
       const r = await runBin(["start", "--prompt", "--version"], { OPENROUTER_API_KEY: "" });
-      // Must NOT exit 0 with just "0.0.0" — that would be the
-      // version short-circuit swallowing the literal prompt value.
-      const trimmed = r.stdout.trim();
-      expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
     });
 
-    test("`koi serve --manifest --help` treats --help as --manifest value", async () => {
+    test("`koi serve --manifest --help` short-circuits to help", async () => {
       const r = await runBin(["serve", "--manifest", "--help"]);
-      expect(r.stdout).not.toContain("koi serve —");
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi serve —");
+    });
+
+    // Inline `=` form is the documented opt-out: it explicitly binds
+    // the value to the preceding option, so a literal `--help` operand
+    // stays literal and the command runs normally.
+    test("`koi start --prompt=--help` keeps --help as literal prompt value", async () => {
+      const r = await runBin(["start", "--prompt=--help"], { OPENROUTER_API_KEY: "" });
+      // Must NOT short-circuit to the help banner — the inline `=`
+      // form explicitly binds the operand.
+      expect(r.stdout).not.toContain("koi start —");
+      expect(r.exitCode).not.toBe(0);
     });
 
     // Review round 7: --help and --version must still win over malformed

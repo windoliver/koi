@@ -83,13 +83,38 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
     readonly tokens: ReadonlyArray<ParseToken>;
   };
 
-  // --help and --version are an escape hatch: when either is parsed as a
-  // real option (not consumed as a preceding string-option value), skip
-  // unknown-flag rejection so malformed tails like
+  // --help and --version are a safety-first escape hatch. If a bare
+  // --help/-h/--version/-V token was consumed as the value of a
+  // preceding string option (e.g. `koi start --prompt --help`), that
+  // usually means the user fat-fingered a missing value — not that
+  // they actually want a literal `--help` prompt. Running the command
+  // in that state can trigger side effects (model calls, filesystem
+  // writes), so we short-circuit: the parsed boolean is forced on,
+  // and the consumed option value is cleared. Users who genuinely
+  // need a flag-shaped string operand can pass it inline
+  // (`--prompt=--help`) or after `--` (`koi start -- --prompt --help`).
+  const HELP_TOKENS: ReadonlySet<string> = new Set(["--help", "-h"]);
+  const VERSION_TOKENS: ReadonlySet<string> = new Set(["--version", "-V"]);
+  const values = parseResult.values as Record<string, string | boolean | string[] | undefined>;
+  for (const token of parseResult.tokens) {
+    if (token.kind !== "option") continue;
+    if (token.inlineValue !== false) continue;
+    const v = token.value;
+    if (typeof v !== "string") continue;
+    if (HELP_TOKENS.has(v)) {
+      values.help = true;
+      values[token.name] = undefined;
+    } else if (VERSION_TOKENS.has(v)) {
+      values.version = true;
+      values[token.name] = undefined;
+    }
+  }
+
+  // --help and --version are an escape hatch: when either is set,
+  // skip unknown-flag rejection so malformed tails like
   // `koi start --help --typo` still reach the help/version exit path
   // rather than erroring out with "unknown flag --typo".
-  const helpOrVersionRequested =
-    parseResult.values.help === true || parseResult.values.version === true;
+  const helpOrVersionRequested = values.help === true || values.version === true;
 
   if (!helpOrVersionRequested) {
     const knownFlags = new Set(Object.keys(config.options));
