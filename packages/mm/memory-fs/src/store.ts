@@ -321,6 +321,9 @@ async function upsertRecord(
   input: MemoryRecordInput,
   force: boolean,
 ): Promise<UpsertResult> {
+  // Note: validation already ran in the public `upsert()` method before
+  // getContext()/mkdir. This function is called inside the dir lock and
+  // must not re-validate (the lock was acquired after validation passed).
   const { dir, threshold } = ctx;
   const existing = await scanRecords(dir);
 
