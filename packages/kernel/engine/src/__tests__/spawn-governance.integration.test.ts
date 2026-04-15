@@ -218,6 +218,78 @@ describe("spawn governance integration", () => {
     expect(errors.every((e) => e.includes("Max fan-out exceeded"))).toBe(true);
   });
 
+  test("extra modelCall invocations within one turn do NOT refresh fan-out budget (#1793)", async () => {
+    // Adversarial-review finding on #1793: earlier fix reset the counter on
+    // every wrapModelCall hook. Cooperating adapters can invoke
+    // callHandlers.modelCall multiple times per turn (stop-gate retries,
+    // planner→executor loops, semantic retries), which would refresh the
+    // spawn budget inside a single turn and reintroduce runaway child
+    // creation. The guard must key the budget off turnId, not model calls.
+    const results: string[] = [];
+    const adapter: EngineAdapter = {
+      engineId: "nested-model-call-spawn-test",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      terminals: {
+        modelCall: async () => ({ content: "ok", model: "test" }),
+        toolCall: async () => ({ output: "spawned" }),
+      },
+      stream: (input: EngineInput) => ({
+        async *[Symbol.asyncIterator]() {
+          if (!input.callHandlers) {
+            yield { kind: "done" as const, output: doneOutput() };
+            return;
+          }
+          const handlers = input.callHandlers;
+          // Fire 3 spawn tool calls, a nested modelCall, then 3 more spawns —
+          // all inside a single adapter turn. With maxFanOut=5, one of the 6
+          // spawns must still be rejected (the nested modelCall must NOT
+          // refresh the per-turn budget).
+          for (let i = 0; i < 3; i++) {
+            try {
+              const res = await handlers.toolCall({
+                toolId: "forge_agent",
+                input: { task: `pre-${i}` },
+              });
+              results.push(`ok:${String(res.output)}`);
+            } catch (e: unknown) {
+              results.push(`error:${(e as Error).message}`);
+            }
+          }
+          // Nested modelCall inside the same turn — must not reset the budget.
+          await handlers.modelCall({ messages: [] });
+          for (let i = 0; i < 3; i++) {
+            try {
+              const res = await handlers.toolCall({
+                toolId: "forge_agent",
+                input: { task: `post-${i}` },
+              });
+              results.push(`ok:${String(res.output)}`);
+            } catch (e: unknown) {
+              results.push(`error:${(e as Error).message}`);
+            }
+          }
+          yield { kind: "done" as const, output: doneOutput() };
+        },
+      }),
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter,
+      spawn: { maxFanOut: 5 },
+      loopDetection: false,
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "test" }));
+
+    const successes = results.filter((r) => r.startsWith("ok:"));
+    const errors = results.filter((r) => r.startsWith("error:"));
+
+    expect(successes.length).toBe(5);
+    expect(errors.length).toBe(1);
+    expect(errors[0]).toContain("Max fan-out exceeded");
+  });
+
   test("enforces fan-out on sequential spawn batch within one turn (#1793)", async () => {
     // Regression for #1793: real engines await each tool call in a batch
     // sequentially (see turn-runner.ts). An in-flight concurrent counter

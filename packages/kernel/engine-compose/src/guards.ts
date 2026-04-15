@@ -16,6 +16,7 @@ import type {
   ModelRequest,
   ModelResponse,
   TurnContext,
+  TurnId,
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
@@ -777,21 +778,31 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
-  // let justified: mutable per-model-turn spawn counter.
-  // Counts successful spawn tool calls issued in the current model turn's
-  // tool_use batch. Reset before each new model call. Real engines (see
-  // @koi/query-engine turn-runner) execute batched tool calls sequentially
-  // via `for … await`, so a decrement-on-completion counter would never
-  // exceed 1 and the cap would be silently bypassed (#1793). Resetting on
-  // the model-turn boundary instead caps batch size — the natural semantic
-  // for "max fan-out per turn".
+  // let justified: mutable per-turn spawn counter, keyed by the turn currently
+  // holding the budget. Counts successful spawn tool calls issued during that
+  // turn. Real engines (see @koi/query-engine turn-runner) execute batched
+  // tool calls sequentially via `for … await`, so a decrement-on-completion
+  // counter would never exceed 1 and the cap would be silently bypassed
+  // (#1793). We key the counter off `TurnContext.turnId` — the hierarchical
+  // `${runId}:t${turnIndex}` identifier assigned by L1 per agent turn — so a
+  // cooperating adapter that invokes `callHandlers.modelCall` multiple times
+  // inside one turn shares a single budget across every nested model call.
   let spawnsThisTurn = 0;
+  // let justified: mutable last-seen turn id. Resetting when this changes is
+  // the true turn-boundary signal; model-call hooks alone are not, because
+  // adapters may call the model many times per turn (stop-gate retries,
+  // semantic retries, planner→executor loops).
+  let lastTurnId: TurnId | undefined;
 
   // let justified: mutable flag to fire fan-out warning at most once per session
   let firedFanOutWarning = false;
 
-  function resetTurnCounter(): void {
-    spawnsThisTurn = 0;
+  /** Reset the per-turn counter iff we've crossed into a new turn. */
+  function syncTurnBoundary(ctx: TurnContext): void {
+    if (ctx.turnId !== lastTurnId) {
+      lastTurnId = ctx.turnId;
+      spawnsThisTurn = 0;
+    }
   }
 
   return {
@@ -801,23 +812,17 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
     onSessionStart: async () => {
       spawnsThisTurn = 0;
+      lastTurnId = undefined;
       firedFanOutWarning = false;
     },
 
-    // Reset the per-turn counter at each new model call. A fresh model turn
-    // gets a fresh spawn budget; sequential batches are each capped at
-    // maxFanOut. This is the enforcement point for #1793.
-    wrapModelCall: async (_ctx, request, next) => {
-      resetTurnCounter();
-      return next(request);
-    },
+    wrapToolCall: async (ctx, request, next) => {
+      // Enforce the per-turn reset at the true turn boundary — a change in
+      // TurnContext.turnId. This is the fix for #1793: a fresh tool-batch
+      // in a new turn gets a fresh budget, but multiple model calls inside
+      // one turn share a single budget.
+      syncTurnBoundary(ctx);
 
-    wrapModelStream: (_ctx, request, next) => {
-      resetTurnCounter();
-      return next(request);
-    },
-
-    wrapToolCall: async (_ctx, request, next) => {
       // 0. Check depth-based tool restrictions (applies to ALL tools)
       if (deniedTools?.has(request.toolId)) {
         throw KoiRuntimeError.from(

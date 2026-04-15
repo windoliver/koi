@@ -939,28 +939,37 @@ describe("createSpawnGuard", () => {
     expect(next).toHaveBeenCalledTimes(2);
   });
 
-  test("fan-out counter resets at each new model turn", async () => {
-    // Same sequential batch, but with an intervening model call resetting
-    // the per-turn budget. The parent can spawn many children total across
-    // its lifetime — just not more than maxFanOut in any single batch.
+  test("fan-out counter resets at each new turn (distinct turnId)", async () => {
+    // Same sequential batch, but tool calls arrive under a new TurnContext
+    // (different turnId). The parent can spawn many children total across
+    // its lifetime — just not more than maxFanOut in any single turn.
     const guard = createSpawnGuard({ policy: { maxFanOut: 2 }, agentDepth: 0 });
     const toolWrap = getToolWrap(guard);
-    const modelWrap = getModelWrap(guard);
     const next: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
-    const modelNext: ModelNext = mock(() => Promise.resolve(mockModelResponse()));
-    const ctx = mockTurnContext();
+    const rid = runId("r1");
+    const ctxTurn0: TurnContext = { ...mockTurnContext(), turnIndex: 0, turnId: turnId(rid, 0) };
+    const ctxTurn1: TurnContext = { ...mockTurnContext(), turnIndex: 1, turnId: turnId(rid, 1) };
 
-    // Turn 1: exhaust the budget.
-    await modelWrap(ctx, mockModelRequest(), modelNext);
-    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
-    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+    // Turn 0: exhaust the budget.
+    await toolWrap(ctxTurn0, mockToolRequest("forge_agent"), next);
+    await toolWrap(ctxTurn0, mockToolRequest("forge_agent"), next);
 
-    // Turn 2: new model call resets the counter — two more spawns succeed.
-    await modelWrap(ctx, mockModelRequest(), modelNext);
-    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
-    await toolWrap(ctx, mockToolRequest("forge_agent"), next);
+    // Turn 1: new turn — fresh budget.
+    await toolWrap(ctxTurn1, mockToolRequest("forge_agent"), next);
+    await toolWrap(ctxTurn1, mockToolRequest("forge_agent"), next);
 
     expect(next).toHaveBeenCalledTimes(4);
+  });
+
+  test("spawn guard does NOT install model hooks (budget is keyed off turnId, not model calls)", () => {
+    // Adversarial-review: early revisions reset the counter inside
+    // wrapModelCall/wrapModelStream, which lets a cooperating adapter call
+    // the model multiple times within one turn to refresh the spawn budget.
+    // The counter must be keyed off TurnContext.turnId instead, and the
+    // guard must not hook model calls at all for this enforcement.
+    const guard = createSpawnGuard({ policy: { maxFanOut: 2 }, agentDepth: 0 });
+    expect(guard.wrapModelCall).toBeUndefined();
+    expect(guard.wrapModelStream).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
