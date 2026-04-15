@@ -57,6 +57,22 @@ export interface SpawnToolProviderConfig {
    */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
   /**
+   * Optional async factory invoked once per spawned child to
+   * produce fresh middleware instances. Used by hosts that
+   * resolve manifest-declared middleware so each child gets its
+   * own per-session state (audit queue, lifecycle hooks) instead
+   * of sharing the parent's mutable middleware instances.
+   *
+   * The resolved middleware is appended to `inheritedMiddleware`
+   * before `systemPrompt` is injected in the child chain.
+   */
+  readonly perChildMiddlewareFactory?:
+    | ((childCtx: {
+        readonly parentSessionId: string;
+        readonly parentAgentId: string;
+      }) => Promise<readonly KoiMiddleware[]>)
+    | undefined;
+  /**
    * ReportStore for on_demand delivery. Required when resolved agent manifests
    * use `delivery.kind === "on_demand"`. Without it the spawn function will
    * hard-fail on_demand manifests via the VALIDATION error in createAgentSpawnFn.
@@ -305,6 +321,9 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         adapter: config.adapter,
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
+        ...(config.perChildMiddlewareFactory !== undefined
+          ? { perChildMiddlewareFactory: config.perChildMiddlewareFactory }
+          : {}),
         ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
         ...(config.allowDynamicAgents === true ? { allowDynamicAgents: true } : {}),
         spawnProviderFactory: () => createSpawnToolProvider(config),

@@ -322,35 +322,49 @@ zone-B adapter unchanged.
 
 ---
 
-## Known limitations (this release)
+## Spawn + manifest middleware: per-child re-resolution
 
-Zone B ships with one tracked gap that operators must understand
-before enabling manifest middleware in production:
+Delegated child agents inherit the parent's security baseline
+(`permissions`, `exfiltration-guard`, `hooks`, optional
+`system-prompt`) statically via
+`buildInheritedMiddlewareForChildren`. For manifest-declared
+middleware, the runtime factory stashes a per-child factory
+(`LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory`) on the
+late-phase host bag. The spawn preset stack reads it and passes it
+to `createSpawnToolProvider`, which forwards it to
+`createAgentSpawnFn`.
 
-### Spawn is incompatible with manifest middleware
+On each spawn, the engine calls the factory with the parent's
+session id and agent id. The factory re-runs
+`resolveManifestMiddleware` with a child-scoped context, producing
+fresh middleware instances for that child:
 
-Delegated child agents cannot inherit manifest-declared middleware
-instances safely: sharing a parent's audit queue or signing chain
-across runtimes would interleave records and corrupt the trail.
-Per-child re-resolution requires engine-level changes and is
-tracked as a follow-up.
+- Each child gets its own audit queue, its own hash chain, and its
+  own session lifecycle hooks — no state is shared across the
+  delegation boundary.
+- The child's sessionId is prefixed (`parent/child:<agentId>`) so
+  audit records are distinguishable from the parent's trail.
+- Per-child cleanup callbacks (e.g. `sink.close()`) are registered
+  on the same shutdown-hook array as the parent's and fire in
+  reverse order on `runtime.dispose()`, so child sinks close
+  before parent sinks.
 
-The runtime factory fails closed when manifest middleware is
-combined with the spawn preset stack. `koi tui` auto-filters spawn
-out of the default stack set (with a stderr warning) when manifest
-middleware is present AND the user did not pass an explicit
-`stacks:` list, to keep the default path usable. The net effect:
+Absent manifest middleware (empty `manifest.middleware`), the
+per-child factory is undefined and children behave exactly as
+before.
 
-- TUI with manifest middleware: spawn is auto-disabled, task/
-  background-process tools are unavailable, warning logged.
-- `koi start` with manifest middleware: already excludes spawn by
-  default.
-- Programmatic `createKoiRuntime` callers get a hard throw if they
-  set `manifestMiddleware` and leave spawn in `stacks`.
+---
 
-Hosts that need both sub-agent spawning and manifest-enforced
-policy across the delegation boundary must wait for per-child
-re-resolution.
+## Audit poison-on-failure
+
+Failed audit writes are a material integrity gap: for a security
+feature, silent record loss is worse than a loud shutdown failure.
+The manifest audit factory wires an `onError` callback that counts
+failures and stashes the first error. On `runtime.dispose()`, the
+registered shutdown hook closes the sink and then throws an error
+reporting the failure count and cause — the dispose path aggregates
+it into an `AggregateError` surfaced to the host. Operators cannot
+mistake a degraded trail for a complete one.
 
 ---
 

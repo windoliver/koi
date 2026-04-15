@@ -692,29 +692,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // capability).
   const spawnStackActive = enabledStackIds === undefined || enabledStackIds.has("spawn");
 
-  // Fail-closed: reject manifest.middleware + spawn combinations
-  // BEFORE any stack activation runs. The check counts enabled
-  // entries on the raw config without invoking any factory, so
-  // nothing allocates resources on the rejection path. Hoisting it
-  // above `activateStacks(..., { phase: "early" })` means a
-  // rejected config cannot create ~/.koi/snapshots SQLite state,
-  // load MCP setup, write trajectory files, or mutate disk in any
-  // other way before the error surfaces. Per-child re-resolution
-  // of manifest middleware (needed to legitimately combine zone B
-  // with spawn) is a tracked follow-up.
-  const earlyEnabledManifestMiddlewareCount = (config.manifestMiddleware ?? []).reduce(
-    (count, entry) => (entry.enabled === false ? count : count + 1),
-    0,
-  );
-  if (earlyEnabledManifestMiddlewareCount > 0 && spawnStackActive) {
-    throw new Error(
-      "koi-runtime: manifest zone-B middleware cannot be combined with the spawn preset stack in this release. " +
-        `Parent runtime has ${earlyEnabledManifestMiddlewareCount} manifest middleware entries; if children were allowed to spawn without them, ` +
-        "delegated work would silently escape manifest-enforced policy (audit, retry, etc.). " +
-        "Either remove manifest.middleware entries, or disable the spawn stack via manifest.stacks. " +
-        "Per-child re-resolution of manifest middleware is a tracked follow-up.",
-    );
-  }
+  // Zone B + spawn used to be a fail-closed combination because
+  // children would otherwise have shared the parent's mutable
+  // middleware instances (audit queues, hash chains, session
+  // lifecycle state). The spawn preset stack now accepts a
+  // `perChildMiddlewareFactory` that re-resolves manifest
+  // middleware fresh per child, so children get their own
+  // per-session state without escaping manifest-enforced policy.
+  // The factory itself is built and stashed below, after the
+  // manifest registry is constructed.
 
   // `bash_background` depends on the task-board surface for job
   // status / output inspection. If the caller requested
@@ -1132,11 +1118,50 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       hook: hookMw,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
     });
+    // Build the per-child manifest-middleware factory. Each call
+    // re-runs `resolveManifestMiddleware` with a fresh context so
+    // the child gets its own middleware instances (own audit
+    // queue, own lifecycle hooks) rather than sharing the parent's
+    // mutable state. The child context's sessionId is derived from
+    // the spawn ctx so records can be distinguished from the
+    // parent's trail. Cleanup callbacks registered during per-
+    // child resolution are collected into the same
+    // manifestMiddlewareShutdownHooks array as the parent's —
+    // runtime.dispose() fires all of them in reverse order,
+    // closing per-child sinks before the parent's.
+    const buildPerChildManifestMiddlewareFactory = ():
+      | ((childCtx: {
+          readonly parentSessionId: string;
+          readonly parentAgentId: string;
+        }) => Promise<readonly KoiMiddleware[]>)
+      | undefined => {
+      if ((config.manifestMiddleware ?? []).length === 0) {
+        return undefined;
+      }
+      return async (childCtx) => {
+        return resolveManifestMiddleware(config.manifestMiddleware, manifestMiddlewareRegistry, {
+          sessionId: `${childCtx.parentSessionId}/child:${childCtx.parentAgentId}`,
+          hostId,
+          workingDirectory: zoneBWorkingDirectory,
+          stackExports: earlyContribution.exports,
+          registerShutdown: (fn) => {
+            manifestMiddlewareShutdownHooks.push(fn);
+          },
+        });
+      };
+    };
+    const perChildManifestMiddlewareFactory = buildPerChildManifestMiddlewareFactory();
     const lateContext: import("./preset-stacks.js").StackActivationContext = {
       ...earlyContext,
       host: {
         ...earlyContextHost,
         [LATE_PHASE_HOST_KEYS.inheritedMiddleware]: inheritedMiddlewareForChildren,
+        ...(perChildManifestMiddlewareFactory !== undefined
+          ? {
+              [LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory]:
+                perChildManifestMiddlewareFactory,
+            }
+          : {}),
       },
     };
     const lateContribution = await activateStacks(lateContext, {

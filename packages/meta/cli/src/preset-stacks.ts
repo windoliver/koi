@@ -200,6 +200,21 @@ export interface PresetStack {
 export const LATE_PHASE_HOST_KEYS = {
   /** The already-composed inherited middleware for spawn child agents. */
   inheritedMiddleware: "inheritedMiddleware",
+  /**
+   * Async callback that the spawn preset stack invokes once per
+   * spawned child to get a fresh set of middleware instances.
+   * Used by the runtime factory to re-resolve manifest-declared
+   * middleware per child so each child gets its own per-session
+   * state (audit queue + hash chain + lifecycle hooks) rather
+   * than sharing the parent's mutable middleware instances.
+   *
+   * Shape:
+   *   (childCtx: { parentSessionId, parentAgentId }) => Promise<KoiMiddleware[]>
+   *
+   * When absent, children inherit only the static security +
+   * system-prompt layers from `inheritedMiddleware`.
+   */
+  perChildManifestMiddlewareFactory: "perChildManifestMiddlewareFactory",
 } as const;
 
 /**

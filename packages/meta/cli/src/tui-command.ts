@@ -801,31 +801,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         : undefined;
   }
 
-  // If the manifest declares ENABLED zone-B middleware AND the user
-  // did NOT pass an explicit `stacks:` list, auto-disable the spawn
-  // preset stack. The runtime factory fails closed only on enabled
-  // entries, so we must use the same predicate here — otherwise a
-  // manifest that keeps a disabled middleware stanza (e.g. an
-  // experimental entry with `enabled: false`) would still lose
-  // spawn for the whole session, a capability regression that is
-  // hard to diagnose because no zone-B middleware would actually
-  // run. Auto-disabling keeps the TUI usable while surfacing the
-  // trade-off via a warning only when it is actually needed.
-  const enabledManifestMiddlewareCount =
-    manifestMiddleware?.filter((entry) => entry.enabled !== false).length ?? 0;
-  if (enabledManifestMiddlewareCount > 0 && manifestStacks === undefined) {
-    const { DEFAULT_STACKS } = await import("./preset-stacks.js");
-    manifestStacks = DEFAULT_STACKS.filter((stack) => stack.id !== "spawn").map(
-      (stack) => stack.id,
-    );
-    process.stderr.write(
-      `koi tui: manifest.middleware has ${enabledManifestMiddlewareCount} enabled entries; ` +
-        "auto-disabling the spawn preset stack for this session. " +
-        "Delegated child agents cannot inherit manifest middleware in this release, " +
-        "so spawn is unsafe to combine with manifest.middleware. " +
-        "Set stacks: explicitly in the manifest to silence this warning.\n",
-    );
-  }
+  // Previously this block auto-disabled the spawn preset stack
+  // whenever manifest.middleware was non-empty, because children
+  // inheriting the parent's mutable middleware instances would
+  // corrupt per-session state. The spawn preset stack now reads
+  // a per-child factory from the runtime factory's host bag
+  // (`LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory`)
+  // and re-resolves manifest middleware fresh per spawn, so
+  // children get their own audit queue + lifecycle hooks without
+  // sharing parent state. The auto-disable is no longer needed.
 
   // ---------------------------------------------------------------------------
   // 1. API configuration

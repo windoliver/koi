@@ -772,13 +772,32 @@ function createAuditManifestEntry(
     filePath: safeFilePath,
     ...(options.flushIntervalMs !== undefined ? { flushIntervalMs: options.flushIntervalMs } : {}),
   });
-  // Register the sink's close() with the runtime's shutdown chain
-  // so the file writer and flush timer are released on dispose.
-  // Without this, every runtime using manifest audit leaks its
-  // writer and timer until process exit.
+
+  // Poison-on-failure: audit writes that fail are a material
+  // integrity gap. The audit queue invokes `onError` whenever
+  // `sink.log()` rejects; we count the failures and stash the
+  // first error, then raise them on the shutdown hook via the
+  // dispose path. For a security/audit feature, silent record
+  // loss is worse than a loud shutdown failure — hosts cannot
+  // mistake a degraded trail for a complete one.
+  // `let` is justified — these are explicit mutable counters.
+  let auditWriteFailures = 0;
+  let firstAuditError: unknown;
+
   ctx.registerShutdown(async () => {
+    // Close the sink first so any in-flight writes drain before
+    // we inspect the counters.
     await sink.close();
+    if (auditWriteFailures > 0) {
+      throw new Error(
+        `manifest @koi/middleware-audit: ${auditWriteFailures} audit write(s) failed during the session. ` +
+          "The NDJSON trail for this run is incomplete and cannot be treated as authoritative. " +
+          `First error: ${firstAuditError instanceof Error ? firstAuditError.message : String(firstAuditError)}`,
+        { cause: firstAuditError },
+      );
+    }
   });
+
   // Built-in audit is registered as `trusted` in the built-in
   // registry, which means the resolver skips the zone-B adapter
   // and returns this middleware verbatim. The audit middleware
@@ -796,6 +815,12 @@ function createAuditManifestEntry(
   return createAuditMiddleware({
     sink,
     redactRequestBodies: true,
+    onError: (err: unknown) => {
+      auditWriteFailures += 1;
+      if (firstAuditError === undefined) {
+        firstAuditError = err;
+      }
+    },
     // signing deliberately omitted — see parseAuditOptions for why.
   });
 }

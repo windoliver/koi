@@ -95,6 +95,22 @@ export const spawnStack: PresetStack = {
       (ctx.host?.[LATE_PHASE_HOST_KEYS.inheritedMiddleware] as
         | readonly KoiMiddleware[]
         | undefined) ?? [];
+    // Host-owned factory that re-resolves manifest-declared
+    // middleware fresh per child. Threaded from the runtime
+    // factory when the runtime has zone-B middleware; children
+    // get their own per-session state (audit queue + hash chain
+    // + lifecycle hooks) rather than sharing the parent's
+    // mutable instances. Absent when the runtime has no zone-B
+    // middleware, in which case children just inherit the static
+    // security + system-prompt layers.
+    const perChildManifestMiddlewareFactory = ctx.host?.[
+      LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory
+    ] as
+      | ((childCtx: {
+          readonly parentSessionId: string;
+          readonly parentAgentId: string;
+        }) => Promise<readonly KoiMiddleware[]>)
+      | undefined;
     const onSpawnEvent = ctx.host?.[SPAWN_EVENT_CALLBACK_HOST_KEY] as
       | SpawnEventCallback
       | undefined;
@@ -124,6 +140,9 @@ export const spawnStack: PresetStack = {
         },
       },
       inheritedMiddleware,
+      ...(perChildManifestMiddlewareFactory !== undefined
+        ? { perChildMiddlewareFactory: perChildManifestMiddlewareFactory }
+        : {}),
       allowDynamicAgents: true,
       ...(onSpawnEvent !== undefined ? { onSpawnEvent } : {}),
     });

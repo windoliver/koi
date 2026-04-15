@@ -64,6 +64,23 @@ export interface CreateAgentSpawnFnOptions {
   /** Inherited middleware (observe-phase: tracing, telemetry). */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
   /**
+   * Optional async factory invoked once per spawned child to
+   * produce fresh middleware instances for that child. Used by
+   * hosts that resolve manifest-declared middleware so each child
+   * gets its own middleware state (its own audit queue, its own
+   * lifecycle hooks) rather than sharing mutable parent state.
+   *
+   * The resulting middleware is appended to the inherited chain
+   * before `systemPrompt` is injected. Return an empty array when
+   * there is nothing to add.
+   */
+  readonly perChildMiddlewareFactory?:
+    | ((childCtx: {
+        readonly parentSessionId: string;
+        readonly parentAgentId: string;
+      }) => Promise<readonly KoiMiddleware[]>)
+    | undefined;
+  /**
    * ReportStore for on_demand delivery. Required when spawning agents with
    * `delivery.kind === "on_demand"` — fail-fast if absent to prevent silent drops.
    */
@@ -105,8 +122,15 @@ export interface CreateAgentSpawnFnOptions {
  * 6. Wrap in AgentExecutionContext for identity isolation
  */
 export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn {
-  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware, allowDynamicAgents } =
-    options;
+  const {
+    resolver,
+    base,
+    adapter,
+    manifestTemplate,
+    inheritedMiddleware,
+    allowDynamicAgents,
+    perChildMiddlewareFactory,
+  } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
     // Issue 16: fast-path for already-expired deadlines. If the caller set an absolute
@@ -236,8 +260,15 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
     }
 
-    // 4. Build middleware: inherited + system prompt injection
+    // 4. Build middleware: inherited + per-child freshly-resolved + system prompt injection
     const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
+    if (perChildMiddlewareFactory !== undefined) {
+      const perChildMiddleware = await perChildMiddlewareFactory({
+        parentSessionId: base.parentAgent.manifest.name,
+        parentAgentId: base.parentAgent.pid.id,
+      });
+      childMiddleware.push(...perChildMiddleware);
+    }
     if (systemPrompt !== undefined) {
       childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
     }

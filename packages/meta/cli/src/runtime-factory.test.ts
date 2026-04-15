@@ -418,21 +418,23 @@ describe("createKoiRuntime — zone B manifest middleware", () => {
     // present when no manifest middleware is provided.
   });
 
-  test("fails closed when manifest middleware is combined with the spawn stack", async () => {
-    // Codex round-4 finding #1: silently dropping zone B on
-    // delegated work is a policy hole. The factory now refuses to
-    // assemble a runtime that combines zone B with spawn until
-    // per-child re-resolution lands.
+  test("manifest middleware + spawn stack now assembles (per-child re-resolution wired)", async () => {
+    // Earlier revisions fail-closed on this combination because
+    // children would have inherited the parent's mutable middleware
+    // instances. The runtime factory now stashes a per-child
+    // re-resolution factory on the late-phase host bag, which the
+    // spawn preset stack passes to createSpawnToolProvider so each
+    // spawned child gets freshly-resolved middleware. Verify the
+    // combination assembles without the old throw.
     const registry = new MiddlewareRegistry();
     registry.register("test/audit-like", () => stubManifestMiddleware("audit-like"));
-    await expect(
-      createKoiRuntime({
-        ...makeConfig(),
-        // No `stacks` override → spawn is active by default.
-        middlewareRegistry: registry,
-        manifestMiddleware: [{ name: "test/audit-like", options: undefined, enabled: true }],
-      }),
-    ).rejects.toThrow(/cannot be combined with the spawn preset stack/);
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      // No `stacks` override → spawn is active by default.
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/audit-like", options: undefined, enabled: true }],
+    });
+    expect(runtimeHandle.runtime).toBeDefined();
   });
 
   test("manifest middleware with spawn explicitly disabled assembles cleanly", async () => {
