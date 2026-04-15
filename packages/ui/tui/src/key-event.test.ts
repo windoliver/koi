@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { KeyEvent } from "@opentui/core";
-import { isBackspace, isCtrlC, isCtrlJ, isCtrlP, isEnter, isEscape, isTab } from "./key-event.js";
+import {
+  isBackspace,
+  isCtrlC,
+  isCtrlJ,
+  isCtrlN,
+  isCtrlP,
+  isEnter,
+  isEscape,
+  isTab,
+} from "./key-event.js";
 
 // ---------------------------------------------------------------------------
 // Mock factory — mirrors input-keys.test.ts pattern
@@ -90,6 +99,24 @@ describe("isCtrlP", () => {
 
   test("false for ctrl+c", () => {
     expect(isCtrlP(key("c", { ctrl: true }))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCtrlN
+// ---------------------------------------------------------------------------
+
+describe("isCtrlN", () => {
+  test("true for ctrl+n", () => {
+    expect(isCtrlN(key("n", { ctrl: true }))).toBe(true);
+  });
+
+  test("false for plain n", () => {
+    expect(isCtrlN(key("n"))).toBe(false);
+  });
+
+  test("false for ctrl+p", () => {
+    expect(isCtrlN(key("p", { ctrl: true }))).toBe(false);
   });
 });
 

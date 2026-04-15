@@ -1355,13 +1355,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   //
   // `truncatePersistedTranscript` controls whether the on-disk
   // `<tuiSessionId>.jsonl` is cleared alongside the in-memory
-  // state. agent:clear / session:new pass `true` because the
-  // durable transcript is exactly what the user wants erased.
-  // Session switching must NOT pass `true` — the live JSONL
-  // belongs to the startup session id and must survive the switch,
-  // otherwise any work done before the pick is destroyed and the
-  // post-quit resume hint points at a file whose identity no
-  // longer matches that work.
+  // state. agent:clear passes `true` because the durable
+  // transcript is exactly what the user wants erased.
+  // session:new passes `false` — the old transcript is preserved
+  // so it remains resumable via /sessions; the caller rotates
+  // `tuiSessionId` after the reset so new turns write to a
+  // separate file. Session switching also passes `false` — the
+  // live JSONL belongs to the startup session id and must survive
+  // the switch.
   const resetConversation = (options: { readonly truncatePersistedTranscript: boolean }): void => {
     // Bump the reset generation BEFORE any other state changes
     // so older async reset IIFEs can detect that they've been
@@ -1423,7 +1424,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // history. Await the drain first, then truncate.
     const inflightRun = activeRunPromise;
     const shouldTruncate = options.truncatePersistedTranscript;
-    // A `/clear` / `/new` issued during the startup resume window
+    // A `/clear` issued during the startup resume window
     // (before createKoiRuntime has resolved) still has to honor
     // the privacy boundary. Clearing the prime array is synchronous
     // and safe regardless of runtime readiness.
@@ -2262,10 +2263,79 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             });
             break;
           }
-          rewindBoundaryActive = true;
-          clearedThisProcess = true;
-          postClearTurnCount = 0;
-          resetConversation({ truncatePersistedTranscript: true });
+          // Unlike /clear, /new preserves the current transcript on disk
+          // so it remains resumable via /sessions. After the reset barrier
+          // resolves, rotate tuiSessionId and rebind the engine so new
+          // turns write to a separate JSONL file.
+          //
+          // Cleared-session bookkeeping (rewindBoundaryActive, clearedThisProcess,
+          // postClearTurnCount) is deferred to the success path so a failed
+          // /new doesn't suppress the shutdown resume hint for the old session.
+          void (async (): Promise<void> => {
+            resetConversation({ truncatePersistedTranscript: false });
+            const resetOk = await resetBarrier;
+            if (!resetOk || lastResetFailed) {
+              store.dispatch({
+                kind: "add_error",
+                code: "NEW_SESSION_FAILED",
+                message:
+                  "New session failed: session reset did not complete. " +
+                  "Restart koi tui to recover.",
+              });
+              return;
+            }
+            // Rebind the engine BEFORE updating tuiSessionId so a
+            // rebind failure never leaves the host pointing at a UUID
+            // the runtime doesn't know about (fail-closed contract).
+            const newSid = sessionId(crypto.randomUUID());
+            if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(newSid as string);
+              } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the next turn can't
+                // append to the old session with stale context.
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "NEW_SESSION_FAILED",
+                  message: `New session failed: cannot rebind runtime: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
+            // Rebind succeeded — safe to update host-side session ids
+            // and mark the session boundary.
+            rewindBoundaryActive = true;
+            clearedThisProcess = true;
+            postClearTurnCount = 0;
+            // Clear stale failure latches: a prior /clear failure on
+            // the OLD session must not poison the fresh session.
+            clearPersistFailed = false;
+            lastResetFailed = false;
+            tuiSessionId = newSid;
+            viewedSessionId = newSid;
+            costBridge.setSession(newSid as string, modelName, provider);
+            store.dispatch({
+              kind: "set_session_info",
+              modelName,
+              provider,
+              sessionName: "",
+              sessionId: newSid,
+            });
+            // Refresh session list so the old session appears in /sessions.
+            void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+              store.dispatch({ kind: "set_session_list", sessions });
+            });
+          })();
+          break;
+        case "session:sessions":
+          // Refresh the session list every time the picker opens so
+          // sessions saved by a recent Ctrl+N appear immediately.
+          void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
+            store.dispatch({ kind: "set_session_list", sessions });
+          });
           break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
@@ -2444,12 +2514,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
 
-          // Step 3: hydrate memory + UI from the validated target.
-          // The picked session is loaded into the runtime's
-          // in-memory transcript (read-only preview mode); the JSONL
-          // is NOT copied on disk. To durably continue the picked
-          // session, quit and relaunch with `koi tui --resume <id>`.
+          // Step 3: rebind BEFORE hydrating transcript so a rebind
+          // failure never leaves stale messages in the runtime's
+          // in-memory transcript (fail-closed contract).
           if (runtimeHandle !== null) {
+            if (runtimeHandle.runtime.rebindSessionId !== undefined) {
+              try {
+                runtimeHandle.runtime.rebindSessionId(selectedId);
+              } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the blank post-reset
+                // runtime can't accept turns against the old session.
+                lastResetFailed = true;
+                store.dispatch({
+                  kind: "add_error",
+                  code: "SESSION_RESUME_ERROR",
+                  message: `Cannot resume session: rebind failed: ${
+                    rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
+                  }. Restart koi tui to recover.`,
+                });
+                return;
+              }
+            }
+            // Rebind succeeded — safe to hydrate transcript.
             for (const msg of resumeResult.value.messages) {
               runtimeHandle.transcript.push(msg);
             }
@@ -2458,25 +2544,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             kind: "load_history",
             messages: resumeResult.value.messages,
           });
-          // Lock the session into read-only picker mode. Subsequent
-          // submissions and `/rewind` are refused because the runtime
-          // still routes writes to the startup session id and the
-          // checkpoint chain still belongs to that session — allowing
-          // mutation would silently mix the picked conversation with
-          // the startup archive and let `/rewind` walk across the
-          // pick boundary. The user is pointed at
-          // `koi tui --resume <pickedId>` as the correct way to
-          // durably continue the picked session.
-          //
-          // Rotate the VIEWED session id so the status-bar chip,
-          // the post-quit resume hint, and every picker-mode
-          // guard all use the conversation on screen. The runtime
-          // routing key stays `tuiSessionId`. Because
-          // `isInPickerMode()` is derived from
-          // `viewedSessionId !== tuiSessionId`, the read-only
-          // guards auto-enable here AND auto-disable again the
-          // moment the user picks the startup session back.
+          // Fully switch to the selected session — update both
+          // tuiSessionId and viewedSessionId so isInPickerMode()
+          // returns false and the session is writable. New turns
+          // append to the selected session's JSONL file via the
+          // rebind above.
+          tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          rewindBoundaryActive = true;
+          clearedThisProcess = false;
+          postClearTurnCount = 0;
+          // Only clear lastResetFailed — the picker reset succeeded.
+          // Do NOT clear clearPersistFailed: if a prior /clear failed
+          // on a different session, that session's JSONL is still
+          // contaminated and the latch must stay sticky so switching
+          // back to it blocks writes (pre-existing safety contract).
+          lastResetFailed = false;
+          costBridge.setSession(targetSid as string, modelName, provider);
           store.dispatch({
             kind: "set_session_info",
             modelName,

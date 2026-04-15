@@ -120,7 +120,6 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     const parsed = query !== null ? parseSlashCommand(`/${query}`) : null;
     const args = parsed?.args ?? "";
 
-    process.stderr.write(`[slash-select] command=${command.name} args="${args}" hasOnSlashSelect=${props.onSlashSelect !== undefined}\n`);
     props.onSlashDetected(null);
     setClearTrigger((n: number) => n + 1);
     props.onSlashSelect?.(command, args);
