@@ -101,6 +101,22 @@ describe("handleGlobalKey — Ctrl+N", () => {
     expect(result).toBe(false);
     expect(cbs.onNewSession).not.toHaveBeenCalled();
   });
+
+  test("ignored when slash overlay is active (Ctrl+N navigates slash commands)", () => {
+    const state: TuiState = { ...createInitialState(), slashQuery: "ses" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("n", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onNewSession).not.toHaveBeenCalled();
+  });
+
+  test("ignored when @-mention overlay is active (Ctrl+N navigates file completions)", () => {
+    const state: TuiState = { ...createInitialState(), atQuery: "src/" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("n", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onNewSession).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

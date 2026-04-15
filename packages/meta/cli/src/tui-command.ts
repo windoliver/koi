@@ -2459,16 +2459,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             return;
           }
 
-          // Step 3: hydrate memory + UI from the validated target
-          // and rebind the runtime so the resumed session is fully
-          // writable — new turns append to its JSONL, not the
-          // startup session's.
+          // Step 3: rebind BEFORE hydrating transcript so a rebind
+          // failure never leaves stale messages in the runtime's
+          // in-memory transcript (fail-closed contract).
           if (runtimeHandle !== null) {
-            for (const msg of resumeResult.value.messages) {
-              runtimeHandle.transcript.push(msg);
-            }
-            // Rebind engine session so transcript middleware routes
-            // future writes to the selected session's JSONL file.
             if (runtimeHandle.runtime.rebindSessionId !== undefined) {
               try {
                 runtimeHandle.runtime.rebindSessionId(selectedId);
@@ -2482,6 +2476,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 });
                 return;
               }
+            }
+            // Rebind succeeded — safe to hydrate transcript.
+            for (const msg of resumeResult.value.messages) {
+              runtimeHandle.transcript.push(msg);
             }
           }
           store.dispatch({

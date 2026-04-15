@@ -59,9 +59,16 @@ export function handleGlobalKey(
     return true;
   }
 
-  // Ctrl+N — new session (only on conversation view with no modal open;
-  // select overlays and TrajectoryView use Ctrl+N as down-arrow locally)
-  if (isCtrlN(event) && state.modal === null && state.activeView === "conversation") {
+  // Ctrl+N — new session (only on conversation view with no modal and no
+  // inline overlay open; slash/@ overlays and TrajectoryView use Ctrl+N
+  // as down-arrow locally)
+  if (
+    isCtrlN(event) &&
+    state.modal === null &&
+    state.activeView === "conversation" &&
+    state.slashQuery === null &&
+    state.atQuery === null
+  ) {
     callbacks.onNewSession();
     return true;
   }
