@@ -62,7 +62,7 @@ function makeFailure(serverName: string): McpServerFailure {
 // ---------------------------------------------------------------------------
 
 describe("createCliAuthToolFactory", () => {
-  test("creates two tools per auth-needed server", () => {
+  test("creates authenticate tool for auth-needed server", () => {
     const provider = createMockAuthProvider();
     const connection = createMockConnection("jira");
     const servers = new Map<string, AuthServerEntry>([
@@ -73,9 +73,8 @@ describe("createCliAuthToolFactory", () => {
     const factory = createCliAuthToolFactory({ servers, rediscover });
     const tools = factory(makeFailure("jira"));
 
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(1);
     expect(tools[0]?.descriptor.name).toBe("jira__authenticate");
-    expect(tools[1]?.descriptor.name).toBe("jira__complete_authentication");
   });
 
   test("authenticate tool description includes server name and URL", () => {
@@ -169,30 +168,5 @@ describe("createCliAuthToolFactory", () => {
     // Auth succeeded but reconnect failed — should still report partial success
     expect(content.content[0]?.text).toContain("reconnection");
     expect(content.content[0]?.text).toContain("failed");
-  });
-
-  test("complete_authentication is stubbed with fallback message", async () => {
-    const provider = createMockAuthProvider();
-    const connection = createMockConnection("jira");
-    const servers = new Map<string, AuthServerEntry>([
-      ["jira", { provider, connection, url: "https://example.com/mcp" }],
-    ]);
-
-    const factory = createCliAuthToolFactory({ servers, rediscover: async () => [] });
-    const tools = factory(makeFailure("jira"));
-    expect(tools[1]).toBeDefined();
-    const completeTool = tools[1] as (typeof tools)[number];
-
-    expect(completeTool.descriptor.inputSchema).toHaveProperty("required");
-    const result = await completeTool.execute({
-      callback_url: "http://localhost:8912/callback?code=abc",
-    });
-    const content = result as {
-      readonly content: readonly { readonly type: string; readonly text: string }[];
-      readonly isError: boolean;
-    };
-
-    expect(content.isError).toBe(true);
-    expect(content.content[0]?.text).toContain("koi mcp auth jira");
   });
 });

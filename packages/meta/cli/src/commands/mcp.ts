@@ -262,13 +262,14 @@ interface LoadedConfig {
 
 async function loadConfigs(): Promise<LoadedConfig | undefined> {
   const cwd = process.cwd();
-  const paths = [resolve(cwd, ".mcp.json"), resolve(process.env.HOME ?? ".", ".koi", ".mcp.json")];
-
-  for (const p of paths) {
-    const result = await loadMcpJsonFile(p);
-    if (result.ok) {
-      return result.value;
-    }
+  // Only fall back to home config when the project file is truly absent,
+  // not when it exists but is invalid — same logic as shared-wiring.ts.
+  const projectResult = await loadMcpJsonFile(resolve(cwd, ".mcp.json"));
+  if (projectResult.ok) return projectResult.value;
+  const isAbsent = projectResult.error.code === "NOT_FOUND";
+  if (isAbsent) {
+    const homeResult = await loadMcpJsonFile(resolve(process.env.HOME ?? ".", ".koi", ".mcp.json"));
+    if (homeResult.ok) return homeResult.value;
   }
   return undefined;
 }

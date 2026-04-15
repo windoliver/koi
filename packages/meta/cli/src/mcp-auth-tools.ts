@@ -43,10 +43,7 @@ export function createCliAuthToolFactory(options: CliAuthToolFactoryOptions): Au
     const entry = servers.get(failure.serverName);
     if (entry === undefined) return [];
 
-    return [
-      createAuthenticateTool(failure.serverName, entry, rediscover),
-      createCompleteAuthTool(failure.serverName),
-    ];
+    return [createAuthenticateTool(failure.serverName, entry, rediscover)];
   };
 }
 
@@ -118,60 +115,11 @@ function createAuthenticateTool(
           type: "text",
           text:
             `Authentication successful for "${serverName}". ` +
-            `The server's tools are now available.`,
+            `Tokens are stored. The server's tools will be available ` +
+            `on the next session or after a /clear. For this session, ` +
+            `you can use web_fetch to call the server's API directly.`,
         },
       ],
-    };
-  };
-
-  return { descriptor, origin: "operator", policy: DEFAULT_UNSANDBOXED_POLICY, execute };
-}
-
-// ---------------------------------------------------------------------------
-// complete_authentication tool (remote session support)
-// ---------------------------------------------------------------------------
-
-function createCompleteAuthTool(serverName: string): Tool {
-  const descriptor: ToolDescriptor = {
-    name: `${serverName}__complete_authentication`,
-    description:
-      `Complete an in-progress OAuth flow for the "${serverName}" MCP server ` +
-      `by submitting the callback URL. Call ${serverName}__authenticate first ` +
-      `to start the flow. After the user authorizes in their browser, the ` +
-      `browser redirects to a http://localhost:<port>/callback?code=...&state=... ` +
-      `URL — on remote sessions that page may fail to load, but the URL in ` +
-      `the address bar is still valid. Pass that full URL here as callback_url.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        callback_url: {
-          type: "string",
-          description:
-            "The full callback URL from the browser address bar after authorizing, " +
-            "e.g. http://localhost:8912/callback?code=...&state=...",
-        },
-      },
-      required: ["callback_url"],
-      additionalProperties: false,
-    },
-    origin: "operator",
-    server: serverName,
-  };
-
-  const execute = async (_args: JsonObject): Promise<unknown> => {
-    // Phase 1 stub — full implementation requires extending OAuthRuntime
-    // with a manual callback URL handler.
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Manual callback URL handling is not yet supported in this session. ` +
-            `Please run "koi mcp auth ${serverName}" in a separate terminal ` +
-            `to authenticate.`,
-        },
-      ],
-      isError: true,
     };
   };
 
