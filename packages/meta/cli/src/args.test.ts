@@ -375,6 +375,26 @@ describe("parseArgs", () => {
       expect(f.subcommand).toBe("auth");
       expect(f.server).toBeUndefined();
     });
+
+    // Review round 6: under strict:false, node:util reports a string
+    // option with no value as the boolean `true` instead of undefined.
+    // typedParseArgs must normalize these back to undefined so the
+    // exported flag types (`string | undefined`) are not violated on
+    // the help/version path, where we otherwise don't throw.
+    test("parseArgs(start --help --prompt) normalizes missing --prompt to undefined", () => {
+      const f = asFlags(isStartFlags, ["start", "--help", "--prompt"]);
+      expect(f.help).toBe(true);
+      // Before the fix, values.prompt was boolean `true`, which poisoned
+      // flags.mode. After the fix, prompt is undefined → mode is
+      // interactive.
+      expect(f.mode).toEqual({ kind: "interactive" });
+    });
+
+    test("parseArgs(serve --help --manifest) normalizes missing --manifest to undefined", () => {
+      const f = asFlags(isServeFlags, ["serve", "--help", "--manifest"]);
+      expect(f.help).toBe(true);
+      expect(f.manifest).toBeUndefined();
+    });
   });
 
   describe("logFormat env var", () => {

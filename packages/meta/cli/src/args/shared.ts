@@ -83,6 +83,21 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
     readonly tokens: ReadonlyArray<ParseToken>;
   };
 
+  // Normalize missing string-option values. Under strict: false,
+  // node:util reports a string option with no following token as
+  // `true` (boolean) instead of undefined. That breaks exported flag
+  // types that declare `string | undefined`, especially on the
+  // help/version path where we don't throw on bad argv. Scan the
+  // options config and coerce any option whose configured type is
+  // "string" but whose parsed value is the boolean `true` to
+  // undefined.
+  const rawValues = parseResult.values as Record<string, string | boolean | string[] | undefined>;
+  for (const [name, spec] of Object.entries(config.options)) {
+    if (spec.type === "string" && rawValues[name] === true) {
+      rawValues[name] = undefined;
+    }
+  }
+
   // --help and --version follow POSIX/standard CLI convention: when
   // they appear as the value of a preceding string option (e.g.
   // `koi start --prompt --help`), node:util's option-arity rules win
@@ -96,8 +111,7 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
   // rejection so malformed tails like `koi start --help --typo`
   // still reach the help/version exit path instead of erroring out
   // on the stray --typo.
-  const helpOrVersionRequested =
-    parseResult.values.help === true || parseResult.values.version === true;
+  const helpOrVersionRequested = rawValues.help === true || rawValues.version === true;
 
   if (!helpOrVersionRequested) {
     const knownFlags = new Set(Object.keys(config.options));
