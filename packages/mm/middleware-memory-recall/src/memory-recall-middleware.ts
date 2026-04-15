@@ -54,6 +54,8 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
   let memoryManifest: readonly MemoryManifestEntry[] = [];
   // let justified: set of file paths already in the frozen snapshot (skip in relevance overlay)
   let frozenPaths: ReadonlySet<string> = new Set();
+  // let justified: true when frozen snapshot couldn't fit all memories (selector has work to do)
+  let selectorNeeded = false;
 
   /**
    * Runs the recall pipeline exactly once. Sets initialized = true regardless
@@ -81,8 +83,12 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
       }
 
-      // Build full manifest for relevance selector (all memories, not just selected)
-      if (config.relevanceSelector !== undefined) {
+      // Build manifest for relevance selector ONLY when the frozen snapshot
+      // was truncated (more memories exist than fit in the token budget).
+      // When all memories fit, the selector adds zero value — skip the
+      // second scan and the per-turn model call entirely.
+      if (config.relevanceSelector !== undefined && result.truncated) {
+        selectorNeeded = true;
         const scanResult = await scanMemoryDirectory(config.fs, {
           memoryDir: config.recall.memoryDir,
         });
@@ -124,7 +130,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * with the selected (non-frozen) memories.
    */
   async function selectRelevant(request: ModelRequest): Promise<InboundMessage | undefined> {
-    if (config.relevanceSelector === undefined || memoryManifest.length === 0) {
+    if (!selectorNeeded || config.relevanceSelector === undefined || memoryManifest.length === 0) {
       return undefined;
     }
 
@@ -186,6 +192,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       tokenCount = 0;
       memoryManifest = [];
       frozenPaths = new Set();
+      selectorNeeded = false;
     },
 
     describeCapabilities(): CapabilityFragment | undefined {
