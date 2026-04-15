@@ -294,7 +294,7 @@ function explainNonCompletedStop(stopReason: string, metadata: unknown): string 
   const source = meta?.source !== undefined ? ` (${meta.source})` : "";
   switch (stopReason) {
     case "max_turns":
-      return `\n[Turn ended: model reached the max-turns budget without producing a final reply${detail}.]\n`;
+      return `\n[Turn ended: model reached the per-turn tool-call budget without producing a final reply${detail}. Try a more specific prompt, or split the work across multiple turns.]\n`;
     case "interrupted":
       return "\n[Turn interrupted before the model produced a reply.]\n";
     case "hook_blocked":

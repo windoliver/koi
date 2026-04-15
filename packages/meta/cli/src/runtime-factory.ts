@@ -85,8 +85,16 @@ import { MAX_TRAJECTORY_STEPS } from "./preset-stacks/observability.js";
  */
 export { MAX_TRAJECTORY_STEPS };
 
-/** Maximum model→tool→model turns per user submit in the TUI. */
-const DEFAULT_MAX_TURNS = 10;
+/**
+ * Maximum model→tool→model turns per user submit in the TUI.
+ *
+ * Bumped from 10 → 25 so that exploratory flows (the model running multiple
+ * small probes before answering) can finish instead of truncating mid-probe
+ * with a "Turn ended: max-turns budget reached" synthetic message. 25 matches
+ * the kernel/engine-loop default (`packages/drivers/engine-loop/... DEFAULT_MAX_TURNS`)
+ * and keeps runaway agent loops bounded on the same order as before.
+ */
+const DEFAULT_MAX_TURNS = 25;
 
 /** Maximum messages retained in the transcript context window.
  * Matches the default for `koi start --context-window` (100).

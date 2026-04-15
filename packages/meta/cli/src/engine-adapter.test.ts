@@ -346,7 +346,7 @@ describe("createTranscriptAdapter — #1742 silent-termination fallback", () => 
       readonly kind: "text_delta";
       readonly delta: string;
     }>;
-    expect(deltaBeforeDone.map((d) => d.delta).join("")).toMatch(/max-turns/i);
+    expect(deltaBeforeDone.map((d) => d.delta).join("")).toMatch(/per-turn tool-call budget/i);
   });
 
   test("does NOT inject synthetic delta when assistant text was already streamed", async () => {

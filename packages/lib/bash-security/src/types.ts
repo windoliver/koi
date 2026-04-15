@@ -13,7 +13,8 @@ export type ThreatCategory =
   | "privilege-escalation"
   | "recon"
   | "persistence"
-  | "data-exfiltration";
+  | "data-exfiltration"
+  | "destructive";
 
 /** A single compiled pattern entry with category and diagnostic reason. */
 export interface ThreatPattern {
