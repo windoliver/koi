@@ -468,11 +468,23 @@ export function createBuiltinManifestRegistry(
 interface AuditManifestOptions {
   readonly filePath: string;
   readonly flushIntervalMs?: number;
-  readonly redactRequestBodies?: boolean;
-  // `signing` is intentionally NOT part of the resolved options —
-  // the parser rejects `signing: true` from manifest content because
-  // the ephemeral keypair's public key is never persisted. See
-  // parseAuditOptions for the full rationale.
+  // `redactRequestBodies` is intentionally NOT part of the
+  // resolved options — the factory forces it to `true`
+  // unconditionally. Zone B runs AFTER system-prompt / goal /
+  // hooks / model-router in the engine sort, so an un-redacted
+  // request dump would contain host-injected trusted instructions
+  // (system prompt content, goal reminders, hook transformations,
+  // final routed model parameters). Letting a repo-authored
+  // manifest persist those bodies to an in-workspace NDJSON file
+  // would widen the repo->host trust boundary by making hidden
+  // runtime material extractable through committed config.
+  // Manifest audit captures request metadata only; full request
+  // bodies are only available to hosts that register audit
+  // programmatically via a custom MiddlewareRegistry.
+  //
+  // `signing` is also NOT part of the resolved options —
+  // parseAuditOptions rejects `signing: true` from manifest content
+  // because the ephemeral keypair's public key is never persisted.
 }
 
 /**
@@ -661,9 +673,15 @@ function parseAuditOptions(
   ) {
     throw new Error("@koi/middleware-audit: options.flushIntervalMs must be a positive number");
   }
-  const redactRequestBodies = raw.redactRequestBodies;
-  if (redactRequestBodies !== undefined && typeof redactRequestBodies !== "boolean") {
-    throw new Error("@koi/middleware-audit: options.redactRequestBodies must be a boolean");
+  // `redactRequestBodies` is not configurable from manifest: the
+  // factory forces it to `true` below (see AuditManifestOptions
+  // block comment). Accepting the user's value here even for
+  // validation would mislead — drop it silently. If the user
+  // actually sets it, we warn so they know their value is ignored.
+  if (raw.redactRequestBodies !== undefined) {
+    console.warn(
+      "[koi/manifest-audit] options.redactRequestBodies is ignored — manifest-configured audit always redacts request bodies to prevent repo-authored config from extracting host-injected system prompt / goal / hook content from an in-workspace NDJSON file.",
+    );
   }
   const signing = raw.signing;
   if (signing !== undefined && typeof signing !== "boolean") {
@@ -691,7 +709,6 @@ function parseAuditOptions(
   return {
     filePath,
     ...(typeof flushIntervalMs === "number" ? { flushIntervalMs } : {}),
-    ...(typeof redactRequestBodies === "boolean" ? { redactRequestBodies } : {}),
   };
 }
 
@@ -728,9 +745,12 @@ function createAuditManifestEntry(
   );
   const underlying = createAuditMiddleware({
     sink,
-    ...(options.redactRequestBodies !== undefined
-      ? { redactRequestBodies: options.redactRequestBodies }
-      : {}),
+    // redactRequestBodies is forced true regardless of caller
+    // input — see AuditManifestOptions for the trust-boundary
+    // rationale. Manifest-configured audit captures request
+    // metadata only; full bodies require programmatic
+    // registration.
+    redactRequestBodies: true,
     // signing deliberately omitted — see parseAuditOptions for why.
   });
 

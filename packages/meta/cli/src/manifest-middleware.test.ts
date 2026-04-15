@@ -530,26 +530,43 @@ describe("built-in @koi/middleware-audit factory", () => {
     await registered[0]?.();
   });
 
-  test("accepts optional flushIntervalMs and redactRequestBodies", async () => {
+  test("accepts optional flushIntervalMs (redactRequestBodies is forced true and warned)", async () => {
+    // Codex round-loop-2 round 10: redactRequestBodies is forced
+    // to true regardless of caller input so repo-authored config
+    // cannot persist host-injected system prompt / goal / hook
+    // content into an in-workspace NDJSON file. Setting it from
+    // the manifest logs a warning but does NOT fail resolution.
     const workspace = mkTempCwd();
-    const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
-    const resolved = await resolveManifestMiddleware(
-      [
-        {
-          name: "@koi/middleware-audit",
-          options: {
-            filePath: "audit-2.audit.ndjson",
-            flushIntervalMs: 500,
-            redactRequestBodies: true,
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string): void => {
+      warnings.push(msg);
+    };
+    let resolvedLength = 0;
+    try {
+      const registry = createBuiltinManifestRegistry({ allowFileBackedSinks: true });
+      const resolved = await resolveManifestMiddleware(
+        [
+          {
+            name: "@koi/middleware-audit",
+            options: {
+              filePath: "audit-2.audit.ndjson",
+              flushIntervalMs: 500,
+              redactRequestBodies: false, // user tries to disable — should be ignored
+            },
+            enabled: true,
           },
-          enabled: true,
-        },
-      ],
-      registry,
-      stubCtx({ workingDirectory: workspace }),
-    );
-    expect(resolved.length).toBe(1);
-    expect(resolved[0]?.name).toBe("audit");
+        ],
+        registry,
+        stubCtx({ workingDirectory: workspace }),
+      );
+      resolvedLength = resolved.length;
+      expect(resolved[0]?.name).toBe("audit");
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(resolvedLength).toBe(1);
+    expect(warnings.find((w) => w.includes("redactRequestBodies is ignored"))).toBeDefined();
   });
 
   test("rejects signing: true from manifest (ephemeral keypair, no verification path)", async () => {
