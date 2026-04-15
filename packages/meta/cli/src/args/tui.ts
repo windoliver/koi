@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { ParseError, typedParseArgs } from "./shared.js";
 
 export interface TuiFlags extends BaseFlags {
@@ -45,7 +45,7 @@ export interface TuiFlags extends BaseFlags {
   readonly verifierInheritEnv: boolean;
 }
 
-export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags {
+export function parseTuiFlags(rest: readonly string[]): TuiFlags {
   type V = {
     readonly agent: string | undefined;
     readonly session: string | undefined;
@@ -57,6 +57,8 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
     readonly "verifier-timeout": string | undefined;
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values } = typedParseArgs<V>(
     {
@@ -72,21 +74,27 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
         "verifier-timeout": { type: "string" },
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "tui",
   );
 
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
+  const skipValidators = helpRequested || versionRequested;
+
   const untilPass = values["until-pass"] ?? [];
-  if (untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
+  if (!skipValidators && untilPass.length > 0 && untilPass.some((tok) => tok.length === 0)) {
     throw new ParseError("--until-pass tokens must be non-empty");
   }
 
   const allowSideEffects = values["allow-side-effects"] ?? false;
 
   // Fail closed on unsafe combinations — mirrors koi start semantics.
-  if (untilPass.length > 0) {
+  if (!skipValidators && untilPass.length > 0) {
     if (!allowSideEffects) {
       throw new ParseError(
         "--until-pass requires --allow-side-effects to explicitly acknowledge the loop's trust-boundary implications:\n" +
@@ -114,19 +122,41 @@ export function parseTuiFlags(rest: readonly string[], g: GlobalFlags): TuiFlags
 
   return {
     command: "tui" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     agent: values.agent,
     session: values.session,
     resume: values.resume,
     manifest: values.manifest,
     goal: values.goal ?? [],
     untilPass,
-    maxIter: resolveMaxIter(values["max-iter"]),
-    verifierTimeoutMs: resolveVerifierTimeoutMs(values["verifier-timeout"]),
+    maxIter: resolveMaxIterSafe(values["max-iter"], skipValidators),
+    verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
   };
+}
+
+function resolveMaxIterSafe(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveMaxIter(raw);
+    } catch {
+      return DEFAULT_MAX_ITER;
+    }
+  }
+  return resolveMaxIter(raw);
+}
+
+function resolveVerifierTimeoutMsSafe(raw: string | undefined, skip: boolean): number {
+  if (skip) {
+    try {
+      return resolveVerifierTimeoutMs(raw);
+    } catch {
+      return DEFAULT_VERIFIER_TIMEOUT_MS;
+    }
+  }
+  return resolveVerifierTimeoutMs(raw);
 }
 
 // Strict positive-integer regex. parseInt alone accepts trailing junk

@@ -225,7 +225,7 @@ describe("bin.ts", () => {
     });
   });
 
-  describe("--help with subcommand", () => {
+  describe("--help with subcommand (#1729)", () => {
     test("command --help prints help and exits 0", async () => {
       const r = await runBin(["start", "--help"]);
       expect(r.exitCode).toBe(0);
@@ -236,6 +236,238 @@ describe("bin.ts", () => {
       const r = await runBin(["serve", "-h"]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("koi");
+    });
+
+    // Regression for #1729: every subcommand must emit its own help block,
+    // not the generic top-level usage. The per-command marker `koi <cmd> —`
+    // only appears in help.ts, so its presence proves the dispatch help
+    // branch picked the right COMMAND_HELP entry.
+    const SUBCOMMANDS = [
+      "init",
+      "start",
+      "serve",
+      "tui",
+      "sessions",
+      "logs",
+      "status",
+      "doctor",
+      "stop",
+      "deploy",
+      "plugin",
+      "mcp",
+    ] as const;
+
+    for (const cmd of SUBCOMMANDS) {
+      test(`\`koi ${cmd} --help\` prints per-command help`, async () => {
+        const r = await runBin([cmd, "--help"]);
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toContain(`koi ${cmd} —`);
+        expect(r.stdout).toContain("Usage:");
+        // Proves we are NOT falling back to the generic top-level help.
+        expect(r.stdout).not.toContain("agent engine CLI");
+      });
+    }
+
+    test("`koi plugin --help` does not emit subcommand-required error", async () => {
+      // Regression: plugin parser throws ParseError when no subcommand is
+      // given. --help must short-circuit before that throw fires.
+      const r = await runBin(["plugin", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("install");
+      expect(r.stdout).toContain("list");
+    });
+
+    test("`koi mcp --help` does not emit subcommand-required error", async () => {
+      const r = await runBin(["mcp", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toBe("");
+      expect(r.stdout).toContain("auth");
+    });
+
+    test("`koi start --help` lists --prompt flag", async () => {
+      const r = await runBin(["start", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("--prompt");
+      expect(r.stdout).toContain("--until-pass");
+    });
+
+    // Parser/help parity: every command that accepts a positional
+    // manifest in its parser must advertise that positional in its
+    // help usage line. Regression for the review that caught `koi stop`
+    // missing `[manifest]` in its usage text.
+    const POSITIONAL_MANIFEST_COMMANDS = [
+      "start",
+      "serve",
+      "logs",
+      "status",
+      "doctor",
+      "stop",
+      "deploy",
+    ] as const;
+
+    for (const cmd of POSITIONAL_MANIFEST_COMMANDS) {
+      test(`\`koi ${cmd} --help\` usage line advertises [manifest] positional`, async () => {
+        const r = await runBin([cmd, "--help"]);
+        expect(r.exitCode).toBe(0);
+        const usageLine = r.stdout
+          .split("\n")
+          .find((l) => l.includes(`koi ${cmd}`) && l.includes("[manifest]"));
+        expect(usageLine).toBeDefined();
+      });
+    }
+
+    test("`koi stop <manifest>` is accepted (parser parity with help)", async () => {
+      // If stop's parser rejected the positional, this would exit 1
+      // with "unknown flag" or similar. Stub commands exit 2.
+      const r = await runBin(["stop", "./agent.yaml"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    // Regression for #1729 review round 4: once the raw-argv fast-path
+    // stopped firing for subcommand invocations, strict parsers like
+    // `plugin` and `mcp` could swallow `--version` with a usage error.
+    // The dispatch short-circuit must honor --version before any parser
+    // runs, for every known command.
+    test("`koi plugin --version` prints version and exits 0", async () => {
+      const r = await runBin(["plugin", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).toBe("");
+    });
+
+    test("`koi mcp --version` prints version and exits 0", async () => {
+      const r = await runBin(["mcp", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).toBe("");
+    });
+
+    test("`koi start --version` prints version and exits 0", async () => {
+      const r = await runBin(["start", "--version"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
+
+    // --version takes precedence over --help when both appear, matching
+    // the order of the top-level fast-path checks in bin.ts.
+    test("`koi start --version --help` prints version (version wins)", async () => {
+      const r = await runBin(["start", "--version", "--help"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
+
+    // Review round 5: `--` operand terminator must guard literal operands
+    // named `--help` / `--version`. Without this the per-command help
+    // short-circuit would swallow any token matching those names, even
+    // after an explicit `--` end-of-options marker.
+    test("`koi plugin install -- --help` does NOT short-circuit to help", async () => {
+      // With `--` honored, the plugin parser sees `install` as the
+      // subcommand and `--help` as the literal install path. It then
+      // routes into the plugin command body (not into help). Stub/command
+      // body exits 2 with a real error, not exit 0 with help.
+      const r = await runBin(["plugin", "install", "--", "--help"]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stdout).not.toContain("koi plugin —");
+    });
+
+    test("`koi mcp auth -- --version` does NOT short-circuit to version", async () => {
+      const r = await runBin(["mcp", "auth", "--", "--version"]);
+      // Must NOT exit 0 with just "0.0.0" — that would be the
+      // version short-circuit swallowing the literal server name.
+      const trimmed = r.stdout.trim();
+      expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
+    });
+
+    // Option-arity wins (standard CLI convention, matching git/curl/
+    // python-argparse): `--help`/`--version` appearing as the value of
+    // a preceding string option is consumed as that value, NOT as a
+    // control flag. Users who want help type `koi start --help`; with
+    // no preceding string flag, node:util parses it as values.help.
+    test("`koi start --prompt --help` treats --help as --prompt value", async () => {
+      const r = await runBin(["start", "--prompt", "--help"], { OPENROUTER_API_KEY: "" });
+      expect(r.stdout).not.toContain("koi start —");
+      // start either runs and fails on missing API key, or fails to
+      // load @koi/core in this worktree — never exits 0 with help.
+      expect(r.exitCode).not.toBe(0);
+    });
+
+    test("`koi start --prompt --version` treats --version as --prompt value", async () => {
+      const r = await runBin(["start", "--prompt", "--version"], { OPENROUTER_API_KEY: "" });
+      const trimmed = r.stdout.trim();
+      expect(trimmed === "0.0.0" && r.exitCode === 0).toBe(false);
+    });
+
+    test("`koi serve --manifest --help` treats --help as --manifest value", async () => {
+      const r = await runBin(["serve", "--manifest", "--help"]);
+      expect(r.stdout).not.toContain("koi serve —");
+    });
+
+    // Review round 7: --help and --version must still win over malformed
+    // trailing flags. Before this guard, `koi start --help --typo` errored
+    // with "unknown flag --typo" instead of serving help — a regression
+    // from the old raw-argv fast-path that blocked the escape hatch this
+    // PR is trying to provide.
+    test("`koi start --help --typo` still serves help (malformed tail ignored)", async () => {
+      const r = await runBin(["start", "--help", "--typo"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("`koi start --version --typo` still prints version", async () => {
+      const r = await runBin(["start", "--version", "--typo"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+      expect(r.stderr).not.toContain("unknown flag");
+    });
+
+    test("`koi plugin --help --bogus` still serves plugin help", async () => {
+      const r = await runBin(["plugin", "--help", "--bogus"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi plugin —");
+    });
+
+    // The top-level fast-path does NOT claim `--` support: Bun eats the
+    // first `--` from argv, so we can't verify `koi -- --version`
+    // end-to-end in dev. Subcommand-level `--` (e.g.
+    // `koi plugin install -- --help`) is honored by parseArgs and is
+    // covered by the plugin test above.
+
+    // Review round 8: help/version must bypass semantic validators,
+    // not just unknown-flag rejection. Before the parser early-return,
+    // malformed value combinations (invalid --log-format, out-of-range
+    // --port, bad safety combos) threw a ParseError and exit 1 before
+    // the help/version exit path could serve its output.
+    test("`koi start --help --log-format bogus` still serves help", async () => {
+      const r = await runBin(["start", "--help", "--log-format", "bogus"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+    });
+
+    test("`koi serve --version --port 99999` still prints version", async () => {
+      const r = await runBin(["serve", "--version", "--port", "99999"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("0.0.0");
+    });
+
+    test("`koi start --help --until-pass x` skips safety-combo validation", async () => {
+      const r = await runBin(["start", "--help", "--until-pass", "bun"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi start —");
+    });
+
+    test("`koi deploy --help --port 99999` still serves help", async () => {
+      const r = await runBin(["deploy", "--help", "--port", "99999"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi deploy —");
+    });
+
+    test("`koi sessions --help --limit 0` still serves help", async () => {
+      const r = await runBin(["sessions", "--help", "--limit", "0"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("koi sessions —");
     });
   });
 

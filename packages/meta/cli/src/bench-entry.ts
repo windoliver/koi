@@ -43,14 +43,19 @@
 const rawArgv: readonly string[] = ["start"];
 
 // Mirror bin.ts's raw-argv fast-path so the measurement includes the
-// same no-op cost bin.ts pays before reaching dispatch. For "start"
-// these never fire, but keeping them here means the measured
-// prologue matches the shipped CLI.
-if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
-  process.exit(0);
-}
-if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
-  process.exit(0);
+// same no-op cost bin.ts pays before reaching dispatch. The gate only
+// fires when no subcommand precedes the flag (see #1729) — for
+// `["start"]` the fast-path is skipped entirely because the first
+// token is a subcommand, which matches the shipped CLI.
+const firstArg = rawArgv[0];
+const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
+if (!hasSubcommand) {
+  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+    process.exit(0);
+  }
+  if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
+    process.exit(0);
+  }
 }
 
 // Same dynamic import path bin.ts takes post-fast-path.
