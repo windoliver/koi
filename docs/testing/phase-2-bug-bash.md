@@ -187,7 +187,7 @@ EOF
 
 > **Q16 harness note (#1736)**: frontier models typically self-refuse this prompt at the model layer, so the exfiltration-guard middleware is never invoked. A `PASS` from the TUI alone does **not** prove the guard works. Verify the middleware path directly via unit tests:
 > ```
-> bun test --filter=@koi/middleware-exfiltration-guard
+> bun run test --filter=@koi/middleware-exfiltration-guard
 > ```
 > Only mark Q16 `PASS` if both (a) no file is written at `/tmp/leaked.txt` and (b) the unit suite is green.
 
@@ -200,7 +200,7 @@ EOF
 
 > **Q18 harness note (#1736)**: same self-refuse pattern as Q16 — the model usually declines before invoking `web_fetch`, leaving the `@koi/tools-web` URL policy untested by the TUI. Verify the SSRF guard directly:
 > ```
-> bun test --filter=@koi/tools-web
+> bun run test --filter=@koi/tools-web
 > ```
 > The `url-policy.test.ts` + `web-fetch-tool.test.ts` suites cover the exact Q18 URL (including IPv6-mapped and redirect variants). Only mark Q18 `PASS` if both (a) no outbound request occurs and (b) the unit suite is green.
 
@@ -369,16 +369,16 @@ HOME="$KOI_HOME" bun run "$REPO_ROOT/packages/meta/cli/src/bin.ts" \
 
 ```bash
 # Dream consolidation (LLM merge + cold pruning)
-bun test --filter=@koi/dream
+bun run test --filter=@koi/dream
 
 # File-based persistence (Jaccard dedup, concurrent writes, MEMORY.md index)
-bun test --filter=@koi/memory-fs
+bun run test --filter=@koi/memory-fs
 
 # Session-start recall injection (salience scoring, token budgeting)
-bun test --filter=@koi/memory
+bun run test --filter=@koi/memory
 
 # Team-sync filtering (type deny, secret scan, fail-closed)
-bun test --filter=@koi/memory-team-sync
+bun run test --filter=@koi/memory-team-sync
 ```
 
 ### S9 — Skills & Plugins
@@ -751,12 +751,12 @@ tmux new-session -d -s "$KOI_SESSION" \
 
 ### Packages Not Testable via TUI (justified)
 
-The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun test --filter=@koi/runtime`) and package-level unit tests.
+The following L2 packages cannot be exercised through TUI queries due to architectural constraints. They are tested via golden query replay (`bun run test --filter=@koi/runtime`) and package-level unit tests.
 
 | Package | Reason | Test Approach |
 |---------|--------|---------------|
-| `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun test --filter=@koi/dream`; golden query: `dream-consolidation` |
-| `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
+| `@koi/dream` | Offline batch memory consolidation job. Requires injected `listMemories`, `writeMemory`, `deleteMemory`, and `modelCall` handles. No triggering surface in TUI or CLI. | `bun run test --filter=@koi/dream`; golden query: `dream-consolidation` |
+| `@koi/mcp-server` | Exposes Koi *as* an MCP server (opposite of TUI's role as MCP consumer). Runs as a separate process with `createStdioServerTransport`. | `bun run test --filter=@koi/mcp-server`; golden query: `mcp-server` with `InMemoryTransport` |
 
 ### Always-On Packages (implicitly tested by every TUI session)
 
@@ -797,7 +797,7 @@ Each scenario = a sequence of queries with specific setup + MW configuration.
 | **S13** | Nexus GWS Connectors & OAuth | Q28-Q37 | 3+ (restart for token persistence) | Via `koi start --manifest` (not TUI); Python bridge; `pip install nexus-fs` |
 | **S14** | Memory Deep | Q84-Q99 | 1 (no reset until Q99) | Same TUI session for all queries; tests full memory tool surface |
 | **S15** | Loop Mode | Q100-Q101 | 1 per query | Via `koi start --until-pass`; fixture with failing test |
-| **S16** | Golden Query Replay | — | — | `bun test --filter=@koi/runtime`; 20+ golden queries; deterministic, no LLM |
+| **S16** | Golden Query Replay | — | — | `bun run test --filter=@koi/runtime`; 20+ golden queries; deterministic, no LLM |
 | **S9** | Skills & Plugins | Q38-Q42 | 2 (reset between skills and plugins) | skill dirs; plugin.json |
 | **S10** | Tasks & Memory | Q43-Q48 | 2 (reset for Q47) | none |
 | **S11** | TUI UI Features | Q49-Q65 | 1+ | ≥3 prior sessions for /export |
@@ -913,8 +913,8 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/memory-fs | **S25** | Q156-Q162 (wire `KOI_MEMORY_DIR` first) |
 | @koi/model-openai-compat | `*` (always-on) | Every TUI session (default model HTTP transport) |
 | @koi/decision-ledger | `*` (always-on) | Every `/trajectory` view refresh |
-| @koi/dream | non-TUI | `bun test --filter=@koi/dream` (offline batch job) |
-| @koi/mcp-server | non-TUI | `bun test --filter=@koi/mcp-server` (Koi-as-MCP-server) |
+| @koi/dream | non-TUI | `bun run test --filter=@koi/dream` (offline batch job) |
+| @koi/mcp-server | non-TUI | `bun run test --filter=@koi/mcp-server` (Koi-as-MCP-server) |
 
 ### Unlisted-but-Wired Packages — Summary
 
@@ -1038,12 +1038,14 @@ Packages not wired into `koi tui` are tested via **golden query replay** (determ
 | Q100 | `koi start --prompt "Fix the failing test in test/math.test.ts" --until-pass "bun test" --max-iter 3` | Agent iterates: edit → verify → pass. Converges within max-iter |
 | Q101 | `koi start --prompt "Make this pass" --until-pass "false" --max-iter 2` | Hits max-iter; exits cleanly with non-zero code; no hang |
 
-### S16 — Golden Query Replay (via `bun test --filter=@koi/runtime`)
+### S16 — Golden Query Replay (via `bun run test --filter=@koi/runtime`)
 
 Each row is a golden query exercising packages through the full agent pipeline. Run all:
 ```bash
-bun test --filter=@koi/runtime
+bun run test --filter=@koi/runtime
 ```
+
+> **Workspace filter gotcha (#1788)**: `--filter=<pkg>` is a Turborepo workspace selector. It must be passed via `bun run test`, which delegates to `turbo run test` (the root `test` script). Do **not** write `bun test --filter=...` — Bun's built-in `bun test` runner has no `--filter` flag, silently ignores it, and walks every workspace test instead. From a single package directory, `cd packages/meta/runtime && bun test` works as a workspace-scoped fallback.
 
 | Golden Query | Packages Exercised | Pass Criteria |
 |---|---|---|
@@ -1073,8 +1075,8 @@ bun test --filter=@koi/runtime
 These utility packages have no user-facing surface and are exercised indirectly by other packages:
 
 ```bash
-bun test --filter=@koi/file-resolution    # path resolution utility
-bun test --filter=@koi/model-openai-compat # adapter tested via provider selection
+bun run test --filter=@koi/file-resolution    # path resolution utility
+bun run test --filter=@koi/model-openai-compat # adapter tested via provider selection
 ```
 
 ---
@@ -1100,11 +1102,11 @@ bun test --filter=@koi/model-openai-compat # adapter tested via provider selecti
 
 1. All S1-S25 scenarios run at least once (S18-S20, S25 after wiring; skip if not wired)
 2. All Q1-Q162 queries executed with pass/fail recorded
-3. All S16 golden queries pass (`bun test --filter=@koi/runtime` green)
+3. All S16 golden queries pass (`bun run test --filter=@koi/runtime` green)
 3. All P0/blocker bugs filed, fixed, or triaged with owner
 4. L2 coverage matrix (§4) shows every package has ≥1 green scenario or test-suite pass
 5. TUI feature matrix (§5) shows every command/shortcut/view/modal exercised
-6. `bun test --filter=@koi/runtime` (golden replay) passes on candidate commit
+6. `bun run test --filter=@koi/runtime` (golden replay) passes on candidate commit
 7. Written summary posted with:
    - Queries run: N/162
    - Golden replay: all green / N failures
