@@ -23,7 +23,7 @@
  */
 
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type {
   ComponentProvider,
   HookConfig,
@@ -111,7 +111,19 @@ export function __setUserHooksConfigPathForTests(path: string | undefined): void
 function resolveUserHooksConfigPath(): string {
   if (testHookPathOverride !== undefined) return testHookPathOverride;
   const explicitPath = process.env.KOI_HOOKS_CONFIG_PATH;
-  if (explicitPath !== undefined && explicitPath.length > 0) return explicitPath;
+  if (explicitPath !== undefined && explicitPath.length > 0) {
+    // Reject relative paths: a relative KOI_HOOKS_CONFIG_PATH defeats the
+    // whole point of the trust-boundary fix by making resolution
+    // cwd-dependent. An attacker who can influence the launcher's cwd
+    // (service restart, wrapper script, etc.) could redirect the loader
+    // to an alternate hooks file (third-loop round 2 finding).
+    if (!isAbsolute(explicitPath)) {
+      throw new Error(
+        `Refusing to start: KOI_HOOKS_CONFIG_PATH="${explicitPath}" must be an absolute path. Relative paths are rejected because they depend on the launcher's working directory and defeat the purpose of pinning a hooks file.`,
+      );
+    }
+    return explicitPath;
+  }
   return join(homedir(), ".koi", "hooks.json");
 }
 
@@ -422,19 +434,53 @@ export async function loadUserRegisteredHooks(options: {
 /**
  * Merge already-loaded user-tier hooks with plugin-provided `HookConfig`s
  * (tier-tagged as "session"), returning a single deterministic list in
- * user-then-plugin order. When `filterAgentHooks` is true, `kind: "agent"`
- * plugin hooks are silently dropped to mirror the user-hook filter applied
- * by `loadUserRegisteredHooks`.
+ * user-then-plugin order.
+ *
+ * When `filterAgentHooks` is true, `kind: "agent"` plugin hooks cannot
+ * run on the current host. To keep plugin hooks under the same
+ * fail-closed policy as user hooks (third-loop round 2 finding), this
+ * function applies the SAME two escape hatches:
+ *
+ * - Any plugin agent hook marked `failClosed: true` → throw. The plugin
+ *   author explicitly declared the hook load-critical.
+ * - Any plugin agent hook under `KOI_HOOKS_STRICT=1` → throw. Strict mode
+ *   does not permit silently dropping unsupported entries, regardless of
+ *   tier.
+ * - Otherwise → filter the agent hooks out and report the names via
+ *   `onFilteredAgentHooks` so operators can see which plugin hooks were
+ *   skipped.
  */
 export function mergeUserAndPluginHooks(
   userHooks: readonly RegisteredHook[],
   pluginHookConfigs: readonly HookConfig[],
-  options: { readonly filterAgentHooks: boolean },
+  options: {
+    readonly filterAgentHooks: boolean;
+    readonly onFilteredAgentHooks?: (hookNames: readonly string[]) => void;
+  },
 ): readonly RegisteredHook[] {
-  const filteredPluginConfigs = options.filterAgentHooks
-    ? pluginHookConfigs.filter((h) => h.kind !== "agent")
-    : pluginHookConfigs;
-  const pluginRegistered = createRegisteredHooks(filteredPluginConfigs, "session");
+  let effectivePluginConfigs = pluginHookConfigs;
+  if (options.filterAgentHooks) {
+    const strictMode = process.env.KOI_HOOKS_STRICT === "1";
+    const agentHooks = pluginHookConfigs.filter((h) => h.kind === "agent");
+    const failClosedAgents = agentHooks.filter((h) => h.failClosed === true);
+    if (failClosedAgents.length > 0) {
+      const labels = failClosedAgents.map((h) => `"${h.name}"`).join(", ");
+      throw new Error(
+        `Refusing to start: plugin agent hook(s) marked failClosed:true cannot be loaded by this host (${labels}). Remove failClosed from the affected plugin entries or run via a host that supports agent hooks.`,
+      );
+    }
+    if (strictMode && agentHooks.length > 0) {
+      const labels = agentHooks.map((h) => `"${h.name}"`).join(", ");
+      throw new Error(
+        `Refusing to start: ${agentHooks.length} plugin agent hook(s) (${labels}) — this host does not support agent hooks and KOI_HOOKS_STRICT=1 does not permit silently dropping unsupported entries.`,
+      );
+    }
+    if (agentHooks.length > 0 && options.onFilteredAgentHooks !== undefined) {
+      options.onFilteredAgentHooks(agentHooks.map((h) => h.name));
+    }
+    effectivePluginConfigs = pluginHookConfigs.filter((h) => h.kind !== "agent");
+  }
+  const pluginRegistered = createRegisteredHooks(effectivePluginConfigs, "session");
   return [...userHooks, ...pluginRegistered];
 }
 

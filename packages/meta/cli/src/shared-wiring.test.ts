@@ -249,6 +249,29 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors.some((m) => m.includes("Duplicate"))).toBe(true);
   });
 
+  test("rejects relative KOI_HOOKS_CONFIG_PATH (review third-loop r2)", async () => {
+    // A relative path defeats the trust-boundary fix by making resolution
+    // cwd-dependent.
+    __setUserHooksConfigPathForTests(undefined);
+    const origPath = process.env.KOI_HOOKS_CONFIG_PATH;
+    process.env.KOI_HOOKS_CONFIG_PATH = "hooks.json";
+    try {
+      await expect(
+        loadUserRegisteredHooks({
+          filterAgentHooks: false,
+          onLoadError: () => {},
+        }),
+      ).rejects.toThrow(/Refusing to start.*must be an absolute path/);
+    } finally {
+      if (origPath === undefined) {
+        delete process.env.KOI_HOOKS_CONFIG_PATH;
+      } else {
+        process.env.KOI_HOOKS_CONFIG_PATH = origPath;
+      }
+      __setUserHooksConfigPathForTests(join(fakeHome, ".koi", "hooks.json"));
+    }
+  });
+
   test("KOI_HOOKS_CONFIG_PATH pins loader path regardless of HOME", async () => {
     // Deployment-override trust-boundary fix: HOME-preserving launchers
     // (sudo -E, launchd, etc.) should be able to pin the hook file to a
@@ -496,15 +519,51 @@ describe("mergeUserAndPluginHooks", () => {
 
   test("filters agent hooks from plugin list when filterAgentHooks is true", () => {
     const plugin = [commandHook("p1"), agentHook("p2"), commandHook("p3")];
-    const merged = mergeUserAndPluginHooks([], plugin, { filterAgentHooks: true });
+    const filtered: string[][] = [];
+    const merged = mergeUserAndPluginHooks([], plugin, {
+      filterAgentHooks: true,
+      onFilteredAgentHooks: (names) => filtered.push([...names]),
+    });
     const names = merged.map((rh) => rh.hook.name);
     expect(names).toEqual(["p1", "p3"]);
+    expect(filtered).toEqual([["p2"]]);
   });
 
   test("does not filter agent hooks when filterAgentHooks is false", () => {
     const plugin = [commandHook("p1"), agentHook("p2")];
     const merged = mergeUserAndPluginHooks([], plugin, { filterAgentHooks: false });
     expect(merged).toHaveLength(2);
+  });
+
+  test("aborts when a plugin agent hook is marked failClosed:true (review third-loop r2)", () => {
+    const plugin: HookConfig[] = [
+      commandHook("p1"),
+      { kind: "agent", name: "critical-plugin", prompt: "deny", failClosed: true },
+    ];
+    expect(() =>
+      mergeUserAndPluginHooks([], plugin, {
+        filterAgentHooks: true,
+      }),
+    ).toThrow(/Refusing to start.*plugin agent hook.*failClosed.*"critical-plugin"/);
+  });
+
+  test("aborts on plugin agent hooks under KOI_HOOKS_STRICT=1 (review third-loop r2)", () => {
+    const origStrict = process.env.KOI_HOOKS_STRICT;
+    process.env.KOI_HOOKS_STRICT = "1";
+    try {
+      const plugin = [commandHook("p1"), agentHook("plugin-agent")];
+      expect(() =>
+        mergeUserAndPluginHooks([], plugin, {
+          filterAgentHooks: true,
+        }),
+      ).toThrow(/Refusing to start.*1 plugin agent hook.*KOI_HOOKS_STRICT=1/);
+    } finally {
+      if (origStrict === undefined) {
+        delete process.env.KOI_HOOKS_STRICT;
+      } else {
+        process.env.KOI_HOOKS_STRICT = origStrict;
+      }
+    }
   });
 
   test("does not second-filter user hooks (trusts the loader)", () => {
