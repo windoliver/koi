@@ -278,15 +278,29 @@ export async function* consumeModelStream(
           // 1. Dangling tool calls → "error" (incomplete response)
           // 2. Non-success model stop reason (error, hook_blocked) → "error"
           //    (preserve denial/failure signal from middleware or provider)
-          // 3. Otherwise → "completed"
+          // 3. Truncated tool calls ("length" + completed tool calls) → "error"
+          //    (model hit max_tokens — may have intended additional tool calls)
+          // 4. Otherwise → "completed"
           const responseStopReason = chunk.response.stopReason;
           const isNonSuccess =
             responseStopReason !== undefined &&
             responseStopReason !== "stop" &&
             responseStopReason !== "length" &&
             responseStopReason !== "tool_use";
+          // When the model hit max_tokens ("length") but completed tool calls
+          // exist, the response is incomplete — the model may have intended
+          // additional tool calls that were cut off. Reject all tool calls
+          // rather than executing a potentially incomplete batch.
+          const isTruncatedToolCall =
+            responseStopReason === "length" && completedToolCalls.length > 0;
           const stopReason =
-            danglingOnDone.length > 0 ? "error" : isNonSuccess ? "error" : "completed";
+            danglingOnDone.length > 0
+              ? "error"
+              : isNonSuccess
+                ? "error"
+                : isTruncatedToolCall
+                  ? "error"
+                  : "completed";
 
           // Build metadata: merge response metadata (hook block info, etc.)
           // with dangling tool call warnings. Use distinct keys so dangling-tool-call
@@ -296,11 +310,22 @@ export async function* consumeModelStream(
           const hasResponseMeta =
             responseMeta !== undefined && Object.keys(responseMeta).length > 0;
           const metadata =
-            hasDangling || hasResponseMeta
+            hasDangling || hasResponseMeta || isTruncatedToolCall
               ? {
                   ...(hasResponseMeta ? responseMeta : {}),
                   ...(isNonSuccess && responseStopReason !== undefined
                     ? { modelStopReason: responseStopReason }
+                    : {}),
+                  ...(isTruncatedToolCall
+                    ? {
+                        modelStopReason: "length" as const,
+                        truncatedToolCallError:
+                          "model hit max_tokens with completed tool calls — response may be incomplete",
+                        truncatedToolCalls: completedToolCalls.map((tc) => ({
+                          callId: tc.callId,
+                          toolName: tc.toolName,
+                        })),
+                      }
                     : {}),
                   ...(hasDangling
                     ? {

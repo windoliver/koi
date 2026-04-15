@@ -108,6 +108,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   // let justified: mutable per-run flag, set inside the catch path
   let toolErrorRecoveryUsed = false;
 
+  // #1768: cap truncation recovery to ONE re-prompt. If the model hits
+  // max_tokens again on the retry turn, the truncation is effectively
+  // structural (prompt too large, limit too low) — fail closed.
+  // let justified: mutable per-run flag, set in the truncation recovery block
+  let truncationRecoveryUsed = false;
+
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
   if (isAborted(signal)) {
@@ -161,6 +167,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // let justified: mutable per-turn usage tracked from custom events
     let turnInputTokens = 0;
     let turnOutputTokens = 0;
+    // let justified: mutable per-turn flag — set when done event has truncation metadata
+    let truncationDetectedThisTurn = false;
 
     try {
       const stream =
@@ -192,17 +200,30 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             terminalMetricsCommitted = true;
           }
           if (event.output.stopReason !== "completed") {
-            errorMetadata = {
-              source: "model_stream",
-              originalStopReason: event.output.stopReason,
-              ...(event.output.metadata !== undefined
-                ? { providerDetail: event.output.metadata }
-                : {}),
-            };
-            state = transitionTurn(state, {
-              kind: "error",
-              message: `model stream ended with stopReason: ${event.output.stopReason}`,
-            });
+            // #1768: truncation with completed tool calls is recoverable
+            // when the recovery budget hasn't been spent. Detect via the
+            // metadata flag set by consumeModelStream.
+            const providerMeta = event.output.metadata as Record<string, unknown> | undefined;
+            const isTruncation = providerMeta?.truncatedToolCallError !== undefined;
+
+            if (isTruncation && !truncationRecoveryUsed) {
+              // Recoverable — don't transition to error. The recovery
+              // block after the stream loop will inject feedback and
+              // re-prompt the model.
+              truncationDetectedThisTurn = true;
+            } else {
+              errorMetadata = {
+                source: "model_stream",
+                originalStopReason: event.output.stopReason,
+                ...(event.output.metadata !== undefined
+                  ? { providerDetail: event.output.metadata }
+                  : {}),
+              };
+              state = transitionTurn(state, {
+                kind: "error",
+                message: `model stream ended with stopReason: ${event.output.stopReason}`,
+              });
+            }
           }
           break;
         }
@@ -247,6 +268,38 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // Update lastTurnText eagerly so error/abort breaks report
     // the current turn's text, not a previous turn's.
     lastTurnText = turnText;
+
+    // #1768: truncation recovery — give the model one chance to retry
+    // when it hit max_tokens with completed tool calls. Mirrors the
+    // stop_blocked re-prompt pattern: append context, inject feedback,
+    // transition to continue, and re-enter the while loop.
+    if (truncationDetectedThisTurn) {
+      truncationRecoveryUsed = true;
+      // Preserve partial text so the model sees what it already said
+      if (turnText.length > 0) {
+        appendAssistantTurn(transcript, turnText, []);
+      }
+      transcript.push({
+        senderId: "system:truncation",
+        content: [
+          {
+            kind: "text",
+            text: "[Truncation detected]: Your previous response was cut short at the token limit. Tool calls were not executed because the response may be incomplete. Please retry with fewer tool calls or shorter arguments.",
+          },
+        ],
+        timestamp: Date.now(),
+      });
+      yield {
+        kind: "custom",
+        type: "truncation_recovery",
+        data: { turnIndex: state.turnIndex },
+      };
+      // model → complete (no tool calls) → continue (blocked)
+      state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+      state = transitionTurn(state, { kind: "stop_blocked" });
+      yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+      continue;
+    }
 
     // If abort or stream error happened, we already transitioned.
     // Preserve partial usage only if terminal metrics weren't already committed.
