@@ -25,4 +25,7 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run workspace-filter guard
-        run: bun run check:bun-test-filter
+        # Calls the script directly rather than via a `bun run` script so
+        # we don't need to add an entry to the root package.json (which is
+        # part of the startup-latency gate's measurement surface).
+        run: bun scripts/check-bun-test-filter.ts

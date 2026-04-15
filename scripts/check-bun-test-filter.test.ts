@@ -117,11 +117,6 @@ describe("detectViolations — negative cases", () => {
     expect(v).toHaveLength(0);
   });
 
-  test("allows `bun run test:pkg @koi/runtime` (blessed shorthand)", () => {
-    const v = detectViolations("a.md", "bun run test:pkg @koi/runtime");
-    expect(v).toHaveLength(0);
-  });
-
   test("allows `bun test:integration` (script with colon)", () => {
     const v = detectViolations("a.md", "bun test:integration --filter=@koi/runtime");
     expect(v).toHaveLength(0);

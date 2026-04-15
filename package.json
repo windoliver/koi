@@ -13,7 +13,6 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "test:pkg": "turbo run test --filter",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "biome format --write .",
@@ -36,7 +35,6 @@
     "bench:startup:local": "bun scripts/measure-startup.ts --local",
     "check:golden-queries": "bun scripts/check-golden-queries.ts",
     "check:tui-tools": "bun scripts/check-tui-tools.ts",
-    "check:bun-test-filter": "bun scripts/check-bun-test-filter.ts",
     "check:trajectories": "bun scripts/check-trajectories.ts",
     "check:unused": "bunx knip",
     "check:duplicates": "bunx jscpd .",
