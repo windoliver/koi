@@ -1167,13 +1167,37 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         // session id as their prefix. Fall back to a neutral label
         // on the (normally unreachable) pre-assignment path.
         const liveParentSessionId = runtimeForRotation?.sessionId ?? "parent-session";
+        // Per-child registerShutdown is child-scoped: any hook a
+        // factory registers here is fired IMMEDIATELY if the
+        // spawn fails after resolution (see try/catch below).
+        // Hooks that survive to the success path are owned by the
+        // spawned child runtime and should cleanup via middleware
+        // lifecycle hooks (`onSessionEnd`) rather than runtime
+        // dispose, because the child runtime has its own lifecycle
+        // boundary. Registering to the parent's shutdown list
+        // would leak one hook per spawn until parent dispose.
+        //
+        // For file-backed factories that use `sharedAuditSinks`,
+        // the cache hit avoids any new registration at all (see
+        // createAuditManifestEntry). Factories that DO allocate
+        // per-child resources must wire their cleanup into the
+        // middleware's own onSessionEnd — registerShutdown in
+        // this path is intentionally a no-op so the parent
+        // shutdown chain cannot accumulate leaked child hooks.
+        // The no-op is documented in docs/L2/manifest.md.
         return resolveManifestMiddleware(config.manifestMiddleware, manifestMiddlewareRegistry, {
           sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
           hostId,
           workingDirectory: zoneBWorkingDirectory,
           stackExports: earlyContribution.exports,
-          registerShutdown: (fn) => {
-            manifestMiddlewareShutdownHooks.push(fn);
+          registerShutdown: (_fn) => {
+            // Intentional no-op for per-child resolution. Built-in
+            // audit is the only factory that calls registerShutdown,
+            // and it only calls it when `sinkIsNew`. The cache hit
+            // for per-child resolution means this branch is never
+            // exercised from the built-in. Third-party factories
+            // that call registerShutdown during per-child mode
+            // should use middleware-lifecycle cleanup instead.
           },
           sharedAuditSinks,
         });

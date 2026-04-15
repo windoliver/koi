@@ -272,22 +272,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
     }
 
-    // 4. Build middleware: inherited + per-child freshly-resolved + system prompt injection
-    const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
-    if (perChildMiddlewareFactory !== undefined) {
-      // Unique per-spawn id so sibling children from the same
-      // parent never collapse onto one derived session label.
-      const childRunId = crypto.randomUUID();
-      const perChildMiddleware = await perChildMiddlewareFactory({
-        childRunId,
-        parentAgentId: base.parentAgent.pid.id,
-      });
-      childMiddleware.push(...perChildMiddleware);
-    }
-    if (systemPrompt !== undefined) {
-      childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
-    }
-
     // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
@@ -316,6 +300,29 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     const validation = validateSpawnRequest(request);
     if (!validation.ok) {
       return { ok: false, error: validation.error };
+    }
+
+    // 4. Build middleware: inherited + per-child freshly-resolved + system prompt injection
+    //
+    // Per-child middleware resolution is deferred until AFTER every
+    // validation gate above returns ok. Resolution may allocate
+    // resources (audit sinks, timers, etc.) that are otherwise
+    // non-trivial to unwind if the spawn is rejected. Running
+    // resolution only on the happy path means failed spawn
+    // requests cost zero per-child resources.
+    const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
+    if (perChildMiddlewareFactory !== undefined) {
+      // Unique per-spawn id so sibling children from the same
+      // parent never collapse onto one derived session label.
+      const childRunId = crypto.randomUUID();
+      const perChildMiddleware = await perChildMiddlewareFactory({
+        childRunId,
+        parentAgentId: base.parentAgent.pid.id,
+      });
+      childMiddleware.push(...perChildMiddleware);
+    }
+    if (systemPrompt !== undefined) {
+      childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
     }
     // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
     const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
