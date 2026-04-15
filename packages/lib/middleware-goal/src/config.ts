@@ -169,12 +169,12 @@ export function validateGoalConfig(input: unknown): Result<GoalMiddlewareConfig,
 
   const c = input as Record<string, unknown>;
 
-  if (!Array.isArray(c.objectives) || c.objectives.length === 0) {
+  if (!Array.isArray(c.objectives)) {
     return {
       ok: false,
       error: {
         code: "VALIDATION",
-        message: "GoalMiddlewareConfig.objectives must be a non-empty array of strings",
+        message: "GoalMiddlewareConfig.objectives must be an array of strings",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

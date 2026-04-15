@@ -365,9 +365,9 @@ describe("validateGoalConfig", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("rejects empty objectives", () => {
+  it("accepts empty objectives (for lazy /goal add)", () => {
     const result = validateGoalConfig({ objectives: [] });
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
   });
 
   it("rejects non-string objectives", () => {
@@ -402,7 +402,12 @@ describe("validateGoalConfig", () => {
 
 describe("createGoalMiddleware", () => {
   it("throws on invalid config", () => {
-    expect(() => createGoalMiddleware({ objectives: [] } as never)).toThrow();
+    expect(() => createGoalMiddleware({ objectives: null } as never)).toThrow();
+  });
+
+  it("accepts empty objectives for lazy goal add", () => {
+    const mw = createGoalMiddleware({ objectives: [] });
+    expect(mw).toBeDefined();
   });
 
   it("injects goals on first model call", async () => {

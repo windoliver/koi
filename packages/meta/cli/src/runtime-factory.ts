@@ -879,12 +879,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // --- @koi/middleware-goal: adaptive goal reminders (optional) ---
   // Only installed when the caller provides objectives. Injects goal blocks
   // into model messages and tracks drift/completion across turns.
-  const goalResult =
-    config.goals !== undefined && config.goals.length > 0
-      ? createGoalMiddleware({ objectives: config.goals })
-      : undefined;
-  const goalMw = goalResult?.middleware;
-  const goalController = goalResult?.controller;
+  // Always create goal middleware — starts empty when no --goal flags.
+  // GoalController.add() populates objectives mid-session via /goal add.
+  const goalResult = createGoalMiddleware({ objectives: config.goals ?? [] });
+  const goalMw = goalResult.middleware;
+  const goalController = goalResult.controller;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1007,7 +1006,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     ...(config.modelRouterMiddleware !== undefined
       ? { modelRouter: config.modelRouterMiddleware }
       : {}),
-    ...(goalMw !== undefined ? { goal: goalMw } : {}),
+    goal: goalMw,
     presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
     ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
     ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),

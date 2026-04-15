@@ -2269,22 +2269,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           break;
         case "session:goal": {
           const ctrl = runtimeHandle?.goalController;
+          if (ctrl === undefined) {
+            store.dispatch({
+              kind: "add_error",
+              code: "GOAL_INFO",
+              message: "Runtime not ready — try again.",
+            });
+            break;
+          }
           const parts = args.trim().split(/\s+/);
           const subCmd = parts[0]?.toLowerCase() ?? "list";
           const goalText = parts.slice(1).join(" ").trim();
 
           if (subCmd === "list" || args.trim().length === 0) {
-            if (ctrl === undefined) {
+            const items = ctrl.list();
+            if (items.length === 0) {
               store.dispatch({
                 kind: "add_error",
                 code: "GOAL_INFO",
-                message: "No goals active. Launch with --goal to enable goal tracking.",
+                message: "No goals set. Use /goal add <text> to add one.",
               });
-              break;
-            }
-            const items = ctrl.list();
-            if (items.length === 0) {
-              store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "No goals set." });
             } else {
               const lines = items.map((i) => `${i.completed ? "[x]" : "[ ]"} ${i.text}`);
               store.dispatch({
@@ -2299,14 +2303,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 kind: "add_error",
                 code: "GOAL_MISSING_TEXT",
                 message: "Usage: /goal add <objective text>",
-              });
-              break;
-            }
-            if (ctrl === undefined) {
-              store.dispatch({
-                kind: "add_error",
-                code: "GOAL_NOT_ENABLED",
-                message: "Goal tracking not active. Launch with --goal to enable.",
               });
               break;
             }
@@ -2333,14 +2329,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               break;
             }
-            if (ctrl === undefined) {
-              store.dispatch({
-                kind: "add_error",
-                code: "GOAL_NOT_ENABLED",
-                message: "Goal tracking not active. Launch with --goal to enable.",
-              });
-              break;
-            }
             const removed = ctrl.remove(goalText);
             store.dispatch({
               kind: "add_error",
@@ -2348,10 +2336,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               message: removed ? `Goal removed: "${goalText}"` : `Goal not found: "${goalText}"`,
             });
           } else if (subCmd === "clear") {
-            if (ctrl === undefined) {
-              store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "No goals active." });
-              break;
-            }
             ctrl.clear();
             store.dispatch({ kind: "add_error", code: "GOAL_INFO", message: "All goals cleared." });
           } else {
