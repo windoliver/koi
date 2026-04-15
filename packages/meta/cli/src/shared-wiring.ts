@@ -233,6 +233,21 @@ export async function loadUserRegisteredHooks(options: {
     }
   }
 
+  // Structural root errors (non-array, etc.) are fatal: we cannot inspect
+  // individual entries to see whether any were marked failClosed:true, and
+  // an object-shaped root that contained a failClosed hook would otherwise
+  // silently start the TUI with zero user hooks (review round 3 finding).
+  // Same reasoning as the parse-failure branch above — "we don't understand
+  // the file, so we cannot pretend nothing was configured."
+  const structuralErrors = loaded.errors.filter((e) => e.index < 0);
+  if (structuralErrors.length > 0) {
+    throw new Error(
+      `Refusing to start: ${path} is structurally invalid — ${structuralErrors
+        .map((e) => e.message)
+        .join("; ")}. Fix or remove the file before retrying.`,
+    );
+  }
+
   // Fail-closed opt-in (respects the operator's declared intent, addresses
   // the architectural concern that partial loading weakens enforcement):
   // if any invalid entry was marked `failClosed: true`, abort startup rather

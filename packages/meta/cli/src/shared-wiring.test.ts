@@ -114,10 +114,6 @@ describe("buildPluginMcpSetup", () => {
 });
 
 // ---------------------------------------------------------------------------
-// mergeUserAndPluginHooks
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // loadUserRegisteredHooks — per-entry loader semantics (issue #1781)
 // ---------------------------------------------------------------------------
 
@@ -188,16 +184,20 @@ describe("loadUserRegisteredHooks", () => {
     expect(errors[0]).toContain("bad");
   });
 
-  test("surfaces an error when root is not an array", async () => {
-    writeHooksJson(JSON.stringify({ preToolUse: [{ command: "echo" }] }));
+  test("aborts startup when hooks.json root is not an array (fail closed)", async () => {
+    // Object-shaped root cannot be inspected for failClosed entries, so the
+    // safe default is abort — otherwise an object root containing a
+    // failClosed hook would silently start the TUI with zero user hooks
+    // (review round 3 finding).
+    writeHooksJson(JSON.stringify({ kind: "command", name: "deny", cmd: [], failClosed: true }));
     const errors: string[] = [];
-    const hooks = await loadUserRegisteredHooks({
-      filterAgentHooks: false,
-      onLoadError: (m) => errors.push(m),
-    });
-    expect(hooks).toEqual([]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("array");
+    await expect(
+      loadUserRegisteredHooks({
+        filterAgentHooks: false,
+        onLoadError: (m) => errors.push(m),
+      }),
+    ).rejects.toThrow(/Refusing to start.*structurally invalid/);
+    expect(errors.some((m) => m.includes("array"))).toBe(true);
   });
 
   test("aborts startup when a failClosed entry fails to load", async () => {
