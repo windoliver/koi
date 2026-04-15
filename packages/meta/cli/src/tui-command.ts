@@ -2242,32 +2242,37 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // Rotate to a fresh session ID and keep viewedSessionId
-            // in sync so isInPickerMode() stays false.
-            tuiSessionId = sessionId(crypto.randomUUID());
-            viewedSessionId = tuiSessionId;
-            // Rebind the engine so the session-transcript middleware
-            // routes future turns to the new JSONL file.
+            // Rebind the engine BEFORE updating tuiSessionId so a
+            // rebind failure never leaves the host pointing at a UUID
+            // the runtime doesn't know about (fail-closed contract).
+            const newSid = sessionId(crypto.randomUUID());
             if (runtimeHandle?.runtime.rebindSessionId !== undefined) {
               try {
-                runtimeHandle.runtime.rebindSessionId(tuiSessionId as string);
+                runtimeHandle.runtime.rebindSessionId(newSid as string);
               } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the next turn can't
+                // append to the old session with stale context.
+                lastResetFailed = true;
                 store.dispatch({
                   kind: "add_error",
                   code: "NEW_SESSION_FAILED",
                   message: `New session failed: cannot rebind runtime: ${
                     rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
-                  }`,
+                  }. Restart koi tui to recover.`,
                 });
                 return;
               }
             }
+            // Rebind succeeded — safe to update host-side session ids.
+            tuiSessionId = newSid;
+            viewedSessionId = newSid;
+            costBridge.setSession(newSid as string, modelName, provider);
             store.dispatch({
               kind: "set_session_info",
               modelName,
               provider,
               sessionName: "",
-              sessionId: tuiSessionId,
+              sessionId: newSid,
             });
             // Refresh session list so the old session appears in /sessions.
             void loadSessionList(SESSIONS_DIR, jsonlTranscript).then((sessions) => {
@@ -2467,12 +2472,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               try {
                 runtimeHandle.runtime.rebindSessionId(selectedId);
               } catch (rebindErr: unknown) {
+                // Latch submit-blocking flag so the blank post-reset
+                // runtime can't accept turns against the old session.
+                lastResetFailed = true;
                 store.dispatch({
                   kind: "add_error",
                   code: "SESSION_RESUME_ERROR",
                   message: `Cannot resume session: rebind failed: ${
                     rebindErr instanceof Error ? rebindErr.message : String(rebindErr)
-                  }. Quit and relaunch with \`koi tui --resume ${selectedId}\`.`,
+                  }. Restart koi tui to recover.`,
                 });
                 return;
               }
@@ -2496,6 +2504,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
+          costBridge.setSession(targetSid as string, modelName, provider);
           store.dispatch({
             kind: "set_session_info",
             modelName,
