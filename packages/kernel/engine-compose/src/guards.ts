@@ -778,20 +778,21 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
-  // let justified: mutable per-turn spawn counter, keyed by the turn currently
-  // holding the budget. Counts successful spawn tool calls issued during that
-  // turn. Real engines (see @koi/query-engine turn-runner) execute batched
-  // tool calls sequentially via `for … await`, so a decrement-on-completion
-  // counter would never exceed 1 and the cap would be silently bypassed
-  // (#1793). We key the counter off `TurnContext.turnId` — the hierarchical
-  // `${runId}:t${turnIndex}` identifier assigned by L1 per agent turn — so a
-  // cooperating adapter that invokes `callHandlers.modelCall` multiple times
-  // inside one turn shares a single budget across every nested model call.
+  // let justified: mutable concurrent in-flight child counter. Matters if
+  // a future engine parallelises tool dispatch — protects against literal
+  // simultaneous runaway children.
+  let directChildren = 0;
+  // let justified: mutable per-turn spawn counter. Required because today's
+  // engines (see @koi/query-engine turn-runner) execute batched tool calls
+  // sequentially via `for … await`, so the in-flight counter never exceeds
+  // 1 and burst fan-out within one tool_use batch was silently bypassed
+  // (#1793). Keyed off `TurnContext.turnId` so cooperating adapters that
+  // call the model multiple times per turn (stop-gate retries, planner→
+  // executor loops) share a single per-turn budget.
   let spawnsThisTurn = 0;
-  // let justified: mutable last-seen turn id. Resetting when this changes is
-  // the true turn-boundary signal; model-call hooks alone are not, because
-  // adapters may call the model many times per turn (stop-gate retries,
-  // semantic retries, planner→executor loops).
+  // let justified: mutable last-seen turn id — the true turn-boundary
+  // signal. Model-call hooks alone are not, because adapters may call the
+  // model many times per turn.
   let lastTurnId: TurnId | undefined;
 
   // let justified: mutable flag to fire fan-out warning at most once per session
@@ -811,16 +812,16 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
     priority: 2,
 
     onSessionStart: async () => {
+      directChildren = 0;
       spawnsThisTurn = 0;
       lastTurnId = undefined;
       firedFanOutWarning = false;
     },
 
     wrapToolCall: async (ctx, request, next) => {
-      // Enforce the per-turn reset at the true turn boundary — a change in
-      // TurnContext.turnId. This is the fix for #1793: a fresh tool-batch
-      // in a new turn gets a fresh budget, but multiple model calls inside
-      // one turn share a single budget.
+      // Reset the per-turn burst counter at the true turn boundary — a
+      // change in TurnContext.turnId. This is the #1793 enforcement point
+      // for sequential tool-batch execution.
       syncTurnBoundary(ctx);
 
       // 0. Check depth-based tool restrictions (applies to ALL tools)
@@ -861,20 +862,38 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         }
       }
 
-      // 3. Check fan-out (RATE_LIMIT — retryable on the next model turn,
-      //    which resets the counter)
+      // 3. Check fan-out — dual enforcement:
+      //    a) `directChildren` — live child lifetime (matters if tools run
+      //       in parallel; released when the child terminates).
+      //    b) `spawnsThisTurn` — per-turn batch cumulative (catches sequential
+      //       fan-out bursts that today's serialised tool runner couldn't
+      //       detect via the in-flight counter, #1793).
+      //    Both check against the same maxFanOut — whichever hits first
+      //    throws RATE_LIMIT (retryable: a follow-up turn resets the burst
+      //    counter and freed child slots replenish the in-flight counter).
+      if (directChildren >= policy.maxFanOut) {
+        throw KoiRuntimeError.from(
+          "RATE_LIMIT",
+          `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} concurrent children`,
+          {
+            retryable: true,
+            context: { directChildren, maxFanOut: policy.maxFanOut, reason: "concurrent" },
+          },
+        );
+      }
       if (spawnsThisTurn >= policy.maxFanOut) {
         throw KoiRuntimeError.from(
           "RATE_LIMIT",
-          `Max fan-out exceeded: ${spawnsThisTurn}/${policy.maxFanOut} children in this model turn`,
+          `Max fan-out exceeded: ${spawnsThisTurn}/${policy.maxFanOut} children in this turn`,
           {
             retryable: true,
-            context: { spawnsThisTurn, maxFanOut: policy.maxFanOut },
+            context: { spawnsThisTurn, maxFanOut: policy.maxFanOut, reason: "per_turn_burst" },
           },
         );
       }
 
-      // 4. Optimistic: increment fan-out before next()
+      // 4. Optimistic: increment both counters before next()
+      directChildren++;
       spawnsThisTurn++;
 
       // 5. Fire fan-out warning (synchronous, at most once per session)
@@ -882,25 +901,29 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         !firedFanOutWarning &&
         policy.fanOutWarningAt !== undefined &&
         policy.onWarning !== undefined &&
-        spawnsThisTurn >= policy.fanOutWarningAt
+        directChildren >= policy.fanOutWarningAt
       ) {
         firedFanOutWarning = true;
         policy.onWarning({
           kind: "fan_out",
-          current: spawnsThisTurn,
+          current: directChildren,
           limit: policy.maxFanOut,
           warningAt: policy.fanOutWarningAt,
         });
       }
 
-      // 6. Execute spawn. Roll back the counter only on failure — a spawn
-      //    that didn't run should not consume budget. Successful spawns
-      //    remain counted until the next model turn resets the counter.
+      // 6. Execute spawn:
+      //    - directChildren always decrements (the child's slot is freed
+      //      when this tool call unwinds, success or failure).
+      //    - spawnsThisTurn decrements only on failure — a spawn that
+      //      didn't run should not consume the per-turn burst budget.
       try {
         return await next(request);
       } catch (e: unknown) {
         spawnsThisTurn--;
         throw e;
+      } finally {
+        directChildren--;
       }
     },
   };

@@ -93,11 +93,18 @@ export interface SpawnPolicy {
    */
   readonly maxDepth: number;
   /**
-   * Maximum number of spawn tool calls a parent agent may issue in a single
-   * model turn's tool_use batch. The counter resets at the start of each
-   * new model call, so a long-running agent can spawn many children over
-   * its lifetime — it just can't ask for more than maxFanOut in one batch.
-   * RATE_LIMIT error is retryable on the next model turn.
+   * Maximum direct children per parent — dual enforcement:
+   *   1. Concurrent in-flight: a parent may have at most maxFanOut live
+   *      children at any moment (each slot is held for the child's
+   *      lifetime and released when it terminates). Matters when a future
+   *      engine parallelises tool-call dispatch.
+   *   2. Per-turn burst: a parent may issue at most maxFanOut spawn tool
+   *      calls within one agent turn (keyed off `TurnContext.turnId`).
+   *      Required because today's turn-runner awaits batched tool calls
+   *      sequentially, so the in-flight counter alone never caught batch
+   *      fan-out bursts (#1793).
+   * Whichever cap is hit first throws RATE_LIMIT. Both use the same knob
+   * so there's no new config surface to learn.
    */
   readonly maxFanOut: number;
   /**
