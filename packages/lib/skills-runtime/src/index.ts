@@ -11,10 +11,11 @@
  *   const filtered = await runtime.query({ tags: ["typescript"] });
  */
 
+import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
-import type { ScanFinding } from "@koi/skill-scanner";
+import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
-import type { Severity } from "@koi/validation";
+import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills } from "./discover.js";
 import type { LoaderContext } from "./loader.js";
@@ -43,6 +44,102 @@ export type {
   SkillsRuntime,
   SkillsRuntimeConfig,
 };
+
+// ---------------------------------------------------------------------------
+// Discover-time security scan (issue #1722)
+// ---------------------------------------------------------------------------
+
+interface BlockedEntry {
+  readonly entry: DiscoveredSkillEntry;
+  readonly findings: readonly ScanFinding[];
+}
+
+interface ScanSplit {
+  readonly clean: ReadonlyMap<string, DiscoveredSkillEntry>;
+  readonly blocked: ReadonlyMap<string, BlockedEntry>;
+}
+
+/**
+ * Scans each discovered skill's SKILL.md body BEFORE it enters the registry.
+ *
+ * Issue #1722: until this ran, a malicious skill with clean frontmatter but
+ * a destructive body (`rm -rf /` or `$OPENROUTER_API_KEY` exfiltration in
+ * prose) was advertised via discover()/query()/describeCapabilities and only
+ * rejected when a caller invoked load() — too late, since the metadata had
+ * already reached the model.
+ *
+ * Entries with at least one finding at or above `blockOnSeverity` are moved
+ * to the `blocked` map — they are excluded from discover()/query() (so the
+ * model never sees them) but load()/loadAll() still surface them with a
+ * PERMISSION error for operator observability. Sub-threshold findings route
+ * through `onSecurityFinding`. Read errors are tolerated — the load() path
+ * will surface a proper NOT_FOUND later.
+ */
+async function scanDiscoveredEntries(
+  entries: ReadonlyMap<string, DiscoveredSkillEntry>,
+  scanner: Scanner,
+  blockOnSeverity: Severity,
+  onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
+): Promise<ScanSplit> {
+  const results = await Promise.all(
+    [...entries.entries()].map(async ([name, entry]) => {
+      const skillMdPath = join(entry.dirPath, "SKILL.md");
+      let content: string; // let: assigned in try/catch
+      try {
+        content = await Bun.file(skillMdPath).text();
+      } catch {
+        // Unreadable — keep the entry; load() will surface the error.
+        return { name, entry, blocking: [] as readonly ScanFinding[] };
+      }
+
+      const report = scanner.scanSkill(content);
+      if (report.findings.length === 0) {
+        return { name, entry, blocking: [] as readonly ScanFinding[] };
+      }
+
+      const blocking = report.findings.filter((f) =>
+        severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+      const nonBlocking = report.findings.filter(
+        (f) => !severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+
+      if (nonBlocking.length > 0) {
+        onSecurityFinding?.(name, nonBlocking);
+      }
+
+      return { name, entry, blocking };
+    }),
+  );
+
+  const clean = new Map<string, DiscoveredSkillEntry>();
+  const blocked = new Map<string, BlockedEntry>();
+  for (const { name, entry, blocking } of results) {
+    if (blocking.length > 0) {
+      blocked.set(name, { entry, findings: blocking });
+    } else {
+      clean.set(name, entry);
+    }
+  }
+  return { clean, blocked };
+}
+
+function buildBlockedResult(
+  name: string,
+  blockOnSeverity: Severity,
+  findings: readonly ScanFinding[],
+): Result<SkillDefinition, KoiError> {
+  const summary = findings.map((f) => `[${f.severity}] ${f.rule}: ${f.message}`).join("; ");
+  return {
+    ok: false,
+    error: {
+      code: "PERMISSION",
+      message: `Skill "${name}" blocked by discover-time security scan (${findings.length} finding(s) at or above ${blockOnSeverity}): ${summary}`,
+      retryable: false,
+      context: { name, blockOnSeverity, findings },
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -80,6 +177,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
   // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
   let discoveredEntry: ReadonlyMap<string, DiscoveredSkillEntry> | undefined;
+  // Issue #1722: skills excluded from discover() by the discover-time security
+  // scan. Kept separate so loadAll() / provider.skipped can still surface them.
+  let blockedEntry: ReadonlyMap<string, BlockedEntry> = new Map();
   // Projected metadata map cached to preserve reference identity across discover() calls.
   // Rebuilt whenever filesystem or external entries change.
   let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
@@ -171,21 +271,41 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     }
 
     // No cache, no in-flight — start filesystem discovery.
-    discoverInflight = discoverSkills(discoverConfig).then(
-      (result) => {
-        if (result.ok) {
-          discoveredEntry = result.value;
-          discoveredMetaMap = buildMergedMetaMap(result.value, externalSkills);
-          lastExternalRef = externalSkills;
-        }
-        discoverInflight = undefined;
-        return result;
-      },
-      (err: unknown) => {
-        discoverInflight = undefined;
-        throw err;
-      },
-    );
+    // Issue #1722: run the scanner on each discovered skill BEFORE it enters
+    // the registry, so malicious SKILL.md bodies are never advertised via
+    // discover()/query()/describeCapabilities. Sub-threshold findings route
+    // through onSecurityFinding; blocking findings move the entry into
+    // blockedEntry (still surfaced via loadAll() as PERMISSION errors).
+    discoverInflight = discoverSkills(discoverConfig)
+      .then(async (result) => {
+        if (!result.ok) return result;
+        const split = await scanDiscoveredEntries(
+          result.value,
+          scanner,
+          resolvedConfig.blockOnSeverity,
+          resolvedConfig.onSecurityFinding,
+        );
+        blockedEntry = split.blocked;
+        return { ok: true, value: split.clean } satisfies Result<
+          ReadonlyMap<string, DiscoveredSkillEntry>,
+          KoiError
+        >;
+      })
+      .then(
+        (result) => {
+          if (result.ok) {
+            discoveredEntry = result.value;
+            discoveredMetaMap = buildMergedMetaMap(result.value, externalSkills);
+            lastExternalRef = externalSkills;
+          }
+          discoverInflight = undefined;
+          return result;
+        },
+        (err: unknown) => {
+          discoverInflight = undefined;
+          throw err;
+        },
+      );
 
     const result = await discoverInflight;
     if (!result.ok) return result;
@@ -224,6 +344,16 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // Ensure discovery has run
       const discoverResult = await discover();
       if (!discoverResult.ok) return discoverResult;
+
+      // Issue #1722: blocked-at-discovery entries short-circuit with a
+      // PERMISSION error — they are kept out of discoveredEntry but still
+      // surfaced here for operator visibility (loadAll → provider.skipped).
+      const blocked = blockedEntry.get(name);
+      if (blocked !== undefined) {
+        const result = buildBlockedResult(name, resolvedConfig.blockOnSeverity, blocked.findings);
+        cache.set(name, result);
+        return result;
+      }
 
       // Check filesystem entries first (higher priority)
       const entry = discoveredEntry?.get(name);
@@ -281,8 +411,15 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       return { ok: false, error: discoverResult.error };
     }
 
-    // Collect all skill names from both filesystem and external sources
-    const nameSet = new Set<string>([...(discoveredEntry?.keys() ?? []), ...externalSkills.keys()]);
+    // Collect all skill names from filesystem, external, AND discover-time
+    // blocked entries (issue #1722) — loadAll() surfaces the PERMISSION error
+    // for blocked skills so callers like createSkillProvider can report them
+    // as `skipped`.
+    const nameSet = new Set<string>([
+      ...(discoveredEntry?.keys() ?? []),
+      ...blockedEntry.keys(),
+      ...externalSkills.keys(),
+    ]);
     const names = Array.from(nameSet);
 
     // Promise.allSettled — partial failures don't block other skills
@@ -364,6 +501,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       discoveredEntry = undefined;
       discoveredMetaMap = undefined;
       discoverInflight = undefined;
+      blockedEntry = new Map();
       externalSkills = new Map();
       lastExternalRef = externalSkills;
       cache.clear();

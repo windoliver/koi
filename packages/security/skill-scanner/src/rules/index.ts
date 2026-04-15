@@ -4,6 +4,7 @@
 
 import type { ScanCategory, ScanRule } from "../types.js";
 import { dangerousApisRule } from "./dangerous-apis.js";
+import { credentialEnvReferenceRule, destructiveShellProseRule } from "./dangerous-prose.js";
 import { exfiltrationRule } from "./exfiltration.js";
 import { filesystemAbuseRule } from "./filesystem-abuse.js";
 import { nlInjectionRule } from "./nl-injection.js";
@@ -24,7 +25,11 @@ const ALL_RULES: readonly ScanRule[] = [
 ];
 
 /** Text-based rules run on full markdown in scanSkill(), not on code blocks. */
-const TEXT_RULES: readonly ScanRule[] = [promptInjectionRule];
+const TEXT_RULES: readonly ScanRule[] = [
+  promptInjectionRule,
+  destructiveShellProseRule,
+  credentialEnvReferenceRule,
+];
 
 /** Server-side only rules — disabled locally, enabled in community registry publish gate. */
 const SERVER_RULES: readonly ScanRule[] = [nlInjectionRule];
