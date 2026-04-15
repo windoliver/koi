@@ -846,12 +846,27 @@ function createAuditManifestEntry(
   // that flushes and closes.
   sharedState.refCount += 1;
   ctx.registerShutdown(async () => {
-    sharedState.refCount -= 1;
-    if (sharedState.refCount > 0 || sharedState.closed) {
+    if (sharedState.closed) {
+      // Someone already drove refCount to zero and closed the
+      // sink in a prior release; nothing to do. Do NOT decrement
+      // again — a negative refCount would mask a double-release
+      // bug elsewhere in the runtime.
       return;
     }
-    sharedState.closed = true;
+    if (sharedState.refCount > 1) {
+      // Not the last holder: drop our ref and let a later
+      // release handle the actual close.
+      sharedState.refCount -= 1;
+      return;
+    }
+    // This release owns the close. Attempt close FIRST; only
+    // mark `closed` and drop the final ref on success, so a
+    // transient close/flush failure remains retryable by a
+    // subsequent dispose attempt — the hook is still registered
+    // and future runs will retry with refCount still at 1.
     await sink.close();
+    sharedState.closed = true;
+    sharedState.refCount = 0;
     if (sharedState.writeFailures > 0) {
       throw new Error(
         `manifest @koi/middleware-audit: ${sharedState.writeFailures} audit write(s) failed during the session. ` +

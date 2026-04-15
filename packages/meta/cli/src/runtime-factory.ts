@@ -1089,6 +1089,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // comment on `ManifestMiddlewareContext.sharedAuditSinks` for
   // why independent writers per child would corrupt the trail.
   const sharedAuditSinks: ManifestMiddlewareContext["sharedAuditSinks"] = new Map();
+  // Parent-scoped accumulator for failures that happen during
+  // per-child manifest cleanup (audit sink close, release hook
+  // throws, etc). drainHooks() in the per-child factory appends
+  // here instead of only logging, and wrappedDispose surfaces
+  // any accumulated entries as part of its AggregateError on the
+  // next parent-visible dispose — guaranteeing host observability
+  // even when children outlive the parent's first dispose call.
+  const childManifestCleanupFailures: unknown[] = [];
   let zoneBMiddleware: readonly KoiMiddleware[];
   try {
     zoneBMiddleware = await resolveManifestMiddleware(
@@ -1201,15 +1209,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           drained = true;
           // Reverse order so later registrations unwind first,
           // matching the parent's registerShutdown semantics.
+          // Collect every hook failure: we push them onto the
+          // parent-scoped accumulator (so wrappedDispose can
+          // surface them on the next parent-visible lifecycle
+          // operation) AND throw an AggregateError at the end
+          // so the immediate caller (onSessionEnd / unwind) sees
+          // the failure synchronously too. Silent swallowing here
+          // would hide audit close failures exactly at the
+          // shutdown/recovery boundary where audit integrity
+          // matters most.
+          const errors: unknown[] = [];
           for (const hook of [...perChildShutdownHooks].reverse()) {
             try {
               await hook();
             } catch (err) {
-              console.error(
-                `[koi/${hostId}] per-child cleanup hook failed at child session end`,
-                err,
-              );
+              errors.push(err);
+              childManifestCleanupFailures.push(err);
             }
+          }
+          if (errors.length > 0) {
+            throw new AggregateError(
+              errors,
+              `per-child manifest cleanup had ${errors.length} failure(s) at child session end. ` +
+                "Audit sinks or other file-backed child cleanup may not have fully flushed — " +
+                "the failures have also been attached to the parent runtime's dispose chain so the " +
+                "host's shutdown-reporting path will observe them.",
+            );
           }
         };
         let childMiddleware: readonly KoiMiddleware[];
@@ -1558,13 +1583,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           hookErrors.push(hookErr);
         }
       }
+      // Drain any deferred per-child cleanup failures accumulated
+      // while children were still running after a prior parent
+      // dispose call. Each call to wrappedDispose resets the
+      // accumulator so the same errors aren't surfaced twice on
+      // repeated dispose attempts.
+      const pendingChildErrors = childManifestCleanupFailures.splice(0);
+      hookErrors.push(...pendingChildErrors);
       if (hookErrors.length > 0) {
         throw new AggregateError(
           hookErrors,
-          `manifest-middleware shutdown had ${hookErrors.length} failure(s) during runtime.dispose. ` +
-            "Audit sinks or other file-backed cleanup may not have fully flushed — treat shutdown as failed " +
-            "and surface this error to the host's shutdown-reporting path. A subsequent runtime.dispose() call " +
-            "will retry the failed hooks without re-running the ones that already completed.",
+          `manifest-middleware shutdown had ${hookErrors.length} failure(s) during runtime.dispose ` +
+            `(${pendingChildErrors.length} from per-child cleanup). Audit sinks or other file-backed cleanup may not have ` +
+            "fully flushed — treat shutdown as failed and surface this error to the host's shutdown-reporting path. " +
+            "A subsequent runtime.dispose() call will retry the failed parent hooks without re-running the ones that " +
+            "already completed.",
         );
       }
     };
