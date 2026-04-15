@@ -29,9 +29,10 @@
  */
 
 import { writeSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
   EngineEvent,
@@ -42,6 +43,9 @@ import type {
   SessionTranscript,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { formatCost, formatTokens } from "@koi/core/cost-tracker";
+import type { DisplayableResumedMessage } from "@koi/core/message";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -52,6 +56,7 @@ import {
 } from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -104,6 +109,55 @@ const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 const SESSION_NAME_MAX = 60;
 /** Maximum characters for session preview (last message) in session picker. */
 const SESSION_PREVIEW_MAX = 80;
+
+// ---------------------------------------------------------------------------
+// Slash-command helpers (system:model, system:cost, session:export, etc.)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatch a system-generated notice as a synthetic user message.
+ *
+ * Used by /model, /cost, /tokens, /compact, /export, /zoom to surface
+ * slash-command output in the conversation stream without polluting the
+ * runtime.transcript (which feeds the next model call). Mirrors the fork
+ * notice pattern (see the `add_user_message` dispatch in the fork flow).
+ */
+function dispatchNotice(store: TuiStore, tag: string, text: string): void {
+  store.dispatch({
+    kind: "add_user_message",
+    id: `${tag}-${Date.now()}`,
+    blocks: [{ kind: "text", text }],
+  });
+}
+
+/** Render a displayable transcript as a Markdown document for /export. */
+export function renderTranscriptMarkdown(
+  messages: readonly DisplayableResumedMessage[],
+  info: { readonly sessionId: string; readonly modelName: string; readonly provider: string },
+): string {
+  const lines: string[] = [];
+  lines.push(`# Koi Session ${info.sessionId}`);
+  lines.push("");
+  lines.push(`- **Model**: ${info.modelName}`);
+  lines.push(`- **Provider**: ${info.provider}`);
+  lines.push(`- **Exported**: ${new Date().toISOString()}`);
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  for (const msg of messages) {
+    lines.push(msg.role === "user" ? "## User" : "## Assistant");
+    lines.push("");
+    for (const block of msg.content) {
+      if (block.kind === "text") {
+        lines.push(block.text);
+      } else {
+        lines.push(`_[${block.kind} block]_`);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Trajectory step mapping
@@ -2337,6 +2391,187 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             store.dispatch({ kind: "set_session_list", sessions });
           });
           break;
+        case "system:model": {
+          const lines = [`Model: ${modelName}`, `Provider: ${provider}`];
+          if (fallbackModels.length > 0) {
+            lines.push(`Fallback: ${fallbackModels.join(", ")}`);
+          }
+          dispatchNotice(store, "model-info", `[${lines.join(" · ")}]`);
+          break;
+        }
+        case "system:cost": {
+          // The cost aggregator is populated from live engine "done" events
+          // in this TUI process only — resumed sessions do NOT backfill
+          // historical spend. Scope the copy to "this process" so users
+          // reading the notice do not mistake zero for whole-session total
+          // after `koi tui --resume <id>`.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const totalIn = breakdown.byModel.reduce((s, m) => s + m.totalInputTokens, 0);
+          const totalOut = breakdown.byModel.reduce((s, m) => s + m.totalOutputTokens, 0);
+          if (totalIn === 0 && totalOut === 0) {
+            dispatchNotice(store, "cost-info", "[Cost (this process): no model calls yet]");
+          } else {
+            dispatchNotice(
+              store,
+              "cost-info",
+              `[Cost (this process): ${formatCost(breakdown.totalCostUsd)} — ` +
+                `${formatTokens(totalIn)} in / ${formatTokens(totalOut)} out tokens]`,
+            );
+          }
+          break;
+        }
+        case "system:tokens": {
+          // Process-local accounting — see the comment on system:cost above.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const lines: string[] = ["[Token usage (this process)]"];
+          if (breakdown.byModel.length === 0) {
+            lines.push("  (no model calls yet)");
+          } else {
+            for (const m of breakdown.byModel) {
+              lines.push(
+                `  ${m.model}: ${formatTokens(m.totalInputTokens)} in / ` +
+                  `${formatTokens(m.totalOutputTokens)} out ` +
+                  `(${m.callCount} call${m.callCount === 1 ? "" : "s"}, ` +
+                  `${formatCost(m.totalCostUsd)})`,
+              );
+            }
+          }
+          const ips = costBridge.tokenRate.inputPerSecond();
+          const ops = costBridge.tokenRate.outputPerSecond();
+          if (ips > 0 || ops > 0) {
+            lines.push(`  rate: ${ips.toFixed(1)} in/s · ${ops.toFixed(1)} out/s`);
+          }
+          dispatchNotice(store, "tokens-info", lines.join("\n"));
+          break;
+        }
+        case "agent:compact":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "COMPACT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            // Snapshot current transcript. microcompact is pure — we splice the
+            // result back into runtimeHandle.transcript below. /compact is a
+            // user-initiated command between turns, so there are no concurrent
+            // writers and the snapshot can't race with new appends.
+            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+            if (snapshot.length === 0) {
+              dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+              return;
+            }
+            const originalTokens = await Promise.resolve(
+              HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
+            );
+            // Halve the current budget, or 4k, whichever is larger. Preserves
+            // the 6 most recent messages so the active thread stays coherent.
+            const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
+            const preserveRecent = 6;
+            const result = await microcompact(
+              snapshot,
+              targetTokens,
+              preserveRecent,
+              HEURISTIC_ESTIMATOR,
+              modelName,
+            );
+            if (result.strategy === "noop") {
+              dispatchNotice(
+                store,
+                "compact-info",
+                `[Compact: already compact (${result.compactedTokens} tokens)]`,
+              );
+              return;
+            }
+            runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
+            const dropped = snapshot.length - result.messages.length;
+            const partial = result.strategy === "micro-truncate-partial";
+            // UI-only notice: the dropped messages are gone from the model's
+            // view. We deliberately do NOT insert a transcript marker —
+            // pinned markers accumulate across repeat /compact calls (pair
+            // rescue keeps them even when nothing else can be dropped), and
+            // a `system:*` senderId would leak a hidden privileged prompt
+            // into every subsequent turn while being filtered from /export
+            // and resume surfaces. The user-facing notice below is the
+            // durable record; /trajectory can surface compactions separately
+            // if needed later.
+            dispatchNotice(
+              store,
+              "compact-info",
+              `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
+                `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
+                `${partial ? " (partial — still above target)" : ""}]`,
+            );
+          })();
+          break;
+        case "session:export":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const displayable = filterResumedMessagesForDisplay(runtimeHandle.transcript);
+            if (displayable.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_EMPTY",
+                message: "Nothing to export — no user or assistant messages in this session.",
+              });
+              return;
+            }
+            const engineSid = String(runtimeHandle.runtime.sessionId);
+            const md = renderTranscriptMarkdown(displayable, {
+              sessionId: engineSid,
+              modelName,
+              provider,
+            });
+            const trimmed = args.trim();
+            const defaultName = `koi-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+            const target = trimmed.length > 0 ? trimmed : defaultName;
+            const filePath = isAbsolute(target) ? target : join(process.cwd(), target);
+            try {
+              await writeFile(filePath, md, "utf8");
+            } catch (err) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_WRITE_FAILED",
+                message: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return;
+            }
+            dispatchNotice(store, "export-info", `[Exported session to ${filePath}]`);
+          })();
+          break;
+        case "system:zoom": {
+          const current = store.getState().zoomLevel;
+          // let: justified — next level computed from one of two branches
+          let next = current;
+          const trimmed = args.trim();
+          if (trimmed.length > 0) {
+            const parsed = Number(trimmed);
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "ZOOM_INVALID_ARGS",
+                message: `Usage: /zoom [level] — level must be a positive number (got "${trimmed}").`,
+              });
+              break;
+            }
+            next = parsed;
+          } else {
+            // No arg: cycle 1 → 1.25 → 1.5 → 1.
+            next = current >= 1.5 ? 1 : Math.round((current + 0.25) * 100) / 100;
+          }
+          store.dispatch({ kind: "set_zoom", level: next });
+          dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
+          break;
+        }
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
