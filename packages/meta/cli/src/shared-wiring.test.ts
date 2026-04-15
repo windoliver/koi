@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { HookConfig } from "@koi/core";
 import type { McpServerConfig } from "@koi/mcp";
 import {
+  __setUserHooksConfigPathForTests,
   buildPluginMcpSetup,
   loadUserMcpSetup,
   loadUserRegisteredHooks,
@@ -119,7 +120,6 @@ describe("buildPluginMcpSetup", () => {
 
 describe("loadUserRegisteredHooks", () => {
   let fakeHome: string;
-  let origHome: string | undefined;
   let origStrict: string | undefined;
 
   function writeHooksJson(body: string): void {
@@ -129,20 +129,18 @@ describe("loadUserRegisteredHooks", () => {
   }
 
   beforeEach(() => {
-    origHome = process.env.HOME;
     origStrict = process.env.KOI_HOOKS_STRICT;
     fakeHome = mkdtempSync(join(tmpdir(), "koi-user-hooks-"));
-    process.env.HOME = fakeHome;
+    // Use the explicit test seam instead of redirecting $HOME — runtime
+    // path resolution trusts `os.homedir()`, not the env var, for
+    // trust-boundary reasons (review round 9 finding).
+    __setUserHooksConfigPathForTests(join(fakeHome, ".koi", "hooks.json"));
     // Default every test to lenient mode; strict-mode tests opt in explicitly.
     delete process.env.KOI_HOOKS_STRICT;
   });
 
   afterEach(() => {
-    if (origHome === undefined) {
-      delete process.env.HOME;
-    } else {
-      process.env.HOME = origHome;
-    }
+    __setUserHooksConfigPathForTests(undefined);
     if (origStrict === undefined) {
       delete process.env.KOI_HOOKS_STRICT;
     } else {

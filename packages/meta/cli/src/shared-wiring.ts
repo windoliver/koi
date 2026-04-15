@@ -76,16 +76,28 @@ export interface McpSetup {
 export const USER_HOOKS_CONFIG_PATH: string = join(homedir(), ".koi", "hooks.json");
 
 /**
- * Resolve the user hooks config path lazily. `USER_HOOKS_CONFIG_PATH` is
- * captured at module load, but tests need to redirect `$HOME` per-test and
- * Bun's `os.homedir()` does not re-read `process.env.HOME` between calls —
- * it returns a snapshot taken at process startup. Consulting `HOME` first
- * keeps test overrides working while preserving `homedir()` as the POSIX
- * fallback for environments where `HOME` is unset.
+ * Test-only override for the resolved user hooks config path. The runtime
+ * path always comes from `os.homedir()` so that an attacker-controlled
+ * `$HOME` (in `sudo`, launchd, or similar env-preserving wrappers) cannot
+ * redirect or bypass user policy hooks (review round 9 finding). Tests
+ * call `__setUserHooksConfigPathForTests(path)` in `beforeEach` to point
+ * the loader at a sandbox directory and reset it in `afterEach`.
+ */
+let testHookPathOverride: string | undefined;
+
+/** Test seam — never call in production code. */
+export function __setUserHooksConfigPathForTests(path: string | undefined): void {
+  testHookPathOverride = path;
+}
+
+/**
+ * Resolve the user hooks config path lazily. Production uses `os.homedir()`
+ * exclusively (does NOT read `process.env.HOME`, which is attacker-
+ * controllable); tests inject a sandbox path via the test seam above.
  */
 function resolveUserHooksConfigPath(): string {
-  const home = process.env.HOME ?? homedir();
-  return join(home, ".koi", "hooks.json");
+  if (testHookPathOverride !== undefined) return testHookPathOverride;
+  return join(homedir(), ".koi", "hooks.json");
 }
 
 // ---------------------------------------------------------------------------
