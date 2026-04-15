@@ -1172,7 +1172,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // the cached sink do NOT re-register close, so the dispose
     // chain closes each sink exactly once.
     const buildPerChildManifestMiddlewareFactory = ():
-      | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+      | ((childCtx: {
+          readonly childRunId: string;
+          readonly parentAgentId: string;
+          readonly childAgentId: string;
+          readonly childAgentName: string;
+        }) => Promise<{
           readonly middleware: readonly KoiMiddleware[];
           readonly unwind?: () => Promise<void> | void;
         }>)
@@ -1247,7 +1252,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             config.manifestMiddleware,
             manifestMiddlewareRegistry,
             {
-              sessionId: `${liveParentSessionId}/child:${childCtx.parentAgentId}:${childCtx.childRunId}`,
+              // Label the child session by the CHILD agent id +
+              // runId, not the parent agent id. Operators
+              // correlating a child audit stream back to the
+              // spawned agent need the child identity in the
+              // prefix; parentAgentId is retained in
+              // `parent:` so the lineage is still recoverable.
+              sessionId: `${liveParentSessionId}/parent:${childCtx.parentAgentId}/child:${childCtx.childAgentName}:${childCtx.childAgentId}:${childCtx.childRunId}`,
               hostId,
               workingDirectory: zoneBWorkingDirectory,
               // Child re-resolution inherits the parent's stack

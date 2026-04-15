@@ -87,7 +87,12 @@ export interface CreateAgentSpawnFnOptions {
    * there is nothing to add.
    */
   readonly perChildMiddlewareFactory?:
-    | ((childCtx: { readonly childRunId: string; readonly parentAgentId: string }) => Promise<{
+    | ((childCtx: {
+        readonly childRunId: string;
+        readonly parentAgentId: string;
+        readonly childAgentId: string;
+        readonly childAgentName: string;
+      }) => Promise<{
         readonly middleware: readonly KoiMiddleware[];
         /**
          * Optional unwind callback invoked by the engine when
@@ -364,6 +369,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       // Unique per-spawn id so sibling children from the same
       // parent never collapse onto one derived session label.
       const childRunId = crypto.randomUUID();
+      // Child identity — computed here so the factory can label
+      // session prefixes by the child agent rather than the
+      // parent. Mirror the agentContext construction below so
+      // both identities stay in sync.
+      const childAgentId = request.agentId ?? `spawn-${manifest.name}-${Date.now()}`;
       // Convert factory throws into a structured SpawnResult error
       // rather than letting them escape the SpawnFn contract. A
       // throwing factory would otherwise abort the parent turn and
@@ -373,6 +383,8 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         const factoryResult = await perChildMiddlewareFactory({
           childRunId,
           parentAgentId: base.parentAgent.pid.id,
+          childAgentId,
+          childAgentName: manifest.name,
         });
         childMiddleware.push(...factoryResult.middleware);
         perChildUnwind = factoryResult.unwind;
@@ -601,6 +613,52 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
                     `[agent-spawn] UNRECOVERABLE: parent inbox full — child dispose error dropped for agent "${manifest.name}" (child: ${spawnResult.childPid.id}). Dispose error: ${disposeMsg}`,
                   );
                 }
+              }
+              // on_demand consumers read reportStore, not inbox —
+              // write a critical cleanup-failure report under the
+              // same delivery-<childId> session key so a caller
+              // querying the store sees a failed outcome rather
+              // than the optimistic one that may have been
+              // written by deliveryHandle.runChild success.
+              if (policy.kind === "on_demand" && options.reportStore !== undefined) {
+                const childId = spawnResult.childPid.id;
+                void Promise.resolve(
+                  options.reportStore.put({
+                    agentId: childId,
+                    sessionId: `delivery-${childId}` as ReturnType<
+                      typeof import("@koi/core").sessionId
+                    >,
+                    runId: `delivery-${childId}-dispose-error-${Date.now()}` as ReturnType<
+                      typeof import("@koi/core").runId
+                    >,
+                    summary: `[CLEANUP-FAILED] ${disposeMsg}`,
+                    duration: {
+                      startedAt: Date.now(),
+                      completedAt: Date.now(),
+                      durationMs: 0,
+                      totalTurns: 0,
+                      totalActions: 0,
+                      truncated: false,
+                    },
+                    actions: [],
+                    artifacts: [],
+                    issues: [
+                      {
+                        severity: "critical",
+                        message: `child runtime dispose failed; audit trail may be incomplete: ${disposeMsg}`,
+                        turnIndex: 0,
+                        resolved: false,
+                      },
+                    ],
+                    cost: { totalTokens: 0, inputTokens: 0, outputTokens: 0 },
+                    recommendations: [],
+                  }),
+                ).catch((storeErr: unknown) => {
+                  console.error(
+                    `[agent-spawn] failed to write dispose-error report for child "${childId}"`,
+                    storeErr,
+                  );
+                });
               }
             }
           }
