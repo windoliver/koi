@@ -32,6 +32,29 @@ function fail<T>(e: unknown): Result<T, KoiError> {
 }
 
 // ---------------------------------------------------------------------------
+// In-process serializer for storeWithDedup
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialize storeWithDedup calls so the name+type check and the
+ * subsequent write/update happen without interleaving. Without this,
+ * two concurrent calls with the same (name,type) could both observe
+ * "no match" and both create a record.
+ *
+ * This is an in-process mutex only — cross-process atomicity relies on
+ * MemoryStore's directory file lock. A proper fix would add an atomic
+ * upsert API to MemoryStore itself.
+ */
+// let justified: serialization chain for storeWithDedup
+let dedupChain: Promise<unknown> = Promise.resolve();
+
+function withDedupLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = dedupChain.then(fn, fn);
+  dedupChain = next.catch((): undefined => undefined);
+  return next;
+}
+
+// ---------------------------------------------------------------------------
 // Adapter factory
 // ---------------------------------------------------------------------------
 
@@ -56,41 +79,46 @@ export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryTool
       }
     },
 
-    storeWithDedup: async (input, opts) => {
-      try {
-        // Name+type dedup: find existing record with same name and type.
-        const all = await store.list();
-        const match = all.find((r) => r.name === input.name && r.type === input.type);
+    storeWithDedup: (input, opts) =>
+      withDedupLock(async () => {
+        try {
+          // Name+type dedup: find existing record with same name and type.
+          // Serialized via withDedupLock to prevent TOCTOU races.
+          const all = await store.list();
+          const match = all.find((r) => r.name === input.name && r.type === input.type);
 
-        if (match !== undefined) {
-          if (!opts.force) {
-            const result: StoreWithDedupResult = { action: "conflict", existing: match };
+          if (match !== undefined) {
+            if (!opts.force) {
+              const result: StoreWithDedupResult = { action: "conflict", existing: match };
+              return ok(result);
+            }
+            // Force update: overwrite the existing record's content
+            const updated = await store.update(match.id, {
+              description: input.description,
+              content: input.content,
+            });
+            const result: StoreWithDedupResult = { action: "updated", record: updated.record };
             return ok(result);
           }
-          // Force update: overwrite the existing record's content
-          const updated = await store.update(match.id, {
-            description: input.description,
-            content: input.content,
-          });
-          const result: StoreWithDedupResult = { action: "updated", record: updated.record };
-          return ok(result);
-        }
 
-        // No name+type match → write new (MemoryStore may still Jaccard-dedup
-        // on content similarity; that's transparent to the caller).
-        const writeResult = await store.write(input);
-        if (writeResult.action === "skipped") {
-          // Jaccard content dedup fired. Surface as conflict with the
-          // existing record so the tool can report it.
-          const result: StoreWithDedupResult = { action: "conflict", existing: writeResult.record };
+          // No name+type match → write new (MemoryStore may still Jaccard-dedup
+          // on content similarity; that's transparent to the caller).
+          const writeResult = await store.write(input);
+          if (writeResult.action === "skipped") {
+            // Jaccard content dedup fired. Surface as conflict with the
+            // existing record so the tool can report it.
+            const result: StoreWithDedupResult = {
+              action: "conflict",
+              existing: writeResult.record,
+            };
+            return ok(result);
+          }
+          const result: StoreWithDedupResult = { action: "created", record: writeResult.record };
           return ok(result);
+        } catch (e: unknown) {
+          return fail(e);
         }
-        const result: StoreWithDedupResult = { action: "created", record: writeResult.record };
-        return ok(result);
-      } catch (e: unknown) {
-        return fail(e);
-      }
-    },
+      }),
 
     recall: async (_query, _options) => {
       try {

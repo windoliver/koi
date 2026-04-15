@@ -31,6 +31,8 @@ export interface MemoryRecallMiddlewareConfig {
         readonly modelCall: ModelHandler;
         /** Maximum relevant files to select per turn. Default: 5. */
         readonly maxFiles?: number | undefined;
+        /** Token budget for the relevance overlay. Default: 4000. */
+        readonly maxTokens?: number | undefined;
       }
     | undefined;
 }

@@ -24,7 +24,8 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core";
-import { recallMemories, scanMemoryDirectory } from "@koi/memory";
+import type { ScoredMemory } from "@koi/memory";
+import { formatMemorySection, recallMemories, scanMemoryDirectory } from "@koi/memory";
 import { estimateTokens } from "@koi/token-estimator";
 import type { MemoryManifestEntry } from "./select-relevant.js";
 import { selectRelevantMemories } from "./select-relevant.js";
@@ -129,6 +130,12 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * Run per-turn relevance selection and build an injection message
    * with the selected (non-frozen) memories.
    */
+  /**
+   * Token budget for the relevance overlay. Defaults to 4000 tokens —
+   * half the frozen snapshot budget — to prevent crowding the context.
+   */
+  const relevanceBudget = config.relevanceSelector?.maxTokens ?? 4000;
+
   async function selectRelevant(request: ModelRequest): Promise<InboundMessage | undefined> {
     if (!selectorNeeded || config.relevanceSelector === undefined || memoryManifest.length === 0) {
       return undefined;
@@ -149,25 +156,38 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
 
     if (selectedPaths.length === 0) return undefined;
 
-    // Load selected memory files
-    const contents: string[] = [];
-    for (const filePath of selectedPaths) {
-      const fullPath = `${config.recall.memoryDir}/${filePath}`;
-      const readResult = await config.fs.read(fullPath);
-      if (readResult.ok) {
-        contents.push(`### Relevant memory: ${filePath}\n${readResult.value.content}`);
-      }
+    // Load selected memory files via scan (gets parsed MemoryRecord with frontmatter)
+    const scanResult = await scanMemoryDirectory(config.fs, {
+      memoryDir: config.recall.memoryDir,
+    });
+    const selectedSet = new Set(selectedPaths);
+    const selectedMemories = scanResult.memories.filter((m) => selectedSet.has(m.record.filePath));
+
+    if (selectedMemories.length === 0) return undefined;
+
+    // Wrap as ScoredMemory for the trusted formatter (score=1.0 — all are relevant)
+    const scored: readonly ScoredMemory[] = selectedMemories.map((m) => ({
+      memory: m,
+      salienceScore: 1.0,
+      decayScore: 1.0,
+      typeRelevance: 1.0,
+    }));
+
+    // Format through the SAME trusted path as the frozen snapshot:
+    // <memory-data> escaping, JSON metadata serialization, static headings
+    const formatted = formatMemorySection(scored, {
+      sectionTitle: "Relevant Memories (selected for this query)",
+      trustingRecallNote: true,
+    });
+
+    // Enforce token budget — skip if overlay would exceed limit
+    const overlayTokens = estimateTokens(formatted);
+    if (overlayTokens > relevanceBudget) {
+      return undefined;
     }
 
-    if (contents.length === 0) return undefined;
-
     return {
-      content: [
-        {
-          kind: "text",
-          text: `## Relevant Memories (selected for this query)\n\n${contents.join("\n\n")}`,
-        },
-      ],
+      content: [{ kind: "text", text: formatted }],
       senderId: "system:memory-relevant",
       timestamp: Date.now(),
     };

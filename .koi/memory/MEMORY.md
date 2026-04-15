@@ -1,1 +1,0 @@
-- [Tao's Preferences](tao_s_preferences.md) — Personal preferences for Tao including editor, runtime, database, and food.
