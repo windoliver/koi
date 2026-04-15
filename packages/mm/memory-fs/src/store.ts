@@ -50,6 +50,7 @@ import type {
   MemoryStoreConfig,
   MemoryStoreOperation,
   UpdateResult,
+  UpsertResult,
 } from "./types.js";
 import { DEFAULT_DEDUP_THRESHOLD } from "./types.js";
 
@@ -137,6 +138,21 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
         const records = await scanRecords(ctx.dir);
         await rebuildIndex(ctx.dir, records);
       });
+    },
+    upsert: async (input, opts) => {
+      const errors = validateMemoryRecordInput({ ...input });
+      if (errors.length > 0) {
+        const messages = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
+        throw new Error(`Invalid memory record input: ${messages}`);
+      }
+      const ctx = await getContext();
+      const res = await withDirLock(ctx.canonicalDir, () => upsertRecord(ctx, input, opts.force));
+      // Index rebuild for any action that mutated disk (created or updated).
+      if (res.action === "created" || res.action === "updated") {
+        const indexError = await chainedRebuild(ctx, "upsert");
+        return indexError === undefined ? res : { ...res, indexError };
+      }
+      return res;
     },
   };
 }
@@ -298,6 +314,67 @@ async function deleteRecord(ctx: StoreContext, id: MemoryRecordId): Promise<Dele
   }
 
   return { deleted: true };
+}
+
+async function upsertRecord(
+  ctx: StoreContext,
+  input: MemoryRecordInput,
+  force: boolean,
+): Promise<UpsertResult> {
+  const { dir, threshold } = ctx;
+  const existing = await scanRecords(dir);
+
+  // Step 1: Name+type exact match
+  const nameTypeMatch = existing.find((r) => r.name === input.name && r.type === input.type);
+
+  if (nameTypeMatch !== undefined) {
+    if (!force) {
+      return { action: "conflict", existing: nameTypeMatch };
+    }
+    // Force update — overwrite the matched record's description + content.
+    const updated = await updateRecord(ctx, nameTypeMatch.id, {
+      description: input.description,
+      content: input.content,
+    });
+    return { action: "updated", record: updated.record };
+  }
+
+  // Step 2: Jaccard content dedup (no name+type match found)
+  const dup = findDuplicate(input.content, existing, threshold);
+  if (dup !== undefined) {
+    return {
+      action: "skipped",
+      record: dup.record,
+      duplicateOf: dup.id,
+      similarity: dup.similarity,
+    };
+  }
+
+  // Step 3: Create new record
+  const serialized = serializeMemoryFrontmatter(
+    { name: input.name, description: input.description, type: input.type },
+    input.content,
+  );
+  if (serialized === undefined) {
+    throw new Error("Failed to serialize memory record — invalid frontmatter or empty content");
+  }
+
+  const filename = await writeExclusive(dir, input.name, serialized);
+  const fileStat = await stat(join(dir, filename));
+
+  const persisted = parseMemoryFrontmatter(serialized);
+  const record: MemoryRecord = {
+    id: memoryRecordId(filenameToId(filename)),
+    name: persisted?.frontmatter.name ?? input.name,
+    description: persisted?.frontmatter.description ?? input.description,
+    type: persisted?.frontmatter.type ?? input.type,
+    content: persisted?.content ?? input.content,
+    filePath: filename,
+    createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
+    updatedAt: fileStat.ctimeMs,
+  };
+
+  return { action: "created", record };
 }
 
 async function listRecords(
