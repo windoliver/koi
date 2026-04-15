@@ -21,6 +21,24 @@ describe("detectViolations — positive cases", () => {
     expect(v).toHaveLength(1);
   });
 
+  test("flags `bun --watch test --filter=<pkg>` (Bun-level flag before subcommand)", () => {
+    const v = detectViolations("a.md", "bun --watch test --filter=@koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags `bun --cwd=<dir> test --filter=<pkg>` (= form for Bun flag)", () => {
+    const v = detectViolations(
+      "a.md",
+      "bun --cwd=packages/meta/runtime test --filter=@koi/runtime",
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags `bun test --filter @koi/runtime` (space-separated --filter value)", () => {
+    const v = detectViolations("a.md", "bun test --filter @koi/runtime");
+    expect(v).toHaveLength(1);
+  });
+
   test("flags multiline shell continuation", () => {
     const content = "bun test \\\n  --filter=@koi/runtime";
     const v = detectViolations("a.md", content);
@@ -90,6 +108,16 @@ describe("detectViolations — negative cases", () => {
   test("does not match --filter on a separate logical line", () => {
     const content = "bun test\n\n--filter=foo";
     const v = detectViolations("a.md", content);
+    expect(v).toHaveLength(0);
+  });
+
+  test("does not match across shell command separators", () => {
+    const v = detectViolations("a.md", "bun test ; echo --filter=foo");
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows `bun --watch run test --filter=<pkg>` (canonical with bun flag)", () => {
+    const v = detectViolations("a.md", "bun --watch run test --filter=@koi/runtime");
     expect(v).toHaveLength(0);
   });
 });
