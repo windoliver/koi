@@ -1085,6 +1085,37 @@ describe("createSpawnGuard", () => {
     await p1;
   });
 
+  test("per-turn budget is refunded on pre-admission spawn errors (#1793)", async () => {
+    // Pre-admission failures (resolver NOT_FOUND, VALIDATION, PERMISSION,
+    // RATE_LIMIT, AUTH_REQUIRED) mean the child was never launched — the
+    // parent should not be penalised. Refund keeps later valid spawns
+    // in the same turn admissible.
+    const guard = createSpawnGuard({ agentDepth: 0, policy: { maxFanOut: 2 } });
+    const wrap = getToolWrap(guard);
+    const ctx = mockTurnContext();
+
+    const notFoundNext: ToolNext = mock(() =>
+      Promise.reject(KoiRuntimeError.from("NOT_FOUND", "agent not found")),
+    );
+    const permissionNext: ToolNext = mock(() =>
+      Promise.reject(KoiRuntimeError.from("PERMISSION", "denied")),
+    );
+    const validationNext: ToolNext = mock(() =>
+      Promise.reject(KoiRuntimeError.from("VALIDATION", "bad args")),
+    );
+
+    // Three pre-admission failures — all refunded.
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), notFoundNext)).rejects.toThrow();
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), permissionNext)).rejects.toThrow();
+    await expect(wrap(ctx, mockToolRequest("forge_agent"), validationNext)).rejects.toThrow();
+
+    // Two valid spawns must now succeed — the budget was refunded.
+    const succeedingNext: ToolNext = mock(() => Promise.resolve(mockToolResponse()));
+    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    await wrap(ctx, mockToolRequest("forge_agent"), succeedingNext);
+    expect(succeedingNext).toHaveBeenCalledTimes(2);
+  });
+
   test("failed spawns consume per-turn burst budget (#1793)", async () => {
     // Regression: earlier revisions refunded the per-turn burst budget on
     // every thrown spawn. This is unsafe because the synchronous spawn

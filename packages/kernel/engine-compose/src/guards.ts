@@ -11,6 +11,7 @@ import type {
   Agent,
   GovernanceController,
   InboundMessage,
+  KoiErrorCode,
   KoiMiddleware,
   ModelChunk,
   ModelRequest,
@@ -34,6 +35,21 @@ import {
   DEFAULT_SPAWN_POLICY,
   DEFAULT_SPAWN_TOOL_IDS,
 } from "./guard-types.js";
+
+/**
+ * Error codes that reliably indicate the spawn was rejected BEFORE any
+ * child was admitted/launched. Used to refund the per-turn burst budget
+ * on pre-admission failures so a parent isn't penalised for resolver,
+ * validation, or permission errors. Post-admission failures (TIMEOUT,
+ * INTERNAL, EXTERNAL, child-run crashes) keep the spawn counted.
+ */
+const PRE_ADMISSION_SPAWN_ERROR_CODES: ReadonlySet<KoiErrorCode> = new Set<KoiErrorCode>([
+  "VALIDATION",
+  "NOT_FOUND",
+  "PERMISSION",
+  "RATE_LIMIT",
+  "AUTH_REQUIRED",
+]);
 
 // ---------------------------------------------------------------------------
 // Shared validation helper
@@ -928,18 +944,22 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
       // 6. Execute spawn:
       //    - directChildren always decrements (the in-flight slot is
       //      freed when this tool call unwinds, success or failure).
-      //    - spawnsThisTurn is NOT refunded on throw. Rationale: by the
-      //      time we reach this try block, all guard pre-flight checks
-      //      (depth, fan-out, governance) have already passed, meaning
-      //      the request cleared our admission gate and the downstream
-      //      spawn executor (which may launch the child before later
-      //      reporting failure) has taken over. A thrown error no longer
-      //      means "nothing launched" — e.g. a child that starts and
-      //      then fails during its own run still counts against the
-      //      per-turn burst budget. Refunding would let a parent spam
-      //      failing spawns past the cap.
+      //    - spawnsThisTurn is refunded ONLY when the downstream error
+      //      reliably indicates the child was never admitted — resolver
+      //      NOT_FOUND, VALIDATION, PERMISSION, RATE_LIMIT, AUTH_REQUIRED
+      //      from any middleware before the spawn executor touched the
+      //      child. Post-admission errors (child crashed mid-run, etc.)
+      //      keep the burst consumed: otherwise a parent could spam
+      //      failing children past the cap while they were actually
+      //      running. Plain `Error` from `next()` is treated as
+      //      post-admission (safer default — don't refund).
       try {
         return await next(request);
+      } catch (e: unknown) {
+        if (e instanceof KoiRuntimeError && PRE_ADMISSION_SPAWN_ERROR_CODES.has(e.code)) {
+          spawnsThisTurn--;
+        }
+        throw e;
       } finally {
         directChildren--;
       }
