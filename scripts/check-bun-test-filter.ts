@@ -162,6 +162,35 @@ function isBunTestWithFilter(line: string): boolean {
   return false;
 }
 
+/**
+ * Reconstruct the verifier argv from a koi `--until-pass` repeated-flag
+ * sequence. `koi start --until-pass bun --until-pass test --until-pass
+ * --filter=foo` reassembles to the argv `bun test --filter=foo`, which
+ * is the same broken form we want to flag in plain shell commands.
+ *
+ * Supports both space-separated (`--until-pass <token>`) and `=` form
+ * (`--until-pass=<token>`).
+ */
+function reconstructUntilPassArgv(line: string): string {
+  const tokens = normalizeLine(line).match(/\S+/g) ?? [];
+  const argv: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i] ?? "";
+    if (tok === "--until-pass") {
+      const next = tokens[i + 1];
+      if (next !== undefined) {
+        argv.push(next);
+        i++;
+      }
+      continue;
+    }
+    if (tok.startsWith("--until-pass=")) {
+      argv.push(tok.slice("--until-pass=".length));
+    }
+  }
+  return argv.join(" ");
+}
+
 export function detectViolations(file: string, content: string): Violation[] {
   const violations: Violation[] = [];
   const logical = joinContinuations(content);
@@ -170,11 +199,21 @@ export function detectViolations(file: string, content: string): Violation[] {
     // Split on shell command separators so `foo; bun test --filter=x` is
     // checked as two commands (only the second is a violation).
     const commands = text.split(/[;|&]+/);
+    let flagged = false;
     for (const cmd of commands) {
       if (isBunTestWithFilter(cmd)) {
         violations.push({ file, line: originLine, text: text.trim() });
+        flagged = true;
         break;
       }
+    }
+    if (flagged) continue;
+    // Also reconstruct any koi --until-pass argv stream and check the
+    // assembled verifier command. This catches `--until-pass bun
+    // --until-pass test --until-pass --filter=foo` regressions.
+    const reconstructed = reconstructUntilPassArgv(text);
+    if (reconstructed !== "" && isBunTestWithFilter(reconstructed)) {
+      violations.push({ file, line: originLine, text: text.trim() });
     }
   }
   return violations;

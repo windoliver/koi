@@ -149,3 +149,49 @@ describe("detectViolations — negative cases", () => {
     expect(v).toHaveLength(0);
   });
 });
+
+describe("detectViolations — koi --until-pass argv reconstruction", () => {
+  test("flags repeated `--until-pass` form (loop verifier with bun test --filter)", () => {
+    const v = detectViolations(
+      "a.md",
+      "koi start --until-pass bun --until-pass test --until-pass --filter=@koi/runtime",
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  test("flags multiline `--until-pass` argv across continuations", () => {
+    const content = [
+      'koi start -p "fix" \\',
+      "  --until-pass bun \\",
+      "  --until-pass test \\",
+      "  --until-pass --filter=@koi/runtime",
+    ].join("\n");
+    const v = detectViolations("a.md", content);
+    expect(v).toHaveLength(1);
+    expect(v[0]?.line).toBe(1);
+  });
+
+  test("flags `--until-pass=<value>` form", () => {
+    const v = detectViolations(
+      "a.md",
+      "koi start --until-pass=bun --until-pass=test --until-pass=--filter=@koi/runtime",
+    );
+    expect(v).toHaveLength(1);
+  });
+
+  test("allows canonical `--until-pass bun --until-pass run --until-pass test --until-pass --filter=<pkg>`", () => {
+    const v = detectViolations(
+      "a.md",
+      "koi start --until-pass bun --until-pass run --until-pass test --until-pass --filter=@koi/runtime",
+    );
+    expect(v).toHaveLength(0);
+  });
+
+  test("allows pytest verifier with no bun involvement", () => {
+    const v = detectViolations(
+      "a.md",
+      "koi start --until-pass pytest --until-pass -k --until-pass foo",
+    );
+    expect(v).toHaveLength(0);
+  });
+});
