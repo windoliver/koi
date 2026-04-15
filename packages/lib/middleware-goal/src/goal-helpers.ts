@@ -117,12 +117,18 @@ export function matchesToken(keyword: string, tokens: ReadonlySet<string>): bool
 // Rendering
 // ---------------------------------------------------------------------------
 
-/** Render a markdown todo block from goal items. */
-export function renderGoalBlock(items: readonly GoalItem[], header: string): string {
+/**
+ * Render a markdown todo block from goal items.
+ * Only shows pending (incomplete) goals — completed goals are removed
+ * from the injection block so the model stops seeing them.
+ * Returns undefined when all goals are completed (nothing to inject).
+ */
+export function renderGoalBlock(items: readonly GoalItem[], header: string): string | undefined {
+  const pending = items.filter((i) => !i.completed);
+  if (pending.length === 0) return undefined;
   const lines = [header, ""];
-  for (const item of items) {
-    const mark = item.completed ? "x" : " ";
-    lines.push(`- [${mark}] ${item.text}`);
+  for (const item of pending) {
+    lines.push(`- [ ] ${item.text}`);
   }
   return lines.join("\n");
 }
@@ -131,7 +137,15 @@ export function renderGoalBlock(items: readonly GoalItem[], header: string): str
 // Completion detection
 // ---------------------------------------------------------------------------
 
-const COMPLETION_SIGNALS = /\b(?:completed|done|finished|accomplished)\b|\[x\]|✓|✅/i;
+/**
+ * Signals that indicate an objective was completed. Includes both
+ * explicit completion language ("done", "completed") and tool-action
+ * evidence ("executed", "created", "output") so that tool-based
+ * completions like running `echo "Hello"` for a "print hello" goal
+ * are recognized.
+ */
+const COMPLETION_SIGNALS =
+  /\b(?:completed|done|finished|accomplished|executed|created|printed|wrote|built|fixed|output|succeeded|passed)\b|\[x\]|✓|✅/i;
 
 /**
  * Detect which objectives were completed based on response text.

@@ -752,8 +752,22 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
       }
     },
 
-    async wrapToolCall(_ctx, request, next) {
-      return next(request);
+    async wrapToolCall(ctx, request, next) {
+      const result = await next(request);
+      // Buffer tool output for completion detection — tool results
+      // (e.g., Bash output "Hello") contain evidence that action-oriented
+      // goals like "print hello" were accomplished.
+      const sid = ctx.session.sessionId;
+      const state = sessions.get(sid);
+      if (state) {
+        const turnKey = String(ctx.turnId);
+        const turn = state.turns.get(turnKey);
+        const output = typeof result.output === "string" ? result.output : "";
+        if (turn && output.length > 0) {
+          turn.responseBuffer.push(output);
+        }
+      }
+      return result;
     },
 
     async onSessionEnd(ctx) {

@@ -141,10 +141,20 @@ describe("renderGoalBlock", () => {
     expect(block).toContain("- [ ] Write tests");
   });
 
-  it("renders completed items", () => {
+  it("returns undefined when all items are completed", () => {
     const items = [{ text: "Write tests", completed: true }];
     const block = renderGoalBlock(items, "## Goals");
-    expect(block).toContain("- [x] Write tests");
+    expect(block).toBeUndefined();
+  });
+
+  it("only renders pending items, excludes completed", () => {
+    const items = [
+      { text: "Write tests", completed: true },
+      { text: "Fix bugs", completed: false },
+    ];
+    const block = renderGoalBlock(items, "## Goals");
+    expect(block).not.toContain("Write tests");
+    expect(block).toContain("- [ ] Fix bugs");
   });
 });
 
@@ -1210,19 +1220,17 @@ describe("turn-scoped state (overlap safety)", () => {
     await mw.wrapModelCall?.(ctx0, makeModelRequest(), async () => makeModelResponse("ok"));
     await mw.onAfterTurn?.(ctx0);
 
-    // Turn 1: inject. Injected message should reflect turn 0's completion
-    let injectedText = "";
+    // Turn 1: completed goals are excluded from injection — no goal message
+    let goalInjected = false;
     const ctx1 = makeTurnCtx(session, { turnIndex: 1 });
     await mw.onBeforeTurn?.(ctx1);
     await mw.wrapModelCall?.(ctx1, makeModelRequest(), async (req) => {
-      const goalMsg = req.messages.find((m) => m.senderId === "system:goal");
-      const block = goalMsg?.content.find((b) => b.kind === "text");
-      if (block && block.kind === "text") injectedText = block.text;
+      goalInjected = req.messages.some((m) => m.senderId === "system:goal");
       return makeModelResponse("x");
     });
 
-    // The injected goal block should show [x] for completed goal 0
-    expect(injectedText).toContain("- [x] Write tests");
+    // All goals completed → no goal block injected
+    expect(goalInjected).toBe(false);
   });
 });
 
