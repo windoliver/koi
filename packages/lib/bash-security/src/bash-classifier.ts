@@ -191,8 +191,72 @@ const EXFILTRATION_PATTERNS: readonly ThreatPattern[] = [
   },
 ] as const;
 
-/** All classifier patterns ordered by threat severity (reverse-shell first). */
+/**
+ * Catastrophically destructive patterns — unrecoverable data loss or host
+ * takedown. These block even after a user approves the Bash call, because
+ * "approve Bash once" should not be license to run `rm -rf /`.
+ *
+ * Scope: system-path `rm -rf`, filesystem format, block-device writes, fork
+ * bombs, chmod-777 on root, system shutdown. `rm -rf /tmp/x` and other
+ * workspace-scoped destructive ops are intentionally NOT caught here — the
+ * user's approval remains the authority for workspace-scoped operations.
+ */
+const DESTRUCTIVE_PATTERNS: readonly ThreatPattern[] = [
+  {
+    // rm with both -r and -f (any order, any flag grouping) targeting bare root,
+    // a system top-level dir, `~`, or `$HOME`. Catches `rm -rf /`, `rm -Rf /etc`,
+    // `rm -fr /var`, `rm --recursive --force ~`.
+    // Matches `/`, `/*`, or `/<system_dir>` at a word boundary; whitespace or
+    // end-of-string terminates the target. Workspace-scoped paths like
+    // `/tmp/foo` intentionally do not match (they hit `/tmp` which is not listed).
+    regex:
+      /\brm\b[^\n#]*\s(?:--recursive\s+--force|--force\s+--recursive|-[a-zA-Z]*(?:[rR][a-zA-Z]*[fF]|[fF][a-zA-Z]*[rR])[a-zA-Z]*)[^\n#]*?\s(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
+    category: "destructive",
+    reason: "rm -rf targeting the root, a system directory, or the home directory is unrecoverable",
+  },
+  {
+    // mkfs, mkfs.ext4, mke2fs, mkswap — reformat a filesystem (destroys all data)
+    regex: /\b(?:mkfs(?:\.\w+)?|mke2fs|mkswap)\b/,
+    category: "destructive",
+    reason: "mkfs/mkswap formats a filesystem and destroys all data on the device",
+  },
+  {
+    // dd if=... of=/dev/<disk> — raw block-device write destroys the target disk
+    regex: /\bdd\b[^\n#]*\bof=\/dev\//,
+    category: "destructive",
+    reason: "dd writing to a /dev/ block device destroys all data on the target disk",
+  },
+  {
+    // Classic fork bomb: :(){:|:&};:  (whitespace-tolerant)
+    regex: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
+    category: "destructive",
+    reason: "fork bomb exhausts process slots and wedges the host",
+  },
+  {
+    // chmod -R 777 on root, a system dir, `~`, or `$HOME`. Mirrors the rm -rf
+    // target set — catastrophic permission change across the system.
+    regex:
+      /\bchmod\b[^\n#]*\s-[a-zA-Z]*R[a-zA-Z]*\s+[0-7]*777[0-7]*\s+(?:\/(?:$|\s|\*|etc\b|usr\b|bin\b|boot\b|dev\b|lib(?:32|64)?\b|sbin\b|var\b|opt\b|root\b|srv\b|home\b)|~(?:$|\s)|\$HOME\b)/,
+    category: "destructive",
+    reason: "chmod -R 777 on the root or a system directory is a catastrophic permission change",
+  },
+  {
+    // shutdown / reboot / halt / poweroff — takes the host offline
+    regex: /\b(?:shutdown|reboot|halt|poweroff)\b/,
+    category: "destructive",
+    reason: "shutdown/reboot/halt/poweroff takes the host offline",
+  },
+  {
+    // init 0 (halt) and init 6 (reboot)
+    regex: /\binit\s+[06]\b/,
+    category: "destructive",
+    reason: "init 0/6 halts or reboots the host",
+  },
+] as const;
+
+/** All classifier patterns ordered by threat severity (destructive first). */
 const ALL_CLASSIFIER_PATTERNS: readonly ThreatPattern[] = [
+  ...DESTRUCTIVE_PATTERNS,
   ...REVERSE_SHELL_PATTERNS,
   ...PRIVILEGE_PATTERNS,
   ...PERSISTENCE_PATTERNS,

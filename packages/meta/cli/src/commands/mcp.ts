@@ -26,6 +26,10 @@ import { createCliOAuthRuntime } from "./mcp-oauth-runtime.js";
 export async function run(flags: CliFlags): Promise<ExitCode> {
   if (!isMcpFlags(flags)) return ExitCode.FAILURE;
 
+  // `subcommand` is optional only on the help/version short-circuit path
+  // (see parseMcpFlags). dispatch.ts exits on help/version before run()
+  // is invoked, so a non-defined subcommand reaching here means the
+  // invocation was already invalid — fail closed.
   switch (flags.subcommand) {
     case "list":
       return runList(flags);
@@ -35,6 +39,9 @@ export async function run(flags: CliFlags): Promise<ExitCode> {
       return runLogout(flags);
     case "debug":
       return runDebug(flags);
+    case undefined:
+      process.stderr.write(`error: koi mcp requires a subcommand (list, auth, logout, debug)\n`);
+      return ExitCode.FAILURE;
   }
 }
 

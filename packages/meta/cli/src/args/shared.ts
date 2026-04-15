@@ -2,7 +2,7 @@
  * Shared parser infrastructure — used by all per-command arg modules.
  *
  * Exports: ParseError, BaseFlags, typedParseArgs, parseIntFlag,
- * resolveLogFormat, detectGlobalFlags, extractCommand, GLOBAL_RAW_FLAGS.
+ * resolveLogFormat, detectGlobalFlags, extractCommand.
  */
 
 import { parseArgs as nodeParseArgs } from "node:util";
@@ -83,14 +83,70 @@ export function typedParseArgs<T extends Record<string, string | boolean | strin
     readonly tokens: ReadonlyArray<ParseToken>;
   };
 
-  const knownFlags = new Set(Object.keys(config.options));
-  for (const token of parseResult.tokens) {
-    if (token.kind === "option" && !knownFlags.has(token.name)) {
-      throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
+  // Normalize missing string-option values. Under strict: false,
+  // node:util reports a string option with no following token as
+  // `true` (boolean) instead of undefined. That breaks exported flag
+  // types that declare `string | undefined`, especially on the
+  // help/version path where we don't throw on bad argv. Scan the
+  // options config and coerce any option whose configured type is
+  // "string" but whose parsed value is the boolean `true` to
+  // undefined.
+  const rawValues = parseResult.values as Record<string, string | boolean | string[] | undefined>;
+  for (const [name, spec] of Object.entries(config.options)) {
+    if (spec.type === "string" && rawValues[name] === true) {
+      rawValues[name] = undefined;
+    }
+  }
+
+  // --help and --version follow POSIX/standard CLI convention: when
+  // they appear as the value of a preceding string option (e.g.
+  // `koi start --prompt --help`), node:util's option-arity rules win
+  // and the token is consumed as the string value, not as a control
+  // flag. This matches git, curl, python-argparse, etc. — users who
+  // want help always type `koi start --help` (with no preceding
+  // string flag), which parses cleanly as values.help = true.
+  //
+  // The escape hatch: when --help or --version IS parsed as a real
+  // option (not consumed as a string value), skip unknown-flag
+  // rejection so malformed tails like `koi start --help --typo`
+  // still reach the help/version exit path instead of erroring out
+  // on the stray --typo.
+  const helpOrVersionRequested = rawValues.help === true || rawValues.version === true;
+
+  if (!helpOrVersionRequested) {
+    const knownFlags = new Set(Object.keys(config.options));
+    for (const token of parseResult.tokens) {
+      if (token.kind === "option" && !knownFlags.has(token.name)) {
+        throw new ParseError(`unknown flag ${token.rawName} for 'koi ${command}'`);
+      }
     }
   }
 
   return { values: parseResult.values as T, positionals: parseResult.positionals };
+}
+
+/**
+ * parseIntFlag variant used by the help/version escape hatch: when
+ * `skipValidators` is true and the underlying validator would throw,
+ * return `fallback` instead. Lets parsers continue to build a
+ * shape-complete flags object when the user is only asking for help.
+ */
+export function parseIntFlagSafe(
+  name: string,
+  value: string,
+  min: number,
+  max: number,
+  skipValidators: boolean,
+  fallback: number,
+): number {
+  if (skipValidators) {
+    try {
+      return parseIntFlag(name, value, min, max);
+    } catch {
+      return fallback;
+    }
+  }
+  return parseIntFlag(name, value, min, max);
 }
 
 /**
@@ -121,10 +177,17 @@ export function resolveLogFormat(flagValue: string | undefined): "text" | "json"
 }
 
 export function detectGlobalFlags(argv: readonly string[]): GlobalFlags {
-  return {
-    version: argv.some((a) => a === "--version" || a === "-V"),
-    help: argv.some((a) => a === "--help" || a === "-h"),
-  };
+  // Tokens after `--` are literal operands, not flags: `koi plugin install
+  // -- --help` targets a plugin literally named `--help`, not a help
+  // request. Stop scanning at the first terminator.
+  let version = false;
+  let help = false;
+  for (const a of argv) {
+    if (a === "--") break;
+    if (a === "--version" || a === "-V") version = true;
+    else if (a === "--help" || a === "-h") help = true;
+  }
+  return { version, help };
 }
 
 export function extractCommand(argv: readonly string[]): {
@@ -137,6 +200,3 @@ export function extractCommand(argv: readonly string[]): {
   }
   return { command: first, rest: argv.slice(1) };
 }
-
-/** Stripped from rest before command dispatch so parsers never see them as unknown flags. */
-export const GLOBAL_RAW_FLAGS: ReadonlySet<string> = new Set(["--help", "-h", "--version", "-V"]);

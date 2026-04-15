@@ -43,14 +43,44 @@ Global flags:
 
 const rawArgv = process.argv.slice(2);
 
-if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
-  process.stdout.write(`${VERSION}\n`);
-  process.exit(0);
-}
+// Fast-path: top-level --version / --help exit before loading dispatch.
+// Three gates, all must hold for the fast-path to fire:
+//   1. No subcommand precedes the flag — `koi start --help` must reach
+//      dispatch so it can print the per-command help block (#1729).
+//   2. The flag appears before the first `--` operand terminator —
+//      `koi -- --version` is a literal operand request, not a version
+//      probe. Matches detectGlobalFlags semantics in args/shared.ts so
+//      the parser and entrypoint share one contract.
+//   3. The flag is actually present.
+//
+// Subcommand detection: "first arg exists and is not a flag".
+//
+// Dev-mode testability note: Bun consumes the first `--` from its own
+// argv before the shim sees it, so `bun bin.ts -- --version` can't
+// express this case end-to-end under dev invocation. The behavior is
+// still correct for the installed binary shim, and the `--` scan is
+// unit-tested via detectGlobalFlags/parseArgs in args.test.ts.
+const firstArg = rawArgv[0];
+const hasSubcommand = firstArg !== undefined && !firstArg.startsWith("-");
 
-if (rawArgv.includes("--help") || rawArgv.includes("-h")) {
-  process.stdout.write(HELP);
-  process.exit(0);
+if (!hasSubcommand) {
+  let wantsVersion = false;
+  let wantsHelp = false;
+  for (const a of rawArgv) {
+    if (a === "--") break;
+    if (a === "--version" || a === "-V") wantsVersion = true;
+    else if (a === "--help" || a === "-h") wantsHelp = true;
+  }
+
+  if (wantsVersion) {
+    process.stdout.write(`${VERSION}\n`);
+    process.exit(0);
+  }
+
+  if (wantsHelp) {
+    process.stdout.write(HELP);
+    process.exit(0);
+  }
 }
 
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.

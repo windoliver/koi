@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { typedParseArgs } from "./shared.js";
 
 export interface DoctorFlags extends BaseFlags {
@@ -8,11 +8,13 @@ export interface DoctorFlags extends BaseFlags {
   readonly json: boolean;
 }
 
-export function parseDoctorFlags(rest: readonly string[], g: GlobalFlags): DoctorFlags {
+export function parseDoctorFlags(rest: readonly string[]): DoctorFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly repair: boolean | undefined;
     readonly json: boolean | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -21,6 +23,8 @@ export function parseDoctorFlags(rest: readonly string[], g: GlobalFlags): Docto
         manifest: { type: "string" },
         repair: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
@@ -28,8 +32,8 @@ export function parseDoctorFlags(rest: readonly string[], g: GlobalFlags): Docto
   );
   return {
     command: "doctor" as const,
-    version: g.version,
-    help: g.help,
+    version: values.version ?? false,
+    help: values.help ?? false,
     manifest: values.manifest ?? positionals[0],
     repair: values.repair ?? false,
     json: values.json ?? false,

@@ -1,4 +1,4 @@
-import type { BaseFlags, GlobalFlags } from "./shared.js";
+import type { BaseFlags } from "./shared.js";
 import { parseIntFlag, resolveLogFormat, typedParseArgs } from "./shared.js";
 
 export interface ServeFlags extends BaseFlags {
@@ -9,12 +9,14 @@ export interface ServeFlags extends BaseFlags {
   readonly logFormat: "text" | "json";
 }
 
-export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeFlags {
+export function parseServeFlags(rest: readonly string[]): ServeFlags {
   type V = {
     readonly manifest: string | undefined;
     readonly port: string | undefined;
     readonly verbose: boolean | undefined;
     readonly "log-format": string | undefined;
+    readonly help: boolean | undefined;
+    readonly version: boolean | undefined;
   };
   const { values, positionals } = typedParseArgs<V>(
     {
@@ -24,20 +26,57 @@ export function parseServeFlags(rest: readonly string[], g: GlobalFlags): ServeF
         port: { type: "string", short: "p" },
         verbose: { type: "boolean", short: "v", default: false },
         "log-format": { type: "string" },
+        help: { type: "boolean", short: "h", default: false },
+        version: { type: "boolean", short: "V", default: false },
       },
       allowPositionals: true,
     },
     "serve",
   );
+  const helpRequested = values.help ?? false;
+  const versionRequested = values.version ?? false;
+  const skipValidators = helpRequested || versionRequested;
+
   return {
     command: "serve" as const,
-    version: g.version,
-    help: g.help,
+    version: versionRequested,
+    help: helpRequested,
     manifest: values.manifest ?? positionals[0],
-    port: values.port !== undefined ? parseIntFlag("port", values.port, 1, 65535) : undefined,
+    port:
+      values.port !== undefined
+        ? parseIntFlagOrUndefined("port", values.port, 1, 65535, skipValidators)
+        : undefined,
     verbose: values.verbose ?? false,
-    logFormat: resolveLogFormat(values["log-format"]),
+    logFormat: resolveLogFormatOrText(values["log-format"], skipValidators),
   };
+}
+
+function parseIntFlagOrUndefined(
+  name: string,
+  value: string,
+  min: number,
+  max: number,
+  skip: boolean,
+): number | undefined {
+  if (skip) {
+    try {
+      return parseIntFlag(name, value, min, max);
+    } catch {
+      return undefined;
+    }
+  }
+  return parseIntFlag(name, value, min, max);
+}
+
+function resolveLogFormatOrText(raw: string | undefined, skip: boolean): "text" | "json" {
+  if (skip) {
+    try {
+      return resolveLogFormat(raw);
+    } catch {
+      return "text";
+    }
+  }
+  return resolveLogFormat(raw);
 }
 
 export function isServeFlags(flags: BaseFlags): flags is ServeFlags {

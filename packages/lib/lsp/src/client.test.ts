@@ -21,10 +21,12 @@ const TEST_CONFIG: ResolvedLspServerConfig = {
   timeoutMs: 30_000,
 };
 
+const textEncoder = new TextEncoder();
+
 function encodeMessage(message: JsonRpcMessage): Uint8Array {
   const body = JSON.stringify(message);
   const header = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n`;
-  return Buffer.from(header + body);
+  return textEncoder.encode(header + body);
 }
 
 interface MockTransportOptions {

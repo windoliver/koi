@@ -80,6 +80,7 @@ Output (truncated):
 7. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
 8. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
 9. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
+10. **Destructive-pattern defense-in-depth** (#1721): the classifier includes a `destructive` category covering catastrophic shell ops — `rm -rf` on system paths (`/`, `/etc`, `/usr`, `/bin`, etc.), `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`/`halt`/`poweroff`, `init 0/6`. These fire inside `bash-tool.ts`'s execution path **after** the permission modal, so a session-wide `[a] Always allow Bash` grant does not authorize catastrophic commands. Workspace-scoped ops (`rm -rf /tmp/x`, `rm -rf node_modules`) are intentionally not caught.
 
 ## OS-Level Sandboxing
 

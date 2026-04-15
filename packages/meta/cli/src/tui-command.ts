@@ -78,7 +78,8 @@ import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
-import { createSigintHandler, createUnrefTimer } from "./sigint-handler.js";
+import { createUnrefTimer } from "./sigint-handler.js";
+import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -956,6 +957,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
     // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
     ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
+    // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
+    // every model/tool call is recorded as a hash-chained NDJSON entry.
+    ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
+      ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
+      : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
@@ -1086,17 +1093,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // plausible dual-path delivery delay, so it defends the first tap
   // without blocking a legitimate force double-tap.
   const TUI_COALESCE_WINDOW_MS = 150;
-  const sigintHandler = createSigintHandler({
-    onGraceful: () => {
-      // Idle sessions (no active stream) have nothing to cancel, so the
-      // first Ctrl+C quits the TUI — matching the standard single-SIGINT
-      // termination convention. When a stream IS active, abort it and let
-      // the user stay in the TUI; a second Ctrl+C within 2s forces exit.
-      if (activeController === null) {
-        void shutdown(130);
-        return;
-      }
-      abortActiveStream();
+  const TUI_DOUBLE_TAP_WINDOW_MS = 2000;
+  // Wiring for the three-way graceful SIGINT action + the bg-wait
+  // self-disarm timer is extracted into `createTuiSigintHandler`
+  // (see tui-graceful-sigint.ts) so the state matrix — including the
+  // #1772 idle-with-background case and its post-double-tap disarm —
+  // can be unit-tested without spinning up a TUI or runtime.
+  const sigintHandler = createTuiSigintHandler({
+    hasActiveForegroundStream: () => activeController !== null,
+    hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
+    abortActiveStream,
+    onShutdown: () => {
+      void shutdown(130);
     },
     onForce: () => {
       // Force path: abort the active foreground stream FIRST so no
@@ -1121,7 +1129,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     write: (msg: string) => {
       process.stderr.write(msg);
     },
-    doubleTapWindowMs: 2000,
+    doubleTapWindowMs: TUI_DOUBLE_TAP_WINDOW_MS,
     coalesceWindowMs: TUI_COALESCE_WINDOW_MS,
     setTimer: createUnrefTimer,
   });
@@ -2672,6 +2680,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
       const controller = new AbortController();
       activeController = controller;
+
+      // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
+      // review r2). If the user tapped Ctrl+C while idle with background
+      // work running, the handler was left armed for the duration of
+      // the double-tap window — if they then submit a new prompt inside
+      // that window, a single Ctrl+C to cancel the new turn would be
+      // treated as the second tap of the stale sequence and force-exit
+      // the TUI. `complete()` is a no-op when the handler is idle, so
+      // this is safe to call unconditionally at every turn start.
+      sigintHandler.complete();
 
       // Inject a synthetic turn-boundary step so /trajectory can group steps
       // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
