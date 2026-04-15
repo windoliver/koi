@@ -123,7 +123,7 @@ interface AuditMiddlewareConfig {
 ## Tests
 
 ```bash
-bun test --filter=@koi/middleware-audit
+bun run test --filter=@koi/middleware-audit
 ```
 
 Test files:

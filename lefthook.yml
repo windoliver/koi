@@ -10,6 +10,11 @@ pre-commit:
       skip:
         - merge
         - rebase
+    bun-test-filter:
+      run: bun scripts/check-bun-test-filter.ts --staged
+      skip:
+        - merge
+        - rebase
 
 pre-push:
   parallel: true
