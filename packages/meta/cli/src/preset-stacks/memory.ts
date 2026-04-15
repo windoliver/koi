@@ -1,131 +1,88 @@
 /**
- * Memory preset stack — in-memory memory backend + memory tool provider
+ * Memory preset stack — file-backed memory storage + tools + recall injection
  * + extraction middleware.
  *
  * Bundles everything related to "stored learnings" into a single stack:
  *
- *   - A clearable in-memory `MemoryToolBackend` (Map-based, wiped on
- *     `onResetSession`).
+ *   - A file-backed MemoryStore via @koi/memory-fs, adapted to the
+ *     MemoryToolBackend interface consumed by memory tools.
  *   - The memory tool provider that exposes memory_store / memory_recall
- *     / memory_search / memory_delete tools to the model.
+ *     / memory_search / memory_delete tools to the model (with
+ *     SkillComponent behavioral guidance).
+ *   - The recall middleware that injects a frozen snapshot of recalled
+ *     memories at session start (scan → score → budget → format).
  *   - The extraction middleware that harvests structured takeaways from
- *     spawn tool outputs and stores them as `MemoryRecord` entries.
+ *     spawn tool outputs and stores them as MemoryRecord entries.
  *
  * Exports:
- *   - `memoryBackend` — the clearable backend, so other callers (rewind,
- *     debug inspection) can peek at the records.
+ *   - `memoryDir` — the resolved absolute path to the memory directory,
+ *     so other callers (debug inspection) can find persisted memories.
  */
 
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { MemoryRecord, MemoryRecordInput } from "@koi/core";
-import { memoryRecordId } from "@koi/core";
-import type { MemoryToolBackend } from "@koi/memory-tools";
+import { mkdir } from "node:fs/promises";
+import type { MemoryRecord } from "@koi/core";
+import { createLocalFileSystem } from "@koi/fs-local";
+import { createMemoryStore, resolveMemoryDir } from "@koi/memory-fs";
 import { createMemoryToolProvider } from "@koi/memory-tools";
 import { createExtractionMiddleware } from "@koi/middleware-extraction";
+import { createMemoryRecallMiddleware } from "@koi/middleware-memory-recall";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
-
-/** In-memory MemoryToolBackend with session-scoped clear(). */
-export interface ClearableMemoryBackend extends MemoryToolBackend {
-  /** Clear all stored memories — called on session reset. */
-  readonly clear: () => void;
-}
+import { createMemoryToolBackendFromStore } from "./memory-adapter.js";
 
 export const MEMORY_EXPORTS = {
-  memoryBackend: "memoryBackend",
+  memoryDir: "memoryDir",
 } as const;
-
-function createInMemoryMemoryBackend(): ClearableMemoryBackend {
-  const records = new Map<string, MemoryRecord>();
-  // let: mutable counter for ID generation
-  let counter = 0;
-
-  return {
-    store: (input: MemoryRecordInput) => {
-      counter += 1;
-      const id = memoryRecordId(`mem-${counter}`);
-      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
-      const now = Date.now();
-      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
-      records.set(id, record);
-      return { ok: true as const, value: record };
-    },
-    storeWithDedup: (input: MemoryRecordInput, opts: { readonly force: boolean }) => {
-      const match = [...records.values()].find(
-        (r) => r.name === input.name && r.type === input.type,
-      );
-      if (match !== undefined) {
-        if (!opts.force) {
-          return { ok: true as const, value: { action: "conflict" as const, existing: match } };
-        }
-        const updated = {
-          ...match,
-          description: input.description,
-          content: input.content,
-          updatedAt: Date.now(),
-        } as MemoryRecord;
-        records.set(match.id, updated);
-        return { ok: true as const, value: { action: "updated" as const, record: updated } };
-      }
-      counter += 1;
-      const id = memoryRecordId(`mem-${counter}`);
-      const filePath = `${input.name.toLowerCase().replace(/\s+/g, "_")}.md`;
-      const now = Date.now();
-      const record: MemoryRecord = { id, ...input, filePath, createdAt: now, updatedAt: now };
-      records.set(id, record);
-      return { ok: true as const, value: { action: "created" as const, record } };
-    },
-    recall: (_query, _options) => {
-      return { ok: true as const, value: [...records.values()] };
-    },
-    search: (filter) => {
-      const all = [...records.values()];
-      const filtered = filter.type !== undefined ? all.filter((r) => r.type === filter.type) : all;
-      return { ok: true as const, value: filtered };
-    },
-    delete: (id) => {
-      const wasPresent = records.has(id);
-      records.delete(id);
-      return { ok: true as const, value: { wasPresent } };
-    },
-    findByName: (name, type) => {
-      const match = [...records.values()].find(
-        (r) => r.name === name && (type === undefined || r.type === type),
-      );
-      return { ok: true as const, value: match };
-    },
-    get: (id) => {
-      return { ok: true as const, value: records.get(id) };
-    },
-    update: (id, patch) => {
-      const existing = records.get(id);
-      if (existing === undefined)
-        return {
-          ok: false as const,
-          error: { code: "NOT_FOUND" as const, message: "not found", retryable: false },
-        };
-      const updated = { ...existing, ...patch, updatedAt: Date.now() } as MemoryRecord;
-      records.set(id, updated);
-      return { ok: true as const, value: updated };
-    },
-    clear: () => {
-      records.clear();
-      counter = 0;
-    },
-  };
-}
 
 export const memoryStack: PresetStack = {
   id: "memory",
-  description: "In-memory memory backend + memory tools + spawn extraction middleware",
-  activate: (ctx): StackContribution => {
-    const memoryBackend = createInMemoryMemoryBackend();
-    const memoryDir = join(tmpdir(), `koi-${ctx.hostId}-memory`);
+  description: "File-backed memory store + tools + recall injection + extraction middleware",
+  activate: async (ctx): Promise<StackContribution> => {
+    // Resolve the memory directory for this worktree
+    const resolved = await resolveMemoryDir(ctx.cwd);
+    const memoryDir = resolved.dir;
+
+    // Ensure directory exists before creating backends
+    await mkdir(memoryDir, { recursive: true });
+
+    // File-backed store: each memory is a .md file with frontmatter
+    const store = createMemoryStore({ dir: memoryDir });
+
+    // Adapt MemoryStore → MemoryToolBackend for the tool provider
+    const memoryBackend = createMemoryToolBackendFromStore(store);
+
+    // Memory tool provider (store/recall/search/delete + SkillComponent guidance)
     const memoryProviderResult = createMemoryToolProvider({
       backend: memoryBackend,
       memoryDir,
     });
 
+    if (!memoryProviderResult.ok) {
+      console.warn(
+        `[memory-stack] memory tool provider failed to build: ${memoryProviderResult.error.message}`,
+      );
+    }
+
+    // FileSystemBackend for the recall middleware (reads .md files from disk)
+    const memoryFs = createLocalFileSystem(memoryDir);
+
+    // Frozen-snapshot recall middleware: scans memory dir once per session,
+    // injects formatted memories into every model call. When a model adapter
+    // is available, enables per-turn relevance selection (lightweight side-query
+    // picks the most relevant memories for the current user message).
+    const recallMw = createMemoryRecallMiddleware({
+      fs: memoryFs,
+      recall: { memoryDir },
+      ...(ctx.modelAdapter !== undefined
+        ? {
+            relevanceSelector: {
+              modelCall: ctx.modelAdapter.complete,
+              maxFiles: 5,
+            },
+          }
+        : {}),
+    });
+
+    // Extraction middleware: harvests learnings from spawn tool outputs
     const extractionMw = createExtractionMiddleware({
       memory: {
         async recall() {
@@ -138,25 +95,27 @@ export const memoryStack: PresetStack = {
           }));
         },
         async store(content: string, options?: { readonly category?: string | undefined }) {
-          memoryBackend.store({
+          const result = await memoryBackend.store({
             name: `extracted-${Date.now()}`,
             description: options?.category ?? "extracted learning",
             type: "feedback",
             content,
           });
+          if (!result.ok) {
+            console.warn(`[memory-stack] extraction store failed: ${result.error.message}`);
+          }
         },
       },
     });
 
     return {
-      middleware: [extractionMw],
+      middleware: [recallMw, extractionMw],
       providers: memoryProviderResult.ok ? [memoryProviderResult.value] : [],
       exports: {
-        [MEMORY_EXPORTS.memoryBackend]: memoryBackend,
+        [MEMORY_EXPORTS.memoryDir]: memoryDir,
       },
-      onResetSession: () => {
-        memoryBackend.clear();
-      },
+      // No onResetSession — persisted memories survive session resets.
+      // The recall middleware resets its frozen cache via onSessionStart.
     };
   },
 };
