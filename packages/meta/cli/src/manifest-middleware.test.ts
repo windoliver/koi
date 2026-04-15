@@ -926,36 +926,47 @@ describe("resolveManifestMiddleware — phase/priority forced slot", () => {
     expect(names.indexOf("hostile")).toBeLessThan(names.indexOf("session-transcript"));
   });
 
-  test("preserves class-based middleware prototype + methods when normalizing", async () => {
-    // Codex round-loop-2 round 4: a shallow spread stripped the
-    // prototype, which broke class-based middleware returned from
-    // host/plugin registries. Verify that a class instance with
-    // a prototype method survives normalization.
+  test("adapter preserves class-based private state via bound hook delegation", async () => {
+    // Codex round-loop-2 rounds 4+5: the normalization must keep
+    // the inner class's private fields reachable from hook
+    // invocations. Clone strategies (object-spread, Object.create)
+    // cannot copy JavaScript private fields, so the normalizer
+    // uses a delegating adapter that keeps the original instance
+    // alive and binds every hook to the inner `this`.
+    //
+    // The test middleware has a `#private` counter that its
+    // `describeCapabilities` hook increments. After zone-B
+    // normalization, calling the hook through the returned
+    // adapter must still mutate the inner's private state.
     class CustomMiddleware {
-      readonly name = "custom-class";
-      // wrapModelCall is defined on the prototype, not as an own
-      // property. A spread would not copy it; Object.create with
-      // getOwnPropertyDescriptors must preserve the prototype chain.
-      wrapModelCall(): void {}
+      readonly name = "custom-private";
+      #callCount = 0;
+      describeCapabilities(): { label: string } {
+        this.#callCount += 1;
+        return { label: `calls=${this.#callCount}` };
+      }
     }
     const registry = new MiddlewareRegistry();
-    registry.register("@koi/class-mw", () => new CustomMiddleware() as unknown as KoiMiddleware);
+    const instance = new CustomMiddleware();
+    registry.register("@koi/private-mw", () => instance as unknown as KoiMiddleware);
     const resolved = await resolveManifestMiddleware(
-      [{ name: "@koi/class-mw", options: undefined, enabled: true }],
+      [{ name: "@koi/private-mw", options: undefined, enabled: true }],
       registry,
       stubCtx(),
     );
     expect(resolved.length).toBe(1);
     const mw = resolved[0];
     if (mw === undefined) throw new Error("expected resolved middleware");
-    expect(mw.name).toBe("custom-class");
+    expect(mw.name).toBe("custom-private");
     expect(mw.phase).toBe("resolve");
     expect(mw.priority).toBe(500);
-    // Prototype chain preserved → wrapModelCall still callable.
-    expect(typeof (mw as unknown as CustomMiddleware).wrapModelCall).toBe("function");
-    // The normalized object is a separate instance but shares the
-    // prototype; `instanceof` still works.
-    expect(mw instanceof CustomMiddleware).toBe(true);
+    // Hook invocations must route to the inner instance so private
+    // fields remain reachable. Calling twice proves the counter
+    // mutates the same instance (not a snapshotted clone).
+    const first = mw.describeCapabilities?.({} as never) as { label: string } | undefined;
+    const second = mw.describeCapabilities?.({} as never) as { label: string } | undefined;
+    expect(first?.label).toBe("calls=1");
+    expect(second?.label).toBe("calls=2");
   });
 
   test("multiple zone B entries land on the forced slot and keep declared order", async () => {

@@ -246,34 +246,83 @@ export async function resolveManifestMiddleware(
     // a low priority could leapfrog the security layers. By rewriting
     // the slot at resolution time, every zone B entry provably runs
     // after `exfiltration-guard`, `permissions`, and `hooks`.
-    // Preserve the factory's original prototype chain and all own
-    // property descriptors (including accessors and non-enumerable
-    // fields) when overriding phase/priority. A shallow spread
-    // (`{...fromFactory}`) would strip prototypes, drop getter
-    // semantics, and lose any non-enumerable `wrapModelCall`/
-    // `onSessionEnd`/etc. hooks that a class-based KoiMiddleware
-    // implementation might expose. Class-based middleware returned
-    // from a host/plugin registry would then resolve to a broken
-    // stub at the zone-B slot.
-    const normalized = Object.create(
-      Object.getPrototypeOf(fromFactory),
-      Object.getOwnPropertyDescriptors(fromFactory),
-    ) as KoiMiddleware;
-    Object.defineProperty(normalized, "phase", {
-      value: ZONE_B_PHASE,
-      writable: false,
-      enumerable: true,
-      configurable: true,
-    });
-    Object.defineProperty(normalized, "priority", {
-      value: ZONE_B_PRIORITY,
-      writable: false,
-      enumerable: true,
-      configurable: true,
-    });
-    resolved.push(normalized);
+    // Zone-B slot normalization uses a delegating adapter rather
+    // than cloning the factory's result. Cloning (Object.create or
+    // object-spread) cannot preserve JavaScript private fields
+    // (`#foo` / internal slots), so any host/plugin middleware
+    // implemented as a class with private state would resolve
+    // successfully and then throw the first time a prototype
+    // method touched that state. The adapter keeps the original
+    // object identity alive: every hook invocation routes through
+    // `.bind(fromFactory)` so method calls execute against the
+    // untouched instance with its private fields intact. Only the
+    // adapter's outer `phase` and `priority` are visible to the
+    // engine's sort, which is exactly the zone-B slot guarantee.
+    resolved.push(adaptToZoneBSlot(fromFactory));
   }
   return resolved;
+}
+
+/**
+ * Wrap a middleware instance in a delegating adapter that forces
+ * zone-B scheduling (phase + priority) without mutating or cloning
+ * the inner object.
+ *
+ * Every optional hook on `KoiMiddleware` is forwarded with
+ * `.bind(inner)` when present, which:
+ *   1. Keeps the method's `this` pointing at the real instance so
+ *      private fields (`#foo`), getters, and other non-serializable
+ *      state continue to work.
+ *   2. Preserves the hook's absence when the factory did not
+ *      provide it (returning `undefined` means the engine skips
+ *      that step, which matches the inner's intent).
+ *
+ * The required `describeCapabilities` hook is wrapped with a
+ * non-optional forwarder; the engine asserts it exists on every
+ * middleware, and binding preserves its `this` reference.
+ *
+ * `concurrent` is forwarded as a plain value — it's advisory for
+ * the engine's observe-phase scheduler, not a function, so there
+ * is no `this` to preserve.
+ */
+function adaptToZoneBSlot(inner: KoiMiddleware): KoiMiddleware {
+  return {
+    name: inner.name,
+    phase: ZONE_B_PHASE,
+    priority: ZONE_B_PRIORITY,
+    ...(inner.concurrent !== undefined ? { concurrent: inner.concurrent } : {}),
+    ...(inner.onSessionStart !== undefined
+      ? { onSessionStart: inner.onSessionStart.bind(inner) }
+      : {}),
+    ...(inner.onSessionEnd !== undefined ? { onSessionEnd: inner.onSessionEnd.bind(inner) } : {}),
+    ...(inner.onBeforeTurn !== undefined ? { onBeforeTurn: inner.onBeforeTurn.bind(inner) } : {}),
+    ...(inner.onAfterTurn !== undefined ? { onAfterTurn: inner.onAfterTurn.bind(inner) } : {}),
+    ...(inner.onBeforeStop !== undefined ? { onBeforeStop: inner.onBeforeStop.bind(inner) } : {}),
+    ...(inner.wrapModelCall !== undefined
+      ? { wrapModelCall: inner.wrapModelCall.bind(inner) }
+      : {}),
+    ...(inner.wrapModelStream !== undefined
+      ? { wrapModelStream: inner.wrapModelStream.bind(inner) }
+      : {}),
+    ...(inner.wrapToolCall !== undefined ? { wrapToolCall: inner.wrapToolCall.bind(inner) } : {}),
+    ...(inner.onPermissionDecision !== undefined
+      ? { onPermissionDecision: inner.onPermissionDecision.bind(inner) }
+      : {}),
+    ...(inner.onConfigChange !== undefined
+      ? { onConfigChange: inner.onConfigChange.bind(inner) }
+      : {}),
+    // `describeCapabilities` is required by the KoiMiddleware
+    // interface, but stub/test middleware often omit it. Bind
+    // through when present; otherwise fall back to a no-op that
+    // returns `undefined`, which the engine treats as "skip
+    // injection." This mirrors the typical production pattern
+    // (return undefined unless the middleware needs to advertise
+    // a capability fragment).
+    describeCapabilities:
+      typeof inner.describeCapabilities === "function"
+        ? inner.describeCapabilities.bind(inner)
+        : (): undefined => undefined,
+  };
 }
 
 /**

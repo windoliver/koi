@@ -477,6 +477,58 @@ describe("createKoiRuntime — zone B manifest middleware", () => {
     runtimeHandle = null;
   });
 
+  test("manifest middleware cleanup is idempotent across repeated dispose() calls", async () => {
+    // Codex round-loop-2 round 5 finding #2: dispose must be a
+    // no-op on second call. Without a latch, retry-idempotent
+    // shutdown paths would re-invoke sink.close() on an
+    // already-ended writer and throw.
+    let cleanupCount = 0;
+    const registry = new MiddlewareRegistry();
+    registry.register("test/idempotent-probe", (_entry, ctx) => {
+      ctx.registerShutdown(() => {
+        cleanupCount += 1;
+      });
+      return stubManifestMiddleware("idempotent-probe");
+    });
+    const handle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/idempotent-probe", options: undefined, enabled: true }],
+    });
+    await handle.runtime.dispose();
+    expect(cleanupCount).toBe(1);
+    await handle.runtime.dispose();
+    expect(cleanupCount).toBe(1);
+    runtimeHandle = null;
+  });
+
+  test("manifest middleware cleanup failure propagates as AggregateError from dispose()", async () => {
+    // Codex round-loop-2 round 5 finding #3: cleanup failures
+    // were previously downgraded to warnings, letting audit flush
+    // failures appear as successful shutdown. dispose now throws.
+    const registry = new MiddlewareRegistry();
+    registry.register("test/failing-cleanup", (_entry, ctx) => {
+      ctx.registerShutdown(async () => {
+        throw new Error("simulated flush failure");
+      });
+      return stubManifestMiddleware("failing-cleanup");
+    });
+    const handle = await createKoiRuntime({
+      ...makeConfig(),
+      stacks: STACKS_WITHOUT_SPAWN,
+      middlewareRegistry: registry,
+      manifestMiddleware: [{ name: "test/failing-cleanup", options: undefined, enabled: true }],
+    });
+    await expect(handle.runtime.dispose()).rejects.toThrow(
+      /manifest-middleware shutdown had 1 failure/,
+    );
+    // After a failing cleanup, a second dispose should NOT re-run
+    // hooks (they are latched as done) and must be a clean no-op.
+    await expect(handle.runtime.dispose()).resolves.toBeUndefined();
+    runtimeHandle = null;
+  });
+
   test("manifest middleware shutdown hooks NOT fired by shutdownBackgroundTasks", async () => {
     // Sibling of the previous test: shutdownBackgroundTasks is
     // called by hosts BEFORE dispose to drain bg work. If it
