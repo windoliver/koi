@@ -30,6 +30,7 @@
 import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
+import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
@@ -49,6 +50,7 @@ import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
 import { resolveFsPath } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
+import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
@@ -271,6 +273,18 @@ export interface KoiRuntimeConfig {
    *   otel: { captureContent: true, meter: myMeter }
    */
   readonly otel?: OtelMiddlewareConfig | true | false | undefined;
+
+  /**
+   * Opt-in security-grade audit logging via `@koi/middleware-audit` +
+   * `@koi/audit-sink-ndjson`. When set, every model/tool call is recorded
+   * as a hash-chained NDJSON entry at this path.
+   *
+   * The TUI surfaces this via the `KOI_AUDIT_NDJSON` environment variable
+   * — set to an absolute file path before launching `koi tui`. Any
+   * existing file is appended to. Sink resources (writer, timer) are
+   * owned by the runtime and closed during shutdown.
+   */
+  readonly auditNdjsonPath?: string | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -932,6 +946,26 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/checkpoint").Checkpoint
     | undefined;
 
+  // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
+  // Build the NDJSON sink + hash-chained audit middleware when the host
+  // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
+  // owns both the middleware and the underlying sink's writer/timer;
+  // `shutdownBackgroundTasks` below flushes and closes on shutdown.
+  // let: retained so shutdown can flush+close.
+  let auditMwForShutdown:
+    | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+    | undefined;
+  const auditPresetExtras: KoiMiddleware[] = [];
+  if (config.auditNdjsonPath !== undefined) {
+    const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
+    const auditMw = createAuditMiddleware({ sink: auditSink });
+    auditPresetExtras.push(auditMw);
+    auditMwForShutdown = {
+      flush: () => auditMw.flush(),
+      close: () => auditSink.close(),
+    };
+  }
+
   // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
   // The ordering (outermost → innermost) is defined in one place —
   // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -945,7 +979,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? { modelRouter: config.modelRouterMiddleware }
       : {}),
     ...(goalMw !== undefined ? { goal: goalMw } : {}),
-    presetExtras: stackContribution.middleware,
+    presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
     ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
     ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
   });
@@ -1217,6 +1251,28 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // configHotReload is factory-bootstrap, not a stack feature —
       // dispose directly.
       configHotReload?.dispose();
+      // Flush + close runtime-owned audit sink (opt-in via
+      // config.auditNdjsonPath). Fire-and-forget because
+      // shutdownBackgroundTasks is sync; any error is logged but does
+      // not block shutdown. The process exits after this returns, so
+      // the fire-and-forget close must complete synchronously relative
+      // to the event loop before exit — createNdjsonAuditSink drains
+      // its internal timer queue synchronously on close().
+      if (auditMwForShutdown !== undefined) {
+        const audit = auditMwForShutdown;
+        void (async () => {
+          try {
+            await audit.flush();
+            await audit.close();
+          } catch (err) {
+            console.warn(
+              `[koi/${hostId}] audit shutdown failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        })();
+      }
       return hadWork;
     },
   };

@@ -127,3 +127,20 @@ const result = await createLspComponentProvider({
 - No git-ignore filtering of `findReferences`/`gotoDefinition` results (tracked as future improvement)
 - No LSP `textDocument/completion` support (agents don't need autocomplete)
 - No `textDocument/rename` support (agents use text editing tools instead)
+
+## Runtime wiring (#1778)
+
+`@koi/runtime.createRuntime` accepts an optional `config.lsp: LspProviderConfig`. Because LSP startup spawns language-server subprocesses and runs a JSON-RPC `initialize` handshake, `createRuntime` exposes LSP via a lazy thunk on `RuntimeHandle.lspProvider`:
+
+```ts
+const handle = createRuntime({ lsp: { servers: [...] } });
+// No subprocesses spawned yet.
+const { provider, clients, failures } = await handle.lspProvider!();
+const koi = await createKoi({ manifest, adapter, providers: [provider] });
+```
+
+A runtime created and disposed without ever calling `handle.lspProvider()` does not spawn any subprocesses. When the caller did invoke it, `runtime.dispose()` awaits the cached startup to completion, then releases pooled clients via `lsp.pool.release()` (fail-closed fallback to `client.close()` on error) or closes them directly — mirroring the ref-counted detach semantics of the provider so warm pooled capacity is not double-released.
+
+## TS 6 compatibility note
+
+`src/jsonrpc.test.ts` and `src/client.test.ts` use a local `TextEncoder` + `concatU8` helper for building test payloads (previously `Buffer.from(string)` / `Buffer.concat([...])`). The change is test-only and resolves TS 6 typecheck errors (`Buffer<ArrayBufferLike>` is no longer structurally assignable to `Uint8Array<ArrayBufferLike>`). Runtime behavior unchanged.

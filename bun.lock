@@ -511,6 +511,7 @@
       },
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
@@ -527,6 +528,7 @@
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
         "@koi/memory-tools": "workspace:*",
+        "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",

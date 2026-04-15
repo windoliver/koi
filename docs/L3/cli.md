@@ -157,6 +157,8 @@ koi tui
 | `OPENAI_API_KEY` | one of these | — | Key for OpenAI (`api.openai.com/v1`) |
 | `KOI_MODEL` | no | `anthropic/claude-sonnet-4-6` | Model name passed to the provider |
 | `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
+| `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call (requires a tracer provider registered before launch) |
+| `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
