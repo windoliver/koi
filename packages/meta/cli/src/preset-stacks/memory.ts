@@ -95,12 +95,15 @@ export const memoryStack: PresetStack = {
           }));
         },
         async store(content: string, options?: { readonly category?: string | undefined }) {
-          memoryBackend.store({
+          const result = await memoryBackend.store({
             name: `extracted-${Date.now()}`,
             description: options?.category ?? "extracted learning",
             type: "feedback",
             content,
           });
+          if (!result.ok) {
+            console.warn(`[memory-stack] extraction store failed: ${result.error.message}`);
+          }
         },
       },
     });

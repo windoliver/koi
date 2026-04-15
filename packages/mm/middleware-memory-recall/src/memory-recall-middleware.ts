@@ -239,15 +239,14 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // Layer 1: frozen snapshot (stable prefix)
       let effectiveRequest = injectFrozenSnapshot(request);
 
-      // Layer 2: per-turn relevance overlay (appended after frozen)
+      // Layer 2: per-turn relevance overlay — appended AFTER the transcript
+      // so the frozen snapshot + transcript prefix stays stable for prompt
+      // cache reuse. Turn-specific content at the end doesn't break the cache.
       if (config.relevanceSelector !== undefined) {
         try {
           const relevantMsg = await selectRelevant(request);
           if (relevantMsg !== undefined) {
-            // Insert after frozen snapshot, before user messages
-            const frozenCount = cachedMessage !== undefined ? 1 : 0;
-            const messages = [...effectiveRequest.messages];
-            messages.splice(frozenCount, 0, relevantMsg);
+            const messages = [...effectiveRequest.messages, relevantMsg];
             effectiveRequest = { ...effectiveRequest, messages };
           }
         } catch (_e: unknown) {
@@ -273,9 +272,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         try {
           const relevantMsg = await selectRelevant(request);
           if (relevantMsg !== undefined) {
-            const frozenCount = cachedMessage !== undefined ? 1 : 0;
-            const messages = [...effectiveRequest.messages];
-            messages.splice(frozenCount, 0, relevantMsg);
+            const messages = [...effectiveRequest.messages, relevantMsg];
             effectiveRequest = { ...effectiveRequest, messages };
           }
         } catch (_e: unknown) {
