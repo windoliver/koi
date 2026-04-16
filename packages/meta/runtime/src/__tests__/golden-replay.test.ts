@@ -3666,20 +3666,22 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(recallOutput).toContain('"results"');
     // The recalled record must include the stored content — proves full round-trip
     expect(recallOutput).toContain("testing approach");
+    // #1725: filePath must NOT appear in recall output (stripped at tool level)
+    expect(recallOutput).not.toContain('"filePath"');
 
-    // Final model turn: derived from tool output, not hardcoded
+    // Final model turn: must reference recall-specific content, not just store output
     const modelSteps = steps.filter(
       (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
     );
     expect(modelSteps.length).toBeGreaterThanOrEqual(2); // initial intent + post-tool summary
     const finalModel = modelSteps[modelSteps.length - 1];
     const finalText = finalModel?.response?.text ?? "";
-    // Proves the second turn saw real tool output (not a hardcoded stub)
+    // Proves the final turn saw real tool output — must include recall/memory content
     expect(finalText.length).toBeGreaterThan(0);
     expect(
       finalText.includes("testing_approach") ||
         finalText.includes("memories") ||
-        finalText.includes("stored"),
+        finalText.includes("Retrieved"),
     ).toBe(true);
 
     // Hook + MW spans present
