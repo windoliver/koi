@@ -16,7 +16,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { EngineEvent } from "@koi/core";
 import { COMMAND_DEFINITIONS, createEventBatcher, createInitialState, createStore } from "@koi/tui";
-import { drainEngineStream, renderTranscriptMarkdown, summarizeRunReport } from "./tui-command.js";
+import {
+  computeLiveMcpStatus,
+  drainEngineStream,
+  renderTranscriptMarkdown,
+  summarizeRunReport,
+} from "./tui-command.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -777,5 +782,47 @@ describe("onCommand dispatch coverage — #1752", () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeLiveMcpStatus — #1852 regression: stdio servers must never be
+// labeled `needs-auth` when the resolver returns `AUTH_REQUIRED` from a
+// pattern-matched stderr string.
+// ---------------------------------------------------------------------------
+
+describe("computeLiveMcpStatus", () => {
+  test("undefined failureCode → connected for any transport", () => {
+    expect(computeLiveMcpStatus(undefined, "stdio")).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, "http")).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, "sse")).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, undefined)).toBe("connected");
+  });
+
+  test("AUTH_REQUIRED on stdio → error (#1852)", () => {
+    // Regression: pattern-matched 'unauthorized' on stdio stderr previously
+    // surfaced as needs-auth, an impossible state for a transport without
+    // an OAuth flow.
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "stdio")).toBe("error");
+  });
+
+  test("AUTH_REQUIRED on sse → error (no OAuth flow)", () => {
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "sse")).toBe("error");
+  });
+
+  test("AUTH_REQUIRED on http → needs-auth", () => {
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "http")).toBe("needs-auth");
+  });
+
+  test("AUTH_REQUIRED with unknown transport → needs-auth (plugin OAuth fallback)", () => {
+    // Plugin-sourced entries don't carry transport info; preserve existing
+    // behavior so a plugin HTTP+OAuth server still surfaces needs-auth.
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", undefined)).toBe("needs-auth");
+  });
+
+  test("non-auth failure code → error for any transport", () => {
+    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "stdio")).toBe("error");
+    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "http")).toBe("error");
+    expect(computeLiveMcpStatus("INTERNAL", undefined)).toBe("error");
   });
 });

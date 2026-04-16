@@ -278,6 +278,31 @@ function mapSourceState(status: { readonly state: string }): string {
 }
 
 /**
+ * Compute the `/mcp` view status label for an MCP server from the resolver
+ * failure code and the server's configured transport kind.
+ *
+ * `needs-auth` is reserved for HTTP transport — stdio and SSE have no OAuth
+ * flow, so an `AUTH_REQUIRED` surfaced for those transports is a pattern-
+ * matched false positive (`@koi/mcp` maps any error containing `unauthorized`
+ * / `HTTP 401` / `invalid_token` / `authentication required` to that code,
+ * and a stdio subprocess may write those strings to stderr for unrelated
+ * reasons). Surface those as a generic `error` instead. When the transport
+ * is unknown (plugin-provided servers), keep existing behavior and allow
+ * `needs-auth` through (plugin HTTP+OAuth servers remain labelled correctly).
+ *
+ * @internal — exported for unit tests only.
+ */
+export function computeLiveMcpStatus(
+  failureCode: string | undefined,
+  transport: "http" | "stdio" | "sse" | undefined,
+): "connected" | "needs-auth" | "error" {
+  if (failureCode === undefined) return "connected";
+  if (failureCode !== "AUTH_REQUIRED") return "error";
+  if (transport === "stdio" || transport === "sse") return "error";
+  return "needs-auth";
+}
+
+/**
  * Build a compact run-report summary string for the TUI's `/trajectory` view
  * without serializing the full report tree. Avoids the avoidable
  * `JSON.stringify` of nested `childReports` on every refresh, which can
@@ -2847,12 +2872,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
                       name: l.name,
-                      status:
-                        l.failureCode === undefined
-                          ? ("connected" as const)
-                          : l.failureCode === "AUTH_REQUIRED"
-                            ? ("needs-auth" as const)
-                            : ("error" as const),
+                      // Plugin-provided servers — transport is unknown here,
+                      // so pass undefined and preserve existing behavior for
+                      // plugin HTTP+OAuth servers.
+                      status: computeLiveMcpStatus(l.failureCode, undefined),
                       toolCount: l.toolCount,
                       detail: l.failureMessage ?? "plugin",
                     })),
@@ -2861,6 +2884,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               }
               return;
             }
+
+            // Build name → transport map for background enrichment: the live
+            // resolver collapses pattern-matched stderr strings like
+            // "unauthorized" into `AUTH_REQUIRED`, so stdio servers could
+            // otherwise surface as `needs-auth` — impossible for a transport
+            // with no OAuth flow. See #1852.
+            const transportByName = new Map<string, "http" | "stdio" | "sse">(
+              config.value.servers.map((s) => [s.name, s.kind]),
+            );
 
             // Check token storage for each OAuth server — fast Keychain lookup, no network
             const storage = createSecureStorage();
@@ -2920,29 +2952,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
-                  const liveStatus: "connected" | "needs-auth" | "error" =
-                    l.failureCode === undefined
-                      ? "connected"
-                      : l.failureCode === "AUTH_REQUIRED"
-                        ? "needs-auth"
-                        : "error";
                   return {
                     name: entry.name,
-                    status: liveStatus,
+                    status: computeLiveMcpStatus(l.failureCode, transportByName.get(entry.name)),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
-                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json.
+                // Transport is unknown for plugin-sourced entries — undefined
+                // preserves current `needs-auth` behavior for plugin OAuth.
                 for (const l of liveOther) {
                   enriched.push({
                     name: l.name,
-                    status:
-                      l.failureCode === undefined
-                        ? "connected"
-                        : l.failureCode === "AUTH_REQUIRED"
-                          ? "needs-auth"
-                          : "error",
+                    status: computeLiveMcpStatus(l.failureCode, undefined),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? "plugin",
                   });
