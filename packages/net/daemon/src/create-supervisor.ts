@@ -13,6 +13,12 @@ import type {
 } from "@koi/core";
 import { DEFAULT_WORKER_RESTART_POLICY, validateSupervisorConfig } from "@koi/core";
 
+/**
+ * Internal pool entry. `restartAttempts` and `restartTimestamps` are mutated
+ * in place by the watch loop (Task 5) — do NOT copy the entry to a new
+ * object when updating, which would require banned `as` casts. Mutate the
+ * existing map entry's counters directly via the Map reference.
+ */
 interface PoolEntry {
   readonly handle: WorkerHandle;
   readonly backend: WorkerBackend;
@@ -44,7 +50,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     return undefined;
   };
 
-  const start: Supervisor["start"] = async (request, overrides?) => {
+  const start: Supervisor["start"] = async (request, overrides) => {
     if (pool.size >= config.maxWorkers) {
       return {
         ok: false,
@@ -102,11 +108,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     return out;
   };
 
-  const watchAll: Supervisor["watchAll"] = () => {
+  const emptyEvents: readonly WorkerEvent[] = [];
+  const watchAll: Supervisor["watchAll"] = async function* (): AsyncIterable<WorkerEvent> {
     // Implemented in Task 7
-    return (async function* (): AsyncGenerator<WorkerEvent> {
-      yield* [] as WorkerEvent[];
-    })();
+    yield* emptyEvents;
   };
 
   return { ok: true, value: { start, stop, shutdown, list, watchAll } };

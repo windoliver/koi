@@ -39,4 +39,19 @@ describe("createSupervisor.start", () => {
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error.code).toBe("RESOURCE_EXHAUSTED");
   });
+
+  it("prefers subprocess backend when multiple are registered", async () => {
+    const { backend: inProcess } = createFakeBackend("in-process");
+    const { backend: subprocess } = createFakeBackend("subprocess");
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 1000,
+      backends: { subprocess, "in-process": inProcess },
+    });
+    expect(supervisorResult.ok).toBe(true);
+    if (!supervisorResult.ok) return;
+    const started = await supervisorResult.value.start(makeRequest("w1"));
+    expect(started.ok).toBe(true);
+    if (started.ok) expect(started.value.backendKind).toBe("subprocess");
+  });
 });

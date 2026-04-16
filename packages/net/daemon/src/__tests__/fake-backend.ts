@@ -2,6 +2,7 @@ import type {
   KoiError,
   Result,
   WorkerBackend,
+  WorkerBackendKind,
   WorkerEvent,
   WorkerHandle,
   WorkerId,
@@ -10,10 +11,10 @@ import type {
 
 interface FakeWorkerState {
   alive: boolean;
-  controller: AbortController;
-  events: WorkerEvent[];
-  listeners: Array<(ev: WorkerEvent) => void>;
-  emit: (ev: WorkerEvent) => void;
+  readonly controller: AbortController;
+  readonly events: WorkerEvent[];
+  readonly listeners: Array<(ev: WorkerEvent) => void>;
+  readonly emit: (ev: WorkerEvent) => void;
 }
 
 export interface FakeBackendControls {
@@ -24,11 +25,11 @@ export interface FakeBackendControls {
   readonly liveWorkerCount: () => number;
 }
 
-export function createFakeBackend(): FakeBackendControls {
+export function createFakeBackend(kind: WorkerBackendKind = "in-process"): FakeBackendControls {
   const workers = new Map<WorkerId, FakeWorkerState>();
 
   const backend: WorkerBackend = {
-    kind: "in-process",
+    kind,
     displayName: "fake",
     isAvailable: () => true,
     spawn: async (req: WorkerSpawnRequest): Promise<Result<WorkerHandle, KoiError>> => {
@@ -49,7 +50,7 @@ export function createFakeBackend(): FakeBackendControls {
       const handle: WorkerHandle = {
         workerId: req.workerId,
         agentId: req.agentId,
-        backendKind: "in-process",
+        backendKind: kind,
         startedAt: Date.now(),
         signal: controller.signal,
       };
