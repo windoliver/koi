@@ -197,7 +197,11 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     mounts = ready.mounts ?? [];
   } catch (e: unknown) {
     lineReader.release();
-    proc.kill();
+    try {
+      proc.kill();
+    } catch {
+      // Bridge may have already exited (e.g. procExit race) — proceed to drain stderr.
+    }
     const stderr = await collectStderr(proc);
     // If stderr drain timed out, the process ignored SIGTERM — force kill it.
     try {
