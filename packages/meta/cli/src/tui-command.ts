@@ -1588,11 +1588,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     onForce: () => {
       // One-shot: subsequent force signals during in-flight teardown
-      // escalate to immediate exit rather than re-entering dispose.
-      if (forceStarted) {
-        process.exit(130);
-        return;
-      }
+      // are no-ops. The first force call has its own hard-exit timer
+      // and SIGKILL escalation wait — re-entering would spawn
+      // overlapping dispose sequences. We do NOT process.exit()
+      // immediately here because that would cancel the SIGKILL
+      // escalation window and orphan SIGTERM-resistant subprocesses.
+      if (forceStarted) return;
       forceStarted = true;
       // Force path: abort the active foreground stream FIRST so no
       // further model/tool work can execute during the exit window,
