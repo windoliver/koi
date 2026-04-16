@@ -1471,12 +1471,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           kind: "set_mcp_status",
           servers: live.map((l) => ({
             name: l.name,
-            status:
-              l.failureCode === undefined
-                ? ("connected" as const)
-                : l.failureCode === "AUTH_REQUIRED"
-                  ? ("needs-auth" as const)
-                  : ("error" as const),
+            // transport is now threaded through McpServerStatus from getMcpStatus(),
+            // so startup refresh uses the same authoritative source as nav:mcp enrichment.
+            status: computeLiveMcpStatus(l.failureCode, l.transport),
             toolCount: l.toolCount,
             detail: l.failureMessage,
           })),
@@ -2872,10 +2869,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
                       name: l.name,
-                      // Plugin-provided servers — transport is unknown here,
-                      // so pass undefined and preserve existing behavior for
-                      // plugin HTTP+OAuth servers.
-                      status: computeLiveMcpStatus(l.failureCode, undefined),
+                      status: computeLiveMcpStatus(l.failureCode, l.transport),
                       toolCount: l.toolCount,
                       detail: l.failureMessage ?? "plugin",
                     })),
@@ -2884,15 +2878,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               }
               return;
             }
-
-            // Build name → transport map for background enrichment: the live
-            // resolver collapses pattern-matched stderr strings like
-            // "unauthorized" into `AUTH_REQUIRED`, so stdio servers could
-            // otherwise surface as `needs-auth` — impossible for a transport
-            // with no OAuth flow. See #1852.
-            const transportByName = new Map<string, "http" | "stdio" | "sse">(
-              config.value.servers.map((s) => [s.name, s.kind]),
-            );
 
             // Check token storage for each OAuth server — fast Keychain lookup, no network
             const storage = createSecureStorage();
@@ -2948,24 +2933,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     liveOther.push(l);
                   }
                 }
-                // Enrich config-based entries with live data (match by bare name)
+                // Enrich config-based entries with live data (match by bare name).
+                // Use l.transport from McpServerStatus (threaded from config in getMcpStatus)
+                // rather than the closure transportByName map — both carry the same data but
+                // l.transport also covers plugin-provided servers correctly.
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
                   return {
                     name: entry.name,
-                    status: computeLiveMcpStatus(l.failureCode, transportByName.get(entry.name)),
+                    status: computeLiveMcpStatus(l.failureCode, l.transport),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
                 // Append plugin-provided servers (source-prefixed) not in .mcp.json.
-                // Transport is unknown for plugin-sourced entries — undefined
-                // preserves current `needs-auth` behavior for plugin OAuth.
                 for (const l of liveOther) {
                   enriched.push({
                     name: l.name,
-                    status: computeLiveMcpStatus(l.failureCode, undefined),
+                    status: computeLiveMcpStatus(l.failureCode, l.transport),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? "plugin",
                   });

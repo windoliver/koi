@@ -52,6 +52,10 @@ export const mcpStack: PresetStack = {
       exports: {
         ...(userMcpSetup !== undefined ? { mcpResolver: userMcpSetup.resolver } : {}),
         ...(pluginMcpSetup !== undefined ? { mcpPluginResolver: pluginMcpSetup.resolver } : {}),
+        ...(userMcpSetup !== undefined ? { mcpTransportByName: userMcpSetup.transportByName } : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginTransportByName: pluginMcpSetup.transportByName }
+          : {}),
       },
       onShutdown: () => {
         // Best-effort dispose. Neither setup has background work that

@@ -72,6 +72,8 @@ export interface McpSetup {
   readonly bridge: SkillsMcpBridge | undefined;
   /** Disposes the bridge (if any) and the underlying resolver. Idempotent. */
   readonly dispose: () => void;
+  /** Transport kind per server name — used to gate `needs-auth` to HTTP only. */
+  readonly transportByName: ReadonlyMap<string, "http" | "stdio" | "sse">;
 }
 
 /** Absolute path of `~/.koi/hooks.json` — the single user-tier hook source. */
@@ -236,6 +238,7 @@ export async function loadUserMcpSetup(
       bridge?.dispose();
       resolver.dispose();
     },
+    transportByName: new Map(result.value.servers.map((s) => [s.name, s.kind])),
   };
 }
 
@@ -286,6 +289,7 @@ export function buildPluginMcpSetup(
     dispose: () => {
       resolver.dispose();
     },
+    transportByName: new Map(pluginMcpServers.map((s) => [s.name, s.kind])),
   };
 }
 
