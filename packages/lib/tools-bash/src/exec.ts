@@ -15,10 +15,17 @@ import type { SandboxAdapter, SandboxProfile } from "@koi/core";
 /** Grace period before escalating SIGTERM to SIGKILL on cancellation. */
 export const SIGKILL_ESCALATION_MS = 3_000;
 
-/** Safe minimal environment for spawned bash processes. */
+/**
+ * Safe minimal environment for spawned bash processes.
+ *
+ * HOME defaults to /tmp — a neutral directory that prevents subprocess
+ * tools from reading config/credentials from a potentially injected
+ * $HOME. Callers that have validated home ownership should pass a
+ * trusted home via `buildSafeEnv({ home })`.
+ */
 export const SAFE_ENV: Readonly<Record<string, string>> = {
   PATH: "/usr/local/bin:/usr/bin:/bin",
-  HOME: process.env.HOME ?? "/tmp",
+  HOME: "/tmp",
   LANG: "en_US.UTF-8",
   LC_ALL: "en_US.UTF-8",
   TERM: "dumb",

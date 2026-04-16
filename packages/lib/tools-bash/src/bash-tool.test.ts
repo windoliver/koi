@@ -502,9 +502,16 @@ describe("buildSafeEnv", () => {
     expect(env.HOME).toBe("/validated/home");
   });
 
-  test("keeps default HOME when no home provided", () => {
+  test("keeps safe HOME (/tmp) when no home provided", () => {
     const env = buildSafeEnv({ pathExtensions: ["/some/path"] });
-    expect(env.HOME).toBe(SAFE_ENV.HOME);
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("SAFE_ENV.HOME is /tmp, not process.env.HOME", () => {
+    // Regression: SAFE_ENV.HOME must be a neutral safe default, not
+    // the parent process HOME, to prevent injected HOME from steering
+    // subprocess config/credentials.
+    expect(SAFE_ENV.HOME).toBe("/tmp");
   });
 
   test("rejects empty string entries (POSIX cwd injection)", () => {
