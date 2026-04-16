@@ -88,8 +88,18 @@ async function scanDiscoveredEntries(
       try {
         content = await Bun.file(skillMdPath).text();
       } catch {
-        // Unreadable — keep the entry; load() will surface the error.
-        return { name, entry, blocking: [] as readonly ScanFinding[] };
+        // Unreadable at discovery time — fail closed. Reserve the name as
+        // blocked so the unscanned body cannot surface via discover()/
+        // query()/describeCapabilities, and so operators get a PERMISSION
+        // signal from load()/loadAll() instead of a silent NOT_FOUND.
+        const finding: ScanFinding = {
+          rule: "unreadable-skill-body",
+          severity: "HIGH",
+          confidence: 1.0,
+          category: "UNPARSEABLE",
+          message: `SKILL.md could not be read at discovery time: ${skillMdPath}`,
+        };
+        return { name, entry, blocking: [finding] as readonly ScanFinding[] };
       }
 
       const report = scanner.scanSkill(content);
@@ -291,6 +301,20 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // window, so rapid successive invalidations cannot be lost.
   const pendingRescan = new Map<string, number>();
   let nextPendingGen = 0;
+  // Issue #1722 round 2: names whose SKILL.md was unreadable at discovery
+  // time (transient I/O, atomic replace, etc.). These are kept in
+  // `blockedEntry` fail-closed, and are auto-promoted to `pendingRescan`
+  // on discover() calls where `Date.now() >= nextRetryAt` — so transient
+  // unreadable states recover without requiring an explicit
+  // `invalidate(name)`, but a stable permission problem does not flood
+  // the runtime with rescans on every discover()/load()/query() call.
+  // Value is the earliest timestamp (ms) at which the next auto-retry is
+  // allowed. Exponential backoff: start at ~250ms, double per failure,
+  // capped at 60s.
+  const quarantinedUnreadable = new Map<string, number>();
+  const quarantineBackoff = new Map<string, number>();
+  const QUARANTINE_MIN_BACKOFF_MS = 250;
+  const QUARANTINE_MAX_BACKOFF_MS = 60_000;
   // Issue #1722: inflight dedup for the targeted rescan path — concurrent
   // discover()/load()/query() callers join the same pending rescan rather
   // than observing stale discoveredMetaMap/blockedEntry during the await.
@@ -373,7 +397,25 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // retry cap: the loop converges naturally once invalidate() stops
     // firing, and any bounded cap would turn routine editor/watcher
     // churn into a visible availability regression.
+    //
+    // Issue #1722 round 2: auto-promote quarantined-unreadable entries to
+    // `pendingRescan` once per outer call. Doing this once (not once per
+    // while-loop iteration) prevents an infinite loop when rescan returns
+    // a "keep" decision for a still-unreadable skill.
+    let autoPromotedUnreadable = false;
     while (true) {
+      if (!autoPromotedUnreadable && quarantinedUnreadable.size > 0) {
+        const now = Date.now();
+        for (const [name, nextRetryAt] of quarantinedUnreadable) {
+          if (now < nextRetryAt) continue;
+          if (!pendingRescan.has(name)) {
+            nextPendingGen += 1;
+            pendingRescan.set(name, nextPendingGen);
+          }
+        }
+        autoPromotedUnreadable = true;
+      }
+
       // Issue #1722: if a targeted rescan is already in flight, join it
       // before reading cached state. This closes the race where a
       // concurrent caller would otherwise observe the pre-rescan
@@ -435,31 +477,39 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
                 case "promoted":
                   nextBlocked.delete(n);
                   nextDiscovered.set(n, decision.entry);
-                  // The skill is leaving the blocked map: drop any
-                  // previously cached PERMISSION load result so the next
-                  // load() picks up the now-clean body fresh.
                   cache.delete(n);
                   loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
                   break;
                 case "stillBlocked":
                   nextBlocked.set(n, { entry: decision.entry, findings: decision.findings });
-                  // Still blocked — any cached external or clean body for
-                  // this name must be evicted.
                   cache.delete(n);
                   loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
                   break;
                 case "released":
                   nextBlocked.delete(n);
                   nextDiscovered.delete(n);
                   cache.delete(n);
                   loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
                   break;
-                case "keep":
-                  // Transient I/O or unreadable — leave maps alone. A
-                  // subsequent invalidate(name) is the explicit retry
-                  // trigger; we must clear the pending entry now or the
-                  // while loop in discover() spins forever.
+                case "keep": {
+                  // Transient I/O or unreadable — leave maps alone and
+                  // schedule the next auto-retry with exponential backoff
+                  // capped at QUARANTINE_MAX_BACKOFF_MS. This gives
+                  // persistent permission failures a bounded recovery
+                  // path without flooding the runtime with rescans on
+                  // every call.
+                  const prev = quarantineBackoff.get(n) ?? QUARANTINE_MIN_BACKOFF_MS;
+                  const next = Math.min(prev * 2, QUARANTINE_MAX_BACKOFF_MS);
+                  quarantineBackoff.set(n, next);
+                  quarantinedUnreadable.set(n, Date.now() + next);
                   break;
+                }
               }
               pendingRescan.delete(n);
             }
@@ -535,6 +585,18 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
               blockedEntry = split.blocked;
               discoveredMetaMap = buildMergedMetaMap(split.clean, externalSkills, split.blocked);
               lastExternalRef = externalSkills;
+              // Refresh the quarantined-unreadable set so the next
+              // discover() auto-retries any skill that was only blocked
+              // because its body could not be read at discovery time.
+              // Initial retry window is 0 (immediate) — the backoff only
+              // kicks in after the first failed rescan.
+              quarantinedUnreadable.clear();
+              quarantineBackoff.clear();
+              for (const [n, be] of split.blocked) {
+                if (be.findings.some((f) => f.rule === "unreadable-skill-body")) {
+                  quarantinedUnreadable.set(n, 0);
+                }
+              }
             }
             discoverInflight = undefined;
             if (!result.ok) return result;
@@ -743,6 +805,8 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       rescanInflight = undefined;
       blockedEntry = new Map();
       pendingRescan.clear();
+      quarantinedUnreadable.clear();
+      quarantineBackoff.clear();
       externalSkills = new Map();
       lastExternalRef = externalSkills;
       cache.clear();
@@ -767,6 +831,13 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       if (blockedEntry.has(name)) {
         nextPendingGen += 1;
         pendingRescan.set(name, nextPendingGen);
+        // Reset backoff: an explicit invalidate is the retry trigger, so
+        // the next discover() should attempt immediately regardless of
+        // any auto-retry cooldown in progress.
+        quarantineBackoff.delete(name);
+        if (quarantinedUnreadable.has(name)) {
+          quarantinedUnreadable.set(name, 0);
+        }
       }
     }
   };

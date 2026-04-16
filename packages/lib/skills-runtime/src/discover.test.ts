@@ -13,7 +13,7 @@
  * instead of the previous DiscoveredSkills shape with separate .skills and .dirPaths maps.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverSkills } from "./discover.js";
@@ -381,6 +381,147 @@ describe("discover-time security scan (issue #1722)", () => {
     expect(result.value.get("scary-skill")).toBeDefined();
     expect(findings.length).toBeGreaterThan(0);
     expect(findings[0]?.name).toBe("scary-skill");
+  });
+
+  test("unreadable SKILL.md at discovery is quarantined, not admitted", async () => {
+    // Regression for review round 1 (round 2 of the second loop): if
+    // `SKILL.md` cannot be read during discover() — transient I/O,
+    // permission failure, atomic replace mid-walk — the skill must NOT
+    // surface via discover()/query(). It must be reserved as blocked so
+    // load()/loadAll() return PERMISSION for operator visibility.
+    //
+    // We simulate unreadable by chmod-ing the SKILL.md to 000 after the
+    // filesystem walk has matched it.
+    const skillDir = join(userRoot, "unreadable-skill");
+    const skillMd = join(skillDir, "SKILL.md");
+    const malicious = `---\nname: unreadable-skill\ndescription: Will be locked.\n---\n\nBody.\n`;
+    await Bun.write(skillMd, malicious, { createPath: true });
+    await chmod(skillMd, 0o000);
+
+    await writeSkillDir(userRoot, "clean-neighbor");
+
+    try {
+      const runtime = createSkillsRuntime({
+        bundledRoot: null,
+        userRoot,
+        projectRoot,
+      });
+
+      const result = await runtime.discover();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Unreadable skill must not be in the advertised metadata.
+      expect(result.value.get("unreadable-skill")).toBeUndefined();
+      // Clean neighbor still surfaces.
+      expect(result.value.get("clean-neighbor")).toBeDefined();
+
+      // loadAll() must surface the unreadable skill as PERMISSION so
+      // operators see why it was withheld — not NOT_FOUND.
+      const allResult = await runtime.loadAll();
+      expect(allResult.ok).toBe(true);
+      if (!allResult.ok) return;
+      const unreadable = allResult.value.get("unreadable-skill");
+      expect(unreadable?.ok).toBe(false);
+      if (unreadable && !unreadable.ok) {
+        expect(unreadable.error.code).toBe("PERMISSION");
+      }
+    } finally {
+      // Restore perms so afterEach rm can clean up.
+      await chmod(skillMd, 0o644).catch(() => {});
+    }
+  });
+
+  test("unreadable quarantine auto-recovers on next discover() once file becomes readable", async () => {
+    // Regression for review round 2: transient unreadable states must
+    // self-heal without an explicit invalidate(name). After chmod 000
+    // quarantines the skill, chmod'ing it back to readable should make
+    // the next discover() call pick it up.
+    const skillDir = join(userRoot, "flaky-read");
+    const skillMd = join(skillDir, "SKILL.md");
+    const content = `---\nname: flaky-read\ndescription: Becomes readable.\n---\n\nBody.\n`;
+    await Bun.write(skillMd, content, { createPath: true });
+    await chmod(skillMd, 0o000);
+
+    try {
+      const runtime = createSkillsRuntime({
+        bundledRoot: null,
+        userRoot,
+        projectRoot,
+      });
+
+      const first = await runtime.discover();
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      // Quarantined fail-closed.
+      expect(first.value.get("flaky-read")).toBeUndefined();
+
+      // File becomes readable again — no explicit invalidate.
+      await chmod(skillMd, 0o644);
+
+      const second = await runtime.discover();
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      // Auto-recovered.
+      expect(second.value.get("flaky-read")).toBeDefined();
+
+      const loadResult = await runtime.load("flaky-read");
+      expect(loadResult.ok).toBe(true);
+    } finally {
+      await chmod(skillMd, 0o644).catch(() => {});
+    }
+  });
+
+  test("persistent unreadable skill does not auto-rescan on every discover() call", async () => {
+    // Regression for review round 3: a single permanently unreadable
+    // skill must not force rescans on every discover()/load()/query()
+    // call. After one failed auto-retry, recovery requires explicit
+    // invalidate(name) — otherwise a single bad file degrades every
+    // discovery-backed operation.
+    const skillDir = join(userRoot, "stuck");
+    const skillMd = join(skillDir, "SKILL.md");
+    const content = `---\nname: stuck\ndescription: Permanently locked.\n---\n\nBody.\n`;
+    await Bun.write(skillMd, content, { createPath: true });
+    await chmod(skillMd, 0o000);
+
+    try {
+      const runtime = createSkillsRuntime({
+        bundledRoot: null,
+        userRoot,
+        projectRoot,
+      });
+
+      // First discover() — walks, quarantines.
+      const first = await runtime.discover();
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.get("stuck")).toBeUndefined();
+
+      // Second discover() — auto-retries once, still unreadable, clears
+      // the quarantine so subsequent calls stay on the fast path.
+      const second = await runtime.discover();
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.get("stuck")).toBeUndefined();
+
+      // Reference identity: the 3rd call must return the exact same map
+      // as the 2nd — proving no further filesystem rescans happened.
+      const third = await runtime.discover();
+      expect(third.ok).toBe(true);
+      if (!third.ok) return;
+      expect(third.value).toBe(second.value);
+
+      // Explicit invalidate(name) is the recovery path. After chmod
+      // readable + invalidate, the next discover() picks it up.
+      await chmod(skillMd, 0o644);
+      runtime.invalidate("stuck");
+
+      const fourth = await runtime.discover();
+      expect(fourth.ok).toBe(true);
+      if (!fourth.ok) return;
+      expect(fourth.value.get("stuck")).toBeDefined();
+    } finally {
+      await chmod(skillMd, 0o644).catch(() => {});
+    }
   });
 
   test("clean skills pass through unchanged", async () => {
