@@ -787,6 +787,17 @@ export interface CoreProvidersConfig {
    */
   readonly includeFilesystemTools?: boolean;
   /**
+   * Explicit filesystem backend to use for `fs_read` / `fs_write` / `fs_edit`
+   * tools. When provided, this backend is used directly; otherwise the
+   * helper creates a default `@koi/fs-local` backend rooted at `cwd` with
+   * `allowExternalPaths: true`.
+   *
+   * Pass this when the session uses a non-local filesystem (e.g. a Nexus
+   * backend created by `resolveFileSystemAsync`) so tools and the
+   * checkpoint middleware share the same backend instance and discriminator.
+   */
+  readonly filesystemBackend?: import("@koi/core").FileSystemBackend | undefined;
+  /**
    * Subset of filesystem operations to expose as tools. When omitted,
    * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
@@ -832,7 +843,10 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     // backend path — pre-resolving them via resolveFileSystem would
     // build a local backend without `allowExternalPaths`, tightening
     // the sandbox relative to the host-default path.
-    const fs = createLocalFileSystem(cwd, { allowExternalPaths: true });
+    //
+    // Use the caller-supplied backend when provided (e.g. a Nexus backend
+    // from resolveFileSystemAsync); otherwise create the default local one.
+    const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
     // Operation gating: `undefined` means "wire all three" (the default
     // for host-default filesystems). Manifest-driven filesystems apply
     // the `FileSystemConfig` contract's `["read"]` default at the host

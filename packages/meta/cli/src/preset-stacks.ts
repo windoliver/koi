@@ -28,6 +28,7 @@
 
 import type {
   ComponentProvider,
+  FileSystemBackend,
   KoiMiddleware,
   ModelAdapter,
   SessionId,
@@ -71,6 +72,16 @@ export interface StackActivationContext {
    * when the host opts out of persistence (loop mode).
    */
   readonly sessionTranscript?: SessionTranscript | undefined;
+  /**
+   * Active filesystem backend for this session. Stacks that need to
+   * tag captured file ops with the backend discriminator (e.g. the
+   * checkpoint stack) read this to obtain `backend.name` for
+   * `FileOpRecord.backend` and to build the `backends` map for the
+   * restore protocol.
+   *
+   * When omitted, stacks fall back to pure local I/O (no discriminator).
+   */
+  readonly filesystem?: FileSystemBackend | undefined;
   /**
    * Host-specific opaque context. Stacks that care about a particular
    * host state (skillsRuntime, approvalHandler, etc.) read a

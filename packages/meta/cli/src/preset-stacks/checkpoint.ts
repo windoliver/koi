@@ -20,6 +20,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCheckpoint } from "@koi/checkpoint";
+import type { FileSystemBackend } from "@koi/core";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
 
@@ -48,6 +49,24 @@ export const checkpointStack: PresetStack = {
       return join(ctx.cwd, stripped);
     };
 
+    // Backend discriminator wiring.
+    //
+    // When the session uses a non-local filesystem backend (e.g. Nexus),
+    // captured `FileOpRecord` entries must carry the backend name so the
+    // restore protocol can dispatch compensating ops to the right backend
+    // during rewind. We stamp the name on every captured record and supply
+    // the live backend instance for rewind dispatch.
+    //
+    // For the default local backend (`name === "local"`), both fields are
+    // omitted: `buildFileOpRecord` leaves `backend` unset (equivalent to
+    // `"local"`) and `runRestore` uses direct local I/O.
+    const fsBackend: FileSystemBackend | undefined = ctx.filesystem;
+    const isNonLocal = fsBackend !== undefined && fsBackend.name !== "local";
+    const backendName: string | undefined = isNonLocal ? fsBackend.name : undefined;
+    const backends: ReadonlyMap<string, FileSystemBackend> | undefined = isNonLocal
+      ? new Map([[fsBackend.name, fsBackend]])
+      : undefined;
+
     const checkpointHandle = createCheckpoint({
       store: createSnapshotStoreSqlite({ path: snapshotPath }),
       config: {
@@ -55,6 +74,8 @@ export const checkpointStack: PresetStack = {
         driftDetector: null,
         resolvePath: resolveCheckpointPath,
         ...(ctx.sessionTranscript !== undefined ? { transcript: ctx.sessionTranscript } : {}),
+        ...(backendName !== undefined ? { backendName } : {}),
+        ...(backends !== undefined ? { backends } : {}),
       },
     });
 

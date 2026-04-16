@@ -398,7 +398,12 @@ function makeMockBackend(
   const writtenFiles = overrides.writtenFiles ?? new Map<string, string>();
   const deletedPaths = overrides.deletedPaths ?? [];
 
-  const backend: FileSystemBackend = {
+  // Builds the base backend without `delete` so tests that pass
+  // `noDeleteMethod: true` can verify the protocol's fallback path.
+  // exactOptionalPropertyTypes: we cannot assign `undefined` to an
+  // optional property — omit it entirely using type assertion on the
+  // base object and conditionally re-adding it below.
+  const baseBackend = {
     name: "mock-backend",
     read: () => ({
       ok: false,
@@ -429,10 +434,15 @@ function makeMockBackend(
       ok: false,
       error: { code: "NOT_FOUND", message: "not implemented", retryable: false } as never,
     }),
-    delete:
-      overrides.noDeleteMethod === true
-        ? undefined
-        : (_path: string) => {
+    resolvePath: (path: string) => path,
+  } satisfies Omit<FileSystemBackend, "delete">;
+
+  const backend: FileSystemBackend =
+    overrides.noDeleteMethod === true
+      ? baseBackend
+      : {
+          ...baseBackend,
+          delete: (_path: string) => {
             if (overrides.deleteError === true) {
               return {
                 ok: false,
@@ -448,8 +458,7 @@ function makeMockBackend(
             deletedPaths.push(_path);
             return { ok: true, value: { path: _path } satisfies FileDeleteResult };
           },
-    resolvePath: (path: string) => path,
-  };
+        };
   return { backend, writtenFiles, deletedPaths };
 }
 
