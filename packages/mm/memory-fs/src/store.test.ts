@@ -606,7 +606,7 @@ describe("createMemoryStore", () => {
       expect(all.length).toBe(1);
     });
 
-    test("fails loudly on legacy duplicate (name,type) records on disk", async () => {
+    test("returns 'corrupted' for legacy duplicate (name,type) records on disk", async () => {
       // Seed two .md files with the same logical (name, type) — simulating
       // corruption left over from a pre-atomic-upsert race on main.
       const dir = makeDir();
@@ -625,9 +625,6 @@ describe("createMemoryStore", () => {
 
       const store = createMemoryStore({ dir });
 
-      // Both force=false and force=true must refuse to act. The adapter
-      // should surface the corruption rather than silently picking one
-      // duplicate as the winner and updating it.
       const input = {
         name: "Dup Key",
         description: "new description",
@@ -635,15 +632,19 @@ describe("createMemoryStore", () => {
         content: "Fresh content that would overwrite one of the duplicates.",
       };
 
-      await expect(store.upsert(input, { force: false })).rejects.toThrow(
-        /Memory store corruption: 2 records share/,
-      );
-      await expect(store.upsert(input, { force: true })).rejects.toThrow(
-        /Memory store corruption: 2 records share/,
-      );
+      // Both force=false and force=true must return a structured corruption
+      // result. The higher layer can then surface the conflicting ids to
+      // the operator and reconcile via delete() + retry.
+      for (const force of [false, true]) {
+        const res = await store.upsert(input, { force });
+        expect(res.action).toBe("corrupted");
+        if (res.action !== "corrupted") throw new Error("unreachable");
+        expect(res.canonicalName).toBe("Dup Key");
+        expect(res.type).toBe("user");
+        expect(res.conflictingIds.length).toBe(2);
+      }
 
-      // Both files must still be on disk — the upsert aborted before any
-      // mutation occurred.
+      // Both files must still be on disk — corruption return never mutated.
       const all = await store.list();
       expect(all.length).toBe(2);
     });

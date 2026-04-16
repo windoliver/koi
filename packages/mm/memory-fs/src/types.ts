@@ -81,6 +81,19 @@ export type UpsertResult =
       readonly duplicateOf: MemoryRecordId;
       readonly similarity: number;
       readonly indexError?: unknown;
+    }
+  /**
+   * Two or more records already share the same canonical `(name, type)`.
+   * This state can arise from pre-atomic-upsert writes left on disk by
+   * the old list→find→write path. Higher layers can surface the
+   * `conflictingIds` to the operator and reconcile via `delete()` on the
+   * stale records, then retry the upsert.
+   */
+  | {
+      readonly action: "corrupted";
+      readonly canonicalName: string;
+      readonly type: MemoryType;
+      readonly conflictingIds: readonly MemoryRecordId[];
     };
 
 /** Configuration for creating a MemoryStore. */

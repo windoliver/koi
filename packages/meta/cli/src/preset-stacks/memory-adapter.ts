@@ -45,6 +45,12 @@ function mapUpsertResult(result: UpsertResult): StoreWithDedupResult {
       return { action: "conflict", existing: result.existing };
     case "skipped":
       return { action: "conflict", existing: result.record };
+    case "corrupted":
+      return {
+        action: "corrupted",
+        canonicalName: result.canonicalName,
+        conflictingIds: result.conflictingIds,
+      };
   }
 }
 

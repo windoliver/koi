@@ -365,13 +365,12 @@ async function upsertRecord(
   );
 
   if (nameTypeMatches.length > 1) {
-    const ids = nameTypeMatches.map((r) => r.id).join(", ");
-    throw new Error(
-      `Memory store corruption: ${String(nameTypeMatches.length)} records share ` +
-        `(name=${JSON.stringify(canonicalName)}, type=${canonicalInput.type}). ` +
-        `Resolve manually via delete() on the stale ids before retrying upsert(). ` +
-        `Conflicting ids: ${ids}`,
-    );
+    return {
+      action: "corrupted",
+      canonicalName,
+      type: canonicalInput.type,
+      conflictingIds: nameTypeMatches.map((r) => r.id),
+    };
   }
 
   const nameTypeMatch = nameTypeMatches[0];
