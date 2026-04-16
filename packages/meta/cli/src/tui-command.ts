@@ -79,6 +79,7 @@ import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
+import { initOtelSdk } from "./otel-bootstrap.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime } from "./runtime-factory.js";
@@ -1182,6 +1183,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // resumable — matches koi start --until-pass semantics.
   const isLoopMode = flags.untilPass.length > 0;
 
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("tui") : undefined;
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
@@ -1232,8 +1238,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
       : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
-    // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
-    ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
+    // initOtelSdk() registers a global TracerProvider so middleware-otel's
+    // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
+    ...(otelEnabled ? { otel: true as const } : {}),
     // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
     // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
     // every model/tool call is recorded as a hash-chained NDJSON entry.
@@ -2006,6 +2013,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       approvalStore?.close();
     } finally {
       clearInterval(shutdownKeepAlive);
+      // Flush OTel spans before process exit
+      await otelHandle?.shutdown();
       process.exit(exitCode);
     }
   };
