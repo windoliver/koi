@@ -123,7 +123,7 @@ function makeSpawnFn(
 // ---------------------------------------------------------------------------
 
 describe("fork children receive Spawn (Issue #1790)", () => {
-  test("spawnProviderFactory is called for fork=true spawn", async () => {
+  test("spawnProviderFactory is called for fork=true + allowNestedSpawn=true", async () => {
     const { factory, calls } = mockSpawnProviderFactory();
     const spawnFn = makeSpawnFn(["Read"], factory);
     const signal = AbortSignal.timeout(1000);
@@ -135,10 +135,27 @@ describe("fork children receive Spawn (Issue #1790)", () => {
       description: "coordinator that will spawn grandchildren",
       signal,
       fork: true,
+      allowNestedSpawn: true,
     });
 
-    // The factory must have been invoked — fork children get a fresh Spawn provider
+    // The factory must have been invoked — fork+allowNestedSpawn children get a fresh Spawn provider
     expect(calls.length).toBe(1);
+  });
+
+  test("spawnProviderFactory is NOT called for fork=true without allowNestedSpawn (leaf worker)", async () => {
+    const { factory, calls } = mockSpawnProviderFactory();
+    const spawnFn = makeSpawnFn(["Read"], factory);
+    const signal = AbortSignal.timeout(1000);
+
+    await spawnFn({
+      agentName: "child-agent",
+      description: "leaf worker — cannot spawn",
+      signal,
+      fork: true,
+    });
+
+    // Default fork children are leaf workers — no Spawn provider
+    expect(calls.length).toBe(0);
   });
 
   test("spawnProviderFactory is called for fork=false spawn (baseline)", async () => {
@@ -215,6 +232,7 @@ describe("fork children receive Spawn (Issue #1790)", () => {
       description: "child blocked by parent manifest",
       signal,
       fork: true,
+      allowNestedSpawn: true, // opt-in, but manifest still blocks
     });
 
     // Factory must NOT be called when parent manifest blocks Spawn
@@ -231,6 +249,7 @@ describe("fork children receive Spawn (Issue #1790)", () => {
       description: "child with Spawn denied",
       signal,
       fork: true,
+      allowNestedSpawn: true, // opt-in, but toolDenylist still blocks
       toolDenylist: ["Spawn"],
     });
 

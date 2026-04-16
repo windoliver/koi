@@ -6,9 +6,9 @@
  *   - Inheritance guard: fork children cannot INHERIT the parent's Spawn closure
  *   - Turn cap: fork children default to DEFAULT_FORK_MAX_TURNS when maxTurns is unset
  *
- * Fork children CAN spawn via a fresh Spawn provider (bounded by the depth guard).
- * applyForkDenylist prevents inheriting the parent's closure-bound Spawn tool, which
- * would mis-attribute nested spawns to the ancestor.
+ * Fork children CAN spawn via a fresh Spawn provider when `allowNestedSpawn` is set
+ * (bounded by the depth guard). applyForkDenylist prevents inheriting the parent's
+ * closure-bound Spawn tool, which would mis-attribute nested spawns to the ancestor.
  */
 
 import { describe, expect, test } from "bun:test";

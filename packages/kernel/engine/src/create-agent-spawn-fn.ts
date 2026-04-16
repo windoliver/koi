@@ -298,13 +298,16 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
-    //      b) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
-    //    Fork children CAN receive a fresh Spawn provider — nested spawning is bounded
-    //    by the depth guard (maxDepth) in the spawn guard middleware.  The fork denylist
-    //    in spawn-child.ts only strips Spawn from the *inherited* tool path (preventing
-    //    closure-bound parent-attribution issues); the fresh provider creates a new
-    //    closure correctly bound to the child.
+    //      b) The child is not a fork, OR fork with allowNestedSpawn=true
+    //      c) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
+    //    Fork children default to leaf-worker mode (no Spawn) for backwards compatibility.
+    //    Set allowNestedSpawn=true to enable the coordinator pattern (fork child that
+    //    spawns grandchildren), bounded by the depth guard (maxDepth).
+    //    The fork denylist in spawn-child.ts strips Spawn from the *inherited* tool path
+    //    (preventing closure-bound parent-attribution issues); the fresh provider creates
+    //    a new closure correctly bound to the child.
     const isFork = request.fork === true;
+    const forkAllowsSpawn = !isFork || request.allowNestedSpawn === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
@@ -314,7 +317,10 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     const selfCeilingAllowsSpawn =
       childSelfCeilingTools === undefined || childSelfCeilingTools.includes("Spawn");
     const childProviders: ComponentProvider[] =
-      options.spawnProviderFactory !== undefined && spawnAllowedByManifest && selfCeilingAllowsSpawn
+      options.spawnProviderFactory !== undefined &&
+      spawnAllowedByManifest &&
+      forkAllowsSpawn &&
+      selfCeilingAllowsSpawn
         ? [options.spawnProviderFactory()]
         : [];
 
