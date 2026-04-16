@@ -278,6 +278,35 @@ function mapSourceState(status: { readonly state: string }): string {
 }
 
 /**
+ * Compute the `/mcp` view status label for an MCP server from the resolver
+ * failure code, the server's configured transport kind, and whether it has a
+ * usable OAuth config.
+ *
+ * `needs-auth` is an actionable state — the TUI binds Enter to `nav:mcp-auth`
+ * which launches the OAuth PKCE flow. It is only valid when:
+ *   1. The failure is `AUTH_REQUIRED`
+ *   2. Transport is HTTP (stdio/SSE have no OAuth flow)
+ *   3. The server has an `oauth` config block (non-OAuth HTTP servers like
+ *      static-token / basic-auth / API-key cannot be fixed via the TUI)
+ *
+ * Everything else surfaces as `error` so users see a clear failure state
+ * rather than an Enter-to-auth prompt that will immediately fail.
+ *
+ * @internal — exported for unit tests only.
+ */
+export function computeLiveMcpStatus(
+  failureCode: string | undefined,
+  transport: "http" | "stdio" | "sse" | undefined,
+  hasOAuth: boolean,
+): "connected" | "needs-auth" | "error" {
+  if (failureCode === undefined) return "connected";
+  if (failureCode !== "AUTH_REQUIRED") return "error";
+  if (transport !== "http") return "error";
+  if (!hasOAuth) return "error";
+  return "needs-auth";
+}
+
+/**
  * Build a compact run-report summary string for the TUI's `/trajectory` view
  * without serializing the full report tree. Avoids the avoidable
  * `JSON.stringify` of nested `childReports` on every refresh, which can
@@ -1446,12 +1475,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           kind: "set_mcp_status",
           servers: live.map((l) => ({
             name: l.name,
-            status:
-              l.failureCode === undefined
-                ? ("connected" as const)
-                : l.failureCode === "AUTH_REQUIRED"
-                  ? ("needs-auth" as const)
-                  : ("error" as const),
+            // transport is now threaded through McpServerStatus from getMcpStatus(),
+            // so startup refresh uses the same authoritative source as nav:mcp enrichment.
+            status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
             toolCount: l.toolCount,
             detail: l.failureMessage,
           })),
@@ -2847,12 +2873,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
                       name: l.name,
-                      status:
-                        l.failureCode === undefined
-                          ? ("connected" as const)
-                          : l.failureCode === "AUTH_REQUIRED"
-                            ? ("needs-auth" as const)
-                            : ("error" as const),
+                      status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                       toolCount: l.toolCount,
                       detail: l.failureMessage ?? "plugin",
                     })),
@@ -2916,33 +2937,39 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     liveOther.push(l);
                   }
                 }
-                // Enrich config-based entries with live data (match by bare name)
+                // Derive transport/OAuth from the freshly-loaded config file so
+                // that in-session edits (e.g. adding an oauth block) are reflected
+                // immediately. nav:mcp-auth reads the same config.value, so the
+                // status and the auth action stay consistent. Live data
+                // (failureCode, toolCount) still comes from the runtime.
+                const configTransportByName = new Map<string, "http" | "stdio" | "sse">(
+                  config.value.servers.map((s) => [s.name, s.kind]),
+                );
+                const configOAuthByName = new Set<string>(
+                  config.value.servers
+                    .filter((s) => s.kind === "http" && s.oauth !== undefined)
+                    .map((s) => s.name),
+                );
+                // Enrich config-based entries with live data (match by bare name).
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
-                  const liveStatus: "connected" | "needs-auth" | "error" =
-                    l.failureCode === undefined
-                      ? "connected"
-                      : l.failureCode === "AUTH_REQUIRED"
-                        ? "needs-auth"
-                        : "error";
                   return {
                     name: entry.name,
-                    status: liveStatus,
+                    status: computeLiveMcpStatus(
+                      l.failureCode,
+                      configTransportByName.get(entry.name),
+                      configOAuthByName.has(entry.name),
+                    ),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
-                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json.
                 for (const l of liveOther) {
                   enriched.push({
                     name: l.name,
-                    status:
-                      l.failureCode === undefined
-                        ? "connected"
-                        : l.failureCode === "AUTH_REQUIRED"
-                          ? "needs-auth"
-                          : "error",
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? "plugin",
                   });
