@@ -431,6 +431,36 @@ describe("discover-time security scan (issue #1722)", () => {
     }
   });
 
+  test("unreadable quarantine is threshold-independent (blockOnSeverity=CRITICAL)", async () => {
+    // Regression for Codex round 2: even with blockOnSeverity raised to
+    // CRITICAL, an unreadable SKILL.md must still be quarantined. The
+    // unreadable-skill-body finding bypasses the severity threshold filter
+    // because it is returned directly as a blocking finding, not routed
+    // through the normal scan → filter path.
+    const skillDir = join(userRoot, "unreadable-critical");
+    const skillMd = join(skillDir, "SKILL.md");
+    await Bun.write(skillMd, "---\nname: unreadable-critical\ndescription: test\n---\n\nBody.\n", {
+      createPath: true,
+    });
+    await chmod(skillMd, 0o000);
+
+    try {
+      const runtime = createSkillsRuntime({
+        bundledRoot: null,
+        userRoot,
+        projectRoot,
+        blockOnSeverity: "CRITICAL",
+      });
+
+      const result = await runtime.discover();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.get("unreadable-critical")).toBeUndefined();
+    } finally {
+      await chmod(skillMd, 0o644).catch(() => {});
+    }
+  });
+
   test("unreadable quarantine auto-recovers on next discover() once file becomes readable", async () => {
     // Regression for review round 2: transient unreadable states must
     // self-heal without an explicit invalidate(name). After chmod 000

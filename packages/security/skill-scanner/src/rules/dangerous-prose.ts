@@ -118,16 +118,22 @@ const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   GETENV_CALL_PATTERN,
 ];
 
-// Exfiltration intent signals — words and URL shapes that, near a
-// credential reference, upgrade the finding from a warning to a block.
+// Exfiltration intent signals — hostile language or active data-upload
+// commands near a credential reference upgrade the finding to HIGH.
+//
+// Deliberately does NOT include bare non-allowlisted URLs — a skill
+// instructing `curl -H "Authorization: Bearer $API_KEY" https://api.internal.corp/...`
+// is legitimate private-service usage, not exfiltration. Only patterns
+// with clearly hostile semantics (outbound data movement words, attacker
+// mention, POST-with-data curl/wget flags) qualify.
 const EXFIL_INTENT_PATTERNS: readonly RegExp[] = [
   /\bexfiltrat/i,
   /\battacker\b/i,
   /\b(?:send|post|upload|leak|transmit|forward|ship|deliver)\b[^\n.]{0,80}\b(?:to|via|into)\b/i,
-  /\bcurl\s+-[a-zA-Z]*[ud]/i, // curl -u / curl -d / curl -X POST / etc.
+  /\bcurl\s+-[a-zA-Z]*[dX]/i, // curl -d (POST data) / curl -X POST
   /\bwget\s+[^\n]*--post/i,
-  /\bhttps?:\/\/(?!(?:github\.com|npmjs\.com|api\.openai\.com|api\.anthropic\.com|openrouter\.ai))[^\s`"')]+/i,
-  /\bfetch\s*\(\s*["'`]https?:\/\//i,
+  // fetch() with method: "POST" + body — active outbound data upload
+  /\bfetch\s*\([^\n]*\bmethod\s*:\s*["']POST["'][^\n]*\bbody\s*:/i,
 ];
 
 function hasExfiltrationIntent(text: string, credentialIndex: number): boolean {
