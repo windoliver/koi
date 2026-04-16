@@ -57,9 +57,14 @@ export const checkpointStack: PresetStack = {
     // capture is wired through FileSystemBackend.read(), disable checkpoint
     // for non-local backends to avoid creating unrecoverable snapshots.
     const fsBackend: FileSystemBackend | undefined = ctx.filesystem;
-    const isNonLocal = fsBackend !== undefined && fsBackend.name !== "local";
+    // Detect truly remote backends (nexus) vs. locally-backed wrappers (scoped).
+    // scoped(local) and scoped(fs-local:...) still read from local disk — safe for checkpoint.
+    // Only nexus backends (name starts with "nexus") have remote files inaccessible via local I/O.
+    const isRemoteBackend =
+      fsBackend !== undefined &&
+      (fsBackend.name.startsWith("nexus") || fsBackend.name.includes("nexus"));
 
-    if (isNonLocal) {
+    if (isRemoteBackend) {
       // Return a no-op StackContribution — checkpoint is disabled for non-local backends.
       // This preserves the existing contract (no crash, no middleware gap) while avoiding
       // the creation of snapshots that reference remote paths but capture local content.
