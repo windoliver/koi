@@ -4,6 +4,13 @@
 
 Command-line interface for running Koi agents locally. Provides interactive (`start`), headless (`serve`), standalone admin (`admin`), and operator console (`tui`) flows, plus automatic Nexus backend wiring, conversation persistence, and graceful shutdown.
 
+## Recent updates
+
+- **`/mcp` TUI command**: full-screen interactive view of MCP server status (connected / needs-auth / error / pending / auth-pending-restart). Reads `.mcp.json` from `cwd` then `~/.koi/.mcp.json` (legacy `~/.claude/.mcp.json` still read with deprecation warning). Status comes from instant Keychain check + background `runtimeHandle.getMcpStatus()` enrichment.
+- **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
+- **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.
+- **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
+
 ---
 
 ## What This Enables

@@ -43,7 +43,16 @@ export type TuiView =
   | "agents"
   | "trajectory"
   | "cost"
+  | "mcp"
   | "plugins";
+
+/** MCP server status entry for the /mcp view. */
+export interface McpServerInfo {
+  readonly name: string;
+  readonly status: "connected" | "needs-auth" | "error" | "pending" | "auth-pending-restart";
+  readonly toolCount: number;
+  readonly detail: string | undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Plugin summary (populated once at startup — static for session lifetime)
@@ -395,6 +404,8 @@ export interface TuiState {
   readonly runReportSummary: string | null;
   /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
   readonly showThinking: boolean;
+  /** MCP server status list — populated by host on /mcp command. */
+  readonly mcpServers: readonly McpServerInfo[];
   /** Plugin discovery results — null before runtime reports. */
   readonly pluginSummary: PluginSummary | null;
   /** Cost breakdown injected by host — null before first cost data push. */
@@ -477,6 +488,7 @@ export type TuiAction =
       readonly blocks: readonly ContentBlock[];
     }
   | { readonly kind: "set_view"; readonly view: TuiView }
+  | { readonly kind: "set_mcp_status"; readonly servers: readonly McpServerInfo[] }
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }
   | { readonly kind: "set_connection_status"; readonly status: ConnectionStatus }
   | { readonly kind: "set_layout"; readonly tier: LayoutTier }

@@ -21,6 +21,7 @@ export type {
   LayoutTier,
   LedgerAuditEntry,
   LedgerSources,
+  McpServerInfo,
   PermissionPromptData,
   PermissionRiskLevel,
   PlanTask,

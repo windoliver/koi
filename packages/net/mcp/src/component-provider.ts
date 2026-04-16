@@ -7,14 +7,28 @@
 
 import type { Agent, AttachResult, ComponentProvider, Tool } from "@koi/core";
 import { toolToken } from "@koi/core";
-import type { McpResolver } from "./resolver.js";
+import type { McpResolver, McpServerFailure } from "./resolver.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * Factory that creates auth pseudo-tools for servers requiring OAuth.
+ * Injected by the host (CLI) which owns the OAuth runtime.
+ * Called once per `AUTH_REQUIRED` failure during `attach()`.
+ */
+export type AuthToolFactory = (failure: McpServerFailure) => readonly Tool[];
+
 export interface McpComponentProviderOptions {
   readonly resolver: McpResolver;
+  /**
+   * Optional factory for creating authentication pseudo-tools.
+   * When provided and a server failure has code `AUTH_REQUIRED`,
+   * the factory is called to produce Tool objects instead of
+   * recording the server as a skipped component.
+   */
+  readonly createAuthTools?: AuthToolFactory | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -30,7 +44,7 @@ export interface McpComponentProviderOptions {
 export function createMcpComponentProvider(
   options: McpComponentProviderOptions,
 ): ComponentProvider {
-  const { resolver } = options;
+  const { resolver, createAuthTools } = options;
 
   const attach = async (_agent: Agent): Promise<AttachResult> => {
     const descriptors = await resolver.discover();
@@ -67,12 +81,30 @@ export function createMcpComponentProvider(
       components.set(toolToken(descriptor.name) as string, result.value as Tool);
     }
 
-    // Surface resolver-level server failures as skipped components
+    // Surface resolver-level server failures as skipped components,
+    // or as auth pseudo-tools when a factory is provided and the
+    // failure is an auth challenge.
     for (const failure of resolver.failures) {
-      skipped.push({
-        name: `mcp-server:${failure.serverName}`,
-        reason: failure.error.message,
-      });
+      if (failure.error.code === "AUTH_REQUIRED" && createAuthTools !== undefined) {
+        const authTools = createAuthTools(failure);
+        if (authTools.length > 0) {
+          for (const tool of authTools) {
+            components.set(toolToken(tool.descriptor.name) as string, tool);
+          }
+        } else {
+          // Factory returned nothing (e.g. non-OAuth server with AUTH_REQUIRED) —
+          // fall through to skipped so the failure signal isn't lost.
+          skipped.push({
+            name: `mcp-server:${failure.serverName}`,
+            reason: failure.error.message,
+          });
+        }
+      } else {
+        skipped.push({
+          name: `mcp-server:${failure.serverName}`,
+          reason: failure.error.message,
+        });
+      }
     }
 
     return { components, skipped };
