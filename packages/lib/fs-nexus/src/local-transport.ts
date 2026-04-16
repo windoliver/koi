@@ -513,13 +513,15 @@ const STDERR_DRAIN_TIMEOUT_MS = 3_000;
 async function collectStderr(proc: {
   readonly stderr: ReadableStream<Uint8Array>;
 }): Promise<string> {
-  try {
-    const reader = proc.stderr.getReader();
-    const decoder = new TextDecoder();
-    let output = "";
-    let bytes = 0;
-    let truncated = false;
+  const reader = proc.stderr.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  let bytes = 0;
+  let truncated = false;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
 
+  try {
     const drain = (async () => {
       while (true) {
         const { value, done } = await reader.read();
@@ -535,16 +537,37 @@ async function collectStderr(proc: {
       }
     })();
 
-    await Promise.race([drain, rejectAfter(STDERR_DRAIN_TIMEOUT_MS, "stderr drain timeout")]);
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), STDERR_DRAIN_TIMEOUT_MS);
+    });
 
-    // Flush any remaining bytes in the decoder
-    output += decoder.decode();
-    reader.releaseLock();
-    const trimmed = output.trim();
-    return truncated
-      ? `${trimmed}\n[truncated — exceeded ${String(MAX_STDERR_BYTES)} bytes]`
-      : trimmed;
+    const result = await Promise.race([drain.then(() => "done" as const), timeout]);
+    timedOut = result === "timeout";
   } catch {
-    return "";
+    // Stream error — use whatever we collected so far
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    try {
+      reader.cancel();
+    } catch {
+      // Ignore — best-effort cleanup
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // Ignore — may already be released after cancel
+    }
   }
+
+  // Flush any remaining bytes in the decoder
+  output += decoder.decode();
+  const trimmed = output.trim();
+
+  if (truncated) {
+    return `${trimmed}\n[truncated — exceeded ${String(MAX_STDERR_BYTES)} bytes]`;
+  }
+  if (timedOut) {
+    return trimmed.length > 0 ? `${trimmed}\n[truncated — stderr drain timed out]` : "";
+  }
+  return trimmed;
 }
