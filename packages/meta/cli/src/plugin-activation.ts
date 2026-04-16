@@ -19,11 +19,26 @@ import type { SkillMetadata } from "@koi/skills-runtime";
 // Types
 // ---------------------------------------------------------------------------
 
+export interface DiscoveredPluginInfo {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly source: "bundled" | "user" | "managed";
+}
+
 export interface PluginComponents {
   readonly hooks: readonly HookConfig[];
   readonly mcpServers: readonly McpServerConfig[];
   readonly skillMetadata: readonly SkillMetadata[];
   readonly middlewareNames: readonly string[];
+  readonly errors: readonly PluginActivationError[];
+  /** Discovered plugin metadata (name, version, description, source). */
+  readonly discovered: readonly DiscoveredPluginInfo[];
+}
+
+/** Plugin discovery summary for host consumption (TUI, headless, etc.). */
+export interface PluginDiscoverySummary {
+  readonly loaded: readonly DiscoveredPluginInfo[];
   readonly errors: readonly PluginActivationError[];
 }
 
@@ -148,8 +163,11 @@ export async function loadPluginComponents(
   const registry = createGatedRegistry({ userRoot }, userRoot);
   const plugins = await registry.discover();
 
+  const discovered: DiscoveredPluginInfo[] = [];
+
   for (const pluginMeta of plugins) {
     if (allowlist !== undefined && !allowlist.has(pluginMeta.name)) continue;
+
     const loadResult = await registry.load(pluginMeta.name);
     if (!loadResult.ok) {
       errors.push({ plugin: pluginMeta.name, error: loadResult.error.message });
@@ -157,21 +175,28 @@ export async function loadPluginComponents(
     }
     const plugin = loadResult.value;
 
+    // Buffer per-plugin components locally for atomic activation.
+    // Only merge into the runtime if ALL activation steps succeed.
+    const pluginHooks: HookConfig[] = [];
+    const pluginMcpServers: McpServerConfig[] = [];
+    const pluginSkills: SkillMetadata[] = [];
+    const pluginErrors: PluginActivationError[] = [];
+
     // Hooks
     if (plugin.hookConfigPath !== undefined) {
       try {
         const raw: unknown = await Bun.file(plugin.hookConfigPath).json();
         const hookResult = loadHooks(raw);
         if (hookResult.ok) {
-          hooks.push(...hookResult.value);
+          pluginHooks.push(...hookResult.value);
         } else {
-          errors.push({
+          pluginErrors.push({
             plugin: plugin.name,
             error: `Hook load failed: ${hookResult.error.message}`,
           });
         }
       } catch (err: unknown) {
-        errors.push({
+        pluginErrors.push({
           plugin: plugin.name,
           error: `Cannot read hook config: ${err instanceof Error ? err.message : String(err)}`,
         });
@@ -182,21 +207,40 @@ export async function loadPluginComponents(
     if (plugin.mcpConfigPath !== undefined) {
       const mcpResult = await loadMcpJsonFile(plugin.mcpConfigPath);
       if (mcpResult.ok) {
-        mcpServers.push(...mcpResult.value.servers);
+        pluginMcpServers.push(...mcpResult.value.servers);
       } else {
-        errors.push({ plugin: plugin.name, error: `MCP load failed: ${mcpResult.error.message}` });
+        pluginErrors.push({
+          plugin: plugin.name,
+          error: `MCP load failed: ${mcpResult.error.message}`,
+        });
       }
     }
 
     // Skills
     for (const skillPath of plugin.skillPaths) {
       const skills = await loadSkillsFromRoot(skillPath);
-      skillMetadata.push(...skills);
+      pluginSkills.push(...skills);
     }
 
-    // Middleware names (pass-through — no factory registry yet)
-    middlewareNames.push(...plugin.middlewareNames);
+    // Atomic commit: merge only if all activation steps succeeded.
+    // Middleware names are passed through even on success — the factory
+    // logs a warning for unsupported middleware but doesn't block the
+    // plugin's other components (hooks/MCP/skills) from activating.
+    if (pluginErrors.length === 0) {
+      hooks.push(...pluginHooks);
+      mcpServers.push(...pluginMcpServers);
+      skillMetadata.push(...pluginSkills);
+      middlewareNames.push(...plugin.middlewareNames);
+      discovered.push({
+        name: plugin.name,
+        version: plugin.version,
+        description: plugin.description,
+        source: plugin.source,
+      });
+    } else {
+      errors.push(...pluginErrors);
+    }
   }
 
-  return { hooks, mcpServers, skillMetadata, middlewareNames, errors };
+  return { hooks, mcpServers, skillMetadata, middlewareNames, errors, discovered };
 }

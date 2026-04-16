@@ -82,7 +82,7 @@ import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
-import { createKoiRuntime } from "./runtime-factory.js";
+import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
@@ -1196,6 +1196,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     modelAdapter,
     modelName,
     approvalHandler: permissionBridge.handler,
+    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
@@ -1289,6 +1290,47 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       handle.transcript.push(...resumedMessagesToPrime);
       resumedMessagesToPrime = [];
     }
+
+    // Dispatch plugin summary to TUI store (#1728)
+    store.dispatch({
+      kind: "set_plugin_summary",
+      summary: handle.pluginSummary,
+    });
+
+    // Surface plugin status as inline TUI notice (#1728).
+    // UI-only — not injected into the model transcript to avoid a trust
+    // boundary issue (plugin descriptions are untrusted metadata).
+    // Agent awareness comes through the /plugins view and startup log.
+    //
+    // Plugin-derived strings are sanitized to strip ANSI escape sequences
+    // and control characters before display.
+    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+      // Strip ANSI escapes and control characters from untrusted plugin text.
+      // Uses RegExp constructor to avoid Biome noControlCharactersInRegex lint.
+      const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+      const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+      const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
+
+      const parts: string[] = [];
+      if (handle.pluginSummary.loaded.length > 0) {
+        const pluginLines = handle.pluginSummary.loaded
+          .map((p) => `- ${sanitize(p.name)} v${sanitize(p.version)}`)
+          .join("\n");
+        parts.push(`[Loaded Plugins]\n${pluginLines}`);
+      }
+      if (handle.pluginSummary.errors.length > 0) {
+        const errorLines = handle.pluginSummary.errors
+          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+          .join("\n");
+        parts.push(`[Plugin Load Errors]\n${errorLines}`);
+      }
+      store.dispatch({
+        kind: "add_user_message",
+        id: `plugin-status-${String(Date.now())}`,
+        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+      });
+    }
+
     return handle;
   });
 

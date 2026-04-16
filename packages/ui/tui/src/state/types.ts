@@ -42,7 +42,29 @@ export type TuiView =
   | "help"
   | "agents"
   | "trajectory"
-  | "cost";
+  | "cost"
+  | "plugins";
+
+// ---------------------------------------------------------------------------
+// Plugin summary (populated once at startup — static for session lifetime)
+// ---------------------------------------------------------------------------
+
+export interface PluginSummaryEntry {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly source: "bundled" | "user" | "managed";
+}
+
+export interface PluginSummaryError {
+  readonly plugin: string;
+  readonly error: string;
+}
+
+export interface PluginSummary {
+  readonly loaded: readonly PluginSummaryEntry[];
+  readonly errors: readonly PluginSummaryError[];
+}
 
 /** Risk level for permission prompts — computed by permissions middleware. */
 export type PermissionRiskLevel = "low" | "medium" | "high";
@@ -373,6 +395,8 @@ export interface TuiState {
   readonly runReportSummary: string | null;
   /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
   readonly showThinking: boolean;
+  /** Plugin discovery results — null before runtime reports. */
+  readonly pluginSummary: PluginSummary | null;
   /** Cost breakdown injected by host — null before first cost data push. */
   readonly costBreakdown: CostBreakdown | null;
   /** Token throughput rate (tokens/sec) — null before first data push. */
@@ -593,4 +617,8 @@ export type TuiAction =
       readonly tokenRate?:
         | { readonly inputPerSecond: number; readonly outputPerSecond: number }
         | undefined;
+    }
+  | {
+      readonly kind: "set_plugin_summary";
+      readonly summary: PluginSummary;
     };
