@@ -186,7 +186,10 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   const existing = await scanRecords(dir);
 
   // Dedup scan + file creation are now both inside the dir lock, so two
-  // writers cannot both observe "no duplicate" and both succeed.
+  // writers cannot both observe "no duplicate" and both succeed. Run
+  // this BEFORE the name+type uniqueness check so a replay of the same
+  // content (same name, same content) resolves as a dedup-skip rather
+  // than a spurious "already exists" error.
   const dup = findDuplicate(input.content, existing, threshold);
   if (dup !== undefined) {
     return {
@@ -195,6 +198,22 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
       duplicateOf: dup.id,
       similarity: dup.similarity,
     };
+  }
+
+  // Enforce the same (canonical name, type) uniqueness invariant as
+  // upsert() so callers cannot create the `corrupted` state through the
+  // low-level write() path. Without this guard, two writes with
+  // newline/control-char name variants (e.g. "foo bar" then "foo\nbar")
+  // would slug-collision-rename into two files that both deserialize as
+  // the same logical (name, type).
+  const canonicalName = sanitizeFrontmatterValue(input.name);
+  const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
+  if (nameTypeCollision !== undefined) {
+    throw new Error(
+      `Memory record already exists with name=${JSON.stringify(canonicalName)}, ` +
+        `type=${input.type} (id=${nameTypeCollision.id}). Use upsert({ force: true }) ` +
+        `to overwrite or pick a different name.`,
+    );
   }
 
   const serialized = serializeMemoryFrontmatter(
@@ -245,6 +264,27 @@ async function updateRecord(
     type: patch.type ?? existing.type,
     content: patch.content ?? existing.content,
   };
+
+  // Guard renames/type changes against collisions. If either name or
+  // type changed, make sure no OTHER record already owns the new
+  // canonical (name, type) pair — otherwise update() could silently
+  // land the store in the `corrupted` state that upsert() now
+  // surfaces. A patch that is a no-op on name+type (e.g. content-only
+  // update, or renaming to the same canonical form) is allowed.
+  const canonicalNewName = sanitizeFrontmatterValue(updated.name);
+  const canonicalOldName = existing.name; // already canonical on disk
+  const keyChanged = canonicalNewName !== canonicalOldName || updated.type !== existing.type;
+  if (keyChanged) {
+    const collision = records.find(
+      (r) => r.id !== id && r.name === canonicalNewName && r.type === updated.type,
+    );
+    if (collision !== undefined) {
+      throw new Error(
+        `Cannot rename memory record ${id}: target (name=${JSON.stringify(canonicalNewName)}, ` +
+          `type=${updated.type}) is already owned by ${collision.id}.`,
+      );
+    }
+  }
 
   const serialized = serializeMemoryFrontmatter(
     { name: updated.name, description: updated.description, type: updated.type },

@@ -105,6 +105,61 @@ describe("createMemoryStore", () => {
     });
   });
 
+  describe("uniqueness invariant on low-level mutations", () => {
+    test("write() rejects name-variant that canonicalizes onto an existing (name,type)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.write({
+        name: "foo bar",
+        description: "first",
+        type: "user",
+        content: "First body that differs enough to not Jaccard-match.",
+      });
+
+      await expect(
+        store.write({
+          name: "foo\nbar",
+          description: "second",
+          type: "user",
+          content: "Second body, different enough to not trigger Jaccard dedup.",
+        }),
+      ).rejects.toThrow(/already exists/);
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("update() rejects rename onto an existing (name,type)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.write({
+        name: "alpha",
+        description: "alpha desc",
+        type: "feedback",
+        content: "First record body, no Jaccard overlap with the second.",
+      });
+      const second = await store.write({
+        name: "beta",
+        description: "beta desc",
+        type: "feedback",
+        content: "Second record body, no Jaccard overlap with the first.",
+      });
+
+      // Attempt to rename second onto first's (name, type).
+      await expect(store.update(second.record.id, { name: "alpha" })).rejects.toThrow(
+        /already owned by/,
+      );
+
+      // First record must still own (name="alpha", type="feedback").
+      const all = await store.list();
+      expect(all.length).toBe(2);
+      const stillOwnsAlpha = await store.read(first.record.id);
+      expect(stillOwnsAlpha?.name).toBe("alpha");
+    });
+  });
+
   describe("update", () => {
     test("modifies content and preserves unpatched fields", async () => {
       const dir = makeDir();
