@@ -9,8 +9,8 @@
  *   - BatchSpanProcessor (not Simple) — onStep is synchronous/CPU-only,
  *     synchronous export would violate the middleware hot-path contract
  *   - CLI owns SDK init, not middleware-otel — keeps the library SDK-free
- *   - Mode-aware exporter — TUI defaults to OTLP (console corrupts renderer),
- *     headless defaults to ConsoleSpanExporter (safe for stderr)
+ *   - Mode-aware exporter — TUI defaults to OTLP (stdout writes corrupt
+ *     renderer), headless defaults to StderrSpanExporter (JSON to stderr)
  */
 
 import { trace } from "@opentelemetry/api";
@@ -18,7 +18,8 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BasicTracerProvider,
   BatchSpanProcessor,
-  ConsoleSpanExporter,
+  type ExportResult,
+  type ReadableSpan,
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
 
@@ -31,10 +32,9 @@ export interface OtelSdkHandle {
 /**
  * Initialise the OTel SDK and register a global TracerProvider.
  *
- * @param mode - `"tui"` uses OTLP exporter by default (console corrupts the
- *   TUI renderer). `"headless"` uses ConsoleSpanExporter to stderr.
- *   Override with `OTEL_TRACES_EXPORTER=console` to force console export
- *   (useful when stderr is redirected: `koi tui 2>/tmp/spans.log`).
+ * @param mode - `"tui"` uses OTLP exporter (defaults to localhost:4318).
+ *   `"headless"` uses StderrSpanExporter (JSON to stderr, not stdout).
+ *   Override with `OTEL_TRACES_EXPORTER=console|otlp|none`.
  *
  * Safe to call multiple times — subsequent calls after the first return a
  * no-op handle (the global provider is already registered).
@@ -89,10 +89,10 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
  * Select span exporter based on OTEL_TRACES_EXPORTER env var and mode.
  *
  * Honors the standard OTel env var first, then applies mode defaults:
- *   - "console" → ConsoleSpanExporter (any mode)
+ *   - "console" → StderrSpanExporter (JSON to stderr, not stdout)
  *   - "otlp"    → OTLPTraceExporter (requires OTEL_EXPORTER_OTLP_*ENDPOINT)
  *   - "none"    → no export (returns undefined)
- *   - unset     → mode default: headless=console, tui=otlp (if endpoint set) else none
+ *   - unset     → mode default: headless=stderr, tui=otlp (localhost:4318)
  *
  * Returns undefined when export should be disabled (no exporter to wire).
  */
@@ -106,9 +106,10 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
     return undefined;
   }
 
-  // Explicit "console" — user knows what they're doing (may corrupt TUI).
+  // Explicit "console" — writes spans as JSON to stderr (not stdout).
+  // User knows what they're doing — may need to redirect stderr in TUI mode.
   if (envExporter === "console") {
-    return new ConsoleSpanExporter();
+    return new StderrSpanExporter();
   }
 
   // Explicit "otlp" — require an endpoint.
@@ -135,25 +136,56 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
 
   // --- No explicit exporter — apply mode defaults ---
 
-  // Headless mode — console is safe (no renderer to corrupt).
+  // Headless mode — stderr is safe (no renderer to corrupt).
   if (mode === "headless") {
-    return new ConsoleSpanExporter();
+    return new StderrSpanExporter();
   }
 
-  // TUI mode — use OTLP only when endpoint is explicitly configured.
-  // Console output would corrupt the TUI renderer, and defaulting to
-  // localhost:4318 when no collector is running causes silent failures.
-  // Fail closed: no endpoint = no export.
-  if (otlpUrl !== undefined) {
-    return new OTLPTraceExporter({ url: otlpUrl });
+  // TUI mode — use OTLP. Default to localhost:4318 (the standard OTel
+  // collector endpoint). Shutdown is bounded to 5s, so a missing collector
+  // won't stall exit — it just means spans are lost (acceptable for local dev).
+  const url = otlpUrl ?? "http://localhost:4318/v1/traces";
+  return new OTLPTraceExporter({ url });
+}
+
+// ---------------------------------------------------------------------------
+// StderrSpanExporter — like ConsoleSpanExporter but writes to stderr
+// ---------------------------------------------------------------------------
+
+/**
+ * Span exporter that serialises spans as JSON to stderr.
+ *
+ * The upstream `ConsoleSpanExporter` uses `console.dir()` which writes
+ * to **stdout**, corrupting CLI output and TUI rendering. This exporter
+ * uses `process.stderr.write()` so span dumps stay on the diagnostic
+ * stream where redirection (`2>/tmp/spans.log`) captures them cleanly.
+ */
+class StderrSpanExporter implements SpanExporter {
+  export(spans: readonly ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
+    for (const span of spans) {
+      const obj = {
+        traceId: span.spanContext().traceId,
+        spanId: span.spanContext().spanId,
+        parentSpanId: span.parentSpanContext?.spanId,
+        name: span.name,
+        kind: span.kind,
+        startTime: span.startTime,
+        endTime: span.endTime,
+        duration: span.duration,
+        attributes: span.attributes,
+        status: span.status,
+        events: span.events,
+      };
+      process.stderr.write(`${JSON.stringify(obj)}\n`);
+    }
+    resultCallback({ code: 0 });
   }
 
-  process.stderr.write(
-    "[koi] OTel: TUI mode requires an OTLP endpoint for span export.\n" +
-      "  Console export would corrupt the renderer. Options:\n" +
-      "  - Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n" +
-      "  - Set OTEL_TRACES_EXPORTER=console and redirect stderr: 2>/tmp/spans.log\n" +
-      "  OTel export disabled for this session.\n",
-  );
-  return undefined;
+  async shutdown(): Promise<void> {
+    // No resources to release.
+  }
+
+  async forceFlush(): Promise<void> {
+    // Writes are synchronous — nothing to flush.
+  }
 }
