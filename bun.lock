@@ -211,6 +211,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/fs-scoped": {
+      "name": "@koi/fs-scoped",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/git-utils": {
       "name": "@koi/git-utils",
       "version": "0.0.0",
@@ -1148,6 +1155,8 @@
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
+
+    "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
