@@ -19,7 +19,7 @@ createSkillsRuntime(config)
 
 ### Progressive Loading (two-phase)
 
-`discover()` reads YAML frontmatter only — returns `SkillMetadata` with name, description, tags, allowedTools, source, and dirPath. No body is parsed, no security scan runs. This is fast and suitable for listing/filtering.
+`discover()` reads YAML frontmatter and runs the security scanner on each skill's SKILL.md body before inserting it into the registry. Returns `SkillMetadata` with name, description, tags, allowedTools, source, and dirPath for each skill that passes the scan. Skills that produce findings at or above `blockOnSeverity` are excluded from the returned map (and from `query()` / `describeCapabilities()`) so that malicious skills never reach the model — they remain visible via `loadAll()` as `PERMISSION` errors for operator observability.
 
 `load(name)` promotes a discovered skill to `SkillDefinition` by reading the full body, resolving includes, and running the security scanner. Results are cached.
 
@@ -41,12 +41,13 @@ When two tiers define a skill with the same name, the higher-priority tier wins.
 
 ### Security Model (fail-closed)
 
-Loading a skill at `body` level runs `@koi/skill-scanner` on all embedded code blocks and the full markdown text.
+`@koi/skill-scanner` runs at two points: **discovery** (so blocked skills never appear in `discover()` / `query()` / `describeCapabilities()`) and **load** (fail-safe for any caller that constructs a loader context directly).
 
-- Findings at or above `blockOnSeverity` (default: `"HIGH"`) → `{ ok: false, error: { code: "PERMISSION", ... } }`
+- Findings at or above `blockOnSeverity` (default: `"HIGH"`) at discovery → excluded from the discovered map; `load()` / `loadAll()` return `{ ok: false, error: { code: "PERMISSION", ... } }` for operator visibility
+- Findings at or above `blockOnSeverity` at load → `{ ok: false, error: { code: "PERMISSION", ... } }`
 - Findings below `blockOnSeverity` → warning emitted via `onSecurityFinding`, skill loads normally
 
-This is **fail-closed**: a skill with `eval()` in a code block does not load unless you explicitly lower the threshold.
+This is **fail-closed**: a skill with `eval()` in a code block, or destructive prose such as `rm -rf /` and `$OPENROUTER_API_KEY` exfiltration in plain text, does not reach the model's capability list unless you explicitly lower the threshold.
 
 ## Public API
 
