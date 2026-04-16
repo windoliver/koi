@@ -467,12 +467,21 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
         }
 
-        // Schema-invalid turns break doom-loop streaks — the model's
-        // corrected retry must not be counted as consecutive with
-        // pre-error calls. Clear streaks and per-key budgets so the
-        // corrected call executes without doom-loop interference.
-        doomLoopStreaks = new Map();
-        doomLoopInterventionsByKey.clear();
+        // Schema-invalid turns break doom-loop streaks for the tools
+        // in this batch — the model's corrected retry must not be counted
+        // as consecutive. Only clear entries whose tool name appeared in
+        // the invalid batch; preserve streaks for unrelated tools.
+        const invalidToolNames = new Set(validToolCalls.map((tc) => tc.toolName));
+        for (const key of [...doomLoopStreaks.keys()]) {
+          if (invalidToolNames.has(parseDoomLoopKey(key).toolName)) {
+            doomLoopStreaks.delete(key);
+          }
+        }
+        for (const key of [...doomLoopInterventionsByKey.keys()]) {
+          if (invalidToolNames.has(parseDoomLoopKey(key).toolName)) {
+            doomLoopInterventionsByKey.delete(key);
+          }
+        }
 
         // Transition to continue so the model gets a recovery turn.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
