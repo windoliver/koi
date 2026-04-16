@@ -24,6 +24,7 @@ import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { initOtelSdk } from "../otel-bootstrap.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
@@ -182,10 +183,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
 
-    if (
-      manifestResult.value.stacks !== undefined &&
-      manifestResult.value.stacks.includes("spawn")
-    ) {
+    if (manifestResult.value.stacks?.includes("spawn")) {
       process.stderr.write(
         'koi start: manifest.stacks including "spawn" is not supported on this host.\n' +
           "  Spawn enables coordinator workflows that poll task_output while waiting on\n" +
@@ -297,6 +295,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
 
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("headless") : undefined;
+
   const runtimeHandle = await createKoiRuntime({
     modelAdapter,
     modelName: model,
@@ -348,6 +351,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
     getGeneration: () => transcriptGeneration,
+    ...(otelEnabled ? { otel: true as const } : {}),
   });
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
@@ -441,6 +445,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }\n`,
       );
     }
+    // Flush OTel spans before process exit
+    await otelHandle?.shutdown();
   };
   // Pre-populate the runtime's in-memory transcript with the resumed
   // messages so the model sees prior context on the first turn.
