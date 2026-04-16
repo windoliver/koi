@@ -1,10 +1,10 @@
 /**
- * Regression test for #1845 — memory_delete and notebook_delete_cell
- * must be auto-allowed in the TUI permission rules, just like their
- * sibling CRUD tools (memory_store, notebook_add_cell, etc.).
+ * Regression test for #1845 — tool calls timed out at 30s because the TUI
+ * used the 30s agent-to-agent default instead of a 60-minute interactive
+ * approval timeout.
  *
- * Also verifies the TUI passes an interactive-length approval timeout
- * rather than the 30s agent-to-agent default.
+ * Also verifies that destructive tools (memory_delete, notebook mutations)
+ * still require approval while non-destructive tools are auto-allowed.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -38,7 +38,7 @@ describe("TUI permission rules (#1845)", () => {
     rules: [...TUI_ALLOW_RULES],
   });
 
-  describe("memory tools — all auto-allowed (sandboxed to .koi/memory/)", () => {
+  describe("non-destructive memory tools — auto-allowed", () => {
     test("memory_store is allowed", () => {
       expect(checkTool(backend, "memory_store")).toBe("allow");
     });
@@ -50,31 +50,31 @@ describe("TUI permission rules (#1845)", () => {
     test("memory_search is allowed", () => {
       expect(checkTool(backend, "memory_search")).toBe("allow");
     });
-
-    test("memory_delete is allowed (#1845)", () => {
-      expect(checkTool(backend, "memory_delete")).toBe("allow");
-    });
   });
 
-  describe("notebook tools — all auto-allowed (file-path tools, sandboxed)", () => {
+  describe("read-only notebook tools — auto-allowed", () => {
     test("notebook_read is allowed", () => {
       expect(checkTool(backend, "notebook_read")).toBe("allow");
     });
-
-    test("notebook_add_cell is allowed", () => {
-      expect(checkTool(backend, "notebook_add_cell")).toBe("allow");
-    });
-
-    test("notebook_replace_cell is allowed", () => {
-      expect(checkTool(backend, "notebook_replace_cell")).toBe("allow");
-    });
-
-    test("notebook_delete_cell is allowed (#1845)", () => {
-      expect(checkTool(backend, "notebook_delete_cell")).toBe("allow");
-    });
   });
 
-  describe("dangerous tools stay gated", () => {
+  describe("destructive tools require approval (#1845 — now works with 60m timeout)", () => {
+    test("memory_delete requires approval (deletes durable on-disk state)", () => {
+      expect(checkTool(backend, "memory_delete")).toBe("ask");
+    });
+
+    test("notebook_add_cell requires approval (writes .ipynb in-place)", () => {
+      expect(checkTool(backend, "notebook_add_cell")).toBe("ask");
+    });
+
+    test("notebook_replace_cell requires approval (writes .ipynb in-place)", () => {
+      expect(checkTool(backend, "notebook_replace_cell")).toBe("ask");
+    });
+
+    test("notebook_delete_cell requires approval (writes .ipynb in-place)", () => {
+      expect(checkTool(backend, "notebook_delete_cell")).toBe("ask");
+    });
+
     test("Bash requires approval", () => {
       expect(checkTool(backend, "Bash")).toBe("ask");
     });
@@ -92,6 +92,8 @@ describe("TUI permission rules (#1845)", () => {
 describe("TUI approval timeout (#1845)", () => {
   test("TUI uses 60-minute interactive timeout, not 30s agent default", () => {
     // 60 minutes = 3_600_000ms — documented in docs/L2/tui.md
+    // This is the primary fix for #1845: the 30s default caused approval
+    // prompts to time out before interactive users could respond.
     expect(TUI_APPROVAL_TIMEOUT_MS).toBe(3_600_000);
   });
 });

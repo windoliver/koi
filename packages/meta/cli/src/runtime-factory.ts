@@ -140,11 +140,17 @@ export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
  * - Glob, Grep, ToolSearch — filesystem search, no mutations
  * - task_* — task board reads/writes (own state, not workspace files)
  * - Skill — skill invocation (own state)
- * - memory_* — sandboxed to .koi/memory/, own state, not workspace files (#1845)
- * - notebook_* — file-path tools, sandboxed via resolveToolPath (#1845)
+ * - memory_store/recall/search — sandboxed to .koi/memory/, non-destructive
+ * - notebook_read — read-only notebook access
  *
- * Bash, bash_background, web_fetch, fs_write, fs_edit are intentionally NOT
- * listed — they fall to "ask" (mode-default fallback for unmatched tools).
+ * Destructive tools fall to "ask" (mode-default for unmatched tools):
+ * - Bash, bash_background, web_fetch, fs_write, fs_edit
+ * - memory_delete — deletes durable cross-session state
+ * - notebook_add_cell, notebook_replace_cell, notebook_delete_cell — in-place
+ *   .ipynb writes (comparable to fs_write/fs_edit)
+ *
+ * The TUI sets TUI_APPROVAL_TIMEOUT_MS (60 min) so interactive users are
+ * never auto-denied while reading an "ask" prompt (#1845).
  */
 export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
@@ -157,16 +163,14 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
-  // Memory tools — sandboxed to .koi/memory/, own state, not workspace files
+  // Memory tools — non-destructive ops sandboxed to .koi/memory/
+  // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
-  { pattern: "memory_delete", action: "invoke", effect: "allow", source: "policy" },
-  // Notebook tools — file-path tools, sandboxed via resolveToolPath
+  // Notebook tools — only read is auto-allowed; mutating ops (add/replace/delete)
+  // write .ipynb files in-place, comparable to fs_write/fs_edit
   { pattern: "notebook_read", action: "invoke", effect: "allow", source: "policy" },
-  { pattern: "notebook_add_cell", action: "invoke", effect: "allow", source: "policy" },
-  { pattern: "notebook_replace_cell", action: "invoke", effect: "allow", source: "policy" },
-  { pattern: "notebook_delete_cell", action: "invoke", effect: "allow", source: "policy" },
 ] as const;
 
 // ---------------------------------------------------------------------------
