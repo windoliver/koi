@@ -9,6 +9,7 @@
  */
 
 import { spawn as spawnChild } from "node:child_process";
+import { statSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { SandboxAdapter, SandboxProfile } from "@koi/core";
 
@@ -52,13 +53,22 @@ export interface SafeEnvOptions {
   readonly home?: string | undefined;
 }
 
+function validateHome(home: string | undefined): string | undefined {
+  if (home === undefined || home.length === 0 || !home.startsWith("/")) return undefined;
+  try {
+    return statSync(home).isDirectory() ? home : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildSafeEnv(options: SafeEnvOptions): Readonly<Record<string, string>> {
   const pathExtensions = options.pathExtensions ?? [];
   const rawHome = options.home;
-  // Validate home: must be non-empty absolute path. Reject relative or
-  // empty values to prevent repo-local config poisoning.
-  const home =
-    rawHome !== undefined && rawHome.length > 0 && rawHome.startsWith("/") ? rawHome : undefined;
+  // Validate home: must be non-empty absolute path pointing to an
+  // existing directory. Reject relative, empty, or non-directory values
+  // to prevent repo-local config poisoning from arbitrary callers.
+  const home = validateHome(rawHome);
   const hasHome = home !== undefined;
 
   // Reject entries that are empty, non-absolute, or contain ":" (which

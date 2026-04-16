@@ -498,8 +498,9 @@ describe("buildSafeEnv", () => {
   });
 
   test("overrides HOME when validated home provided", () => {
-    const env = buildSafeEnv({ home: "/validated/home" });
-    expect(env.HOME).toBe("/validated/home");
+    // Use /var — an existing directory distinct from the /tmp default
+    const env = buildSafeEnv({ home: "/var" });
+    expect(env.HOME).toBe("/var");
   });
 
   test("keeps safe HOME (/tmp) when no home provided", () => {
@@ -514,6 +515,11 @@ describe("buildSafeEnv", () => {
 
   test("rejects relative home value", () => {
     const env = buildSafeEnv({ home: "relative/home" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("rejects non-existent home directory", () => {
+    const env = buildSafeEnv({ home: "/this/path/does/not/exist/koi-test" });
     expect(env.HOME).toBe("/tmp");
   });
 

@@ -164,9 +164,15 @@ function detectToolEnv(): ToolEnvConfig {
   } catch {
     // Degraded host — no home discovery possible
   }
-  const home = canonicalHome ?? undefined;
+  // Prefer passwd-backed home. If unavailable but getuid() + homedir()
+  // both succeed and match ownership, use envHome as fallback (covers
+  // passwd-less containers where userInfo() throws but HOME is valid).
+  const home = canonicalHome ?? (uid !== undefined && envHome !== undefined ? envHome : undefined);
   const homeOwned =
-    home !== undefined && uid !== undefined && home === envHome && isOwnedDir(home, uid);
+    home !== undefined &&
+    uid !== undefined &&
+    (canonicalHome !== undefined ? home === envHome : true) &&
+    isOwnedDir(home, uid);
   // Self-contained binaries — work correctly regardless of HOME value.
   const selfContainedCandidates: readonly string[] = homeOwned
     ? [
