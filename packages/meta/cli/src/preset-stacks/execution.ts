@@ -137,22 +137,27 @@ interface ToolEnvConfig {
 }
 
 function detectToolEnv(): ToolEnvConfig {
-  const home = homedir();
-  // process.getuid() is the POSIX fallback when os.userInfo() throws
-  // (common in containers / CI images with no passwd entry for the uid).
+  // Use passwd-backed home (os.userInfo().homedir) as the canonical
+  // source. Unlike os.homedir(), this ignores $HOME env overrides and
+  // reads directly from the passwd database, preventing same-uid HOME
+  // injection from steering subprocess PATH and config.
+  let canonicalHome: string | undefined;
   let uid: number | undefined;
   try {
-    uid = userInfo().uid;
+    const info = userInfo();
+    canonicalHome = info.homedir;
+    uid = info.uid;
   } catch {
     uid = process.getuid?.();
   }
 
-  // Validate home directory ownership before deriving paths from it.
-  // If $HOME points to a directory we do not own, or we cannot determine
-  // the uid, skip all home-derived candidates AND do not propagate HOME
-  // into the subprocess to prevent attacker-controlled binaries and
-  // config from being used.
-  const homeOwned = uid !== undefined && isOwnedDir(home, uid);
+  // Fall back to env-derived home ONLY when it matches the canonical
+  // home. If os.userInfo() failed entirely (no passwd entry), skip
+  // home-derived paths since we cannot verify ownership.
+  const envHome = homedir();
+  const home = canonicalHome ?? undefined;
+  const homeOwned =
+    home !== undefined && uid !== undefined && home === envHome && isOwnedDir(home, uid);
   const homeCandidates: readonly string[] = homeOwned
     ? [
         join(home, ".bun", "bin"),
@@ -254,15 +259,19 @@ export const executionStack: PresetStack = {
     // validated source so the trust boundary is consistent.
     const toolEnv = detectToolEnv();
 
+    // When sandboxed, keep HOME=/tmp (the SAFE_ENV default) because
+    // the sandbox write-allowlist does not include $HOME — propagating
+    // the real home would cause tool cache/config writes to fail.
+    const sandboxed = sandboxAdapter !== undefined && sandboxProfile !== undefined;
+    const effectiveHome = sandboxed ? undefined : toolEnv.home;
+
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,
       trackCwd: true,
       elicit: bashElicit,
       pathExtensions: toolEnv.pathExtensions,
-      home: toolEnv.home,
-      ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-        ? { sandboxAdapter, sandboxProfile }
-        : {}),
+      home: effectiveHome,
+      ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
     });
 
     // --- Task board (always created — spawned coordinators need task_*) ---
@@ -319,10 +328,8 @@ export const executionStack: PresetStack = {
                 },
                 elicit: bashElicit,
                 pathExtensions: toolEnv.pathExtensions,
-                home: toolEnv.home,
-                ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-                  ? { sandboxAdapter, sandboxProfile }
-                  : {}),
+                home: effectiveHome,
+                ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
           })
         : undefined;
