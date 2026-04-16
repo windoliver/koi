@@ -191,22 +191,24 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   // return `skipped` and silently keep the old record on disk, hiding
   // what is actually a same-key write that should conflict.
   //
-  // When a same-key record already exists, we still want retries of
-  // the *exact* same payload to resolve as a clean `skipped` replay
-  // (idempotency after a lost response). Determine that via Jaccard
-  // similarity against the specific matched record: above threshold
-  // → idempotent replay; below → loud error telling the caller to
-  // use upsert({ force: true }).
+  // When a same-key record already exists, treat the call as a replay
+  // ONLY when both the canonical description AND the content are
+  // exactly equal. Jaccard-threshold similarity is too loose here —
+  // a single token edit (e.g. port 8080 → 9090) must NOT be silently
+  // dropped as "close enough".
   const canonicalName = sanitizeFrontmatterValue(input.name);
+  const canonicalDescription = sanitizeFrontmatterValue(input.description);
   const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
   if (nameTypeCollision !== undefined) {
-    const sameKeyDup = findDuplicate(input.content, [nameTypeCollision], threshold);
-    if (sameKeyDup !== undefined) {
+    const exactReplay =
+      nameTypeCollision.description === canonicalDescription &&
+      nameTypeCollision.content === input.content;
+    if (exactReplay) {
       return {
         action: "skipped",
-        record: sameKeyDup.record,
-        duplicateOf: sameKeyDup.id,
-        similarity: sameKeyDup.similarity,
+        record: nameTypeCollision,
+        duplicateOf: nameTypeCollision.id,
+        similarity: 1,
       };
     }
     throw new Error(
