@@ -83,4 +83,26 @@ describe("DoctorView", () => {
     expect(frame).toContain("—");
     renderer.destroy();
   });
+
+  test("#1753: renders connected + populated model/provider after a successful turn", async () => {
+    // Regression for bug-bash S11/Q60: immediately after a successful
+    // model turn, /doctor must reflect the live runtime state — not a
+    // stale "disconnected" placeholder with blank Model/Provider.
+    const sessionInfo: SessionInfo = {
+      modelName: "anthropic/claude-sonnet-4.5",
+      provider: "openrouter",
+      sessionName: "",
+      sessionId: "sid-1753",
+    };
+    const { captureCharFrame, renderer } = await renderDoctorView({
+      connectionStatus: "connected",
+      sessionInfo,
+    });
+    const frame = captureCharFrame();
+    expect(frame).toContain("connected");
+    expect(frame).not.toContain("disconnected");
+    expect(frame).toContain("anthropic/claude-sonnet-4.5");
+    expect(frame).toContain("openrouter");
+    renderer.destroy();
+  });
 });
