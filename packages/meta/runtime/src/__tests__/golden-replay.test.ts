@@ -3645,6 +3645,8 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     // #1725: filePath removed from memory_store output — only check for stored+id
     expect(storeOutput).toContain('"stored":true');
     expect(storeOutput).toContain('"id"');
+    // Negative assertion: filePath must NOT appear in live runtime output (#1725)
+    expect(storeOutput).not.toContain('"filePath"');
 
     // In-memory backend correctly populated
     expect(records.size).toBeGreaterThan(0);
