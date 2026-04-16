@@ -73,6 +73,7 @@ import {
   type MiddlewareRegistry,
   resolveManifestMiddleware,
 } from "./middleware-registry.js";
+import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
 import { enforceRequiredMiddleware } from "./required-middleware.js";
@@ -527,6 +528,12 @@ export interface KoiRuntimeHandle {
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * Plugin discovery summary — loaded plugins + any errors.
+   * Static for the lifetime of the runtime. Used by the TUI to populate
+   * the /plugins view and inject plugin awareness into the system prompt.
+   */
+  readonly pluginSummary: PluginDiscoverySummary;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -730,6 +737,35 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Register plugin skills with the SkillsRuntime (if any)
   if (skillsRuntime !== undefined && pluginComponents.skillMetadata.length > 0) {
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
+  }
+
+  // Surface skipped middleware as a warning in the plugin summary so
+  // /plugins shows it, but don't block the plugin's other components.
+  const middlewareWarnings =
+    pluginComponents.middlewareNames.length > 0
+      ? [
+          {
+            plugin: "(middleware)",
+            error: `Skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+          },
+        ]
+      : [];
+  const pluginSummary: PluginDiscoverySummary = {
+    loaded: pluginComponents.discovered,
+    errors: [...pluginComponents.errors, ...middlewareWarnings],
+  };
+  if (pluginSummary.loaded.length > 0) {
+    // Sanitize plugin-derived strings before logging to prevent terminal
+    // control sequence injection from malicious plugin manifests.
+    const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+    const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
+    const names = pluginSummary.loaded
+      .map((p) => `${sanitizeLog(p.name)}@${sanitizeLog(p.version)}`)
+      .join(", ");
+    console.error(
+      `[koi/${hostId}] ${String(pluginSummary.loaded.length)} plugin(s) loaded: ${names}`,
+    );
   }
 
   // Session generation counter — incremented on each reset.
@@ -1712,6 +1748,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,
+      pluginSummary,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
