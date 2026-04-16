@@ -81,6 +81,8 @@ interface TuiState {
   readonly toolsExpanded: boolean;                // Ctrl+E toggle for accordion collapse
   // Trajectory view data — injected by host via set_trajectory_data
   readonly trajectorySteps: readonly TrajectoryStepSummary[];
+  // Spawn history (#1792) — recently finished agents, most-recent-first, cap 20
+  readonly finishedSpawns: readonly SpawnRecord[];
 }
 ```
 
@@ -601,6 +603,8 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 - **Writable session resume (#1783):** Picker now fully resumes sessions (rebind engine → hydrate transcript → update `tuiSessionId`/`viewedSessionId`). Fail-closed: rebind before hydrate, `lastResetFailed` latch on failure. Cost bridge retargeted via `setSession()`.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
 - **Fix orphan text node crash (#1768):** `StatusBar.tsx` and `CommandPalette.tsx` used ternaries returning `null` inside `<box>` elements. OpenTUI's strict schema requires text content wrapped in `<text>` tags; when ternaries evaluated to `null`, Solid converted it to `""` creating orphan text nodes. Replaced with `<Show>` which returns `null` safely via `cleanChildren`. Only triggered when running under Solid's server runtime (`solid-js/dist/server.js`) instead of the browser runtime — the `--conditions browser` re-exec in `bin.ts` prevents this in normal usage, but the `KOI_TUI_BROWSER_SOLID=1` env bypass skipped the conditions flag.
+
+> **Spawn history in /agents view (#1792):** `/agents` previously showed "No active agents" the instant a spawn finished, making it useless for multi-agent debugging. New `finishedSpawns: readonly SpawnRecord[]` state field — a session-scoped ring buffer (cap `MAX_FINISHED_SPAWNS = 20`, most-recent-first) populated from both `set_spawn_terminal` and `agent_status_changed(terminated)`. `AgentsView` now renders an "Active" section and a "Recent" section; finished agents show name, description, final duration, and a ✓/✗ outcome badge. `SpawnRecord` carries `agentId`, `agentName`, `description`, `startedAt`, `finishedAt`, `durationMs`, and `outcome: "complete" | "failed"`. `formatDuration()` extracted to `AgentsView` for shared active/finished rendering.
 
 > **Connection status stays connected after successful turns (#1753):** `engine_done` no longer dispatches `set_connection_status: "disconnected"`. It is a healthy end-of-turn signal — the worker is still alive and ready for the next turn. Disconnect is now reserved for `engine_error`, worker `onerror`, and `channel.dispose()`. This fixes `/doctor` reporting `Connection ○ disconnected` after every successful model turn. `dispose()` is hardened with per-message resilient teardown: each `approval_response` denial is posted in isolation so one failed `postMessage` cannot strand remaining pending requests, and any stranded approvals are surfaced via `add_error` so the operator knows to terminate the worker. `dispose()` also flips connection status to `disconnected` so `/doctor` cannot report a healthy engine for a torn-down channel.
 

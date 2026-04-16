@@ -13,6 +13,7 @@ import type {
   SessionInfo,
   SessionSummary,
   SpawnProgress,
+  SpawnRecord,
   SpawnStats,
   ToolResultData,
   TuiAction,
@@ -20,7 +21,13 @@ import type {
   TuiMessage,
   TuiState,
 } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_SESSIONS, MAX_TOOL_RESULT_BYTES } from "./types.js";
+import {
+  COMPACT_THRESHOLD,
+  MAX_FINISHED_SPAWNS,
+  MAX_MESSAGES,
+  MAX_SESSIONS,
+  MAX_TOOL_RESULT_BYTES,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Assistant message type (narrowed)
@@ -52,6 +59,18 @@ function findLastAssistant(messages: readonly TuiMessage[]): FoundAssistant | un
 /** Replace a single element in a readonly array by index. */
 function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
   return arr.with(idx, value);
+}
+
+/**
+ * Prepend a finished spawn record and cap the buffer at MAX_FINISHED_SPAWNS.
+ * Most-recent-first ordering lets the /agents view render without re-sorting.
+ */
+function appendFinishedSpawn(
+  existing: readonly SpawnRecord[],
+  record: SpawnRecord,
+): readonly SpawnRecord[] {
+  const next = [record, ...existing];
+  return next.length > MAX_FINISHED_SPAWNS ? next.slice(0, MAX_FINISHED_SPAWNS) : next;
 }
 
 /**
@@ -556,7 +575,8 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
       if (blockIdx < 0) return state;
 
       const spawnStatus: "complete" = "complete";
-      const durationMs = Date.now() - progress.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - progress.startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
@@ -575,6 +595,15 @@ function reduceEngineEvent(state: TuiState, event: EngineEvent): TuiState {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
         activeSpawns,
+        finishedSpawns: appendFinishedSpawn(state.finishedSpawns, {
+          agentId,
+          agentName: progress.agentName,
+          description: progress.description,
+          startedAt: progress.startedAt,
+          finishedAt,
+          durationMs,
+          outcome: "complete",
+        }),
       };
     }
 
@@ -725,7 +754,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         state.planTasks === null &&
         state.expandedToolCallIds.size === 0 &&
         state.expandedBodyToolCallIds.size === 0 &&
-        state.activeSpawns.size === 0
+        state.activeSpawns.size === 0 &&
+        state.finishedSpawns.length === 0
       )
         return state;
       return {
@@ -737,6 +767,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         expandedToolCallIds: new Set(),
         expandedBodyToolCallIds: new Set(),
         activeSpawns: new Map(),
+        finishedSpawns: [],
         retryState: null,
         // Reset cost dashboard state so new sessions start clean (#1636)
         costBreakdown: null,
@@ -810,36 +841,77 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       // Host-dispatched spawn termination with explicit outcome (complete or failed).
       // The engine's agent_status_changed event only carries "terminated", so the
       // bridge uses this action to preserve failure state for rendering.
+      // This action is authoritative: if agent_status_changed already recorded the
+      // spawn as "complete", this overwrites both the block and the finishedSpawns
+      // record with the correct outcome (#1792).
       const progress = state.activeSpawns.get(action.agentId);
-      if (!progress) return state;
 
-      const found = findLastAssistant(state.messages);
-      if (!found) return state;
+      // If activeSpawns was already cleared (agent_status_changed arrived first),
+      // look up the existing finishedSpawns record to recover metadata.
+      const existingRecord = progress
+        ? undefined
+        : state.finishedSpawns.find((r) => r.agentId === action.agentId);
+      if (!progress && !existingRecord) return state;
 
-      const blockIdx = found.msg.blocks.findIndex(
-        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
-      );
-      if (blockIdx < 0) return state;
-
-      const durationMs = Date.now() - progress.startedAt;
+      const agentName = progress?.agentName ?? existingRecord!.agentName;
+      const description = progress?.description ?? existingRecord!.description;
+      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
+      const finishedAt = Date.now();
+      const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
-      const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
-        kind: "spawn_call" as const,
-        agentId: action.agentId,
-        agentName: progress.agentName,
-        description: progress.description,
-        status: action.outcome,
-        stats,
-      });
+      // Best-effort inline block update — block may no longer be in the last
+      // assistant message if UI/message evolution moved it.
+      let messages = state.messages;
+      const found = findLastAssistant(state.messages);
+      if (found) {
+        const blockIdx = found.msg.blocks.findIndex(
+          (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+        );
+        if (blockIdx >= 0) {
+          const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
+            kind: "spawn_call" as const,
+            agentId: action.agentId,
+            agentName,
+            description,
+            status: action.outcome,
+            stats,
+          });
+          messages = updateAssistant(state.messages, found, { blocks: updatedBlocks });
+        }
+      }
 
-      const activeSpawns = new Map(state.activeSpawns);
-      activeSpawns.delete(action.agentId);
+      let activeSpawns: ReadonlyMap<string, SpawnProgress> = state.activeSpawns;
+      if (progress) {
+        const mutable = new Map(state.activeSpawns);
+        mutable.delete(action.agentId);
+        activeSpawns = mutable;
+      }
+
+      // Replace the existing record if agent_status_changed already inserted one,
+      // otherwise append a new record. This runs regardless of whether the inline
+      // block was found — history correction is never gated on message state.
+      const correctedSpawns = existingRecord
+        ? state.finishedSpawns.map((r) =>
+            r.agentId === action.agentId
+              ? { ...r, outcome: action.outcome, finishedAt, durationMs }
+              : r,
+          )
+        : appendFinishedSpawn(state.finishedSpawns, {
+            agentId: action.agentId,
+            agentName,
+            description,
+            startedAt,
+            finishedAt,
+            durationMs,
+            outcome: action.outcome,
+          });
 
       return {
         ...state,
-        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+        messages,
         activeSpawns,
+        finishedSpawns: correctedSpawns,
       };
     }
 
