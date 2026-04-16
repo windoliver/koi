@@ -28,13 +28,23 @@ export async function loadMcpJsonFile(
   try {
     raw = await Bun.file(filePath).text();
   } catch (error: unknown) {
+    // Distinguish "file absent" (ENOENT) from "file exists but can't read"
+    // (EACCES, EPERM, I/O). Callers use NOT_FOUND to decide whether to
+    // fall back to a different config location — non-ENOENT failures
+    // must not be treated as absence.
+    const errCode =
+      error !== null && typeof error === "object" && "code" in error
+        ? String((error as { code: unknown }).code)
+        : "";
+    const isAbsent = errCode === "ENOENT" || errCode === "ENOTDIR";
+    const msg = error instanceof Error ? error.message : String(error);
     return {
       ok: false,
       error: {
-        code: "NOT_FOUND",
-        message: `Failed to read .mcp.json at "${filePath}": ${error instanceof Error ? error.message : String(error)}`,
+        code: isAbsent ? "NOT_FOUND" : "EXTERNAL",
+        message: `Failed to read .mcp.json at "${filePath}": ${msg}`,
         retryable: false,
-        context: { filePath },
+        context: { filePath, errCode },
       },
     };
   }

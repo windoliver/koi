@@ -4,6 +4,15 @@
 
 Command-line interface for running Koi agents locally. Provides interactive (`start`), headless (`serve`), standalone admin (`admin`), and operator console (`tui`) flows, plus automatic Nexus backend wiring, conversation persistence, and graceful shutdown.
 
+## Recent updates
+
+- **`/mcp` TUI command**: full-screen interactive view of MCP server status (connected / needs-auth / error / pending / auth-pending-restart). Reads `.mcp.json` from `cwd` then `~/.koi/.mcp.json` (legacy `~/.claude/.mcp.json` still read with deprecation warning). Status comes from instant Keychain check + background `runtimeHandle.getMcpStatus()` enrichment.
+- **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
+- **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.
+- **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
+- **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
+- **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
+
 ---
 
 ## What This Enables
@@ -80,6 +89,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--verbose` / `-v` | boolean | false | Stream tool calls and turn delimiters |
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend. When set, `resolve-filesystem.ts` allows `FileSystemBackend` instances whose `kind` is `"nexus"` rather than failing closed with an unsupported-backend error. Requires nexus connectivity; startup aborts if the backend liveness check fails. |
 
 **Wiring (current):**
 
@@ -157,8 +167,10 @@ koi tui
 | `OPENAI_API_KEY` | one of these | — | Key for OpenAI (`api.openai.com/v1`) |
 | `KOI_MODEL` | no | `anthropic/claude-sonnet-4-6` | Model name passed to the provider |
 | `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
-| `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call (requires a tracer provider registered before launch) |
+| `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call. The CLI auto-initializes a `BasicTracerProvider` with `BatchSpanProcessor` — no external SDK setup needed. Headless (`koi start`) exports spans as JSON to stderr; TUI (`koi tui`) exports via OTLP to `localhost:4318` by default. Override with `OTEL_TRACES_EXPORTER` (`console`, `otlp`, `none`) and `OTEL_EXPORTER_OTLP_ENDPOINT`. (#1770) |
 | `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
+| `KOI_AUDIT_SQLITE` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-sqlite`. Same audit coverage as NDJSON but stored in a WAL-mode SQLite database. Both `KOI_AUDIT_NDJSON` and `KOI_AUDIT_SQLITE` can be set simultaneously (tee pattern) as long as they target different files — a collision guard rejects startup if paths overlap (#1849) |
+| `KOI_REPORT_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-report`. Emits a RunReport to stderr at session end with turn count, action count, duration, and token usage. If goals are configured, the report includes the objective. (#1858) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
@@ -169,6 +181,7 @@ so the key is not forwarded to OpenRouter.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--goal` | string (repeatable) | — | Goal objectives for adaptive reminder middleware |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend (same semantics as `koi start --allow-remote-fs`). When set, `koi tui` passes the flag into `createTuiRuntime()` so the filesystem resolver does not fail closed on nexus backends. |
 
 Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
@@ -183,7 +196,7 @@ Engine adapter is wired directly from environment variables. Manifest-based
 - **Tools wired:** Glob, Grep, web_fetch, Bash, fs_read/write/edit (via `createRuntime`), task_create/get/update/list/stop/output/delegate (via `@koi/task-tools`), and **TodoWrite**.
 - **Interaction tools (partial):** `TodoWrite` is wired. `EnterPlanMode`, `ExitPlanMode`, and `AskUserQuestion` are intentionally NOT registered until real TUI dialogs are wired (tracked in #1582). Without dialog integration: plan-mode would flip a boolean without gating Bash/fs access, and AskUserQuestion would auto-answer without showing the user.
 - **No agent_spawn:** `agent_spawn` is intentionally not registered — child workers only have Glob/Grep (read-only) but the child prompt says "write files, run commands" which they cannot do. Deferred until workers route through `createKoi` with full middleware (#1582).
-- **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Loaded skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp).
+- **Skill injection:** At startup, `createSkillsRuntime().loadAll()` discovers SKILL.md files from `~/.claude/skills/` (user) and `.claude/skills/` (project). Discovery now runs `@koi/skill-scanner` on each skill's SKILL.md body before insertion (#1722) — skills with destructive prose (`rm -rf /`, credential env-var exfiltration) or dangerous code blocks are excluded from `discover()`/`query()` so malicious skills never reach the model's capability list. Clean skill content is prepended to the system prompt so the model follows skill guidance. Standard tier precedence applies (project > user > bundled > mcp).
 - **MCP wiring:** If `.mcp.json` exists in CWD, `createTuiRuntime()` loads MCP server configs and creates connections via `createOAuthAwareMcpConnection()` — HTTP servers with an `oauth` field automatically get an `OAuthAuthProvider` backed by `@koi/secure-storage` keychain tokens. Creates an `McpResolver` + `McpComponentProvider` (tools appear as available tools), and bridges MCP tools into the skill registry via `createSkillsMcpBridge` (tools discoverable via `query({ source: "mcp" })`). MCP connections are cleaned up on shutdown. Without `.mcp.json`, MCP loading is silently skipped. CLI management via `koi mcp list|auth|logout|debug` (#1633).
 - **Skill tool:** `@koi/skill-tool` is wired as the `Skill` meta-tool (#1594). The model can invoke `Skill({ skill: "name", args?: "..." })` to load skills on demand. Budget-aware advertising lists available skills in the tool description. Inline mode returns the substituted skill body; fork mode is disabled in TUI (no `spawnFn`). The Skill tool is only registered when `createSkillTool()` succeeds at startup.
 - **Goal middleware:** `@koi/middleware-goal` is optionally wired when `--goal` flags are provided. Injects adaptive goal reminders into model context, tracks drift and completion across turns. Goal state persists across session resets (known limitation — full fix requires runtime hot-swapping).
@@ -280,6 +293,17 @@ is merged with workspace-specific overrides (network allowed, write access to `c
 tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
 the unsandboxed denylist-only path when the platform is unsupported.
 
+### Bash PATH Extensions (#1841)
+
+The execution preset stack auto-detects user-installed tool directories at boot
+(`~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, etc.) and injects them via
+`pathExtensions` on both Bash tools. Each candidate is validated for uid ownership
+and absolute path format. HOME-dependent shim paths (nvm, volta, pyenv) are excluded
+in sandboxed mode. `SAFE_ENV.HOME` defaults to `/tmp`; the real home directory is
+only propagated when passwd-backed ownership is confirmed and the sandbox is not
+active. The home derivation uses `os.userInfo().homedir` (passwd-backed) with
+`process.getuid()` + `os.homedir()` fallback for passwd-less containers.
+
 ### Bash AST Classifier (PR #1660, issue #1634)
 
 `@koi/tools-bash` now delegates to `@koi/bash-ast` for command classification instead of
@@ -367,21 +391,26 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider. `task_update(completed)` defaults `output` when omitted (#1785) |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@opentelemetry/api` | ext | OTel API — `trace.getTracer()`, `trace.setGlobalTracerProvider()` |
+| `@opentelemetry/sdk-trace-base` | ext | `BasicTracerProvider`, `BatchSpanProcessor` — OTel SDK bootstrap (#1770) |
+| `@opentelemetry/exporter-trace-otlp-http` | ext | `OTLPTraceExporter` — OTLP HTTP span export for TUI mode (#1770) |
 | `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
 | `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
 | `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification. Classifier includes a `destructive` category (#1721) enforced inside `execute()` after the permission modal, so session-wide `[a]` grants cannot authorize catastrophic commands (`rm -rf /`, `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`) |
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
+| `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
+| `@koi/middleware-report` | L2 | Run report middleware — opt-in via `KOI_REPORT_ENABLED=true`. Accumulates model/tool call metrics and emits a RunReport at session end (#1858) |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. |
 | `@koi/memory` | L0u | Session-start memory recall — scan, score by salience, budget to 8K tokens, format with `<memory-data>` trust boundary |
 | `@koi/memory-fs` | L2 | File-based memory storage — `.koi/memory/` with per-dir mutex, worktree-local by default, atomic writes, MEMORY.md index |
-| `@koi/memory-tools` | L2 | Memory read/write/list tools with SkillComponent behavioral guidance — file-backed via `@koi/memory-fs` adapter |
-| `@koi/middleware-memory-recall` | L2 | Frozen-snapshot memory recall — auto-injects recalled memories at session start, optional per-turn relevance selector |
+| `@koi/memory-tools` | L2 | Memory read/write/list tools with SkillComponent behavioral guidance — file-backed via `@koi/memory-fs` adapter. Tool output excludes internal `filePath` (#1725) |
+| `@koi/middleware-memory-recall` | L2 | Frozen-snapshot memory recall — auto-injects recalled memories at session start, optional per-turn relevance selector (uses opaque record IDs, not filenames) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
 | `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json` as `"user"` tier, plugin hooks as `"session"` tier (#1282). Hook policy tiers enable tier-phased dispatch (managed → user → session) and `HookPolicy` filtering. Wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279). **User-hook loader semantics (#1781):** `loadUserRegisteredHooks` in `shared-wiring.ts` calls `loadRegisteredHooksPerEntry` so one invalid entry no longer silently drops every hook; parse failures and non-array roots are fatal by default (Codex review convergence); per-entry errors marked `failClosed: true` abort startup; `KOI_HOOKS_STRICT=1` tightens every per-entry error into a fatal; `KOI_HOOKS_CONFIG_PATH=/abs/path` pins the hooks file for deployments that don't trust `$HOME` (sudo/launchd); diagnostics surface via `[koi tui] hooks.json: …` warnings wired to `onLoadError`. Plugin agent hooks are silently filtered in TUI (auto-discovered third-party content must not be able to brick hosts — a plugin update can then cause per-session warnings rather than a machine-wide outage). Agent pre-filter honors `enabled: false` so operators can share one hooks.json across agent-capable and TUI-only hosts |
@@ -576,12 +605,18 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 >
 > - **Engine: `CreateKoiOptions.rotateSessionId` callback.** New L0/L1 surface so hosts that own the session-id format keep ownership across `cycleSession()` rotations. Pre-computed at the top of `cycleSession()` BEFORE any destructive lifecycle step (sessionEpoch bump, onSessionEnd, governance reset), so a throwing host callback leaves the runtime entirely pre-cycle — no half-cycled state, no stale-iterable lockup.
 
+> **Spawn crash guard (#1855):** `createSpawnExecutor` in `@koi/engine` now wraps all 4 `onSpawnEvent` callback invocations in a `safeSpawnEvent()` helper that catches and logs errors — observational callbacks must never crash the spawn flow. The first call site (`spawn_requested`) was outside the try block entirely, so a throwing `store.dispatch()` was completely unhandled and crashed the parent TUI process. The TUI's `onSpawnEvent` callback in `tui-command.ts` gains a defense-in-depth try-catch around `store.dispatch()` calls. `set_spawn_terminal` now passes fallback `agentName`/`description` metadata so the TUI reducer can synthesize a `finishedSpawns` record when the initial `spawn_requested` dispatch was lost.
+
 
 ## Changelog
 
+- **Fix SessionsView row overlap (#1776)** — Layout fix in `@koi/tui` `SessionsView` component (nested column box collapse). No CLI behavioral change as `SessionsView` is currently inactive (superseded by `SessionPicker` modal in #1783).
 - **Wire host-dispatched slash commands (#1752)** — `/model`, `/cost`, `/tokens`, `/compact`, `/export`, `/zoom` previously advertised in the command palette but fell through to `COMMAND_NOT_IMPLEMENTED`. `onCommand` in `tui-command.ts` now handles each: `/model` shows resolved `modelName`/`provider`/fallback chain, `/cost` and `/tokens` read `costBridge.aggregator.breakdown()` (notices labeled "this process" — the aggregator is not backfilled on `--resume`), `/compact` calls `microcompact()` from `@koi/context-manager` and splices `runtimeHandle.transcript`, `/export` renders a Markdown document via the new `renderTranscriptMarkdown` helper and writes to cwd, `/zoom` parses a numeric arg or cycles `1 → 1.25 → 1.5 → 1` and dispatches `set_zoom`. All notices reuse the fork-notice `add_user_message` pattern so they land in the conversation stream without polluting `runtime.transcript`.
 - **Ctrl+N new session + unified /sessions + writable resume (#1783)** — `session:new` (Ctrl+N) preserves old transcript on disk, rotates `tuiSessionId`, rebinds engine. Removed `nav:sessions` read-only view; `/sessions` opens unified session picker (browse + resume). Picker now fully resumes sessions (writable, not read-only). Fail-closed rebind ordering, `lastResetFailed` latch, cost bridge retargeting, deferred cleared-session bookkeeping.
 - **@-mention file completion + content injection (#1782)** — `tui-command.ts` wires `onAtQuery` callback with `createFileCompletionHandler` (FileIndex bitmap pre-filter + nucleo-style scorer over cached `git ls-files`). New `at-reference.ts` parses `@path`, `@path#L10-20`, `@"quoted"` from submitted text, reads files with realpathSync containment, and injects `<file>` context blocks into `modelText` before `runtime.run()` — model sees content directly without tool calls.
+- **Fix /doctor false-negative connection status (#1753)** — `drainEngineStream` now returns `DrainOutcome` (`"settled" | "engine_error" | "abandoned" | "failed"`) instead of `void`. The `finally` block no longer unconditionally sets `disconnected` — connection status stays `connected` on the happy path and user-initiated abort, and is set to `disconnected` only on real engine errors, abandoned streams (batcher disposed mid-drain), or finalization failures. Post-turn bookkeeping (rewind count, cost delta, trajectory refresh) is gated on outcome: `abandoned`/`failed` skip all bookkeeping, `engine_error` refreshes observability but skips rewind budget, `settled` runs full bookkeeping. The `engine_done` handler in `@koi/tui`'s `EngineChannel` no longer dispatches `disconnected` — it flushes the batcher and leaves the channel connected.
 - **Cost attribution dashboard (#1636)** — `@koi/cost-aggregator` wired via `CostBridge` in tui-command.ts. Tracks per-model/provider cost from engine done events, computes pricing via models.dev live table, pushes breakdown to TUI `CostDashboardView` with 200ms debounce. Accessible via Ctrl+P → "Cost Dashboard".
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
 - **Fix TUI orphan text crash (#1768)** — `StatusBar.tsx` and `CommandPalette.tsx` ternaries returning `null` inside `<box>` replaced with `<Show>` to prevent OpenTUI orphan text node errors under Solid's server runtime.
+- **Retain spawn history in /agents view (#1792)** — `/agents` now shows both active and recently-finished spawns. Session-scoped ring buffer (`finishedSpawns`, cap 20) populated from `set_spawn_terminal` and `agent_status_changed(terminated)`. Finished agents display name, description, duration, and ✓/✗ outcome badge.
+- **Plugin TUI observability (#1728)** — Plugin loading now observable from TUI. `KoiRuntimeHandle` exposes `pluginSummary` (`PluginDiscoverySummary` from `plugin-activation.ts`). After runtime ready, `tui-command.ts` dispatches `set_plugin_summary` to TUI store and surfaces plugin status as inline notice. `/plugins` nav command opens `PluginsView` showing loaded plugins and errors. Plugin activation refactored to atomic commit: per-plugin hooks/MCP/skills buffered locally and merged only if all steps succeed. Startup log sanitizes plugin-derived strings (ANSI/control character stripping). Middleware-declaring plugins load other components but middleware skip is surfaced as a warning in `/plugins` errors.

@@ -1232,10 +1232,11 @@ describe("createMemoryRecallMiddleware", () => {
           maxFiles: 1,
           modelCall: async (req) => {
             const text = (req.messages[0]?.content[0] as { text?: string })?.text ?? "";
-            // Find Memory0's path in the manifest.
-            const m = text.match(/\(([^)]*memory0\.md)\)/);
-            const targetPath = m?.[1] ?? "";
-            receivedPaths = targetPath ? [targetPath] : [];
+            // Find Memory0's id in the manifest. Main's selector prompt
+            // renders entries as `(id: <id>)`.
+            const m = text.match(/\(id: ([^)]*memory0\.md)\)/);
+            const targetId = m?.[1] ?? "";
+            receivedPaths = targetId ? [targetId] : [];
             return {
               content: JSON.stringify(receivedPaths),
               model: "test",

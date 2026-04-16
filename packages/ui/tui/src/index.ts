@@ -47,6 +47,8 @@ export type { GlobalKeyCallbacks } from "./keyboard.js";
 export { createKeyboardHandler, handleGlobalKey } from "./keyboard.js";
 // State management
 export * from "./state/index.js";
+// Plugin summary types
+export type { PluginSummary, PluginSummaryEntry, PluginSummaryError } from "./state/types.js";
 // Store context — the SolidJS store provides reactivity directly through StoreContext.
 // Components that use useTuiStore must be rendered inside StoreContext.Provider
 // (or inside TuiRoot, which provides it automatically).

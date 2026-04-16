@@ -68,7 +68,7 @@ interface SessionRecallState {
   memoryCount: number;
   tokenCount: number;
   memoryManifest: readonly MemoryManifestEntry[];
-  frozenPaths: ReadonlySet<string>;
+  frozenIds: ReadonlySet<string>;
   /**
    * Content-hash signatures for EVERY memory file present at session
    * start — not just the frozen-snapshot subset. The live delta uses
@@ -95,9 +95,9 @@ interface SessionRecallState {
   /** Cached live delta message (new/modified memories since frozen snapshot). */
   liveMessage: InboundMessage | undefined;
   /** Paths included in the live delta (for relevance exclusion). */
-  livePaths: ReadonlySet<string>;
+  liveIds: ReadonlySet<string>;
   /**
-   * Paths that exist in `frozenPaths` AND were observed as changed
+   * Paths that exist in `frozenIds` AND were observed as changed
    * mid-session. The frozen snapshot now contains stale data for these
    * paths. The relevance selector must be ALLOWED to pick them up
    * (overriding the normal "exclude frozen" rule) so a budget-truncated
@@ -105,7 +105,7 @@ interface SessionRecallState {
    * that doesn't fit in the live delta becomes unreachable for the
    * rest of the session — the agent keeps seeing the stale frozen copy.
    */
-  staleFrozenPaths: Set<string>;
+  staleFrozenIds: Set<string>;
   /**
    * Last seen fs.list() fingerprint (path+mtime+size hash). Fast-path
    * gate: if this turn's fingerprint matches, the directory looks
@@ -122,13 +122,13 @@ function createEmptyState(): SessionRecallState {
     memoryCount: 0,
     tokenCount: 0,
     memoryManifest: [],
-    frozenPaths: new Set(),
+    frozenIds: new Set(),
     sessionStartSignatures: new Map(),
     selectorNeeded: false,
     detectedAt: new Map(),
     liveMessage: undefined,
-    livePaths: new Set(),
-    staleFrozenPaths: new Set(),
+    liveIds: new Set(),
+    staleFrozenIds: new Set(),
     lastListFingerprint: "",
   };
 }
@@ -310,7 +310,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
             timestamp: Date.now(),
           };
 
-          state.frozenPaths = new Set(selection.selected.map((s) => s.memory.record.filePath));
+          state.frozenIds = new Set(selection.selected.map((s) => s.memory.record.id));
         }
 
         if (config.relevanceSelector !== undefined && selection.truncated) {
@@ -319,7 +319,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
             name: m.record.name,
             description: m.record.description,
             type: m.record.type,
-            filePath: m.record.filePath,
+            id: m.record.id,
           }));
         }
       }
@@ -376,16 +376,16 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     }
 
     // Candidate filter:
-    //  - Exclude paths already in the live delta (avoid double-injection).
-    //  - Exclude frozen-snapshot paths UNLESS they were observed as
+    //  - Exclude IDs already in the live delta (avoid double-injection).
+    //  - Exclude frozen-snapshot IDs UNLESS they were observed as
     //    changed mid-session — those frozen entries are stale, and the
     //    selector is the fallback that lets a budget-truncated overwrite
     //    reach the model. Otherwise an overwrite that doesn't fit in
     //    the live delta would never be visible for the rest of the session.
     const candidates = state.memoryManifest.filter((m) => {
-      if (state.livePaths.has(m.filePath)) return false;
-      if (state.frozenPaths.has(m.filePath)) {
-        return state.staleFrozenPaths.has(m.filePath);
+      if (state.liveIds.has(m.id)) return false;
+      if (state.frozenIds.has(m.id)) {
+        return state.staleFrozenIds.has(m.id);
       }
       return true;
     });
@@ -394,28 +394,31 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     const userMessage = extractUserMessage(request);
     if (userMessage.length === 0) return undefined;
 
-    const selectedPaths = await selectRelevantMemories(
+    const selectedIds = await selectRelevantMemories(
       candidates,
       userMessage,
       config.relevanceSelector,
     );
 
-    if (selectedPaths.length === 0) return undefined;
+    if (selectedIds.length === 0) return undefined;
 
-    // Load only the selected paths via direct fs.read. Applies the same
-    // path/size validation as scanMemoryDirectory:
-    //  - relative path must pass validateMemoryFilePath (no traversal,
-    //    no absolute paths, .md extension only)
+    // Load only the selected memories via direct fs.read. Applies the
+    // same path/size validation as scanMemoryDirectory:
+    //  - relative path (derived from id + ".md") must pass
+    //    validateMemoryFilePath (no traversal, no absolute paths)
     //  - file size must be <= MAX_MEMORY_FILE_BYTES (50KB) to bound
     //    prompt-budget impact and prevent runaway reads if a memory
     //    was overwritten with a huge file mid-session
     //
     // Replaces the previous scanMemoryDirectory() that was wasteful
     // (read N files, kept K) and bound by the 200-file default cap.
-    // Direct reads are O(K) where K = selected paths.
+    // Direct reads are O(K) where K = selected memories.
     const baseDir = config.recall.memoryDir.replace(/\\/g, "/").replace(/\/$/, "");
     const selectedMemories: ScannedMemory[] = [];
-    for (const relPath of selectedPaths) {
+    for (const id of selectedIds) {
+      // scan.ts sets record.id = relativePath (including ".md"), so id
+      // IS the filePath we need to read.
+      const relPath = id;
       // Path validation — same checks scanMemoryDirectory applies.
       if (validateMemoryFilePath(relPath) !== undefined) continue;
       try {
@@ -431,7 +434,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         if (parsed === undefined) continue;
         selectedMemories.push({
           record: {
-            id: memoryRecordId(relPath.endsWith(".md") ? relPath.slice(0, -3) : relPath),
+            id: memoryRecordId(id),
             name: parsed.frontmatter.name,
             description: parsed.frontmatter.description,
             type: parsed.frontmatter.type,
@@ -601,19 +604,21 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // edits, not just content edits.
       const now = Date.now();
       const changedMemories = scanResult.memories.filter((m) => {
-        const path = m.record.filePath;
-        const baseline = state.sessionStartSignatures.get(path);
+        const id = m.record.id;
+        // Baseline is keyed by filePath (built during init scan);
+        // keep filePath lookup for baseline compatibility.
+        const baseline = state.sessionStartSignatures.get(m.record.filePath);
         const current = signatureFromRecord(m.record);
         if (baseline === undefined) {
           // Genuinely new file — record first-observation time for ranking.
-          if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
+          if (!state.detectedAt.has(id)) state.detectedAt.set(id, now);
           return true;
         }
         if (signatureChanged(current, baseline)) {
-          if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
+          if (!state.detectedAt.has(id)) state.detectedAt.set(id, now);
           // Record stale-frozen status so the relevance selector can
           // reach this overwrite even if the live delta budget drops it.
-          if (state.frozenPaths.has(path)) state.staleFrozenPaths.add(path);
+          if (state.frozenIds.has(id)) state.staleFrozenIds.add(id);
           return true;
         }
         // Signature matches baseline — unchanged.
@@ -622,7 +627,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
 
       if (changedMemories.length === 0) {
         state.liveMessage = undefined;
-        state.livePaths = new Set();
+        state.liveIds = new Set();
         return;
       }
 
@@ -631,25 +636,25 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // selector and frontmatter-only edits refresh the manifest's
       // metadata in place. Done up front because every code path below
       // (delta-injected, budget-truncated, all-too-big) needs this.
-      const changedByPath = new Map<string, MemoryManifestEntry>();
+      const changedById = new Map<string, MemoryManifestEntry>();
       for (const m of changedMemories) {
-        changedByPath.set(m.record.filePath, {
+        changedById.set(m.record.id, {
           name: m.record.name,
           description: m.record.description,
           type: m.record.type,
-          filePath: m.record.filePath,
+          id: m.record.id,
         });
       }
-      const replaced = state.memoryManifest.map((e) => changedByPath.get(e.filePath) ?? e);
-      const existingPaths = new Set(state.memoryManifest.map((e) => e.filePath));
-      const additions = [...changedByPath.values()].filter((e) => !existingPaths.has(e.filePath));
+      const replaced = state.memoryManifest.map((e) => changedById.get(e.id) ?? e);
+      const existingIds = new Set(state.memoryManifest.map((e) => e.id));
+      const additions = [...changedById.values()].filter((e) => !existingIds.has(e.id));
       state.memoryManifest = additions.length > 0 ? [...replaced, ...additions] : replaced;
 
       // Build the section title to explicitly handle precedence when
-      // any changed memory shares a path with the frozen snapshot.
+      // any changed memory shares an id with the frozen snapshot.
       // Without this signal the model sees two contradictory copies
       // (stale frozen + fresh delta) and may answer from the wrong one.
-      const hasOverwrite = changedMemories.some((m) => state.frozenPaths.has(m.record.filePath));
+      const hasOverwrite = changedMemories.some((m) => state.frozenIds.has(m.record.id));
       const sectionTitle = hasOverwrite
         ? "Recent Memory Updates (these supersede same-name entries in the earlier Memory section)"
         : "Recently Added Memories";
@@ -662,7 +667,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // Rank by OUR observation time, not record.updatedAt — for
       // mtime-preserving stores, mtime is stale on every update.
       const rankOf = (m: ScannedMemory): number =>
-        state.detectedAt.get(m.record.filePath) ?? m.record.updatedAt;
+        state.detectedAt.get(m.record.id) ?? m.record.updatedAt;
       const byRecency = [...changedMemories].sort((a, b) => rankOf(b) - rankOf(a));
       const packed: ScannedMemory[] = [];
       // let — accumulator built by incrementally adding memories and
@@ -695,20 +700,20 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         // the delta but leave the manifest populated so the relevance
         // selector can route overflow.
         state.liveMessage = undefined;
-        state.livePaths = new Set();
+        state.liveIds = new Set();
       } else {
         state.liveMessage = {
           content: [{ kind: "text", text: formatted }],
           senderId: "system:memory-live",
           timestamp: Date.now(),
         };
-        state.livePaths = new Set(packed.map((m) => m.record.filePath));
+        state.liveIds = new Set(packed.map((m) => m.record.id));
       }
 
       // Enable the relevance selector when delta couldn't include
       // every changed memory (truncation OR couldn't fit anything).
       // The dropped memories remain reachable: they are in
-      // memoryManifest but NOT in livePaths, so the selector's
+      // memoryManifest but NOT in liveIds, so the selector's
       // candidate filter will include them.
       if (
         packed.length < changedMemories.length &&

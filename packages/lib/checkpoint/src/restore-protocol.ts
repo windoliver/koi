@@ -28,6 +28,7 @@
 
 import type {
   ChainId,
+  FileSystemBackend,
   KoiError,
   NodeId,
   Result,
@@ -77,6 +78,14 @@ export interface RestoreInput {
   readonly transcript?: SessionTranscript;
   /** Session ID — required when `transcript` is provided. */
   readonly sessionId?: SessionId;
+  /**
+   * Optional map of named `FileSystemBackend` instances. When provided,
+   * ops that carry a `backend` field are dispatched to the matching backend
+   * instead of using direct local I/O. The pre-flight check will verify
+   * that every required non-local backend is present in this map before
+   * touching the filesystem.
+   */
+  readonly backends?: ReadonlyMap<string, FileSystemBackend>;
 }
 
 /**
@@ -88,7 +97,7 @@ export interface RestoreInput {
  * to retry, surface the error, or both.
  */
 export async function runRestore(input: RestoreInput): Promise<RewindResult> {
-  const { store, chainId, blobDir, target, transcript, sessionId } = input;
+  const { store, chainId, blobDir, target, transcript, sessionId, backends } = input;
 
   // ---- Step 1: locate the current head and walk to the target ----
   const headResult = await store.head(chainId);
@@ -123,11 +132,65 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     };
   }
 
+  // ---- Step 1b: pre-flight backend availability check ----
+  // Collect every non-local backend name referenced by FileOpRecords in the
+  // snapshots we are about to undo. If any required backend is absent from
+  // the map, abort before touching the filesystem — atomicity guarantee.
+  const missingBackend = findMissingBackend(snapshotsToUndo, backends);
+  if (missingBackend !== undefined) {
+    return {
+      ok: false,
+      error: internal(
+        `Rewind aborted — backend '${missingBackend}' unavailable. No changes were made.`,
+      ),
+    };
+  }
+
+  // ---- Step 1c: liveness check for non-local backends ----
+  // Map membership alone is not sufficient — the backend object may exist
+  // but its transport/subprocess may be dead. Probe each required non-local
+  // backend with a lightweight list(".") call before any filesystem writes.
+  if (backends !== undefined) {
+    const requiredBackends = new Set<string>();
+    for (const snap of snapshotsToUndo) {
+      for (const op of snap.data.fileOps) {
+        const b = op.backend;
+        if (b !== undefined && b !== "local") {
+          requiredBackends.add(b);
+        }
+      }
+    }
+    for (const name of requiredBackends) {
+      const backend = backends.get(name);
+      if (backend !== undefined) {
+        try {
+          const probe = backend.list(".");
+          const result = probe instanceof Promise ? await probe : probe;
+          if (!result.ok) {
+            return {
+              ok: false,
+              error: internal(
+                `Rewind aborted — backend '${name}' failed liveness check: ${result.error.message}. No changes were made.`,
+              ),
+            };
+          }
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: internal(
+              `Rewind aborted — backend '${name}' is unresponsive. No changes were made.`,
+            ),
+          };
+        }
+      }
+    }
+  }
+
   // ---- Step 2: compute compensating ops ----
   const ops = computeCompensatingOps(snapshotsToUndo);
 
   // ---- Step 3: apply ops to the filesystem ----
-  const applyResults = await applyCompensatingOps(ops, blobDir);
+  const applyResults = await applyCompensatingOps(ops, blobDir, backends);
 
   // Surface the first hard error (missing blob, write failure, etc).
   // Idempotent skips are not errors.
@@ -226,6 +289,32 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     driftWarnings: targetNode.data.driftWarnings,
     incompleteSnapshotsSkipped,
   };
+}
+
+/**
+ * Scan the FileOpRecords in `snapshotsToUndo` for any non-local `backend`
+ * value not present in the `backends` map. Returns the first missing backend
+ * name, or `undefined` if all required backends are available.
+ *
+ * A `backend` value is considered "local" (and therefore always available)
+ * when it is `undefined` or the literal string `"local"`.
+ */
+function findMissingBackend(
+  snapshotsToUndo: readonly SnapshotNode<CheckpointPayload>[],
+  backends: ReadonlyMap<string, FileSystemBackend> | undefined,
+): string | undefined {
+  for (const snapshot of snapshotsToUndo) {
+    for (const op of snapshot.data.fileOps) {
+      const backendName = op.backend;
+      if (backendName === undefined || backendName === "local") {
+        continue;
+      }
+      if (backends === undefined || !backends.has(backendName)) {
+        return backendName;
+      }
+    }
+  }
+  return undefined;
 }
 
 interface LocateResult {

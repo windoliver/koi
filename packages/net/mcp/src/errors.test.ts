@@ -182,8 +182,23 @@ describe("mapMcpError with message patterns", () => {
   });
 
   test("matches permission patterns", () => {
-    expect(mapMcpError(new Error("unauthorized"), { serverName: "s1" }).code).toBe("PERMISSION");
+    // "unauthorized" maps to AUTH_REQUIRED (RFC 6750 bearer-auth signal)
+    // so the connection layer's auth-needed transition fires and triggers
+    // the OAuth re-auth path. "forbidden" stays PERMISSION (scope/ACL).
+    expect(mapMcpError(new Error("unauthorized"), { serverName: "s1" }).code).toBe("AUTH_REQUIRED");
     expect(mapMcpError(new Error("forbidden"), { serverName: "s1" }).code).toBe("PERMISSION");
+  });
+
+  test("matches auth-required patterns", () => {
+    expect(mapMcpError(new Error("HTTP 401: foo"), { serverName: "s1" }).code).toBe(
+      "AUTH_REQUIRED",
+    );
+    expect(mapMcpError(new Error("invalid_token"), { serverName: "s1" }).code).toBe(
+      "AUTH_REQUIRED",
+    );
+    expect(mapMcpError(new Error("Authentication required"), { serverName: "s1" }).code).toBe(
+      "AUTH_REQUIRED",
+    );
   });
 
   test("matches not-found patterns", () => {

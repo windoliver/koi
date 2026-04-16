@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { realpathSync } from "node:fs";
 import { createBashTool } from "./bash-tool.js";
+import { buildSafeEnv, SAFE_ENV } from "./exec.js";
 
 // ---------------------------------------------------------------------------
 // Unit tests — security blocking
@@ -467,5 +468,124 @@ describe("createBashTool — trackCwd", () => {
     expect(r.exitCode).toBe(0);
     expect(String(r.stdout).trim()).toBe(workspaceRoot);
     await tool.execute({ command: `rmdir ${subdir}` }, {});
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathExtensions tests — regression for #1841
+// ---------------------------------------------------------------------------
+
+describe("buildSafeEnv", () => {
+  test("returns SAFE_ENV unchanged when no extensions", () => {
+    expect(buildSafeEnv({})).toBe(SAFE_ENV);
+  });
+
+  test("prepends extensions to default PATH", () => {
+    const env = buildSafeEnv({
+      pathExtensions: ["/opt/homebrew/bin", "/home/user/.bun/bin"],
+    });
+    const path = env.PATH ?? "";
+    expect(path).toBe("/opt/homebrew/bin:/home/user/.bun/bin:/usr/local/bin:/usr/bin:/bin");
+    expect(env.HOME).toBe(SAFE_ENV.HOME);
+    expect(env.LANG).toBe(SAFE_ENV.LANG);
+  });
+
+  test("single extension prepended correctly", () => {
+    const env = buildSafeEnv({ pathExtensions: ["/custom/path"] });
+    const path = env.PATH ?? "";
+    expect(path).toStartWith("/custom/path:");
+    expect(path).toEndWith(SAFE_ENV.PATH ?? "");
+  });
+
+  test("overrides HOME when validated home provided", () => {
+    // Use /var — an existing directory distinct from the /tmp default
+    const env = buildSafeEnv({ home: "/var" });
+    expect(env.HOME).toBe("/var");
+  });
+
+  test("keeps safe HOME (/tmp) when no home provided", () => {
+    const env = buildSafeEnv({ pathExtensions: ["/some/path"] });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("rejects empty home value", () => {
+    const env = buildSafeEnv({ home: "" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("rejects relative home value", () => {
+    const env = buildSafeEnv({ home: "relative/home" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("rejects non-existent home directory", () => {
+    const env = buildSafeEnv({ home: "/this/path/does/not/exist/koi-test" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("SAFE_ENV.HOME is /tmp, not process.env.HOME", () => {
+    // Regression: SAFE_ENV.HOME must be a neutral safe default, not
+    // the parent process HOME, to prevent injected HOME from steering
+    // subprocess config/credentials.
+    expect(SAFE_ENV.HOME).toBe("/tmp");
+  });
+
+  test("rejects empty string entries (POSIX cwd injection)", () => {
+    const env = buildSafeEnv({ pathExtensions: ["", "/valid/path", ""] });
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("::");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("rejects non-absolute paths", () => {
+    const env = buildSafeEnv({
+      pathExtensions: ["relative/path", "./local", "/valid/path"],
+    });
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("relative");
+    expect(path).not.toContain("./local");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("rejects entries containing colons (segment injection)", () => {
+    const env = buildSafeEnv({
+      pathExtensions: ["/safe/bin:/evil/bin", "/valid/path"],
+    });
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("/evil/bin");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("returns SAFE_ENV when all entries are invalid", () => {
+    expect(buildSafeEnv({ pathExtensions: ["", "relative", "/has:colon"] })).toBe(SAFE_ENV);
+  });
+});
+
+describe("createBashTool — pathExtensions (#1841)", () => {
+  test("subprocess sees extended PATH when pathExtensions provided", async () => {
+    const tool = createBashTool({ pathExtensions: ["/opt/homebrew/bin", "/fake/path"] });
+    const result = (await tool.execute({ command: "echo $PATH" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    const path = String(result.stdout).trim();
+    expect(path).toContain("/opt/homebrew/bin");
+    expect(path).toContain("/fake/path");
+    expect(path).toContain("/usr/local/bin");
+  });
+
+  test("subprocess uses default PATH when no pathExtensions", async () => {
+    const tool = createBashTool();
+    const result = (await tool.execute({ command: "echo $PATH" }, {})) as Record<string, unknown>;
+    expect(result.exitCode).toBe(0);
+    const path = String(result.stdout).trim();
+    expect(path).toBe("/usr/local/bin:/usr/bin:/bin");
+  });
+
+  test("env vars still do not leak with pathExtensions", async () => {
+    process.env.KOI_PATH_EXT_SENTINEL = "should-not-leak";
+    const tool = createBashTool({ pathExtensions: ["/opt/homebrew/bin"] });
+    const result = (await tool.execute({ command: "env" }, {})) as Record<string, unknown>;
+    delete process.env.KOI_PATH_EXT_SENTINEL;
+    expect(result.exitCode).toBe(0);
+    expect(String(result.stdout)).not.toContain("KOI_PATH_EXT_SENTINEL");
   });
 });

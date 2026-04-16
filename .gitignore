@@ -8,6 +8,7 @@ tsup.config.bundled_*.mjs
 .env
 .env.*
 !.env.example
+.mcp.json
 test-results.json
 # Written by scripts/measure-startup.ts on every run; baseline is the committed file, report is ephemeral.
 bench/startup-report.json

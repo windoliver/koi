@@ -47,7 +47,7 @@ import {
   createRegisteredHooks,
   loadRegisteredHooksPerEntry,
 } from "@koi/hooks";
-import type { McpResolver, McpServerConfig } from "@koi/mcp";
+import type { McpResolver, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpComponentProvider, createMcpResolver, loadMcpJsonFile } from "@koi/mcp";
 import type { SkillsMcpBridge } from "@koi/runtime";
 import { createSkillsMcpBridge } from "@koi/runtime";
@@ -60,6 +60,8 @@ import {
   createFsWriteTool,
 } from "@koi/tools-builtin";
 import { createWebExecutor, createWebProvider } from "@koi/tools-web";
+import type { AuthServerEntry } from "./mcp-auth-tools.js";
+import { createCliAuthToolFactory } from "./mcp-auth-tools.js";
 import { createOAuthAwareMcpConnection } from "./mcp-connection-factory.js";
 
 /** Common shape for an assembled MCP setup — user config or plugin-provided. */
@@ -145,14 +147,75 @@ export async function loadUserMcpSetup(
   cwd: string,
   skillsRuntime: SkillsRuntime | undefined,
 ): Promise<McpSetup | undefined> {
-  const mcpConfigPath = join(cwd, ".mcp.json");
-  const result = await loadMcpJsonFile(mcpConfigPath);
-  if (!result.ok) return undefined;
+  // Project-local .mcp.json takes priority. Only fall back to
+  // ~/.koi/.mcp.json when the project file is truly absent (NOT_FOUND),
+  // not when it exists but is invalid — that would silently mask
+  // misconfigurations and cross the repo/user boundary.
+  const projectPath = join(cwd, ".mcp.json");
+  const projectResult = await loadMcpJsonFile(projectPath);
+  let result: typeof projectResult | undefined;
+  if (projectResult.ok) {
+    result = projectResult;
+  } else {
+    // Only fall back if the project file doesn't exist at all.
+    // loadMcpJsonFile returns error.code "NOT_FOUND" for missing files
+    // vs "VALIDATION" or "EXTERNAL" for parse/schema failures.
+    const isAbsent = projectResult.error.code === "NOT_FOUND";
+    if (isAbsent) {
+      const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+      if (homeResult.ok) {
+        result = homeResult;
+      } else if (homeResult.error.code === "NOT_FOUND") {
+        // Legacy compatibility: prior versions stored MCP config at
+        // ~/.claude/.mcp.json. Read it with a deprecation warning so
+        // operators don't lose their servers on upgrade.
+        const legacyResult = await loadMcpJsonFile(join(homedir(), ".claude", ".mcp.json"));
+        if (legacyResult.ok) {
+          process.stderr.write(
+            `[koi] warning: reading MCP config from deprecated ~/.claude/.mcp.json. ` +
+              `Migrate to ~/.koi/.mcp.json — support for the old path will be removed.\n`,
+          );
+          result = legacyResult;
+        }
+      }
+    }
+  }
+  if (result === undefined || !result.ok) return undefined;
   if (result.value.servers.length === 0) return undefined;
 
-  const connections = result.value.servers.map((server) => createOAuthAwareMcpConnection(server));
+  // Collect auth providers + connections so we can create auth pseudo-tools
+  // for servers that need OAuth but have no stored tokens.
+  const authProviders = new Map<string, OAuthAuthProvider>();
+  const authServers = new Map<string, AuthServerEntry>();
+  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+
+  const connections = result.value.servers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    connectionsByName.set(server.name, conn);
+    return conn;
+  });
+
+  // Build auth server entries for any server that has an OAuth provider
+  for (const server of result.value.servers) {
+    const provider = authProviders.get(server.name);
+    const connection = connectionsByName.get(server.name);
+    if (provider !== undefined && connection !== undefined && server.kind === "http") {
+      authServers.set(server.name, { provider, connection, url: server.url });
+    }
+  }
+
   const resolver = createMcpResolver(connections);
-  const provider = createMcpComponentProvider({ resolver });
+
+  // Wire auth tool factory when OAuth servers are present
+  const createAuthTools =
+    authServers.size > 0
+      ? createCliAuthToolFactory({
+          servers: authServers,
+          rediscover: () => resolver.discover(),
+        })
+      : undefined;
+
+  const provider = createMcpComponentProvider({ resolver, createAuthTools });
 
   let bridge: SkillsMcpBridge | undefined;
   if (skillsRuntime !== undefined) {
@@ -186,9 +249,36 @@ export function buildPluginMcpSetup(
   pluginMcpServers: readonly McpServerConfig[],
 ): McpSetup | undefined {
   if (pluginMcpServers.length === 0) return undefined;
-  const connections = pluginMcpServers.map((server) => createOAuthAwareMcpConnection(server));
+
+  const authProviders = new Map<string, OAuthAuthProvider>();
+  const authServers = new Map<string, AuthServerEntry>();
+  const connectionsByName = new Map<string, import("@koi/mcp").McpConnection>();
+
+  const connections = pluginMcpServers.map((server) => {
+    const conn = createOAuthAwareMcpConnection(server, authProviders);
+    connectionsByName.set(server.name, conn);
+    return conn;
+  });
+
+  for (const server of pluginMcpServers) {
+    const provider = authProviders.get(server.name);
+    const connection = connectionsByName.get(server.name);
+    if (provider !== undefined && connection !== undefined && server.kind === "http") {
+      authServers.set(server.name, { provider, connection, url: server.url });
+    }
+  }
+
   const resolver = createMcpResolver(connections);
-  const provider = createMcpComponentProvider({ resolver });
+
+  const createAuthTools =
+    authServers.size > 0
+      ? createCliAuthToolFactory({
+          servers: authServers,
+          rediscover: () => resolver.discover(),
+        })
+      : undefined;
+
+  const provider = createMcpComponentProvider({ resolver, createAuthTools });
   return {
     resolver,
     provider,
@@ -787,6 +877,17 @@ export interface CoreProvidersConfig {
    */
   readonly includeFilesystemTools?: boolean;
   /**
+   * Explicit filesystem backend to use for `fs_read` / `fs_write` / `fs_edit`
+   * tools. When provided, this backend is used directly; otherwise the
+   * helper creates a default `@koi/fs-local` backend rooted at `cwd` with
+   * `allowExternalPaths: true`.
+   *
+   * Pass this when the session uses a non-local filesystem (e.g. a Nexus
+   * backend created by `resolveFileSystemAsync`) so tools and the
+   * checkpoint middleware share the same backend instance and discriminator.
+   */
+  readonly filesystemBackend?: import("@koi/core").FileSystemBackend | undefined;
+  /**
    * Subset of filesystem operations to expose as tools. When omitted,
    * all three (`fs_read`, `fs_write`, `fs_edit`) are wired. Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
@@ -832,7 +933,10 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     // backend path — pre-resolving them via resolveFileSystem would
     // build a local backend without `allowExternalPaths`, tightening
     // the sandbox relative to the host-default path.
-    const fs = createLocalFileSystem(cwd, { allowExternalPaths: true });
+    //
+    // Use the caller-supplied backend when provided (e.g. a Nexus backend
+    // from resolveFileSystemAsync); otherwise create the default local one.
+    const fs = config.filesystemBackend ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
     // Operation gating: `undefined` means "wire all three" (the default
     // for host-default filesystems). Manifest-driven filesystems apply
     // the `FileSystemConfig` contract's `["read"]` default at the host

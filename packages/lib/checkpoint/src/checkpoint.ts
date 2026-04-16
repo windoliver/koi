@@ -255,6 +255,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         eventIndex: state.eventIndex++,
         pre,
         post,
+        ...(config.backendName !== undefined ? { backend: config.backendName } : {}),
       });
 
       if (record !== undefined) {
@@ -454,25 +455,16 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     target: { kind: "by-count"; n: number } | { kind: "by-node"; targetNodeId: NodeId },
   ): Promise<RewindResult> {
     const state = await getOrCreateSession(sessionId);
-    // Build the RestoreInput conditionally so we omit `transcript` entirely
-    // when none is wired (exactOptionalPropertyTypes forbids passing undefined).
-    const result = await runRestore(
-      config.transcript !== undefined
-        ? {
-            store,
-            chainId: state.chainId,
-            blobDir: config.blobDir,
-            target,
-            transcript: config.transcript,
-            sessionId,
-          }
-        : {
-            store,
-            chainId: state.chainId,
-            blobDir: config.blobDir,
-            target,
-          },
-    );
+    // Build the RestoreInput conditionally so we omit optional fields entirely
+    // when they are absent (exactOptionalPropertyTypes forbids passing undefined).
+    const result = await runRestore({
+      store,
+      chainId: state.chainId,
+      blobDir: config.blobDir,
+      target,
+      ...(config.transcript !== undefined ? { transcript: config.transcript, sessionId } : {}),
+      ...(config.backends !== undefined ? { backends: config.backends } : {}),
+    });
     if (result.ok) {
       // Refresh the parent pointer so the next captured turn chains off the
       // rewind marker, not the old pre-rewind head.

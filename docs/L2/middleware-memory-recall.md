@@ -101,6 +101,32 @@ Deep Go expertise, new to React.
 
 ---
 
+## Relevance selector (optional)
+
+When the frozen snapshot is truncated (memory count exceeds token budget), an
+optional per-turn relevance selector picks the most relevant non-frozen memories
+for the current user query via a lightweight model side-query.
+
+The selector prompt uses opaque memory record IDs — never filesystem paths or
+filenames. Selected IDs are mapped back to records server-side and injected
+through the same trusted `<memory-data>` formatting as the frozen snapshot.
+
+Configured via `relevanceSelector` in the middleware config:
+
+```typescript
+const mw = createMemoryRecallMiddleware({
+  fs: fileSystemBackend,
+  recall: { memoryDir: "/path/to/memory" },
+  relevanceSelector: {
+    modelCall: adapter.complete,  // lightweight model (Haiku)
+    maxFiles: 5,
+    maxTokens: 4000,             // budget for relevance overlay
+  },
+});
+```
+
+---
+
 ## Lifecycle
 
 | Event | Behavior |

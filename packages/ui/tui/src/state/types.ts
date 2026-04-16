@@ -42,7 +42,38 @@ export type TuiView =
   | "help"
   | "agents"
   | "trajectory"
-  | "cost";
+  | "cost"
+  | "mcp"
+  | "plugins";
+
+/** MCP server status entry for the /mcp view. */
+export interface McpServerInfo {
+  readonly name: string;
+  readonly status: "connected" | "needs-auth" | "error" | "pending" | "auth-pending-restart";
+  readonly toolCount: number;
+  readonly detail: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin summary (populated once at startup — static for session lifetime)
+// ---------------------------------------------------------------------------
+
+export interface PluginSummaryEntry {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly source: "bundled" | "user" | "managed";
+}
+
+export interface PluginSummaryError {
+  readonly plugin: string;
+  readonly error: string;
+}
+
+export interface PluginSummary {
+  readonly loaded: readonly PluginSummaryEntry[];
+  readonly errors: readonly PluginSummaryError[];
+}
 
 /** Risk level for permission prompts — computed by permissions middleware. */
 export type PermissionRiskLevel = "low" | "medium" | "high";
@@ -214,6 +245,20 @@ export interface SpawnProgress {
   readonly currentTool?: string | undefined;
 }
 
+/** Historical record for a spawn that reached a terminal state (#1792). */
+export interface SpawnRecord {
+  readonly agentId: string;
+  readonly agentName: string;
+  readonly description: string;
+  readonly startedAt: number;
+  readonly finishedAt: number;
+  readonly durationMs: number;
+  readonly outcome: "complete" | "failed";
+}
+
+/** Maximum number of finished spawns retained for the /agents view. */
+export const MAX_FINISHED_SPAWNS = 20;
+
 /** A single block within an assistant message. */
 export type TuiAssistantBlock =
   | { readonly kind: "text"; readonly text: string }
@@ -326,6 +371,13 @@ export interface TuiState {
    * Entries are removed when the agent reaches a terminal status.
    */
   readonly activeSpawns: ReadonlyMap<string, SpawnProgress>;
+  /**
+   * Rolling history of spawned agents that reached a terminal state in the
+   * current session (#1792). Most-recent-first, capped at MAX_FINISHED_SPAWNS.
+   * Used by the /agents view to surface recently-completed spawns that would
+   * otherwise disappear from activeSpawns the moment they finish.
+   */
+  readonly finishedSpawns: readonly SpawnRecord[];
   /** Max context tokens for the current model — used for context % indicator (#17). */
   readonly maxContextTokens: number | null;
   /** Live retry countdown — set by the bridge when the engine retries (#20). */
@@ -352,6 +404,10 @@ export interface TuiState {
   readonly runReportSummary: string | null;
   /** Whether thinking/reasoning blocks are visible. Default: true. Toggle via /thinking. */
   readonly showThinking: boolean;
+  /** MCP server status list — populated by host on /mcp command. */
+  readonly mcpServers: readonly McpServerInfo[];
+  /** Plugin discovery results — null before runtime reports. */
+  readonly pluginSummary: PluginSummary | null;
   /** Cost breakdown injected by host — null before first cost data push. */
   readonly costBreakdown: CostBreakdown | null;
   /** Token throughput rate (tokens/sec) — null before first data push. */
@@ -432,6 +488,7 @@ export type TuiAction =
       readonly blocks: readonly ContentBlock[];
     }
   | { readonly kind: "set_view"; readonly view: TuiView }
+  | { readonly kind: "set_mcp_status"; readonly servers: readonly McpServerInfo[] }
   | { readonly kind: "set_modal"; readonly modal: TuiModal | null }
   | { readonly kind: "set_connection_status"; readonly status: ConnectionStatus }
   | { readonly kind: "set_layout"; readonly tier: LayoutTier }
@@ -498,6 +555,9 @@ export type TuiAction =
       readonly kind: "set_spawn_terminal";
       readonly agentId: string;
       readonly outcome: "complete" | "failed";
+      /** Fallback metadata for recovery when spawn_requested dispatch was lost (#1855). */
+      readonly agentName?: string | undefined;
+      readonly description?: string | undefined;
     }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | {
@@ -572,4 +632,8 @@ export type TuiAction =
       readonly tokenRate?:
         | { readonly inputPerSecond: number; readonly outputPerSecond: number }
         | undefined;
+    }
+  | {
+      readonly kind: "set_plugin_summary";
+      readonly summary: PluginSummary;
     };

@@ -92,20 +92,90 @@ function isSupportedMountUri(uri: string): boolean {
 function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): FileSystemConfig {
   const options = config.options;
   if (options === undefined || typeof options !== "object") return config;
-  const mountUri = (options as Record<string, unknown>).mountUri;
-  if (mountUri === undefined) return config;
-  let nextMountUri: unknown;
+  const opts = options as Record<string, unknown>;
+
+  // Anchor mountUri relative paths to manifest directory
+  let nextMountUri: unknown = opts.mountUri;
+  const mountUri = opts.mountUri;
   if (typeof mountUri === "string") {
     nextMountUri = absolutizeMountUri(mountUri, manifestDir);
   } else if (Array.isArray(mountUri) && mountUri.every((u) => typeof u === "string")) {
     nextMountUri = (mountUri as string[]).map((u) => absolutizeMountUri(u, manifestDir));
-  } else {
-    return config;
   }
+
+  // Anchor scope root to manifest directory so a relative root like
+  // "./workspace" resolves against the manifest, not the shell cwd.
+  let nextRoot: unknown = opts.root;
+  if (typeof opts.root === "string" && !isAbsolute(opts.root)) {
+    nextRoot = resolvePath(manifestDir, opts.root);
+  }
+
+  if (nextMountUri === opts.mountUri && nextRoot === opts.root) return config;
   return {
     ...config,
-    options: { ...(options as Record<string, unknown>), mountUri: nextMountUri },
+    options: { ...opts, mountUri: nextMountUri, root: nextRoot },
   };
+}
+
+/**
+ * Names of core middleware layers that hosts configure via factory flags,
+ * not via `manifest.middleware`. Users who name any of these in the zone-B
+ * middleware list get a load-time error directing them to the host flag.
+ *
+ * This list covers three forms:
+ *   1. Runtime middleware `.name` values (`permissions`, `hooks`, ...)
+ *   2. Canonical workspace package names (`@koi/permissions`, ...)
+ *   3. camelCase variants and short aliases in case of typo tolerance
+ *
+ * All three forms are rejected because the runtime factory and YAML loader
+ * both run this check against user-supplied entries. Extending the list
+ * beyond the short name forms closes the gap an embedder might create by
+ * naming a core layer by its package name when calling `createKoiRuntime`
+ * programmatically — the security-critical layers in zone C stay out of
+ * user reach regardless of the entry surface.
+ */
+export const CORE_MIDDLEWARE_BLOCKLIST: readonly string[] = [
+  // Runtime middleware `.name` values.
+  "hook",
+  "hooks",
+  "permissions",
+  "exfiltration-guard",
+  "exfiltrationGuard",
+  "model-router",
+  "modelRouter",
+  "goal",
+  "system-prompt",
+  "systemPrompt",
+  "session-transcript",
+  "sessionTranscript",
+  // Canonical workspace package names — embedders calling
+  // `createKoiRuntime({ manifestMiddleware: [{ name: "@koi/permissions", ... }] })`
+  // must also be rejected, not just YAML users.
+  "@koi/permissions",
+  "@koi/middleware-permissions",
+  "@koi/hooks",
+  "@koi/middleware-hooks",
+  "@koi/middleware-exfiltration-guard",
+  "@koi/exfiltration-guard",
+  "@koi/model-router",
+  "@koi/middleware-model-router",
+  "@koi/middleware-goal",
+  "@koi/goal",
+  "@koi/system-prompt",
+  "@koi/middleware-system-prompt",
+  "@koi/session",
+  "@koi/session-transcript",
+  "@koi/middleware-session-transcript",
+];
+
+/**
+ * A single entry in `manifest.middleware` (zone B). Users declare these
+ * in order; the resolved chain preserves declared order within zone B.
+ */
+export interface ManifestMiddlewareEntry {
+  readonly name: string;
+  readonly options: Readonly<Record<string, unknown>> | undefined;
+  readonly enabled: boolean;
 }
 
 export interface ManifestConfig {
@@ -117,6 +187,22 @@ export interface ManifestConfig {
    * means "deactivate every stack" (the host runs core middleware only).
    */
   readonly stacks: readonly string[] | undefined;
+  /**
+   * Zone B: ordered, user-controlled middleware list. Each entry names a
+   * middleware registered in the `MiddlewareRegistry` and carries
+   * optional `options` passed verbatim to the factory. `enabled: false`
+   * excludes an entry without removing it from the manifest (useful for
+   * A/B comparison and review diffs).
+   *
+   * Zone B entries CANNOT name any layer in `CORE_MIDDLEWARE_BLOCKLIST` —
+   * core layers are configured via host flags, not the manifest. Zone B
+   * always composes between zone A (preset stacks) and zone C (required
+   * core); users cannot reorder across zones.
+   *
+   * `undefined` means "no zone B entries" — existing manifests that only
+   * use `stacks` keep working unchanged.
+   */
+  readonly middleware: readonly ManifestMiddlewareEntry[] | undefined;
   /**
    * Opt-in subset of discovered plugin names. `undefined` means
    * "activate every plugin found in `~/.koi/plugins/`" — matches the
@@ -168,6 +254,20 @@ export interface ManifestConfig {
 }
 
 /**
+ * Options for `loadManifestConfig`.
+ */
+export interface LoadManifestOptions {
+  /**
+   * When `true`, skip the OAuth-scheme allowlist check for nexus local-bridge
+   * mounts. Pass this for hosts (like `koi tui`) that have an interactive auth
+   * UI capable of routing `auth_required` notifications back to the user via
+   * `transport.submitAuthCode(...)`. Hosts without an auth UI (like `koi start`)
+   * keep the default `false` so OAuth-gated schemes fail fast at parse time.
+   */
+  readonly allowOAuthSchemes?: boolean | undefined;
+}
+
+/**
  * Load a minimal agent manifest from a YAML or JSON file.
  *
  * Validates eagerly — call before creating any adapters so errors surface
@@ -178,6 +278,7 @@ export interface ManifestConfig {
  */
 export async function loadManifestConfig(
   path: string,
+  options?: LoadManifestOptions,
 ): Promise<
   | { readonly ok: true; readonly value: ManifestConfig }
   | { readonly ok: false; readonly error: string }
@@ -268,6 +369,31 @@ export async function loadManifestConfig(
     backgroundSubprocesses = bgSubsRaw;
   }
 
+  const middlewareResult = parseManifestMiddleware(raw.middleware);
+  if (!middlewareResult.ok) {
+    return middlewareResult;
+  }
+
+  // `trustedHost` is not an accepted manifest field. Earlier
+  // designs exposed a per-layer security opt-out surface here, but
+  // the runtime factory never actually omitted the corresponding
+  // middleware, so the API advertised behavior it did not provide.
+  // The entire surface has been removed rather than ship a no-op.
+  // Reject the field at the loader with a clear message so
+  // existing manifests that tried to use it fail fast instead of
+  // silently losing configuration.
+  if (raw.trustedHost !== undefined) {
+    return {
+      ok: false,
+      error:
+        "manifest.trustedHost is not a supported field. The per-layer security opt-outs " +
+        "(disablePermissions, disableExfiltrationGuard) that were previously documented here " +
+        "were never wired into runtime assembly and have been removed. Hosts that need a " +
+        "headless/CI posture without permissions or exfiltration-guard must construct the " +
+        "runtime with a custom middleware list programmatically.",
+    };
+  }
+
   let filesystem: FileSystemConfig | undefined;
   const fsRaw = raw.filesystem;
   if (fsRaw !== undefined) {
@@ -296,9 +422,10 @@ export async function loadManifestConfig(
     // silently accepting them and aborting the session on first
     // filesystem call. Routing `auth_required` notifications back
     // through `transport.submitAuthCode(...)` requires a channel-aware
-    // auth handler that neither host has wired yet — until then the
-    // conservative posture is "local bridge only, local:// mounts
-    // only". Hosts that add OAuth support can relax this allowlist.
+    // auth handler. Hosts that wire OAuth support (koi tui with the
+    // interactive auth loop) pass `allowOAuthSchemes: true` to skip
+    // this check. Non-interactive hosts (koi start) keep the default
+    // posture: local:// only.
     if (filesystem.backend === "nexus" && filesystem.options !== undefined) {
       const mountUri = (filesystem.options as Record<string, unknown>).mountUri;
       const candidates: unknown[] =
@@ -320,16 +447,18 @@ export async function loadManifestConfig(
             "Multi-mount local-bridge configs are not yet supported by the runtime resolver.",
         };
       }
-      const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
-      if (invalid !== undefined) {
-        return {
-          ok: false,
-          error:
-            `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
-            `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
-            `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
-            `out of scope for the current manifest filesystem wiring.`,
-        };
+      if (!(options?.allowOAuthSchemes === true)) {
+        const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
+        if (invalid !== undefined) {
+          return {
+            ok: false,
+            error:
+              `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
+              `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
+              `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
+              `out of scope for the current manifest filesystem wiring.`,
+          };
+        }
       }
     }
   }
@@ -343,6 +472,143 @@ export async function loadManifestConfig(
       plugins,
       backgroundSubprocesses,
       filesystem,
+      middleware: middlewareResult.value,
+    },
+  };
+}
+
+type ParseResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Parse `manifest.middleware` (zone B). Accepts two entry shapes:
+ *
+ *   # Explicit form
+ *   - name: "@koi/middleware-audit"
+ *     options: { filePath: "./session.audit.ndjson" }
+ *     enabled: true
+ *
+ *   # Shorthand form — single-key object becomes {name, options}
+ *   - "@koi/middleware-audit": { filePath: "./session.audit.ndjson" }
+ *
+ * Rejects any entry whose name appears in `CORE_MIDDLEWARE_BLOCKLIST` —
+ * core layers are configured by host flags, not the manifest.
+ *
+ * Built-in registrations and the options each accepts are documented
+ * in `docs/L2/manifest.md` under "Built-in registrations."
+ */
+function parseManifestMiddleware(
+  raw: unknown,
+): ParseResult<readonly ManifestMiddlewareEntry[] | undefined> {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      error:
+        'manifest.middleware must be a list of entries, e.g. middleware: [{name: "@koi/middleware-audit"}]',
+    };
+  }
+
+  const out: ManifestMiddlewareEntry[] = [];
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    const normalized = normalizeMiddlewareEntry(entry, i);
+    if (!normalized.ok) {
+      return normalized;
+    }
+    if (CORE_MIDDLEWARE_BLOCKLIST.includes(normalized.value.name)) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${i}]: "${normalized.value.name}" is a core middleware — configure it via host flags, not the manifest.\nblocked names: ${CORE_MIDDLEWARE_BLOCKLIST.join(", ")}`,
+      };
+    }
+    out.push(normalized.value);
+  }
+  return { ok: true, value: out };
+}
+
+function normalizeMiddlewareEntry(
+  entry: unknown,
+  index: number,
+): ParseResult<ManifestMiddlewareEntry> {
+  if (typeof entry !== "object" || entry === null) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] must be an object (explicit {name, options} or shorthand {"@koi/name": {options}})`,
+    };
+  }
+
+  const rec = entry as Record<string, unknown>;
+
+  // Explicit form: has `name` field.
+  if (typeof rec.name === "string") {
+    if (rec.name.length === 0) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].name must be a non-empty string`,
+      };
+    }
+    const options = rec.options;
+    if (
+      options !== undefined &&
+      (typeof options !== "object" || options === null || Array.isArray(options))
+    ) {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].options must be an object (or omitted)`,
+      };
+    }
+    const enabledRaw = rec.enabled;
+    if (enabledRaw !== undefined && typeof enabledRaw !== "boolean") {
+      return {
+        ok: false,
+        error: `manifest.middleware[${index}].enabled must be a boolean (or omitted)`,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        name: rec.name,
+        options: options as Readonly<Record<string, unknown>> | undefined,
+        enabled: enabledRaw === undefined ? true : enabledRaw,
+      },
+    };
+  }
+
+  // Shorthand form: single-key object whose value is the options record.
+  const keys = Object.keys(rec);
+  if (keys.length !== 1) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand form requires exactly one key (got ${keys.length}): use {"@koi/name": {options}} or the explicit {name, options} form`,
+    };
+  }
+  const name = keys[0];
+  if (name === undefined || name.length === 0) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand key must be a non-empty string`,
+    };
+  }
+  const optionsRaw = rec[name];
+  if (
+    optionsRaw !== undefined &&
+    (typeof optionsRaw !== "object" || optionsRaw === null || Array.isArray(optionsRaw))
+  ) {
+    return {
+      ok: false,
+      error: `manifest.middleware[${index}] shorthand value must be an options object (or null/omitted)`,
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      name,
+      options: optionsRaw as Readonly<Record<string, unknown>> | undefined,
+      enabled: true,
     },
   };
 }

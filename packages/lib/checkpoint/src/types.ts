@@ -15,6 +15,7 @@
 
 import type {
   FileOpRecord,
+  FileSystemBackend,
   KoiError,
   KoiMiddleware,
   NodeId,
@@ -145,6 +146,33 @@ export interface CheckpointMiddlewareConfig {
    * unit tests and setups where the agent emits absolute filesystem paths.
    */
   readonly resolvePath?: (virtualPath: string) => string | undefined;
+
+  /**
+   * Backend discriminator name to stamp on `FileOpRecord` entries during
+   * capture. Corresponds to `FileSystemBackend.name` of the session's
+   * active filesystem backend (e.g. `"local"`, `"nexus-local:<mountUri>"`).
+   *
+   * When present (and not `"local"`), the restore protocol dispatches
+   * compensating ops for those records through the matching entry in
+   * `backends` rather than direct local I/O.
+   *
+   * Omit (default) for pure-local setups — equivalent to passing `"local"`.
+   */
+  readonly backendName?: string | undefined;
+
+  /**
+   * Map of named `FileSystemBackend` instances available for rewind.
+   * The restore protocol uses this to dispatch compensating ops to the
+   * correct backend when `FileOpRecord.backend` is set to a non-local value.
+   *
+   * Build this from the session's active filesystem backend(s):
+   *   `new Map([[backend.name, backend]])`
+   *
+   * When omitted (default), all ops are applied via direct local I/O —
+   * equivalent to passing an empty map (acceptable for `"local"` backends
+   * since `findMissingBackend` skips the `"local"` discriminator).
+   */
+  readonly backends?: ReadonlyMap<string, FileSystemBackend> | undefined;
 }
 
 /**

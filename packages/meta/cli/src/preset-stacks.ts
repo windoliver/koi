@@ -28,6 +28,7 @@
 
 import type {
   ComponentProvider,
+  FileSystemBackend,
   KoiMiddleware,
   ModelAdapter,
   SessionId,
@@ -71,6 +72,16 @@ export interface StackActivationContext {
    * when the host opts out of persistence (loop mode).
    */
   readonly sessionTranscript?: SessionTranscript | undefined;
+  /**
+   * Active filesystem backend for this session. Stacks that need to
+   * tag captured file ops with the backend discriminator (e.g. the
+   * checkpoint stack) read this to obtain `backend.name` for
+   * `FileOpRecord.backend` and to build the `backends` map for the
+   * restore protocol.
+   *
+   * When omitted, stacks fall back to pure local I/O (no discriminator).
+   */
+  readonly filesystem?: FileSystemBackend | undefined;
   /**
    * Host-specific opaque context. Stacks that care about a particular
    * host state (skillsRuntime, approvalHandler, etc.) read a
@@ -200,6 +211,21 @@ export interface PresetStack {
 export const LATE_PHASE_HOST_KEYS = {
   /** The already-composed inherited middleware for spawn child agents. */
   inheritedMiddleware: "inheritedMiddleware",
+  /**
+   * Async callback that the spawn preset stack invokes once per
+   * spawned child to get a fresh set of middleware instances.
+   * Used by the runtime factory to re-resolve manifest-declared
+   * middleware per child so each child gets its own per-session
+   * state (audit queue + hash chain + lifecycle hooks) rather
+   * than sharing the parent's mutable middleware instances.
+   *
+   * Shape:
+   *   (childCtx: { parentSessionId, parentAgentId }) => Promise<KoiMiddleware[]>
+   *
+   * When absent, children inherit only the static security +
+   * system-prompt layers from `inheritedMiddleware`.
+   */
+  perChildManifestMiddlewareFactory: "perChildManifestMiddlewareFactory",
 } as const;
 
 /**
