@@ -1531,7 +1531,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
-      const auditMw = createAuditMiddleware({ sink: auditSink });
+      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       auditPresetExtras.push(auditMw);
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
@@ -1587,7 +1587,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
       }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
       auditPresetExtras.push(sqliteAuditMw);
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
