@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { SessionId } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createSessionRegistry } from "./session-registry.js";
 
@@ -113,13 +114,24 @@ describe("createSessionRegistry", () => {
     expect(ctrlB.signal.aborted).toBe(false);
   });
 
-  test("listActive returns a stable snapshot (caller mutation does not affect registry)", () => {
+  test("listActive returns a fresh array per call and tolerates caller mutation", () => {
     const registry = createSessionRegistry();
     const sid = sessionId("snap");
     registry.register(sid, new AbortController());
+
     const snapshot = registry.listActive();
     expect(snapshot).toEqual([sid]);
+
+    // Two calls return two different array instances, so caller mutation
+    // to one cannot leak into a subsequent read.
     const snapshot2 = registry.listActive();
     expect(snapshot2).not.toBe(snapshot);
+
+    // Attempting to mutate the snapshot at runtime (the type system
+    // forbids it; this cast reaches past the readonly guard) must not
+    // affect the registry's internal state.
+    (snapshot as unknown as SessionId[]).pop();
+    const snapshot3 = registry.listActive();
+    expect(snapshot3).toEqual([sid]);
   });
 });
