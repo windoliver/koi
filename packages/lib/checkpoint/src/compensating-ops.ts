@@ -220,8 +220,17 @@ async function applyDeleteViaBackend(
   path: string,
 ): Promise<ApplyResult> {
   if (backend.delete === undefined) {
-    // Backend does not support delete — fall back to local unlink.
-    return applyDelete(path);
+    // Non-local backend without delete() — fail closed instead of
+    // falling back to local unlink, which would delete a local file
+    // that belongs to a different filesystem.
+    return {
+      kind: "error",
+      path,
+      cause: new Error(
+        `Backend '${backend.name}' does not implement delete(). ` +
+          `Cannot safely delete '${path}' on a non-local backend.`,
+      ),
+    };
   }
   try {
     const result = await backend.delete(path);

@@ -97,6 +97,21 @@ mock.module("../manifest.js", () => ({
   loadManifestConfig: mockLoadManifest,
 }));
 
+// Mock resolveFileSystem from @koi/runtime so nexus gate tests don't
+// try to create real nexus backends.
+const mockResolveFileSystem = mock((_config: unknown, _cwd: string) => ({
+  name: "mock-nexus",
+  read: mock(async () => ({ ok: true, value: { content: "", path: "", size: 0 } })),
+  write: mock(async () => ({ ok: true, value: { path: "", bytesWritten: 0 } })),
+  edit: mock(async () => ({ ok: true, value: { path: "", hunksApplied: 0 } })),
+  list: mock(async () => ({ ok: true, value: { entries: [], truncated: false } })),
+  search: mock(async () => ({ ok: true, value: { matches: [], truncated: false } })),
+}));
+
+mock.module("@koi/runtime", () => ({
+  resolveFileSystem: mockResolveFileSystem,
+}));
+
 // Mock @koi/session so tests don't touch the filesystem. We
 // retain a mock for the raw `resumeForSession` API so other
 // codepaths that call it directly still work.

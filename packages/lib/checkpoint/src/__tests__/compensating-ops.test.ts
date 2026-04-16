@@ -503,7 +503,7 @@ describe("applyCompensatingOps — backend routing", () => {
     expect(r[0]?.kind).toBe("skipped-already-current");
   });
 
-  test("delete op — backend.delete undefined falls back to local unlink", async () => {
+  test("delete op — backend.delete undefined fails closed (no local fallback)", async () => {
     const path = join(workDir, "local-fallback.txt");
     writeFileSync(path, "content");
     const { backend } = makeMockBackend({ noDeleteMethod: true });
@@ -514,8 +514,9 @@ describe("applyCompensatingOps — backend routing", () => {
       blobDir,
       backends,
     );
-    expect(r[0]?.kind).toBe("applied");
-    expect(existsSync(path)).toBe(false);
+    expect(r[0]?.kind).toBe("error");
+    // File must NOT be deleted locally — fail closed
+    expect(existsSync(path)).toBe(true);
   });
 
   test("restore op with backend → dispatched to backend.write", async () => {

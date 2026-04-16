@@ -92,19 +92,28 @@ function isSupportedMountUri(uri: string): boolean {
 function anchorFilesystemPaths(config: FileSystemConfig, manifestDir: string): FileSystemConfig {
   const options = config.options;
   if (options === undefined || typeof options !== "object") return config;
-  const mountUri = (options as Record<string, unknown>).mountUri;
-  if (mountUri === undefined) return config;
-  let nextMountUri: unknown;
+  const opts = options as Record<string, unknown>;
+
+  // Anchor mountUri relative paths to manifest directory
+  let nextMountUri: unknown = opts.mountUri;
+  const mountUri = opts.mountUri;
   if (typeof mountUri === "string") {
     nextMountUri = absolutizeMountUri(mountUri, manifestDir);
   } else if (Array.isArray(mountUri) && mountUri.every((u) => typeof u === "string")) {
     nextMountUri = (mountUri as string[]).map((u) => absolutizeMountUri(u, manifestDir));
-  } else {
-    return config;
   }
+
+  // Anchor scope root to manifest directory so a relative root like
+  // "./workspace" resolves against the manifest, not the shell cwd.
+  let nextRoot: unknown = opts.root;
+  if (typeof opts.root === "string" && !isAbsolute(opts.root)) {
+    nextRoot = resolvePath(manifestDir, opts.root);
+  }
+
+  if (nextMountUri === opts.mountUri && nextRoot === opts.root) return config;
   return {
     ...config,
-    options: { ...(options as Record<string, unknown>), mountUri: nextMountUri },
+    options: { ...opts, mountUri: nextMountUri, root: nextRoot },
   };
 }
 

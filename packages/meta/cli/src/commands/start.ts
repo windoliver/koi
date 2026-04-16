@@ -13,13 +13,20 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
+import type {
+  ApprovalHandler,
+  EngineEvent,
+  EngineInput,
+  FileSystemBackend,
+  InboundMessage,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import { resolveFileSystem } from "@koi/runtime";
 import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
@@ -109,6 +116,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // remote/bridge storage, which would silently grant a repo-local
   // manifest unreviewed access to data outside the workspace.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestFilesystemBackend: FileSystemBackend | undefined;
   let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
@@ -210,6 +218,11 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // `execution`) to strip the bash provider entirely.
     if (manifestResult.value.filesystem !== undefined) {
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
+      // Resolve the manifest filesystem backend (local or nexus) so koi start
+      // uses the correct backend, not the default local one. The sync path is
+      // sufficient here — koi start rejects OAuth mounts above, and the async
+      // path (local bridge subprocess) is only needed for OAuth-gated mounts.
+      manifestFilesystemBackend = resolveFileSystem(manifestResult.value.filesystem, process.cwd());
     }
 
     if (manifestResult.value.stacks?.includes("spawn")) {
@@ -372,6 +385,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       ...(manifestFilesystemOps !== undefined
         ? { filesystemOperations: manifestFilesystemOps }
         : {}),
+      ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
       // Zone B — manifest-declared middleware. Resolved inside the
       // factory; unknown names throw, core names are blocked by the
       // loader, and composed entries run INSIDE the security guard.
