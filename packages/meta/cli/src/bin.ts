@@ -106,11 +106,13 @@ switch (result.kind) {
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") baseEnv[k] = v;
     }
-    // Import signal handlers BEFORE spawning the child to close the
-    // spawn-to-handler race window (#1750). If SIGHUP/SIGTERM arrives
-    // between spawn and handler installation, the parent would die with
-    // default behavior, orphaning the child.
-    const { installTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
+    // Arm signal handlers BEFORE spawning the child to eliminate the
+    // spawn-to-handler race window (#1750). The two-phase API installs
+    // SIGINT/SIGTERM/SIGHUP handlers immediately, then binds the child
+    // ref after spawn. If a signal arrives before spawn, the parent
+    // exits cleanly (no child to orphan).
+    const { armTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
+    const bindChild = armTuiReexecSignalHandlers();
     const proc = Bun.spawn(
       [process.execPath, "--conditions", "browser", ...process.argv.slice(1)],
       {
@@ -120,7 +122,7 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
-    installTuiReexecSignalHandlers(proc);
+    bindChild(proc);
     process.exit(await proc.exited);
     break;
   }

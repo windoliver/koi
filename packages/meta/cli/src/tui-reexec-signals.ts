@@ -22,7 +22,17 @@ import type { Subprocess } from "bun";
 const PARENT_SIGTERM_ESCALATION_MS = 10_000;
 
 /**
- * Install SIGINT, SIGTERM, and SIGHUP handlers on the re-exec parent process.
+ * Arm SIGINT, SIGTERM, and SIGHUP handlers on the re-exec parent process
+ * BEFORE spawning the child. Returns a function to bind the child process
+ * reference once spawned. This two-phase design eliminates the race window
+ * where a signal could arrive between spawn and handler installation (#1750).
+ *
+ * Usage:
+ * ```ts
+ * const bindChild = armTuiReexecSignalHandlers();
+ * const proc = Bun.spawn(...);
+ * bindChild(proc);
+ * ```
  *
  * SIGINT: the terminal delivers Ctrl+C to the whole foreground process
  * group, so the child already receives it directly. Forwarding would
@@ -47,24 +57,32 @@ const PARENT_SIGTERM_ESCALATION_MS = 10_000;
  * All forwarding state is per-installation (closure-local), so sequential
  * re-exec children in one process each get independent signal forwarding.
  */
-export function installTuiReexecSignalHandlers(proc: Subprocess): void {
+export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
+  // let: justified — mutable child ref, set once when caller binds.
+  let child: Subprocess | null = null;
   // let: justified — set once on first forward call to prevent double-
-  // escalation when both SIGHUP and SIGTERM arrive (e.g. tmux kill-session
-  // + supervisor). Per-child, not module-global.
+  // escalation when both SIGHUP and SIGTERM arrive.
   let forwardingStarted = false;
 
   const forward = (): void => {
     if (forwardingStarted) return;
     forwardingStarted = true;
+    if (child === null) {
+      // Signal arrived before spawn completed — just exit. The child
+      // either doesn't exist yet or is about to be created into a
+      // dead parent, so it will get SIGHUP from the kernel when the
+      // parent's process group leader exits.
+      process.exit(143);
+      return;
+    }
     try {
-      proc.kill("SIGTERM");
+      child.kill("SIGTERM");
     } catch {
-      // Child already exited — `await proc.exited` will unblock on the
-      // next tick.
+      // Child already exited.
     }
     const escalate = setTimeout(() => {
       try {
-        proc.kill("SIGKILL");
+        child?.kill("SIGKILL");
       } catch {
         // Nothing more to do.
       }
@@ -86,13 +104,24 @@ export function installTuiReexecSignalHandlers(proc: Subprocess): void {
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
 
-  // Clean up listeners when the child exits so a later re-exec child in
-  // the same process starts from a clean state.
-  void proc.exited.then(() => {
-    process.removeListener("SIGINT", noopSigintHandler);
-    process.removeListener("SIGTERM", onSigterm);
-    process.removeListener("SIGHUP", onSighup);
-  });
+  return (proc: Subprocess): void => {
+    child = proc;
+    // Clean up listeners when the child exits so a later re-exec child
+    // in the same process starts from a clean state.
+    void proc.exited.then(() => {
+      process.removeListener("SIGINT", noopSigintHandler);
+      process.removeListener("SIGTERM", onSigterm);
+      process.removeListener("SIGHUP", onSighup);
+    });
+  };
+}
+
+/**
+ * @deprecated Use {@link armTuiReexecSignalHandlers} instead.
+ * Kept for backward compatibility — calls arm + bind in one step.
+ */
+export function installTuiReexecSignalHandlers(proc: Subprocess): void {
+  armTuiReexecSignalHandlers()(proc);
 }
 
 function noopSigintHandler(): void {
