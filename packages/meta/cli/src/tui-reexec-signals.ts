@@ -127,7 +127,7 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
 
   return {
     get terminated(): boolean {
-      return pendingSignal;
+      return forwardingStarted;
     },
     get terminatedExitCode(): number {
       return pendingExitCode;
