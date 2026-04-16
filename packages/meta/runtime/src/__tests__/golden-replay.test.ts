@@ -3236,14 +3236,13 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     );
     expect(toolSteps.length).toBeGreaterThanOrEqual(2); // memory_store + memory_recall (memory_search optional)
 
-    // memory_store output contains stored: true and filePath
+    // memory_store output contains stored: true (filePath removed in #1725)
     const storeStep = toolSteps.find((s) => {
       const content = s.observation?.results?.[0]?.content ?? "";
-      return content.includes("stored") && content.includes("filePath");
+      return content.includes("stored");
     });
     expect(storeStep).toBeDefined();
     const storeContent = storeStep?.observation?.results?.[0]?.content ?? "";
-    expect(storeContent).toContain("testing_approach.md");
     expect(storeContent).toContain('"stored":true');
   });
 

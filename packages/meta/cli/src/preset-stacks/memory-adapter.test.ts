@@ -9,6 +9,91 @@ import { createMemoryStore } from "@koi/memory-fs";
 import type { MemoryToolBackend } from "@koi/memory-tools";
 import { createMemoryToolBackendFromStore } from "./memory-adapter.js";
 
+// ---------------------------------------------------------------------------
+// Tool-level round-trip: memory_store execute → memory_recall execute (#1725)
+// ---------------------------------------------------------------------------
+
+describe("memory tool round-trip (#1725 regression)", () => {
+  let dir: string;
+  let backend: MemoryToolBackend;
+
+  beforeEach(async () => {
+    dir = await realpath(await mkdtemp(join(tmpdir(), "koi-memory-tool-roundtrip-")));
+    const store = createMemoryStore({ dir });
+    backend = createMemoryToolBackendFromStore(store);
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  test("memory_recall returns stored data after memory_store", async () => {
+    const { createMemoryStoreTool } = await import("@koi/memory-tools");
+    const { createMemoryRecallTool } = await import("@koi/memory-tools");
+
+    const storeResult = createMemoryStoreTool(backend, dir);
+    const recallResult = createMemoryRecallTool(backend, dir);
+    expect(storeResult.ok).toBe(true);
+    expect(recallResult.ok).toBe(true);
+    if (!storeResult.ok || !recallResult.ok) return;
+
+    const storeTool = storeResult.value;
+    const recallTool = recallResult.value;
+
+    // Step 1: Store a memory
+    const storeOutput = (await storeTool.execute({
+      name: "project_toolchain",
+      description: "Project uses Bun and Biome",
+      type: "user",
+      content: "This project uses Bun 1.3 and Biome for linting.",
+    })) as Record<string, unknown>;
+
+    expect(storeOutput.stored).toBe(true);
+    expect(storeOutput.id).toBeDefined();
+
+    // Step 2: Recall the memory — this is the path that fails in TUI (#1725)
+    const recallOutput = (await recallTool.execute({
+      query: "toolchain",
+    })) as Record<string, unknown>;
+
+    // Bug #1725: recall should return the stored memory, not an error
+    expect(recallOutput.count).toBe(1);
+    expect(recallOutput.results).toBeDefined();
+    const results = recallOutput.results as readonly Record<string, unknown>[];
+    expect(results[0]?.name).toBe("project_toolchain");
+    expect(results[0]?.content).toContain("Bun 1.3");
+  });
+
+  test("memory_store output does not contain misleading filePath (#1725 bug 2)", async () => {
+    const { createMemoryStoreTool } = await import("@koi/memory-tools");
+
+    const storeResult = createMemoryStoreTool(backend, dir);
+    expect(storeResult.ok).toBe(true);
+    if (!storeResult.ok) return;
+
+    const storeOutput = (await storeResult.value.execute({
+      name: "test_memory",
+      description: "test desc",
+      type: "feedback",
+      content: "test content",
+    })) as Record<string, unknown>;
+
+    expect(storeOutput.stored).toBe(true);
+    // Bug #1725 bug 2: filePath should not be a bare filename that looks
+    // like a relative path. Either omit it or provide the full absolute path.
+    if ("filePath" in storeOutput) {
+      // If filePath is present, it must be an absolute path (starts with /)
+      // to avoid misleading the model about where data was written.
+      expect(typeof storeOutput.filePath).toBe("string");
+      expect((storeOutput.filePath as string).startsWith("/")).toBe(true);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// File-backed adapter E2E
+// ---------------------------------------------------------------------------
+
 describe("memory-adapter E2E", () => {
   let dir: string;
   let backend: MemoryToolBackend;
@@ -104,6 +189,36 @@ describe("memory-adapter E2E", () => {
     if (!result.ok) return;
     expect(result.value.length).toBe(1);
     expect(result.value[0]?.name).toBe("beta");
+  });
+
+  test("adapter recall returns stored records (#1725 regression)", async () => {
+    // Bug #1725: memory_recall fails in TUI after successful memory_store.
+    // This test validates the adapter's recall path independently.
+    await backend.storeWithDedup(
+      {
+        name: "toolchain",
+        description: "project toolchain",
+        type: "user",
+        content: "Bun 1.3 and Biome",
+      },
+      { force: false },
+    );
+
+    const recallResult = await backend.recall("toolchain", undefined);
+
+    expect(recallResult.ok).toBe(true);
+    if (!recallResult.ok) return;
+    expect(recallResult.value.length).toBe(1);
+    expect(recallResult.value[0]?.name).toBe("toolchain");
+    expect(recallResult.value[0]?.content).toBe("Bun 1.3 and Biome");
+  });
+
+  test("adapter recall returns empty array when no records exist (#1725)", async () => {
+    const recallResult = await backend.recall("anything", undefined);
+
+    expect(recallResult.ok).toBe(true);
+    if (!recallResult.ok) return;
+    expect(recallResult.value.length).toBe(0);
   });
 
   test("adapter delete removes record from disk", async () => {
