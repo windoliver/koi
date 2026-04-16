@@ -1301,24 +1301,38 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // prompt because the factory applies the manifest allowlist during
     // discovery — pre-discovery would list phantom plugins the factory
     // subsequently excludes.
+    //
+    // Both the TUI store AND the transcript are updated so the model
+    // sees loaded plugins on its first turn.
     if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
       const parts: string[] = [];
       if (handle.pluginSummary.loaded.length > 0) {
         const pluginLines = handle.pluginSummary.loaded
-          .map((p) => `  \u2022 ${p.name} v${p.version}: ${p.description}`)
+          .map((p) => `- ${p.name} v${p.version}: ${p.description}`)
           .join("\n");
         parts.push(`[Loaded Plugins]\n${pluginLines}`);
       }
       if (handle.pluginSummary.errors.length > 0) {
         const errorLines = handle.pluginSummary.errors
-          .map((e) => `  \u2022 ${e.plugin}: ${e.error}`)
+          .map((e) => `- ${e.plugin}: ${e.error}`)
           .join("\n");
-        parts.push(`\u26a0 Plugin load errors:\n${errorLines}`);
+        parts.push(`[Plugin Load Errors]\n${errorLines}`);
       }
+      const pluginContextText = parts.join("\n\n");
+
+      // Push to transcript so the model sees plugin context
+      const pluginContextMsg: InboundMessage = {
+        content: [{ kind: "text" as const, text: pluginContextText }],
+        senderId: "system:plugins",
+        timestamp: Date.now(),
+      };
+      handle.transcript.push(pluginContextMsg);
+
+      // Also dispatch to TUI store for display
       store.dispatch({
         kind: "add_user_message",
         id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+        blocks: [{ kind: "text" as const, text: pluginContextText }],
       });
     }
 

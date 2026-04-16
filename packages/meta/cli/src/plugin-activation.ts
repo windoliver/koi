@@ -174,14 +174,7 @@ export async function loadPluginComponents(
       continue;
     }
     const plugin = loadResult.value;
-
-    // Record successfully loaded plugin metadata for summary
-    discovered.push({
-      name: plugin.name,
-      version: plugin.version,
-      description: plugin.description,
-      source: plugin.source,
-    });
+    const errorsBefore = errors.length;
 
     // Hooks
     if (plugin.hookConfigPath !== undefined) {
@@ -218,6 +211,16 @@ export async function loadPluginComponents(
     for (const skillPath of plugin.skillPaths) {
       const skills = await loadSkillsFromRoot(skillPath);
       skillMetadata.push(...skills);
+    }
+
+    // Only report as loaded if all activation steps succeeded
+    if (errors.length === errorsBefore) {
+      discovered.push({
+        name: plugin.name,
+        version: plugin.version,
+        description: plugin.description,
+        source: plugin.source,
+      });
     }
 
     // Middleware names (pass-through — no factory registry yet)
