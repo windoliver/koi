@@ -22,6 +22,17 @@ export interface DisplayLine {
   readonly detail?: string | undefined;
 }
 
+/**
+ * Strip ANSI escape sequences and control characters from untrusted plugin text.
+ * Plugin names, versions, descriptions, and error messages originate from
+ * plugin.json manifests which are untrusted user-installed content.
+ */
+const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+function sanitize(s: string): string {
+  return s.replace(ANSI_RE, "").replace(CTRL_RE, "");
+}
+
 export function buildPluginDisplayLines(summary: PluginSummary | null): readonly DisplayLine[] {
   if (summary === null || (summary.loaded.length === 0 && summary.errors.length === 0)) {
     return [{ kind: "info", text: "No plugins loaded." }];
@@ -34,8 +45,8 @@ export function buildPluginDisplayLines(summary: PluginSummary | null): readonly
     for (const p of summary.loaded) {
       lines.push({
         kind: "plugin",
-        text: p.name,
-        detail: `v${p.version} (${p.source}) \u2014 ${p.description}`,
+        text: sanitize(p.name),
+        detail: `v${sanitize(p.version)} (${p.source}) \u2014 ${sanitize(p.description)}`,
       });
     }
   }
@@ -43,7 +54,7 @@ export function buildPluginDisplayLines(summary: PluginSummary | null): readonly
   if (summary.errors.length > 0) {
     lines.push({ kind: "header", text: `Errors (${String(summary.errors.length)})` });
     for (const e of summary.errors) {
-      lines.push({ kind: "error", text: e.plugin, detail: e.error });
+      lines.push({ kind: "error", text: sanitize(e.plugin), detail: sanitize(e.error) });
     }
   }
 

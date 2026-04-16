@@ -222,21 +222,15 @@ export async function loadPluginComponents(
       pluginSkills.push(...skills);
     }
 
-    // Middleware references are not yet resolvable (no factory registry).
-    // Treat declared middleware as an activation error so plugins that
-    // depend on middleware enforcement are not reported as fully loaded.
-    if (plugin.middlewareNames.length > 0) {
-      pluginErrors.push({
-        plugin: plugin.name,
-        error: `Middleware not supported (no factory registry): ${plugin.middlewareNames.join(", ")}`,
-      });
-    }
-
-    // Atomic commit: merge only if all activation steps succeeded
+    // Atomic commit: merge only if all activation steps succeeded.
+    // Middleware names are passed through even on success — the factory
+    // logs a warning for unsupported middleware but doesn't block the
+    // plugin's other components (hooks/MCP/skills) from activating.
     if (pluginErrors.length === 0) {
       hooks.push(...pluginHooks);
       mcpServers.push(...pluginMcpServers);
       skillMetadata.push(...pluginSkills);
+      middlewareNames.push(...plugin.middlewareNames);
       discovered.push({
         name: plugin.name,
         version: plugin.version,
