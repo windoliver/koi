@@ -305,3 +305,53 @@ describe("isInterrupted reflects external input.signal abort", () => {
     await runtime.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 6 & 7: Abandoned iterable cleanup (#1682)
+// ---------------------------------------------------------------------------
+
+describe("abandoned iterable cleanup", () => {
+  test("run() called but never iterated — cycleSession clears registry and accepts new run", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+
+    const sid = sessionId(runtime.sessionId);
+
+    // Call run() but DO NOT iterate. The returned iterable is abandoned.
+    const _abandoned = runtime.run({ kind: "text", text: "hello" });
+
+    // After run(), the registry should show the session (synchronous register).
+    expect(registry.listActive()).toContain(sid);
+
+    // cycleSession sweeps the abandoned state.
+    await runtime.cycleSession?.();
+
+    // Registry entry gone; a fresh run is accepted without an "already running" throw.
+    expect(registry.listActive()).not.toContain(sid);
+
+    const iter = runtime.run({ kind: "text", text: "hello" });
+    await drainEvents(iter); // should not throw
+
+    await runtime.dispose();
+  });
+
+  test("run() called but never iterated — dispose clears registry", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+
+    const sid = sessionId(runtime.sessionId);
+    const _abandoned = runtime.run({ kind: "text", text: "hello" });
+    expect(registry.listActive()).toContain(sid);
+
+    await runtime.dispose();
+    expect(registry.listActive()).not.toContain(sid);
+  });
+});

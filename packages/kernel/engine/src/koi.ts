@@ -342,6 +342,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // so runtime.isInterrupted() reflects external aborts too. Set inside try
   // alongside activeController, cleared in finally.
   let activeRunSignal: AbortSignal | undefined;
+  // #1682: sweeper for the state published synchronously in run() so
+  // cycleSession/dispose/stale-epoch paths can clean up pre-iteration
+  // state without waiting on a generator finally that may never fire
+  // (abandoned iterable: run() called but .next() never invoked).
+  // Populated in run(); cleared when the generator body actually takes
+  // ownership of cleanup (first line of the try block in streamEvents)
+  // OR when a lifecycle sweeper calls it.
+  // let justified: mutable pre-iteration cleanup reference.
+  let preIterationCleanup: (() => void) | undefined;
   /**
    * Eagerly compute the next session id under the host-configured
    * rotation strategy. Called at the top of `cycleSession()` BEFORE
@@ -444,6 +453,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // iterable's). Clearing unconditionally would let a third run()
       // run concurrently with B.
       if (runningEpoch === expectedEpoch) {
+        // #1682: this stale iterable still owns the pre-iteration
+        // state published in run(). Run the sweeper before releasing
+        // the `running` latch so the registry + activeController don't
+        // outlive the rejected run.
+        preIterationCleanup?.();
+        preIterationCleanup = undefined;
         running = false;
         runningEpoch = undefined;
       }
@@ -577,6 +592,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
+      // #1682: generator body is now executing — ownership of the
+      // pre-iteration cleanup transfers to the finally block below.
+      // Clear the sweeper so a concurrent cycleSession/dispose doesn't
+      // double-fire cleanup on state the finally will drain itself.
+      preIterationCleanup = undefined;
+
       // --- Run / session initialization ---
       // onSessionStart fires exactly once across the runtime's lifetime,
       // on the first run() call, with this run's sessionCtx (tests rely on
@@ -1558,6 +1579,20 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         throw err;
       }
 
+      // Populate the pre-iteration cleanup before marking `running`. If the
+      // consumer drops the returned iterable without iterating, this closure
+      // gets invoked by cycleSession/dispose/the stale-epoch path below so
+      // we don't leak the registry entry or the interrupt handles.
+      preIterationCleanup = () => {
+        try {
+          runSignal.removeEventListener("abort", onAbort);
+        } catch {
+          // Defensive: signal already removed is non-fatal.
+        }
+        unregisterFromRegistry?.();
+        activeController = undefined;
+        activeRunSignal = undefined;
+      };
       running = true;
       runningEpoch = sessionEpoch;
       // #1742: currentRunSettled / currentRunResolveSettled are initialized
@@ -1711,7 +1746,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             }
           } else if (running) {
             // No generator entry yet — nothing to wait for, just
-            // release the concurrent-run latch.
+            // release the concurrent-run latch. #1682: also sweep the
+            // pre-iteration interrupt handle + registry slot so the
+            // abandoned iterable doesn't leak stale state.
+            preIterationCleanup?.();
+            preIterationCleanup = undefined;
             running = false;
             runningEpoch = undefined;
           }
@@ -1981,6 +2020,9 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             );
           }
         } else if (running) {
+          // #1682: sweep pre-iteration state for the same reason as cycleSession.
+          preIterationCleanup?.();
+          preIterationCleanup = undefined;
           running = false;
           runningEpoch = undefined;
         }
