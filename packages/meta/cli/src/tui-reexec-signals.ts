@@ -63,26 +63,19 @@ export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
   // let: justified — set once on first forward call to prevent double-
   // escalation when both SIGHUP and SIGTERM arrive.
   let forwardingStarted = false;
+  // let: justified — tracks whether a signal arrived before bindChild.
+  // If true, bindChild replays the forward immediately.
+  let pendingSignal = false;
 
-  const forward = (): void => {
-    if (forwardingStarted) return;
-    forwardingStarted = true;
-    if (child === null) {
-      // Signal arrived before spawn completed — just exit. The child
-      // either doesn't exist yet or is about to be created into a
-      // dead parent, so it will get SIGHUP from the kernel when the
-      // parent's process group leader exits.
-      process.exit(143);
-      return;
-    }
+  const forwardToChild = (proc: Subprocess): void => {
     try {
-      child.kill("SIGTERM");
+      proc.kill("SIGTERM");
     } catch {
       // Child already exited.
     }
     const escalate = setTimeout(() => {
       try {
-        child?.kill("SIGKILL");
+        proc.kill("SIGKILL");
       } catch {
         // Nothing more to do.
       }
@@ -90,6 +83,18 @@ export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
     }, PARENT_SIGTERM_ESCALATION_MS);
     if (typeof escalate === "object" && escalate !== null && "unref" in escalate) {
       (escalate as { unref: () => void }).unref();
+    }
+  };
+
+  const forward = (): void => {
+    if (forwardingStarted) return;
+    forwardingStarted = true;
+    if (child !== null) {
+      forwardToChild(child);
+    } else {
+      // Signal arrived between arm and bind — record it so bindChild
+      // can replay the forward once the child ref is available.
+      pendingSignal = true;
     }
   };
 
@@ -106,6 +111,10 @@ export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
 
   return (proc: Subprocess): void => {
     child = proc;
+    // Replay: if a signal arrived between arm and bind, forward now.
+    if (pendingSignal) {
+      forwardToChild(proc);
+    }
     // Clean up listeners when the child exits so a later re-exec child
     // in the same process starts from a clean state.
     void proc.exited.then(() => {
