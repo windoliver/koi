@@ -287,6 +287,17 @@ is merged with workspace-specific overrides (network allowed, write access to `c
 tool and all commands run inside the OS sandbox automatically. Falls back gracefully to
 the unsandboxed denylist-only path when the platform is unsupported.
 
+### Bash PATH Extensions (#1841)
+
+The execution preset stack auto-detects user-installed tool directories at boot
+(`~/.bun/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, etc.) and injects them via
+`pathExtensions` on both Bash tools. Each candidate is validated for uid ownership
+and absolute path format. HOME-dependent shim paths (nvm, volta, pyenv) are excluded
+in sandboxed mode. `SAFE_ENV.HOME` defaults to `/tmp`; the real home directory is
+only propagated when passwd-backed ownership is confirmed and the sandbox is not
+active. The home derivation uses `os.userInfo().homedir` (passwd-backed) with
+`process.getuid()` + `os.homedir()` fallback for passwd-less containers.
+
 ### Bash AST Classifier (PR #1660, issue #1634)
 
 `@koi/tools-bash` now delegates to `@koi/bash-ast` for command classification instead of

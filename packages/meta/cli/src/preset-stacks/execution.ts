@@ -48,7 +48,8 @@
  *   callback" channel — the context interface stays narrow.
  */
 
-import { tmpdir } from "node:os";
+import { existsSync, statSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { AgentId, ApprovalHandler, ManagedTaskBoard } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
@@ -102,6 +103,118 @@ export const TASK_BOARD_TOOLS_HOST_KEY = "taskBoardTools";
  * surface (no bash_background, but task_* + Spawn are intact).
  */
 export const BACKGROUND_SUBPROCESSES_HOST_KEY = "backgroundSubprocesses";
+
+/**
+ * Check whether a directory exists and is owned by the current uid.
+ *
+ * Rejects directories owned by other users to prevent command hijack
+ * when `$HOME` is overridden or the process inherits a foreign env.
+ */
+function isOwnedDir(path: string, uid: number): boolean {
+  try {
+    const st = statSync(path);
+    return st.isDirectory() && st.uid === uid;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect common tool directories that exist on this host.
+ *
+ * Only directories that actually exist AND are owned by the current uid
+ * are returned, keeping the subprocess PATH tight. Home-derived paths
+ * are validated against the real uid to prevent command hijack when
+ * `$HOME` is injected. Fixed system paths (`/opt/homebrew/bin`, etc.)
+ * only need to exist.
+ *
+ * Closes #1841.
+ */
+interface ToolEnvConfig {
+  /** PATH directories containing self-contained binaries (safe with any HOME). */
+  readonly pathExtensions: readonly string[];
+  /** PATH directories containing shims that depend on HOME for state (nvm, volta, pyenv). */
+  readonly shimPathExtensions: readonly string[];
+  /** Validated home directory, or undefined when ownership cannot be confirmed. */
+  readonly home: string | undefined;
+}
+
+function detectToolEnv(): ToolEnvConfig {
+  // Use passwd-backed home (os.userInfo().homedir) as the canonical
+  // source. Unlike os.homedir(), this ignores $HOME env overrides and
+  // reads directly from the passwd database, preventing same-uid HOME
+  // injection from steering subprocess PATH and config.
+  let canonicalHome: string | undefined;
+  let uid: number | undefined;
+  try {
+    const info = userInfo();
+    canonicalHome = info.homedir;
+    uid = info.uid;
+  } catch {
+    uid = process.getuid?.();
+  }
+
+  // Fall back to env-derived home ONLY when it matches the canonical
+  // home. If os.userInfo() failed entirely (no passwd entry), skip
+  // home-derived paths since we cannot verify ownership.
+  // homedir() can also throw on degraded NSS/passwd — guard it.
+  let envHome: string | undefined;
+  try {
+    envHome = homedir();
+  } catch {
+    // Degraded host — no home discovery possible
+  }
+  // Prefer passwd-backed home. If unavailable but getuid() + homedir()
+  // both succeed and match ownership, use envHome as fallback (covers
+  // passwd-less containers where userInfo() throws but HOME is valid).
+  const home = canonicalHome ?? (uid !== undefined && envHome !== undefined ? envHome : undefined);
+  const homeOwned =
+    home !== undefined &&
+    uid !== undefined &&
+    (canonicalHome !== undefined ? home === envHome : true) &&
+    isOwnedDir(home, uid);
+  // Self-contained binaries — work correctly regardless of HOME value.
+  const selfContainedCandidates: readonly string[] = homeOwned
+    ? [
+        join(home, ".bun", "bin"),
+        join(home, ".local", "bin"),
+        join(home, ".cargo", "bin"),
+        join(home, "go", "bin"),
+      ]
+    : [];
+
+  // Shim-based managers — depend on HOME for state resolution.
+  // Only safe when HOME is propagated (unsandboxed mode).
+  const shimCandidates: readonly string[] = homeOwned
+    ? [
+        join(home, ".nvm", "current", "bin"),
+        join(home, ".fnm", "current", "bin"),
+        join(home, ".volta", "bin"),
+        join(home, ".pyenv", "shims"),
+      ]
+    : [];
+
+  // Fixed system paths — no ownership check needed (system-managed).
+  const systemCandidates: readonly string[] = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/usr/local/go/bin",
+  ];
+
+  // Validate each candidate directory's ownership (not just existence)
+  // to prevent symlinked paths from resolving to untrusted locations.
+  // System paths only need existence checks (system-managed).
+  const ownedUid = uid ?? -1;
+  return {
+    pathExtensions: [
+      ...selfContainedCandidates.filter((p) => isOwnedDir(p, ownedUid)),
+      ...systemCandidates.filter((p) => existsSync(p)),
+    ],
+    shimPathExtensions: shimCandidates.filter((p) => isOwnedDir(p, ownedUid)),
+    home: homeOwned ? home : undefined,
+  };
+}
 
 /** Maximum wait for SIGTERM→SIGKILL drain on resetSessionState (ms). */
 const SUBPROCESS_DRAIN_MS = 3_500;
@@ -172,13 +285,29 @@ export const executionStack: PresetStack = {
       return decision.kind === "allow" || decision.kind === "always-allow";
     };
 
+    // Detect user-installed tool paths and validated home at boot.
+    // Both PATH extensions and HOME are derived from the same ownership-
+    // validated source so the trust boundary is consistent.
+    const toolEnv = detectToolEnv();
+
+    // When sandboxed, keep HOME=/tmp (the SAFE_ENV default) because
+    // the sandbox write-allowlist does not include $HOME — propagating
+    // the real home would cause tool cache/config writes to fail.
+    // Also exclude HOME-dependent shim paths (nvm, volta, pyenv) since
+    // they require HOME for state resolution.
+    const sandboxed = sandboxAdapter !== undefined && sandboxProfile !== undefined;
+    const effectiveHome = sandboxed ? undefined : toolEnv.home;
+    const effectivePaths = sandboxed
+      ? toolEnv.pathExtensions
+      : [...toolEnv.pathExtensions, ...toolEnv.shimPathExtensions];
+
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,
       trackCwd: true,
       elicit: bashElicit,
-      ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-        ? { sandboxAdapter, sandboxProfile }
-        : {}),
+      pathExtensions: effectivePaths,
+      home: effectiveHome,
+      ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
     });
 
     // --- Task board (always created — spawned coordinators need task_*) ---
@@ -234,9 +363,9 @@ export const executionStack: PresetStack = {
                   liveSubprocessCount--;
                 },
                 elicit: bashElicit,
-                ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
-                  ? { sandboxAdapter, sandboxProfile }
-                  : {}),
+                pathExtensions: effectivePaths,
+                home: effectiveHome,
+                ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
           })
         : undefined;
