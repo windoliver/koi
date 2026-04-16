@@ -11,14 +11,18 @@
  *   const filtered = await runtime.query({ tags: ["typescript"] });
  */
 
+import { join } from "node:path";
 import type { KoiError, Result } from "@koi/core";
-import type { ScanFinding } from "@koi/skill-scanner";
+import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { createScanner } from "@koi/skill-scanner";
-import type { Severity } from "@koi/validation";
+import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
-import { discoverSkills } from "./discover.js";
+import { discoverSkills, resolveSingleSkill } from "./discover.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
+import { parseSkillMd } from "./parse.js";
+import type { ResolvedInclude } from "./resolve-includes.js";
+import { resolveIncludes } from "./resolve-includes.js";
 import type {
   SkillDefinition,
   SkillMetadata,
@@ -43,6 +47,302 @@ export type {
   SkillsRuntime,
   SkillsRuntimeConfig,
 };
+
+// ---------------------------------------------------------------------------
+// Discover-time security scan (issue #1722)
+// ---------------------------------------------------------------------------
+
+interface BlockedEntry {
+  readonly entry: DiscoveredSkillEntry;
+  readonly findings: readonly ScanFinding[];
+}
+
+interface ScanSplit {
+  readonly clean: ReadonlyMap<string, DiscoveredSkillEntry>;
+  readonly blocked: ReadonlyMap<string, BlockedEntry>;
+}
+
+/**
+ * Scans each discovered skill's SKILL.md body BEFORE it enters the registry.
+ *
+ * Issue #1722: until this ran, a malicious skill with clean frontmatter but
+ * a destructive body (`rm -rf /` or `$OPENROUTER_API_KEY` exfiltration in
+ * prose) was advertised via discover()/query()/describeCapabilities and only
+ * rejected when a caller invoked load() — too late, since the metadata had
+ * already reached the model.
+ *
+ * Entries with at least one finding at or above `blockOnSeverity` are moved
+ * to the `blocked` map — they are excluded from discover()/query() (so the
+ * model never sees them) but load()/loadAll() still surface them with a
+ * PERMISSION error for operator observability. Sub-threshold findings route
+ * through `onSecurityFinding`. Read errors are tolerated — the load() path
+ * will surface a proper NOT_FOUND later.
+ */
+/**
+ * Reads SKILL.md content and resolves any `includes:` frontmatter items
+ * using the same `parseSkillMd` + `resolveIncludes` pipeline as the loader,
+ * returning the concatenated body for scanning.
+ *
+ * Reuses the loader's include resolution so path boundary enforcement,
+ * recursion limits, and YAML parsing are identical (issue #1722 round 5).
+ *
+ * Shared between `scanDiscoveredEntries` and `rescanBlockedSkills`.
+ */
+async function readFullSkillContent(
+  content: string,
+  dirPath: string,
+  skillsRoot: string,
+): Promise<
+  | { readonly ok: true; readonly fullContent: string }
+  | { readonly ok: false; readonly finding: ScanFinding }
+> {
+  const parsed = parseSkillMd(content, join(dirPath, "SKILL.md"));
+  if (!parsed.ok) {
+    // Unparseable frontmatter — fail closed
+    return {
+      ok: false,
+      finding: {
+        rule: "unparseable-skill-frontmatter",
+        severity: "HIGH",
+        confidence: 1.0,
+        category: "UNPARSEABLE",
+        message: `SKILL.md frontmatter could not be parsed: ${parsed.error.message}`,
+      },
+    };
+  }
+
+  const rawIncludes = parsed.value.frontmatter.includes;
+  if (!Array.isArray(rawIncludes) || rawIncludes.length === 0) {
+    return { ok: true, fullContent: content };
+  }
+
+  const includes = rawIncludes.filter((i: unknown): i is string => typeof i === "string");
+  const includeResult = await resolveIncludes(includes, dirPath, skillsRoot);
+  if (!includeResult.ok) {
+    return {
+      ok: false,
+      finding: {
+        rule: "unreadable-skill-include",
+        severity: "HIGH",
+        confidence: 1.0,
+        category: "UNPARSEABLE",
+        message: `Include resolution failed at discovery time: ${includeResult.error.message}`,
+      },
+    };
+  }
+
+  const appendix = includeResult.value.map((inc: ResolvedInclude) => inc.content).join("\n\n");
+  const fullContent = appendix.length > 0 ? `${content}\n\n${appendix}` : content;
+  return { ok: true, fullContent };
+}
+
+async function scanDiscoveredEntries(
+  entries: ReadonlyMap<string, DiscoveredSkillEntry>,
+  scanner: Scanner,
+  blockOnSeverity: Severity,
+  onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
+): Promise<ScanSplit> {
+  const results = await Promise.all(
+    [...entries.entries()].map(async ([name, entry]) => {
+      const skillMdPath = join(entry.dirPath, "SKILL.md");
+      let content: string; // let: assigned in try/catch
+      try {
+        content = await Bun.file(skillMdPath).text();
+      } catch {
+        // Unreadable at discovery time — fail closed. Reserve the name as
+        // blocked so the unscanned body cannot surface via discover()/
+        // query()/describeCapabilities, and so operators get a PERMISSION
+        // signal from load()/loadAll() instead of a silent NOT_FOUND.
+        const finding: ScanFinding = {
+          rule: "unreadable-skill-body",
+          severity: "HIGH",
+          confidence: 1.0,
+          category: "UNPARSEABLE",
+          message: `SKILL.md could not be read at discovery time: ${skillMdPath}`,
+        };
+        return { name, entry, blocking: [finding] as readonly ScanFinding[] };
+      }
+
+      // Issue #1722 round 3+4+5+6: scan SKILL.md + included files together
+      // using the same resolveIncludes pipeline as the loader. Parse and
+      // include failures are routed through the normal threshold filter
+      // (round 6) so blockOnSeverity is respected.
+      const resolved = await readFullSkillContent(content, entry.dirPath, entry.skillsRoot);
+      if (!resolved.ok) {
+        if (severityAtOrAbove(resolved.finding.severity, blockOnSeverity)) {
+          return { name, entry, blocking: [resolved.finding] as readonly ScanFinding[] };
+        }
+        onSecurityFinding?.(name, [resolved.finding]);
+        // Below threshold — scan the base content without includes
+      }
+
+      const report = scanner.scanSkill(resolved.ok ? resolved.fullContent : content);
+      if (report.findings.length === 0) {
+        return { name, entry, blocking: [] as readonly ScanFinding[] };
+      }
+
+      const blocking = report.findings.filter((f) =>
+        severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+      const nonBlocking = report.findings.filter(
+        (f) => !severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+
+      if (nonBlocking.length > 0) {
+        onSecurityFinding?.(name, nonBlocking);
+      }
+
+      return { name, entry, blocking };
+    }),
+  );
+
+  const clean = new Map<string, DiscoveredSkillEntry>();
+  const blocked = new Map<string, BlockedEntry>();
+  for (const { name, entry, blocking } of results) {
+    if (blocking.length > 0) {
+      blocked.set(name, { entry, findings: blocking });
+    } else {
+      clean.set(name, entry);
+    }
+  }
+  return { clean, blocked };
+}
+
+/**
+ * Per-skill decision emitted by `rescanBlockedSkills()`.
+ *
+ * The commit step applies decisions one-by-one, gated by a per-name
+ * generation check so a skill re-invalidated during the async rescan
+ * window is never committed with stale data.
+ */
+type RescanDecision =
+  | { readonly kind: "promoted"; readonly entry: DiscoveredSkillEntry }
+  | {
+      readonly kind: "stillBlocked";
+      readonly entry: DiscoveredSkillEntry;
+      readonly findings: readonly ScanFinding[];
+    }
+  | { readonly kind: "released" }
+  | { readonly kind: "keep" };
+
+/**
+ * Re-scans a small set of previously-blocked skills (issue #1722 recovery path).
+ *
+ * Used by `invalidate(name)` so that editing one blocked SKILL.md in place
+ * can promote it back to the discovered map without forcing a full
+ * filesystem re-walk that would also re-discover every unrelated skill.
+ * Only the requested names are re-read + re-scanned; every other entry in
+ * `currentDiscovered` and `currentBlocked` is copied through untouched.
+ *
+ * Uses `resolveSingleSkill()` so tier precedence (project > user > bundled)
+ * is honored: if a higher-priority skill with the same name was added after
+ * the original block, the rescan sees it; if the old tier's copy was
+ * removed but a lower-tier copy still exists, that lower tier wins.
+ *
+ * Returns per-skill decisions (rather than pre-merged maps) so the caller
+ * can gate each application on the per-name generation snapshot captured
+ * before the async work started — a name that was re-invalidated during
+ * the rescan is `keep`'d and deferred to the next rescan rather than
+ * publishing the already-superseded snapshot.
+ *
+ * Decision kinds:
+ * - `promoted` — scan came back clean; move to discovered map.
+ * - `stillBlocked` — findings above threshold; replace in blocked map.
+ * - `released` — all tiers confirm missing; drop the reservation.
+ * - `keep` — unreadable/transient; keep existing state as-is.
+ */
+async function rescanBlockedSkills(
+  pendingNames: ReadonlySet<string>,
+  currentBlocked: ReadonlyMap<string, BlockedEntry>,
+  scanner: Scanner,
+  blockOnSeverity: Severity,
+  discoverConfig: DiscoverConfig,
+  onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void,
+): Promise<ReadonlyMap<string, RescanDecision>> {
+  const decisions = new Map<string, RescanDecision>();
+
+  await Promise.all(
+    [...pendingNames].map(async (name) => {
+      if (!currentBlocked.has(name)) {
+        decisions.set(name, { kind: "keep" });
+        return;
+      }
+
+      // Re-run tier resolution — don't just re-read the stale dirPath.
+      const resolved = await resolveSingleSkill(name, discoverConfig);
+
+      if (resolved === "unreadable") {
+        decisions.set(name, { kind: "keep" });
+        return;
+      }
+
+      if (resolved === "not-found") {
+        decisions.set(name, { kind: "released" });
+        return;
+      }
+
+      // Winning tier owns the skill — re-read + re-scan body + includes.
+      const skillMdPath = join(resolved.dirPath, "SKILL.md");
+      let content: string; // let: assigned in try/catch
+      try {
+        content = await Bun.file(skillMdPath).text();
+      } catch {
+        decisions.set(name, { kind: "keep" });
+        return;
+      }
+
+      // Issue #1722 round 4+5+6: rescan must also resolve includes, same
+      // as the initial discover-time scan path. Parse/include failures
+      // respect blockOnSeverity threshold.
+      const fullResult = await readFullSkillContent(content, resolved.dirPath, resolved.skillsRoot);
+      if (!fullResult.ok) {
+        if (severityAtOrAbove(fullResult.finding.severity, blockOnSeverity)) {
+          decisions.set(name, {
+            kind: "stillBlocked",
+            entry: resolved,
+            findings: [fullResult.finding],
+          });
+          return;
+        }
+        onSecurityFinding?.(name, [fullResult.finding]);
+      }
+
+      const report = scanner.scanSkill(fullResult.ok ? fullResult.fullContent : content);
+      const blocking = report.findings.filter((f) =>
+        severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+      const nonBlocking = report.findings.filter(
+        (f) => !severityAtOrAbove(f.severity, blockOnSeverity),
+      );
+      if (nonBlocking.length > 0) onSecurityFinding?.(name, nonBlocking);
+
+      if (blocking.length > 0) {
+        decisions.set(name, { kind: "stillBlocked", entry: resolved, findings: blocking });
+      } else {
+        decisions.set(name, { kind: "promoted", entry: resolved });
+      }
+    }),
+  );
+
+  return decisions;
+}
+
+function buildBlockedResult(
+  name: string,
+  blockOnSeverity: Severity,
+  findings: readonly ScanFinding[],
+): Result<SkillDefinition, KoiError> {
+  const summary = findings.map((f) => `[${f.severity}] ${f.rule}: ${f.message}`).join("; ");
+  return {
+    ok: false,
+    error: {
+      code: "PERMISSION",
+      message: `Skill "${name}" blocked by discover-time security scan (${findings.length} finding(s) at or above ${blockOnSeverity}): ${summary}`,
+      retryable: false,
+      context: { name, blockOnSeverity, findings },
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -80,6 +380,40 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
   // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
   let discoveredEntry: ReadonlyMap<string, DiscoveredSkillEntry> | undefined;
+  // Issue #1722: skills excluded from discover() by the discover-time security
+  // scan. Kept separate so loadAll() / provider.skipped can still surface them.
+  let blockedEntry: ReadonlyMap<string, BlockedEntry> = new Map();
+  // Issue #1722: names flagged by `invalidate(name)` for a targeted re-read +
+  // re-scan on the next `discover()` call. Scoped to specific blocked skills
+  // so unrelated cached metadata survives. Each entry is tagged with a
+  // per-name generation counter: a rescan only clears names whose generation
+  // was not bumped by a concurrent `invalidate(name)` during the async
+  // window, so rapid successive invalidations cannot be lost.
+  const pendingRescan = new Map<string, number>();
+  let nextPendingGen = 0;
+  // Issue #1722 round 2: names whose SKILL.md was unreadable at discovery
+  // time (transient I/O, atomic replace, etc.). These are kept in
+  // `blockedEntry` fail-closed, and are auto-promoted to `pendingRescan`
+  // on discover() calls where `Date.now() >= nextRetryAt` — so transient
+  // unreadable states recover without requiring an explicit
+  // `invalidate(name)`, but a stable permission problem does not flood
+  // the runtime with rescans on every discover()/load()/query() call.
+  // Value is the earliest timestamp (ms) at which the next auto-retry is
+  // allowed. Exponential backoff: start at ~250ms, double per failure,
+  // capped at 60s.
+  const quarantinedUnreadable = new Map<string, number>();
+  const quarantineBackoff = new Map<string, number>();
+  const QUARANTINE_MIN_BACKOFF_MS = 250;
+  const QUARANTINE_MAX_BACKOFF_MS = 60_000;
+  // Issue #1722: inflight dedup for the targeted rescan path — concurrent
+  // discover()/load()/query() callers join the same pending rescan rather
+  // than observing stale discoveredMetaMap/blockedEntry during the await.
+  let rescanInflight: Promise<void> | undefined;
+  // Issue #1722: monotonic runtime generation token. Incremented by
+  // `invalidate()` (full reset). In-flight discover / rescan promises check
+  // this before committing so a stale async completion cannot repopulate
+  // state after a reset.
+  let runtimeGeneration = 0;
   // Projected metadata map cached to preserve reference identity across discover() calls.
   // Rebuilt whenever filesystem or external entries change.
   let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
@@ -113,14 +447,25 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   /**
    * Builds the merged metadata map: external (lowest priority) + filesystem entries.
    * Filesystem entries always shadow external entries of the same name.
+   *
+   * Issue #1722 regression: blocked filesystem names also shadow external
+   * entries. Without this, a filesystem skill rejected by the discover-time
+   * scanner would silently let a same-named external (MCP) skill surface
+   * under its name — the model would see external metadata while `load()`
+   * routes to the blocked filesystem entry and returns `PERMISSION`. Blocked
+   * filesystem names are treated as reserved.
    */
   function buildMergedMetaMap(
     fsEntries: ReadonlyMap<string, DiscoveredSkillEntry>,
     external: ReadonlyMap<string, SkillMetadata>,
+    blocked: ReadonlyMap<string, BlockedEntry>,
   ): ReadonlyMap<string, SkillMetadata> {
-    // Start with external (lowest priority)
-    const merged = new Map<string, SkillMetadata>(external);
-    // Overwrite with filesystem entries (higher priority)
+    const merged = new Map<string, SkillMetadata>();
+    // External is lowest priority — and blocked filesystem names are reserved.
+    for (const [k, v] of external) {
+      if (!blocked.has(k)) merged.set(k, v);
+    }
+    // Filesystem entries shadow external.
     for (const [k, v] of fsEntries) {
       merged.set(k, v.metadata);
     }
@@ -136,71 +481,232 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   let lastExternalRef: ReadonlyMap<string, SkillMetadata> = externalSkills;
 
   const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
-    // Fast path: filesystem cache valid AND external map unchanged → return cached merge
-    if (
-      discoveredEntry !== undefined &&
-      discoveredMetaMap !== undefined &&
-      lastExternalRef === externalSkills
-    ) {
-      return { ok: true, value: discoveredMetaMap };
-    }
+    // Issue #1722 round 10: a generation mismatch (invalidate() racing
+    // with an in-flight rescan/discover) must not surface as INTERNAL.
+    // Instead we loop and restart against the fresh state. There is no
+    // retry cap: the loop converges naturally once invalidate() stops
+    // firing, and any bounded cap would turn routine editor/watcher
+    // churn into a visible availability regression.
+    //
+    // Issue #1722 round 2: auto-promote quarantined-unreadable entries to
+    // `pendingRescan` once per outer call. Doing this once (not once per
+    // while-loop iteration) prevents an infinite loop when rescan returns
+    // a "keep" decision for a still-unreadable skill.
+    let autoPromotedUnreadable = false;
+    while (true) {
+      if (!autoPromotedUnreadable && quarantinedUnreadable.size > 0) {
+        const now = Date.now();
+        for (const [name, nextRetryAt] of quarantinedUnreadable) {
+          if (now < nextRetryAt) continue;
+          if (!pendingRescan.has(name)) {
+            nextPendingGen += 1;
+            pendingRescan.set(name, nextPendingGen);
+          }
+        }
+        autoPromotedUnreadable = true;
+      }
 
-    // If filesystem is cached but external changed, just rebuild the merged map
-    if (discoveredEntry !== undefined && lastExternalRef !== externalSkills) {
-      discoveredMetaMap = buildMergedMetaMap(discoveredEntry, externalSkills);
-      lastExternalRef = externalSkills;
-      return { ok: true, value: discoveredMetaMap };
-    }
+      // Issue #1722: if a targeted rescan is already in flight, join it
+      // before reading cached state. This closes the race where a
+      // concurrent caller would otherwise observe the pre-rescan
+      // discoveredMetaMap.
+      if (rescanInflight !== undefined) {
+        await rescanInflight;
+      }
 
-    // Inflight dedup: join the in-flight promise if discovery is already running.
-    if (discoverInflight !== undefined) {
+      // Fast path: filesystem cache valid AND external map unchanged AND
+      // no pending per-skill rescans → return cached merge.
+      if (
+        discoveredEntry !== undefined &&
+        discoveredMetaMap !== undefined &&
+        lastExternalRef === externalSkills &&
+        pendingRescan.size === 0
+      ) {
+        return { ok: true, value: discoveredMetaMap };
+      }
+
+      // Issue #1722: pending rescan path — `invalidate(name)` flagged one
+      // or more blocked skills for re-read + re-scan. Update only those
+      // entries and rebuild the merged map; unrelated cached metadata
+      // survives. The work is wrapped in `rescanInflight` so concurrent
+      // discover()/load() callers arriving mid-rescan join the same
+      // promise instead of hitting the stale fast path.
+      if (discoveredEntry !== undefined && pendingRescan.size > 0) {
+        // Snapshot per-name generations so a concurrent `invalidate(name)`
+        // during the async rescan window bumps the generation and is not
+        // silently coalesced away on completion.
+        const snapshotGenerations = new Map(pendingRescan);
+        const namesToRescan = new Set(snapshotGenerations.keys());
+        const discoveredSnapshot = discoveredEntry;
+        const blockedSnapshot = blockedEntry;
+        const rescanRuntimeGen = runtimeGeneration;
+        rescanInflight = (async () => {
+          try {
+            const decisions = await rescanBlockedSkills(
+              namesToRescan,
+              blockedSnapshot,
+              scanner,
+              resolvedConfig.blockOnSeverity,
+              discoverConfig,
+              resolvedConfig.onSecurityFinding,
+            );
+            // Generation guard: if a full `invalidate()` landed during
+            // the rescan, discard the result rather than repopulating
+            // stale state.
+            if (rescanRuntimeGen !== runtimeGeneration) return;
+            const nextDiscovered = new Map(discoveredSnapshot);
+            const nextBlocked = new Map(blockedSnapshot);
+            for (const [n, decision] of decisions) {
+              // Per-name gen guard: skip any name that was re-invalidated
+              // during the async window. Its `pendingRescan` entry now
+              // has a higher generation than the snapshot — we leave the
+              // existing blocked/discovered state untouched and defer to
+              // the next rescan.
+              if (pendingRescan.get(n) !== snapshotGenerations.get(n)) continue;
+              switch (decision.kind) {
+                case "promoted":
+                  nextBlocked.delete(n);
+                  nextDiscovered.set(n, decision.entry);
+                  cache.delete(n);
+                  loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
+                  break;
+                case "stillBlocked":
+                  nextBlocked.set(n, { entry: decision.entry, findings: decision.findings });
+                  cache.delete(n);
+                  loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
+                  break;
+                case "released":
+                  nextBlocked.delete(n);
+                  nextDiscovered.delete(n);
+                  cache.delete(n);
+                  loadInflight.delete(n);
+                  quarantinedUnreadable.delete(n);
+                  quarantineBackoff.delete(n);
+                  break;
+                case "keep": {
+                  // Transient I/O or unreadable — leave maps alone and
+                  // schedule the next auto-retry with exponential backoff
+                  // capped at QUARANTINE_MAX_BACKOFF_MS. This gives
+                  // persistent permission failures a bounded recovery
+                  // path without flooding the runtime with rescans on
+                  // every call.
+                  const prev = quarantineBackoff.get(n) ?? QUARANTINE_MIN_BACKOFF_MS;
+                  const next = Math.min(prev * 2, QUARANTINE_MAX_BACKOFF_MS);
+                  quarantineBackoff.set(n, next);
+                  quarantinedUnreadable.set(n, Date.now() + next);
+                  break;
+                }
+              }
+              pendingRescan.delete(n);
+            }
+            discoveredEntry = nextDiscovered;
+            blockedEntry = nextBlocked;
+            discoveredMetaMap = buildMergedMetaMap(nextDiscovered, externalSkills, nextBlocked);
+            lastExternalRef = externalSkills;
+          } finally {
+            rescanInflight = undefined;
+          }
+        })();
+        await rescanInflight;
+        // On gen mismatch (or re-invalidation leaving pending entries),
+        // restart the loop so the caller sees the fresh state.
+        continue;
+      }
+
+      // If filesystem is cached but external changed, just rebuild the
+      // merged map.
+      if (discoveredEntry !== undefined && lastExternalRef !== externalSkills) {
+        discoveredMetaMap = buildMergedMetaMap(discoveredEntry, externalSkills, blockedEntry);
+        lastExternalRef = externalSkills;
+        return { ok: true, value: discoveredMetaMap };
+      }
+
+      // Inflight dedup: join the in-flight promise if discovery is
+      // already running.
+      if (discoverInflight !== undefined) {
+        const result = await discoverInflight;
+        if (!result.ok) return result;
+        // Generation guard may have caused the commit to be skipped;
+        // loop to re-read fresh state instead of returning INTERNAL.
+        if (discoveredMetaMap === undefined) continue;
+        return { ok: true, value: discoveredMetaMap };
+      }
+
+      // No cache, no in-flight — start filesystem discovery.
+      // Issue #1722: run the scanner on each discovered skill BEFORE it enters
+      // the registry, so malicious SKILL.md bodies are never advertised via
+      // discover()/query()/describeCapabilities. Sub-threshold findings route
+      // through onSecurityFinding; blocking findings move the entry into
+      // blockedEntry (still surfaced via loadAll() as PERMISSION errors).
+      const discoverRuntimeGen = runtimeGeneration;
+      discoverInflight = discoverSkills(discoverConfig)
+        .then(async (result) => {
+          if (!result.ok) return result;
+          const split = await scanDiscoveredEntries(
+            result.value,
+            scanner,
+            resolvedConfig.blockOnSeverity,
+            resolvedConfig.onSecurityFinding,
+          );
+          // Generation guard: if a full `invalidate()` landed while the walk
+          // + scan was running, return the walk result to any joined caller
+          // but do NOT commit — the next commit step sees the mismatch and
+          // skips publishing.
+          return { ok: true, value: split } satisfies Result<ScanSplit, KoiError>;
+        })
+        .then(
+          (result) => {
+            const stale = discoverRuntimeGen !== runtimeGeneration;
+            if (result.ok && !stale) {
+              const split = result.value;
+              // Evict stale cached/inflight definitions for any name now
+              // blocked — a previously cached clean body (e.g. cached
+              // external definition for the same name) must not leak past
+              // the new blocked reservation.
+              for (const n of split.blocked.keys()) {
+                cache.delete(n);
+                loadInflight.delete(n);
+              }
+              discoveredEntry = split.clean;
+              blockedEntry = split.blocked;
+              discoveredMetaMap = buildMergedMetaMap(split.clean, externalSkills, split.blocked);
+              lastExternalRef = externalSkills;
+              // Refresh the quarantined-unreadable set so the next
+              // discover() auto-retries any skill that was only blocked
+              // because its body could not be read at discovery time.
+              // Initial retry window is 0 (immediate) — the backoff only
+              // kicks in after the first failed rescan.
+              quarantinedUnreadable.clear();
+              quarantineBackoff.clear();
+              for (const [n, be] of split.blocked) {
+                if (be.findings.some((f) => f.rule === "unreadable-skill-body")) {
+                  quarantinedUnreadable.set(n, 0);
+                }
+              }
+            }
+            discoverInflight = undefined;
+            if (!result.ok) return result;
+            return { ok: true, value: result.value.clean } satisfies Result<
+              ReadonlyMap<string, DiscoveredSkillEntry>,
+              KoiError
+            >;
+          },
+          (err: unknown) => {
+            discoverInflight = undefined;
+            throw err;
+          },
+        );
+
       const result = await discoverInflight;
       if (!result.ok) return result;
-      if (discoveredMetaMap === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "INTERNAL",
-            message: "Discovery succeeded but metadata map was not built",
-            retryable: false,
-            context: {},
-          },
-        };
-      }
+      // Generation guard may have skipped commit; loop instead of INTERNAL.
+      if (discoveredMetaMap === undefined) continue;
       return { ok: true, value: discoveredMetaMap };
     }
-
-    // No cache, no in-flight — start filesystem discovery.
-    discoverInflight = discoverSkills(discoverConfig).then(
-      (result) => {
-        if (result.ok) {
-          discoveredEntry = result.value;
-          discoveredMetaMap = buildMergedMetaMap(result.value, externalSkills);
-          lastExternalRef = externalSkills;
-        }
-        discoverInflight = undefined;
-        return result;
-      },
-      (err: unknown) => {
-        discoverInflight = undefined;
-        throw err;
-      },
-    );
-
-    const result = await discoverInflight;
-    if (!result.ok) return result;
-    if (discoveredMetaMap === undefined) {
-      return {
-        ok: false,
-        error: {
-          code: "INTERNAL",
-          message: "Discovery succeeded but metadata map was not built",
-          retryable: false,
-          context: {},
-        },
-      };
-    }
-    return { ok: true, value: discoveredMetaMap };
   };
 
   // ---------------------------------------------------------------------------
@@ -224,6 +730,17 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // Ensure discovery has run
       const discoverResult = await discover();
       if (!discoverResult.ok) return discoverResult;
+
+      // Issue #1722: blocked-at-discovery entries short-circuit with a
+      // PERMISSION error — they are kept out of discoveredEntry but still
+      // surfaced here for operator visibility (loadAll → provider.skipped).
+      // NOT cached: the blocked reservation is authoritative and can
+      // change under `invalidate(name)` + rescan, so every call must read
+      // live `blockedEntry` state.
+      const blocked = blockedEntry.get(name);
+      if (blocked !== undefined) {
+        return buildBlockedResult(name, resolvedConfig.blockOnSeverity, blocked.findings);
+      }
 
       // Check filesystem entries first (higher priority)
       const entry = discoveredEntry?.get(name);
@@ -281,8 +798,15 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       return { ok: false, error: discoverResult.error };
     }
 
-    // Collect all skill names from both filesystem and external sources
-    const nameSet = new Set<string>([...(discoveredEntry?.keys() ?? []), ...externalSkills.keys()]);
+    // Collect all skill names from filesystem, external, AND discover-time
+    // blocked entries (issue #1722) — loadAll() surfaces the PERMISSION error
+    // for blocked skills so callers like createSkillProvider can report them
+    // as `skipped`.
+    const nameSet = new Set<string>([
+      ...(discoveredEntry?.keys() ?? []),
+      ...blockedEntry.keys(),
+      ...externalSkills.keys(),
+    ]);
     const names = Array.from(nameSet);
 
     // Promise.allSettled — partial failures don't block other skills
@@ -360,19 +884,51 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
 
   const invalidate = (name?: string): void => {
     if (name === undefined) {
-      // Full reset: clear filesystem + external + all body caches
+      // Full reset: clear filesystem + external + all body caches.
+      // Bump the runtime generation so any in-flight discover / rescan
+      // whose async work completes after this point detects the mismatch
+      // and refuses to repopulate state.
+      runtimeGeneration += 1;
       discoveredEntry = undefined;
       discoveredMetaMap = undefined;
       discoverInflight = undefined;
+      rescanInflight = undefined;
+      blockedEntry = new Map();
+      pendingRescan.clear();
+      quarantinedUnreadable.clear();
+      quarantineBackoff.clear();
       externalSkills = new Map();
       lastExternalRef = externalSkills;
       cache.clear();
       loadInflight.clear();
     } else {
-      // Skill-only reset: clear just this skill's body entry
-      // Discovery metadata is preserved — re-discover not needed.
+      // Skill-only reset. Clean skills keep the existing contract: the body
+      // cache is dropped but the shared discovery map is preserved, so
+      // query() for unrelated skills still returns cached metadata without
+      // a filesystem re-walk.
+      //
+      // Blocked skills (issue #1722) need a refresh path: `load()` short-
+      // circuits on `blockedEntry` and `discover()` hides the name from the
+      // merged map, so a skill that was edited in place to remove dangerous
+      // prose would stay blocked forever otherwise. The next `discover()`
+      // call will re-read + re-scan just this entry (no full re-walk), so
+      // unrelated discovered metadata and blocked-name reservations are
+      // untouched. We assign a fresh per-name generation so an in-flight
+      // rescan's commit step can detect re-invalidations that raced with
+      // its async window.
       cache.delete(name);
       loadInflight.delete(name);
+      if (blockedEntry.has(name)) {
+        nextPendingGen += 1;
+        pendingRescan.set(name, nextPendingGen);
+        // Reset backoff: an explicit invalidate is the retry trigger, so
+        // the next discover() should attempt immediately regardless of
+        // any auto-retry cooldown in progress.
+        quarantineBackoff.delete(name);
+        if (quarantinedUnreadable.has(name)) {
+          quarantinedUnreadable.set(name, 0);
+        }
+      }
     }
   };
 

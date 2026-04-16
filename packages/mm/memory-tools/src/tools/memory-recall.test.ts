@@ -24,7 +24,13 @@ describe("memory_recall execute", () => {
 
     const result = (await tool.execute({ query: "test" })) as Record<string, unknown>;
     expect(result.count).toBe(2);
-    expect(result.results).toEqual(records);
+    // #1725: filePath is stripped from tool output — verify records are returned
+    // without the internal filePath field
+    const results = result.results as readonly Record<string, unknown>[];
+    expect(results.length).toBe(2);
+    expect(results[0]?.name).toBe(records[0]?.name);
+    expect(results[0]?.content).toBe(records[0]?.content);
+    expect("filePath" in (results[0] ?? {})).toBe(false);
   });
 
   test("returns empty results for no matches", async () => {

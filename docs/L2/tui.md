@@ -493,6 +493,7 @@ subscriptions.
 | `render()` throws | Full rollback: unmount + renderer teardown before re-throw |
 | `stop()` before `start()` | No-op (idempotent) |
 | `stop()` called twice | No-op (idempotent) |
+| `renderer.destroy()` throws EBADF/ENOENT | Suppressed when caused by stdin `setRawMode` failure (stderr redirected, tmux detach). Unrelated destroy errors propagate normally. (#1770) |
 
 ### Trajectory Visibility
 

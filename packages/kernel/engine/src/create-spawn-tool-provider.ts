@@ -57,6 +57,27 @@ export interface SpawnToolProviderConfig {
    */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
   /**
+   * Optional async factory invoked once per spawned child to
+   * produce fresh middleware instances. Used by hosts that
+   * resolve manifest-declared middleware so each child gets its
+   * own per-session state (audit queue, lifecycle hooks) instead
+   * of sharing the parent's mutable middleware instances.
+   *
+   * The resolved middleware is appended to `inheritedMiddleware`
+   * before `systemPrompt` is injected in the child chain.
+   */
+  readonly perChildMiddlewareFactory?:
+    | ((childCtx: {
+        readonly childRunId: string;
+        readonly parentAgentId: string;
+        readonly childAgentId: string;
+        readonly childAgentName: string;
+      }) => Promise<{
+        readonly middleware: readonly KoiMiddleware[];
+        readonly unwind?: () => Promise<void> | void;
+      }>)
+    | undefined;
+  /**
    * ReportStore for on_demand delivery. Required when resolved agent manifests
    * use `delivery.kind === "on_demand"`. Without it the spawn function will
    * hard-fail on_demand manifests via the VALIDATION error in createAgentSpawnFn.
@@ -150,8 +171,15 @@ function buildSpawnToolSchema(allowDynamic: boolean): JsonObject {
       fork: {
         type: "boolean",
         description:
-          "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
-          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+          "If true, spawns the agent in fork mode: the child inherits all parent tools except Spawn (leaf worker). " +
+          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist. " +
+          "To allow nested delegation, also set allowNestedSpawn to true.",
+      },
+      allowNestedSpawn: {
+        type: "boolean",
+        description:
+          "When true with fork, the forked child receives its own Spawn tool for nested delegation (coordinator pattern). " +
+          "Without this, fork children are leaf workers that cannot spawn grandchildren. Bounded by depth limits.",
       },
       timeoutMs: {
         type: "number",
@@ -233,6 +261,7 @@ export function createSpawnExecutor(
           ? { toolAllowlist: args.toolAllowlist as string[] }
           : {}),
         ...(args.fork === true ? { fork: true as const } : {}),
+        ...(args.allowNestedSpawn === true ? { allowNestedSpawn: true as const } : {}),
       });
 
       if (!result.ok) {
@@ -305,6 +334,9 @@ export function createSpawnToolProvider(config: SpawnToolProviderConfig): Compon
         adapter: config.adapter,
         manifestTemplate: config.manifestTemplate,
         inheritedMiddleware: config.inheritedMiddleware,
+        ...(config.perChildMiddlewareFactory !== undefined
+          ? { perChildMiddlewareFactory: config.perChildMiddlewareFactory }
+          : {}),
         ...(config.reportStore !== undefined ? { reportStore: config.reportStore } : {}),
         ...(config.allowDynamicAgents === true ? { allowDynamicAgents: true } : {}),
         spawnProviderFactory: () => createSpawnToolProvider(config),
