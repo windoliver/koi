@@ -1323,7 +1323,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // Push to transcript so the model sees plugin context
       const pluginContextMsg: InboundMessage = {
         content: [{ kind: "text" as const, text: pluginContextText }],
-        senderId: "system:plugins",
+        senderId: "user",
         timestamp: Date.now(),
       };
       handle.transcript.push(pluginContextMsg);

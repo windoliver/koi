@@ -174,7 +174,13 @@ export async function loadPluginComponents(
       continue;
     }
     const plugin = loadResult.value;
-    const errorsBefore = errors.length;
+
+    // Buffer per-plugin components locally for atomic activation.
+    // Only merge into the runtime if ALL activation steps succeed.
+    const pluginHooks: HookConfig[] = [];
+    const pluginMcpServers: McpServerConfig[] = [];
+    const pluginSkills: SkillMetadata[] = [];
+    const pluginErrors: PluginActivationError[] = [];
 
     // Hooks
     if (plugin.hookConfigPath !== undefined) {
@@ -182,15 +188,15 @@ export async function loadPluginComponents(
         const raw: unknown = await Bun.file(plugin.hookConfigPath).json();
         const hookResult = loadHooks(raw);
         if (hookResult.ok) {
-          hooks.push(...hookResult.value);
+          pluginHooks.push(...hookResult.value);
         } else {
-          errors.push({
+          pluginErrors.push({
             plugin: plugin.name,
             error: `Hook load failed: ${hookResult.error.message}`,
           });
         }
       } catch (err: unknown) {
-        errors.push({
+        pluginErrors.push({
           plugin: plugin.name,
           error: `Cannot read hook config: ${err instanceof Error ? err.message : String(err)}`,
         });
@@ -201,30 +207,36 @@ export async function loadPluginComponents(
     if (plugin.mcpConfigPath !== undefined) {
       const mcpResult = await loadMcpJsonFile(plugin.mcpConfigPath);
       if (mcpResult.ok) {
-        mcpServers.push(...mcpResult.value.servers);
+        pluginMcpServers.push(...mcpResult.value.servers);
       } else {
-        errors.push({ plugin: plugin.name, error: `MCP load failed: ${mcpResult.error.message}` });
+        pluginErrors.push({
+          plugin: plugin.name,
+          error: `MCP load failed: ${mcpResult.error.message}`,
+        });
       }
     }
 
     // Skills
     for (const skillPath of plugin.skillPaths) {
       const skills = await loadSkillsFromRoot(skillPath);
-      skillMetadata.push(...skills);
+      pluginSkills.push(...skills);
     }
 
-    // Only report as loaded if all activation steps succeeded
-    if (errors.length === errorsBefore) {
+    // Atomic commit: merge only if all activation steps succeeded
+    if (pluginErrors.length === 0) {
+      hooks.push(...pluginHooks);
+      mcpServers.push(...pluginMcpServers);
+      skillMetadata.push(...pluginSkills);
+      middlewareNames.push(...plugin.middlewareNames);
       discovered.push({
         name: plugin.name,
         version: plugin.version,
         description: plugin.description,
         source: plugin.source,
       });
+    } else {
+      errors.push(...pluginErrors);
     }
-
-    // Middleware names (pass-through — no factory registry yet)
-    middlewareNames.push(...plugin.middlewareNames);
   }
 
   return { hooks, mcpServers, skillMetadata, middlewareNames, errors, discovered };
