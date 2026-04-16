@@ -1405,6 +1405,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             kind: "set_spawn_terminal",
             agentId: event.agentId,
             outcome,
+            // Pass metadata so the reducer can synthesize a record when
+            // spawn_requested dispatch was lost (#1855).
+            agentName: event.agentName,
+            description: event.description,
           });
         }
       } catch (e: unknown) {
