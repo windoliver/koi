@@ -87,8 +87,17 @@ export function createMcpComponentProvider(
     for (const failure of resolver.failures) {
       if (failure.error.code === "AUTH_REQUIRED" && createAuthTools !== undefined) {
         const authTools = createAuthTools(failure);
-        for (const tool of authTools) {
-          components.set(toolToken(tool.descriptor.name) as string, tool);
+        if (authTools.length > 0) {
+          for (const tool of authTools) {
+            components.set(toolToken(tool.descriptor.name) as string, tool);
+          }
+        } else {
+          // Factory returned nothing (e.g. non-OAuth server with AUTH_REQUIRED) —
+          // fall through to skipped so the failure signal isn't lost.
+          skipped.push({
+            name: `mcp-server:${failure.serverName}`,
+            reason: failure.error.message,
+          });
         }
       } else {
         skipped.push({

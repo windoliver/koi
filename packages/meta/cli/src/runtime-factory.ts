@@ -980,9 +980,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     | import("@koi/checkpoint").Checkpoint
     | undefined;
 
-  // --- MCP resolver exported by the MCP preset stack ---
+  // --- MCP resolvers exported by the MCP preset stack ---
   // Read here for the returned KoiRuntimeHandle.getMcpStatus().
   const mcpResolver = stackContribution.exports.mcpResolver as
+    | import("@koi/mcp").McpResolver
+    | undefined;
+  const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
     | import("@koi/mcp").McpResolver
     | undefined;
 
@@ -1164,20 +1167,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         },
       }),
     getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
-      if (mcpResolver === undefined) return [];
-      const descriptors = await mcpResolver.discover();
-      const failures = mcpResolver.failures;
-      // Group descriptors by server name
+      // Merge both user and plugin MCP resolvers for a complete picture.
+      const resolvers = [mcpResolver, mcpPluginResolver].filter(
+        (r): r is import("@koi/mcp").McpResolver => r !== undefined,
+      );
+      if (resolvers.length === 0) return [];
+
       const toolCounts = new Map<string, number>();
-      for (const d of descriptors) {
-        const server = d.server ?? "unknown";
-        toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+      const allFailures: import("@koi/mcp").McpServerFailure[] = [];
+      for (const r of resolvers) {
+        const descriptors = await r.discover();
+        for (const d of descriptors) {
+          const server = d.server ?? "unknown";
+          toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+        }
+        allFailures.push(...r.failures);
       }
       const entries: McpServerStatus[] = [];
       for (const [name, count] of toolCounts) {
         entries.push({ name, toolCount: count, failureCode: undefined, failureMessage: undefined });
       }
-      for (const f of failures) {
+      for (const f of allFailures) {
         if (!toolCounts.has(f.serverName)) {
           entries.push({
             name: f.serverName,
