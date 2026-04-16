@@ -32,6 +32,7 @@ export function createInitialState(): TuiState {
     expandedToolCallIds: new Set(),
     expandedBodyToolCallIds: new Set(),
     activeSpawns: new Map(),
+    finishedSpawns: [],
     maxContextTokens: null,
     retryState: null,
     agentDepth: 0,

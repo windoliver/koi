@@ -43,7 +43,9 @@ test("real worker: receives 3 text deltas and engine_done via channel", async ()
   await new Promise<void>((resolve) => setTimeout(resolve, 100));
 
   const state = store.getState();
-  expect(state.connectionStatus).toBe("disconnected"); // engine_done received
+  // After a healthy turn the channel is still connected (#1753):
+  // ready → deltas → engine_done is the happy path, worker is alive.
+  expect(state.connectionStatus).toBe("connected");
 
   const assistantMsg = state.messages.find((m) => m.kind === "assistant");
   expect(assistantMsg).toBeDefined();

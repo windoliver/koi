@@ -108,6 +108,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   // let justified: mutable per-run flag, set inside the catch path
   let toolErrorRecoveryUsed = false;
 
+  // #1768: cap truncation recovery to ONE re-prompt. If the model hits
+  // max_tokens again on the retry turn, the truncation is effectively
+  // structural (prompt too large, limit too low) — fail closed.
+  // let justified: mutable per-run flag, set in the truncation recovery block
+  let truncationRecoveryUsed = false;
+
+  // #1754: cap schema-validation recovery to ONE consecutive re-prompt.
+  // If the model sends invalid args on the very next turn after recovery,
+  // the problem is structural — fail closed. Reset after any successful
+  // tool-execution turn so unrelated later mistakes still get recovery.
+  // let justified: mutable flag, set/cleared across turns
+  let schemaValidationRecoveryPending = false;
+
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
   if (isAborted(signal)) {
@@ -161,6 +174,8 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // let justified: mutable per-turn usage tracked from custom events
     let turnInputTokens = 0;
     let turnOutputTokens = 0;
+    // let justified: mutable per-turn flag — set when done event has truncation metadata
+    let truncationDetectedThisTurn = false;
 
     try {
       const stream =
@@ -192,17 +207,30 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
             terminalMetricsCommitted = true;
           }
           if (event.output.stopReason !== "completed") {
-            errorMetadata = {
-              source: "model_stream",
-              originalStopReason: event.output.stopReason,
-              ...(event.output.metadata !== undefined
-                ? { providerDetail: event.output.metadata }
-                : {}),
-            };
-            state = transitionTurn(state, {
-              kind: "error",
-              message: `model stream ended with stopReason: ${event.output.stopReason}`,
-            });
+            // #1768: truncation with completed tool calls is recoverable
+            // when the recovery budget hasn't been spent. Detect via the
+            // metadata flag set by consumeModelStream.
+            const providerMeta = event.output.metadata as Record<string, unknown> | undefined;
+            const isTruncation = providerMeta?.truncatedToolCallError !== undefined;
+
+            if (isTruncation && !truncationRecoveryUsed) {
+              // Recoverable — don't transition to error. The recovery
+              // block after the stream loop will inject feedback and
+              // re-prompt the model.
+              truncationDetectedThisTurn = true;
+            } else {
+              errorMetadata = {
+                source: "model_stream",
+                originalStopReason: event.output.stopReason,
+                ...(event.output.metadata !== undefined
+                  ? { providerDetail: event.output.metadata }
+                  : {}),
+              };
+              state = transitionTurn(state, {
+                kind: "error",
+                message: `model stream ended with stopReason: ${event.output.stopReason}`,
+              });
+            }
           }
           break;
         }
@@ -247,6 +275,38 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     // Update lastTurnText eagerly so error/abort breaks report
     // the current turn's text, not a previous turn's.
     lastTurnText = turnText;
+
+    // #1768: truncation recovery — give the model one chance to retry
+    // when it hit max_tokens with completed tool calls. Mirrors the
+    // stop_blocked re-prompt pattern: append context, inject feedback,
+    // transition to continue, and re-enter the while loop.
+    if (truncationDetectedThisTurn) {
+      truncationRecoveryUsed = true;
+      // Preserve partial text so the model sees what it already said
+      if (turnText.length > 0) {
+        appendAssistantTurn(transcript, turnText, []);
+      }
+      transcript.push({
+        senderId: "system:truncation",
+        content: [
+          {
+            kind: "text",
+            text: "[Truncation detected]: Your previous response was cut short at the token limit. Tool calls were not executed because the response may be incomplete. Please retry with fewer tool calls or shorter arguments.",
+          },
+        ],
+        timestamp: Date.now(),
+      });
+      yield {
+        kind: "custom",
+        type: "truncation_recovery",
+        data: { turnIndex: state.turnIndex },
+      };
+      // model → complete (no tool calls) → continue (blocked)
+      state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+      state = transitionTurn(state, { kind: "stop_blocked" });
+      yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+      continue;
+    }
 
     // If abort or stream error happened, we already transitioned.
     // Preserve partial usage only if terminal metrics weren't already committed.
@@ -349,6 +409,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       // Validate tool arguments against advertised inputSchema
       const schemaErrors: string[] = [];
+      const schemaErrorsByCallId = new Map<string, string>();
       for (const tc of validToolCalls) {
         const descriptor = descriptorMap.get(tc.toolName);
         if (descriptor !== undefined) {
@@ -356,19 +417,76 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           const error = validateToolArgs(args, descriptor);
           if (error !== undefined) {
             schemaErrors.push(`${tc.toolName}: ${error}`);
+            schemaErrorsByCallId.set(tc.callId, `${tc.toolName}: ${error}`);
           }
         }
       }
       if (schemaErrors.length > 0) {
         errorMetadata = { source: "schema_validation", errors: schemaErrors };
-        state = transitionTurn(state, {
-          kind: "error",
-          message: `tool argument validation failed — ${schemaErrors.join("; ")}`,
-        });
-        yield { kind: "turn_end", turnIndex: state.turnIndex };
-        break;
+
+        // #1754: consecutive schema failure after a recovery turn → hard error.
+        // Also hard-fail when maxTurns is exhausted — the recovery turn would
+        // be consumed by the budget check, misclassifying the failure as max_turns.
+        const turnBudgetExhausted = maxTurns !== undefined && state.turnIndex + 1 >= maxTurns;
+        if (schemaValidationRecoveryPending || turnBudgetExhausted) {
+          state = transitionTurn(state, {
+            kind: "error",
+            message: schemaValidationRecoveryPending
+              ? `tool argument validation failed again after recovery turn — ${schemaErrors.join("; ")}`
+              : `tool argument validation failed and no turn budget for recovery — ${schemaErrors.join("; ")}`,
+          });
+          yield { kind: "turn_end", turnIndex: state.turnIndex };
+          break;
+        }
+        schemaValidationRecoveryPending = true;
+
+        // Record the assistant's tool-call intents in the transcript so
+        // every streamed tool_call event has a matching intent.
+        appendAssistantTurn(transcript, turnText, validToolCalls);
+
+        // Synthesize error tool_results for every tool call in this turn.
+        // Calls that passed validation also get a synthetic result because
+        // the whole batch is rejected — partial execution would be surprising.
+        for (const tc of validToolCalls) {
+          const errorMsg =
+            schemaErrorsByCallId.get(tc.callId) ??
+            "Co-occurring tool call skipped due to validation failure in this batch";
+          const syntheticOutput = {
+            error: `Schema validation failed: ${errorMsg}`,
+            code: "SCHEMA_VALIDATION_ERROR",
+          } as const;
+          appendToolResult(transcript, {
+            callId: tc.callId,
+            toolName: tc.toolName,
+            output: syntheticOutput,
+          });
+          yield {
+            kind: "tool_result",
+            callId: tc.callId as ToolCallId,
+            output: syntheticOutput,
+          };
+        }
+
+        // The schema recovery `continue` skips the normal doom-loop
+        // updateStreaks call. Do NOT update streaks here — the invalid
+        // turn did not execute any tools, so it should not advance or
+        // reset streak counters. Existing streaks are preserved as-is;
+        // the next normal turn will update them through the regular path.
+
+        // Transition to continue so the model gets a recovery turn.
+        state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+        if (state.stopReason === "completed") {
+          state = transitionTurn(state, { kind: "stop_blocked" });
+        }
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        continue;
       }
     }
+
+    // Schema-recovery pending state is cleared after successful tool
+    // execution (tools_done path below), not here. Validation passing
+    // alone is insufficient — the tool call may still be doom-loop-blocked
+    // or throw at execution time.
 
     // Dedup: within this turn, skip tool calls with identical (toolName + args).
     // Models occasionally emit the same call twice in one response (e.g. Sonnet
@@ -574,6 +692,18 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     if (state.phase === "tool_execution") {
+      // #1754: the model produced schema-valid args that reached execution.
+      // Clear schema-recovery state now — before execution — so a later
+      // tool-execution throw does not leave the flag armed. The model
+      // proved it can produce correct args; tool failures are unrelated.
+      if (schemaValidationRecoveryPending) {
+        schemaValidationRecoveryPending = false;
+        const source = (errorMetadata as { source?: unknown } | undefined)?.source;
+        if (source === "schema_validation") {
+          errorMetadata = undefined;
+        }
+      }
+
       // Append ALL tool call intents (including skipped duplicates) to the
       // transcript so session-repair's callId pairing stays consistent —
       // every tool_call_* event the model emitted has a matching intent.
@@ -770,6 +900,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       kind: "turn_end",
       turnIndex: state.phase === "continue" ? state.turnIndex - 1 : state.turnIndex,
     };
+  }
+
+  // #1754: clear stale schema-validation errorMetadata when the run completed
+  // successfully. Recovery metadata is transient — it should not leak into
+  // the terminal done event for completed runs.
+  if (
+    (state.stopReason === "completed" || state.stopReason === undefined) &&
+    errorMetadata !== undefined
+  ) {
+    const source = (errorMetadata as { source?: unknown }).source;
+    if (source === "schema_validation") {
+      errorMetadata = undefined;
+    }
   }
 
   // Final done event — only the terminal turn's text, not all turns concatenated

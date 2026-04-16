@@ -30,7 +30,11 @@ describe("memory_search execute", () => {
 
     const result = (await tool.execute({})) as Record<string, unknown>;
     expect(result.count).toBe(1);
-    expect(result.results).toEqual(records);
+    // #1725: filePath is stripped from tool output
+    const results = result.results as readonly Record<string, unknown>[];
+    expect(results.length).toBe(1);
+    expect(results[0]?.name).toBe(records[0]?.name);
+    expect("filePath" in (results[0] ?? {})).toBe(false);
   });
 
   test("passes keyword filter to backend", async () => {

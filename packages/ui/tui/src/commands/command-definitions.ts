@@ -89,7 +89,7 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
   {
     id: "agent:compact",
     label: "Compact",
-    description: "Summarise and compress message history",
+    description: "Drop oldest messages to shrink the context window",
     category: "agent",
   },
   {
@@ -155,14 +155,14 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
   {
     id: "system:cost",
     label: "Cost",
-    description: "Show session token usage and cost",
+    description: "Show token usage and cost for this process",
     category: "system",
     minSessionCount: 1,
   },
   {
     id: "system:tokens",
     label: "Tokens",
-    description: "Show detailed token breakdown for this session",
+    description: "Show detailed token breakdown for this process",
     category: "system",
   },
   {

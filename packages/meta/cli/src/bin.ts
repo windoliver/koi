@@ -106,6 +106,22 @@ switch (result.kind) {
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") baseEnv[k] = v;
     }
+    // Arm signal handlers BEFORE spawning the child to eliminate the
+    // spawn-to-handler race window (#1750). The two-phase API installs
+    // SIGTERM/SIGHUP handlers immediately, then binds the child ref
+    // after spawn. If a signal arrives before spawn, `terminated` is
+    // true and we skip spawning entirely.
+    const { armTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
+    const guard = armTuiReexecSignalHandlers();
+    // Yield to the event loop so any signals queued during the
+    // synchronous arm phase can fire their handlers and set
+    // pendingSignal before we check terminated.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    if (guard.terminated) {
+      process.exit(guard.terminatedExitCode);
+    }
     const proc = Bun.spawn(
       [process.execPath, "--conditions", "browser", ...process.argv.slice(1)],
       {
@@ -115,9 +131,12 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
-    const { installTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
-    installTuiReexecSignalHandlers(proc);
-    process.exit(await proc.exited);
+    guard.bindChild(proc);
+    const childExit = await proc.exited;
+    // If the parent handled a SIGHUP, preserve that exit code instead
+    // of the child's SIGTERM exit (143). Supervisors need to distinguish
+    // terminal hangup (129) from operator kill (143).
+    process.exit(guard.terminated ? guard.terminatedExitCode : childExit);
     break;
   }
   case "tui": {

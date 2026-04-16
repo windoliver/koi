@@ -29,9 +29,10 @@
  */
 
 import { writeSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
   EngineEvent,
@@ -42,6 +43,9 @@ import type {
   SessionTranscript,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
+import { formatCost, formatTokens } from "@koi/core/cost-tracker";
+import type { DisplayableResumedMessage } from "@koi/core/message";
+import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -52,6 +56,7 @@ import {
 } from "@koi/model-router";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
+import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
 import type {
   EventBatcher,
   LedgerAuditEntry,
@@ -74,6 +79,7 @@ import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
+import { initOtelSdk } from "./otel-bootstrap.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime } from "./runtime-factory.js";
@@ -104,6 +110,55 @@ const SESSIONS_DIR = join(homedir(), ".koi", "sessions");
 const SESSION_NAME_MAX = 60;
 /** Maximum characters for session preview (last message) in session picker. */
 const SESSION_PREVIEW_MAX = 80;
+
+// ---------------------------------------------------------------------------
+// Slash-command helpers (system:model, system:cost, session:export, etc.)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dispatch a system-generated notice as a synthetic user message.
+ *
+ * Used by /model, /cost, /tokens, /compact, /export, /zoom to surface
+ * slash-command output in the conversation stream without polluting the
+ * runtime.transcript (which feeds the next model call). Mirrors the fork
+ * notice pattern (see the `add_user_message` dispatch in the fork flow).
+ */
+function dispatchNotice(store: TuiStore, tag: string, text: string): void {
+  store.dispatch({
+    kind: "add_user_message",
+    id: `${tag}-${Date.now()}`,
+    blocks: [{ kind: "text", text }],
+  });
+}
+
+/** Render a displayable transcript as a Markdown document for /export. */
+export function renderTranscriptMarkdown(
+  messages: readonly DisplayableResumedMessage[],
+  info: { readonly sessionId: string; readonly modelName: string; readonly provider: string },
+): string {
+  const lines: string[] = [];
+  lines.push(`# Koi Session ${info.sessionId}`);
+  lines.push("");
+  lines.push(`- **Model**: ${info.modelName}`);
+  lines.push(`- **Provider**: ${info.provider}`);
+  lines.push(`- **Exported**: ${new Date().toISOString()}`);
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+  for (const msg of messages) {
+    lines.push(msg.role === "user" ? "## User" : "## Assistant");
+    lines.push("");
+    for (const block of msg.content) {
+      if (block.kind === "text") {
+        lines.push(block.text);
+      } else {
+        lines.push(`_[${block.kind} block]_`);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
 
 // ---------------------------------------------------------------------------
 // Trajectory step mapping
@@ -457,12 +512,45 @@ function finalizeAbandonedStream(
   store.dispatch({ kind: "engine_event", event: syntheticDone });
 }
 
+/**
+ * Outcome of a drainEngineStream run.
+ *
+ * `settled` — the stream finalized into a checkpoint-producing
+ * terminal state: happy path (real `done` event observed) or user
+ * abort with a clean synthetic done. A snapshot is guaranteed to
+ * have been written for this turn, so ALL post-turn bookkeeping is
+ * safe, including rewind-budget increment. The happy path still
+ * increments rewind; the abort path is filtered out by the existing
+ * `!signal.aborted` guard.
+ *
+ * `engine_error` — a real ENGINE_ERROR was cleanly dispatched. Trace
+ * data was captured up to the failure, so observability refresh
+ * (trajectory, audit view) must still run — operators debugging a
+ * provider failure need to see it. But no rewindable checkpoint was
+ * produced, so `postClearTurnCount` MUST NOT advance on this outcome
+ * or `/rewind` can step across a clear/resume boundary. (#1753
+ * review round 9.)
+ *
+ * `abandoned` — `resetConversation()` (or another caller) disposed
+ * the batcher mid-drain, so the turn was intentionally dropped and
+ * the session has already advanced to a new trajectory generation.
+ * Any post-turn bookkeeping at this point would write stale cost /
+ * trajectory data into the freshly reset UI. Callers MUST skip all
+ * bookkeeping on this outcome. (#1753 review round 7.)
+ *
+ * `failed` — the drain hit a fail-closed path: buffered flush threw
+ * and lost events, the finalization handler crashed, or finally had
+ * to fail-close itself. The reducer may be in an inconsistent state
+ * and callers MUST skip post-turn bookkeeping on this outcome.
+ */
+export type DrainOutcome = "settled" | "engine_error" | "abandoned" | "failed";
+
 export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
   batcher: EventBatcher<EngineEvent>,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<DrainOutcome> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
   // Track partial usage yielded as `custom` events so an aborted stream
   // (which throws instead of emitting a real terminal `done`) can still
@@ -475,6 +563,19 @@ export async function drainEngineStream(
   // double-count tokens when multiple usage updates arrive.
   let partialInputTokens = 0;
   let partialOutputTokens = 0;
+  // #1753 review: track whether the function has reached one of its
+  // intended terminal states (success, clean UI reset, user abort, or
+  // real ENGINE_ERROR with its own dispatches). If the function exits
+  // with this still false, a flush or dispatch threw somewhere we did
+  // not anticipate — the finally block below must fail closed so
+  // /doctor cannot report a healthy engine for a drain that crashed
+  // during finalization.
+  let terminalStateApplied = false;
+  // #1753 review round 4: distinguish "drain produced a coherent
+  // terminal state" from "finalization failed". Callers gate post-turn
+  // bookkeeping (rewind count, cost delta, trajectory refresh) on
+  // "settled" so a broken drain cannot advance the session.
+  let outcome: DrainOutcome = "failed";
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
@@ -490,7 +591,16 @@ export async function drainEngineStream(
       // cleanly; the caller's finally block handles connection-status reset.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
 
       // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
@@ -565,7 +675,16 @@ export async function drainEngineStream(
       // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
       if (
         event.kind === "tool_call_start" ||
@@ -590,9 +709,18 @@ export async function drainEngineStream(
     // UI can stay stuck in "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
     batcher.flushSync();
+    // Happy path: the stream completed cleanly and the final flush
+    // landed. The channel stays "connected" and the finally below is a
+    // no-op.
+    terminalStateApplied = true;
+    outcome = "settled";
   } catch (e: unknown) {
     // #1742: the batcher may have been disposed by resetConversation() while
     // the stream was still producing. Finalize the active turn before
@@ -600,9 +728,47 @@ export async function drainEngineStream(
     // with the reducer in idle/error state instead of stuck "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
-    batcher.flushSync();
+    // Flush buffered pre-error events so the UI reflects what the
+    // stream produced before it threw. If this flush itself throws,
+    // the batcher has already dropped its buffer without applying
+    // it — buffered events are lost permanently. That is exactly the
+    // partial-failure state /doctor must surface, so fail closed here
+    // instead of continuing into the clean-abort branch (#1753 review
+    // round 3).
+    try {
+      batcher.flushSync();
+    } catch (flushErr: unknown) {
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      store.dispatch({
+        kind: "add_error",
+        code: "ENGINE_ERROR",
+        message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+      });
+      terminalStateApplied = true;
+      outcome = "failed";
+      return outcome;
+    }
+    // #1753 review round 6: the batcher may have been disposed in the
+    // window between the per-iteration check and this catch-time flush
+    // (e.g. resetConversation() raced us). After dispose, `enqueue` and
+    // `flushSync` are no-ops — if we still took the abort branch, the
+    // synthetic `done` would be silently dropped and the caller would
+    // see "settled" for a turn that never finalized. Fall back to the
+    // same UI-reset path as the mid-stream dispose detector above.
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
+    }
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
     // passed a signal, (2) that signal is actually aborted at the time of
@@ -635,17 +801,70 @@ export async function drainEngineStream(
         },
       };
       batcher.enqueue(syntheticDone);
-      batcher.flushSync();
-      return;
+      try {
+        batcher.flushSync();
+        // Synthetic `done` landed: user abort is a clean interrupt,
+        // connection stays connected, finally is a no-op.
+        terminalStateApplied = true;
+        outcome = "settled";
+      } catch (flushErr: unknown) {
+        // #1753 review round 2: if the reducer/store crashes while
+        // finalizing the aborted turn, do NOT let the outer finally
+        // leave the drain looking "settled". Fail closed right here so
+        // /doctor cannot report a healthy engine for an abort that
+        // never actually finalized.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+        });
+        terminalStateApplied = true;
+        outcome = "failed";
+      }
+      return outcome;
     }
+    // Real engine failure — the model call errored out. Mark the channel
+    // disconnected so /doctor reflects the true last-known state, and
+    // surface the error toast. (#1753: previously a `finally` block set
+    // disconnected unconditionally, including on the happy path, so
+    // /doctor reported "disconnected" after every successful turn.)
+    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
     store.dispatch({
       kind: "add_error",
       code: "ENGINE_ERROR",
       message: e instanceof Error ? e.message : String(e),
     });
+    terminalStateApplied = true;
+    // #1753 review rounds 5 + 9: a cleanly dispatched ENGINE_ERROR is
+    // a *coherent* terminal state — the error toast is in the store
+    // and trace data was captured up to the failure, so trajectory /
+    // audit refresh must still run. But no rewindable checkpoint was
+    // produced for this turn, so callers gate `postClearTurnCount++`
+    // on `outcome === "settled"` specifically and skip it here.
+    outcome = "engine_error";
   } finally {
-    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+    // #1753 review: fail-closed cleanup. Reaching this with the flag
+    // still false means a flush or dispatch threw from a path we did
+    // not intercept above — force the channel to "disconnected" and
+    // raise an error toast so /doctor cannot report a healthy engine
+    // for a drain that crashed during finalization.
+    if (!terminalStateApplied) {
+      try {
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: "drainEngineStream finalization failed",
+        });
+      } catch {
+        // Store itself is unrecoverable — nothing left we can do
+        // from this frame. The next turn will reinitialize state.
+      }
+      outcome = "failed";
+    }
   }
+  return outcome;
 }
 
 /**
@@ -706,6 +925,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // non-cwd backend would break trust-boundary and rollback
   // invariants.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -740,7 +960,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // from `manifest.stacks`.
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
   }
+
+  // Previously this block auto-disabled the spawn preset stack
+  // whenever manifest.middleware was non-empty, because children
+  // inheriting the parent's mutable middleware instances would
+  // corrupt per-session state. The spawn preset stack now reads
+  // a per-child factory from the runtime factory's host bag
+  // (`LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory`)
+  // and re-resolves manifest middleware fresh per spawn, so
+  // children get their own audit queue + lifecycle hooks without
+  // sharing parent state. The auto-disable is no longer needed.
 
   // ---------------------------------------------------------------------------
   // 1. API configuration
@@ -949,6 +1183,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // resumable — matches koi start --until-pass semantics.
   const isLoopMode = flags.untilPass.length > 0;
 
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("tui") : undefined;
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
@@ -985,6 +1224,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Zone B — manifest-declared middleware. Resolved inside the
+    // factory via the default built-in registry. Runs INSIDE the
+    // security guard so repo-authored content cannot observe raw
+    // traffic before `exfiltration-guard` redacts secrets.
+    //
+    // `allowManifestFileSinks` gates the built-in audit entry
+    // (which opens a file at resolution time). Controlled by the
+    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+    // manifest so repo content cannot flip it.
+    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
@@ -992,8 +1242,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
       : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
-    // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
-    ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
+    // initOtelSdk() registers a global TracerProvider so middleware-otel's
+    // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
+    ...(otelEnabled ? { otel: true as const } : {}),
     // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
     // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
     // every model/tool call is recorded as a hash-chained NDJSON entry.
@@ -1079,7 +1330,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // middleware's finally-block append (which runs on turns that
   // already observed a `done` chunk before the caller aborted) can
   // land AFTER the truncate and silently resurrect pre-clear history.
-  let activeRunPromise: Promise<void> | null = null;
+  let activeRunPromise: Promise<DrainOutcome> | null = null;
 
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
   // Async: fetches live pricing from models.dev (5s timeout, disk cached).
@@ -1646,9 +1897,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const SHUTDOWN_HARD_EXIT_MS = 8000;
   // let: justified — set once on first shutdown call
   let shutdownStarted = false;
-  const shutdown = async (exitCode = 0): Promise<void> => {
+  const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    if (reason !== undefined) {
+      try {
+        process.stderr.write(`[koi tui] shutdown: ${reason}\n`);
+      } catch {
+        /* stderr unwritable after hangup — best effort */
+      }
+    }
     // Abort the active foreground run FIRST so no further model/tool
     // work can execute during teardown. Without this, long-running or
     // non-cooperative tools can keep mutating local/remote state during
@@ -1790,6 +2048,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       approvalStore?.close();
     } finally {
       clearInterval(shutdownKeepAlive);
+      // Flush OTel spans before process exit
+      await otelHandle?.shutdown();
       process.exit(exitCode);
     }
   };
@@ -2643,6 +2903,187 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             store.dispatch({ kind: "set_session_list", sessions });
           });
           break;
+        case "system:model": {
+          const lines = [`Model: ${modelName}`, `Provider: ${provider}`];
+          if (fallbackModels.length > 0) {
+            lines.push(`Fallback: ${fallbackModels.join(", ")}`);
+          }
+          dispatchNotice(store, "model-info", `[${lines.join(" · ")}]`);
+          break;
+        }
+        case "system:cost": {
+          // The cost aggregator is populated from live engine "done" events
+          // in this TUI process only — resumed sessions do NOT backfill
+          // historical spend. Scope the copy to "this process" so users
+          // reading the notice do not mistake zero for whole-session total
+          // after `koi tui --resume <id>`.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const totalIn = breakdown.byModel.reduce((s, m) => s + m.totalInputTokens, 0);
+          const totalOut = breakdown.byModel.reduce((s, m) => s + m.totalOutputTokens, 0);
+          if (totalIn === 0 && totalOut === 0) {
+            dispatchNotice(store, "cost-info", "[Cost (this process): no model calls yet]");
+          } else {
+            dispatchNotice(
+              store,
+              "cost-info",
+              `[Cost (this process): ${formatCost(breakdown.totalCostUsd)} — ` +
+                `${formatTokens(totalIn)} in / ${formatTokens(totalOut)} out tokens]`,
+            );
+          }
+          break;
+        }
+        case "system:tokens": {
+          // Process-local accounting — see the comment on system:cost above.
+          const breakdown = costBridge.aggregator.breakdown(tuiSessionId as string);
+          const lines: string[] = ["[Token usage (this process)]"];
+          if (breakdown.byModel.length === 0) {
+            lines.push("  (no model calls yet)");
+          } else {
+            for (const m of breakdown.byModel) {
+              lines.push(
+                `  ${m.model}: ${formatTokens(m.totalInputTokens)} in / ` +
+                  `${formatTokens(m.totalOutputTokens)} out ` +
+                  `(${m.callCount} call${m.callCount === 1 ? "" : "s"}, ` +
+                  `${formatCost(m.totalCostUsd)})`,
+              );
+            }
+          }
+          const ips = costBridge.tokenRate.inputPerSecond();
+          const ops = costBridge.tokenRate.outputPerSecond();
+          if (ips > 0 || ops > 0) {
+            lines.push(`  rate: ${ips.toFixed(1)} in/s · ${ops.toFixed(1)} out/s`);
+          }
+          dispatchNotice(store, "tokens-info", lines.join("\n"));
+          break;
+        }
+        case "agent:compact":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "COMPACT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            // Snapshot current transcript. microcompact is pure — we splice the
+            // result back into runtimeHandle.transcript below. /compact is a
+            // user-initiated command between turns, so there are no concurrent
+            // writers and the snapshot can't race with new appends.
+            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+            if (snapshot.length === 0) {
+              dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+              return;
+            }
+            const originalTokens = await Promise.resolve(
+              HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
+            );
+            // Halve the current budget, or 4k, whichever is larger. Preserves
+            // the 6 most recent messages so the active thread stays coherent.
+            const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
+            const preserveRecent = 6;
+            const result = await microcompact(
+              snapshot,
+              targetTokens,
+              preserveRecent,
+              HEURISTIC_ESTIMATOR,
+              modelName,
+            );
+            if (result.strategy === "noop") {
+              dispatchNotice(
+                store,
+                "compact-info",
+                `[Compact: already compact (${result.compactedTokens} tokens)]`,
+              );
+              return;
+            }
+            runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
+            const dropped = snapshot.length - result.messages.length;
+            const partial = result.strategy === "micro-truncate-partial";
+            // UI-only notice: the dropped messages are gone from the model's
+            // view. We deliberately do NOT insert a transcript marker —
+            // pinned markers accumulate across repeat /compact calls (pair
+            // rescue keeps them even when nothing else can be dropped), and
+            // a `system:*` senderId would leak a hidden privileged prompt
+            // into every subsequent turn while being filtered from /export
+            // and resume surfaces. The user-facing notice below is the
+            // durable record; /trajectory can surface compactions separately
+            // if needed later.
+            dispatchNotice(
+              store,
+              "compact-info",
+              `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
+                `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
+                `${partial ? " (partial — still above target)" : ""}]`,
+            );
+          })();
+          break;
+        case "session:export":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const displayable = filterResumedMessagesForDisplay(runtimeHandle.transcript);
+            if (displayable.length === 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_EMPTY",
+                message: "Nothing to export — no user or assistant messages in this session.",
+              });
+              return;
+            }
+            const engineSid = String(runtimeHandle.runtime.sessionId);
+            const md = renderTranscriptMarkdown(displayable, {
+              sessionId: engineSid,
+              modelName,
+              provider,
+            });
+            const trimmed = args.trim();
+            const defaultName = `koi-session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`;
+            const target = trimmed.length > 0 ? trimmed : defaultName;
+            const filePath = isAbsolute(target) ? target : join(process.cwd(), target);
+            try {
+              await writeFile(filePath, md, "utf8");
+            } catch (err) {
+              store.dispatch({
+                kind: "add_error",
+                code: "EXPORT_WRITE_FAILED",
+                message: `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+              });
+              return;
+            }
+            dispatchNotice(store, "export-info", `[Exported session to ${filePath}]`);
+          })();
+          break;
+        case "system:zoom": {
+          const current = store.getState().zoomLevel;
+          // let: justified — next level computed from one of two branches
+          let next = current;
+          const trimmed = args.trim();
+          if (trimmed.length > 0) {
+            const parsed = Number(trimmed);
+            if (!Number.isFinite(parsed) || parsed <= 0) {
+              store.dispatch({
+                kind: "add_error",
+                code: "ZOOM_INVALID_ARGS",
+                message: `Usage: /zoom [level] — level must be a positive number (got "${trimmed}").`,
+              });
+              break;
+            }
+            next = parsed;
+          } else {
+            // No arg: cycle 1 → 1.25 → 1.5 → 1.
+            next = current >= 1.5 ? 1 : Math.round((current + 0.25) * 100) / 100;
+          }
+          store.dispatch({ kind: "set_zoom", level: next });
+          dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
+          break;
+        }
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
@@ -3096,13 +3537,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const costBefore = cm.costUsd;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
-        await drainPromise;
+        const drainOutcome = await drainPromise;
 
-        // Count the turn for rewind boundary enforcement, but ONLY when
-        // the turn completed uninterrupted. Checkpoint capture only
-        // runs on real engine-complete turns; counting an aborted turn
-        // would let `/rewind 1` walk past the clear boundary.
-        if (rewindBoundaryActive && !controller.signal.aborted) {
+        // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
+        // layered. `abandoned` and `failed` drains cannot advance any
+        // session state, so they return early. `engine_error` is a
+        // coherent terminal state — the error is already in the store
+        // and trace data was captured up to the failure — so cost
+        // delta + trajectory refresh must still run so operators can
+        // diagnose the failure, but the rewind budget must NOT be
+        // advanced (no rewindable checkpoint was produced).
+        if (drainOutcome === "abandoned" || drainOutcome === "failed") {
+          return;
+        }
+
+        // Count the turn for rewind boundary enforcement, but ONLY
+        // when the turn completed uninterrupted AND produced a
+        // real checkpoint. Aborted turns are filtered by the signal
+        // guard; engine-errored turns are filtered by `drainOutcome
+        // === "settled"` because ENGINE_ERRORs return `"engine_error"`
+        // (#1753 review round 9).
+        if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
 
@@ -3201,8 +3656,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSigterm = (): void => {
     void shutdown(143);
   };
+  // SIGHUP (#1750): tmux sends SIGHUP when a session is killed. Without
+  // this handler the TUI survives as an orphan (PPID 1). 129 = 128 + 1.
+  const onProcessSighup = (): void => {
+    void shutdown(129, "SIGHUP received (terminal hangup)");
+  };
+  // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
+  // the fd fires 'close'. Does NOT require resume() (avoids perturbing
+  // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
+  // prevent false triggers in test/pipe contexts. Uses exit code 129
+  // (same as SIGHUP) because PTY close IS a hangup — using a generic
+  // error code would mask the real termination cause for supervisors.
+  // let: justified — set to false when done() resolves, preventing the
+  // stdin close handler from force-exiting during external/host teardown.
+  let tuiRunning = false;
+  const onStdinClose = (): void => {
+    // Only treat stdin close as a hangup when the TUI is actively
+    // running AND no orderly shutdown is in progress. In embedded/test
+    // callers the host may close stdin during normal teardown — that
+    // should not force process.exit(129).
+    if (tuiRunning && !shutdownStarted) {
+      void shutdown(129, "stdin closed (parent terminal gone)");
+    }
+  };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
+  process.once("SIGHUP", onProcessSighup);
+
+  // Register stdin close listener and set tuiRunning BEFORE start() so
+  // PTY teardown during startup is not missed. tuiRunning is cleared in
+  // the finally block to prevent false positives during host teardown.
+  tuiRunning = true;
+  if (process.stdin.isTTY) {
+    process.stdin.once("close", onStdinClose);
+  }
 
   try {
     await result.value.start();
@@ -3219,9 +3706,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal handlers and armed double-tap timers without explicit cleanup.
     await result.value.done();
   } finally {
+    tuiRunning = false;
     sigintHandler.dispose();
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
+    process.removeListener("SIGHUP", onProcessSighup);
+    process.stdin.removeListener("close", onStdinClose);
   }
 }
 

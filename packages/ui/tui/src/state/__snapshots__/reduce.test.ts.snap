@@ -34,6 +34,7 @@ exports[`createInitialState initial state shape 1`] = `
   },
   "expandedBodyToolCallIds":   Set {},
   "expandedToolCallIds":   Set {},
+  "finishedSpawns": [],
   "layoutTier": "normal",
   "ledgerSources": null,
   "maxContextTokens": null,

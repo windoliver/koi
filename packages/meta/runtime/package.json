@@ -37,6 +37,7 @@
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/middleware-audit": "workspace:*",
     "@koi/middleware-extraction": "workspace:*",
+    "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",

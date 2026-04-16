@@ -420,10 +420,10 @@ packages/filesystem/src/
 
 ```bash
 # Run all filesystem tests
-bun turbo test --filter=@koi/filesystem
+bun run test --filter=@koi/filesystem
 
 # Type-check
-bun turbo typecheck --filter=@koi/filesystem
+bun run typecheck --filter=@koi/filesystem
 ```
 
 ---

@@ -39,3 +39,4 @@ tasks/
 !packages/lib/task-tools/
 !packages/lib/task-board/
 varfolders/
+.koi/memory/
