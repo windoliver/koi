@@ -598,6 +598,30 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // double-fire cleanup on state the finally will drain itself.
       preIterationCleanup = undefined;
 
+      // #1682: pre-start interrupt short-circuit. A host that published
+      // a cancel before the consumer pulled the first event must not see
+      // session-start hooks, adapter setup, or any other side effects
+      // fire. Emit the terminal `done` immediately; finally still drains
+      // cleanup via the normal path.
+      if (runSignal.aborted) {
+        const interruptedDone: EngineEvent = {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: Date.now() - sessionStartedAt,
+            },
+          },
+        };
+        yield interruptedDone;
+        return;
+      }
+
       // --- Run / session initialization ---
       // onSessionStart fires exactly once across the runtime's lifetime,
       // on the first run() call, with this run's sessionCtx (tests rely on

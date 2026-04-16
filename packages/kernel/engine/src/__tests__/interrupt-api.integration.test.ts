@@ -7,7 +7,13 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { AgentManifest, EngineAdapter, EngineEvent, EngineOutput } from "@koi/core";
+import type {
+  AgentManifest,
+  EngineAdapter,
+  EngineEvent,
+  EngineOutput,
+  KoiMiddleware,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createKoi } from "../koi.js";
 import { createSessionRegistry } from "../session-registry.js";
@@ -307,7 +313,56 @@ describe("isInterrupted reflects external input.signal abort", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 6 & 7: Abandoned iterable cleanup (#1682)
+// Test 6: Pre-start interrupt short-circuit (#1682)
+// ---------------------------------------------------------------------------
+
+describe("pre-start interrupt short-circuit", () => {
+  test("interrupt before first .next() emits terminal done and skips session-start side effects", async () => {
+    // Track whether onSessionStart fired; if the short-circuit works,
+    // it must NOT fire because session init is skipped entirely.
+    let onSessionStartFired = false;
+    const middleware: KoiMiddleware[] = [
+      {
+        name: "session-start-spy",
+        describeCapabilities: () => undefined,
+        onSessionStart: async () => {
+          onSessionStartFired = true;
+        },
+      },
+    ];
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      middleware,
+      sessionRegistry: registry,
+    });
+    const sid = sessionId(runtime.sessionId);
+
+    // Start the run but DO NOT iterate yet.
+    const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
+
+    // Interrupt BEFORE first .next().
+    expect(registry.interrupt(sid, "pre-start")).toBe(true);
+
+    // Now drain. First event should be the synthetic terminal.
+    const first = await iter.next();
+    expect(first.done).toBe(false);
+    // The first yielded value must be a done event with stopReason: interrupted
+    if (first.value.kind !== "done") throw new Error("expected done event");
+    expect(first.value.output.stopReason).toBe("interrupted");
+    // Generator signals done on the next pull.
+    expect((await iter.next()).done).toBe(true);
+
+    // Session-start hook MUST NOT have fired.
+    expect(onSessionStartFired).toBe(false);
+
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 7 & 8: Abandoned iterable cleanup (#1682)
 // ---------------------------------------------------------------------------
 
 describe("abandoned iterable cleanup", () => {
