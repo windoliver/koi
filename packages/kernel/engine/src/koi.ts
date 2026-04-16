@@ -334,6 +334,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // let justified: mutable so cycleSession can rotate the identity
   let factorySessionId: SessionId =
     options.sessionId ?? sessionId(`agent:${pid.id}:${crypto.randomUUID()}`);
+  // let justified: tracks the active run's AbortController so runtime.interrupt()
+  // can operate without a registry. Set in streamEvents at the start of each
+  // run, cleared in finally. Undefined when no run is active.
+  let activeController: AbortController | undefined;
   /**
    * Eagerly compute the next session id under the host-configured
    * rotation strategy. Called at the top of `cycleSession()` BEFORE
@@ -467,6 +471,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       input.signal !== undefined
         ? AbortSignal.any([input.signal, abortController.signal])
         : abortController.signal;
+    // #1682: expose the controller to runtime.interrupt() and, if a registry
+    // is configured, register this run for external-caller interrupt. The
+    // registration key is captured at entry so a mid-run cycleSession() (which
+    // cannot actually fire because cycleSession waits for currentRunSettled)
+    // cannot orphan the entry.
+    activeController = abortController;
+    const registeredSessionId = factorySessionId;
+    const unregisterFromRegistry = options.sessionRegistry?.register(
+      registeredSessionId,
+      abortController,
+    );
 
     // Abort listener: immediate agent transition for external observers.
     // The generator's finally block handles resource cleanup.
@@ -1427,6 +1442,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // let cycleSession()/dispose() skip the wait while the adapter
       // iterator was still being torn down. The flag is lowered only
       // after every cleanup step AND the resolver have completed.
+      // #1682: release our registry slot and clear the activeController ref
+      // so runtime.interrupt() returns false between runs.
+      unregisterFromRegistry?.();
+      activeController = undefined;
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
@@ -1809,6 +1828,22 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // cycleSession: pre-rebind iterables don't attach to a new
       // identity.
       sessionEpoch += 1;
+    },
+
+    interrupt(reason?: string): boolean {
+      if (options.sessionRegistry !== undefined) {
+        return options.sessionRegistry.interrupt(factorySessionId, reason);
+      }
+      if (activeController === undefined) return false;
+      if (activeController.signal.aborted) return false;
+      activeController.abort(reason);
+      return true;
+    },
+    isInterrupted(): boolean {
+      if (options.sessionRegistry !== undefined) {
+        return options.sessionRegistry.isInterrupted(factorySessionId);
+      }
+      return activeController?.signal.aborted === true;
     },
 
     dispose: async (): Promise<void> => {

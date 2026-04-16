@@ -45,6 +45,7 @@ import type {
 } from "@koi/engine-compose";
 import type { GovernanceConfig } from "@koi/engine-reconcile";
 import type { AssemblyConflict } from "./agent-entity.js";
+import type { SessionRegistry } from "./session-registry.js";
 
 // ---------------------------------------------------------------------------
 // Live forge resolution
@@ -195,6 +196,21 @@ export interface CreateKoiOptions {
   readonly groupId?: AgentGroupId | undefined;
   /** Debug instrumentation configuration. When enabled, records per-middleware timing spans. */
   readonly debug?: DebugInstrumentationConfig | undefined;
+  /**
+   * Optional shared session registry for programmatic interrupt.
+   *
+   * When provided, each `run()` registers its AbortController under
+   * `runtime.sessionId` at entry and unregisters on completion. External
+   * callers can then call `sessionRegistry.interrupt(sessionId)` to abort
+   * the run without holding a direct reference to the runtime.
+   *
+   * Leave undefined for runtimes that do not need programmatic cancel
+   * (e.g. short-lived test runtimes, CLI hosts that already own the
+   * AbortController via `EngineInput.signal`).
+   *
+   * See docs/L2/interrupt.md and issue #1682.
+   */
+  readonly sessionRegistry?: SessionRegistry;
 }
 
 export interface KoiRuntime {
@@ -240,6 +256,24 @@ export interface KoiRuntime {
    * undefined.
    */
   readonly rebindSessionId?: (id: string) => void;
+  /**
+   * Abort the active run, if any. Equivalent to calling
+   * `sessionRegistry.interrupt(runtime.sessionId, reason)` when a registry
+   * was supplied to createKoi, or aborting the internal AbortController
+   * directly otherwise.
+   *
+   * Returns `true` if the abort was the first one for the active run
+   * (signal.aborted was false before the call). Returns `false` when no
+   * run is active or the run is already aborted.
+   *
+   * Idempotent — safe to call multiple times.
+   */
+  readonly interrupt: (reason?: string) => boolean;
+  /**
+   * True iff the active run's AbortSignal is aborted. Returns `false`
+   * when no run is active.
+   */
+  readonly isInterrupted: () => boolean;
   /** Dispose the runtime and release resources. */
   readonly dispose: () => Promise<void>;
   /** Debug instrumentation accessors. Only present when `debug.enabled` is true. */

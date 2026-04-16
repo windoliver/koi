@@ -86,6 +86,8 @@ function createMockSpawnResult(events: readonly EngineEvent[]): SpawnChildResult
       sessionId: "test-session",
       conflicts: [],
       run: (_input: EngineInput) => streamEvents(...events),
+      interrupt: () => false,
+      isInterrupted: () => false,
       dispose: async () => {},
     },
     handle: {
@@ -284,6 +286,8 @@ describe("applyDeliveryPolicy — deferred", () => {
         sessionId: "test-session",
         conflicts: [],
         run: () => failingStream,
+        interrupt: () => false,
+        isInterrupted: () => false,
         dispose: async () => {},
       },
       handle: {
@@ -420,6 +424,8 @@ describe("applyDeliveryPolicy — on_demand", () => {
         sessionId: "test-session",
         conflicts: [],
         run: () => failingStream,
+        interrupt: () => false,
+        isInterrupted: () => false,
         dispose: async () => {},
       },
       handle: {
