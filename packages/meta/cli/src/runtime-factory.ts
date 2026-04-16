@@ -1516,9 +1516,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
-    const mcpPluginOAuthCapableNames = stackContribution.exports.mcpPluginOAuthCapableNames as
-      | ReadonlySet<string>
-      | undefined;
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -1962,7 +1959,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            oauthNames: mcpPluginOAuthCapableNames,
+            // Plugin servers authenticate via their own auth pseudo-tools, not
+            // via nav:mcp-auth (which only handles .mcp.json entries). Force
+            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
+            // rather than needs-auth, preventing a misleading recovery prompt.
+            oauthNames: undefined,
           });
         if (sources.length === 0) return [];
 
@@ -1976,7 +1977,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
           }
           for (const [name, count] of toolCounts) {
-            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            // Always prefix non-user sources so nav:mcp-auth can detect them
+            // reliably even in single-source (plugin-only) sessions.
+            const displayName = label === "user" ? name : `${label}:${name}`;
             const key = `${label}:${name}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
@@ -1991,7 +1994,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           }
           for (const f of resolver.failures) {
             if (toolCounts.has(f.serverName)) continue;
-            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const displayName = label === "user" ? f.serverName : `${label}:${f.serverName}`;
             const key = `${label}:${f.serverName}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
