@@ -102,7 +102,39 @@ async function scanDiscoveredEntries(
         return { name, entry, blocking: [finding] as readonly ScanFinding[] };
       }
 
-      const report = scanner.scanSkill(content);
+      // Issue #1722 round 3: also scan included files so a skill cannot
+      // hide malicious content behind a clean SKILL.md + dirty includes.
+      // Extract `includes:` items from YAML frontmatter, read each file,
+      // and concatenate for scanning. Unreadable includes fail closed.
+      let fullContent = content;
+      const fmMatch = /^---\s*\n([\s\S]*?)\n---/.exec(content);
+      if (fmMatch !== null) {
+        const includeBlock = /^\s*includes\s*:\s*\n((?:\s+-\s+.+\n?)*)/m.exec(fmMatch[1] ?? "");
+        if (includeBlock !== null) {
+          const items = [...(includeBlock[1] ?? "").matchAll(/^\s+-\s+(.+)/gm)].map((m) =>
+            (m[1] ?? "").trim(),
+          );
+          for (const includePath of items) {
+            if (includePath.length === 0) continue;
+            const resolvedPath = join(entry.dirPath, includePath);
+            try {
+              const includeContent = await Bun.file(resolvedPath).text();
+              fullContent = `${fullContent}\n\n${includeContent}`;
+            } catch {
+              const finding: ScanFinding = {
+                rule: "unreadable-skill-include",
+                severity: "HIGH",
+                confidence: 1.0,
+                category: "UNPARSEABLE",
+                message: `Included file could not be read at discovery time: ${resolvedPath}`,
+              };
+              return { name, entry, blocking: [finding] as readonly ScanFinding[] };
+            }
+          }
+        }
+      }
+
+      const report = scanner.scanSkill(fullContent);
       if (report.findings.length === 0) {
         return { name, entry, blocking: [] as readonly ScanFinding[] };
       }

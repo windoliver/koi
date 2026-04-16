@@ -130,7 +130,8 @@ const EXFIL_INTENT_PATTERNS: readonly RegExp[] = [
   /\bexfiltrat/i,
   /\battacker\b/i,
   /\b(?:send|post|upload|leak|transmit|forward|ship|deliver)\b[^\n.]{0,80}\b(?:to|via|into)\b/i,
-  /\bcurl\s+-[a-zA-Z]*[dX]/i, // curl -d (POST data) / curl -X POST
+  // curl with data-upload flags — short or long forms, any position
+  /\bcurl\b[^\n]*(?:\s-[a-zA-Z]*[dX]|\s--data(?:-\w+)?|\s--form)\b/i,
   /\bwget\s+[^\n]*--post/i,
   // fetch() with method: "POST" + body — active outbound data upload
   /\bfetch\s*\([^\n]*\bmethod\s*:\s*["']POST["'][^\n]*\bbody\s*:/i,
