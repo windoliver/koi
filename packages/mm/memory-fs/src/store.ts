@@ -34,6 +34,7 @@ import type {
 import {
   memoryRecordId,
   parseMemoryFrontmatter,
+  sanitizeFrontmatterValue,
   serializeMemoryFrontmatter,
   validateMemoryRecordInput,
 } from "@koi/core/memory";
@@ -327,8 +328,22 @@ async function upsertRecord(
   const { dir, threshold } = ctx;
   const existing = await scanRecords(dir);
 
-  // Step 1: Name+type exact match
-  const nameTypeMatch = existing.find((r) => r.name === input.name && r.type === input.type);
+  // Canonicalize the inputs to match the persisted frontmatter form before
+  // comparing against scanned records. Otherwise inputs that only differ by
+  // newlines or control chars (e.g. "foo\nbar" vs "foo bar") would miss an
+  // existing record and create a logical duplicate on disk.
+  const canonicalName = sanitizeFrontmatterValue(input.name);
+  const canonicalDescription = sanitizeFrontmatterValue(input.description);
+  const canonicalInput: MemoryRecordInput = {
+    ...input,
+    name: canonicalName,
+    description: canonicalDescription,
+  };
+
+  // Step 1: Name+type exact match (against canonicalized name)
+  const nameTypeMatch = existing.find(
+    (r) => r.name === canonicalName && r.type === canonicalInput.type,
+  );
 
   if (nameTypeMatch !== undefined) {
     if (!force) {
@@ -336,14 +351,14 @@ async function upsertRecord(
     }
     // Force update — overwrite the matched record's description + content.
     const updated = await updateRecord(ctx, nameTypeMatch.id, {
-      description: input.description,
-      content: input.content,
+      description: canonicalDescription,
+      content: canonicalInput.content,
     });
     return { action: "updated", record: updated.record };
   }
 
   // Step 2: Jaccard content dedup (no name+type match found)
-  const dup = findDuplicate(input.content, existing, threshold);
+  const dup = findDuplicate(canonicalInput.content, existing, threshold);
   if (dup !== undefined) {
     return {
       action: "skipped",
@@ -355,23 +370,23 @@ async function upsertRecord(
 
   // Step 3: Create new record
   const serialized = serializeMemoryFrontmatter(
-    { name: input.name, description: input.description, type: input.type },
-    input.content,
+    { name: canonicalName, description: canonicalDescription, type: canonicalInput.type },
+    canonicalInput.content,
   );
   if (serialized === undefined) {
     throw new Error("Failed to serialize memory record — invalid frontmatter or empty content");
   }
 
-  const filename = await writeExclusive(dir, input.name, serialized);
+  const filename = await writeExclusive(dir, canonicalName, serialized);
   const fileStat = await stat(join(dir, filename));
 
   const persisted = parseMemoryFrontmatter(serialized);
   const record: MemoryRecord = {
     id: memoryRecordId(filenameToId(filename)),
-    name: persisted?.frontmatter.name ?? input.name,
-    description: persisted?.frontmatter.description ?? input.description,
-    type: persisted?.frontmatter.type ?? input.type,
-    content: persisted?.content ?? input.content,
+    name: persisted?.frontmatter.name ?? canonicalName,
+    description: persisted?.frontmatter.description ?? canonicalDescription,
+    type: persisted?.frontmatter.type ?? canonicalInput.type,
+    content: persisted?.content ?? canonicalInput.content,
     filePath: filename,
     createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
     updatedAt: fileStat.ctimeMs,

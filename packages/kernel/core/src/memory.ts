@@ -147,8 +147,13 @@ const CONTROL_CHAR_TEST_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
  * - Strips control characters (except tab, which is harmless)
  * - Collapses resulting whitespace runs
  * - Trims leading/trailing whitespace
+ *
+ * Exported so that callers which perform their own identity comparisons
+ * (e.g. the atomic `MemoryStore.upsert` name+type lookup) can canonicalize
+ * input to its persisted form before comparing against scanned records.
+ * Keep this in sync with `serializeMemoryFrontmatter`.
  */
-function sanitizeFrontmatterValue(value: string): string {
+export function sanitizeFrontmatterValue(value: string): string {
   return value
     .replace(/\r\n|\r|\n/g, " ")
     .replace(CONTROL_CHAR_REPLACE_RE, "")

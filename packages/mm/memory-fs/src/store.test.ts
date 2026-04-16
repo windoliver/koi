@@ -543,5 +543,74 @@ describe("createMemoryStore", () => {
         ),
       ).rejects.toThrow("Invalid memory record input");
     });
+
+    test("canonicalizes frontmatter-unsafe name: newline-variant conflicts with plain name (force=false)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.upsert(
+        {
+          name: "foo bar",
+          description: "plain space name",
+          type: "user" as const,
+          content: "Original content that will not Jaccard-match the follow-up.",
+        },
+        { force: false },
+      );
+      expect(first.action).toBe("created");
+
+      const second = await store.upsert(
+        {
+          name: "foo\nbar",
+          description: "newline variant",
+          type: "user" as const,
+          content: "Totally different follow-up content, no Jaccard overlap whatsoever.",
+        },
+        { force: false },
+      );
+
+      expect(second.action).toBe("conflict");
+      if (second.action !== "conflict") throw new Error("unreachable");
+      expect(second.existing.name).toBe("foo bar");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("canonicalizes frontmatter-unsafe name: newline-variant updates plain name (force=true)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.upsert(
+        {
+          name: "alpha beta",
+          description: "first version",
+          type: "feedback" as const,
+          content: "Initial content before the force overwrite replaces it.",
+        },
+        { force: false },
+      );
+
+      const updated = await store.upsert(
+        {
+          name: "alpha\u0001\nbeta",
+          description: "second version with control chars and newline",
+          type: "feedback" as const,
+          content: "Replacement content written through the canonicalized name path.",
+        },
+        { force: true },
+      );
+
+      expect(updated.action).toBe("updated");
+      if (updated.action !== "updated") throw new Error("unreachable");
+      expect(updated.record.name).toBe("alpha beta");
+      expect(updated.record.description).toBe("second version with control chars and newline");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+      expect(all[0]?.content).toBe(
+        "Replacement content written through the canonicalized name path.",
+      );
+    });
   });
 });
