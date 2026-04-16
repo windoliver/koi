@@ -1191,6 +1191,97 @@ describe("runTurn", () => {
         }
       }
     });
+
+    test("text-only recovery clears stale schema metadata from done event", async () => {
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: bad args
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model apologizes with text only
+        createTextStream("I cannot read that file."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (): Promise<ToolResponse> => ({ output: "unused" }),
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+        // Stale schema_validation metadata must NOT leak into completed done
+        expect(done.output.metadata).toBeUndefined();
+      }
+    });
+
+    test("schema-invalid turn breaks doom-loop streaks so corrected retry executes", async () => {
+      const toolCalls: string[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: valid readFile("/foo")
+        createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
+        // Turn 1: valid readFile("/foo") again
+        createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+        // Turn 2: schema-invalid (missing required path) — breaks streak
+        () => toolCallStreamGen("readFile", "tc-3", '{"encoding":"utf8"}'),
+        // Turn 3 (recovery): model retries readFile("/foo") — must NOT be doom-looped
+        createToolCallStream("readFile", "tc-4", '{"path":"/foo"}'),
+        // Turn 4: done
+        createTextStream("Here is the content."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "file-content" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          doomLoopThreshold: 3,
+        }),
+      );
+
+      // readFile should have executed 3 times (turns 0, 1, 3) — NOT blocked by doom loop
+      expect(toolCalls).toEqual(["readFile", "readFile", "readFile"]);
+
+      // No doom_loop_detected event
+      const doomEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
+      );
+      expect(doomEvent).toBeUndefined();
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
   });
 
   test("error metadata is included in done event for model stream errors", async () => {

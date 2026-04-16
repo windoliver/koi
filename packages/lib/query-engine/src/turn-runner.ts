@@ -467,6 +467,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           };
         }
 
+        // Schema-invalid turns break doom-loop streaks — the model's
+        // corrected retry must not be counted as consecutive with
+        // pre-error calls. Clear streaks and per-key budgets so the
+        // corrected call executes without doom-loop interference.
+        doomLoopStreaks = new Map();
+        doomLoopInterventionsByKey.clear();
+
         // Transition to continue so the model gets a recovery turn.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
         if (state.stopReason === "completed") {
@@ -888,6 +895,19 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       kind: "turn_end",
       turnIndex: state.phase === "continue" ? state.turnIndex - 1 : state.turnIndex,
     };
+  }
+
+  // #1754: clear stale schema-validation errorMetadata when the run completed
+  // successfully. Recovery metadata is transient — it should not leak into
+  // the terminal done event for completed runs.
+  if (
+    (state.stopReason === "completed" || state.stopReason === undefined) &&
+    errorMetadata !== undefined
+  ) {
+    const source = (errorMetadata as { source?: unknown }).source;
+    if (source === "schema_validation") {
+      errorMetadata = undefined;
+    }
   }
 
   // Final done event — only the terminal turn's text, not all turns concatenated
