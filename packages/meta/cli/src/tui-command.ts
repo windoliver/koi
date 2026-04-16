@@ -924,6 +924,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // non-cwd backend would break trust-boundary and rollback
   // invariants.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -958,7 +959,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // from `manifest.stacks`.
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
   }
+
+  // Previously this block auto-disabled the spawn preset stack
+  // whenever manifest.middleware was non-empty, because children
+  // inheriting the parent's mutable middleware instances would
+  // corrupt per-session state. The spawn preset stack now reads
+  // a per-child factory from the runtime factory's host bag
+  // (`LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory`)
+  // and re-resolves manifest middleware fresh per spawn, so
+  // children get their own audit queue + lifecycle hooks without
+  // sharing parent state. The auto-disable is no longer needed.
 
   // ---------------------------------------------------------------------------
   // 1. API configuration
@@ -1199,6 +1214,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Zone B — manifest-declared middleware. Resolved inside the
+    // factory via the default built-in registry. Runs INSIDE the
+    // security guard so repo-authored content cannot observe raw
+    // traffic before `exfiltration-guard` redacts secrets.
+    //
+    // `allowManifestFileSinks` gates the built-in audit entry
+    // (which opens a file at resolution time). Controlled by the
+    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+    // manifest so repo content cannot flip it.
+    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
