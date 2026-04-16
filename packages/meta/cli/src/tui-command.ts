@@ -1585,12 +1585,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     onForce: () => {
       // Force path: abort the active foreground stream FIRST so no
-      // further model/tool work can execute during the exit window.
+      // further model/tool work can execute during the exit window,
+      // then kick background-task SIGTERM so subprocesses start dying.
+      // Without the foreground abort, side-effecting tools could keep
+      // running for the full SIGKILL-escalation wait below.
       abortActiveStream();
       // Commit exit code immediately so even a natural event-loop drain
       // (e.g. all ref'd handles gone before dispose settles) reports an
       // interrupt exit status to the shell / parent process.
       process.exitCode = 130;
+      // SIGTERM background subprocesses BEFORE dispose so the SIGKILL
+      // escalation timers start early. If dispose wedges and the hard-
+      // exit timer fires, subprocesses have already received SIGTERM
+      // (and possibly SIGKILL). Without this ordering, a wedged dispose
+      // would let the hard-exit fire before subprocesses are ever
+      // signalled — orphaning them.
+      const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
       // #1862: call runtime.dispose() so onSessionEnd fires on ALL
       // middleware (report, audit, etc.) before the process exits.
       // Best-effort only — force-quit must always terminate, so a
@@ -1616,11 +1626,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           }
         }
         clearTimeout(hardExit);
-        // Drain background subprocesses AFTER dispose so onSessionEnd's
-        // audit/report writes complete before shutdownBackgroundTasks
-        // fire-and-forgets audit sink close. Without this ordering, the
-        // sink close races the session_end record write.
-        const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
         if (liveTasks) {
           // Wait long enough for the runtime's SIGKILL escalation window
           // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec)
