@@ -12,7 +12,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FileOpRecord, NodeId, SnapshotNode, ToolCallId } from "@koi/core";
+import type {
+  FileDeleteResult,
+  FileOpRecord,
+  FileSystemBackend,
+  FileWriteResult,
+  NodeId,
+  SnapshotNode,
+  ToolCallId,
+} from "@koi/core";
 import { writeBlobFromFile } from "../cas-store.js";
 import {
   applyCompensatingOps,
@@ -312,5 +320,283 @@ describe("applyCompensatingOps", () => {
     );
     expect(r[0]?.kind).toBe("applied");
     expect(readFileSync(nestedPath, "utf8")).toBe("nested content");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toCompensating — backend field threading
+// ---------------------------------------------------------------------------
+
+describe("toCompensating — backend field threading", () => {
+  test("create op with backend → delete op carries backend", () => {
+    const op: FileOpRecord = {
+      kind: "create",
+      callId: "c1" as ToolCallId,
+      path: "/x",
+      postContentHash: "h1",
+      turnIndex: 0,
+      eventIndex: 0,
+      timestamp: 0,
+      backend: "nexus:my-backend",
+    };
+    expect(toCompensating(op)).toEqual({ kind: "delete", path: "/x", backend: "nexus:my-backend" });
+  });
+
+  test("edit op with backend → restore op carries backend", () => {
+    const op: FileOpRecord = {
+      kind: "edit",
+      callId: "c1" as ToolCallId,
+      path: "/x",
+      preContentHash: "before",
+      postContentHash: "after",
+      turnIndex: 0,
+      eventIndex: 0,
+      timestamp: 0,
+      backend: "nexus:my-backend",
+    };
+    expect(toCompensating(op)).toEqual({
+      kind: "restore",
+      path: "/x",
+      contentHash: "before",
+      backend: "nexus:my-backend",
+    });
+  });
+
+  test("op without backend → compensating op has no backend field", () => {
+    const op: FileOpRecord = {
+      kind: "create",
+      callId: "c1" as ToolCallId,
+      path: "/x",
+      postContentHash: "h1",
+      turnIndex: 0,
+      eventIndex: 0,
+      timestamp: 0,
+    };
+    const result = toCompensating(op);
+    expect(result).toEqual({ kind: "delete", path: "/x" });
+    expect("backend" in result).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyCompensatingOps — backend routing
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a minimal mock FileSystemBackend for testing backend routing.
+ */
+function makeMockBackend(
+  overrides: Partial<{
+    writtenFiles: Map<string, string>;
+    deletedPaths: string[];
+    writeError: boolean;
+    deleteError: boolean;
+    deleteNotFound: boolean;
+    noDeleteMethod: boolean;
+  }> = {},
+): { backend: FileSystemBackend; writtenFiles: Map<string, string>; deletedPaths: string[] } {
+  const writtenFiles = overrides.writtenFiles ?? new Map<string, string>();
+  const deletedPaths = overrides.deletedPaths ?? [];
+
+  const backend: FileSystemBackend = {
+    name: "mock-backend",
+    read: () => ({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "not implemented", retryable: false } as never,
+    }),
+    write: (_path: string, content: string) => {
+      if (overrides.writeError === true) {
+        return {
+          ok: false,
+          error: { code: "IO_ERROR", message: "write failed", retryable: false } as never,
+        };
+      }
+      writtenFiles.set(_path, content);
+      return {
+        ok: true,
+        value: { path: _path, bytesWritten: content.length } satisfies FileWriteResult,
+      };
+    },
+    edit: () => ({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "not implemented", retryable: false } as never,
+    }),
+    list: () => ({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "not implemented", retryable: false } as never,
+    }),
+    search: () => ({
+      ok: false,
+      error: { code: "NOT_FOUND", message: "not implemented", retryable: false } as never,
+    }),
+    delete:
+      overrides.noDeleteMethod === true
+        ? undefined
+        : (_path: string) => {
+            if (overrides.deleteError === true) {
+              return {
+                ok: false,
+                error: { code: "IO_ERROR", message: "delete failed", retryable: false } as never,
+              };
+            }
+            if (overrides.deleteNotFound === true) {
+              return {
+                ok: false,
+                error: { code: "NOT_FOUND", message: "not found", retryable: false } as never,
+              };
+            }
+            deletedPaths.push(_path);
+            return { ok: true, value: { path: _path } satisfies FileDeleteResult };
+          },
+    resolvePath: (path: string) => path,
+  };
+  return { backend, writtenFiles, deletedPaths };
+}
+
+describe("applyCompensatingOps — backend routing", () => {
+  let blobDir: string;
+  let workDir: string;
+
+  beforeEach(() => {
+    blobDir = makeBlobDir();
+    workDir = makeWorkDir();
+  });
+
+  afterEach(() => {
+    rmSync(blobDir, { recursive: true, force: true });
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  test("delete op with backend → dispatched to backend.delete, not local unlink", async () => {
+    const { backend, deletedPaths } = makeMockBackend();
+    const path = "/remote/doomed.txt";
+    const backends = new Map([["nexus:my-backend", backend]]);
+
+    const r = await applyCompensatingOps(
+      [{ kind: "delete", path, backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("applied");
+    expect(deletedPaths).toContain(path);
+  });
+
+  test("delete op — backend not found treated as idempotent skipped-already-current", async () => {
+    const { backend } = makeMockBackend({ deleteNotFound: true });
+    const backends = new Map([["nexus:my-backend", backend]]);
+    const path = "/remote/gone.txt";
+
+    const r = await applyCompensatingOps(
+      [{ kind: "delete", path, backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("skipped-already-current");
+  });
+
+  test("delete op — backend.delete undefined falls back to local unlink", async () => {
+    const path = join(workDir, "local-fallback.txt");
+    writeFileSync(path, "content");
+    const { backend } = makeMockBackend({ noDeleteMethod: true });
+    const backends = new Map([["nexus:my-backend", backend]]);
+
+    const r = await applyCompensatingOps(
+      [{ kind: "delete", path, backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("applied");
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("restore op with backend → dispatched to backend.write", async () => {
+    const src = join(workDir, "source.txt");
+    writeFileSync(src, "remote content");
+    const hash = await writeBlobFromFile(blobDir, src);
+
+    const { backend, writtenFiles } = makeMockBackend();
+    const backends = new Map([["nexus:my-backend", backend]]);
+    const path = "/remote/restored.txt";
+
+    const r = await applyCompensatingOps(
+      [{ kind: "restore", path, contentHash: hash, backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("applied");
+    expect(writtenFiles.get(path)).toBe("remote content");
+  });
+
+  test("restore op with backend — missing blob returns skipped-missing-blob", async () => {
+    const { backend } = makeMockBackend();
+    const backends = new Map([["nexus:my-backend", backend]]);
+    const path = "/remote/no-blob.txt";
+
+    const r = await applyCompensatingOps(
+      [{ kind: "restore", path, contentHash: "a".repeat(64), backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("skipped-missing-blob");
+  });
+
+  test("restore op with backend — write failure returns error", async () => {
+    const src = join(workDir, "source.txt");
+    writeFileSync(src, "data");
+    const hash = await writeBlobFromFile(blobDir, src);
+
+    const { backend } = makeMockBackend({ writeError: true });
+    const backends = new Map([["nexus:my-backend", backend]]);
+    const path = "/remote/write-fail.txt";
+
+    const r = await applyCompensatingOps(
+      [{ kind: "restore", path, contentHash: hash, backend: "nexus:my-backend" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("error");
+  });
+
+  test("op with backend='local' uses local I/O, not backend map", async () => {
+    const path = join(workDir, "local-explicit.txt");
+    writeFileSync(path, "should be deleted");
+    const { backend, deletedPaths } = makeMockBackend();
+    const backends = new Map([["local", backend]]);
+
+    const r = await applyCompensatingOps(
+      [{ kind: "delete", path, backend: "local" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("applied");
+    // Local unlink used, not backend.delete
+    expect(deletedPaths).toHaveLength(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("op without backend field uses local I/O even when backends map provided", async () => {
+    const path = join(workDir, "no-backend.txt");
+    writeFileSync(path, "delete me");
+    const { backend, deletedPaths } = makeMockBackend();
+    const backends = new Map([["nexus:my-backend", backend]]);
+
+    const r = await applyCompensatingOps([{ kind: "delete", path }], blobDir, backends);
+    expect(r[0]?.kind).toBe("applied");
+    expect(deletedPaths).toHaveLength(0);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  test("op with backend not in map falls back to local I/O", async () => {
+    const path = join(workDir, "unknown-backend.txt");
+    writeFileSync(path, "fallback");
+    const backends = new Map<string, FileSystemBackend>();
+
+    const r = await applyCompensatingOps(
+      [{ kind: "delete", path, backend: "nexus:missing" }],
+      blobDir,
+      backends,
+    );
+    expect(r[0]?.kind).toBe("applied");
+    expect(existsSync(path)).toBe(false);
   });
 });
