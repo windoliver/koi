@@ -52,15 +52,13 @@ describe("TUI permission rules (#1845)", () => {
     });
   });
 
-  describe("read-only notebook tools — auto-allowed", () => {
-    test("notebook_read is allowed", () => {
-      expect(checkTool(backend, "notebook_read")).toBe("allow");
-    });
-  });
-
-  describe("destructive tools require approval (#1845 — now works with 60m timeout)", () => {
+  describe("tools requiring approval (#1845 — now works with 60m timeout)", () => {
     test("memory_delete requires approval (deletes durable on-disk state)", () => {
       expect(checkTool(backend, "memory_delete")).toBe("ask");
+    });
+
+    test("notebook_read requires approval (filesystem read, must respect filesystemOperations gate)", () => {
+      expect(checkTool(backend, "notebook_read")).toBe("ask");
     });
 
     test("notebook_add_cell requires approval (writes .ipynb in-place)", () => {

@@ -141,13 +141,13 @@ export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
  * - task_* — task board reads/writes (own state, not workspace files)
  * - Skill — skill invocation (own state)
  * - memory_store/recall/search — sandboxed to .koi/memory/, non-destructive
- * - notebook_read — read-only notebook access
  *
- * Destructive tools fall to "ask" (mode-default for unmatched tools):
+ * Tools that fall to "ask" (mode-default for unmatched tools):
  * - Bash, bash_background, web_fetch, fs_write, fs_edit
  * - memory_delete — deletes durable cross-session state
- * - notebook_add_cell, notebook_replace_cell, notebook_delete_cell — in-place
- *   .ipynb writes (comparable to fs_write/fs_edit)
+ * - notebook_* — read/write .ipynb files on disk; notebook_read bypasses
+ *   the filesystemOperations gate if auto-allowed, so all notebook tools
+ *   stay gated for consistency with fs_read
  *
  * The TUI sets TUI_APPROVAL_TIMEOUT_MS (60 min) so interactive users are
  * never auto-denied while reading an "ask" prompt (#1845).
@@ -168,9 +168,6 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
-  // Notebook tools — only read is auto-allowed; mutating ops (add/replace/delete)
-  // write .ipynb files in-place, comparable to fs_write/fs_edit
-  { pattern: "notebook_read", action: "invoke", effect: "allow", source: "policy" },
 ] as const;
 
 // ---------------------------------------------------------------------------
