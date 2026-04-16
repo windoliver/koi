@@ -17,8 +17,8 @@ V1 had the scoped-filesystem pattern (`archive/v1/packages/security/scope/src/sc
 |----------|--------|-----------|
 | Scope | All 4 gaps in one branch, sequential sub-projects | User preference; gaps are interdependent enough to ship together |
 | Gap 2 approach | Full backend-aware rewind | No feature regression for nexus users; checkpoint schema gains backend discriminator |
-| Gap 4 gate | Manifest-declared scope as trust gate | No Nexus ReBAC dependency (doesn't exist in v2). Enforcer stack is future work |
-| Gap 1 path display | V1-style: scope enforces, display shows raw truth | Matches v1 philosophy; no URI prefixes needed; permission rules stay tool-based |
+| Gap 4 gate | Manifest scope + explicit `--allow-remote-fs` CLI flag | Scope alone is self-attestation; operator must also opt in. No Nexus ReBAC dependency. Enforcer stack is future work |
+| Gap 1 path display | Scope enforces containment; approval shows backend label for non-local backends | Bare paths hide provenance — non-local backends get `[nexus: <transport>]` prefix in approval prompts and audit trail |
 | Gap 3 auth UX | Inline paste in TUI chat input | Simplest thing that works; no extra TUI modal plumbing; iterate later if needed |
 
 ## Sub-project 1: Backend-Aware Permission Middleware (Gap 1) — [high]
@@ -74,7 +74,14 @@ function createScopedFileSystem(backend: FileSystemBackend, scope: FileSystemSco
 
 **Permission rules:** Stay tool-based (`fs:read`, `fs:write`). No path-based rules needed. Scope layer handles containment.
 
-**Approval display:** Shows absolute resolved path from the scoped backend — already safe because scope-validated. No backend prefixes or labels.
+**Approval display:**
+- **Local backends:** Show absolute resolved path (existing behavior). No label needed — path is under `cwd`.
+- **Non-local backends:** Show `[nexus: <transport>] /resolved/path` in approval prompts and audit trail. Concrete examples:
+  - `[nexus: local-bridge] /mnt/workspace/src/main.ts` (local bridge transport)
+  - `[nexus: http] /agents/coder/workspace/src/main.ts` (HTTP nexus endpoint)
+  - The backend label makes provenance explicit so operators can distinguish local workspace access from remote storage access
+  - Applies to both TUI approval prompts and any audit log entries
+- Permission rules stay tool-based (`fs:read`, `fs:write`). Scope layer handles containment.
 
 ### Files to Create/Modify
 
@@ -123,11 +130,18 @@ interface CheckpointEntry {
 **Rewind flow:**
 - For each snapshot entry, resolve the correct `FileSystemBackend` instance by matching `entry.backend` against available backends in the session
 - Restore through the matched backend
-- If backend instance unavailable at rewind time (e.g., nexus bridge crashed): surface error `"cannot restore '{path}' — backend '{backend}' unavailable"` and skip that entry (don't fail the entire rewind)
 - Entries restored in reverse chronological order (existing behavior)
 
+**Atomicity guarantee:** Rewind is all-or-nothing. Before starting any restore operations, validate that ALL required backends are available. If any backend instance is unavailable at rewind time (e.g., nexus bridge crashed): **fail the entire rewind** without advancing transcript or head. Surface error: `"rewind aborted — backend '{backend}' unavailable. No changes were made."` This preserves the existing atomic restore contract: transcript and file state always move together, never partially.
+
+**Pre-flight check sequence:**
+1. Collect the set of unique `backend` values from all snapshot entries in the rewind range
+2. For each backend, verify the `FileSystemBackend` instance is available and responsive (e.g., ping/health check for nexus transports)
+3. If any backend is unavailable: abort with error, do not touch transcript or files
+4. If all backends available: proceed with ordered restore (existing protocol)
+
 **Edge case — mixed backends in one rewind:**
-A session might edit local files and nexus files in the same turn. Rewind must restore both. The per-entry backend discriminator handles this naturally.
+A session might edit local files and nexus files in the same turn. Rewind must restore both. The per-entry backend discriminator handles this naturally — but the atomicity guarantee means either ALL entries restore or NONE do.
 
 ### Files to Modify
 
@@ -207,39 +221,57 @@ V1 used a composable trust stack: `Raw backend → Enforced (async Nexus ReBAC) 
 
 ### Design
 
-**Gate logic in `start.ts`:**
+**Two-gate logic in `start.ts`:**
 
-Remove the blanket nexus rejection. Replace with scope-based gate:
+Remove the blanket nexus rejection. Replace with a two-gate check: manifest scope (necessary) + CLI flag (sufficient). A repo-local manifest declaring its own scope is self-attestation — not a trust boundary. The operator must explicitly opt in via `--allow-remote-fs`.
 
 ```typescript
 if (manifest.filesystem?.backend === "nexus") {
   const scope = manifest.filesystem.root;
   const mode = manifest.filesystem.mode;
+
+  // Gate 1: manifest must declare scope
   if (scope === undefined || mode === undefined) {
-    // Reject: no scope declared
     process.stderr.write(
       "koi start: nexus backends require 'filesystem.root' and 'filesystem.mode' " +
-      "in the manifest when running without interactive approval UI.\n" +
+      "in the manifest.\n" +
       "Add filesystem.root and filesystem.mode to your manifest, or use 'koi tui'.\n"
     );
     return ExitCode.FAILURE;
   }
-  // Scope declared — createScopedFileSystem (sub-project 1) enforces the boundary
+
+  // Gate 2: operator must opt in
+  if (!flags.allowRemoteFs) {
+    process.stderr.write(
+      "koi start: nexus filesystem backends require --allow-remote-fs.\n" +
+      "This flag confirms the operator (not the manifest) authorizes remote storage access.\n" +
+      "Scope: " + scope + " (mode: " + mode + ")\n"
+    );
+    return ExitCode.FAILURE;
+  }
+
+  // Both gates passed — createScopedFileSystem (sub-project 1) enforces the boundary
 }
 ```
 
-**`koi tui` behavior:**
-- Accepts nexus with or without scope declaration
-- If scope declared: wraps with `createScopedFileSystem` (additional safety)
-- If scope not declared: user can approve/deny per-operation via interactive UI
+**Why two gates:**
+- Manifest scope ensures containment (path boundary enforcement via `createScopedFileSystem`)
+- `--allow-remote-fs` ensures the operator — not the manifest author — authorizes remote access
+- Mirrors the existing `--allow-side-effects` posture: operator decisions are CLI flags, not manifest declarations
 
-**Future work:** When Nexus ReBAC lands in v2, add `ScopeEnforcer` as an additional layer in the trust stack (between raw backend and scoped filesystem). The scope gate remains as a fail-safe.
+**`koi tui` behavior:**
+- Accepts nexus with or without scope declaration (interactive UI provides per-operation approval)
+- If scope declared: wraps with `createScopedFileSystem` (additional safety layer)
+- If scope not declared: user can approve/deny per-operation via interactive UI
+- No `--allow-remote-fs` flag needed — the TUI's interactive approval is the trust mechanism
+
+**Future work:** When Nexus ReBAC lands in v2, add `ScopeEnforcer` as an additional layer in the trust stack (between raw backend and scoped filesystem). Both the scope gate and CLI flag remain as fail-safes.
 
 ### Files to Modify
 
 | Action | Path | Description |
 |--------|------|-------------|
-| Modify | `packages/meta/cli/src/commands/start.ts` | Replace blanket reject with scope gate |
+| Modify | `packages/meta/cli/src/commands/start.ts` | Replace blanket reject with two-gate (scope + `--allow-remote-fs`) |
 | Modify | `packages/meta/cli/src/tui-command.ts` | Accept nexus, optional scope wrapping |
 | Create | `packages/meta/cli/src/commands/start.test.ts` | Test scope gate logic |
 
@@ -266,10 +298,10 @@ Sub-projects 2 and 3 are independent of each other and can be parallelized after
 | 1 | Unit | Path normalization, traversal rejection, write guard, search filtering |
 | 1 | Integration | `resolve-filesystem` wraps nexus backend with scope |
 | 2 | Unit | Snapshot capture with backend discriminator, rewind per-backend restore |
-| 2 | Unit | Mixed-backend rewind, unavailable-backend error handling |
+| 2 | Unit | Mixed-backend rewind, unavailable-backend aborts entire rewind |
 | 3 | Unit | URL pattern matching for OAuth callback interception |
 | 3 | Integration | Auth notification → TUI display → paste → submitAuthCode flow |
-| 4 | Unit | Scope gate accepts/rejects correctly on `koi start` |
+| 4 | Unit | Two-gate (scope + `--allow-remote-fs`) accepts/rejects correctly on `koi start` |
 | 4 | Integration | `koi tui` accepts nexus with and without scope |
 | All | Golden | New golden query: nexus-mount tool use through scoped filesystem |
 
