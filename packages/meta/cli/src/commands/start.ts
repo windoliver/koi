@@ -146,24 +146,37 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return ExitCode.FAILURE;
     }
 
-    // #1777: reject `backend: "nexus"` outright. The CLI's auto-allow
-    // permission backend is path-agnostic, so wiring a manifest-supplied
-    // remote/bridge filesystem would grant a repo-local manifest
-    // unreviewed read/write access to storage outside the workspace and
-    // outside the local host — a real trust-boundary regression.
-    // Backend-aware approvals + audit paths are follow-up work; the
-    // parse/validate/path-anchor plumbing in `loadManifestConfig` is
-    // already in place so this rejection is the only thing gating full
-    // nexus support here.
+    // #1777 two-gate trust boundary for nexus backends:
+    //   Gate 1 — manifest must declare scope (root + mode in options)
+    //   Gate 2 — operator must pass --allow-remote-fs to explicitly
+    //             authorize remote storage access at the CLI level.
+    // Both gates must pass; failing closed at gate 1 catches manifests
+    // that omit scope accidentally, and failing closed at gate 2 ensures
+    // the operator (not just the manifest author) has reviewed the risk.
     if (manifestResult.value.filesystem?.backend === "nexus") {
-      process.stderr.write(
-        "koi start: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
-          "  The CLI's auto-allow permission backend cannot enforce backend-aware\n" +
-          "  approvals, so wiring a remote/bridge filesystem from a repo-local\n" +
-          "  manifest would grant unreviewed access to storage outside the workspace.\n" +
-          "  Omit the `filesystem:` block or use `backend: local`.\n",
-      );
-      return ExitCode.FAILURE;
+      const scope = manifestResult.value.filesystem.options;
+      const root = typeof scope?.root === "string" ? scope.root : undefined;
+      const mode = scope?.mode;
+
+      // Gate 1: manifest must declare scope
+      if (root === undefined || (mode !== "ro" && mode !== "rw")) {
+        process.stderr.write(
+          "koi start: nexus backends require 'filesystem.options.root' and 'filesystem.options.mode' " +
+            "in the manifest.\n" +
+            "Add filesystem.options.root and filesystem.options.mode to your manifest, or use 'koi tui'.\n",
+        );
+        return ExitCode.FAILURE;
+      }
+
+      // Gate 2: operator must opt in
+      if (!flags.allowRemoteFs) {
+        process.stderr.write(
+          "koi start: nexus filesystem backends require --allow-remote-fs.\n" +
+            "This flag confirms the operator (not the manifest) authorizes remote storage access.\n" +
+            `Scope: ${root} (mode: ${mode})\n`,
+        );
+        return ExitCode.FAILURE;
+      }
     }
 
     // Apply the `FileSystemConfig.operations` contract's `["read"]`

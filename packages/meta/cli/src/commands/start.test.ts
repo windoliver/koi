@@ -176,6 +176,7 @@ function makeFlags(
     logFormat: "text" | "json";
     noTui: boolean;
     contextWindow: number;
+    allowRemoteFs: boolean;
   }> = {},
 ): import("../args/start.js").StartFlags {
   return {
@@ -196,6 +197,7 @@ function makeFlags(
     workingDir: undefined,
     allowSideEffects: false,
     verifierInheritEnv: false,
+    allowRemoteFs: overrides.allowRemoteFs ?? false,
   };
 }
 
@@ -376,5 +378,103 @@ describe("run() — session resume", () => {
     const { run } = await import("./start.js");
     const result = await run(makeFlags({ resume: "ses_missing" }));
     expect(result).toBe(ExitCode.FAILURE);
+  });
+});
+
+describe("run() — nexus two-gate trust boundary", () => {
+  beforeEach(() => {
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    mockLoadManifest.mockReset();
+    mockRunSinglePrompt.mockImplementation(async () => completedOutput());
+  });
+  afterEach(() => {
+    delete process.env.OPENROUTER_API_KEY;
+  });
+
+  test("gate 1 fails: nexus without root and mode → FAILURE", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "gpt-4",
+        instructions: undefined,
+        stacks: undefined,
+        plugins: undefined,
+        middleware: undefined,
+        backgroundSubprocesses: undefined,
+        filesystem: { backend: "nexus" as const, options: undefined, operations: undefined },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ manifest: "koi.yaml" }));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("gate 1 fails: nexus with root but missing mode → FAILURE", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "gpt-4",
+        instructions: undefined,
+        stacks: undefined,
+        plugins: undefined,
+        middleware: undefined,
+        backgroundSubprocesses: undefined,
+        filesystem: {
+          backend: "nexus" as const,
+          options: { root: "/data", mountUri: "local://data" },
+          operations: undefined,
+        },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ manifest: "koi.yaml" }));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("gate 2 fails: nexus with scope but without --allow-remote-fs → FAILURE", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "gpt-4",
+        instructions: undefined,
+        stacks: undefined,
+        plugins: undefined,
+        middleware: undefined,
+        backgroundSubprocesses: undefined,
+        filesystem: {
+          backend: "nexus" as const,
+          options: { root: "/data/workspace", mode: "ro" },
+          operations: undefined,
+        },
+      },
+    }));
+    const { run } = await import("./start.js");
+    const result = await run(makeFlags({ manifest: "koi.yaml", allowRemoteFs: false }));
+    expect(result).toBe(ExitCode.FAILURE);
+  });
+
+  test("both gates pass: nexus with scope and --allow-remote-fs → proceeds past nexus check", async () => {
+    mockLoadManifest.mockImplementation(async () => ({
+      ok: true as const,
+      value: {
+        modelName: "gpt-4",
+        instructions: undefined,
+        stacks: undefined,
+        plugins: undefined,
+        middleware: undefined,
+        backgroundSubprocesses: undefined,
+        filesystem: {
+          backend: "nexus" as const,
+          options: { root: "/data/workspace", mode: "rw" },
+          operations: ["read" as const, "write" as const],
+        },
+      },
+    }));
+    mockRunInteractive.mockImplementation(async () => {});
+    const { run } = await import("./start.js");
+    // Should not return FAILURE due to nexus gate — the run proceeds
+    // to runtime assembly (which uses mocked dependencies) and succeeds.
+    const result = await run(makeFlags({ manifest: "koi.yaml", allowRemoteFs: true }));
+    expect(result).toBe(ExitCode.OK);
   });
 });
