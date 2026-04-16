@@ -21,7 +21,7 @@
 
 import { mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { CompensatingOp, FileOpRecord, SnapshotNode } from "@koi/core";
+import type { CompensatingOp, FileOpRecord, FileSystemBackend, SnapshotNode } from "@koi/core";
 import { hasBlob, readBlob } from "./cas-store.js";
 import type { CheckpointPayload } from "./types.js";
 
@@ -31,13 +31,14 @@ import type { CheckpointPayload } from "./types.js";
  * Pure function — does not touch the filesystem.
  */
 export function toCompensating(op: FileOpRecord): CompensatingOp {
+  const backendField = op.backend !== undefined ? { backend: op.backend } : {};
   switch (op.kind) {
     case "create":
-      return { kind: "delete", path: op.path };
+      return { kind: "delete", path: op.path, ...backendField };
     case "edit":
-      return { kind: "restore", path: op.path, contentHash: op.preContentHash };
+      return { kind: "restore", path: op.path, contentHash: op.preContentHash, ...backendField };
     case "delete":
-      return { kind: "restore", path: op.path, contentHash: op.preContentHash };
+      return { kind: "restore", path: op.path, contentHash: op.preContentHash, ...backendField };
   }
 }
 
@@ -89,6 +90,14 @@ export type ApplyResult =
  * Each delete op:
  *   1. unlink the path. Missing file is fine — already deleted.
  *
+ * When `backends` is provided, ops that carry a `backend` field (and are NOT
+ * "local") are dispatched to the matching `FileSystemBackend` entry rather than
+ * using direct local I/O. Falls back to local I/O when:
+ *   - `backends` is not provided, or
+ *   - the op has no `backend` field, or
+ *   - `op.backend` is `"local"`, or
+ *   - the backend name is not present in the map.
+ *
  * Errors on individual ops are surfaced in the result list rather than
  * thrown, so a partial failure can be inspected and re-tried. The caller
  * decides whether to abort the restore based on the results.
@@ -96,19 +105,44 @@ export type ApplyResult =
 export async function applyCompensatingOps(
   ops: readonly CompensatingOp[],
   blobDir: string,
+  backends?: ReadonlyMap<string, FileSystemBackend>,
 ): Promise<readonly ApplyResult[]> {
   const results: ApplyResult[] = [];
 
   for (const op of ops) {
+    const backend = resolveBackend(op.backend, backends);
+
     if (op.kind === "delete") {
-      results.push(applyDelete(op.path));
+      if (backend !== undefined) {
+        results.push(await applyDeleteViaBackend(backend, op.path));
+      } else {
+        results.push(applyDelete(op.path));
+      }
       continue;
     }
     // restore
-    results.push(await applyRestore(blobDir, op.path, op.contentHash));
+    if (backend !== undefined) {
+      results.push(await applyRestoreViaBackend(backend, blobDir, op.path, op.contentHash));
+    } else {
+      results.push(await applyRestore(blobDir, op.path, op.contentHash));
+    }
   }
 
   return results;
+}
+
+/**
+ * Resolve the optional `FileSystemBackend` for an op. Returns `undefined` when
+ * local I/O should be used.
+ */
+function resolveBackend(
+  backendName: string | undefined,
+  backends: ReadonlyMap<string, FileSystemBackend> | undefined,
+): FileSystemBackend | undefined {
+  if (backends === undefined || backendName === undefined || backendName === "local") {
+    return undefined;
+  }
+  return backends.get(backendName);
 }
 
 function applyDelete(path: string): ApplyResult {
@@ -175,6 +209,88 @@ async function applyRestore(
     const tmp = `${path}.tmp.${process.pid}.${crypto.randomUUID()}`;
     writeFileSync(tmp, bytes);
     renameSync(tmp, path);
+    return { kind: "applied", path };
+  } catch (cause: unknown) {
+    return { kind: "error", path, cause };
+  }
+}
+
+async function applyDeleteViaBackend(
+  backend: FileSystemBackend,
+  path: string,
+): Promise<ApplyResult> {
+  if (backend.delete === undefined) {
+    // Non-local backend without delete() — fail closed instead of
+    // falling back to local unlink, which would delete a local file
+    // that belongs to a different filesystem.
+    return {
+      kind: "error",
+      path,
+      cause: new Error(
+        `Backend '${backend.name}' does not implement delete(). ` +
+          `Cannot safely delete '${path}' on a non-local backend.`,
+      ),
+    };
+  }
+  try {
+    const result = await backend.delete(path);
+    if (!result.ok) {
+      // Treat "not found" as idempotent success.
+      if (result.error.code === "NOT_FOUND") {
+        return { kind: "skipped-already-current", path };
+      }
+      return { kind: "error", path, cause: result.error };
+    }
+    return { kind: "applied", path };
+  } catch (cause: unknown) {
+    return { kind: "error", path, cause };
+  }
+}
+
+async function applyRestoreViaBackend(
+  backend: FileSystemBackend,
+  blobDir: string,
+  path: string,
+  contentHash: string,
+): Promise<ApplyResult> {
+  if (!hasBlob(blobDir, contentHash)) {
+    return { kind: "skipped-missing-blob", path, contentHash };
+  }
+
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await readBlob(blobDir, contentHash);
+  } catch (cause: unknown) {
+    return { kind: "error", path, cause };
+  }
+  if (bytes === undefined) {
+    return { kind: "skipped-missing-blob", path, contentHash };
+  }
+
+  try {
+    // FileSystemBackend.write accepts a string, not bytes. Decode as UTF-8
+    // but reject content that is not valid UTF-8 — silently decoding binary
+    // content would corrupt the restored file. The local restore path writes
+    // raw bytes directly, so this limitation only affects non-local backends.
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let content: string;
+    try {
+      content = decoder.decode(bytes);
+    } catch {
+      return {
+        kind: "error",
+        path,
+        cause: new Error(
+          `Cannot restore '${path}' through backend '${backend.name}': ` +
+            `file content is not valid UTF-8. Non-text files cannot be restored ` +
+            `through non-local backends (FileSystemBackend.write accepts string only).`,
+        ),
+      };
+    }
+    const result = await backend.write(path, content, { createDirectories: true, overwrite: true });
+    if (!result.ok) {
+      return { kind: "error", path, cause: result.error };
+    }
     return { kind: "applied", path };
   } catch (cause: unknown) {
     return { kind: "error", path, cause };

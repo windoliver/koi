@@ -211,6 +211,13 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/fs-scoped": {
+      "name": "@koi/fs-scoped",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/git-utils": {
       "name": "@koi/git-utils",
       "version": "0.0.0",
@@ -512,6 +519,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",
@@ -521,6 +529,7 @@
         "@koi/engine": "workspace:*",
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
+        "@koi/fs-nexus": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -607,6 +616,7 @@
         "@koi/event-trace": "workspace:*",
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
+        "@koi/fs-scoped": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -1148,6 +1158,8 @@
     "@koi/fs-local": ["@koi/fs-local@workspace:packages/lib/fs-local"],
 
     "@koi/fs-nexus": ["@koi/fs-nexus@workspace:packages/lib/fs-nexus"],
+
+    "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 

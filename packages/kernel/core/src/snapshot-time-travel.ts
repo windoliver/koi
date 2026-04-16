@@ -43,6 +43,12 @@ interface FileOpRecordBase {
    * rename. Lets the rewind UI present them as one operation.
    */
   readonly renameId?: string;
+  /**
+   * Backend that owns this file. `"local"` for the host filesystem,
+   * `"nexus:<transport>"` for nexus backends (e.g., `"nexus:local-bridge"`).
+   * Undefined means `"local"` (backwards-compatible default for existing snapshots).
+   */
+  readonly backend?: string;
 }
 
 /**
@@ -84,8 +90,13 @@ export type FileOpRecord =
  * the same hash be reused across many compensating ops without duplication.
  */
 export type CompensatingOp =
-  | { readonly kind: "restore"; readonly path: string; readonly contentHash: string }
-  | { readonly kind: "delete"; readonly path: string };
+  | {
+      readonly kind: "restore";
+      readonly path: string;
+      readonly contentHash: string;
+      readonly backend?: string;
+    }
+  | { readonly kind: "delete"; readonly path: string; readonly backend?: string };
 
 // ---------------------------------------------------------------------------
 // Feature 1b: Snapshot status (soft-fail contract)

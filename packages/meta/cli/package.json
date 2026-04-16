@@ -49,6 +49,7 @@
     "@koi/engine": "workspace:*",
     "@koi/event-trace": "workspace:*",
     "@koi/fs-local": "workspace:*",
+    "@koi/fs-nexus": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
