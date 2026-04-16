@@ -1644,8 +1644,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // timer — dies. Exiting earlier orphans subprocesses that
           // ignore SIGTERM, exactly the failure mode "force" is supposed
           // to handle.
-          setTimeout(() => process.exit(130), 3500);
-          return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+          // Retry dispose after SIGKILL escalation — the runtime contract
+          // expects callers to retry after the wedged child has been killed.
+          // If the first dispose failed (poisoned runtime), this retry can
+          // succeed now that the subprocess is dead.
+          try {
+            await runtimeHandle?.runtime.dispose();
+          } catch {
+            // Best-effort — exit regardless.
+          }
         }
         process.exit(130);
       };
