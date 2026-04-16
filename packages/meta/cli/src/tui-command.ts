@@ -2265,7 +2265,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
 
             if (config === undefined || !config.ok) {
-              store.dispatch({ kind: "set_mcp_status", servers: [] });
+              // No file config — still check runtime for plugin servers
+              if (runtimeHandle !== null) {
+                const live = await runtimeHandle.getMcpStatus();
+                store.dispatch({
+                  kind: "set_mcp_status",
+                  servers: live.map((l) => ({
+                    name: l.name,
+                    status:
+                      l.failureCode === undefined
+                        ? ("connected" as const)
+                        : l.failureCode === "AUTH_REQUIRED"
+                          ? ("needs-auth" as const)
+                          : ("error" as const),
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? "plugin",
+                  })),
+                });
+              } else {
+                store.dispatch({ kind: "set_mcp_status", servers: [] });
+              }
               store.dispatch({ kind: "set_view", view: "mcp" });
               return;
             }
