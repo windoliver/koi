@@ -2211,6 +2211,34 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // rather than propagate an unhandled rejection.
       clearPersistFailed = true;
     }
+    // #1862: dispose the runtime BEFORE appHandle.stop(). After stop(),
+    // Bun's event loop drops pending microtasks when the last "real"
+    // handle goes away — even with our ref'd setInterval keepalive.
+    // Awaiting dispose() here, while the renderer is still alive,
+    // ensures onSessionEnd hooks (report MW, audit MW) complete before
+    // the event loop collapses. The resume hint prints after stop()
+    // releases the alt screen, so it is not affected.
+    if (runtimeHandle !== null) {
+      // Only pay the SIGTERM→SIGKILL escalation wait when we actually
+      // had live subprocesses to drain. Idle exits stay immediate.
+      // SIGKILL_ESCALATION_MS = 3000 in the runtime.
+      if (hadLiveTasks) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
+      // #1742 loop-2 round 10: dispose now fails closed on settle
+      // timeout. Catch the throw so the rest of shutdown (approval
+      // store close, process.exit) still runs. The hard-exit timer
+      // is the ultimate failsafe if process.exit itself wedges.
+      try {
+        await runtimeHandle.runtime.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] runtime.dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+    }
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -2263,28 +2291,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // stdout may be closed during abnormal teardown — swallow.
         }
       }
-      batcher.dispose();
+      // #1862: print the buffered run-report after the alt screen is
+      // released so it is visible on the user's terminal. The report
+      // was captured by onReport during runtime.dispose() → onSessionEnd
+      // which runs before appHandle.stop().
       if (runtimeHandle !== null) {
-        // Only pay the SIGTERM→SIGKILL escalation wait when we actually
-        // had live subprocesses to drain. Idle exits stay immediate.
-        // SIGKILL_ESCALATION_MS = 3000 in the runtime.
-        if (hadLiveTasks) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
-        }
-        // #1742 loop-2 round 10: dispose now fails closed on settle
-        // timeout. Catch the throw so the rest of shutdown (approval
-        // store close, process.exit) still runs. The hard-exit timer
-        // is the ultimate failsafe if process.exit itself wedges.
-        try {
-          await runtimeHandle.runtime.dispose();
-        } catch (disposeErr) {
-          process.stderr.write(
-            `[koi tui] runtime.dispose failed during shutdown: ${
-              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
-            }\n`,
-          );
+        const reportText = runtimeHandle.getPendingReport();
+        if (reportText !== undefined) {
+          try {
+            writeSync(2, `[run-report] ${reportText}\n`);
+          } catch {
+            /* stderr unwritable — best effort */
+          }
         }
       }
+      batcher.dispose();
       approvalStore?.close();
       // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
