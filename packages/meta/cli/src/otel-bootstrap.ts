@@ -48,8 +48,24 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
   testSpan.end();
 
   if (!isNoop) {
-    // Provider already registered (e.g. user brought their own) — no-op.
-    return { shutdown: async () => {} };
+    // Provider already registered (e.g. user brought their own).
+    // Attempt forceFlush on shutdown so buffered spans are exported before
+    // process exit. Don't call shutdown() — we didn't create this provider.
+    return {
+      shutdown: async () => {
+        try {
+          const provider = trace.getTracerProvider();
+          if ("forceFlush" in provider && typeof provider.forceFlush === "function") {
+            await Promise.race([
+              (provider as { forceFlush: () => Promise<void> }).forceFlush(),
+              new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+            ]);
+          }
+        } catch {
+          // Best-effort — don't destabilize shutdown.
+        }
+      },
+    };
   }
 
   const exporter = createExporter(mode);
@@ -98,8 +114,15 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
  */
 function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   const envExporter = process.env.OTEL_TRACES_EXPORTER;
+  // OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is signal-specific (full URL with path).
+  // OTEL_EXPORTER_OTLP_ENDPOINT is the generic base URL — needs /v1/traces appended.
+  const tracesEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+  const genericEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
   const otlpUrl =
-    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    tracesEndpoint ??
+    (genericEndpoint !== undefined
+      ? `${genericEndpoint.replace(/\/+$/, "")}/v1/traces`
+      : undefined);
 
   // Explicit "none" — user wants OTel middleware wired but no export.
   if (envExporter === "none") {
