@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  detectSlashFullText,
   detectSlashPrefix,
   matchCommands,
   parseSlashCommand,
@@ -54,6 +55,48 @@ describe("detectSlashPrefix", () => {
 
   test("returns null for text starting with space then '/'", () => {
     expect(detectSlashPrefix(" /clear")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSlashFullText
+// ---------------------------------------------------------------------------
+
+describe("detectSlashFullText", () => {
+  // Regression (#1851 Codex review): overlay-accept paths (Tab, click) need
+  // the FULL slash text including args, not just the command name. Earlier
+  // implementation reused detectSlashPrefix which truncated at first space,
+  // so /rewind 3 → /export ./out → /zoom 2 silently lost their args when
+  // accepted via overlay instead of direct Enter.
+  test("returns full text after '/' (preserves args)", () => {
+    expect(detectSlashFullText("/rewind 3")).toBe("rewind 3");
+    expect(detectSlashFullText("/export ./out.md")).toBe("export ./out.md");
+    expect(detectSlashFullText("/zoom 2")).toBe("zoom 2");
+  });
+
+  test("returns command name only when no args", () => {
+    expect(detectSlashFullText("/clear")).toBe("clear");
+  });
+
+  test("returns empty string for bare '/'", () => {
+    expect(detectSlashFullText("/")).toBe("");
+  });
+
+  test("returns null for non-slash input", () => {
+    expect(detectSlashFullText("hello")).toBeNull();
+    expect(detectSlashFullText("")).toBeNull();
+    expect(detectSlashFullText("hello /world")).toBeNull();
+    expect(detectSlashFullText(" /clear")).toBeNull();
+  });
+
+  test("parseSlashCommand round-trip with overlay query (Tab-accept path)", () => {
+    // Simulates what handleSlashSelect sees after the InputArea fix:
+    // slashQuery state holds the full text via detectSlashFullText, so
+    // parseSlashCommand correctly extracts args even when overlay accepts.
+    const fullText = detectSlashFullText("/rewind 3");
+    expect(fullText).toBe("rewind 3");
+    const parsed = parseSlashCommand(`/${fullText}`);
+    expect(parsed).toEqual({ command: "rewind", args: "3" });
   });
 });
 

@@ -11,6 +11,8 @@
 - **`/mcp` MCP server status view** (`McpView.tsx`): full-screen two-column interactive view, arrow-key navigation, Enter-to-authenticate. Status is sourced from Keychain check (instant) + live `getMcpStatus()` enrichment. Five status states: `connected`, `needs-auth`, `auth-pending-restart`, `error`, `pending`.
 - **`McpServerInfo`** state type and `set_mcp_status` reducer action for the new view.
 - **MCP tool display** (`tool-display.ts`): MCP-namespaced tools (`server__tool`) render as `Server ▸ subtitle` instead of falling through to suffix matching that mislabels them (e.g., previously `jira__jira_search` showed as "Web Search").
+- **`add_info` action + `{ kind: "info" }` TuiMessage** (#1851): non-error slash-command feedback (e.g. `/model`, `/export`, `/compact`) renders as a cyan `InfoMessage` row instead of a red `ErrorBlock` or a synthetic `You:` turn. Info is its own `TuiMessage` kind — `findLastAssistant` filters by `kind === "assistant"`, so notices never steal ownership of late `tool_result` / `spawn_end` / `agent_status_changed` events and always append at the end for visibility.
+- **Slash-command arg preservation** (#1851): `parseSlashCommand` preserves text after the command name on both dispatch paths — direct Enter (`handleSlashSubmit`) and overlay Tab/accept (`handleSlashSelect` via `detectSlashFullText`). Previously `/rewind 3<Tab>` dropped args silently and fell back to defaults.
 
 ## Purpose
 
@@ -115,6 +117,7 @@ type TuiMessage =
   | { kind: "user"; id: string; blocks: readonly ContentBlock[] }
   | { kind: "assistant"; id: string; blocks: readonly TuiAssistantBlock[]; streaming: boolean }
   | { kind: "system"; id: string; text: string }
+  | { kind: "info"; id: string; message: string }    // #1851 — non-assistant notice row
 
 type TuiAssistantBlock =
   | { kind: "text"; text: string }
@@ -124,9 +127,19 @@ type TuiAssistantBlock =
       args?: string;    // streamed argument JSON fragments
       result?: string }  // tool execution result (stringified by capResult())
   | { kind: "error"; code: string; message: string }
+  | { kind: "info"; message: string }    // legacy inline form, retained for other renderers
 ```
 
-**IDs are deterministic:** `assistant-${turnIndex}`, `tool-${callId}`, caller-provided for user messages.
+**IDs are deterministic:** `assistant-${turnIndex}`, `tool-${callId}`, `info-${messages.length}`, caller-provided for user messages.
+
+**Why `info` is a message kind, not an assistant block:** slash-command feedback
+notices (`/model`, `/compact`, `/export`) must stay visible at the bottom of
+the viewport AND must not participate in lifecycle routing. `findLastAssistant`
+filters by `kind === "assistant"`, so `info` messages are transparent to the
+reducer's late event resolution (`tool_result`, `spawn_progress`, `spawn_end`,
+`agent_status_changed`) — a notice can land after the assistant's `turn_end`
+without stranding a still-running tool or spawn. Lifecycle correctness is
+decoupled from transcript order (#1851 round 3 fix).
 
 **Tool call semantics:** `tool_call_delta` streams argument JSON fragments into `args`.
 `tool_call_end.result` stores the execution result into `result`. These are separate
@@ -159,6 +172,7 @@ type TuiAction =
   | { kind: "set_layout"; tier: LayoutTier }
   | { kind: "set_zoom"; level: number }
   | { kind: "add_error"; code: string; message: string }
+  | { kind: "add_info"; message: string }    // #1851 — appends { kind: "info" } TuiMessage
   | { kind: "clear_messages" }
   | { kind: "permission_response"; requestId: string; decision: ApprovalDecision }
   // Phase 2j-4 — dispatched by host on session start; TUI never does I/O

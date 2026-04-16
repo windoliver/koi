@@ -15,7 +15,7 @@ import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
 import { createEffect, createSignal, on, onCleanup, Show } from "solid-js";
 import { detectAtPrefix } from "../commands/at-detection.js";
-import { detectSlashPrefix } from "../commands/slash-detection.js";
+import { detectSlashFullText, detectSlashPrefix } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
 import { readClipboardImage } from "../utils/clipboard.js";
 import { COLORS } from "../theme.js";
@@ -233,8 +233,10 @@ export function InputArea(props: InputAreaProps): JSX.Element {
         // replace this with an onInput/onChange callback on <textarea> instead.
         queueMicrotask(() => {
           const text = safeText();
-          const slash = detectSlashPrefix(text);
-          props.onSlashDetected(slash);
+          // Use full-text detection so overlay-accept paths (Tab/click)
+          // can recover typed args. Overlay strips at space internally
+          // for command matching.
+          props.onSlashDetected(detectSlashFullText(text));
           props.onAtDetected?.(detectAtPrefix(text));
         });
         break;
@@ -243,7 +245,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
       case "delete-word": {
         queueMicrotask(() => {
           const text = safeText();
-          props.onSlashDetected(detectSlashPrefix(text));
+          props.onSlashDetected(detectSlashFullText(text));
           props.onAtDetected?.(detectAtPrefix(text));
         });
         break;
@@ -269,7 +271,7 @@ export function InputArea(props: InputAreaProps): JSX.Element {
             // Recompute slash and @-mention state after programmatic text
             // replacement so overlays stay in sync with buffer contents
             queueMicrotask(() => {
-              props.onSlashDetected(detectSlashPrefix(historyText));
+              props.onSlashDetected(detectSlashFullText(historyText));
               props.onAtDetected?.(detectAtPrefix(historyText));
             });
           }

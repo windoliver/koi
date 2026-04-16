@@ -291,6 +291,10 @@ export type TuiAssistantBlock =
       readonly kind: "error";
       readonly code: string;
       readonly message: string;
+    }
+  | {
+      readonly kind: "info";
+      readonly message: string;
     };
 
 /** Materialized message — reducer accumulates streaming deltas into these. */
@@ -310,6 +314,18 @@ export type TuiMessage =
       readonly kind: "system";
       readonly id: string;
       readonly text: string;
+    }
+  | {
+      /**
+       * Informational notice (slash-command feedback, session lifecycle, etc.).
+       * Rendered as a neutral cyan box — does NOT participate in assistant
+       * lifecycle resolution (`findLastAssistant`), so notices can safely
+       * append after an assistant turn whose tool_call / spawn_call is still
+       * resolving post-`turn_end`.
+       */
+      readonly kind: "info";
+      readonly id: string;
+      readonly message: string;
     };
 
 // ---------------------------------------------------------------------------
@@ -496,6 +512,10 @@ export type TuiAction =
   | {
       readonly kind: "add_error";
       readonly code: string;
+      readonly message: string;
+    }
+  | {
+      readonly kind: "add_info";
       readonly message: string;
     }
   | { readonly kind: "clear_messages" }

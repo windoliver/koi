@@ -52,6 +52,24 @@ export function detectSlashPrefix(input: string): string | null {
 }
 
 /**
+ * Full slash text detection: returns everything after "/" (including args).
+ *
+ * Used by the overlay state so that overlay selection (Tab / click) can
+ * recover typed arguments. `detectSlashPrefix` truncates at the first
+ * space (for command-name matching) — calling that for overlay state
+ * loses `/cmd <args>` args when the user accepts via overlay instead of
+ * direct Enter.
+ *
+ * Callers that need just the command name (for matching) should continue
+ * using `detectSlashPrefix` or strip at space themselves (see
+ * `SlashOverlay.matchQuery`).
+ */
+export function detectSlashFullText(input: string): string | null {
+  if (!input.startsWith("/")) return null;
+  return input.slice(1);
+}
+
+/**
  * Parse a full slash command from input text.
  * Returns null if the input is not a slash command.
  */

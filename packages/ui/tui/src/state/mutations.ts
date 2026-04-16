@@ -574,6 +574,21 @@ export function mutate(state: Draft, action: TuiAction): void {
       break;
     }
 
+    case "add_info": {
+      // Info uses its own `kind: "info"` TuiMessage and never participates in
+      // `findLastAssistantIdx`. Late tool_result / spawn_end /
+      // agent_status_changed events always resolve to the real assistant
+      // regardless of where the info row lands, so we always append.
+      const implicit: TuiMessage = {
+        kind: "info",
+        id: `info-${state.messages.length}`,
+        message: action.message,
+      };
+      (state.messages as TuiMessage[]).push(implicit);
+      maybeCompact(state);
+      break;
+    }
+
     case "clear_messages":
       (state as unknown as { messages: TuiMessage[] }).messages = [];
       (state as { agentStatus: string }).agentStatus = "idle";

@@ -11,6 +11,7 @@ export { CostDashboardView } from "./CostDashboardView.js";
 // Message rendering components
 export { ErrorBlock } from "./error-block.js";
 export { InputArea, type InputAreaProps } from "./InputArea.js";
+export { InfoBlock } from "./info-block.js";
 export type { InputKeyResult } from "./input-keys.js";
 export { processInputKey } from "./input-keys.js";
 export { MessageList } from "./message-list.js";
