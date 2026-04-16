@@ -14,7 +14,7 @@ import {
   toolResult,
   userMsg,
 } from "./test-helpers.js";
-import type { TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
+import type { PluginSummary, TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
 import {
   COMPACT_THRESHOLD,
   MAX_FINISHED_SPAWNS,
@@ -3070,5 +3070,29 @@ describe("reduce — set_trajectory_data", () => {
     });
     const next = reduce(state, { kind: "set_trajectory_data", steps: [] });
     expect(next.trajectorySteps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_plugin_summary
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_plugin_summary", () => {
+  test("sets pluginSummary when dispatched", () => {
+    const summary: PluginSummary = {
+      loaded: [
+        { name: "hello-plugin", version: "0.0.1", description: "A test plugin", source: "user" },
+      ],
+      errors: [],
+    };
+    const next = reduce(createInitialState(), { kind: "set_plugin_summary", summary });
+    expect(next.pluginSummary).toEqual(summary);
+  });
+
+  test("returns same state when summary is identical reference", () => {
+    const summary: PluginSummary = { loaded: [], errors: [] };
+    const state = { ...createInitialState(), pluginSummary: summary };
+    const next = reduce(state, { kind: "set_plugin_summary", summary });
+    expect(next).toBe(state);
   });
 });
