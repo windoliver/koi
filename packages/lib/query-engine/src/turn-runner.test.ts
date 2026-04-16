@@ -1800,4 +1800,137 @@ describe("runTurn", () => {
       expect(toolCalls.filter((t) => t === "writeFile").length).toBe(3);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Truncated tool call detection (#1768)
+  // ---------------------------------------------------------------------------
+
+  describe("truncated tool calls (stopReason 'length')", () => {
+    /** Helper: creates a stream that emits a completed tool call then done with stopReason "length". */
+    function createTruncatedToolStream(
+      toolName: string,
+      id: string,
+      args: string,
+    ): () => AsyncIterable<ModelChunk> {
+      return async function* (): AsyncIterable<ModelChunk> {
+        yield { kind: "tool_call_start", toolName, callId: callId(id) };
+        yield { kind: "tool_call_delta", callId: callId(id), delta: args };
+        yield { kind: "tool_call_end", callId: callId(id) };
+        yield {
+          kind: "done",
+          response: {
+            content: "",
+            model: "test-model",
+            stopReason: "length",
+            usage: { inputTokens: 10, outputTokens: 5 },
+          },
+        };
+      };
+    }
+
+    test("first truncation injects feedback and re-prompts model (recovery)", async () => {
+      const toolCallExecuted: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          // Turn 1: truncated tool call
+          createTruncatedToolStream("read_file", "tc1", '{"path": "foo.ts"}'),
+          // Turn 2: model retries successfully with text-only response
+          createTextStream("Here is the file content."),
+        ],
+        tools: [toolDesc("read_file")],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCallExecuted.push(request.toolId);
+          return { output: "file content" };
+        },
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool must NOT have been executed (truncated turn skipped, retry was text-only)
+      expect(toolCallExecuted).toHaveLength(0);
+
+      // Should have a truncation_recovery custom event
+      const recoveryEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "truncation_recovery",
+      );
+      expect(recoveryEvent).toBeDefined();
+
+      // Should complete successfully (model recovered with text)
+      const done = events.find((e) => e.kind === "done") as Extract<
+        EngineEvent,
+        { readonly kind: "done" }
+      >;
+      expect(done).toBeDefined();
+      expect(done.output.stopReason).toBe("completed");
+    });
+
+    test("recovery re-prompt allows model to retry with tool calls", async () => {
+      const toolCallExecuted: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          // Turn 1: truncated tool call
+          createTruncatedToolStream("read_file", "tc1", '{"path": "foo.ts"}'),
+          // Turn 2: model retries with a proper tool call (not truncated)
+          createToolCallStream("read_file", "tc2", '{"path": "bar.ts"}'),
+          // Turn 3: model responds with text after tool result
+          createTextStream("Done."),
+        ],
+        tools: [toolDesc("read_file")],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCallExecuted.push(request.toolId);
+          return { output: "file content" };
+        },
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool executed on the retry turn (tc2), NOT on the truncated turn (tc1)
+      expect(toolCallExecuted).toEqual(["read_file"]);
+
+      const done = events.find((e) => e.kind === "done") as Extract<
+        EngineEvent,
+        { readonly kind: "done" }
+      >;
+      expect(done.output.stopReason).toBe("completed");
+    });
+
+    test("second truncation after recovery fails closed", async () => {
+      const toolCallExecuted: string[] = [];
+      const handlers = createMockHandlers({
+        modelStreams: [
+          // Turn 1: truncated
+          createTruncatedToolStream("read_file", "tc1", '{"path": "foo.ts"}'),
+          // Turn 2: truncated again (recovery exhausted)
+          createTruncatedToolStream("read_file", "tc2", '{"path": "bar.ts"}'),
+        ],
+        tools: [toolDesc("read_file")],
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCallExecuted.push(request.toolId);
+          return { output: "file content" };
+        },
+      });
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // No tools executed
+      expect(toolCallExecuted).toHaveLength(0);
+
+      // Recovery event from first truncation
+      const recoveryEvent = events.find(
+        (e) => e.kind === "custom" && (e as { type: string }).type === "truncation_recovery",
+      );
+      expect(recoveryEvent).toBeDefined();
+
+      // Second truncation fails closed
+      const done = events.find((e) => e.kind === "done") as Extract<
+        EngineEvent,
+        { readonly kind: "done" }
+      >;
+      expect(done).toBeDefined();
+      expect(done.output.stopReason).toBe("error");
+
+      const meta = done.output.metadata as Record<string, unknown>;
+      expect(meta.source).toBe("model_stream");
+    });
+  });
 });

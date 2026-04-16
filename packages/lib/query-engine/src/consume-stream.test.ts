@@ -479,6 +479,170 @@ describe("consumeModelStream", () => {
     expect(events[1]).toEqual({ kind: "text_delta", delta: "Answer" });
   });
 
+  // ---------------------------------------------------------------------------
+  // stopReason × toolCalls matrix — truncation detection (#1768)
+  // ---------------------------------------------------------------------------
+
+  test("stopReason 'length' with completed tool calls yields error with truncation metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path": "foo.ts"}' },
+      { kind: "tool_call_end", callId: callId("tc1") },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "length",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as {
+      readonly modelStopReason: string;
+      readonly truncatedToolCallError: string;
+      readonly truncatedToolCalls: readonly {
+        readonly callId: string;
+        readonly toolName: string;
+      }[];
+    };
+    expect(meta.modelStopReason).toBe("length");
+    expect(meta.truncatedToolCallError).toContain("max_tokens");
+    expect(meta.truncatedToolCalls).toHaveLength(1);
+    expect(meta.truncatedToolCalls[0]?.callId).toBe(callId("tc1"));
+    expect(meta.truncatedToolCalls[0]?.toolName).toBe("read_file");
+  });
+
+  test("stopReason 'length' with multiple completed tool calls reports all in metadata", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path": "a.ts"}' },
+      { kind: "tool_call_end", callId: callId("tc1") },
+      { kind: "tool_call_start", toolName: "write_file", callId: callId("tc2") },
+      { kind: "tool_call_delta", callId: callId("tc2"), delta: '{"path": "b.ts", "content": "x"}' },
+      { kind: "tool_call_end", callId: callId("tc2") },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "length",
+          usage: { inputTokens: 20, outputTokens: 15 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as {
+      readonly truncatedToolCalls: readonly { readonly toolName: string }[];
+    };
+    expect(meta.truncatedToolCalls).toHaveLength(2);
+    expect(meta.truncatedToolCalls[0]?.toolName).toBe("read_file");
+    expect(meta.truncatedToolCalls[1]?.toolName).toBe("write_file");
+  });
+
+  test("stopReason 'length' with no tool calls yields completed (truncated text is not a safety hazard)", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "partial answer" },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "length",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("completed");
+    expect(done.output.metadata).toBeUndefined();
+  });
+
+  test("stopReason 'length' with dangling tool calls yields error via dangling path", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path":' },
+      // No tool_call_end — dangling
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "length",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("error");
+    const meta = done.output.metadata as {
+      readonly danglingToolCallsError: string;
+      readonly danglingToolCalls: readonly { readonly callId: string }[];
+    };
+    // Dangling path takes priority (it fires first in the stopReason chain)
+    expect(meta.danglingToolCallsError).toContain("in-flight tool calls");
+    expect(meta.danglingToolCalls).toHaveLength(1);
+  });
+
+  test("stopReason 'tool_use' with completed tool calls yields completed (normal flow)", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "read_file", callId: callId("tc1") },
+      { kind: "tool_call_delta", callId: callId("tc1"), delta: '{"path": "foo.ts"}' },
+      { kind: "tool_call_end", callId: callId("tc1") },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "tool_use",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("completed");
+    expect(done.output.metadata).toBeUndefined();
+  });
+
+  test("stopReason 'stop' with no tool calls yields completed (normal text flow)", async () => {
+    const chunks: readonly ModelChunk[] = [
+      { kind: "text_delta", delta: "Hello world" },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test-model",
+          stopReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 5 },
+        },
+      },
+    ];
+
+    const events = await collect(consumeModelStream(toStream(chunks)));
+    const done = events.at(-1) as Extract<EngineEvent, { readonly kind: "done" }>;
+
+    expect(done.output.stopReason).toBe("completed");
+    expect(done.output.metadata).toBeUndefined();
+  });
+
   // Regression: before the iterator-cleanup fix, `consumeModelStream` called
   // `iterator.return?.()` inside its finally but discarded the returned promise
   // with `void`. Any inner async-generator finally that awaited I/O (e.g. the

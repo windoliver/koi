@@ -527,6 +527,8 @@
         "@koi/loop": "workspace:*",
         "@koi/lsp": "workspace:*",
         "@koi/mcp": "workspace:*",
+        "@koi/memory": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
         "@koi/memory-tools": "workspace:*",
         "@koi/middleware-audit": "workspace:*",
         "@koi/middleware-exfiltration-guard": "workspace:*",
@@ -695,6 +697,15 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/redaction": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
+    "packages/mm/middleware-memory-recall": {
+      "name": "@koi/middleware-memory-recall",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/memory": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
     },
@@ -1166,6 +1177,8 @@
     "@koi/middleware-extraction": ["@koi/middleware-extraction@workspace:packages/mm/middleware-extraction"],
 
     "@koi/middleware-goal": ["@koi/middleware-goal@workspace:packages/lib/middleware-goal"],
+
+    "@koi/middleware-memory-recall": ["@koi/middleware-memory-recall@workspace:packages/mm/middleware-memory-recall"],
 
     "@koi/middleware-otel": ["@koi/middleware-otel@workspace:packages/lib/middleware-otel"],
 

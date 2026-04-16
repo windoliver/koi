@@ -12,9 +12,11 @@
  */
 
 import { describe, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { EngineEvent } from "@koi/core";
-import { createEventBatcher, createInitialState, createStore } from "@koi/tui";
-import { drainEngineStream, summarizeRunReport } from "./tui-command.js";
+import { COMMAND_DEFINITIONS, createEventBatcher, createInitialState, createStore } from "@koi/tui";
+import { drainEngineStream, renderTranscriptMarkdown, summarizeRunReport } from "./tui-command.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -680,5 +682,100 @@ describe("summarizeRunReport", () => {
       cost: { totalTokens: 0 },
     });
     expect(out).toBe("actions=0 artifacts=0 issues=0 recs=0 children=0 tokens=0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderTranscriptMarkdown — /export output format (#1752)
+// ---------------------------------------------------------------------------
+
+describe("renderTranscriptMarkdown", () => {
+  test("renders header + user/assistant sections", () => {
+    const md = renderTranscriptMarkdown(
+      [
+        { role: "user", content: [{ kind: "text", text: "hello" }] },
+        { role: "assistant", content: [{ kind: "text", text: "hi there" }] },
+      ],
+      { sessionId: "sess-123", modelName: "anthropic/claude-sonnet-4-6", provider: "openrouter" },
+    );
+    expect(md).toContain("# Koi Session sess-123");
+    expect(md).toContain("**Model**: anthropic/claude-sonnet-4-6");
+    expect(md).toContain("**Provider**: openrouter");
+    expect(md).toContain("## User");
+    expect(md).toContain("hello");
+    expect(md).toContain("## Assistant");
+    expect(md).toContain("hi there");
+  });
+
+  test("renders non-text blocks as placeholders", () => {
+    const md = renderTranscriptMarkdown(
+      [
+        {
+          role: "user",
+          content: [
+            { kind: "text", text: "see this" },
+            { kind: "image", url: "https://example.com/x.png" },
+          ],
+        },
+      ],
+      { sessionId: "s", modelName: "m", provider: "p" },
+    );
+    expect(md).toContain("see this");
+    expect(md).toContain("_[image block]_");
+  });
+
+  test("produces a valid document for an empty transcript", () => {
+    const md = renderTranscriptMarkdown([], {
+      sessionId: "empty",
+      modelName: "m",
+      provider: "p",
+    });
+    expect(md).toContain("# Koi Session empty");
+    // No user/assistant sections.
+    expect(md).not.toContain("## User");
+    expect(md).not.toContain("## Assistant");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: issue #1752 — every advertised slash command is handled
+// ---------------------------------------------------------------------------
+
+describe("onCommand dispatch coverage — #1752", () => {
+  // Commands advertised in the palette that reach the host's onCommand
+  // callback (as opposed to nav:* and a handful of session:* / display:*
+  // commands that TuiRoot handles internally and never bubbles up). Issue
+  // #1752 reported that every id listed here fell through to the `default:`
+  // branch and returned COMMAND_NOT_IMPLEMENTED. Locked in below.
+  const HOST_DISPATCHED_COMMAND_IDS = [
+    "agent:interrupt",
+    "agent:clear",
+    "agent:compact",
+    "agent:rewind",
+    "session:new",
+    "session:export",
+    "system:model",
+    "system:cost",
+    "system:tokens",
+    "system:zoom",
+    "system:quit",
+  ] as const;
+
+  test("every host-dispatched command id is defined in COMMAND_DEFINITIONS", () => {
+    const defined = new Set(COMMAND_DEFINITIONS.map((c) => c.id));
+    for (const id of HOST_DISPATCHED_COMMAND_IDS) {
+      expect(defined.has(id)).toBe(true);
+    }
+  });
+
+  test("every host-dispatched command id has a case clause in tui-command.ts", () => {
+    const src = readFileSync(join(import.meta.dir, "tui-command.ts"), "utf8");
+    const missing: string[] = [];
+    for (const id of HOST_DISPATCHED_COMMAND_IDS) {
+      if (!src.includes(`case "${id}"`)) {
+        missing.push(id);
+      }
+    }
+    expect(missing).toEqual([]);
   });
 });
