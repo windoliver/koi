@@ -1495,6 +1495,82 @@ describe("reduce — add_error", () => {
 });
 
 // ---------------------------------------------------------------------------
+// add_info
+// ---------------------------------------------------------------------------
+
+describe("reduce — add_info", () => {
+  test("appends standalone notice when no active turn", () => {
+    const state = createInitialState();
+    const next = reduce(state, { kind: "add_info", message: "Goal added" });
+    expect(next.messages).toHaveLength(1);
+    const msg = lastMessage(next);
+    expect(msg.kind).toBe("assistant");
+    if (msg.kind === "assistant") {
+      expect(msg.streaming).toBe(false);
+      expect(msg.blocks).toHaveLength(1);
+      expect(msg.blocks[0]?.kind).toBe("info");
+    }
+  });
+
+  // Regression (#1851 Codex review): add_info dispatched mid-turn must not
+  // strand the active streaming assistant. Inserting it AFTER the streaming
+  // turn would make findLastAssistant target the notice, dropping later
+  // tool_result / turn_end events on the floor.
+  test("inserts BEFORE active streaming assistant (preserves lifecycle target)", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "text", text: "working..." },
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-active", streaming: true, blocks })],
+    });
+    const next = reduce(state, { kind: "add_info", message: "Goal added" });
+    expect(next.messages).toHaveLength(2);
+    // Notice inserted FIRST, streaming assistant remains LAST
+    const notice = messageAt(next, 0);
+    expect(notice.kind).toBe("assistant");
+    if (notice.kind === "assistant") {
+      expect(notice.streaming).toBe(false);
+      expect(notice.blocks[0]?.kind).toBe("info");
+    }
+    const active = lastMessage(next);
+    expect(active.kind).toBe("assistant");
+    if (active.kind === "assistant") {
+      // Streaming assistant unchanged — tool still running, still streaming
+      expect(active.streaming).toBe(true);
+      const tool = active.blocks.find((b) => b.kind === "tool_call");
+      if (tool?.kind === "tool_call") {
+        expect(tool.status).toBe("running");
+      }
+    }
+  });
+
+  test("subsequent tool_result + turn_end target the original streaming assistant", () => {
+    // Full lifecycle reproduction of the Codex-flagged scenario:
+    // turn_start + tool_call_start + add_info + tool_result + turn_end.
+    // Verify the streaming assistant gets the tool_result and turn_end
+    // (not the info notice) — this would have been broken before the fix.
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-active", streaming: true, blocks })],
+      runningToolCount: 1,
+    });
+    const afterInfo = reduce(state, { kind: "add_info", message: "Goal added" });
+    // The streaming assistant must still be the LAST message after add_info,
+    // so future findLastAssistant calls hit it (not the notice).
+    const lastIdx = afterInfo.messages.length - 1;
+    const lastAfterInfo = afterInfo.messages[lastIdx];
+    expect(lastAfterInfo?.kind).toBe("assistant");
+    if (lastAfterInfo?.kind === "assistant") {
+      expect(lastAfterInfo.streaming).toBe(true);
+      expect(lastAfterInfo.id).toBe("assistant-active");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // clear_messages
 // ---------------------------------------------------------------------------
 

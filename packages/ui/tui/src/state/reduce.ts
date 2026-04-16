@@ -758,6 +758,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         blocks: [infoBlock],
         streaming: false,
       };
+      // If a streaming assistant is active (mid-turn tool call etc.),
+      // insert the info BEFORE it so findLastAssistant still resolves to
+      // the real in-flight turn. Otherwise later tool_result / turn_end
+      // events would target the info message and strand the real turn's
+      // tool/runningTool state.
+      const active = findLastAssistant(state.messages);
+      if (active?.msg.streaming) {
+        const before = state.messages.slice(0, active.idx);
+        const after = state.messages.slice(active.idx);
+        return { ...state, messages: maybeCompact([...before, implicit, ...after]) };
+      }
       return { ...state, messages: maybeCompact([...state.messages, implicit]) };
     }
 

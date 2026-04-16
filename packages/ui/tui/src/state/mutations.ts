@@ -582,7 +582,16 @@ export function mutate(state: Draft, action: TuiAction): void {
         blocks: [infoBlock],
         streaming: false,
       };
-      (state.messages as TuiMessage[]).push(implicit);
+      // Insert BEFORE any active streaming assistant so tool/turn
+      // lifecycle helpers (findLastAssistantIdx) still resolve to the
+      // real in-flight turn rather than this notice.
+      const activeIdx = findLastAssistantIdx(state.messages);
+      const active = activeIdx >= 0 ? (state.messages[activeIdx] as AssistantMessage) : undefined;
+      if (active?.streaming) {
+        (state.messages as TuiMessage[]).splice(activeIdx, 0, implicit);
+      } else {
+        (state.messages as TuiMessage[]).push(implicit);
+      }
       maybeCompact(state);
       break;
     }
