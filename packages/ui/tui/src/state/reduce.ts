@@ -754,7 +754,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         state.planTasks === null &&
         state.expandedToolCallIds.size === 0 &&
         state.expandedBodyToolCallIds.size === 0 &&
-        state.activeSpawns.size === 0
+        state.activeSpawns.size === 0 &&
+        state.finishedSpawns.length === 0
       )
         return state;
       return {
@@ -766,6 +767,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         expandedToolCallIds: new Set(),
         expandedBodyToolCallIds: new Set(),
         activeSpawns: new Map(),
+        finishedSpawns: [],
         retryState: null,
         // Reset cost dashboard state so new sessions start clean (#1636)
         costBreakdown: null,
@@ -839,8 +841,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       // Host-dispatched spawn termination with explicit outcome (complete or failed).
       // The engine's agent_status_changed event only carries "terminated", so the
       // bridge uses this action to preserve failure state for rendering.
+      // This action is authoritative: if agent_status_changed already recorded the
+      // spawn as "complete", this overwrites both the block and the finishedSpawns
+      // record with the correct outcome (#1792).
       const progress = state.activeSpawns.get(action.agentId);
-      if (!progress) return state;
+
+      // If activeSpawns was already cleared (agent_status_changed arrived first),
+      // look up the existing finishedSpawns record to recover metadata.
+      const existingRecord = progress
+        ? undefined
+        : state.finishedSpawns.find((r) => r.agentId === action.agentId);
+      if (!progress && !existingRecord) return state;
 
       const found = findLastAssistant(state.messages);
       if (!found) return state;
@@ -850,35 +861,52 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       );
       if (blockIdx < 0) return state;
 
+      const agentName = progress?.agentName ?? existingRecord!.agentName;
+      const description = progress?.description ?? existingRecord!.description;
+      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
       const finishedAt = Date.now();
-      const durationMs = finishedAt - progress.startedAt;
+      const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
         kind: "spawn_call" as const,
         agentId: action.agentId,
-        agentName: progress.agentName,
-        description: progress.description,
+        agentName,
+        description,
         status: action.outcome,
         stats,
       });
 
-      const activeSpawns = new Map(state.activeSpawns);
-      activeSpawns.delete(action.agentId);
+      let activeSpawns: ReadonlyMap<string, SpawnProgress> = state.activeSpawns;
+      if (progress) {
+        const mutable = new Map(state.activeSpawns);
+        mutable.delete(action.agentId);
+        activeSpawns = mutable;
+      }
+
+      // Replace the existing record if agent_status_changed already inserted one,
+      // otherwise append a new record.
+      const correctedSpawns = existingRecord
+        ? state.finishedSpawns.map((r) =>
+            r.agentId === action.agentId
+              ? { ...r, outcome: action.outcome, finishedAt, durationMs }
+              : r,
+          )
+        : appendFinishedSpawn(state.finishedSpawns, {
+            agentId: action.agentId,
+            agentName,
+            description,
+            startedAt,
+            finishedAt,
+            durationMs,
+            outcome: action.outcome,
+          });
 
       return {
         ...state,
         messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
         activeSpawns,
-        finishedSpawns: appendFinishedSpawn(state.finishedSpawns, {
-          agentId: action.agentId,
-          agentName: progress.agentName,
-          description: progress.description,
-          startedAt: progress.startedAt,
-          finishedAt,
-          durationMs,
-          outcome: action.outcome,
-        }),
+        finishedSpawns: correctedSpawns,
       };
     }
 

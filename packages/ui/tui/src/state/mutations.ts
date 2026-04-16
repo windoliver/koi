@@ -583,6 +583,7 @@ export function mutate(state: Draft, action: TuiAction): void {
       (state as unknown as { expandedBodyToolCallIds: Set<string> }).expandedBodyToolCallIds =
         new Set();
       (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = new Map();
+      (state as unknown as { finishedSpawns: readonly SpawnRecord[] }).finishedSpawns = [];
       (state as { retryState: null }).retryState = null;
       break;
 
@@ -645,8 +646,13 @@ export function mutate(state: Draft, action: TuiAction): void {
     }
 
     case "set_spawn_terminal": {
+      // Authoritative terminal action — overwrites agent_status_changed record
+      // if it arrived first (#1792).
       const progress = state.activeSpawns.get(action.agentId);
-      if (!progress) break;
+      const existingRecord = progress
+        ? undefined
+        : state.finishedSpawns.find((r) => r.agentId === action.agentId);
+      if (!progress && !existingRecord) break;
 
       const msg = lastAssistant(state);
       if (!msg) break;
@@ -656,31 +662,48 @@ export function mutate(state: Draft, action: TuiAction): void {
       );
       if (blockIdx < 0) break;
 
+      const agentName = progress?.agentName ?? existingRecord!.agentName;
+      const description = progress?.description ?? existingRecord!.description;
+      const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
       const finishedAt = Date.now();
-      const durationMs = finishedAt - progress.startedAt;
+      const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
       (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
         kind: "spawn_call",
         agentId: action.agentId,
-        agentName: progress.agentName,
-        description: progress.description,
+        agentName,
+        description,
         status: action.outcome,
         stats,
       };
 
-      const spawns = new Map(state.activeSpawns);
-      spawns.delete(action.agentId);
-      (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
-      recordFinishedSpawn(state, {
-        agentId: action.agentId,
-        agentName: progress.agentName,
-        description: progress.description,
-        startedAt: progress.startedAt,
-        finishedAt,
-        durationMs,
-        outcome: action.outcome,
-      });
+      if (progress) {
+        const spawns = new Map(state.activeSpawns);
+        spawns.delete(action.agentId);
+        (state as unknown as { activeSpawns: Map<string, SpawnProgress> }).activeSpawns = spawns;
+      }
+
+      if (existingRecord) {
+        // Overwrite the existing record's outcome in-place.
+        const idx = state.finishedSpawns.findIndex((r) => r.agentId === action.agentId);
+        if (idx >= 0) {
+          const updated = state.finishedSpawns.map((r, i) =>
+            i === idx ? { ...r, outcome: action.outcome, finishedAt, durationMs } : r,
+          );
+          (state as unknown as { finishedSpawns: readonly SpawnRecord[] }).finishedSpawns = updated;
+        }
+      } else {
+        recordFinishedSpawn(state, {
+          agentId: action.agentId,
+          agentName,
+          description,
+          startedAt,
+          finishedAt,
+          durationMs,
+          outcome: action.outcome,
+        });
+      }
       break;
     }
 
