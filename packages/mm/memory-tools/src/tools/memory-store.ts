@@ -116,6 +116,23 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
           message: "A memory with this name and type already exists. Use force: true to overwrite.",
         };
       }
+      case "corrupted":
+        // Legacy non-atomic writes left multiple records sharing the same
+        // (name, type) on disk. We refuse to act and surface the stale
+        // ids so the caller can reconcile manually (delete the stale
+        // records, then retry). Without this branch the tool would fall
+        // off the switch and return undefined.
+        return {
+          stored: false,
+          corrupted: {
+            canonicalName: value.canonicalName,
+            conflictingIds: value.conflictingIds,
+          },
+          message:
+            `Memory store corruption: ${String(value.conflictingIds.length)} records share ` +
+            `name=${JSON.stringify(value.canonicalName)}. Delete all but one of the ids ` +
+            `above via memory_delete, then retry memory_store.`,
+        };
     }
   } catch {
     return safeCatchError("Failed to store memory");
