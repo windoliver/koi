@@ -114,6 +114,11 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   // let justified: mutable per-run flag, set in the truncation recovery block
   let truncationRecoveryUsed = false;
 
+  // #1754: cap schema-validation recovery to ONE re-prompt. If the model
+  // sends invalid args twice, the problem is structural — fail closed.
+  // let justified: mutable per-run flag, set in the schema validation block
+  let schemaValidationRecoveryUsed = false;
+
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
   if (isAborted(signal)) {
@@ -402,6 +407,7 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
 
       // Validate tool arguments against advertised inputSchema
       const schemaErrors: string[] = [];
+      const schemaErrorsByCallId = new Map<string, string>();
       for (const tc of validToolCalls) {
         const descriptor = descriptorMap.get(tc.toolName);
         if (descriptor !== undefined) {
@@ -409,17 +415,59 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           const error = validateToolArgs(args, descriptor);
           if (error !== undefined) {
             schemaErrors.push(`${tc.toolName}: ${error}`);
+            schemaErrorsByCallId.set(tc.callId, `${tc.toolName}: ${error}`);
           }
         }
       }
       if (schemaErrors.length > 0) {
         errorMetadata = { source: "schema_validation", errors: schemaErrors };
-        state = transitionTurn(state, {
-          kind: "error",
-          message: `tool argument validation failed — ${schemaErrors.join("; ")}`,
-        });
-        yield { kind: "turn_end", turnIndex: state.turnIndex };
-        break;
+
+        // #1754: first failure → feed error back as synthetic tool_result
+        // so the model can retry with corrected args. Second failure → hard error.
+        if (schemaValidationRecoveryUsed) {
+          state = transitionTurn(state, {
+            kind: "error",
+            message: `tool argument validation failed again after recovery turn — ${schemaErrors.join("; ")}`,
+          });
+          yield { kind: "turn_end", turnIndex: state.turnIndex };
+          break;
+        }
+        schemaValidationRecoveryUsed = true;
+
+        // Record the assistant's tool-call intents in the transcript so
+        // every streamed tool_call event has a matching intent.
+        appendAssistantTurn(transcript, turnText, validToolCalls);
+
+        // Synthesize error tool_results for every tool call in this turn.
+        // Calls that passed validation also get a synthetic result because
+        // the whole batch is rejected — partial execution would be surprising.
+        for (const tc of validToolCalls) {
+          const errorMsg =
+            schemaErrorsByCallId.get(tc.callId) ??
+            "Co-occurring tool call skipped due to validation failure in this batch";
+          const syntheticOutput = {
+            error: `Schema validation failed: ${errorMsg}`,
+            code: "SCHEMA_VALIDATION_ERROR",
+          } as const;
+          appendToolResult(transcript, {
+            callId: tc.callId,
+            toolName: tc.toolName,
+            output: syntheticOutput,
+          });
+          yield {
+            kind: "tool_result",
+            callId: tc.callId as ToolCallId,
+            output: syntheticOutput,
+          };
+        }
+
+        // Transition to continue so the model gets a recovery turn.
+        state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
+        if (state.stopReason === "completed") {
+          state = transitionTurn(state, { kind: "stop_blocked" });
+        }
+        yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
+        continue;
       }
     }
 

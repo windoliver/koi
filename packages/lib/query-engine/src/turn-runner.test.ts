@@ -832,78 +832,202 @@ describe("runTurn", () => {
     }
   });
 
-  test("tool args missing required fields are rejected before execution", async () => {
-    const toolCalls: string[] = [];
-    const handlers: ComposedCallHandlers = {
-      modelCall: async (_request: ModelRequest): Promise<ModelResponse> => DONE_RESPONSE,
-      modelStream: (_request: ModelRequest): AsyncIterable<ModelChunk> => {
-        // Tool call with args missing the required "path" field
-        return toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}');
-      },
-      toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
-        toolCalls.push(request.toolId);
-        return { output: "should-not-run" };
-      },
-      tools: [
-        {
-          name: "readFile",
-          description: "read a file",
-          inputSchema: {
-            type: "object",
-            required: ["path"],
-            properties: { path: { type: "string" } },
-          },
+  describe("schema validation recovery (#1754)", () => {
+    const READ_FILE_TOOL = {
+      name: "readFile",
+      description: "read a file",
+      inputSchema: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string" },
+          offset: { type: "number" },
         },
-      ],
-    };
+      },
+    } as const;
 
-    const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+    test("missing required field feeds synthetic error + re-prompts model", async () => {
+      const toolCalls: string[] = [];
+      const modelCallRequests: ModelRequest[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: model omits required "path" field
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model corrects itself with text
+        createTextStream("Sorry, I need to provide a path."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (request: ModelRequest): AsyncIterable<ModelChunk> => {
+          modelCallRequests.push(request);
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "should-not-run" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
 
-    expect(toolCalls).toEqual([]);
-    const done = events.find((e) => e.kind === "done");
-    expect(done).toBeDefined();
-    if (done?.kind === "done") {
-      expect(done.output.stopReason).toBe("error");
-      // Error metadata should identify schema validation as the source
-      expect(done.output.metadata).toBeDefined();
-      if (done.output.metadata !== undefined) {
-        expect(done.output.metadata.source).toBe("schema_validation");
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool must NOT have been called
+      expect(toolCalls).toEqual([]);
+      // Model was called twice: once for the bad tool call, once after recovery
+      expect(modelCallRequests).toHaveLength(2);
+
+      // A synthetic tool_result was emitted for the failing call
+      const toolResult = events.find((e) => e.kind === "tool_result") as
+        | { readonly kind: "tool_result"; readonly callId: string; readonly output: unknown }
+        | undefined;
+      expect(toolResult).toBeDefined();
+      expect(toolResult?.callId).toBe("tc-1");
+      expect(toolResult?.output).toMatchObject({
+        error: expect.stringContaining("missing required") as unknown as string,
+        code: "SCHEMA_VALIDATION_ERROR",
+      });
+
+      // The second model call saw the validation error in its transcript
+      const secondRequest = modelCallRequests[1];
+      const secondMessages = (secondRequest?.messages ?? []) as readonly {
+        readonly senderId: string;
+      }[];
+      const toolMsg = secondMessages.find((m) => m.senderId === "tool");
+      expect(toolMsg).toBeDefined();
+
+      // Completes successfully after recovery
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
       }
-    }
-  });
+    });
 
-  test("tool args with wrong type are rejected before execution", async () => {
-    const toolCalls: string[] = [];
-    const handlers: ComposedCallHandlers = {
-      modelCall: async (_request: ModelRequest): Promise<ModelResponse> => DONE_RESPONSE,
-      modelStream: (_request: ModelRequest): AsyncIterable<ModelChunk> => {
-        // path should be string but model sent number
-        return toolCallStreamGen("readFile", "tc-1", '{"path":123}');
-      },
-      toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
-        toolCalls.push(request.toolId);
-        return { output: "should-not-run" };
-      },
-      tools: [
-        {
-          name: "readFile",
-          description: "read a file",
-          inputSchema: {
-            type: "object",
-            properties: { path: { type: "string" } },
-          },
+    test("wrong type feeds synthetic error + re-prompts model", async () => {
+      const toolCalls: string[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: path should be string but model sent number
+        () => toolCallStreamGen("readFile", "tc-1", '{"path":123}'),
+        // Turn 1: model corrects itself
+        createTextStream("Let me fix that."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
         },
-      ],
-    };
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "should-not-run" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
 
-    const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
 
-    expect(toolCalls).toEqual([]);
-    const done = events.find((e) => e.kind === "done");
-    expect(done).toBeDefined();
-    if (done?.kind === "done") {
-      expect(done.output.stopReason).toBe("error");
-    }
+      expect(toolCalls).toEqual([]);
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+
+    test("second schema validation failure after recovery fails closed", async () => {
+      const toolCalls: string[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: bad args (missing required)
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model tries again but still bad (wrong type)
+        () => toolCallStreamGen("readFile", "tc-2", '{"path":123}'),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "should-not-run" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool must NOT have been called
+      expect(toolCalls).toEqual([]);
+      // Second failure is hard error
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("error");
+        expect(done.output.metadata).toBeDefined();
+        if (done.output.metadata !== undefined) {
+          expect(done.output.metadata.source).toBe("schema_validation");
+        }
+      }
+    });
+
+    test("recovery allows model to retry with correct args and execute tool", async () => {
+      const toolCalls: string[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: wrong type for offset (string instead of number)
+        () => toolCallStreamGen("readFile", "tc-1", '{"path":"/foo","offset":"abc"}'),
+        // Turn 1: model retries with correct args
+        createToolCallStream("readFile", "tc-2", '{"path":"/foo","offset":0}'),
+        // Turn 2: model responds with text
+        createTextStream("Here is the file content."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "file-content" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool should have been called on the corrected retry
+      expect(toolCalls).toEqual(["readFile"]);
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
   });
 
   test("error metadata is included in done event for model stream errors", async () => {
