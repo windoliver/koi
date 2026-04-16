@@ -171,8 +171,15 @@ function buildSpawnToolSchema(allowDynamic: boolean): JsonObject {
       fork: {
         type: "boolean",
         description:
-          "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
-          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+          "If true, spawns the agent in fork mode: the child inherits all parent tools except Spawn (leaf worker). " +
+          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist. " +
+          "To allow nested delegation, also set allowNestedSpawn to true.",
+      },
+      allowNestedSpawn: {
+        type: "boolean",
+        description:
+          "When true with fork, the forked child receives its own Spawn tool for nested delegation (coordinator pattern). " +
+          "Without this, fork children are leaf workers that cannot spawn grandchildren. Bounded by depth limits.",
       },
       timeoutMs: {
         type: "number",
@@ -254,6 +261,7 @@ export function createSpawnExecutor(
           ? { toolAllowlist: args.toolAllowlist as string[] }
           : {}),
         ...(args.fork === true ? { fork: true as const } : {}),
+        ...(args.allowNestedSpawn === true ? { allowNestedSpawn: true as const } : {}),
       });
 
       if (!result.ok) {

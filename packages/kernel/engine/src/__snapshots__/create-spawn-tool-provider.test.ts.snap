@@ -7,12 +7,16 @@ exports[`createSpawnToolProvider Spawn tool inputSchema matches committed snapsh
       "description": "Name of the agent to spawn (e.g. "researcher", "coder", "reviewer"). Must match a known agent definition.",
       "type": "string",
     },
+    "allowNestedSpawn": {
+      "description": "When true with fork, the forked child receives its own Spawn tool for nested delegation (coordinator pattern). Without this, fork children are leaf workers that cannot spawn grandchildren. Bounded by depth limits.",
+      "type": "boolean",
+    },
     "description": {
       "description": "The task for the spawned agent to perform.",
       "type": "string",
     },
     "fork": {
-      "description": "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+      "description": "If true, spawns the agent in fork mode: the child inherits all parent tools except Spawn (leaf worker). Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist. To allow nested delegation, also set allowNestedSpawn to true.",
       "type": "boolean",
     },
     "maxTokens": {

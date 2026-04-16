@@ -103,8 +103,12 @@ export interface SpawnRequest {
   readonly requiredOutputToolName?: string | undefined;
   /**
    * When true, this spawn is a fork — the child inherits all parent tools with no
-   * filtering (equivalent to `toolAllowlist: ['*']`), and `agent_spawn` is
-   * automatically stripped from the child's tool set to prevent recursive forks.
+   * filtering (equivalent to `toolAllowlist: ['*']`), and by default `agent_spawn`
+   * is stripped from the child's inherited tool set to prevent recursive forks.
+   *
+   * To allow a fork child to spawn its own children (coordinator pattern), set
+   * `allowNestedSpawn: true` — the child receives a fresh Spawn tool bound to
+   * itself (bounded by the depth guard's `maxDepth`).
    *
    * Mutually exclusive with `toolAllowlist` (fork already implies full inheritance).
    * Compatible with `toolDenylist` (further restriction on top of fork defaults).
@@ -116,6 +120,16 @@ export interface SpawnRequest {
    * enabling the engine to enforce both without relying on caller conventions.
    */
   readonly fork?: true | undefined;
+  /**
+   * When true AND `fork` is true, the forked child receives a fresh Spawn tool
+   * for nested delegation (coordinator → researcher → coder pattern). Without
+   * this flag, fork children are leaf workers that cannot spawn grandchildren.
+   *
+   * Bounded by the depth guard (`maxDepth`) — no unbounded recursion.
+   * Ignored when `fork` is not set (non-fork children always receive Spawn
+   * when manifest policy allows it).
+   */
+  readonly allowNestedSpawn?: true | undefined;
 }
 
 // ---------------------------------------------------------------------------

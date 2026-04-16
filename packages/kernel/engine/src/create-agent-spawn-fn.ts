@@ -288,14 +288,26 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
     }
 
-    // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
+    // 5. Fail fast on conflicting list fields before any side-effectful work
+    //    (e.g. spawnProviderFactory allocation).
+    const validation = validateSpawnRequest(request);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
+    }
+
+    // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
-    //      b) The child is not a fork (fork recursion guard — forks never delegate further)
+    //      b) The child is not a fork, OR fork with allowNestedSpawn=true
     //      c) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
-    //    The selfCeiling check ensures built-ins like coordinator can't receive Spawn from a
-    //    privileged parent even if (a) and (b) would otherwise allow it.
+    //    Fork children default to leaf-worker mode (no Spawn) for backwards compatibility.
+    //    Set allowNestedSpawn=true to enable the coordinator pattern (fork child that
+    //    spawns grandchildren), bounded by the depth guard (maxDepth).
+    //    The fork denylist in spawn-child.ts strips Spawn from the *inherited* tool path
+    //    (preventing closure-bound parent-attribution issues); the fresh provider creates
+    //    a new closure correctly bound to the child.
     const isFork = request.fork === true;
+    const forkAllowsSpawn = !isFork || request.allowNestedSpawn === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
@@ -307,24 +319,18 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     const childProviders: ComponentProvider[] =
       options.spawnProviderFactory !== undefined &&
       spawnAllowedByManifest &&
-      !isFork &&
+      forkAllowsSpawn &&
       selfCeilingAllowsSpawn
         ? [options.spawnProviderFactory()]
         : [];
 
-    // Fail fast on conflicting list fields before building child options.
-    const validation = validateSpawnRequest(request);
-    if (!validation.ok) {
-      return { ok: false, error: validation.error };
-    }
-
-    // 6. Resolve delivery policy: request override > base default > manifest > streaming
-    //    Resolved BEFORE middleware building so the delivery-mode validation
-    //    gate below can reject invalid non-streaming spawns without paying
-    //    for per-child middleware resolution.
+    // 6b. Resolve delivery policy: request override > base default > manifest > streaming
+    //     Resolved BEFORE middleware building so the delivery-mode validation
+    //     gate below can reject invalid non-streaming spawns without paying
+    //     for per-child middleware resolution.
     const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
 
-    // 6b. Delivery-mode sink validation — fail fast before middleware build.
+    // 6c. Delivery-mode sink validation — fail fast before middleware build.
     //     on_demand needs a ReportStore; deferred needs the parent inbox.
     //     Without the appropriate sink the child runs but output is silently lost.
     //     Validated up front so rejected spawns cost zero per-child resources.
