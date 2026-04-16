@@ -120,7 +120,7 @@ switch (result.kind) {
       setTimeout(resolve, 0);
     });
     if (guard.terminated) {
-      process.exit(143);
+      process.exit(guard.terminatedExitCode);
     }
     const proc = Bun.spawn(
       [process.execPath, "--conditions", "browser", ...process.argv.slice(1)],

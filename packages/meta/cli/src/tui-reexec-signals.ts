@@ -60,6 +60,8 @@ const PARENT_SIGTERM_ESCALATION_MS = 10_000;
 export interface TuiReexecSignalGuard {
   /** True if a termination signal arrived before bindChild was called. */
   readonly terminated: boolean;
+  /** Exit code for the pending signal (143 for SIGTERM, 129 for SIGHUP). */
+  readonly terminatedExitCode: number;
   /** Bind the child process. Replays any pending signal immediately. */
   readonly bindChild: (proc: Subprocess) => void;
 }
@@ -73,6 +75,9 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // let: justified — tracks whether a signal arrived before bindChild.
   // If true, bindChild replays the forward immediately.
   let pendingSignal = false;
+  // let: justified — exit code matching the pending signal kind.
+  // 143 = SIGTERM (128+15), 129 = SIGHUP (128+1).
+  let pendingExitCode = 143;
 
   const forwardToChild = (proc: Subprocess): void => {
     try {
@@ -93,9 +98,10 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     }
   };
 
-  const forward = (): void => {
+  const forward = (exitCode: number): void => {
     if (forwardingStarted) return;
     forwardingStarted = true;
+    pendingExitCode = exitCode;
     if (child !== null) {
       forwardToChild(child);
     } else {
@@ -106,10 +112,10 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   };
 
   const onSigterm = (): void => {
-    forward();
+    forward(143);
   };
   const onSighup = (): void => {
-    forward();
+    forward(129);
   };
 
   // Only arm SIGTERM/SIGHUP pre-spawn. SIGINT (Ctrl+C) must NOT be
@@ -122,6 +128,9 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   return {
     get terminated(): boolean {
       return pendingSignal;
+    },
+    get terminatedExitCode(): number {
+      return pendingExitCode;
     },
     bindChild(proc: Subprocess): void {
       child = proc;

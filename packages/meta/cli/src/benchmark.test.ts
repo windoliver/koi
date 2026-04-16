@@ -174,7 +174,14 @@ describe("startup-latency probe (#1637) — production-purity contract", () => {
       "armTuiReexecSignalHandlers",
       "guard",
       "terminated",
+      "terminatedExitCode",
       "bindChild",
+      // setTimeout yield for signal flush (#1750)
+      "new",
+      "Promise",
+      "void",
+      "resolve",
+      "setTimeout",
     ]);
 
     // Extract identifiers from the post-fast-path region. Simple
