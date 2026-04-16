@@ -692,6 +692,18 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
     }
 
     if (state.phase === "tool_execution") {
+      // #1754: the model produced schema-valid args that reached execution.
+      // Clear schema-recovery state now — before execution — so a later
+      // tool-execution throw does not leave the flag armed. The model
+      // proved it can produce correct args; tool failures are unrelated.
+      if (schemaValidationRecoveryPending) {
+        schemaValidationRecoveryPending = false;
+        const source = (errorMetadata as { source?: unknown } | undefined)?.source;
+        if (source === "schema_validation") {
+          errorMetadata = undefined;
+        }
+      }
+
       // Append ALL tool call intents (including skipped duplicates) to the
       // transcript so session-repair's callId pairing stays consistent —
       // every tool_call_* event the model emitted has a matching intent.
@@ -792,17 +804,6 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
-          // #1754: successful tool execution proves the model recovered.
-          // Clear schema-recovery state so unrelated later mistakes
-          // still get one recovery attempt. Only clear errorMetadata if
-          // it's from schema_validation — preserve other error sources.
-          if (schemaValidationRecoveryPending) {
-            schemaValidationRecoveryPending = false;
-            const source = (errorMetadata as { source?: unknown } | undefined)?.source;
-            if (source === "schema_validation") {
-              errorMetadata = undefined;
-            }
-          }
         }
       } catch (e: unknown) {
         if (state.phase !== "complete") {
