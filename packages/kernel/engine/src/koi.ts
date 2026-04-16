@@ -338,6 +338,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // can operate without a registry. Set in streamEvents at the start of each
   // run, cleared in finally. Undefined when no run is active.
   let activeController: AbortController | undefined;
+  // let justified: tracks the composite runSignal (input.signal + internal controller)
+  // so runtime.isInterrupted() reflects external aborts too. Set inside try
+  // alongside activeController, cleared in finally.
+  let activeRunSignal: AbortSignal | undefined;
   /**
    * Eagerly compute the next session id under the host-configured
    * rotation strategy. Called at the top of `cycleSession()` BEFORE
@@ -471,17 +475,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       input.signal !== undefined
         ? AbortSignal.any([input.signal, abortController.signal])
         : abortController.signal;
-    // #1682: expose the controller to runtime.interrupt() and, if a registry
-    // is configured, register this run for external-caller interrupt. The
-    // registration key is captured at entry so a mid-run cycleSession() (which
-    // cannot actually fire because cycleSession waits for currentRunSettled)
-    // cannot orphan the entry.
-    activeController = abortController;
-    const registeredSessionId = factorySessionId;
-    const unregisterFromRegistry = options.sessionRegistry?.register(
-      registeredSessionId,
-      abortController,
-    );
+
+    // #1682: placeholders — the actual register happens inside the try block
+    // below so a throwing register propagates through the existing finally
+    // and does not leak running=true / currentRunSettled / activeController.
+    // let justified: set inside try; cleared in finally.
+    let unregisterFromRegistry: (() => void) | undefined;
+    let registeredSessionId: SessionId | undefined;
 
     // Abort listener: immediate agent transition for external observers.
     // The generator's finally block handles resource cleanup.
@@ -596,6 +596,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
+      // #1682: expose the controller to runtime.interrupt() and, if a registry
+      // is configured, register this run for external-caller interrupt. Runs
+      // inside try so a throwing register triggers the full finally cleanup.
+      // The registration key is captured at entry; cycleSession() cannot fire
+      // here because it waits on currentRunSettled.
+      activeController = abortController;
+      activeRunSignal = runSignal;
+      registeredSessionId = factorySessionId;
+      unregisterFromRegistry = options.sessionRegistry?.register(
+        registeredSessionId,
+        abortController,
+      );
+
       // --- Run / session initialization ---
       // onSessionStart fires exactly once across the runtime's lifetime,
       // on the first run() call, with this run's sessionCtx (tests rely on
@@ -1446,6 +1459,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // so runtime.interrupt() returns false between runs.
       unregisterFromRegistry?.();
       activeController = undefined;
+      activeRunSignal = undefined;
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
@@ -1840,10 +1854,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       return true;
     },
     isInterrupted(): boolean {
+      // The registry only observes the internal abortController (what the registry
+      // holds). If a caller passed input.signal and aborted it externally,
+      // activeRunSignal reflects it via AbortSignal.any composition. Prefer the
+      // composite signal so both cancel paths are observable.
+      if (activeRunSignal !== undefined) {
+        return activeRunSignal.aborted;
+      }
       if (options.sessionRegistry !== undefined) {
         return options.sessionRegistry.isInterrupted(factorySessionId);
       }
-      return activeController?.signal.aborted === true;
+      return false;
     },
 
     dispose: async (): Promise<void> => {

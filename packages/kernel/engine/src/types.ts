@@ -270,7 +270,9 @@ export interface KoiRuntime {
    */
   readonly interrupt: (reason?: string) => boolean;
   /**
-   * True iff the active run's AbortSignal is aborted. Returns `false`
+   * True iff the active run's composite AbortSignal is aborted — i.e. either
+   * `runtime.interrupt()` / `sessionRegistry.interrupt()` was called, OR the
+   * caller's `EngineInput.signal` was aborted externally. Returns `false`
    * when no run is active.
    */
   readonly isInterrupted: () => boolean;
