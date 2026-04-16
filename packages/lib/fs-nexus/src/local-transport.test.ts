@@ -534,6 +534,116 @@ asyncio.run(main())
   });
 });
 
+// ---------------------------------------------------------------------------
+// Bridge startup failure tests — stderr collection (Issue #1743)
+// ---------------------------------------------------------------------------
+
+describe("createLocalTransport bridge startup failure", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "koi-transport-crash-"));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  test("includes full Python traceback in error when bridge crashes on startup", async () => {
+    // Write more than one OS pipe buffer (~64KB on macOS) to stderr so that
+    // collectStderr must read multiple chunks. The FINAL_MARKER at the end
+    // proves the entire stream was drained — a single-read implementation
+    // will capture only the first ~64KB and miss it.
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-crash",
+      `
+import sys
+sys.stderr.write("Traceback (most recent call last):\\n")
+# Pad with enough frames to exceed one pipe buffer chunk
+for i in range(2000):
+    sys.stderr.write(f"  File \\"mod_{i}.py\\", line {i}, in func_{i}\\n")
+sys.stderr.write("FINAL_MARKER: AttributeError: 'NoneType' object has no attribute 'register_observer'\\n")
+sys.stderr.flush()
+sys.exit(1)
+`,
+    );
+
+    try {
+      await createLocalTransport({
+        mountUri: "local://./",
+        _bridgePath: bridgePath,
+        startupTimeoutMs: 5_000,
+      });
+      // Should not reach here
+      expect(true).toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      const err = e as Error;
+      // Must include the full stderr — not just the first pipe buffer chunk
+      expect(err.message).toContain("Traceback");
+      expect(err.message).toContain("FINAL_MARKER");
+      expect(err.message).toContain("register_observer");
+    }
+  });
+
+  test("preserves cause chain on startup failure", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-crash-cause",
+      `
+import sys
+sys.stderr.write("fatal error in bridge\\n")
+sys.stderr.flush()
+sys.exit(1)
+`,
+    );
+
+    try {
+      await createLocalTransport({
+        mountUri: "local://./",
+        _bridgePath: bridgePath,
+        startupTimeoutMs: 5_000,
+      });
+      expect(true).toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      const err = e as Error;
+      // Must chain the original error as cause
+      expect(err.cause).toBeInstanceOf(Error);
+    }
+  });
+
+  test("handles bridge that writes nothing to stderr before crashing", async () => {
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-silent-crash",
+      `
+import sys
+sys.exit(1)
+`,
+    );
+
+    try {
+      await createLocalTransport({
+        mountUri: "local://./",
+        _bridgePath: bridgePath,
+        startupTimeoutMs: 5_000,
+      });
+      expect(true).toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      const err = e as Error;
+      // Should still produce a meaningful error, just without stderr content
+      expect(err.message).toContain("Failed to start nexus-fs bridge");
+    }
+  });
+});
+
 describeIf("createLocalTransport multi-mount (requires nexus-fs)", () => {
   let tmpDirA: string;
   let tmpDirB: string;

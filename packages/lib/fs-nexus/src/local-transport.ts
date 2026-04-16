@@ -201,6 +201,7 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     const stderr = await collectStderr(proc);
     throw new Error(
       `Failed to start nexus-fs bridge: ${e instanceof Error ? e.message : String(e)}${stderr ? `\nstderr: ${stderr}` : ""}`,
+      { cause: e },
     );
   }
 
@@ -502,7 +503,7 @@ async function procExit(proc: { readonly exited: Promise<number> }): Promise<nev
   throw new Error(`Bridge process exited with code ${String(code)}`);
 }
 
-/** Collect stderr output for error messages. */
+/** Collect all stderr output for error messages. Drains until EOF. */
 async function collectStderr(proc: {
   readonly stderr: ReadableStream<Uint8Array>;
 }): Promise<string> {
@@ -510,10 +511,15 @@ async function collectStderr(proc: {
     const reader = proc.stderr.getReader();
     const decoder = new TextDecoder();
     let output = "";
-    const { value, done } = await reader.read();
-    if (!done && value !== undefined) {
-      output = decoder.decode(value);
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value !== undefined) {
+        output += decoder.decode(value, { stream: true });
+      }
     }
+    // Flush any remaining bytes in the decoder
+    output += decoder.decode();
     reader.releaseLock();
     return output.trim();
   } catch {
