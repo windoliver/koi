@@ -539,11 +539,25 @@ export interface KoiRuntimeHandle {
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
   /**
+   * MCP server status — returns configured servers, their connection states,
+   * and tool counts. Used by the `/mcp` TUI command. Returns empty array when
+   * no MCP servers are configured.
+   */
+  readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+  /**
    * Plugin discovery summary — loaded plugins + any errors.
    * Static for the lifetime of the runtime. Used by the TUI to populate
    * the /plugins view and inject plugin awareness into the system prompt.
    */
   readonly pluginSummary: PluginDiscoverySummary;
+}
+
+/** Status entry for a single MCP server (used by /mcp TUI command). */
+export interface McpServerStatus {
+  readonly name: string;
+  readonly toolCount: number;
+  readonly failureCode: string | undefined;
+  readonly failureMessage: string | undefined;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -1431,6 +1445,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | import("@koi/checkpoint").Checkpoint
       | undefined;
 
+    // --- MCP resolvers exported by the MCP preset stack ---
+    // Read here for the returned KoiRuntimeHandle.getMcpStatus().
+    const mcpResolver = stackContribution.exports.mcpResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+    const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
     // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
@@ -1828,6 +1851,56 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 : Promise.resolve([]),
           },
         }),
+      getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
+        // Merge user + plugin MCP resolvers — key by (source, name)
+        // so duplicate names from different sources surface as
+        // separate rows instead of hiding failures behind successes.
+        const sources: {
+          readonly label: string;
+          readonly resolver: import("@koi/mcp").McpResolver;
+        }[] = [];
+        if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+        if (mcpPluginResolver !== undefined)
+          sources.push({ label: "plugin", resolver: mcpPluginResolver });
+        if (sources.length === 0) return [];
+
+        const entries: McpServerStatus[] = [];
+        const seenByKey = new Set<string>();
+        for (const { label, resolver } of sources) {
+          const toolCounts = new Map<string, number>();
+          const descriptors = await resolver.discover();
+          for (const d of descriptors) {
+            const server = d.server ?? "unknown";
+            toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+          }
+          for (const [name, count] of toolCounts) {
+            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            const key = `${label}:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: count,
+              failureCode: undefined,
+              failureMessage: undefined,
+            });
+          }
+          for (const f of resolver.failures) {
+            if (toolCounts.has(f.serverName)) continue;
+            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const key = `${label}:${f.serverName}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: 0,
+              failureCode: f.error.code,
+              failureMessage: f.error.message,
+            });
+          }
+        }
+        return entries;
+      },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];
         const steps = await trajectoryStore.getDocument(trajectoryDocId);

@@ -12,6 +12,7 @@ Transport abstraction and connection lifecycle management for Model Context Prot
 - Pluggable auth provider interface with bearer token support
 - Structured error mapping (HTTP status > JSON-RPC code > message pattern)
 - Reconnection with exponential backoff and full jitter
+- **`AuthToolFactory`** callback type for emitting auth pseudo-tools when a server returns AUTH_REQUIRED. The component provider calls it once per AUTH_REQUIRED failure during `attach()` so the model can see and trigger the OAuth flow inline (CC pattern).
 
 ## Transport State Machine
 

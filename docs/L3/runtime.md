@@ -2,6 +2,10 @@
 
 The canonical L3 integration layer. Wires every production-ready L2 package into a single coherent runtime surface, provides VCR cassette replay infrastructure for CI, and owns the golden query test suite that proves all L2 packages work end-to-end with a real LLM.
 
+## Recent updates
+
+`@koi/mcp` now exposes an `AuthToolFactory` callback so auth-needed servers surface as `<server>__authenticate` pseudo-tools (CC pattern). The component provider reads `failure.error.code === "AUTH_REQUIRED"` and either invokes the factory (when supplied by the host) or falls back to skipped components. No new providers are added — existing wiring continues to work.
+
 ---
 
 ## What This Enables

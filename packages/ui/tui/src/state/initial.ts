@@ -49,5 +49,6 @@ export function createInitialState(): TuiState {
     pluginSummary: null,
     costBreakdown: null,
     tokenRate: null,
+    mcpServers: [],
   };
 }

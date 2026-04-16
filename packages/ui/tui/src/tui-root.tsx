@@ -22,6 +22,7 @@ import type { ApprovalDecision } from "@koi/core/middleware";
 import { COMMAND_DEFINITIONS, type CommandDef } from "./commands/command-definitions.js";
 import type { SlashCommand } from "./commands/slash-detection.js";
 import { AgentsView } from "./components/AgentsView.js";
+import { McpView } from "./components/McpView.js";
 import { CommandPalette } from "./components/CommandPalette.js";
 import { ConversationView } from "./components/ConversationView.js";
 import { DoctorView } from "./components/DoctorView.js";
@@ -58,6 +59,7 @@ const NAV_VIEW_MAP: Partial<Record<string, TuiView>> = {
   "nav:agents": "agents",
   "nav:trajectory": "trajectory",
   "nav:cost": "cost",
+  "nav:mcp": "mcp",
   "nav:plugins": "plugins",
 };
 
@@ -318,6 +320,12 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
 
   const handleCommandSelect = (cmd: CommandDef, args = ""): void => {
     store.dispatch({ kind: "set_modal", modal: null });
+    // nav:mcp needs host-side data fetch before showing the view,
+    // so it routes through onCommand instead of the pure-nav path.
+    if (cmd.id === "nav:mcp") {
+      props.onCommand(cmd.id, args);
+      return;
+    }
     const navView = resolveNavCommand(cmd.id);
     if (navView !== null) {
       store.dispatch({ kind: "set_view", view: navView });
@@ -401,6 +409,9 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         </Match>
         <Match when={viewSignal() === "cost"}>
           <CostDashboardView />
+        </Match>
+        <Match when={viewSignal() === "mcp"}>
+          <McpView onCommand={props.onCommand} />
         </Match>
         <Match when={viewSignal() === "plugins"}>
           <PluginsView />
