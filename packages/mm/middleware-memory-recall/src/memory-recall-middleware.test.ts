@@ -1169,7 +1169,7 @@ describe("createMemoryRecallMiddleware", () => {
       await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => mockNext(r));
 
       // Overwrite with a much longer value that exceeds the 1-token cap.
-      const longContent = "Updated authoritative value: " + "supersedes ".repeat(50);
+      const longContent = `Updated authoritative value: ${"supersedes ".repeat(50)}`;
       await store.update(seeded.record.id, { content: longContent });
 
       let captured: ModelRequest | undefined;
@@ -1318,6 +1318,99 @@ describe("createMemoryRecallMiddleware", () => {
 
       // The live delta must be present, just not at the very end.
       expect(captured.messages.some((m) => m.senderId === "system:memory-live")).toBe(true);
+    });
+
+    test("fast-path: unchanged turns skip the full content scan", async () => {
+      // Regression: per-turn full scans regress latency on large memory
+      // dirs. Cheap fingerprint (path+mtime+size hash) gates the
+      // expensive content-reading scan. Three identical turns should
+      // only call scanMemoryDirectory once (init).
+      await writeFile(
+        join(dir, "stable.md"),
+        makeMemoryFileContent("Stable", "user", "unchanged content"),
+      );
+
+      const scanSpy = spyOn(memoryModule, "scanMemoryDirectory");
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
+
+      // Init.
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+      const callsAfterInit = scanSpy.mock.calls.length;
+
+      // Subsequent turns with NO directory changes — fingerprint matches,
+      // so refreshLiveDelta should NOT call scanMemoryDirectory.
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+
+      expect(scanSpy.mock.calls.length).toBe(callsAfterInit);
+    });
+
+    test("oversized memory in selector overlay is rejected (matches scan size cap)", async () => {
+      // Regression: selectRelevant's direct fs.read used to bypass the
+      // 50KB MAX_MEMORY_FILE_BYTES cap that scanMemoryDirectory applies.
+      // A memory that was valid at session-start could be overwritten
+      // with a huge file; the manifest entry stayed valid, selector
+      // picked it, overlay loaded the whole thing → prompt-budget
+      // explosion. Now selectRelevant applies the same size cap.
+      //
+      // Setup: write enough small memories to force frozen truncation
+      // (selectorNeeded). Then write a huge file directly. The huge
+      // file lands in the manifest via refreshLiveDelta. When the
+      // selector picks it, the overlay loader must skip it on size.
+      for (let i = 0; i < 5; i++) {
+        await writeFile(
+          join(dir, `small${String(i)}.md`),
+          makeMemoryFileContent(`Small${String(i)}`, "user", `tiny content ${String(i)}`),
+        );
+      }
+
+      const mw = createMemoryRecallMiddleware({
+        fs: createLocalFileSystem(dir),
+        // Tight budget so frozen truncates and selectorNeeded fires.
+        recall: { memoryDir: dir, now: Date.now(), tokenBudget: 100 },
+        relevanceSelector: {
+          // maxFiles >= candidate count → selectRelevantMemories
+          // short-circuits and returns ALL candidates without invoking
+          // the modelCall, so we don't need a real model.
+          maxFiles: 100,
+          modelCall: async () => ({
+            content: "[]",
+            model: "test",
+            usage: { inputTokens: 0, outputTokens: 0 },
+            stopReason: "stop",
+          }),
+        },
+      });
+
+      // Init — frozen truncated, selectorNeeded = true.
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => mockNext(r));
+
+      // Add a huge new memory file (>50KB). It's a NEW path so it'll be
+      // in the manifest via refreshLiveDelta and pass through to the
+      // selector. The size cap in selectRelevant must skip it.
+      const huge = "X".repeat(60_000);
+      await writeFile(join(dir, "huge.md"), makeMemoryFileContent("Huge", "user", huge));
+      const future = new Date(Date.now() + 10_000);
+      await utimes(dir, future, future);
+
+      let captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => {
+        captured = r;
+        return mockNext(r);
+      });
+
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      // The relevance overlay (if any) must NOT contain the huge content.
+      // Either no overlay was emitted, or overlay only includes the
+      // small memories the selector returned (huge was size-skipped).
+      const overlayMsg = captured.messages.find((m) => m.senderId === "system:memory-relevant");
+      const overlayText =
+        (overlayMsg?.content[0] as { readonly kind: "text"; readonly text: string })?.text ?? "";
+      expect(overlayText).not.toContain(huge);
     });
 
     test("oversized newest memory does not block smaller older updates", async () => {

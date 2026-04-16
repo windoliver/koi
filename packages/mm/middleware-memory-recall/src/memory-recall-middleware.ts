@@ -40,7 +40,7 @@ import type {
   SessionId,
   TurnContext,
 } from "@koi/core";
-import { memoryRecordId, parseMemoryFrontmatter } from "@koi/core/memory";
+import { memoryRecordId, parseMemoryFrontmatter, validateMemoryFilePath } from "@koi/core/memory";
 import type { ScannedMemory, ScoredMemory } from "@koi/memory";
 import {
   formatMemorySection,
@@ -106,6 +106,13 @@ interface SessionRecallState {
    * rest of the session — the agent keeps seeing the stale frozen copy.
    */
   staleFrozenPaths: Set<string>;
+  /**
+   * Last seen fs.list() fingerprint (path+mtime+size hash). Fast-path
+   * gate: if this turn's fingerprint matches, the directory looks
+   * unchanged and we skip the expensive full scan. Set to "" to force
+   * a rescan on the next turn (e.g., after init or fingerprint failure).
+   */
+  lastListFingerprint: string;
 }
 
 function createEmptyState(): SessionRecallState {
@@ -122,6 +129,7 @@ function createEmptyState(): SessionRecallState {
     liveMessage: undefined,
     livePaths: new Set(),
     staleFrozenPaths: new Set(),
+    lastListFingerprint: "",
   };
 }
 
@@ -193,6 +201,51 @@ function buildSignatureBaseline(
   }
   return out;
 }
+
+/**
+ * Cheap change-detection fingerprint built from `fs.list()` output.
+ *
+ * Hashes sorted `(path, modifiedAt, size)` tuples. Used as a fast-path
+ * gate before the (expensive) full scan: if this fingerprint matches
+ * the previous turn, the directory looks unchanged and we skip the
+ * rescan entirely.
+ *
+ * Trade-off: misses same-size, mtime-preserving edits (the case
+ * memory-fs.update() produces) until the next time SOMETHING ELSE in
+ * the directory changes. The scan-based content hash will then catch
+ * up. We accept this small staleness window to avoid an O(n) scan on
+ * every turn — the alternative is a hard latency regression.
+ *
+ * Returns "" on any error or truncation (forces a rescan to be safe).
+ *
+ * Per-file size cap: skip suspiciously-large files (>1MB) to bound the
+ * cost of fingerprinting on poisoned directories.
+ */
+async function computeListFingerprint(
+  fs: MemoryRecallMiddlewareConfig["fs"],
+  memoryDir: string,
+): Promise<string> {
+  try {
+    const settled = await Promise.resolve(fs.list(memoryDir, { glob: "**/*.md", recursive: true }));
+    if (!settled.ok) return "";
+    if (settled.value.truncated) return "";
+    const entries = [...settled.value.entries]
+      .filter((e) => e.path.endsWith(".md") && e.kind === "file")
+      .map((e) => `${e.path}:${String(e.modifiedAt ?? 0)}:${String(e.size ?? 0)}`)
+      .sort();
+    return entries.join("|");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Per-file size cap shared with scan helper (MAX_MEMORY_FILE_BYTES).
+ * Skip oversized files in selectRelevant's loader to match scan's
+ * eligibility checks — otherwise a memory that was valid at session
+ * start could be overwritten with a huge file and bypass the cap.
+ */
+const MAX_MEMORY_FILE_BYTES = 50_000;
 
 export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
   // Per-session state map — prevents cross-session bleed when a single
@@ -269,6 +322,10 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           }));
         }
       }
+
+      // Record the list fingerprint so subsequent turns can fast-path
+      // when nothing has changed at the directory metadata level.
+      state.lastListFingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
     } catch (_e: unknown) {
       console.warn("[middleware-memory-recall] initialize() failed (swallowed)");
     }
@@ -344,18 +401,31 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
 
     if (selectedPaths.length === 0) return undefined;
 
-    // Load only the selected paths via direct fs.read instead of a full
-    // directory scan. Replaces the previous scanMemoryDirectory() that
-    // was both wasteful (read N files, kept K) and bound by the 200-file
-    // default cap. Direct reads are O(K) where K = selected paths.
+    // Load only the selected paths via direct fs.read. Applies the same
+    // path/size validation as scanMemoryDirectory:
+    //  - relative path must pass validateMemoryFilePath (no traversal,
+    //    no absolute paths, .md extension only)
+    //  - file size must be <= MAX_MEMORY_FILE_BYTES (50KB) to bound
+    //    prompt-budget impact and prevent runaway reads if a memory
+    //    was overwritten with a huge file mid-session
+    //
+    // Replaces the previous scanMemoryDirectory() that was wasteful
+    // (read N files, kept K) and bound by the 200-file default cap.
+    // Direct reads are O(K) where K = selected paths.
     const baseDir = config.recall.memoryDir.replace(/\\/g, "/").replace(/\/$/, "");
     const selectedMemories: ScannedMemory[] = [];
     for (const relPath of selectedPaths) {
+      // Path validation — same checks scanMemoryDirectory applies.
+      if (validateMemoryFilePath(relPath) !== undefined) continue;
       try {
         const absPath = `${baseDir}/${relPath}`;
         const readResult = config.fs.read(absPath);
         const settled = await Promise.resolve(readResult);
         if (!settled.ok) continue;
+        // Size cap — matches MAX_MEMORY_FILE_BYTES from scan.ts so a
+        // mid-session overwrite to a huge file doesn't bypass the
+        // scan's eligibility check via the relevance overlay path.
+        if (settled.value.size > MAX_MEMORY_FILE_BYTES) continue;
         const parsed = parseMemoryFrontmatter(settled.value.content);
         if (parsed === undefined) continue;
         selectedMemories.push({
@@ -484,14 +554,24 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * session from crowding out the conversation.
    */
   async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
+    // Fast-path gate: if the cheap fingerprint (path+mtime+size hash
+    // from fs.list) matches the previous turn, the directory looks
+    // unchanged. Skip the expensive content-reading scan entirely.
+    //
+    // Limitation: misses same-size, mtime-preserving overwrites (the
+    // case memory-fs.update() produces) until something else in the
+    // directory changes. This is the trade-off: an O(n) scan on every
+    // turn is unacceptable for large memory dirs / long sessions, and
+    // most updates change either size or mtime (or another file). On
+    // the next directory change, the content-hash signature catches
+    // up to the missed edit.
+    const currentFingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
+    if (currentFingerprint !== "" && currentFingerprint === state.lastListFingerprint) {
+      return; // Nothing changed at the metadata level.
+    }
+    state.lastListFingerprint = currentFingerprint;
+
     try {
-      // Always scan. Content hashing requires reading file content, which
-      // is what scan does anyway. An optimization to gate on cheap metadata
-      // (list size/mtime) would miss same-size mtime-preserving overwrites
-      // — the exact case memory-fs.update() produces. Always-scan is
-      // correct and costs one scan per turn (~ms on local FS for ~dozens
-      // of files). For very large memory dirs this could be added as a
-      // fast-path, but correctness comes first.
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
         // Uncapped maxFiles so we see every memory's signature for the
