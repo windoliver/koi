@@ -59,6 +59,7 @@ describe("validateSupervisorConfig", () => {
 describe("workerId", () => {
   it("preserves string value in branded cast", () => {
     const id = workerId("w-1");
-    expect(id).toBe("w-1");
+    expect(id).toBe(workerId("w-1"));
+    expect(String(id)).toBe("w-1");
   });
 });
