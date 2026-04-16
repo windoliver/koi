@@ -196,9 +196,16 @@ function detectToolEnv(): ToolEnvConfig {
     "/usr/local/go/bin",
   ];
 
+  // Validate each candidate directory's ownership (not just existence)
+  // to prevent symlinked paths from resolving to untrusted locations.
+  // System paths only need existence checks (system-managed).
+  const ownedUid = uid ?? -1;
   return {
-    pathExtensions: [...selfContainedCandidates, ...systemCandidates].filter((p) => existsSync(p)),
-    shimPathExtensions: shimCandidates.filter((p) => existsSync(p)),
+    pathExtensions: [
+      ...selfContainedCandidates.filter((p) => isOwnedDir(p, ownedUid)),
+      ...systemCandidates.filter((p) => existsSync(p)),
+    ],
+    shimPathExtensions: shimCandidates.filter((p) => isOwnedDir(p, ownedUid)),
     home: homeOwned ? home : undefined,
   };
 }

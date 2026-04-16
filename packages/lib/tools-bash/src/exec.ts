@@ -54,7 +54,11 @@ export interface SafeEnvOptions {
 
 export function buildSafeEnv(options: SafeEnvOptions): Readonly<Record<string, string>> {
   const pathExtensions = options.pathExtensions ?? [];
-  const home = options.home;
+  const rawHome = options.home;
+  // Validate home: must be non-empty absolute path. Reject relative or
+  // empty values to prevent repo-local config poisoning.
+  const home =
+    rawHome !== undefined && rawHome.length > 0 && rawHome.startsWith("/") ? rawHome : undefined;
   const hasHome = home !== undefined;
 
   // Reject entries that are empty, non-absolute, or contain ":" (which

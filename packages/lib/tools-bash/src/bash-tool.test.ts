@@ -507,6 +507,16 @@ describe("buildSafeEnv", () => {
     expect(env.HOME).toBe("/tmp");
   });
 
+  test("rejects empty home value", () => {
+    const env = buildSafeEnv({ home: "" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
+  test("rejects relative home value", () => {
+    const env = buildSafeEnv({ home: "relative/home" });
+    expect(env.HOME).toBe("/tmp");
+  });
+
   test("SAFE_ENV.HOME is /tmp, not process.env.HOME", () => {
     // Regression: SAFE_ENV.HOME must be a neutral safe default, not
     // the parent process HOME, to prevent injected HOME from steering
