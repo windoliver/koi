@@ -35,4 +35,10 @@ export interface MemoryRecallMiddlewareConfig {
         readonly maxTokens?: number | undefined;
       }
     | undefined;
+  /**
+   * Token budget for the live delta block (new/modified memories injected
+   * mid-session). Default: 4000. Memories are sorted by recency and packed
+   * until the budget is hit; older changes drop off first.
+   */
+  readonly liveDeltaMaxTokens?: number | undefined;
 }

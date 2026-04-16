@@ -724,6 +724,10 @@
         "@koi/memory": "workspace:*",
         "@koi/token-estimator": "workspace:*",
       },
+      "devDependencies": {
+        "@koi/fs-local": "workspace:*",
+        "@koi/memory-fs": "workspace:*",
+      },
     },
     "packages/mm/model-openai-compat": {
       "name": "@koi/model-openai-compat",
