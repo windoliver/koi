@@ -110,11 +110,15 @@ switch (result.kind) {
     // spawn-to-handler race window (#1750). The two-phase API installs
     // SIGTERM/SIGHUP handlers immediately, then binds the child ref
     // after spawn. If a signal arrives before spawn, `terminated` is
-    // true and we skip spawning entirely. The check → spawn → bind
-    // sequence is synchronous (same event loop tick), so no signal
-    // handler can interleave between them in single-threaded JS.
+    // true and we skip spawning entirely.
     const { armTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
     const guard = armTuiReexecSignalHandlers();
+    // Yield to the event loop so any signals queued during the
+    // synchronous arm phase can fire their handlers and set
+    // pendingSignal before we check terminated.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
     if (guard.terminated) {
       process.exit(143);
     }
