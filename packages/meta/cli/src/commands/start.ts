@@ -179,6 +179,22 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       }
     }
 
+    // OAuth-gated schemes require interactive auth UI (koi tui).
+    // `koi start` cannot route `auth_required` notifications back to the
+    // user because it has no channel-aware auth handler — accepting these
+    // schemes and silently failing on first filesystem call would give a
+    // confusing mid-session error. Reject deterministically here.
+    if (manifestResult.value.filesystem?.options !== undefined) {
+      const uri = (manifestResult.value.filesystem.options as Record<string, unknown>).mountUri;
+      if (typeof uri === "string" && /^(gdrive|gmail|s3|dropbox):\/\//i.test(uri)) {
+        process.stderr.write(
+          `koi start: OAuth-gated mount '${uri.split("://")[0]}://' requires interactive authentication.\n` +
+            "Use 'koi tui' for OAuth-gated mounts.\n",
+        );
+        return ExitCode.FAILURE;
+      }
+    }
+
     // Apply the `FileSystemConfig.operations` contract's `["read"]`
     // default at the host level so manifest-driven filesystems default
     // to read-only on the host-default local backend path.

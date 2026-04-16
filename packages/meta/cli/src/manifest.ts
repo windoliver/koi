@@ -245,6 +245,20 @@ export interface ManifestConfig {
 }
 
 /**
+ * Options for `loadManifestConfig`.
+ */
+export interface LoadManifestOptions {
+  /**
+   * When `true`, skip the OAuth-scheme allowlist check for nexus local-bridge
+   * mounts. Pass this for hosts (like `koi tui`) that have an interactive auth
+   * UI capable of routing `auth_required` notifications back to the user via
+   * `transport.submitAuthCode(...)`. Hosts without an auth UI (like `koi start`)
+   * keep the default `false` so OAuth-gated schemes fail fast at parse time.
+   */
+  readonly allowOAuthSchemes?: boolean | undefined;
+}
+
+/**
  * Load a minimal agent manifest from a YAML or JSON file.
  *
  * Validates eagerly — call before creating any adapters so errors surface
@@ -255,6 +269,7 @@ export interface ManifestConfig {
  */
 export async function loadManifestConfig(
   path: string,
+  options?: LoadManifestOptions,
 ): Promise<
   | { readonly ok: true; readonly value: ManifestConfig }
   | { readonly ok: false; readonly error: string }
@@ -398,9 +413,10 @@ export async function loadManifestConfig(
     // silently accepting them and aborting the session on first
     // filesystem call. Routing `auth_required` notifications back
     // through `transport.submitAuthCode(...)` requires a channel-aware
-    // auth handler that neither host has wired yet — until then the
-    // conservative posture is "local bridge only, local:// mounts
-    // only". Hosts that add OAuth support can relax this allowlist.
+    // auth handler. Hosts that wire OAuth support (koi tui with the
+    // interactive auth loop) pass `allowOAuthSchemes: true` to skip
+    // this check. Non-interactive hosts (koi start) keep the default
+    // posture: local:// only.
     if (filesystem.backend === "nexus" && filesystem.options !== undefined) {
       const mountUri = (filesystem.options as Record<string, unknown>).mountUri;
       const candidates: unknown[] =
@@ -422,16 +438,18 @@ export async function loadManifestConfig(
             "Multi-mount local-bridge configs are not yet supported by the runtime resolver.",
         };
       }
-      const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
-      if (invalid !== undefined) {
-        return {
-          ok: false,
-          error:
-            `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
-            `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
-            `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
-            `out of scope for the current manifest filesystem wiring.`,
-        };
+      if (!(options?.allowOAuthSchemes === true)) {
+        const invalid = candidates.find((u) => typeof u !== "string" || !isSupportedMountUri(u));
+        if (invalid !== undefined) {
+          return {
+            ok: false,
+            error:
+              `manifest.filesystem.options.mountUri "${String(invalid)}" is not supported on this host. ` +
+              `Only \`local://...\` URIs are wired today; OAuth-backed connectors ` +
+              `(gdrive://, s3://, etc.) require channel-aware auth handling which is ` +
+              `out of scope for the current manifest filesystem wiring.`,
+          };
+        }
       }
     }
   }
