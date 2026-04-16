@@ -185,11 +185,41 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   const { dir, threshold } = ctx;
   const existing = await scanRecords(dir);
 
-  // Dedup scan + file creation are now both inside the dir lock, so two
-  // writers cannot both observe "no duplicate" and both succeed. Run
-  // this BEFORE the name+type uniqueness check so a replay of the same
-  // content (same name, same content) resolves as a dedup-skip rather
-  // than a spurious "already exists" error.
+  // Step 1 — check (canonical name, type) collision BEFORE the broad
+  // Jaccard dedup. Otherwise a near-duplicate edit to an existing
+  // same-key record (tiny content tweak, description change) would
+  // return `skipped` and silently keep the old record on disk, hiding
+  // what is actually a same-key write that should conflict.
+  //
+  // When a same-key record already exists, we still want retries of
+  // the *exact* same payload to resolve as a clean `skipped` replay
+  // (idempotency after a lost response). Determine that via Jaccard
+  // similarity against the specific matched record: above threshold
+  // → idempotent replay; below → loud error telling the caller to
+  // use upsert({ force: true }).
+  const canonicalName = sanitizeFrontmatterValue(input.name);
+  const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
+  if (nameTypeCollision !== undefined) {
+    const sameKeyDup = findDuplicate(input.content, [nameTypeCollision], threshold);
+    if (sameKeyDup !== undefined) {
+      return {
+        action: "skipped",
+        record: sameKeyDup.record,
+        duplicateOf: sameKeyDup.id,
+        similarity: sameKeyDup.similarity,
+      };
+    }
+    throw new Error(
+      `Memory record already exists with name=${JSON.stringify(canonicalName)}, ` +
+        `type=${input.type} (id=${nameTypeCollision.id}). Use upsert({ force: true }) ` +
+        `to overwrite or pick a different name.`,
+    );
+  }
+
+  // Step 2 — broad Jaccard dedup across all other records. Same-key
+  // matches cannot fall through here because step 1 already handled
+  // them. Dedup scan + file creation are both inside the dir lock, so
+  // two writers cannot both observe "no duplicate" and both succeed.
   const dup = findDuplicate(input.content, existing, threshold);
   if (dup !== undefined) {
     return {
@@ -198,22 +228,6 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
       duplicateOf: dup.id,
       similarity: dup.similarity,
     };
-  }
-
-  // Enforce the same (canonical name, type) uniqueness invariant as
-  // upsert() so callers cannot create the `corrupted` state through the
-  // low-level write() path. Without this guard, two writes with
-  // newline/control-char name variants (e.g. "foo bar" then "foo\nbar")
-  // would slug-collision-rename into two files that both deserialize as
-  // the same logical (name, type).
-  const canonicalName = sanitizeFrontmatterValue(input.name);
-  const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
-  if (nameTypeCollision !== undefined) {
-    throw new Error(
-      `Memory record already exists with name=${JSON.stringify(canonicalName)}, ` +
-        `type=${input.type} (id=${nameTypeCollision.id}). Use upsert({ force: true }) ` +
-        `to overwrite or pick a different name.`,
-    );
   }
 
   const serialized = serializeMemoryFrontmatter(

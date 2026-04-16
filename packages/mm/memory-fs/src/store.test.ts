@@ -130,6 +130,50 @@ describe("createMemoryStore", () => {
       expect(all.length).toBe(1);
     });
 
+    test("write() conflicts on same-key near-duplicate edit (no silent drop)", async () => {
+      // A same-key write with *different* content must not be allowed
+      // to silently resolve as `skipped` via a broad Jaccard match
+      // against an unrelated record. Seed two records: one that owns
+      // the (name, type) key, and one that happens to have similar
+      // content. A retry with the key + different-enough-from-first
+      // content must fail loud, not silently skip against the
+      // similar-content record.
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.write({
+        name: "Owned Key",
+        description: "first",
+        type: "user",
+        content: "original body that owns the key",
+      });
+
+      // Same key, slightly edited content. With the old ordering this
+      // could false-skip against a near-duplicate record with a
+      // different name. Now the (name, type) collision fires first
+      // and we surface the error.
+      await expect(
+        store.write({
+          name: "Owned Key",
+          description: "edited",
+          type: "user",
+          content: "edited body for the same key — different enough to matter",
+        }),
+      ).rejects.toThrow(/already exists/);
+
+      // Exact-payload retry still resolves as a `skipped` replay.
+      const replay = await store.write({
+        name: "Owned Key",
+        description: "first",
+        type: "user",
+        content: "original body that owns the key",
+      });
+      expect(replay.action).toBe("skipped");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
     test("update() rejects rename onto an existing (name,type)", async () => {
       const dir = makeDir();
       const store = createMemoryStore({ dir });
