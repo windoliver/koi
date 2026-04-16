@@ -1,10 +1,16 @@
 # @koi/tui — State Layer + UI Components
 
-> TUI rendering state, reducer, command palette, status bar, and session picker.
+> TUI rendering state, reducer, command palette, status bar, session picker, and `/mcp` server status view.
 
 **Layer:** UI (depends on `@koi/core` only)
 **Location:** `packages/ui/tui/src/`
 **Issues:** #1265 (Phase 2j-1), #1268 (Phase 2j-4)
+
+## Recent additions
+
+- **`/mcp` MCP server status view** (`McpView.tsx`): full-screen two-column interactive view, arrow-key navigation, Enter-to-authenticate. Status is sourced from Keychain check (instant) + live `getMcpStatus()` enrichment. Five status states: `connected`, `needs-auth`, `auth-pending-restart`, `error`, `pending`.
+- **`McpServerInfo`** state type and `set_mcp_status` reducer action for the new view.
+- **MCP tool display** (`tool-display.ts`): MCP-namespaced tools (`server__tool`) render as `Server ▸ subtitle` instead of falling through to suffix matching that mislabels them (e.g., previously `jira__jira_search` showed as "Web Search").
 
 ## Purpose
 
