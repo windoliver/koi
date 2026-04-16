@@ -503,18 +503,19 @@ describe("createGoalMiddleware", () => {
     );
     // onComplete should not fire again, and status stays completed
     expect(completed).toEqual(["Write integration tests"]);
+    // All goals completed → capabilities returns undefined (stop advertising)
     const cap = mw.describeCapabilities(ctx);
-    expect(cap?.description).toBe("1/1 objectives completed");
+    expect(cap).toBeUndefined();
   });
 
-  it("describes capabilities with completion count", async () => {
+  it("describes capabilities with pending goals only", async () => {
     const mw = createGoalMiddleware({ objectives: ["A", "B"] });
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
 
     const ctx = makeTurnCtx(session);
     const cap = mw.describeCapabilities(ctx);
-    expect(cap).toEqual({ label: "goals", description: "0/2 objectives completed" });
+    expect(cap).toEqual({ label: "goals", description: "2 pending: A, B" });
   });
 
   it("cleans up session state on end", async () => {

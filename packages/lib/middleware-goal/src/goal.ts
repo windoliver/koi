@@ -589,11 +589,13 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
     describeCapabilities(ctx: TurnContext): CapabilityFragment | undefined {
       const sid = ctx.session.sessionId;
       const state = sessions.get(sid);
-      if (!state) return undefined;
-      const completed = state.items.filter((i) => i.completed).length;
+      if (!state || state.items.length === 0) return undefined;
+      const pending = state.items.filter((i) => !i.completed);
+      // All goals completed → stop advertising, model doesn't need to know
+      if (pending.length === 0) return undefined;
       return {
         label: "goals",
-        description: `${String(completed)}/${String(state.items.length)} objectives completed`,
+        description: `${String(pending.length)} pending: ${pending.map((i) => i.text).join(", ")}`,
       };
     },
 
