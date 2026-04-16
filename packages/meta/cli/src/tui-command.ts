@@ -1591,6 +1591,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // running for the full 3.5s SIGKILL-escalation wait below.
       abortActiveStream();
       const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
+      // #1862: call runtime.dispose() so onSessionEnd fires on ALL
+      // middleware (report, audit, etc.) before the process exits.
+      // Best-effort only — force-quit must always terminate, so a
+      // hard-exit failsafe caps the dispose window at 4s (enough for
+      // onSessionEnd hooks but short enough to feel responsive).
+      // The failsafe is unref'd so it doesn't keep the event loop
+      // alive if forceDispose resolves naturally.
+      const FORCE_DISPOSE_TIMEOUT_MS = 4_000;
+      const forceDispose = async (): Promise<void> => {
+        const hardExit = setTimeout(() => process.exit(130), FORCE_DISPOSE_TIMEOUT_MS);
+        if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+          (hardExit as { unref: () => void }).unref();
+        }
+        try {
+          await runtimeHandle?.runtime.dispose();
+        } catch {
+          // Swallow — force-quit must not hang on a wedged dispose.
+        }
+        process.exit(130);
+      };
       if (liveTasks) {
         // Wait long enough for the runtime's SIGKILL escalation window
         // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
@@ -1598,10 +1618,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // timer — dies. Exiting earlier orphans subprocesses that
         // ignore SIGTERM, exactly the failure mode "force" is supposed
         // to handle.
-        setTimeout(() => process.exit(130), 3500);
+        setTimeout(() => void forceDispose(), 3500);
         return;
       }
-      process.exit(130);
+      void forceDispose();
     },
     write: (msg: string) => {
       process.stderr.write(msg);
