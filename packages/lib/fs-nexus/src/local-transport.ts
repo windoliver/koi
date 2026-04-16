@@ -556,12 +556,19 @@ async function collectStderr(proc: {
     // Stream error — use whatever we collected so far
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    await reader.cancel().catch(() => {});
-    try {
-      reader.releaseLock();
-    } catch {
-      // Ignore — may already be released after cancel
-    }
+    // Fire-and-forget cancel — do NOT await, as the stream may be backed by a
+    // process that ignored SIGTERM and is keeping stderr open. Awaiting cancel()
+    // would hang and nullify the drain timeout. Release lock after cancel settles.
+    void reader
+      .cancel()
+      .catch(() => {})
+      .then(() => {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore — may already be released
+        }
+      });
   }
 
   // Flush any remaining bytes in the decoder
