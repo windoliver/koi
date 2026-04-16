@@ -650,6 +650,42 @@ sys.exit(1)
     }
   });
 
+  test("preserves partial stderr when drain times out", async () => {
+    // Bridge writes some stderr, ignores SIGTERM, and keeps pipe open.
+    // After proc.kill(), the process stays alive holding stderr open,
+    // so collectStderr's 3s drain timeout fires. We should get partial
+    // stderr + timeout marker.
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-hang-stderr",
+      `
+import sys, signal, time
+# Ignore SIGTERM so proc.kill() doesn't close stderr
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.stderr.write("PARTIAL_STDERR: something went wrong\\n")
+sys.stderr.flush()
+# Keep stderr open — never exit, never close pipe
+time.sleep(60)
+`,
+    );
+
+    try {
+      await createLocalTransport({
+        mountUri: "local://./",
+        _bridgePath: bridgePath,
+        startupTimeoutMs: 1_000,
+      });
+      expect(true).toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      const err = e as Error;
+      // Must contain the partial stderr that was written before the hang
+      expect(err.message).toContain("PARTIAL_STDERR");
+      // Must contain the timeout truncation marker
+      expect(err.message).toContain("[truncated — stderr drain timed out]");
+    }
+  }, 10_000); // Allow 10s for startup timeout + drain timeout
+
   test("handles bridge that writes nothing to stderr before crashing", async () => {
     const bridgePath = writeMockBridge(
       tmpDir,
