@@ -20,6 +20,9 @@ import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills, resolveSingleSkill } from "./discover.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
+import { parseSkillMd } from "./parse.js";
+import type { ResolvedInclude } from "./resolve-includes.js";
+import { resolveIncludes } from "./resolve-includes.js";
 import type {
   SkillDefinition,
   SkillMetadata,
@@ -76,49 +79,60 @@ interface ScanSplit {
  * will surface a proper NOT_FOUND later.
  */
 /**
- * Reads SKILL.md content and resolves any `includes:` frontmatter items,
- * returning the concatenated body for scanning. Returns a blocking finding
- * if any included file is unreadable (fail-closed).
+ * Reads SKILL.md content and resolves any `includes:` frontmatter items
+ * using the same `parseSkillMd` + `resolveIncludes` pipeline as the loader,
+ * returning the concatenated body for scanning.
  *
- * Shared between `scanDiscoveredEntries` and `rescanBlockedSkills` so both
- * paths scan the fully assembled skill body (issue #1722 round 4).
+ * Reuses the loader's include resolution so path boundary enforcement,
+ * recursion limits, and YAML parsing are identical (issue #1722 round 5).
+ *
+ * Shared between `scanDiscoveredEntries` and `rescanBlockedSkills`.
  */
 async function readFullSkillContent(
   content: string,
   dirPath: string,
+  skillsRoot: string,
 ): Promise<
   | { readonly ok: true; readonly fullContent: string }
   | { readonly ok: false; readonly finding: ScanFinding }
 > {
-  let fullContent = content;
-  const fmMatch = /^---\s*\n([\s\S]*?)\n---/.exec(content);
-  if (fmMatch !== null) {
-    const includeBlock = /^\s*includes\s*:\s*\n((?:\s+-\s+.+\n?)*)/m.exec(fmMatch[1] ?? "");
-    if (includeBlock !== null) {
-      const items = [...(includeBlock[1] ?? "").matchAll(/^\s+-\s+(.+)/gm)].map((m) =>
-        (m[1] ?? "").trim(),
-      );
-      for (const includePath of items) {
-        if (includePath.length === 0) continue;
-        const resolvedPath = join(dirPath, includePath);
-        try {
-          const includeContent = await Bun.file(resolvedPath).text();
-          fullContent = `${fullContent}\n\n${includeContent}`;
-        } catch {
-          return {
-            ok: false,
-            finding: {
-              rule: "unreadable-skill-include",
-              severity: "HIGH",
-              confidence: 1.0,
-              category: "UNPARSEABLE",
-              message: `Included file could not be read at discovery time: ${resolvedPath}`,
-            },
-          };
-        }
-      }
-    }
+  const parsed = parseSkillMd(content, join(dirPath, "SKILL.md"));
+  if (!parsed.ok) {
+    // Unparseable frontmatter — fail closed
+    return {
+      ok: false,
+      finding: {
+        rule: "unparseable-skill-frontmatter",
+        severity: "HIGH",
+        confidence: 1.0,
+        category: "UNPARSEABLE",
+        message: `SKILL.md frontmatter could not be parsed: ${parsed.error.message}`,
+      },
+    };
   }
+
+  const rawIncludes = parsed.value.frontmatter.includes;
+  if (!Array.isArray(rawIncludes) || rawIncludes.length === 0) {
+    return { ok: true, fullContent: content };
+  }
+
+  const includes = rawIncludes.filter((i: unknown): i is string => typeof i === "string");
+  const includeResult = await resolveIncludes(includes, dirPath, skillsRoot);
+  if (!includeResult.ok) {
+    return {
+      ok: false,
+      finding: {
+        rule: "unreadable-skill-include",
+        severity: "HIGH",
+        confidence: 1.0,
+        category: "UNPARSEABLE",
+        message: `Include resolution failed at discovery time: ${includeResult.error.message}`,
+      },
+    };
+  }
+
+  const appendix = includeResult.value.map((inc: ResolvedInclude) => inc.content).join("\n\n");
+  const fullContent = appendix.length > 0 ? `${content}\n\n${appendix}` : content;
   return { ok: true, fullContent };
 }
 
@@ -149,8 +163,9 @@ async function scanDiscoveredEntries(
         return { name, entry, blocking: [finding] as readonly ScanFinding[] };
       }
 
-      // Issue #1722 round 3+4: scan SKILL.md + included files together.
-      const resolved = await readFullSkillContent(content, entry.dirPath);
+      // Issue #1722 round 3+4+5: scan SKILL.md + included files together
+      // using the same resolveIncludes pipeline as the loader.
+      const resolved = await readFullSkillContent(content, entry.dirPath, entry.skillsRoot);
       if (!resolved.ok) {
         return { name, entry, blocking: [resolved.finding] as readonly ScanFinding[] };
       }
@@ -270,9 +285,9 @@ async function rescanBlockedSkills(
         return;
       }
 
-      // Issue #1722 round 4: rescan must also resolve includes, same as
+      // Issue #1722 round 4+5: rescan must also resolve includes, same as
       // the initial discover-time scan path.
-      const fullResult = await readFullSkillContent(content, resolved.dirPath);
+      const fullResult = await readFullSkillContent(content, resolved.dirPath, resolved.skillsRoot);
       if (!fullResult.ok) {
         decisions.set(name, {
           kind: "stillBlocked",
