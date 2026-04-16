@@ -163,14 +163,20 @@ async function scanDiscoveredEntries(
         return { name, entry, blocking: [finding] as readonly ScanFinding[] };
       }
 
-      // Issue #1722 round 3+4+5: scan SKILL.md + included files together
-      // using the same resolveIncludes pipeline as the loader.
+      // Issue #1722 round 3+4+5+6: scan SKILL.md + included files together
+      // using the same resolveIncludes pipeline as the loader. Parse and
+      // include failures are routed through the normal threshold filter
+      // (round 6) so blockOnSeverity is respected.
       const resolved = await readFullSkillContent(content, entry.dirPath, entry.skillsRoot);
       if (!resolved.ok) {
-        return { name, entry, blocking: [resolved.finding] as readonly ScanFinding[] };
+        if (severityAtOrAbove(resolved.finding.severity, blockOnSeverity)) {
+          return { name, entry, blocking: [resolved.finding] as readonly ScanFinding[] };
+        }
+        onSecurityFinding?.(name, [resolved.finding]);
+        // Below threshold — scan the base content without includes
       }
 
-      const report = scanner.scanSkill(resolved.fullContent);
+      const report = scanner.scanSkill(resolved.ok ? resolved.fullContent : content);
       if (report.findings.length === 0) {
         return { name, entry, blocking: [] as readonly ScanFinding[] };
       }
@@ -285,19 +291,23 @@ async function rescanBlockedSkills(
         return;
       }
 
-      // Issue #1722 round 4+5: rescan must also resolve includes, same as
-      // the initial discover-time scan path.
+      // Issue #1722 round 4+5+6: rescan must also resolve includes, same
+      // as the initial discover-time scan path. Parse/include failures
+      // respect blockOnSeverity threshold.
       const fullResult = await readFullSkillContent(content, resolved.dirPath, resolved.skillsRoot);
       if (!fullResult.ok) {
-        decisions.set(name, {
-          kind: "stillBlocked",
-          entry: resolved,
-          findings: [fullResult.finding],
-        });
-        return;
+        if (severityAtOrAbove(fullResult.finding.severity, blockOnSeverity)) {
+          decisions.set(name, {
+            kind: "stillBlocked",
+            entry: resolved,
+            findings: [fullResult.finding],
+          });
+          return;
+        }
+        onSecurityFinding?.(name, [fullResult.finding]);
       }
 
-      const report = scanner.scanSkill(fullResult.fullContent);
+      const report = scanner.scanSkill(fullResult.ok ? fullResult.fullContent : content);
       const blocking = report.findings.filter((f) =>
         severityAtOrAbove(f.severity, blockOnSeverity),
       );

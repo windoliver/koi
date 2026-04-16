@@ -118,25 +118,18 @@ const CREDENTIAL_PATTERNS: readonly RegExp[] = [
   GETENV_CALL_PATTERN,
 ];
 
-// Exfiltration intent signals — hostile language or active data-upload
-// commands near a credential reference upgrade the finding to HIGH.
+// Exfiltration intent signals — hostile LANGUAGE near a credential
+// reference upgrades the finding to HIGH. Generic HTTP upload commands
+// (curl -d, fetch POST, wget --post) are deliberately excluded because
+// POSTing credentials to a trusted/internal endpoint (OAuth token
+// exchange, API auth) is a normal workflow — blocking those at
+// discovery time would silently break legitimate skills.
 //
-// Deliberately does NOT include bare non-allowlisted URLs — a skill
-// instructing `curl -H "Authorization: Bearer $API_KEY" https://api.internal.corp/...`
-// is legitimate private-service usage, not exfiltration. Only patterns
-// with clearly hostile semantics (outbound data movement words, attacker
-// mention, POST-with-data curl/wget flags) qualify.
+// Only patterns with clearly hostile semantics qualify:
 const EXFIL_INTENT_PATTERNS: readonly RegExp[] = [
   /\bexfiltrat/i,
   /\battacker\b/i,
   /\b(?:send|post|upload|leak|transmit|forward|ship|deliver)\b[^\n.]{0,80}\b(?:to|via|into)\b/i,
-  // curl with data-upload flags — short or long forms, any position.
-  // Only -d/--data/--form (upload semantics), NOT -X alone (method
-  // selection — `curl -X GET ... $API_KEY` is a normal auth request).
-  /\bcurl\b[^\n]*(?:\s-[a-zA-Z]*d|\s--data(?:-\w+)?|\s--form)\b/i,
-  /\bwget\s+[^\n]*--post/i,
-  // fetch() with method: "POST" + body — active outbound data upload
-  /\bfetch\s*\([^\n]*\bmethod\s*:\s*["']POST["'][^\n]*\bbody\s*:/i,
 ];
 
 function hasExfiltrationIntent(text: string, credentialIndex: number): boolean {
