@@ -484,16 +484,10 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       }
     }
 
-    // If we got here with tool calls that passed validation, clear
-    // schema-recovery state. Text-only turns do NOT reset — the model
-    // must prove it can produce valid tool calls before earning another
-    // recovery attempt. This prevents invalid→text→invalid churn.
-    if (schemaValidationRecoveryPending && validToolCalls.length > 0) {
-      schemaValidationRecoveryPending = false;
-      // Clear stale errorMetadata from the prior recovery so the final
-      // done event reflects the actual terminal state, not a recovered one.
-      errorMetadata = undefined;
-    }
+    // Schema-recovery pending state is cleared after successful tool
+    // execution (tools_done path below), not here. Validation passing
+    // alone is insufficient — the tool call may still be doom-loop-blocked
+    // or throw at execution time.
 
     // Dedup: within this turn, skip tool calls with identical (toolName + args).
     // Models occasionally emit the same call twice in one response (e.g. Sonnet
@@ -799,6 +793,13 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
         if (state.phase === "tool_execution") {
           state = transitionTurn(state, { kind: "tools_done" });
+          // #1754: successful tool execution proves the model recovered.
+          // Clear schema-recovery state so unrelated later mistakes
+          // still get one recovery attempt. Also clear stale errorMetadata.
+          if (schemaValidationRecoveryPending) {
+            schemaValidationRecoveryPending = false;
+            errorMetadata = undefined;
+          }
         }
       } catch (e: unknown) {
         if (state.phase !== "complete") {
