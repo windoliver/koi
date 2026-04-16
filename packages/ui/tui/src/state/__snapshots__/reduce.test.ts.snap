@@ -38,6 +38,7 @@ exports[`createInitialState initial state shape 1`] = `
   "layoutTier": "normal",
   "ledgerSources": null,
   "maxContextTokens": null,
+  "mcpServers": [],
   "messages": [],
   "modal": null,
   "planTasks": null,

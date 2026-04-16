@@ -343,7 +343,7 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
     expect(frame).toContain("done");
   });
 
-  test("MCP tool with server prefix renders raw name", async () => {
+  test("MCP tool with server prefix renders Server ▸ subtitle label", async () => {
     const msg: TuiMessage = {
       kind: "assistant",
       id: "assistant-mcp-2",
@@ -360,7 +360,8 @@ describe("MessageRow — unknown/MCP tool rendering", () => {
       streaming: false,
     };
     const frame = await renderMessage(msg);
-    expect(frame).toContain("golden-mcp__weather");
+    // MCP tools render as "Server ▸ subtitle" (capitalized server name)
+    expect(frame).toContain("Golden-mcp");
     expect(frame).toContain("sunny");
   });
 
