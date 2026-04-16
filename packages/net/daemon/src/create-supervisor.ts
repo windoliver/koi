@@ -81,6 +81,61 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       restartAttempts: 0,
       restartTimestamps: [],
     });
+
+    // Watch backend events for this worker — drive restart policy.
+    // Fire-and-forget: the loop lives as long as the worker does.
+    void (async () => {
+      try {
+        for await (const ev of backend.watch(request.workerId)) {
+          if (ev.kind !== "exited" && ev.kind !== "crashed") continue;
+
+          const entry = pool.get(request.workerId);
+          if (entry === undefined) return;
+
+          // Decide whether to restart based on policy + exit kind.
+          const policy = entry.policy;
+          const shouldRestart =
+            ev.kind === "crashed" ? policy.restart !== "temporary" : policy.restart === "permanent";
+
+          // Check restart budget (maxRestarts within window).
+          const now = ev.at;
+          const windowStart = now - policy.maxRestartWindowMs;
+          const recentTimestamps = entry.restartTimestamps.filter((t) => t >= windowStart);
+
+          // Remove the dead entry from the pool so maxWorkers frees up.
+          pool.delete(request.workerId);
+
+          if (!shouldRestart) return;
+          if (recentTimestamps.length >= policy.maxRestarts) return;
+
+          // Backoff before restart.
+          const backoff = Math.min(
+            policy.backoffBaseMs * 2 ** entry.restartAttempts,
+            policy.backoffCeilingMs,
+          );
+          if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
+
+          // Respawn via the same backend. `start` will re-add to pool.
+          const respawned = await start(request, {
+            restart: policy,
+            backend: entry.handle.backendKind,
+          });
+
+          if (respawned.ok) {
+            // Carry restart-accounting forward by mutating the new entry in place.
+            const newEntry = pool.get(request.workerId);
+            if (newEntry !== undefined) {
+              newEntry.restartAttempts = entry.restartAttempts + 1;
+              newEntry.restartTimestamps = [...recentTimestamps, now];
+            }
+          }
+          return;
+        }
+      } catch {
+        // Backend watch stream closed unexpectedly — treat as exit with no restart.
+      }
+    })();
+
     return { ok: true, value: spawned.value };
   };
 
