@@ -81,6 +81,8 @@ interface TuiState {
   readonly toolsExpanded: boolean;                // Ctrl+E toggle for accordion collapse
   // Trajectory view data — injected by host via set_trajectory_data
   readonly trajectorySteps: readonly TrajectoryStepSummary[];
+  // Spawn history (#1792) — recently finished agents, most-recent-first, cap 20
+  readonly finishedSpawns: readonly SpawnRecord[];
 }
 ```
 
@@ -601,5 +603,7 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 - **Writable session resume (#1783):** Picker now fully resumes sessions (rebind engine → hydrate transcript → update `tuiSessionId`/`viewedSessionId`). Fail-closed: rebind before hydrate, `lastResetFailed` latch on failure. Cost bridge retargeted via `setSession()`.
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
 - **Fix orphan text node crash (#1768):** `StatusBar.tsx` and `CommandPalette.tsx` used ternaries returning `null` inside `<box>` elements. OpenTUI's strict schema requires text content wrapped in `<text>` tags; when ternaries evaluated to `null`, Solid converted it to `""` creating orphan text nodes. Replaced with `<Show>` which returns `null` safely via `cleanChildren`. Only triggered when running under Solid's server runtime (`solid-js/dist/server.js`) instead of the browser runtime — the `--conditions browser` re-exec in `bin.ts` prevents this in normal usage, but the `KOI_TUI_BROWSER_SOLID=1` env bypass skipped the conditions flag.
+
+> **Spawn history in /agents view (#1792):** `/agents` previously showed "No active agents" the instant a spawn finished, making it useless for multi-agent debugging. New `finishedSpawns: readonly SpawnRecord[]` state field — a session-scoped ring buffer (cap `MAX_FINISHED_SPAWNS = 20`, most-recent-first) populated from both `set_spawn_terminal` and `agent_status_changed(terminated)`. `AgentsView` now renders an "Active" section and a "Recent" section; finished agents show name, description, final duration, and a ✓/✗ outcome badge. `SpawnRecord` carries `agentId`, `agentName`, `description`, `startedAt`, `finishedAt`, `durationMs`, and `outcome: "complete" | "failed"`. `formatDuration()` extracted to `AgentsView` for shared active/finished rendering.
 
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
