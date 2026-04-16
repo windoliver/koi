@@ -79,7 +79,7 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // 143 = SIGTERM (128+15), 129 = SIGHUP (128+1).
   let pendingExitCode = 143;
 
-  const forwardToChild = (proc: Subprocess): void => {
+  const forwardToChild = (proc: Subprocess, exitCode: number): void => {
     try {
       proc.kill("SIGTERM");
     } catch {
@@ -91,7 +91,7 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
       } catch {
         // Nothing more to do.
       }
-      process.exit(143);
+      process.exit(exitCode);
     }, PARENT_SIGTERM_ESCALATION_MS);
     if (typeof escalate === "object" && escalate !== null && "unref" in escalate) {
       (escalate as { unref: () => void }).unref();
@@ -103,7 +103,7 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     forwardingStarted = true;
     pendingExitCode = exitCode;
     if (child !== null) {
-      forwardToChild(child);
+      forwardToChild(child, exitCode);
     } else {
       // Signal arrived between arm and bind — record it so bindChild
       // can replay the forward once the child ref is available.
@@ -139,7 +139,7 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
       process.on("SIGINT", noopSigintHandler);
       // Replay: if a signal arrived between arm and bind, forward now.
       if (pendingSignal) {
-        forwardToChild(proc);
+        forwardToChild(proc, pendingExitCode);
       }
       // Clean up listeners when the child exits so a later re-exec child
       // in the same process starts from a clean state.
