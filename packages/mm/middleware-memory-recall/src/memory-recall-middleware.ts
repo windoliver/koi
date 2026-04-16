@@ -96,6 +96,13 @@ function createEmptyState(): SessionRecallState {
  *
  * Returns "" on any error OR when the backend reports `truncated: true`
  * (fail-open: force a rescan because we cannot trust a partial listing).
+ *
+ * Cost note: this is one list() call per turn. Most turns have no memory
+ * changes so this is the only cost paid (early return before scan).
+ * Changed turns pay this list() plus a second list() inside
+ * `scanMemoryDirectory()`. See `fingerprintFromScan()` for the inverse:
+ * refreshing the fingerprint cache directly from scan output so that
+ * consecutive turns don't redo work if nothing changes between them.
  */
 async function computeListFingerprint(
   fs: MemoryRecallMiddlewareConfig["fs"],
@@ -294,6 +301,37 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
   }
 
   /**
+   * Insert a memory block into the request BEFORE the final user message.
+   *
+   * Canonical order: frozen snapshot → prior conversation → live delta →
+   * relevance overlay → current user message. Appending after the user
+   * turn breaks the semantic: providers treat the privileged
+   * `system:memory-*` block as an instruction that arrives AFTER the
+   * user's question, which either gets ignored as too late or overrides
+   * the user's intent. Injecting before the last user message keeps
+   * dynamic memory as prior context for the current turn.
+   *
+   * Falls back to appending if no user message is found (shouldn't happen
+   * in practice, but the middleware must not lose context).
+   */
+  function insertBeforeLastUser(request: ModelRequest, block: InboundMessage): ModelRequest {
+    const messages = request.messages;
+    // Walk from the end to find the last user message.
+    // let justified: reverse-iteration cursor for the insert position.
+    let insertAt = messages.length;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg === undefined) continue;
+      if (msg.senderId === "user" || msg.senderId?.startsWith("user") === true) {
+        insertAt = i;
+        break;
+      }
+    }
+    const next = [...messages.slice(0, insertAt), block, ...messages.slice(insertAt)];
+    return { ...request, messages: next };
+  }
+
+  /**
    * Token budget for the live delta. Defaults to 4000 tokens — prevents
    * a chatty session from dumping tens of thousands of tokens of freshly
    * stored memories into every subsequent turn. Memories are sorted by
@@ -325,6 +363,9 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     if (fingerprint === state.lastListFingerprint && fingerprint !== "") {
       return; // Nothing changed — reuse cached delta (or none).
     }
+    // Update cache before scanning — on interleaved turns, a failing scan
+    // will still leave the fingerprint advanced so we don't loop trying
+    // the same broken state repeatedly.
     state.lastListFingerprint = fingerprint;
 
     try {
@@ -395,18 +436,32 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       };
       state.livePaths = new Set(packed.map((m) => m.record.filePath));
 
-      // Update manifest so relevance selector can consider new memories.
-      const newManifestEntries: readonly MemoryManifestEntry[] = packed.map((m) => ({
+      // Merge ALL changed memories (not just the packed subset) into the
+      // manifest so truncated overflow stays reachable via the relevance
+      // selector. Without this, a memory that falls past the delta's
+      // token cap would silently disappear until the next session.
+      const allChangedEntries: readonly MemoryManifestEntry[] = changedMemories.map((m) => ({
         name: m.record.name,
         description: m.record.description,
         type: m.record.type,
         filePath: m.record.filePath,
       }));
-      // Merge: keep existing manifest entries, add new ones (dedup by filePath).
       const existingPaths = new Set(state.memoryManifest.map((e) => e.filePath));
-      const additions = newManifestEntries.filter((e) => !existingPaths.has(e.filePath));
+      const additions = allChangedEntries.filter((e) => !existingPaths.has(e.filePath));
       if (additions.length > 0) {
         state.memoryManifest = [...state.memoryManifest, ...additions];
+      }
+
+      // If the delta was truncated by the budget, enable the relevance
+      // selector so the dropped memories remain reachable (they're in
+      // memoryManifest but not in livePaths, so the selector's candidate
+      // filter will include them on this and subsequent turns).
+      if (
+        packed.length < changedMemories.length &&
+        config.relevanceSelector !== undefined &&
+        !state.selectorNeeded
+      ) {
+        state.selectorNeeded = true;
       }
     } catch (_e: unknown) {
       console.warn("[middleware-memory-recall] refreshLiveDelta() failed (swallowed)");
@@ -447,27 +502,24 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         await initialize(state);
       }
 
+      // Final order: frozen snapshot → prior conversation → live delta →
+      // relevance overlay → current user message.
       // 1. Frozen snapshot — prepend (prefix-stable).
       let effectiveRequest = injectFrozenSnapshot(state, request);
 
-      // 2. Live delta — check mtime, scan if changed, append after conversation.
+      // 2. Live delta — insert BEFORE the last user message so the new
+      //    memory arrives as prior context, not as a post-hoc instruction.
       await refreshLiveDelta(state);
       if (state.liveMessage !== undefined) {
-        effectiveRequest = {
-          ...effectiveRequest,
-          messages: [...effectiveRequest.messages, state.liveMessage],
-        };
+        effectiveRequest = insertBeforeLastUser(effectiveRequest, state.liveMessage);
       }
 
-      // 3. Relevance overlay — append after delta.
+      // 3. Relevance overlay — insert before last user, after live delta.
       if (config.relevanceSelector !== undefined) {
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            effectiveRequest = {
-              ...effectiveRequest,
-              messages: [...effectiveRequest.messages, relevantMsg],
-            };
+            effectiveRequest = insertBeforeLastUser(effectiveRequest, relevantMsg);
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");
@@ -488,27 +540,23 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         await initialize(state);
       }
 
+      // Final order: frozen snapshot → prior conversation → live delta →
+      // relevance overlay → current user message.
       // 1. Frozen snapshot — prepend (prefix-stable).
       let effectiveRequest = injectFrozenSnapshot(state, request);
 
-      // 2. Live delta — check mtime, scan if changed, append after conversation.
+      // 2. Live delta — insert BEFORE the last user message.
       await refreshLiveDelta(state);
       if (state.liveMessage !== undefined) {
-        effectiveRequest = {
-          ...effectiveRequest,
-          messages: [...effectiveRequest.messages, state.liveMessage],
-        };
+        effectiveRequest = insertBeforeLastUser(effectiveRequest, state.liveMessage);
       }
 
-      // 3. Relevance overlay — append after delta.
+      // 3. Relevance overlay — insert before last user, after live delta.
       if (config.relevanceSelector !== undefined) {
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            effectiveRequest = {
-              ...effectiveRequest,
-              messages: [...effectiveRequest.messages, relevantMsg],
-            };
+            effectiveRequest = insertBeforeLastUser(effectiveRequest, relevantMsg);
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");

@@ -535,14 +535,14 @@ describe("createMemoryRecallMiddleware", () => {
 
       expect(secondRequest).toBeDefined();
       if (secondRequest === undefined) return;
-      // 3 messages: frozen (prepended) + user + live delta (appended).
+      // 3 messages: frozen (prepended) + live delta (before user) + user.
       expect(secondRequest.messages.length).toBe(3);
       expect(secondRequest.messages[0]?.senderId).toBe("system:memory-recall");
-      expect(secondRequest.messages[1]?.senderId).toBe("user");
-      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
+      expect(secondRequest.messages[1]?.senderId).toBe("system:memory-live");
+      expect(secondRequest.messages[2]?.senderId).toBe("user");
 
       // Live delta contains the new memory, not the frozen one.
-      const liveText = getMessageText(secondRequest, 2);
+      const liveText = getMessageText(secondRequest, 1);
       expect(liveText).toContain("Live delta content");
       expect(liveText).not.toContain("Frozen snapshot content");
 
@@ -604,8 +604,10 @@ describe("createMemoryRecallMiddleware", () => {
 
       expect(req2).toBeDefined();
       if (req2 === undefined) return;
-      expect(req2.messages.length).toBe(3); // frozen + user + live
-      const live2 = getMessageText(req2, 2);
+      // frozen + live (before user) + user
+      expect(req2.messages.length).toBe(3);
+      expect(req2.messages[1]?.senderId).toBe("system:memory-live");
+      const live2 = getMessageText(req2, 1);
       expect(live2).toContain("Second memory");
 
       // Add 3rd file — delta should contain BOTH additions (second + third).
@@ -625,7 +627,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(req3).toBeDefined();
       if (req3 === undefined) return;
       expect(req3.messages.length).toBe(3);
-      const live3 = getMessageText(req3, 2);
+      expect(req3.messages[1]?.senderId).toBe("system:memory-live");
+      const live3 = getMessageText(req3, 1);
       expect(live3).toContain("Second memory");
       expect(live3).toContain("Third memory");
       expect(live3).not.toContain("Original memory"); // frozen-only, excluded from delta
@@ -677,10 +680,10 @@ describe("createMemoryRecallMiddleware", () => {
       if (capturedRequest === undefined) return;
       expect(capturedRequest.messages.length).toBe(3);
       expect(capturedRequest.messages[0]?.senderId).toBe("system:memory-recall");
-      expect(capturedRequest.messages[1]?.senderId).toBe("user");
-      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
+      expect(capturedRequest.messages[1]?.senderId).toBe("system:memory-live");
+      expect(capturedRequest.messages[2]?.senderId).toBe("user");
 
-      const liveText = getMessageText(capturedRequest, 2);
+      const liveText = getMessageText(capturedRequest, 1);
       expect(liveText).toContain("Streaming delta");
       expect(liveText).not.toContain("Streaming frozen");
 
@@ -735,8 +738,9 @@ describe("createMemoryRecallMiddleware", () => {
       expect(secondRequest).toBeDefined();
       if (secondRequest === undefined) return;
       expect(secondRequest.messages.length).toBe(3);
-      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(secondRequest, 2);
+      expect(secondRequest.messages[1]?.senderId).toBe("system:memory-live");
+      expect(secondRequest.messages[2]?.senderId).toBe("user");
+      const deltaText = getMessageText(secondRequest, 1);
       expect(deltaText).toContain("green");
     });
 
@@ -780,8 +784,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(capturedRequest).toBeDefined();
       if (capturedRequest === undefined) return;
       // Live delta present — budget forces truncation, doesn't drop the block.
-      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(capturedRequest, 2);
+      expect(capturedRequest.messages[1]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(capturedRequest, 1);
       // The NEWEST memory (New4) must be in the delta.
       expect(deltaText).toContain("New4");
       // At least one of the oldest must be DROPPED (5 memories ~= 400+ tokens,
@@ -793,6 +797,68 @@ describe("createMemoryRecallMiddleware", () => {
         deltaText.includes("New3") &&
         deltaText.includes("New4");
       expect(containsAllFive).toBe(false);
+    });
+
+    test("injection preserves canonical order: frozen -> prior -> live -> user", async () => {
+      // Seed frozen memory.
+      await writeFile(
+        join(dir, "role.md"),
+        makeMemoryFileContent("Role", "user", "Frozen context"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+
+      // Prior conversation has a user turn + an assistant turn + current user.
+      const request: ModelRequest = {
+        messages: [
+          {
+            content: [{ kind: "text", text: "prior user question" }],
+            senderId: "user",
+            timestamp: Date.now() - 2000,
+          },
+          {
+            content: [{ kind: "text", text: "prior assistant reply" }],
+            senderId: "assistant",
+            timestamp: Date.now() - 1000,
+          },
+          {
+            content: [{ kind: "text", text: "current user question" }],
+            senderId: "user",
+            timestamp: Date.now(),
+          },
+        ],
+      };
+
+      // Init — frozen only, no delta.
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => mockNext(r));
+
+      // Store a new memory mid-session to force a delta.
+      await writeFile(
+        join(dir, "update.md"),
+        makeMemoryFileContent("Update", "user", "Mid-session addition"),
+      );
+      const bump = new Date(Date.now() + 5000);
+      await utimes(dir, bump, bump);
+
+      let captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        captured = r;
+        return mockNext(r);
+      });
+
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      // Expected order: frozen(0) -> prior_user(1) -> prior_assistant(2) ->
+      //                 live_delta(3) -> current_user(4).
+      // Crucially: live delta is BEFORE the current user message, not after.
+      expect(captured.messages.length).toBe(5);
+      expect(captured.messages[0]?.senderId).toBe("system:memory-recall");
+      expect(captured.messages[1]?.senderId).toBe("user");
+      expect(getMessageText(captured, 1)).toBe("prior user question");
+      expect(captured.messages[2]?.senderId).toBe("assistant");
+      expect(captured.messages[3]?.senderId).toBe("system:memory-live");
+      expect(captured.messages[4]?.senderId).toBe("user");
+      expect(getMessageText(captured, 4)).toBe("current user question");
     });
   });
 });
