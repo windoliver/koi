@@ -675,9 +675,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
 
+  // Surface skipped middleware as errors so /plugins shows them
+  const middlewareErrors =
+    pluginComponents.middlewareNames.length > 0
+      ? [
+          {
+            plugin: "(middleware)",
+            error: `Skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+          },
+        ]
+      : [];
   const pluginSummary: PluginDiscoverySummary = {
     loaded: pluginComponents.discovered,
-    errors: pluginComponents.errors,
+    errors: [...pluginComponents.errors, ...middlewareErrors],
   };
   if (pluginSummary.loaded.length > 0) {
     const names = pluginSummary.loaded.map((p) => `${p.name}@${p.version}`).join(", ");

@@ -227,7 +227,6 @@ export async function loadPluginComponents(
       hooks.push(...pluginHooks);
       mcpServers.push(...pluginMcpServers);
       skillMetadata.push(...pluginSkills);
-      middlewareNames.push(...plugin.middlewareNames);
       discovered.push({
         name: plugin.name,
         version: plugin.version,

@@ -1296,19 +1296,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       summary: handle.pluginSummary,
     });
 
-    // Surface plugin status as inline startup context (#1728).
-    // Plugin info is injected here (post-runtime) rather than in the system
-    // prompt because the factory applies the manifest allowlist during
-    // discovery — pre-discovery would list phantom plugins the factory
-    // subsequently excludes.
-    //
-    // Both the TUI store AND the transcript are updated so the model
-    // sees loaded plugins on its first turn.
+    // Surface plugin status as inline TUI notice (#1728).
+    // UI-only — not injected into the model transcript to avoid a trust
+    // boundary issue (plugin descriptions are untrusted metadata).
+    // Agent awareness comes through the /plugins view and startup log.
     if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
       const parts: string[] = [];
       if (handle.pluginSummary.loaded.length > 0) {
         const pluginLines = handle.pluginSummary.loaded
-          .map((p) => `- ${p.name} v${p.version}: ${p.description}`)
+          .map((p) => `- ${p.name} v${p.version}`)
           .join("\n");
         parts.push(`[Loaded Plugins]\n${pluginLines}`);
       }
@@ -1318,21 +1314,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           .join("\n");
         parts.push(`[Plugin Load Errors]\n${errorLines}`);
       }
-      const pluginContextText = parts.join("\n\n");
-
-      // Push to transcript so the model sees plugin context
-      const pluginContextMsg: InboundMessage = {
-        content: [{ kind: "text" as const, text: pluginContextText }],
-        senderId: "user",
-        timestamp: Date.now(),
-      };
-      handle.transcript.push(pluginContextMsg);
-
-      // Also dispatch to TUI store for display
       store.dispatch({
         kind: "add_user_message",
         id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: pluginContextText }],
+        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
       });
     }
 
