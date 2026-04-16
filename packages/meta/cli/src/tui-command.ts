@@ -279,26 +279,30 @@ function mapSourceState(status: { readonly state: string }): string {
 
 /**
  * Compute the `/mcp` view status label for an MCP server from the resolver
- * failure code and the server's configured transport kind.
+ * failure code, the server's configured transport kind, and whether it has a
+ * usable OAuth config.
  *
- * `needs-auth` is reserved for HTTP transport — stdio and SSE have no OAuth
- * flow, so an `AUTH_REQUIRED` surfaced for those transports is a pattern-
- * matched false positive (`@koi/mcp` maps any error containing `unauthorized`
- * / `HTTP 401` / `invalid_token` / `authentication required` to that code,
- * and a stdio subprocess may write those strings to stderr for unrelated
- * reasons). Surface those as a generic `error` instead. When the transport
- * is unknown (plugin-provided servers), keep existing behavior and allow
- * `needs-auth` through (plugin HTTP+OAuth servers remain labelled correctly).
+ * `needs-auth` is an actionable state — the TUI binds Enter to `nav:mcp-auth`
+ * which launches the OAuth PKCE flow. It is only valid when:
+ *   1. The failure is `AUTH_REQUIRED`
+ *   2. Transport is HTTP (stdio/SSE have no OAuth flow)
+ *   3. The server has an `oauth` config block (non-OAuth HTTP servers like
+ *      static-token / basic-auth / API-key cannot be fixed via the TUI)
+ *
+ * Everything else surfaces as `error` so users see a clear failure state
+ * rather than an Enter-to-auth prompt that will immediately fail.
  *
  * @internal — exported for unit tests only.
  */
 export function computeLiveMcpStatus(
   failureCode: string | undefined,
   transport: "http" | "stdio" | "sse" | undefined,
+  hasOAuth: boolean,
 ): "connected" | "needs-auth" | "error" {
   if (failureCode === undefined) return "connected";
   if (failureCode !== "AUTH_REQUIRED") return "error";
-  if (transport === "stdio" || transport === "sse") return "error";
+  if (transport !== "http") return "error";
+  if (!hasOAuth) return "error";
   return "needs-auth";
 }
 
@@ -1473,7 +1477,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             name: l.name,
             // transport is now threaded through McpServerStatus from getMcpStatus(),
             // so startup refresh uses the same authoritative source as nav:mcp enrichment.
-            status: computeLiveMcpStatus(l.failureCode, l.transport),
+            status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
             toolCount: l.toolCount,
             detail: l.failureMessage,
           })),
@@ -2869,7 +2873,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
                       name: l.name,
-                      status: computeLiveMcpStatus(l.failureCode, l.transport),
+                      status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                       toolCount: l.toolCount,
                       detail: l.failureMessage ?? "plugin",
                     })),
@@ -2942,7 +2946,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   if (l === undefined) return entry;
                   return {
                     name: entry.name,
-                    status: computeLiveMcpStatus(l.failureCode, l.transport),
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
@@ -2951,7 +2955,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 for (const l of liveOther) {
                   enriched.push({
                     name: l.name,
-                    status: computeLiveMcpStatus(l.failureCode, l.transport),
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? "plugin",
                   });

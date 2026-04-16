@@ -792,37 +792,43 @@ describe("onCommand dispatch coverage — #1752", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeLiveMcpStatus", () => {
-  test("undefined failureCode → connected for any transport", () => {
-    expect(computeLiveMcpStatus(undefined, "stdio")).toBe("connected");
-    expect(computeLiveMcpStatus(undefined, "http")).toBe("connected");
-    expect(computeLiveMcpStatus(undefined, "sse")).toBe("connected");
-    expect(computeLiveMcpStatus(undefined, undefined)).toBe("connected");
+  test("undefined failureCode → connected regardless of transport/oauth", () => {
+    expect(computeLiveMcpStatus(undefined, "stdio", false)).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, "http", true)).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, "sse", false)).toBe("connected");
+    expect(computeLiveMcpStatus(undefined, undefined, false)).toBe("connected");
   });
 
   test("AUTH_REQUIRED on stdio → error (#1852)", () => {
     // Regression: pattern-matched 'unauthorized' on stdio stderr previously
     // surfaced as needs-auth, an impossible state for a transport without
     // an OAuth flow.
-    expect(computeLiveMcpStatus("AUTH_REQUIRED", "stdio")).toBe("error");
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "stdio", false)).toBe("error");
   });
 
   test("AUTH_REQUIRED on sse → error (no OAuth flow)", () => {
-    expect(computeLiveMcpStatus("AUTH_REQUIRED", "sse")).toBe("error");
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "sse", false)).toBe("error");
   });
 
-  test("AUTH_REQUIRED on http → needs-auth", () => {
-    expect(computeLiveMcpStatus("AUTH_REQUIRED", "http")).toBe("needs-auth");
+  test("AUTH_REQUIRED on http with OAuth → needs-auth (Enter triggers OAuth)", () => {
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "http", true)).toBe("needs-auth");
   });
 
-  test("AUTH_REQUIRED with unknown transport → needs-auth (plugin OAuth fallback)", () => {
-    // Plugin-sourced entries don't carry transport info; preserve existing
-    // behavior so a plugin HTTP+OAuth server still surfaces needs-auth.
-    expect(computeLiveMcpStatus("AUTH_REQUIRED", undefined)).toBe("needs-auth");
+  test("AUTH_REQUIRED on http without OAuth → error (no usable auth flow)", () => {
+    // Static-token / API-key / basic-auth HTTP servers can't be fixed via TUI OAuth.
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", "http", false)).toBe("error");
+  });
+
+  test("AUTH_REQUIRED with unknown transport → error (conservative default)", () => {
+    // Transport is now always available from config; undefined is only reachable
+    // for truly unknown servers. Fail closed: don't surface an Enter-to-auth
+    // prompt when we can't confirm auth capability.
+    expect(computeLiveMcpStatus("AUTH_REQUIRED", undefined, false)).toBe("error");
   });
 
   test("non-auth failure code → error for any transport", () => {
-    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "stdio")).toBe("error");
-    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "http")).toBe("error");
-    expect(computeLiveMcpStatus("INTERNAL", undefined)).toBe("error");
+    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "stdio", false)).toBe("error");
+    expect(computeLiveMcpStatus("CONNECT_TIMEOUT", "http", true)).toBe("error");
+    expect(computeLiveMcpStatus("INTERNAL", undefined, false)).toBe("error");
   });
 });

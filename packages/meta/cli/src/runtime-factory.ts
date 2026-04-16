@@ -589,6 +589,8 @@ export interface McpServerStatus {
   readonly failureMessage: string | undefined;
   /** Transport kind — undefined for plugin-provided servers where config is unavailable. */
   readonly transport: "http" | "stdio" | "sse" | undefined;
+  /** Whether this server has a usable OAuth config — `needs-auth` is only valid when true. */
+  readonly hasOAuth: boolean;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -1511,6 +1513,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpPluginTransportByName = stackContribution.exports.mcpPluginTransportByName as
       | ReadonlyMap<string, "http" | "stdio" | "sse">
       | undefined;
+    const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
+    const mcpPluginOAuthCapableNames = stackContribution.exports.mcpPluginOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -1940,20 +1948,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           readonly label: string;
           readonly resolver: import("@koi/mcp").McpResolver;
           readonly transportMap: ReadonlyMap<string, "http" | "stdio" | "sse"> | undefined;
+          readonly oauthNames: ReadonlySet<string> | undefined;
         }[] = [];
         if (mcpResolver !== undefined)
-          sources.push({ label: "user", resolver: mcpResolver, transportMap: mcpTransportByName });
+          sources.push({
+            label: "user",
+            resolver: mcpResolver,
+            transportMap: mcpTransportByName,
+            oauthNames: mcpOAuthCapableNames,
+          });
         if (mcpPluginResolver !== undefined)
           sources.push({
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
+            oauthNames: mcpPluginOAuthCapableNames,
           });
         if (sources.length === 0) return [];
 
         const entries: McpServerStatus[] = [];
         const seenByKey = new Set<string>();
-        for (const { label, resolver, transportMap } of sources) {
+        for (const { label, resolver, transportMap, oauthNames } of sources) {
           const toolCounts = new Map<string, number>();
           const descriptors = await resolver.discover();
           for (const d of descriptors) {
@@ -1971,6 +1986,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               failureCode: undefined,
               failureMessage: undefined,
               transport: transportMap?.get(name),
+              hasOAuth: oauthNames?.has(name) ?? false,
             });
           }
           for (const f of resolver.failures) {
@@ -1985,6 +2001,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               failureCode: f.error.code,
               failureMessage: f.error.message,
               transport: transportMap?.get(f.serverName),
+              hasOAuth: oauthNames?.has(f.serverName) ?? false,
             });
           }
         }

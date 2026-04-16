@@ -53,8 +53,14 @@ export const mcpStack: PresetStack = {
         ...(userMcpSetup !== undefined ? { mcpResolver: userMcpSetup.resolver } : {}),
         ...(pluginMcpSetup !== undefined ? { mcpPluginResolver: pluginMcpSetup.resolver } : {}),
         ...(userMcpSetup !== undefined ? { mcpTransportByName: userMcpSetup.transportByName } : {}),
+        ...(userMcpSetup !== undefined
+          ? { mcpOAuthCapableNames: userMcpSetup.oauthCapableNames }
+          : {}),
         ...(pluginMcpSetup !== undefined
           ? { mcpPluginTransportByName: pluginMcpSetup.transportByName }
+          : {}),
+        ...(pluginMcpSetup !== undefined
+          ? { mcpPluginOAuthCapableNames: pluginMcpSetup.oauthCapableNames }
           : {}),
       },
       onShutdown: () => {
