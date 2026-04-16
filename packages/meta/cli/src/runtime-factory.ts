@@ -31,10 +31,12 @@ import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
+  FileSystemBackend,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
@@ -48,7 +50,7 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
-import { resolveFsPath } from "@koi/fs-local";
+import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -56,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
@@ -419,12 +422,41 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional absolute path to a SQLite audit database file.
+   *
+   * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
+   * — set to an absolute file path before launching `koi tui`. The file
+   * is created if it doesn't exist. Sink resources (WAL, timer) are
+   * owned by the runtime and closed during shutdown.
+   */
+  readonly auditSqlitePath?: string | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
+   * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
+   */
+  readonly reportEnabled?: boolean | undefined;
+  /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
    * list through here. Honored by `buildCoreProviders`.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  /**
+   * Active filesystem backend to use for `fs_read`, `fs_write`, and
+   * `fs_edit` tools, AND for the checkpoint preset stack's backend
+   * discriminator (capture + rewind dispatch).
+   *
+   * When omitted, the factory creates a default `@koi/fs-local` backend
+   * rooted at `cwd` with `allowExternalPaths: true` — the same backend
+   * `buildCoreProviders` previously created internally. Pass an explicit
+   * backend here when the session uses a non-local filesystem (e.g.
+   * Nexus via `resolveFileSystemAsync`) so the checkpoint middleware
+   * stamps the correct backend name on `FileOpRecord` entries and the
+   * restore protocol can dispatch compensating ops through the right
+   * backend during rewind.
+   */
+  readonly filesystem?: FileSystemBackend | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -522,6 +554,13 @@ export interface KoiRuntimeHandle {
    * in the TUI so they are aware of the reduced isolation posture.
    */
   readonly sandboxActive: boolean;
+  /**
+   * #1862: Formatted run-report text buffered by onSessionEnd. Non-empty
+   * when KOI_REPORT_ENABLED=true and onSessionEnd completed. The TUI
+   * prints this after appHandle.stop() releases the alt screen so the
+   * output is visible on the main screen.
+   */
+  readonly getPendingReport: () => string | undefined;
   /**
    * Decision ledger factory — creates a per-session ledger reader backed by
    * the in-memory trajectory store. Used by the /trajectory view to show
@@ -856,6 +895,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     );
   }
 
+  // --- Filesystem backend — shared by tools and the checkpoint stack ---
+  // When the caller supplies an explicit filesystem backend (e.g. a Nexus
+  // backend from resolveFileSystemAsync), use it; otherwise fall back to
+  // the default local backend so the checkpoint stack receives the same
+  // instance that fs_write / fs_edit tools use.
+  //
+  // The backend is passed into StackActivationContext.filesystem so the
+  // checkpoint preset stack can:
+  //   1. Stamp `FileOpRecord.backend` with the backend name during capture.
+  //   2. Build the `backends` map for the restore protocol's rewind dispatch.
+  //
+  // For the default local backend (`name === "local"`), the checkpoint
+  // stack skips both — the restore protocol treats absent/local ops as
+  // direct local I/O, which is the existing behavior.
+  const filesystemBackend: FileSystemBackend =
+    config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
     ...(config.otel !== undefined ? { otelConfig: config.otel } : {}),
@@ -880,6 +936,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     cwd,
     hostId,
     modelAdapter,
+    filesystem: filesystemBackend,
     ...(config.session !== undefined ? { sessionTranscript: config.session.transcript } : {}),
     host: earlyContextHost,
   };
@@ -1029,6 +1086,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // TUI contributes its hooks-enabled Bash variant via the `bashTool` field.
   const coreProviders = buildCoreProviders({
     cwd,
+    filesystemBackend,
     ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
     ...(config.filesystemOperations !== undefined
       ? { filesystemOperations: config.filesystemOperations }
@@ -1486,12 +1544,91 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
       }
       const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
-      const auditMw = createAuditMiddleware({ sink: auditSink });
+      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
       auditPresetExtras.push(auditMw);
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
       };
+    }
+
+    // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
+    // Parallel to NDJSON above. Both can be active simultaneously (tee
+    // pattern) as long as they target different files.
+    let auditSqliteMwForShutdown:
+      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+      | undefined;
+    if (config.auditSqlitePath !== undefined) {
+      // Collision guard: refuse to start if the SQLite path resolves to the
+      // same canonical file as the NDJSON host-level path or any manifest
+      // @koi/middleware-audit entry. Two independent writers (especially
+      // different formats) against the same file corrupt the audit trail.
+      const sqliteCanonical = canonicalizeAuditSinkPath(
+        config.auditSqlitePath,
+        zoneBWorkingDirectory,
+      );
+      if (sqliteCanonical !== undefined) {
+        // Check against host-level NDJSON path.
+        if (config.auditNdjsonPath !== undefined) {
+          const ndjsonCanonical = canonicalizeAuditSinkPath(
+            config.auditNdjsonPath,
+            zoneBWorkingDirectory,
+          );
+          if (ndjsonCanonical === sqliteCanonical) {
+            throw new Error(
+              `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                `the same canonical path as auditNdjsonPath "${config.auditNdjsonPath}". ` +
+                "SQLite and NDJSON sinks use incompatible formats — they cannot share a file.",
+            );
+          }
+        }
+        // Check against manifest @koi/middleware-audit entries.
+        if (config.manifestMiddleware !== undefined) {
+          for (const entry of config.manifestMiddleware) {
+            if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+            const entryPath = entry.options?.filePath;
+            if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+            const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+            if (entryCanonical === sqliteCanonical) {
+              throw new Error(
+                `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                  `the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                  "Two independent writers cannot share the same file.",
+              );
+            }
+          }
+        }
+      }
+      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      auditPresetExtras.push(sqliteAuditMw);
+      auditSqliteMwForShutdown = {
+        flush: () => sqliteAuditMw.flush(),
+        close: async () => sqliteSink.close(),
+      };
+    }
+
+    // --- Report middleware (opt-in via config.reportEnabled) ---
+    // Accumulates model/tool call metrics and emits a RunReport at session
+    // end. No shutdown resources — the report is printed via onReport.
+    // let: justified — set once by onReport callback during onSessionEnd.
+    let pendingReportText: string | undefined;
+    if (config.reportEnabled === true) {
+      const reportHandle = createReportMiddleware({
+        objective: config.goals?.join("; "),
+        onReport: (_report, formatted) => {
+          // #1862: buffer the formatted text instead of printing
+          // immediately. onReport fires during runtime.dispose() →
+          // onSessionEnd, while the TUI alt screen may still be active.
+          // The host prints pendingReportText after appHandle.stop()
+          // releases the alt screen so the output is visible.
+          pendingReportText = formatted;
+        },
+      });
+      auditPresetExtras.push(reportHandle.middleware);
+      // TODO(#1858): expose reportHandle.getReport / getProgress on
+      // KoiRuntimeHandle so the TUI can surface progress in a status
+      // bar or /report command.
     }
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
@@ -1993,8 +2130,24 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             }
           })();
         }
+        if (auditSqliteMwForShutdown !== undefined) {
+          const sqliteAudit = auditSqliteMwForShutdown;
+          void (async () => {
+            try {
+              await sqliteAudit.flush();
+              await sqliteAudit.close();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] SQLite audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
         return hadWork;
       },
+      getPendingReport: () => pendingReportText,
     };
   } catch (assemblyErr) {
     // Any failure between manifest resolution and the return above

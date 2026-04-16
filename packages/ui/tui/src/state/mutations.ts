@@ -667,7 +667,23 @@ export function mutate(state: Draft, action: TuiAction): void {
       const existingRecord = progress
         ? undefined
         : state.finishedSpawns.find((r) => r.agentId === action.agentId);
-      if (!progress && !existingRecord) break;
+
+      // #1855: when spawn_requested dispatch was lost (callback threw), neither
+      // activeSpawns nor finishedSpawns has this agentId. Synthesize a record
+      // from the fallback metadata so the spawn is still visible in the UI.
+      if (!progress && !existingRecord) {
+        const now = Date.now();
+        recordFinishedSpawn(state, {
+          agentId: action.agentId,
+          agentName: action.agentName ?? "agent",
+          description: action.description ?? "",
+          startedAt: now,
+          finishedAt: now,
+          durationMs: 0,
+          outcome: action.outcome,
+        });
+        break;
+      }
 
       const agentName = progress?.agentName ?? existingRecord!.agentName;
       const description = progress?.description ?? existingRecord!.description;

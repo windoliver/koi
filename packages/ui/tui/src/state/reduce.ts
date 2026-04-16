@@ -870,7 +870,25 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const existingRecord = progress
         ? undefined
         : state.finishedSpawns.find((r) => r.agentId === action.agentId);
-      if (!progress && !existingRecord) return state;
+
+      // #1855: when spawn_requested dispatch was lost (callback threw), neither
+      // activeSpawns nor finishedSpawns has this agentId. Synthesize a record
+      // from the fallback metadata so the spawn is still visible in the UI.
+      if (!progress && !existingRecord) {
+        const now = Date.now();
+        return {
+          ...state,
+          finishedSpawns: appendFinishedSpawn(state.finishedSpawns, {
+            agentId: action.agentId,
+            agentName: action.agentName ?? "agent",
+            description: action.description ?? "",
+            startedAt: now,
+            finishedAt: now,
+            durationMs: 0,
+            outcome: action.outcome,
+          }),
+        };
+      }
 
       const agentName = progress?.agentName ?? existingRecord!.agentName;
       const description = progress?.description ?? existingRecord!.description;

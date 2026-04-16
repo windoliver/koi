@@ -621,6 +621,19 @@ describe("createKoiRuntime — trustedHost enforcement", () => {
     expect(runtimeHandle.runtime).toBeDefined();
   });
 
+  test("assembles with reportEnabled: true (KOI_REPORT_ENABLED wiring)", async () => {
+    runtimeHandle = await createKoiRuntime({
+      ...makeConfig(),
+      reportEnabled: true,
+    });
+    expect(runtimeHandle.runtime).toBeDefined();
+  });
+
+  test("assembles without reportEnabled (default off)", async () => {
+    runtimeHandle = await createKoiRuntime(makeConfig());
+    expect(runtimeHandle.runtime).toBeDefined();
+  });
+
   test("RequiredMiddlewareError carries missing[] and terminalCapable for host error handling", () => {
     // Unit-tested more fully in manifest-middleware.test.ts; this
     // check lives here to ensure the error class is importable

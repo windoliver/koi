@@ -10,6 +10,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
 - **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.
 - **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
+- **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
+- **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
 
 ---
 
@@ -87,6 +89,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--verbose` / `-v` | boolean | false | Stream tool calls and turn delimiters |
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend. When set, `resolve-filesystem.ts` allows `FileSystemBackend` instances whose `kind` is `"nexus"` rather than failing closed with an unsupported-backend error. Requires nexus connectivity; startup aborts if the backend liveness check fails. |
 
 **Wiring (current):**
 
@@ -166,6 +169,8 @@ koi tui
 | `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
 | `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call. The CLI auto-initializes a `BasicTracerProvider` with `BatchSpanProcessor` — no external SDK setup needed. Headless (`koi start`) exports spans as JSON to stderr; TUI (`koi tui`) exports via OTLP to `localhost:4318` by default. Override with `OTEL_TRACES_EXPORTER` (`console`, `otlp`, `none`) and `OTEL_EXPORTER_OTLP_ENDPOINT`. (#1770) |
 | `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
+| `KOI_AUDIT_SQLITE` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-sqlite`. Same audit coverage as NDJSON but stored in a WAL-mode SQLite database. Both `KOI_AUDIT_NDJSON` and `KOI_AUDIT_SQLITE` can be set simultaneously (tee pattern) as long as they target different files — a collision guard rejects startup if paths overlap (#1849) |
+| `KOI_REPORT_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-report`. Emits a RunReport to stderr at session end with turn count, action count, duration, and token usage. If goals are configured, the report includes the objective. (#1858) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
@@ -176,6 +181,7 @@ so the key is not forwarded to OpenRouter.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--goal` | string (repeatable) | — | Goal objectives for adaptive reminder middleware |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend (same semantics as `koi start --allow-remote-fs`). When set, `koi tui` passes the flag into `createTuiRuntime()` so the filesystem resolver does not fail closed on nexus backends. |
 
 Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
@@ -394,15 +400,17 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/sandbox-os` | L2 | OS sandbox adapter — `createOsAdapter()` + `restrictiveProfile()` for Bash confinement (`tui` command) |
 | `@koi/rules-loader` | L0u | Hierarchical project rules file injection — discovers CLAUDE.md/AGENTS.md/.koi/context.md from cwd to git root, merges root-first into system prompt |
 | `@koi/context-manager` | L0u | Token-aware transcript compaction — `enforceBudget()` micro/full cascade, `resolveConfig()` + `budgetConfigFromResolved()` for per-model window from `@koi/model-registry`. Wired into `createTranscriptAdapter()` in `engine-adapter.ts`; both `koi start` and `koi tui` use it. `KOI_COMPACTION_WINDOW` env var overrides the window for testing (#1623) |
+| `@koi/audit-sink-sqlite` | L2 | WAL-mode SQLite audit sink — opt-in via `KOI_AUDIT_SQLITE` env var, parallel to NDJSON sink. Collision guard prevents dual-writer corruption (#1849) |
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
+| `@koi/middleware-report` | L2 | Run report middleware — opt-in via `KOI_REPORT_ENABLED=true`. Accumulates model/tool call metrics and emits a RunReport at session end (#1858) |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. |
 | `@koi/memory` | L0u | Session-start memory recall — scan, score by salience, budget to 8K tokens, format with `<memory-data>` trust boundary |
 | `@koi/memory-fs` | L2 | File-based memory storage — `.koi/memory/` with per-dir mutex, worktree-local by default, atomic writes, MEMORY.md index |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools with SkillComponent behavioral guidance — file-backed via `@koi/memory-fs` adapter. Tool output excludes internal `filePath` (#1725) |
-| `@koi/middleware-memory-recall` | L2 | Frozen-snapshot memory recall — auto-injects recalled memories at session start, optional per-turn relevance selector (uses opaque record IDs, not filenames) |
+| `@koi/middleware-memory-recall` | L2 | Frozen snapshot + live delta memory recall — frozen snapshot injected at session start, per-turn live delta appended for mid-session memory writes (signature-gated scan, FNV-1a content hashes, inserted before the last user turn), optional per-turn relevance selector (uses opaque record IDs) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
 | `@koi/hook-prompt` | L0u | Prompt hook executor — single-shot LLM verdict parsing (hardened JSON extraction, denial language detection) |
 | `@koi/hooks` | L2 | Hook middleware — loads hooks from `~/.koi/hooks.json` as `"user"` tier, plugin hooks as `"session"` tier (#1282). Hook policy tiers enable tier-phased dispatch (managed → user → session) and `HookPolicy` filtering. Wires observer tap for ATIF trajectory recording. Prompt hooks supported via `PromptModelCaller` backed by the TUI model adapter. HTTP hooks protected by DNS-level SSRF guard, header injection prevention, and bounded response body (#1278, #1279). **User-hook loader semantics (#1781):** `loadUserRegisteredHooks` in `shared-wiring.ts` calls `loadRegisteredHooksPerEntry` so one invalid entry no longer silently drops every hook; parse failures and non-array roots are fatal by default (Codex review convergence); per-entry errors marked `failClosed: true` abort startup; `KOI_HOOKS_STRICT=1` tightens every per-entry error into a fatal; `KOI_HOOKS_CONFIG_PATH=/abs/path` pins the hooks file for deployments that don't trust `$HOME` (sudo/launchd); diagnostics surface via `[koi tui] hooks.json: …` warnings wired to `onLoadError`. Plugin agent hooks are silently filtered in TUI (auto-discovered third-party content must not be able to brick hosts — a plugin update can then cause per-session warnings rather than a machine-wide outage). Agent pre-filter honors `enabled: false` so operators can share one hooks.json across agent-capable and TUI-only hosts |
@@ -596,6 +604,8 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 > - **Pre-runtime-ready `/clear` fails closed.** A `/clear` issued during the `koi tui --resume <id>` startup window waits for `runtimeReady`, then runs the same `resetSessionState({ truncate: true })` pipeline. If the runtime never yields a handle the reset fails closed (regardless of `truncate`) — both visible history and the JSONL file are preserved.
 >
 > - **Engine: `CreateKoiOptions.rotateSessionId` callback.** New L0/L1 surface so hosts that own the session-id format keep ownership across `cycleSession()` rotations. Pre-computed at the top of `cycleSession()` BEFORE any destructive lifecycle step (sessionEpoch bump, onSessionEnd, governance reset), so a throwing host callback leaves the runtime entirely pre-cycle — no half-cycled state, no stale-iterable lockup.
+
+> **Spawn crash guard (#1855):** `createSpawnExecutor` in `@koi/engine` now wraps all 4 `onSpawnEvent` callback invocations in a `safeSpawnEvent()` helper that catches and logs errors — observational callbacks must never crash the spawn flow. The first call site (`spawn_requested`) was outside the try block entirely, so a throwing `store.dispatch()` was completely unhandled and crashed the parent TUI process. The TUI's `onSpawnEvent` callback in `tui-command.ts` gains a defense-in-depth try-catch around `store.dispatch()` calls. `set_spawn_terminal` now passes fallback `agentName`/`description` metadata so the TUI reducer can synthesize a `finishedSpawns` record when the initial `spawn_requested` dispatch was lost.
 
 
 ## Changelog

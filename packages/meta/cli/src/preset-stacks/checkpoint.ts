@@ -20,6 +20,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCheckpoint } from "@koi/checkpoint";
+import type { FileSystemBackend } from "@koi/core";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
 
@@ -47,6 +48,32 @@ export const checkpointStack: PresetStack = {
       const stripped = virtualPath.startsWith("/") ? virtualPath.slice(1) : virtualPath;
       return join(ctx.cwd, stripped);
     };
+
+    // Backend discriminator wiring.
+    //
+    // Checkpoint capture reads file pre/post images from the LOCAL filesystem
+    // (via Bun.file + CAS hashing). For non-local backends (nexus), the files
+    // live remotely and cannot be captured through local I/O. Until checkpoint
+    // capture is wired through FileSystemBackend.read(), disable checkpoint
+    // for non-local backends to avoid creating unrecoverable snapshots.
+    const fsBackend: FileSystemBackend | undefined = ctx.filesystem;
+    // Detect truly remote backends (nexus) vs. locally-backed wrappers (scoped).
+    // scoped(local) and scoped(fs-local:...) still read from local disk — safe for checkpoint.
+    // Only nexus backends (name starts with "nexus") have remote files inaccessible via local I/O.
+    const isRemoteBackend =
+      fsBackend !== undefined &&
+      (fsBackend.name.startsWith("nexus") || fsBackend.name.includes("nexus"));
+
+    if (isRemoteBackend) {
+      // Return a no-op StackContribution — checkpoint is disabled for non-local backends.
+      // This preserves the existing contract (no crash, no middleware gap) while avoiding
+      // the creation of snapshots that reference remote paths but capture local content.
+      process.stderr.write(
+        `[checkpoint] /rewind disabled for non-local backend '${fsBackend.name}'. ` +
+          `Checkpoint capture requires local filesystem access.\n`,
+      );
+      return { middleware: [], providers: [] };
+    }
 
     const checkpointHandle = createCheckpoint({
       store: createSnapshotStoreSqlite({ path: snapshotPath }),

@@ -575,6 +575,9 @@ export type TuiAction =
       readonly kind: "set_spawn_terminal";
       readonly agentId: string;
       readonly outcome: "complete" | "failed";
+      /** Fallback metadata for recovery when spawn_requested dispatch was lost (#1855). */
+      readonly agentName?: string | undefined;
+      readonly description?: string | undefined;
     }
   | { readonly kind: "set_slash_query"; readonly query: string | null }
   | {

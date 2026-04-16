@@ -2797,14 +2797,20 @@ describe("reduce — engine_event — spawn", () => {
     expect(next.activeSpawns.has("child-ok")).toBe(false);
   });
 
-  test("set_spawn_terminal is a no-op when agentId is not in activeSpawns", () => {
+  test("set_spawn_terminal synthesizes record when agentId is not in activeSpawns (#1855)", () => {
     const state = createInitialState();
     const next = reduce(state, {
       kind: "set_spawn_terminal",
       agentId: "unknown",
       outcome: "failed",
+      agentName: "orphan-agent",
+      description: "lost spawn",
     });
-    expect(next).toBe(state);
+    // #1855: no longer a no-op — synthesize a finished record so the spawn is visible
+    expect(next).not.toBe(state);
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("unknown");
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
   });
 
   test("agent_status_changed (running) is a no-op for non-terminal status", () => {
@@ -3047,6 +3053,27 @@ describe("reduce — engine_event — spawn", () => {
     expect(next.finishedSpawns.length).toBe(1);
     expect(next.finishedSpawns[0]?.outcome).toBe("failed");
     expect(next.finishedSpawns[0]?.agentId).toBe("child-gone-1");
+  });
+
+  // Regression #1855: set_spawn_terminal synthesizes a record when spawn_requested
+  // dispatch was lost (callback threw), so the child is still visible in the UI.
+  test("set_spawn_terminal synthesizes record when spawn_requested was lost (#1855)", () => {
+    // No spawn_requested was ever dispatched — activeSpawns and finishedSpawns are empty
+    const state = stateWith({
+      messages: [assistantMsg("thinking...", { id: "assistant-1", streaming: true })],
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "orphan-1",
+      outcome: "failed",
+      agentName: "reviewer",
+      description: "Review src/math.ts",
+    });
+    // Record was synthesized despite no prior spawn_requested
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("orphan-1");
+    expect(next.finishedSpawns[0]?.agentName).toBe("reviewer");
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
   });
 
   // clear_messages no-op guard must consider finishedSpawns

@@ -39,6 +39,7 @@
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
     "@koi/audit-sink-ndjson": "workspace:*",
+    "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/channel-cli": "workspace:*",
     "@koi/checkpoint": "workspace:*",
     "@koi/context-manager": "workspace:*",
@@ -48,6 +49,7 @@
     "@koi/engine": "workspace:*",
     "@koi/event-trace": "workspace:*",
     "@koi/fs-local": "workspace:*",
+    "@koi/fs-nexus": "workspace:*",
     "@koi/harness": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
@@ -64,6 +66,7 @@
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
+    "@koi/middleware-report": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/model-router": "workspace:*",

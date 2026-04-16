@@ -198,4 +198,59 @@ describe("buildFileOpRecord", () => {
     });
     expect(result).toBeUndefined();
   });
+
+  describe("backend field threading", () => {
+    test("create record includes backend when provided", () => {
+      const result = buildFileOpRecord({
+        ...baseInput,
+        backend: "nexus:local-bridge",
+        pre: { existed: false, contentHash: undefined },
+        post: { existed: true, contentHash: HASH_A },
+      });
+      expect(result?.kind).toBe("create");
+      expect(result?.backend).toBe("nexus:local-bridge");
+    });
+
+    test("edit record includes backend when provided", () => {
+      const result = buildFileOpRecord({
+        ...baseInput,
+        backend: "nexus:local-bridge",
+        pre: { existed: true, contentHash: HASH_A },
+        post: { existed: true, contentHash: HASH_B },
+      });
+      expect(result?.kind).toBe("edit");
+      expect(result?.backend).toBe("nexus:local-bridge");
+    });
+
+    test("delete record includes backend when provided", () => {
+      const result = buildFileOpRecord({
+        ...baseInput,
+        backend: "nexus:local-bridge",
+        pre: { existed: true, contentHash: HASH_A },
+        post: { existed: false, contentHash: undefined },
+      });
+      expect(result?.kind).toBe("delete");
+      expect(result?.backend).toBe("nexus:local-bridge");
+    });
+
+    test("backend is omitted when not provided (backwards compat)", () => {
+      const result = buildFileOpRecord({
+        ...baseInput,
+        pre: { existed: false, contentHash: undefined },
+        post: { existed: true, contentHash: HASH_A },
+      });
+      expect(result?.kind).toBe("create");
+      expect("backend" in (result ?? {})).toBe(false);
+    });
+
+    test("backend supports local value", () => {
+      const result = buildFileOpRecord({
+        ...baseInput,
+        backend: "local",
+        pre: { existed: true, contentHash: HASH_A },
+        post: { existed: true, contentHash: HASH_B },
+      });
+      expect(result?.backend).toBe("local");
+    });
+  });
 });

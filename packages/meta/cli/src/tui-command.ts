@@ -46,6 +46,7 @@ import { sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -54,6 +55,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -74,6 +76,7 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
+import { createAuthInterceptor } from "./auth-interceptor.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
@@ -921,17 +924,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
   // #1777: the manifest filesystem block is parsed+validated by
-  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
-  // `backend: "local"` on the host-default local backend path.
-  // `backend: "nexus"` is rejected here because the TUI permission
-  // middleware and checkpoint stack both assume the filesystem
-  // backend is rooted at `cwd`; approving or rewinding against a
-  // non-cwd backend would break trust-boundary and rollback
-  // invariants.
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports both
+  // `backend: "local"` and `backend: "nexus"` (with or without scope).
+  // For nexus with local-bridge transport, the TUI wires the OAuth auth
+  // loop: createAuthNotificationHandler (outbound) + createAuthInterceptor
+  // (inbound) so the user can complete OAuth flows inline.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  // Full filesystem config for nexus async resolution — stored here so the
+  // async resolve can run just before createKoiRuntime (after TUI setup).
+  let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+    // Pass allowOAuthSchemes so the manifest loader skips the local-only
+    // scheme allowlist for this host — the TUI wires the auth loop below.
+    const manifestResult = await loadManifestConfig(flags.manifest, { allowOAuthSchemes: true });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
       process.exit(1);
@@ -943,17 +949,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     if (manifestResult.value.filesystem !== undefined) {
-      if (manifestResult.value.filesystem.backend === "nexus") {
-        process.stderr.write(
-          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
-            "  The TUI permission middleware and checkpoint stack both assume the\n" +
-            "  filesystem backend is rooted at the session cwd, and approving or\n" +
-            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
-            "  rollback invariants. Omit the `filesystem:` block or use\n" +
-            "  `backend: local`.\n",
-        );
-        process.exit(1);
-      }
+      // Store the full config for async resolution before runtime assembly.
       // Apply the `FileSystemConfig.operations` contract's `["read"]`
       // default at the host level. `buildCoreProviders` honors
       // `filesystemOperations` verbatim. NOTE: this gates only the
@@ -962,6 +958,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // mutate the workspace via shell commands. Manifest authors who
       // need a true read-only posture should also omit `execution`
       // from `manifest.stacks`.
+      manifestFilesystemConfig = manifestResult.value.filesystem;
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
     manifestMiddleware =
@@ -1192,10 +1189,122 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
   const otelHandle = otelEnabled ? initOtelSdk("tui") : undefined;
 
+  // ---------------------------------------------------------------------------
+  // Auth loop wiring — nexus local-bridge transport (Tasks 11 + 14)
+  // ---------------------------------------------------------------------------
+  //
+  // When the manifest declares a nexus backend with a local-bridge transport,
+  // we resolve the filesystem async so the bridge subprocess starts before the
+  // runtime is assembled. Two auth hooks are wired here:
+  //
+  //   Outbound: `createAuthNotificationHandler(channel)` is subscribed to
+  //   transport notifications so `auth_required` / `auth_progress` /
+  //   `auth_complete` events are forwarded to the TUI channel as chat
+  //   messages.
+  //
+  //   Inbound: `createAuthInterceptor(transport)` is held in
+  //   `tuiAuthInterceptor` and checked in `onSubmit` before the message
+  //   is passed to the engine. When the user pastes a localhost redirect
+  //   URL, the interceptor routes it to `transport.submitAuthCode(...)` and
+  //   swallows the text so it never reaches the model.
+  //
+  // `tuiAuthCorrelationId` tracks the `correlationId` from the most-recent
+  // `auth_required` notification with `mode: "remote"` — forwarded to
+  // `submitAuthCode` so the bridge can correlate the pasted URL to the
+  // pending OAuth flow.
+
+  // Channel adapter for auth notifications — wraps the TUI store so
+  // `createAuthNotificationHandler` can dispatch messages. Only `send` is
+  // meaningful here; the other ChannelAdapter fields are no-ops because this
+  // channel is used only for fire-and-forget auth notification delivery.
+  const tuiChannelForAuth: import("@koi/core").ChannelAdapter = {
+    name: "koi-tui-auth-notifications",
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: false,
+      supportsA2ui: false,
+    },
+    connect: async (): Promise<void> => {},
+    disconnect: async (): Promise<void> => {},
+    send: async (message): Promise<void> => {
+      const textBlock = message.content.find((b) => b.kind === "text");
+      if (textBlock !== undefined && textBlock.kind === "text") {
+        store.dispatch({
+          kind: "add_user_message",
+          id: `auth-notice-${Date.now()}`,
+          blocks: [{ kind: "text", text: textBlock.text }],
+        });
+      }
+    },
+    onMessage: () => () => {},
+  };
+
+  // let: set when nexus local-bridge transport is resolved; undefined otherwise
+  let tuiAuthInterceptor:
+    | ((message: string, correlationId: string | undefined) => { readonly intercepted: boolean })
+    | undefined;
+  // let: updated when auth_required fires with mode:"remote"
+  let tuiAuthCorrelationId: string | undefined;
+
+  // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
+  // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
+  let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+
+  if (manifestFilesystemConfig !== undefined) {
+    const fsResolved = await resolveFileSystemAsync(
+      manifestFilesystemConfig,
+      process.cwd(),
+      createAuthNotificationHandler(tuiChannelForAuth),
+    );
+    resolvedFilesystemBackend = fsResolved.backend;
+    // If `fsResolved.operations` is set, it overrides the manifest-derived ops
+    // (the two should agree, but resolveFileSystemAsync is authoritative).
+    if (fsResolved.operations !== undefined) {
+      manifestFilesystemOps = fsResolved.operations;
+    }
+    // Wire inbound OAuth interceptor when a local-bridge transport is available.
+    if (fsResolved.transport !== undefined) {
+      const transport = fsResolved.transport;
+      // Subscribe extra: track correlationId from auth_required (mode: "remote").
+      transport.subscribe((n) => {
+        if (n.method === "auth_required" && n.params.mode === "remote") {
+          tuiAuthCorrelationId = n.params.correlation_id;
+        } else if (n.method === "auth_complete") {
+          tuiAuthCorrelationId = undefined;
+        }
+      });
+      tuiAuthInterceptor = createAuthInterceptor(transport);
+    }
+  }
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Task 13: when the backend is nexus, prefix fs_* tool approval reason
+  // with "[nexus: <transport>]" so the user can tell at a glance that the
+  // operation targets a remote filesystem, not a local path. The label is
+  // derived from the resolved backend name (e.g. "nexus-local:gdrive://...").
+  const FS_TOOL_NAMES = new Set<string>(["fs_read", "fs_write", "fs_edit"]);
+  const nexusBackendLabel =
+    resolvedFilesystemBackend !== undefined && resolvedFilesystemBackend.name !== "local"
+      ? `[nexus: ${resolvedFilesystemBackend.name.startsWith("nexus-local:") ? "local" : resolvedFilesystemBackend.name}]`
+      : undefined;
+  const labeledApprovalHandler: import("@koi/core").ApprovalHandler =
+    nexusBackendLabel !== undefined
+      ? async (request) => {
+          const labeled = FS_TOOL_NAMES.has(request.toolId)
+            ? { ...request, reason: `${nexusBackendLabel} ${request.reason}` }
+            : request;
+          return permissionBridge.handler(labeled);
+        }
+      : permissionBridge.handler;
+
   // let: incremented on each /mcp navigation; stale background refreshes drop their dispatch
   let mcpViewGeneration = 0;
   // Per-server in-flight auth guard — prevents overlapping OAuth flows
@@ -1203,7 +1312,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
-    approvalHandler: permissionBridge.handler,
+    approvalHandler: labeledApprovalHandler,
     approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
@@ -1229,6 +1338,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Nexus backend (when resolved above) is passed through so the checkpoint
+    // stack stamps the correct backend name and the restore protocol dispatches
+    // compensating ops through the right backend. Omitted when undefined —
+    // factory falls back to the default local backend rooted at cwd.
+    ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -1256,34 +1370,56 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
       ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
       : {}),
+    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
+    // every model/tool call is recorded in a WAL-mode SQLite database.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
+      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+      : {}),
+    // KOI_REPORT_ENABLED=true opts into run-report middleware.
+    // Wires @koi/middleware-report so a RunReport is printed at session end.
+    ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
-      if (event.kind === "spawn_requested") {
-        store.dispatch({
-          kind: "engine_event",
-          event: {
-            kind: "spawn_requested",
-            childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
-            request: {
-              agentName: event.agentName,
-              description: event.description,
-              signal: new AbortController().signal,
+      // Defense-in-depth: store.dispatch can throw if the reducer or
+      // SolidJS reactivity hits an edge case. A throwing callback must
+      // not crash the spawn flow — the engine wraps this in safeSpawnEvent
+      // too, but belt-and-braces keeps the TUI safe even if the engine
+      // guard is ever removed.
+      try {
+        if (event.kind === "spawn_requested") {
+          store.dispatch({
+            kind: "engine_event",
+            event: {
+              kind: "spawn_requested",
+              childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+              request: {
+                agentName: event.agentName,
+                description: event.description,
+                signal: new AbortController().signal,
+              },
             },
-          },
-        });
-      } else {
-        // agent_status_changed: use the dedicated set_spawn_terminal action so the
-        // outcome (complete vs failed) is preserved. The engine's ProcessState only
-        // has a single "terminated" value — routing through that path would collapse
-        // failures into successes.
-        const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
-        store.dispatch({
-          kind: "set_spawn_terminal",
-          agentId: event.agentId,
-          outcome,
-        });
+          });
+        } else {
+          // agent_status_changed: use the dedicated set_spawn_terminal action so the
+          // outcome (complete vs failed) is preserved. The engine's ProcessState only
+          // has a single "terminated" value — routing through that path would collapse
+          // failures into successes.
+          const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
+          store.dispatch({
+            kind: "set_spawn_terminal",
+            agentId: event.agentId,
+            outcome,
+            // Pass metadata so the reducer can synthesize a record when
+            // spawn_requested dispatch was lost (#1855).
+            agentName: event.agentName,
+            description: event.description,
+          });
+        }
+      } catch (e: unknown) {
+        console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
       }
     },
   }).then((handle) => {
@@ -1461,6 +1597,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // (see tui-graceful-sigint.ts) so the state matrix — including the
   // #1772 idle-with-background case and its post-double-tap disarm —
   // can be unit-tested without spinning up a TUI or runtime.
+  // let: justified — one-shot latch so repeated Ctrl+C during in-flight
+  // force teardown doesn't spawn overlapping dispose/shutdown sequences.
+  let forceStarted = false;
   const sigintHandler = createTuiSigintHandler({
     hasActiveForegroundStream: () => activeController !== null,
     hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
@@ -1469,24 +1608,83 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       void shutdown(130);
     },
     onForce: () => {
+      // One-shot: subsequent force signals during in-flight teardown
+      // are no-ops. The first force call has its own hard-exit timer
+      // and SIGKILL escalation wait — re-entering would spawn
+      // overlapping dispose sequences. We do NOT process.exit()
+      // immediately here because that would cancel the SIGKILL
+      // escalation window and orphan SIGTERM-resistant subprocesses.
+      if (forceStarted) return;
+      forceStarted = true;
       // Force path: abort the active foreground stream FIRST so no
       // further model/tool work can execute during the exit window,
       // then kick background-task SIGTERM so subprocesses start dying.
       // Without the foreground abort, side-effecting tools could keep
-      // running for the full 3.5s SIGKILL-escalation wait below.
+      // running for the full SIGKILL-escalation wait below.
       abortActiveStream();
+      // Commit exit code immediately so even a natural event-loop drain
+      // (e.g. all ref'd handles gone before dispose settles) reports an
+      // interrupt exit status to the shell / parent process.
+      process.exitCode = 130;
+      // SIGTERM background subprocesses BEFORE dispose so the SIGKILL
+      // escalation timers start early. If dispose wedges and the hard-
+      // exit timer fires, subprocesses have already received SIGTERM
+      // (and possibly SIGKILL). Without this ordering, a wedged dispose
+      // would let the hard-exit fire before subprocesses are ever
+      // signalled — orphaning them.
       const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
-      if (liveTasks) {
-        // Wait long enough for the runtime's SIGKILL escalation window
-        // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
-        // fire before this process — and its in-process escalation
-        // timer — dies. Exiting earlier orphans subprocesses that
-        // ignore SIGTERM, exactly the failure mode "force" is supposed
-        // to handle.
-        setTimeout(() => process.exit(130), 3500);
-        return;
-      }
-      process.exit(130);
+      // #1862: call runtime.dispose() so onSessionEnd fires on ALL
+      // middleware (report, audit, etc.) before the process exits.
+      // Best-effort only — force-quit must always terminate, so a
+      // ref'd hard-exit failsafe caps the dispose window at 4s (enough
+      // for onSessionEnd hooks but short enough to feel responsive).
+      // The timer stays ref'd to guarantee exit even if all other
+      // handles are gone.
+      // Total budget for the entire force-quit sequence. Worst case:
+      // dispose internal timeout (5s) + SIGKILL wait (3.5s) + retry
+      // dispose (5s) = ~13.5s. 15s gives the retry room to complete
+      // while still guaranteeing termination. The timer stays ref'd
+      // and is only cleared immediately before process.exit so there
+      // is always a guaranteed escape path.
+      const FORCE_HARD_EXIT_MS = 15_000;
+      const forceDispose = async (): Promise<void> => {
+        const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
+        try {
+          await runtimeHandle?.runtime.dispose();
+        } catch (disposeErr: unknown) {
+          // Log but don't block — force-quit must always terminate.
+          try {
+            process.stderr.write(
+              `[koi tui] force-quit dispose failed: ${
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+              }\n`,
+            );
+          } catch {
+            /* stderr unwritable — best effort */
+          }
+        }
+        if (liveTasks) {
+          // Wait long enough for the runtime's SIGKILL escalation window
+          // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec)
+          // to fire before this process — and its in-process escalation
+          // timer — dies. Exiting earlier orphans subprocesses that
+          // ignore SIGTERM, exactly the failure mode "force" is supposed
+          // to handle.
+          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+          // Retry dispose after SIGKILL escalation — the runtime contract
+          // expects callers to retry after the wedged child has been killed.
+          // If the first dispose failed (poisoned runtime), this retry can
+          // succeed now that the subprocess is dead.
+          try {
+            await runtimeHandle?.runtime.dispose();
+          } catch {
+            // Best-effort — exit regardless.
+          }
+        }
+        clearTimeout(hardExit);
+        process.exit(130);
+      };
+      void forceDispose();
     },
     write: (msg: string) => {
       process.stderr.write(msg);
@@ -2021,6 +2219,34 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // rather than propagate an unhandled rejection.
       clearPersistFailed = true;
     }
+    // #1862: dispose the runtime BEFORE appHandle.stop(). After stop(),
+    // Bun's event loop drops pending microtasks when the last "real"
+    // handle goes away — even with our ref'd setInterval keepalive.
+    // Awaiting dispose() here, while the renderer is still alive,
+    // ensures onSessionEnd hooks (report MW, audit MW) complete before
+    // the event loop collapses. The resume hint prints after stop()
+    // releases the alt screen, so it is not affected.
+    if (runtimeHandle !== null) {
+      // Only pay the SIGTERM→SIGKILL escalation wait when we actually
+      // had live subprocesses to drain. Idle exits stay immediate.
+      // SIGKILL_ESCALATION_MS = 3000 in the runtime.
+      if (hadLiveTasks) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
+      // #1742 loop-2 round 10: dispose now fails closed on settle
+      // timeout. Catch the throw so the rest of shutdown (approval
+      // store close, process.exit) still runs. The hard-exit timer
+      // is the ultimate failsafe if process.exit itself wedges.
+      try {
+        await runtimeHandle.runtime.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] runtime.dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+    }
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -2073,29 +2299,26 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // stdout may be closed during abnormal teardown — swallow.
         }
       }
-      batcher.dispose();
+      // #1862: print the buffered run-report after the alt screen is
+      // released so it is visible on the user's terminal. The report
+      // was captured by onReport during runtime.dispose() → onSessionEnd
+      // which runs before appHandle.stop().
       if (runtimeHandle !== null) {
-        // Only pay the SIGTERM→SIGKILL escalation wait when we actually
-        // had live subprocesses to drain. Idle exits stay immediate.
-        // SIGKILL_ESCALATION_MS = 3000 in the runtime.
-        if (hadLiveTasks) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
-        }
-        // #1742 loop-2 round 10: dispose now fails closed on settle
-        // timeout. Catch the throw so the rest of shutdown (approval
-        // store close, process.exit) still runs. The hard-exit timer
-        // is the ultimate failsafe if process.exit itself wedges.
-        try {
-          await runtimeHandle.runtime.dispose();
-        } catch (disposeErr) {
-          process.stderr.write(
-            `[koi tui] runtime.dispose failed during shutdown: ${
-              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
-            }\n`,
-          );
+        const reportText = runtimeHandle.getPendingReport();
+        if (reportText !== undefined) {
+          try {
+            writeSync(2, `[run-report] ${reportText}\n`);
+          } catch {
+            /* stderr unwritable — best effort */
+          }
         }
       }
+      batcher.dispose();
       approvalStore?.close();
+      // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
+      // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
+      // complete before the transport is closed.
+      await resolvedFilesystemBackend?.dispose?.();
     } finally {
       clearInterval(shutdownKeepAlive);
       // Flush OTel spans before process exit
@@ -3548,6 +3771,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
+        // Task 11: check OAuth redirect URL interceptor before passing to engine.
+        // When a nexus local-bridge transport is wired and the user pastes a
+        // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
+        // the interceptor routes it to `transport.submitAuthCode(...)` and
+        // returns `{ intercepted: true }` so the text never reaches the model.
+        if (tuiAuthInterceptor !== undefined) {
+          const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
+          if (interceptResult.intercepted) {
+            // Show a brief notice so the user knows the URL was consumed.
+            store.dispatch({
+              kind: "add_user_message",
+              id: `auth-redirect-${Date.now()}`,
+              blocks: [
+                {
+                  kind: "text",
+                  text: "_OAuth redirect URL received — submitting to auth bridge..._",
+                },
+              ],
+            });
+            activeController = null;
+            return;
+          }
+        }
+
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.

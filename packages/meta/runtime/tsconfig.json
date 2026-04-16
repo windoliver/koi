@@ -16,6 +16,7 @@
     { "path": "../../lib/context-manager" },
     { "path": "../../lib/fs-local" },
     { "path": "../../lib/fs-nexus" },
+    { "path": "../../lib/fs-scoped" },
     { "path": "../../lib/event-trace" },
     { "path": "../../lib/hooks" },
     { "path": "../../lib/loop" },
