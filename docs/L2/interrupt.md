@@ -84,6 +84,137 @@ idle ──SIGINT──▶ graceful
 
 The state machine is installed in `packages/meta/cli/src/commands/start.ts` and `packages/meta/cli/src/tui-command.ts`. It is **not** installed in `packages/meta/cli/src/bin.ts` — the TUI re-execs into a child process, and the state machine must live with the process that owns the `AbortController`.
 
+### Programmatic API
+
+**Purpose:** External callers (HTTP handlers, test harnesses, parent agents) can interrupt a running agent without owning the `AbortController` themselves. This decouples the interrupt authority from the object lifecycle — the registry acts as a shared interrupt table.
+
+**`SessionRegistry` interface and factory:**
+
+```ts
+export interface SessionRegistry {
+  /**
+   * Register a live run. Returns an unregister function that is safe to call
+   * multiple times. Throws if the sessionId is already registered (one run
+   * per session at a time — enforced by the engine's existing `running` guard).
+   */
+  readonly register: (sessionId: SessionId, controller: AbortController) => () => void;
+
+  /**
+   * Abort the controller registered for sessionId. Returns true if the
+   * session was found AND the abort was the first one (signal.aborted was
+   * false before the call). Returns false if unknown session or already
+   * aborted — makes multiple `interrupt()` calls idempotent with a clear
+   * return contract.
+   */
+  readonly interrupt: (sessionId: SessionId, reason?: string) => boolean;
+
+  /** True iff sessionId is registered AND its signal is aborted. */
+  readonly isInterrupted: (sessionId: SessionId) => boolean;
+
+  /** Snapshot of currently registered sessionIds (stable, readonly copy). */
+  readonly listActive: () => readonly SessionId[];
+}
+
+export function createSessionRegistry(): SessionRegistry;
+```
+
+The registry holds `AbortController` references only — no transcript, no engine state. It is an in-memory table of active runs.
+
+**Integration with `createKoi()` and `run()`:**
+
+Pass the registry at factory time:
+
+```ts
+const registry = createSessionRegistry();
+const runtime = await createKoi({
+  manifest,
+  adapter,
+  sessionRegistry: registry,
+});
+```
+
+The engine wires the registry into the existing `run()` lifecycle:
+
+- **On `run()` entry:** After the per-run `AbortController` is created and before any await, the engine calls `registry.register(runtime.sessionId, controller)`. It captures the sessionId at registration time (not later), so `cycleSession()` rotating the sessionId during a run does not orphan the registration.
+- **On `run()` exit:** In the `finally` block (normal completion, error, or abort), the engine calls the unregister function returned by `register()`. Unregister is idempotent and safe to call from any path.
+
+**`runtime.interrupt(reason?)` and `runtime.isInterrupted()` convenience methods:**
+
+The `KoiRuntime` object exposes bound convenience methods that delegate to the registry (if provided) or directly abort the internal controller:
+
+```ts
+export interface KoiRuntime {
+  /**
+   * Abort the active run, if any. Equivalent to calling
+   * `sessionRegistry.interrupt(runtime.sessionId, reason)` when a registry
+   * was supplied to createKoi, or aborting the internal AbortController
+   * directly otherwise. Returns true if the abort was the first one
+   * (signal.aborted was false before the call).
+   */
+  readonly interrupt: (reason?: string) => boolean;
+
+  /** True iff the active run's signal is aborted. False when no run is active. */
+  readonly isInterrupted: () => boolean;
+}
+```
+
+**Return-value contract for `interrupt()`:**
+
+`registry.interrupt(sessionId, reason?)` returns `true` **only on the first abort** for a known, registered session. It returns `false` if:
+- The session is unknown (never registered or already unregistered)
+- The session is known but its signal is already aborted (idempotent — no change occurred)
+
+This contract makes multiple calls to `interrupt()` safe and distinguishable: the first caller knows it won the abort; subsequent callers know the abort already happened or the session is gone.
+
+**Registry entry lifecycle:**
+
+```
+not-registered
+       │
+       ├─ run() starts ──▶ register(sessionId, controller)
+       │
+       ▼
+active-and-running
+       │
+       ├─ registry.interrupt() ──▶ controller.abort()
+       │                   │
+       │                   ▼
+       │              run() detects abort ──▶ emits done with stopReason:"interrupted"
+       │
+       ├─ run() ends (normal, error, or abort) ──▶ finally calls unregister()
+       │
+       ▼
+not-registered (entry drained)
+```
+
+**Example — full flow:**
+
+```ts
+import { createKoi, createSessionRegistry } from "@koi/engine";
+
+const registry = createSessionRegistry();
+const runtime = await createKoi({ manifest, adapter, sessionRegistry: registry });
+
+// Start a run in the background
+const iter = runtime.run({ messages: [...] })[Symbol.asyncIterator]();
+
+// From anywhere else that holds the registry:
+const success = registry.interrupt(runtime.sessionId, "user-cancelled");
+// → the active run's AbortController aborts
+// → the engine emits a final { kind: "done", output: { stopReason: "interrupted", ... } }
+// → the registry entry auto-drains when the finally block runs
+
+// Or use the convenience method:
+const success2 = runtime.interrupt("user-cancelled");
+// → same effect
+```
+
+**Caveats:**
+
+- **Only interrupts the current run.** The registry does not prevent subsequent runs from starting (that is a host policy decision). After a run is interrupted and unregistered, a new `run()` call will register a fresh entry and start normally.
+- **Registry is in-process.** No cross-process coordination. If your architecture spawns separate processes or threads, each process needs its own registry instance.
+- **`cycleSession()` rotates the sessionId.** If a sessionId is captured before rotation, a subsequent `registry.interrupt(capturedSessionId)` will operate on a stale entry that the current `KoiRuntime` is no longer running under. Always use `runtime.sessionId` at interrupt time, or use `runtime.interrupt()` to capture it transparently.
+
 ### TUI key bindings
 
 - **Ctrl+C** → calls `onInterrupt()` → calls `controller.abort()`. First tap = graceful, second tap within 2s = force.
@@ -117,7 +248,6 @@ Per-tool `interruptBehavior` metadata in the manifest is explicitly **not** intr
 - **PID-directed `kill -INT <wrapperPid>` does not reach the TUI child.** The `koi tui` launcher re-execs into a browser-build child process. Forwarding SIGINT would double-deliver every terminal Ctrl+C (since the terminal delivers to the whole foreground process group) and depend on a time-based coalesce heuristic. Spawning the child in a separate process group (`detached: true`) would solve the delivery ambiguity but is unsafe for interactive children: a background-pgroup process reading from the controlling tty gets SIGTTIN under job control and freezes, and Bun/Node do not expose `tcsetpgrp` to transfer terminal foreground ownership. Supervisors should use **SIGTERM** for PID-directed termination — the wrapper forwards SIGTERM and escalates to SIGKILL after 10s if the child wedges. Terminal Ctrl+C works normally via process-group delivery.
 - **MCP tools cannot be cancelled mid-flight.** The MCP protocol has no cancel verb. `packages/net/mcp/src/tool-adapter.ts` checks `signal.aborted` before dispatch but cannot interrupt an in-flight remote call. The terminal `done` fires once the MCP call settles.
 - **Durable resume is not supported yet.** Cancelling a session halts it cleanly but does not persist `EngineState`. See #1683 for the resume-from-checkpoint story. Transcript-based resume via `koi resume <sessionId>` (existing `SessionPersistence`) still works for stateless adapters.
-- **No programmatic `interrupt(sessionId)` API yet.** Today you need to own the `AbortController` to cancel a run. See #1682 for the runtime session registry.
 - **Team runtime fan-out cancel is a separate issue.** Spawned sub-agents that detach from the parent signal (deferred / on-demand delivery modes) will continue running after the parent is cancelled.
 
 ## Testing
