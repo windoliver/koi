@@ -171,8 +171,8 @@ function buildSpawnToolSchema(allowDynamic: boolean): JsonObject {
       fork: {
         type: "boolean",
         description:
-          "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). " +
-          "Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+          "If true, spawns the agent in fork mode: the child inherits all parent tools and receives its own Spawn tool for nested delegation (bounded by depth limits). " +
+          "Use for coordinators or parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
       },
       timeoutMs: {
         type: "number",

@@ -288,7 +288,14 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
     }
 
-    // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
+    // 5. Fail fast on conflicting list fields before any side-effectful work
+    //    (e.g. spawnProviderFactory allocation).
+    const validation = validateSpawnRequest(request);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
+    }
+
+    // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
     //      b) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
@@ -311,19 +318,13 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         ? [options.spawnProviderFactory()]
         : [];
 
-    // Fail fast on conflicting list fields before building child options.
-    const validation = validateSpawnRequest(request);
-    if (!validation.ok) {
-      return { ok: false, error: validation.error };
-    }
-
-    // 6. Resolve delivery policy: request override > base default > manifest > streaming
-    //    Resolved BEFORE middleware building so the delivery-mode validation
-    //    gate below can reject invalid non-streaming spawns without paying
-    //    for per-child middleware resolution.
+    // 6b. Resolve delivery policy: request override > base default > manifest > streaming
+    //     Resolved BEFORE middleware building so the delivery-mode validation
+    //     gate below can reject invalid non-streaming spawns without paying
+    //     for per-child middleware resolution.
     const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
 
-    // 6b. Delivery-mode sink validation — fail fast before middleware build.
+    // 6c. Delivery-mode sink validation — fail fast before middleware build.
     //     on_demand needs a ReportStore; deferred needs the parent inbox.
     //     Without the appropriate sink the child runs but output is silently lost.
     //     Validated up front so rejected spawns cost zero per-child resources.

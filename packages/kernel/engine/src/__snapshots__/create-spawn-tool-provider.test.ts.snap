@@ -12,7 +12,7 @@ exports[`createSpawnToolProvider Spawn tool inputSchema matches committed snapsh
       "type": "string",
     },
     "fork": {
-      "description": "If true, spawns the agent in fork mode: the child inherits all parent tools except agent_spawn (recursion guard). Use for parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
+      "description": "If true, spawns the agent in fork mode: the child inherits all parent tools and receives its own Spawn tool for nested delegation (bounded by depth limits). Use for coordinators or parallel workers that need the same capabilities as the parent. Mutually exclusive with toolAllowlist.",
       "type": "boolean",
     },
     "maxTokens": {

@@ -237,6 +237,25 @@ describe("fork children receive Spawn (Issue #1790)", () => {
     expect(calls.length).toBe(0);
   });
 
+  test("spawnProviderFactory is NOT called when fork + toolAllowlist conflict (validation-first)", async () => {
+    // fork + toolAllowlist is mutually exclusive — validateSpawnRequest rejects before
+    // the provider factory is ever invoked (prevents resource leaks from invalid requests).
+    const { factory, calls } = mockSpawnProviderFactory();
+    const spawnFn = makeSpawnFn(["Read"], factory);
+    const signal = AbortSignal.timeout(1000);
+
+    const result = await spawnFn({
+      agentName: "child-agent",
+      description: "invalid: fork + toolAllowlist",
+      signal,
+      fork: true,
+      toolAllowlist: ["Read", "Spawn"],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(calls.length).toBe(0); // factory never called for invalid requests
+  });
+
   test("spawnProviderFactory is NOT called when request toolAllowlist omits Spawn", async () => {
     const { factory, calls } = mockSpawnProviderFactory();
     const spawnFn = makeSpawnFn(["Read"], factory);
