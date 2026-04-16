@@ -654,14 +654,6 @@ export function mutate(state: Draft, action: TuiAction): void {
         : state.finishedSpawns.find((r) => r.agentId === action.agentId);
       if (!progress && !existingRecord) break;
 
-      const msg = lastAssistant(state);
-      if (!msg) break;
-
-      const blockIdx = msg.blocks.findIndex(
-        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
-      );
-      if (blockIdx < 0) break;
-
       const agentName = progress?.agentName ?? existingRecord!.agentName;
       const description = progress?.description ?? existingRecord!.description;
       const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
@@ -669,14 +661,23 @@ export function mutate(state: Draft, action: TuiAction): void {
       const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
-      (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
-        kind: "spawn_call",
-        agentId: action.agentId,
-        agentName,
-        description,
-        status: action.outcome,
-        stats,
-      };
+      // Best-effort inline block update — block may no longer be addressable.
+      const msg = lastAssistant(state);
+      if (msg) {
+        const blockIdx = msg.blocks.findIndex(
+          (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+        );
+        if (blockIdx >= 0) {
+          (msg.blocks as TuiAssistantBlock[])[blockIdx] = {
+            kind: "spawn_call",
+            agentId: action.agentId,
+            agentName,
+            description,
+            status: action.outcome,
+            stats,
+          };
+        }
+      }
 
       if (progress) {
         const spawns = new Map(state.activeSpawns);

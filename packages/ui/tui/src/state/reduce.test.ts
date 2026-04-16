@@ -2869,6 +2869,36 @@ describe("reduce — engine_event — spawn", () => {
     expect(next.finishedSpawns).toEqual([]);
   });
 
+  // Regression: set_spawn_terminal corrects finishedSpawns even when the
+  // spawn_call block is no longer in the last assistant message.
+  test("set_spawn_terminal corrects finishedSpawns even when block is missing from messages", () => {
+    // Simulate: agent_status_changed already cleared activeSpawns and recorded
+    // a "complete" entry, then messages were compacted/cleared so the spawn_call
+    // block is gone. set_spawn_terminal(failed) must still correct the record.
+    const state = stateWith({
+      messages: [assistantMsg("some later text", { id: "assistant-1", streaming: false })],
+      finishedSpawns: [
+        {
+          agentId: "child-gone-1",
+          agentName: "ghost",
+          description: "vanished block",
+          startedAt: Date.now() - 2000,
+          finishedAt: Date.now() - 1000,
+          durationMs: 1000,
+          outcome: "complete",
+        },
+      ],
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-gone-1",
+      outcome: "failed",
+    });
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
+    expect(next.finishedSpawns[0]?.agentId).toBe("child-gone-1");
+  });
+
   // clear_messages no-op guard must consider finishedSpawns
   test("clear_messages is not a no-op when only finishedSpawns is populated", () => {
     const state = stateWith({

@@ -853,14 +853,6 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         : state.finishedSpawns.find((r) => r.agentId === action.agentId);
       if (!progress && !existingRecord) return state;
 
-      const found = findLastAssistant(state.messages);
-      if (!found) return state;
-
-      const blockIdx = found.msg.blocks.findIndex(
-        (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
-      );
-      if (blockIdx < 0) return state;
-
       const agentName = progress?.agentName ?? existingRecord!.agentName;
       const description = progress?.description ?? existingRecord!.description;
       const startedAt = progress?.startedAt ?? existingRecord!.startedAt;
@@ -868,14 +860,26 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       const durationMs = finishedAt - startedAt;
       const stats: SpawnStats = { turns: 0, toolCalls: 0, durationMs };
 
-      const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
-        kind: "spawn_call" as const,
-        agentId: action.agentId,
-        agentName,
-        description,
-        status: action.outcome,
-        stats,
-      });
+      // Best-effort inline block update — block may no longer be in the last
+      // assistant message if UI/message evolution moved it.
+      let messages = state.messages;
+      const found = findLastAssistant(state.messages);
+      if (found) {
+        const blockIdx = found.msg.blocks.findIndex(
+          (b) => b.kind === "spawn_call" && b.agentId === action.agentId,
+        );
+        if (blockIdx >= 0) {
+          const updatedBlocks = replaceAt(found.msg.blocks, blockIdx, {
+            kind: "spawn_call" as const,
+            agentId: action.agentId,
+            agentName,
+            description,
+            status: action.outcome,
+            stats,
+          });
+          messages = updateAssistant(state.messages, found, { blocks: updatedBlocks });
+        }
+      }
 
       let activeSpawns: ReadonlyMap<string, SpawnProgress> = state.activeSpawns;
       if (progress) {
@@ -885,7 +889,8 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       }
 
       // Replace the existing record if agent_status_changed already inserted one,
-      // otherwise append a new record.
+      // otherwise append a new record. This runs regardless of whether the inline
+      // block was found — history correction is never gated on message state.
       const correctedSpawns = existingRecord
         ? state.finishedSpawns.map((r) =>
             r.agentId === action.agentId
@@ -904,7 +909,7 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
 
       return {
         ...state,
-        messages: updateAssistant(state.messages, found, { blocks: updatedBlocks }),
+        messages,
         activeSpawns,
         finishedSpawns: correctedSpawns,
       };
