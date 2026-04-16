@@ -20,6 +20,7 @@
     { "path": "../runtime" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-ndjson" },
+    { "path": "../../security/audit-sink-sqlite" },
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/context-manager" },
     { "path": "../../mm/token-estimator" }
