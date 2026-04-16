@@ -145,6 +145,13 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   // collector endpoint). Shutdown is bounded to 5s, so a missing collector
   // won't stall exit — it just means spans are lost (acceptable for local dev).
   const url = otlpUrl ?? "http://localhost:4318/v1/traces";
+  if (otlpUrl === undefined) {
+    process.stderr.write(
+      "[koi] OTel: using default OTLP endpoint http://localhost:4318/v1/traces\n" +
+        "  If no collector is running, spans will be silently lost.\n" +
+        "  Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console\n",
+    );
+  }
   return new OTLPTraceExporter({ url });
 }
 

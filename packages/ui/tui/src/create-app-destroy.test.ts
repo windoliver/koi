@@ -2,9 +2,11 @@
  * Regression test for #1770 — renderer.destroy() must not crash when
  * stdin fd is invalid (EBADF/ENOENT from setRawMode).
  *
- * The guard checks BOTH the errno code AND a setRawMode marker in the
- * message. This prevents swallowing unrelated ENOENT/EBADF errors from
- * other destroy paths (e.g. file cleanup, native renderer teardown).
+ * The guard accepts two error shapes:
+ *   1. NodeJS.ErrnoException with .code = "EBADF"/"ENOENT" + setRawMode/errno:2 message
+ *   2. Plain Error with setRawMode/errno:2 message and no .code (renderer may not set it)
+ *
+ * Unrelated ENOENT/EBADF errors (without setRawMode marker) propagate normally.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -18,16 +20,15 @@ function destroyWithGuard(renderer: { destroy(): void }): void {
     renderer.destroy();
   } catch (e: unknown) {
     const errno = (e as NodeJS.ErrnoException).code;
-    const isStdinRawModeError =
-      e instanceof Error &&
-      (errno === "EBADF" || errno === "ENOENT") &&
-      /setRawMode|errno: 2/.test(e.message);
+    const hasErrnoCode = errno === "EBADF" || errno === "ENOENT";
+    const hasRawModeMarker = e instanceof Error && /setRawMode|errno: 2/.test(e.message);
+    const isStdinRawModeError = hasRawModeMarker && (hasErrnoCode || errno === undefined);
     if (!isStdinRawModeError) throw e;
   }
 }
 
 describe("renderer.destroy() error handling", () => {
-  test("EBADF from setRawMode is suppressed during destroy", () => {
+  test("EBADF with .code from setRawMode is suppressed", () => {
     const fakeRenderer = {
       destroy(): void {
         const err = new Error("setRawMode failed with errno: 2");
@@ -35,7 +36,26 @@ describe("renderer.destroy() error handling", () => {
         throw err;
       },
     };
+    expect(() => destroyWithGuard(fakeRenderer)).not.toThrow();
+  });
 
+  test("plain Error (no .code) with setRawMode message is suppressed", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        throw new Error("setRawMode failed with errno: 2");
+      },
+    };
+    expect(() => destroyWithGuard(fakeRenderer)).not.toThrow();
+  });
+
+  test("ENOENT with .code and setRawMode marker is suppressed", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        const err = new Error("ENOENT: no such file or directory, setRawMode");
+        (err as NodeJS.ErrnoException).code = "ENOENT";
+        throw err;
+      },
+    };
     expect(() => destroyWithGuard(fakeRenderer)).not.toThrow();
   });
 
@@ -45,20 +65,7 @@ describe("renderer.destroy() error handling", () => {
         throw new Error("renderer native crash: segfault in wgpu");
       },
     };
-
     expect(() => destroyWithGuard(fakeRenderer)).toThrow("renderer native crash");
-  });
-
-  test("ENOENT variant with setRawMode marker is suppressed", () => {
-    const fakeRenderer = {
-      destroy(): void {
-        const err = new Error("ENOENT: no such file or directory, setRawMode");
-        (err as NodeJS.ErrnoException).code = "ENOENT";
-        throw err;
-      },
-    };
-
-    expect(() => destroyWithGuard(fakeRenderer)).not.toThrow();
   });
 
   test("ENOENT without setRawMode marker propagates (unrelated file error)", () => {
@@ -69,7 +76,6 @@ describe("renderer.destroy() error handling", () => {
         throw err;
       },
     };
-
     expect(() => destroyWithGuard(fakeRenderer)).toThrow("ENOENT");
   });
 
@@ -81,7 +87,17 @@ describe("renderer.destroy() error handling", () => {
         throw err;
       },
     };
-
     expect(() => destroyWithGuard(fakeRenderer)).toThrow("EBADF");
+  });
+
+  test("error with unrelated .code but setRawMode message propagates", () => {
+    const fakeRenderer = {
+      destroy(): void {
+        const err = new Error("setRawMode failed with errno: 2");
+        (err as NodeJS.ErrnoException).code = "EPERM";
+        throw err;
+      },
+    };
+    expect(() => destroyWithGuard(fakeRenderer)).toThrow("setRawMode");
   });
 });
