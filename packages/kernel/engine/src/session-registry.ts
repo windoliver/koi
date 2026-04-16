@@ -20,13 +20,12 @@ export interface SessionRegistry {
 }
 
 export function createSessionRegistry(): SessionRegistry {
-  // let justified: mutable map of live registrations keyed by sessionId.
   const entries = new Map<SessionId, AbortController>();
 
   function register(sessionId: SessionId, controller: AbortController): () => void {
     if (entries.has(sessionId)) {
       throw KoiRuntimeError.from(
-        "VALIDATION",
+        "INTERNAL",
         `Session "${sessionId}" is already registered. The engine's "running" guard should prevent concurrent runs; a duplicate register() here indicates a lifecycle bug.`,
         { context: { sessionId } },
       );
