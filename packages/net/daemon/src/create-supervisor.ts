@@ -42,6 +42,11 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   const defaultPolicy = config.restart ?? DEFAULT_WORKER_RESTART_POLICY;
 
   // Fan-in event bus — collects events from all worker watch loops.
+  // TODO: eventBuffer is unbounded — it grows for the lifetime of the supervisor.
+  // For long-running daemons with restart-heavy workers this is a memory leak.
+  // Follow-up work: bounded ring-buffer with configurable retention window and
+  // a subscriber-abandonment cleanup path that removes stale wakers on iterator
+  // return/throw. Acceptable for Task 7 (initial implementation) per plan.
   const eventBuffer: WorkerEvent[] = [];
   const eventWakers: Array<() => void> = [];
 

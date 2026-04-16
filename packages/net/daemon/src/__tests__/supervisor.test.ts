@@ -218,4 +218,58 @@ describe("supervisor watchAll", () => {
     crashed.sort();
     expect(crashed).toEqual(["ba", "bb", "bc"]);
   });
+
+  it("delivers events to concurrent subscribers independently", async () => {
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+
+    await supervisorResult.value.start(makeRequest("m1"));
+    await supervisorResult.value.start(makeRequest("m2"));
+
+    // Two independent subscribers.
+    const iterA = supervisorResult.value.watchAll()[Symbol.asyncIterator]() as AsyncIterator<
+      import("@koi/core").WorkerEvent
+    >;
+    const iterB = supervisorResult.value.watchAll()[Symbol.asyncIterator]() as AsyncIterator<
+      import("@koi/core").WorkerEvent
+    >;
+
+    crash(workerId("m1"));
+    crash(workerId("m2"));
+
+    const drain = async (
+      iter: AsyncIterator<import("@koi/core").WorkerEvent>,
+      n: number,
+    ): Promise<string[]> => {
+      const out: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const r = await Promise.race([
+          iter.next(),
+          new Promise<IteratorResult<import("@koi/core").WorkerEvent>>((resolve) =>
+            setTimeout(() => resolve({ done: true, value: undefined as never }), 100),
+          ),
+        ]);
+        if (r.done) break;
+        if (r.value.kind === "crashed") out.push(r.value.workerId);
+      }
+      return out.sort();
+    };
+
+    // Each subscriber should independently receive both crashed events.
+    const [a, b] = await Promise.all([drain(iterA, 4), drain(iterB, 4)]);
+    expect(a).toEqual(["m1", "m2"]);
+    expect(b).toEqual(["m1", "m2"]);
+  });
 });
