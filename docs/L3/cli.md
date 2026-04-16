@@ -10,6 +10,8 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
 - **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.
 - **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
+- **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
+- **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
 
 ---
 
@@ -87,6 +89,7 @@ koi start --no-tui                  # Force raw-stdout mode even if TUI is avail
 | `--verbose` / `-v` | boolean | false | Stream tool calls and turn delimiters |
 | `--dry-run` | boolean | false | Validate config and exit (not yet implemented, #1264) |
 | `--log-format` | `text`\|`json` | `text` | Output format (`json` not yet implemented, #1264) |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend. When set, `resolve-filesystem.ts` allows `FileSystemBackend` instances whose `kind` is `"nexus"` rather than failing closed with an unsupported-backend error. Requires nexus connectivity; startup aborts if the backend liveness check fails. |
 
 **Wiring (current):**
 
@@ -177,6 +180,7 @@ so the key is not forwarded to OpenRouter.
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--goal` | string (repeatable) | — | Goal objectives for adaptive reminder middleware |
+| `--allow-remote-fs` | boolean | false | Accept a nexus-backed filesystem backend (same semantics as `koi start --allow-remote-fs`). When set, `koi tui` passes the flag into `createTuiRuntime()` so the filesystem resolver does not fail closed on nexus backends. |
 
 Engine adapter is wired directly from environment variables. Manifest-based
 `--agent` wiring is pending full #1459 integration.
