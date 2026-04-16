@@ -9,7 +9,9 @@
  *   3. On each batch flush: dispatches events to the store in order
  *   4. Forwards approval_request to the PermissionBridge and posts the
  *      resolved decision back as an approval_response
- *   5. Updates connection status on ready / engine_done / engine_error
+ *   5. Updates connection status on ready / engine_error / worker onerror
+ *      (engine_done is a healthy end-of-turn signal and leaves the connection
+ *      status untouched — the worker is still alive and ready for the next turn)
  *
  * The store's own queueMicrotask batching coalesces the N dispatches from
  * one flush into a single Solid re-render, keeping the UI at ≈60fps.
@@ -133,12 +135,14 @@ export function createEngineChannel(
       }
 
       case "engine_done":
-        // Flush any buffered engine_events synchronously before updating
-        // connection status. Without this, the last text/tool deltas can be
-        // overtaken by the disconnected status when they arrive in the same
-        // message burst as engine_done.
+        // Turn finished normally — the worker is still alive and ready for
+        // the next turn, so connection status stays "connected". Flushing
+        // the batcher here guarantees that buffered text/tool deltas from
+        // the same burst are applied before any later action observes the
+        // post-turn state. (#1753: /doctor previously reported
+        // "disconnected" after a successful turn because this arm dispatched
+        // set_connection_status:disconnected on every healthy end-of-turn.)
         batcher.flushSync();
-        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
         break;
 
       case "engine_error":
@@ -170,31 +174,117 @@ export function createEngineChannel(
     dispose(): void {
       if (disposed) return;
 
-      // Interrupt the worker's current stream so it doesn't keep running
-      // after the channel is torn down.
-      worker.postMessage({ kind: "stream_interrupt" });
+      // #1753 review rounds 4 + 6 + 8: teardown must be
+      // non-bypassable, resilient to per-message failures, AND
+      // non-silent about dropped denials. A worker waiting on an
+      // approval that the main side failed to deny would hang
+      // indefinitely, so every failed denial is recorded and
+      // surfaced to the operator via an add_error at the end of
+      // dispose (the caller owns the Worker lifecycle and is the
+      // only layer that can .terminate() it — we raise the alarm
+      // loudly enough that they will).
+      const strandedApprovalIds: string[] = [];
+      try {
+        // Interrupt the worker's current stream so it doesn't keep running
+        // after the channel is torn down. Isolated so a throw here
+        // cannot skip denial delivery for pending approvals below.
+        let streamInterruptDelivered = true;
+        try {
+          worker.postMessage({ kind: "stream_interrupt" });
+        } catch {
+          streamInterruptDelivered = false;
+          // worker is already unreachable — denial posts below will
+          // also no-op, but we still run the loop so any still-live
+          // request gets its response.
+        }
 
-      // Post denial responses BEFORE setting disposed = true so the worker
-      // is not left blocked waiting for approval_response. The .then() handlers
-      // check !disposed and would suppress these if we set disposed first.
-      for (const requestId of pendingApprovalIds) {
-        worker.postMessage({
-          kind: "approval_response",
-          requestId,
-          decision: { kind: "deny", reason: "channel disposed" },
-        });
+        // Post denial responses BEFORE setting disposed = true so the worker
+        // is not left blocked waiting for approval_response. The .then() handlers
+        // check !disposed and would suppress these if we set disposed first.
+        // Each denial is posted in isolation: one failing postMessage
+        // must not strand the remaining pending requests, but any
+        // drop is recorded for surface in the operator-visible error
+        // below.
+        for (const requestId of pendingApprovalIds) {
+          try {
+            worker.postMessage({
+              kind: "approval_response",
+              requestId,
+              decision: { kind: "deny", reason: "channel disposed" },
+            });
+          } catch {
+            strandedApprovalIds.push(requestId);
+          }
+        }
+
+        // If even the stream_interrupt could not reach the worker,
+        // assume every pending request is stranded so the operator
+        // sees the full picture (the bridge side still resolves its
+        // local promises via cancelAllApprovals below, but the
+        // worker-facing side may be hung).
+        if (!streamInterruptDelivered) {
+          for (const requestId of pendingApprovalIds) {
+            if (!strandedApprovalIds.includes(requestId)) {
+              strandedApprovalIds.push(requestId);
+            }
+          }
+        }
+      } finally {
+        // Even if worker.postMessage above threw, the remainder of
+        // teardown MUST run so the channel is not half-closed.
+        disposed = true; // now suppress any further message sends from .then() handlers
+
+        // Clean up local bridge state (modal, timers) — the bridge's pending
+        // Promises resolve with deny, but disposed = true above means the .then()
+        // handlers will not double-post to the worker.
+        try {
+          cancelAllApprovals(); // also clears pendingApprovalIds
+        } catch {
+          // bridge dispose threw — continue, the channel is still
+          // being torn down and we cannot leak handler references.
+        }
+
+        try {
+          batcher.dispose();
+        } catch {
+          // batcher dispose is best-effort — the handler nulling
+          // below guarantees no further events reach the store.
+        }
+
+        worker.onmessage = null;
+        worker.onerror = null;
+
+        // Transport teardown: after this point, send() is a no-op and
+        // worker.onmessage/onerror are nulled, so no further traffic
+        // can reach the store. Flip the UI connection status to
+        // disconnected so /doctor cannot report a healthy engine for a
+        // channel that has already been closed. Best-effort — store
+        // dispatch failures must not block teardown.
+        try {
+          store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        } catch {
+          // store unrecoverable — UI state may be stale, but the
+          // transport is fully torn down so no more traffic can
+          // confuse observers.
+        }
+
+        // #1753 review round 8: surface any stranded approval denials
+        // so the operator (and/or the caller that owns the Worker) can
+        // terminate the worker instead of letting it hang waiting on
+        // an approval that will never arrive. Best-effort dispatch.
+        if (strandedApprovalIds.length > 0) {
+          try {
+            store.dispatch({
+              kind: "add_error",
+              code: "INTERNAL",
+              message: `engine channel dispose could not deliver approval_response for ${strandedApprovalIds.length} request(s) (${strandedApprovalIds.join(", ")}); worker may still be blocked and must be terminated by the host`,
+            });
+          } catch {
+            // see above — transport is already down, nothing further
+            // to do from here.
+          }
+        }
       }
-
-      disposed = true; // now suppress any further message sends from .then() handlers
-
-      // Clean up local bridge state (modal, timers) — the bridge's pending
-      // Promises resolve with deny, but disposed = true above means the .then()
-      // handlers will not double-post to the worker.
-      cancelAllApprovals(); // also clears pendingApprovalIds
-
-      batcher.dispose();
-      worker.onmessage = null;
-      worker.onerror = null;
     },
   };
 }
