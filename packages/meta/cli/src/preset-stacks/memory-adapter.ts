@@ -86,10 +86,18 @@ export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryTool
             // Content-similar record exists. Return the dedup winner —
             // caller's write was semantically redundant, not a failure.
             return ok(result.record);
-          case "conflict":
-            // A different record already owns this (name, type). Fail
-            // loud so the caller can retry with a fresh name rather
-            // than silently mapping the collision to "ok".
+          case "conflict": {
+            // Replay-safe: if the existing record has the EXACT same
+            // description and content as the caller's input, treat it
+            // as a successful idempotent replay (e.g. the caller's
+            // previous write committed but the response was lost).
+            // Only surface a loud error when the payloads actually
+            // differ — in that case the caller picked a colliding
+            // name and must retry with a fresh one.
+            const replay =
+              result.existing.description === input.description &&
+              result.existing.content === input.content;
+            if (replay) return ok(result.existing);
             return fail(
               new Error(
                 `Memory record already exists with name=${JSON.stringify(result.existing.name)}, ` +
@@ -97,6 +105,7 @@ export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryTool
                   `Use storeWithDedup({ force: true }) to overwrite or pick a different name.`,
               ),
             );
+          }
           case "corrupted":
             return fail(
               new Error(

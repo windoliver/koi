@@ -123,6 +123,32 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).toContain("test content");
   });
 
+  test("adapter.store is replay-safe: identical retry returns ok without error", async () => {
+    const input = {
+      name: "replay-safe",
+      description: "same description",
+      type: "feedback" as const,
+      content: "Exact payload that could be replayed if the response was lost.",
+    };
+    const first = await backend.store(input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Retry the exact same write (description + content identical).
+    // This simulates a client replaying after a lost response. The
+    // adapter must treat it as a successful replay, not a loud conflict.
+    const second = await backend.store(input);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.id).toBe(first.value.id);
+
+    // Only one record exists on disk.
+    const all = await backend.recall("", undefined);
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value.length).toBe(1);
+  });
+
   test("adapter.store surfaces (name,type) conflict as a loud error (no silent data loss)", async () => {
     // First write succeeds normally.
     const first = await backend.store({
