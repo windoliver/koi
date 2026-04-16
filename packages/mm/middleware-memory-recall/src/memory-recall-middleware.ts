@@ -91,6 +91,16 @@ interface SessionRecallState {
   liveMessage: InboundMessage | undefined;
   /** Paths included in the live delta (for relevance exclusion). */
   livePaths: ReadonlySet<string>;
+  /**
+   * Paths that exist in `frozenPaths` AND were observed as changed
+   * mid-session. The frozen snapshot now contains stale data for these
+   * paths. The relevance selector must be ALLOWED to pick them up
+   * (overriding the normal "exclude frozen" rule) so a budget-truncated
+   * overwrite can still reach the model. Without this, an overwrite
+   * that doesn't fit in the live delta becomes unreachable for the
+   * rest of the session — the agent keeps seeing the stale frozen copy.
+   */
+  staleFrozenPaths: Set<string>;
 }
 
 function createEmptyState(): SessionRecallState {
@@ -106,6 +116,7 @@ function createEmptyState(): SessionRecallState {
     detectedAt: new Map(),
     liveMessage: undefined,
     livePaths: new Set(),
+    staleFrozenPaths: new Set(),
   };
 }
 
@@ -147,22 +158,33 @@ function fnv1a(text: string): number {
   return h >>> 0;
 }
 
-function signatureFromContent(content: string): FileSignature {
-  return { hash: fnv1a(content), size: content.length };
+/**
+ * Build the canonical text used to compute a record's signature.
+ * Includes the full parsed record — name + description + type + content
+ * — so frontmatter-only edits (e.g. renaming a memory or changing its
+ * type) are detected, not just content edits.
+ */
+function recordSignatureText(record: ScannedMemory["record"]): string {
+  return `${record.name}\u0000${record.description}\u0000${record.type}\u0000${record.content}`;
+}
+
+function signatureFromRecord(record: ScannedMemory["record"]): FileSignature {
+  const text = recordSignatureText(record);
+  return { hash: fnv1a(text), size: text.length };
 }
 
 /**
  * Build a session-start signature baseline from a scan result.
  *
  * The scan already reads every memory file's content (to parse
- * frontmatter), so computing a content hash per record is free.
+ * frontmatter), so computing a per-record signature is free.
  */
 function buildSignatureBaseline(
   memories: readonly ScannedMemory[],
 ): ReadonlyMap<string, FileSignature> {
   const out = new Map<string, FileSignature>();
   for (const m of memories) {
-    out.set(m.record.filePath, signatureFromContent(m.record.content));
+    out.set(m.record.filePath, signatureFromRecord(m.record));
   }
   return out;
 }
@@ -286,10 +308,20 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       return undefined;
     }
 
-    // Only select from memories NOT already in the frozen snapshot or live delta
-    const candidates = state.memoryManifest.filter(
-      (m) => !state.frozenPaths.has(m.filePath) && !state.livePaths.has(m.filePath),
-    );
+    // Candidate filter:
+    //  - Exclude paths already in the live delta (avoid double-injection).
+    //  - Exclude frozen-snapshot paths UNLESS they were observed as
+    //    changed mid-session — those frozen entries are stale, and the
+    //    selector is the fallback that lets a budget-truncated overwrite
+    //    reach the model. Otherwise an overwrite that doesn't fit in
+    //    the live delta would never be visible for the rest of the session.
+    const candidates = state.memoryManifest.filter((m) => {
+      if (state.livePaths.has(m.filePath)) return false;
+      if (state.frozenPaths.has(m.filePath)) {
+        return state.staleFrozenPaths.has(m.filePath);
+      }
+      return true;
+    });
     if (candidates.length === 0) return undefined;
 
     const userMessage = extractUserMessage(request);
@@ -303,9 +335,14 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
 
     if (selectedPaths.length === 0) return undefined;
 
-    // Load selected memory files via scan (gets parsed MemoryRecord with frontmatter)
+    // Load selected memory files via scan. Use uncapped maxFiles so the
+    // scan covers the full directory — the manifest can include paths
+    // beyond the default 200 cap, and we must be able to load any of
+    // them. Without this, older memories that the selector picks would
+    // silently disappear from the overlay.
     const scanResult = await scanMemoryDirectory(config.fs, {
       memoryDir: config.recall.memoryDir,
+      maxFiles: Number.MAX_SAFE_INTEGER,
     });
     const selectedSet = new Set(selectedPaths);
     const selectedMemories = scanResult.memories.filter((m) => selectedSet.has(m.record.filePath));
@@ -410,13 +447,14 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       });
 
       // Include memories that are NEW (absent from baseline) or whose
-      // content-hash signature differs from session start. Hashing the
-      // content survives mtime preservation AND size preservation.
+      // record signature (content + frontmatter) differs from session
+      // start. Frontmatter inclusion catches name/description/type
+      // edits, not just content edits.
       const now = Date.now();
       const changedMemories = scanResult.memories.filter((m) => {
         const path = m.record.filePath;
         const baseline = state.sessionStartSignatures.get(path);
-        const current = signatureFromContent(m.record.content);
+        const current = signatureFromRecord(m.record);
         if (baseline === undefined) {
           // Genuinely new file — record first-observation time for ranking.
           if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
@@ -424,6 +462,9 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         }
         if (signatureChanged(current, baseline)) {
           if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
+          // Record stale-frozen status so the relevance selector can
+          // reach this overwrite even if the live delta budget drops it.
+          if (state.frozenPaths.has(path)) state.staleFrozenPaths.add(path);
           return true;
         }
         // Signature matches baseline — unchanged.
@@ -436,13 +477,29 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         return;
       }
 
+      // Always merge ALL changed memories into the manifest BEFORE the
+      // budget logic, so overflow stays reachable via the relevance
+      // selector and frontmatter-only edits refresh the manifest's
+      // metadata in place. Done up front because every code path below
+      // (delta-injected, budget-truncated, all-too-big) needs this.
+      const changedByPath = new Map<string, MemoryManifestEntry>();
+      for (const m of changedMemories) {
+        changedByPath.set(m.record.filePath, {
+          name: m.record.name,
+          description: m.record.description,
+          type: m.record.type,
+          filePath: m.record.filePath,
+        });
+      }
+      const replaced = state.memoryManifest.map((e) => changedByPath.get(e.filePath) ?? e);
+      const existingPaths = new Set(state.memoryManifest.map((e) => e.filePath));
+      const additions = [...changedByPath.values()].filter((e) => !existingPaths.has(e.filePath));
+      state.memoryManifest = additions.length > 0 ? [...replaced, ...additions] : replaced;
+
       // Build the section title to explicitly handle precedence when
       // any changed memory shares a path with the frozen snapshot.
-      // The frozen snapshot is part of the cached prefix and cannot be
-      // mutated mid-session — so when a memory in the live delta has
-      // the SAME path/name as one in the frozen snapshot, the model
-      // would otherwise see two contradictory copies. The title makes
-      // precedence explicit: live delta wins.
+      // Without this signal the model sees two contradictory copies
+      // (stale frozen + fresh delta) and may answer from the wrong one.
       const hasOverwrite = changedMemories.some((m) => state.frozenPaths.has(m.record.filePath));
       const sectionTitle = hasOverwrite
         ? "Recent Memory Updates (these supersede same-name entries in the earlier Memory section)"
@@ -453,10 +510,8 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // oversized memory is NOT granted a budget bypass — if even one
       // memory exceeds the cap on its own, we stop. Re-measures after
       // formatting to account for section headers and XML overhead.
-      // Rank by OUR observation time, not record.updatedAt. record.updatedAt
-      // comes from file mtime and is stale for mtime-preserving stores —
-      // a freshly-corrected old memory would rank as ancient. detectedAt
-      // is the true "middleware first saw this change" time.
+      // Rank by OUR observation time, not record.updatedAt — for
+      // mtime-preserving stores, mtime is stale on every update.
       const rankOf = (m: ScannedMemory): number =>
         state.detectedAt.get(m.record.filePath) ?? m.record.updatedAt;
       const byRecency = [...changedMemories].sort((a, b) => rankOf(b) - rankOf(a));
@@ -484,61 +539,25 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       }
 
       if (packed.length === 0 || formatted.length === 0) {
-        // Nothing fits (even a single memory exceeds the budget).
-        // Leave the cached delta cleared and enable the relevance selector
-        // so overflow remains reachable.
+        // Nothing fits (even a single memory exceeds the budget). Clear
+        // the delta but leave the manifest populated so the relevance
+        // selector can route overflow.
         state.liveMessage = undefined;
         state.livePaths = new Set();
-        if (
-          changedMemories.length > 0 &&
-          config.relevanceSelector !== undefined &&
-          !state.selectorNeeded
-        ) {
-          state.selectorNeeded = true;
-        }
-        // Fall through: still update manifest below so overflow is
-        // selectable later.
-        const allChangedEntries: readonly MemoryManifestEntry[] = changedMemories.map((m) => ({
-          name: m.record.name,
-          description: m.record.description,
-          type: m.record.type,
-          filePath: m.record.filePath,
-        }));
-        const existingPaths0 = new Set(state.memoryManifest.map((e) => e.filePath));
-        const additions0 = allChangedEntries.filter((e) => !existingPaths0.has(e.filePath));
-        if (additions0.length > 0) {
-          state.memoryManifest = [...state.memoryManifest, ...additions0];
-        }
-        return;
+      } else {
+        state.liveMessage = {
+          content: [{ kind: "text", text: formatted }],
+          senderId: "system:memory-live",
+          timestamp: Date.now(),
+        };
+        state.livePaths = new Set(packed.map((m) => m.record.filePath));
       }
 
-      state.liveMessage = {
-        content: [{ kind: "text", text: formatted }],
-        senderId: "system:memory-live",
-        timestamp: Date.now(),
-      };
-      state.livePaths = new Set(packed.map((m) => m.record.filePath));
-
-      // Merge ALL changed memories (not just the packed subset) into the
-      // manifest so truncated overflow stays reachable via the relevance
-      // selector. Without this, a memory that falls past the delta's
-      // token cap would silently disappear until the next session.
-      const allChangedEntries: readonly MemoryManifestEntry[] = changedMemories.map((m) => ({
-        name: m.record.name,
-        description: m.record.description,
-        type: m.record.type,
-        filePath: m.record.filePath,
-      }));
-      const existingPaths = new Set(state.memoryManifest.map((e) => e.filePath));
-      const additions = allChangedEntries.filter((e) => !existingPaths.has(e.filePath));
-      if (additions.length > 0) {
-        state.memoryManifest = [...state.memoryManifest, ...additions];
-      }
-
-      // If the delta was truncated by the budget, enable the relevance
-      // selector so the dropped memories remain reachable (they're in
-      // memoryManifest but not in livePaths, so the selector's candidate
-      // filter will include them on this and subsequent turns).
+      // Enable the relevance selector when delta couldn't include
+      // every changed memory (truncation OR couldn't fit anything).
+      // The dropped memories remain reachable: they are in
+      // memoryManifest but NOT in livePaths, so the selector's
+      // candidate filter will include them.
       if (
         packed.length < changedMemories.length &&
         config.relevanceSelector !== undefined &&
