@@ -691,7 +691,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     errors: [...pluginComponents.errors, ...middlewareWarnings],
   };
   if (pluginSummary.loaded.length > 0) {
-    const names = pluginSummary.loaded.map((p) => `${p.name}@${p.version}`).join(", ");
+    // Sanitize plugin-derived strings before logging to prevent terminal
+    // control sequence injection from malicious plugin manifests.
+    const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+    const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
+    const names = pluginSummary.loaded
+      .map((p) => `${sanitizeLog(p.name)}@${sanitizeLog(p.version)}`)
+      .join(", ");
     console.error(
       `[koi/${hostId}] ${String(pluginSummary.loaded.length)} plugin(s) loaded: ${names}`,
     );
