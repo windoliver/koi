@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   FileListResult,
   FileReadResult,
@@ -11,6 +14,7 @@ import type {
   SessionContext,
   TurnContext,
 } from "@koi/core";
+import { createLocalFileSystem } from "@koi/fs-local";
 import * as memoryModule from "@koi/memory";
 import { createMemoryRecallMiddleware } from "./memory-recall-middleware.js";
 import type { MemoryRecallMiddlewareConfig } from "./types.js";
@@ -159,6 +163,25 @@ const mockNext = async (_req: ModelRequest): Promise<ModelResponse> => ({
 
 async function* _mockStreamNext(_req: ModelRequest): AsyncIterable<ModelChunk> {
   yield { kind: "text_delta", delta: "hello" };
+}
+
+async function createTempMemoryDir(): Promise<string> {
+  // realpath resolves macOS /var -> /private/var so the path matches what
+  // createLocalFileSystem uses as its root.
+  return realpath(await mkdtemp(join(tmpdir(), "koi-memrecall-live-")));
+}
+
+function createRealFsConfig(dir: string): MemoryRecallMiddlewareConfig {
+  return {
+    fs: createLocalFileSystem(dir),
+    recall: { memoryDir: dir, now: Date.now() },
+  };
+}
+
+function getMessageText(req: ModelRequest, index: number): string {
+  const block = req.messages[index]?.content[0];
+  if (block === undefined || block.kind !== "text") return "";
+  return block.text;
 }
 
 // ---------------------------------------------------------------------------
@@ -454,5 +477,216 @@ describe("createMemoryRecallMiddleware", () => {
       capturedRequest.messages[2]?.content[0] as { readonly kind: "text"; readonly text: string }
     )?.text;
     expect(thirdText).toBe("second user msg");
+  });
+
+  describe("live delta", () => {
+    let dir: string;
+
+    beforeEach(async () => {
+      dir = await createTempMemoryDir();
+    });
+
+    afterEach(async () => {
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    test("injects new memories when dir mtime changes", async () => {
+      // Seed one memory file before init.
+      await writeFile(
+        join(dir, "role.md"),
+        makeMemoryFileContent("Role", "user", "Frozen snapshot content"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // First wrapModelCall — captures the frozen snapshot for "role.md".
+      let firstRequest: ModelRequest | undefined;
+      const firstNext = async (req: ModelRequest): Promise<ModelResponse> => {
+        firstRequest = req;
+        return mockNext(req);
+      };
+      await mw.wrapModelCall?.(createTurnCtx(), request, firstNext);
+
+      expect(firstRequest).toBeDefined();
+      if (firstRequest === undefined) return;
+      // Frozen snapshot prepended, user message follows — no live delta yet.
+      expect(firstRequest.messages.length).toBe(2);
+      expect(firstRequest.messages[0]?.senderId).toBe("system:memory-recall");
+      expect(getMessageText(firstRequest, 0)).toContain("Frozen snapshot content");
+
+      // Add a SECOND memory file mid-session — this bumps the dir mtime.
+      await writeFile(
+        join(dir, "feedback.md"),
+        makeMemoryFileContent("Feedback", "feedback", "Live delta content"),
+      );
+      // Force the dir mtime ahead of the frozen-scan snapshot (guards against
+      // same-millisecond writes on fast disks).
+      const future = new Date(Date.now() + 5000);
+      await utimes(dir, future, future);
+
+      // Second wrapModelCall — live delta should append the new memory.
+      let secondRequest: ModelRequest | undefined;
+      const secondNext = async (req: ModelRequest): Promise<ModelResponse> => {
+        secondRequest = req;
+        return mockNext(req);
+      };
+      await mw.wrapModelCall?.(createTurnCtx(), request, secondNext);
+
+      expect(secondRequest).toBeDefined();
+      if (secondRequest === undefined) return;
+      // 3 messages: frozen (prepended) + user + live delta (appended).
+      expect(secondRequest.messages.length).toBe(3);
+      expect(secondRequest.messages[0]?.senderId).toBe("system:memory-recall");
+      expect(secondRequest.messages[1]?.senderId).toBe("user");
+      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
+
+      // Live delta contains the new memory, not the frozen one.
+      const liveText = getMessageText(secondRequest, 2);
+      expect(liveText).toContain("Live delta content");
+      expect(liveText).not.toContain("Frozen snapshot content");
+
+      // Frozen snapshot does NOT contain the new memory.
+      const frozenText = getMessageText(secondRequest, 0);
+      expect(frozenText).toContain("Frozen snapshot content");
+      expect(frozenText).not.toContain("Live delta content");
+    });
+
+    test("skips re-scan when mtime unchanged", async () => {
+      await writeFile(join(dir, "role.md"), makeMemoryFileContent("Role", "user", "Stable memory"));
+
+      const scanSpy = spyOn(memoryModule, "scanMemoryDirectory");
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+      const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
+
+      // Call wrapModelCall multiple times without touching the dir.
+      await mw.wrapModelCall?.(createTurnCtx(), request, next);
+      const callsAfterInit = scanSpy.mock.calls.length;
+
+      await mw.wrapModelCall?.(createTurnCtx(), request, next);
+      await mw.wrapModelCall?.(createTurnCtx(), request, next);
+
+      // mtime guard prevents additional scans on subsequent calls.
+      expect(scanSpy.mock.calls.length).toBe(callsAfterInit);
+    });
+
+    test("live delta updates on subsequent mtime changes", async () => {
+      await writeFile(
+        join(dir, "role.md"),
+        makeMemoryFileContent("Role", "user", "Original memory"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // Init with 1 file.
+      await mw.wrapModelCall?.(
+        createTurnCtx(),
+        request,
+        async (req: ModelRequest): Promise<ModelResponse> => mockNext(req),
+      );
+
+      // Add 2nd file — delta should contain 1 new memory.
+      await writeFile(
+        join(dir, "second.md"),
+        makeMemoryFileContent("Second", "feedback", "Second memory"),
+      );
+      const bump1 = new Date(Date.now() + 5000);
+      await utimes(dir, bump1, bump1);
+
+      let req2: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        req2 = r;
+        return mockNext(r);
+      });
+
+      expect(req2).toBeDefined();
+      if (req2 === undefined) return;
+      expect(req2.messages.length).toBe(3); // frozen + user + live
+      const live2 = getMessageText(req2, 2);
+      expect(live2).toContain("Second memory");
+
+      // Add 3rd file — delta should contain BOTH additions (second + third).
+      await writeFile(
+        join(dir, "third.md"),
+        makeMemoryFileContent("Third", "reference", "Third memory"),
+      );
+      const bump2 = new Date(Date.now() + 10_000);
+      await utimes(dir, bump2, bump2);
+
+      let req3: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        req3 = r;
+        return mockNext(r);
+      });
+
+      expect(req3).toBeDefined();
+      if (req3 === undefined) return;
+      expect(req3.messages.length).toBe(3);
+      const live3 = getMessageText(req3, 2);
+      expect(live3).toContain("Second memory");
+      expect(live3).toContain("Third memory");
+      expect(live3).not.toContain("Original memory"); // frozen-only, excluded from delta
+    });
+
+    test("live delta works in wrapModelStream", async () => {
+      await writeFile(
+        join(dir, "role.md"),
+        makeMemoryFileContent("Role", "user", "Streaming frozen"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // First stream call — establishes the frozen snapshot.
+      async function* firstStream(_req: ModelRequest): AsyncIterable<ModelChunk> {
+        yield { kind: "text_delta", delta: "hi" };
+      }
+      const firstIter = mw.wrapModelStream?.(createTurnCtx(), request, firstStream);
+      if (firstIter !== undefined) {
+        for await (const _c of firstIter) {
+          // drain
+        }
+      }
+
+      // Add a new memory mid-session.
+      await writeFile(
+        join(dir, "delta.md"),
+        makeMemoryFileContent("Delta", "feedback", "Streaming delta"),
+      );
+      const future = new Date(Date.now() + 5000);
+      await utimes(dir, future, future);
+
+      // Second stream call — live delta should be appended.
+      let capturedRequest: ModelRequest | undefined;
+      async function* secondStream(req: ModelRequest): AsyncIterable<ModelChunk> {
+        capturedRequest = req;
+        yield { kind: "text_delta", delta: "hello" };
+      }
+      const chunks: ModelChunk[] = [];
+      const stream = mw.wrapModelStream?.(createTurnCtx(), request, secondStream);
+      if (stream !== undefined) {
+        for await (const chunk of stream) {
+          chunks.push(chunk);
+        }
+      }
+
+      expect(capturedRequest).toBeDefined();
+      if (capturedRequest === undefined) return;
+      expect(capturedRequest.messages.length).toBe(3);
+      expect(capturedRequest.messages[0]?.senderId).toBe("system:memory-recall");
+      expect(capturedRequest.messages[1]?.senderId).toBe("user");
+      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
+
+      const liveText = getMessageText(capturedRequest, 2);
+      expect(liveText).toContain("Streaming delta");
+      expect(liveText).not.toContain("Streaming frozen");
+
+      // Stream chunks passed through.
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0]?.kind).toBe("text_delta");
+    });
   });
 });

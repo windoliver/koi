@@ -534,6 +534,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
+        "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -618,6 +619,7 @@
         "@koi/middleware-exfiltration-guard": "workspace:*",
         "@koi/middleware-extraction": "workspace:*",
         "@koi/middleware-goal": "workspace:*",
+        "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
@@ -707,6 +709,9 @@
         "@koi/core": "workspace:*",
         "@koi/memory": "workspace:*",
         "@koi/token-estimator": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/fs-local": "workspace:*",
       },
     },
     "packages/mm/model-openai-compat": {
