@@ -5,6 +5,8 @@
  * Dispatch logic lives here (L3) instead of L1, keeping the engine vendor-free.
  */
 
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import type { FileSystemBackend, FileSystemConfig, KoiError, Result } from "@koi/core";
 import { RETRYABLE_DEFAULTS } from "@koi/core";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -14,6 +16,7 @@ import {
   createNexusFileSystem,
   validateNexusFileSystemConfig,
 } from "@koi/fs-nexus";
+import { createScopedFileSystem } from "@koi/fs-scoped";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -57,6 +60,38 @@ export function validateFileSystemConfig(raw: unknown): Result<FileSystemConfig,
 }
 
 // ---------------------------------------------------------------------------
+// Scope extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extracts scope config from `options` if both `root` (string) and `mode`
+ * ("ro" | "rw") are present and valid. Returns `undefined` for partial/absent
+ * scope so callers can skip wrapping.
+ *
+ * Relative `root` values are resolved against the given `cwd`.
+ */
+function extractScope(
+  options: Record<string, unknown> | undefined,
+  cwd: string,
+): { readonly root: string; readonly mode: "ro" | "rw" } | undefined {
+  if (options === undefined || options === null) return undefined;
+  const root = options.root;
+  const mode = options.mode;
+  if (typeof root !== "string" || root.length === 0) return undefined;
+  if (mode !== "ro" && mode !== "rw") return undefined;
+  // Use realpathSync to match the local filesystem backend's own root normalization,
+  // ensuring symlink-based paths (e.g. /var/folders → /private/var/folders on macOS) agree.
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = realpathSync(resolve(cwd, root));
+  } catch {
+    // Directory may not exist yet — fall back to resolve() without realpath.
+    resolvedRoot = resolve(cwd, root);
+  }
+  return { root: resolvedRoot, mode };
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -72,18 +107,29 @@ export function resolveFileSystem(
   config: FileSystemConfig | undefined,
   cwd: string,
 ): FileSystemBackend {
-  const backend = config?.backend ?? "local";
+  const backendKind = config?.backend ?? "local";
+  // Extract scope early so local backend can use the scope root as its cwd.
+  const scope = extractScope(config?.options as Record<string, unknown> | undefined, cwd);
 
-  if (backend === "local") {
-    return createLocalFileSystem(cwd);
+  let backend: FileSystemBackend;
+  if (backendKind === "local") {
+    // When a scope root is declared, root the local backend there so that
+    // path operations are relative to the scope — the scoped wrapper then
+    // enforces the boundary as an additional guard.
+    backend = createLocalFileSystem(scope !== undefined ? scope.root : cwd);
+  } else {
+    // backend === "nexus"
+    const validated = validateNexusFileSystemConfig(config?.options ?? {});
+    if (!validated.ok) {
+      throw new Error(`Invalid nexus filesystem config: ${validated.error.message}`);
+    }
+    backend = createNexusFileSystem(validated.value);
   }
 
-  // backend === "nexus"
-  const validated = validateNexusFileSystemConfig(config?.options ?? {});
-  if (!validated.ok) {
-    throw new Error(`Invalid nexus filesystem config: ${validated.error.message}`);
+  if (scope !== undefined) {
+    return createScopedFileSystem(backend, scope);
   }
-  return createNexusFileSystem(validated.value);
+  return backend;
 }
 
 // ---------------------------------------------------------------------------
@@ -204,9 +250,15 @@ export async function resolveFileSystemAsync(
   // createRuntime({ filesystemOperations: operations }) to avoid read-only regression.
   const operations = config?.operations;
 
+  // Extract scope once — applied to every backend return path below.
+  const scope = extractScope(config?.options as Record<string, unknown> | undefined, cwd);
+
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
   if (fsBackend === "local") {
-    return { backend: createLocalFileSystem(cwd), operations, transport: undefined };
+    // When scope root is declared, root the local backend there (same as sync path).
+    const rawBackend = createLocalFileSystem(scope !== undefined ? scope.root : cwd);
+    const backend = scope !== undefined ? createScopedFileSystem(rawBackend, scope) : rawBackend;
+    return { backend, operations, transport: undefined };
   }
 
   const options = config?.options;
@@ -272,7 +324,7 @@ export async function resolveFileSystemAsync(
     }
 
     // Wrap dispose to clean up the subscription and transport subprocess
-    const backend: FileSystemBackend = {
+    const nexusWrapped: FileSystemBackend = {
       ...nexusBackend,
       name: `nexus-local:${Array.isArray(options.mountUri) ? options.mountUri.join(",") : options.mountUri}`,
       dispose: async (): Promise<void> => {
@@ -286,6 +338,8 @@ export async function resolveFileSystemAsync(
         }
       },
     };
+    const backend =
+      scope !== undefined ? createScopedFileSystem(nexusWrapped, scope) : nexusWrapped;
     return { backend, operations, transport };
   }
 
@@ -294,5 +348,8 @@ export async function resolveFileSystemAsync(
   if (!validated.ok) {
     throw new Error(`Invalid nexus filesystem config: ${validated.error.message}`);
   }
-  return { backend: createNexusFileSystem(validated.value), operations, transport: undefined };
+  const nexusHttpBackend = createNexusFileSystem(validated.value);
+  const backend =
+    scope !== undefined ? createScopedFileSystem(nexusHttpBackend, scope) : nexusHttpBackend;
+  return { backend, operations, transport: undefined };
 }
