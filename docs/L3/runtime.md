@@ -6,6 +6,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 `@koi/mcp` now exposes an `AuthToolFactory` callback so auth-needed servers surface as `<server>__authenticate` pseudo-tools (CC pattern). The component provider reads `failure.error.code === "AUTH_REQUIRED"` and either invokes the factory (when supplied by the host) or falls back to skipped components. No new providers are added — existing wiring continues to work.
 
+`@koi/mcp-server` gained a `__test-echo-server__.ts` dev helper (not exported) for E2E validation of #1852. No behavioral change to the package's public API or runtime integration.
+
 ---
 
 ## What This Enables
