@@ -605,6 +605,8 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 >
 > - **Engine: `CreateKoiOptions.rotateSessionId` callback.** New L0/L1 surface so hosts that own the session-id format keep ownership across `cycleSession()` rotations. Pre-computed at the top of `cycleSession()` BEFORE any destructive lifecycle step (sessionEpoch bump, onSessionEnd, governance reset), so a throwing host callback leaves the runtime entirely pre-cycle — no half-cycled state, no stale-iterable lockup.
 
+> **Spawn crash guard (#1855):** `createSpawnExecutor` in `@koi/engine` now wraps all 4 `onSpawnEvent` callback invocations in a `safeSpawnEvent()` helper that catches and logs errors — observational callbacks must never crash the spawn flow. The first call site (`spawn_requested`) was outside the try block entirely, so a throwing `store.dispatch()` was completely unhandled and crashed the parent TUI process. The TUI's `onSpawnEvent` callback in `tui-command.ts` gains a defense-in-depth try-catch around `store.dispatch()` calls. `set_spawn_terminal` now passes fallback `agentName`/`description` metadata so the TUI reducer can synthesize a `finishedSpawns` record when the initial `spawn_requested` dispatch was lost.
+
 
 ## Changelog
 

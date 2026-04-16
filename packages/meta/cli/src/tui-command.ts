@@ -1379,30 +1379,43 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
-      if (event.kind === "spawn_requested") {
-        store.dispatch({
-          kind: "engine_event",
-          event: {
-            kind: "spawn_requested",
-            childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
-            request: {
-              agentName: event.agentName,
-              description: event.description,
-              signal: new AbortController().signal,
+      // Defense-in-depth: store.dispatch can throw if the reducer or
+      // SolidJS reactivity hits an edge case. A throwing callback must
+      // not crash the spawn flow — the engine wraps this in safeSpawnEvent
+      // too, but belt-and-braces keeps the TUI safe even if the engine
+      // guard is ever removed.
+      try {
+        if (event.kind === "spawn_requested") {
+          store.dispatch({
+            kind: "engine_event",
+            event: {
+              kind: "spawn_requested",
+              childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+              request: {
+                agentName: event.agentName,
+                description: event.description,
+                signal: new AbortController().signal,
+              },
             },
-          },
-        });
-      } else {
-        // agent_status_changed: use the dedicated set_spawn_terminal action so the
-        // outcome (complete vs failed) is preserved. The engine's ProcessState only
-        // has a single "terminated" value — routing through that path would collapse
-        // failures into successes.
-        const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
-        store.dispatch({
-          kind: "set_spawn_terminal",
-          agentId: event.agentId,
-          outcome,
-        });
+          });
+        } else {
+          // agent_status_changed: use the dedicated set_spawn_terminal action so the
+          // outcome (complete vs failed) is preserved. The engine's ProcessState only
+          // has a single "terminated" value — routing through that path would collapse
+          // failures into successes.
+          const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
+          store.dispatch({
+            kind: "set_spawn_terminal",
+            agentId: event.agentId,
+            outcome,
+            // Pass metadata so the reducer can synthesize a record when
+            // spawn_requested dispatch was lost (#1855).
+            agentName: event.agentName,
+            description: event.description,
+          });
+        }
+      } catch (e: unknown) {
+        console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
       }
     },
   }).then((handle) => {
