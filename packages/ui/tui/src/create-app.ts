@@ -511,7 +511,16 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
       // fires "destroy" event, but solidRootDispose is already cleared above so
       // it won't be called twice (mountSolidRoot's once() listener is idempotent).
       if (activeRenderer !== undefined && injectedRenderer === undefined) {
-        activeRenderer.destroy();
+        try {
+          activeRenderer.destroy();
+        } catch (e: unknown) {
+          // Suppress only the known stdin-fd-invalid case (#1770):
+          // renderer.destroy() calls setRawMode(false) which throws EBADF/ENOENT
+          // when stdin fd is closed (stderr redirected, tmux detach).
+          const isRawModeError =
+            e instanceof Error && /setRawMode|EBADF|ENOENT|errno: 2/.test(e.message);
+          if (!isRawModeError) throw e;
+        }
       }
       activeRenderer = undefined;
 
