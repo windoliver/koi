@@ -3342,13 +3342,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
 
+  // Register stdin close listener and set tuiRunning BEFORE start() so
+  // PTY teardown during startup is not missed. tuiRunning is cleared in
+  // the finally block to prevent false positives during host teardown.
+  tuiRunning = true;
+  if (process.stdin.isTTY) {
+    process.stdin.once("close", onStdinClose);
+  }
+
   try {
     await result.value.start();
-    tuiRunning = true;
-
-    if (process.stdin.isTTY) {
-      process.stdin.once("close", onStdinClose);
-    }
 
     // Load saved sessions in the background after the TUI is rendering.
     // Fire-and-forget: failures are silently swallowed (non-critical feature).
