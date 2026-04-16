@@ -2367,11 +2367,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               void (async () => {
                 const live = await runtimeHandle?.getMcpStatus();
                 if (live === undefined) return;
-                const liveMap = new Map(live.map((s) => [s.name, s]));
-                const configNames = new Set(servers.map((s) => s.name));
-                // Enrich config-based entries with live data
+                // Live entries may be source-keyed ("user:jira") when both
+                // user and plugin resolvers exist. Strip the "user:" prefix
+                // when matching against config-backed server names.
+                const stripUserPrefix = (n: string): string =>
+                  n.startsWith("user:") ? n.slice(5) : n;
+                const liveUserMap = new Map<string, (typeof live)[number]>();
+                const liveOther: (typeof live)[number][] = [];
+                for (const l of live) {
+                  if (l.name.startsWith("user:")) {
+                    liveUserMap.set(stripUserPrefix(l.name), l);
+                  } else if (!l.name.includes(":")) {
+                    liveUserMap.set(l.name, l);
+                  } else {
+                    liveOther.push(l);
+                  }
+                }
+                // Enrich config-based entries with live data (match by bare name)
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
-                  const l = liveMap.get(entry.name);
+                  const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
                   const liveStatus: "connected" | "needs-auth" | "error" =
                     l.failureCode === undefined
@@ -2380,27 +2394,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                         ? "needs-auth"
                         : "error";
                   return {
-                    name: l.name,
+                    name: entry.name,
                     status: liveStatus,
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
-                // Append plugin-provided servers not in .mcp.json
-                for (const l of live) {
-                  if (!configNames.has(l.name)) {
-                    enriched.push({
-                      name: l.name,
-                      status:
-                        l.failureCode === undefined
-                          ? "connected"
-                          : l.failureCode === "AUTH_REQUIRED"
-                            ? "needs-auth"
-                            : "error",
-                      toolCount: l.toolCount,
-                      detail: l.failureMessage ?? "plugin",
-                    });
-                  }
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                for (const l of liveOther) {
+                  enriched.push({
+                    name: l.name,
+                    status:
+                      l.failureCode === undefined
+                        ? "connected"
+                        : l.failureCode === "AUTH_REQUIRED"
+                          ? "needs-auth"
+                          : "error",
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? "plugin",
+                  });
                 }
                 if (mcpViewGeneration !== navGen) return;
                 store.dispatch({ kind: "set_mcp_status", servers: enriched });
@@ -2413,8 +2425,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // Triggered by pressing Enter on a needs-auth server in /mcp view.
           // args = server name. Runs `koi mcp auth <name>` inline.
           void (async (): Promise<void> => {
-            const serverName = args.trim();
-            if (serverName === "") return;
+            const rawName = args.trim();
+            if (rawName === "") return;
+            // Strip source prefix. Plugin-backed servers can't auth here.
+            if (rawName.startsWith("plugin:")) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message:
+                  `Cannot authenticate "${rawName}" from /mcp — plugin-provided ` +
+                  `servers must be authenticated through the plugin's own flow.`,
+              });
+              return;
+            }
+            const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
             // Per-server guard — prevent overlapping OAuth flows from
             // double-pressing Enter (callback port conflict, timeout race).
             if (mcpAuthInFlight.has(serverName)) return;

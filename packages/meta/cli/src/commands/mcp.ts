@@ -266,10 +266,20 @@ async function loadConfigs(): Promise<LoadedConfig | undefined> {
   // not when it exists but is invalid — same logic as shared-wiring.ts.
   const projectResult = await loadMcpJsonFile(resolve(cwd, ".mcp.json"));
   if (projectResult.ok) return projectResult.value;
-  const isAbsent = projectResult.error.code === "NOT_FOUND";
-  if (isAbsent) {
-    const homeResult = await loadMcpJsonFile(resolve(process.env.HOME ?? ".", ".koi", ".mcp.json"));
-    if (homeResult.ok) return homeResult.value;
+  if (projectResult.error.code !== "NOT_FOUND") return undefined;
+  const home = process.env.HOME ?? ".";
+  const homeResult = await loadMcpJsonFile(resolve(home, ".koi", ".mcp.json"));
+  if (homeResult.ok) return homeResult.value;
+  // Legacy: ~/.claude/.mcp.json with deprecation warning
+  if (homeResult.error.code === "NOT_FOUND") {
+    const legacyResult = await loadMcpJsonFile(resolve(home, ".claude", ".mcp.json"));
+    if (legacyResult.ok) {
+      process.stderr.write(
+        `[koi] warning: reading MCP config from deprecated ~/.claude/.mcp.json. ` +
+          `Migrate to ~/.koi/.mcp.json — support for the old path will be removed.\n`,
+      );
+      return legacyResult.value;
+    }
   }
   return undefined;
 }

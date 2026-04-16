@@ -70,16 +70,17 @@ const MESSAGE_PATTERNS: readonly ErrorPattern[] = [
   { pattern: /ECONNR(ESET|EFUSED)/, code: "EXTERNAL", retryable: true },
   { pattern: /EPIPE/, code: "EXTERNAL", retryable: true },
   { pattern: /socket hang up/i, code: "EXTERNAL", retryable: true },
-  // Only structured HTTP 401 reliably indicates a real auth challenge.
-  // Other patterns ("invalid_token", "authentication required",
-  // "unauthorized") can appear in proxy error text, login HTML pages,
-  // or server exceptions — using them would incorrectly trigger re-auth
-  // and wipe valid credentials. Map those to PERMISSION so they surface
-  // as scope/ACL denials instead.
+  // Auth detection: prefer structured status (HTTP 401) but also match
+  // bearer-auth error strings since the connection layer does not yet
+  // plumb httpStatus through to mapMcpError. `invalid_token` is an
+  // RFC 6750 bearer-auth signal (OAuth 2.0 §3.1) — unambiguously
+  // AUTH_REQUIRED. `unauthorized` and `authentication required` are
+  // loose but still typically indicate real auth challenges; keeping
+  // them as AUTH_REQUIRED preserves the re-auth path.
   { pattern: /HTTP 401\b/i, code: "AUTH_REQUIRED", retryable: true },
-  { pattern: /invalid_token/i, code: "PERMISSION", retryable: false },
-  { pattern: /authentication required/i, code: "PERMISSION", retryable: false },
-  { pattern: /unauthorized/i, code: "PERMISSION", retryable: false },
+  { pattern: /invalid_token/i, code: "AUTH_REQUIRED", retryable: true },
+  { pattern: /authentication required/i, code: "AUTH_REQUIRED", retryable: true },
+  { pattern: /\bunauthorized\b/i, code: "AUTH_REQUIRED", retryable: true },
   { pattern: /forbidden/i, code: "PERMISSION", retryable: false },
   { pattern: /not.?found/i, code: "NOT_FOUND", retryable: false },
   { pattern: /unknown tool/i, code: "NOT_FOUND", retryable: false },

@@ -163,7 +163,21 @@ export async function loadUserMcpSetup(
     const isAbsent = projectResult.error.code === "NOT_FOUND";
     if (isAbsent) {
       const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
-      if (homeResult.ok) result = homeResult;
+      if (homeResult.ok) {
+        result = homeResult;
+      } else if (homeResult.error.code === "NOT_FOUND") {
+        // Legacy compatibility: prior versions stored MCP config at
+        // ~/.claude/.mcp.json. Read it with a deprecation warning so
+        // operators don't lose their servers on upgrade.
+        const legacyResult = await loadMcpJsonFile(join(homedir(), ".claude", ".mcp.json"));
+        if (legacyResult.ok) {
+          process.stderr.write(
+            `[koi] warning: reading MCP config from deprecated ~/.claude/.mcp.json. ` +
+              `Migrate to ~/.koi/.mcp.json — support for the old path will be removed.\n`,
+          );
+          result = legacyResult;
+        }
+      }
     }
   }
   if (result === undefined || !result.ok) return undefined;
