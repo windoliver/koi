@@ -106,6 +106,11 @@ switch (result.kind) {
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v === "string") baseEnv[k] = v;
     }
+    // Import signal handlers BEFORE spawning the child to close the
+    // spawn-to-handler race window (#1750). If SIGHUP/SIGTERM arrives
+    // between spawn and handler installation, the parent would die with
+    // default behavior, orphaning the child.
+    const { installTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
     const proc = Bun.spawn(
       [process.execPath, "--conditions", "browser", ...process.argv.slice(1)],
       {
@@ -115,7 +120,6 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
-    const { installTuiReexecSignalHandlers } = await import("./tui-reexec-signals.js");
     installTuiReexecSignalHandlers(proc);
     process.exit(await proc.exited);
     break;
