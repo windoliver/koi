@@ -48,8 +48,8 @@
  *   callback" channel — the context interface stays narrow.
  */
 
-import { existsSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, statSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import type { AgentId, ApprovalHandler, ManagedTaskBoard } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
@@ -105,31 +105,62 @@ export const TASK_BOARD_TOOLS_HOST_KEY = "taskBoardTools";
 export const BACKGROUND_SUBPROCESSES_HOST_KEY = "backgroundSubprocesses";
 
 /**
+ * Check whether a directory exists and is owned by the current uid.
+ *
+ * Rejects directories owned by other users to prevent command hijack
+ * when `$HOME` is overridden or the process inherits a foreign env.
+ */
+function isOwnedDir(path: string, uid: number): boolean {
+  try {
+    const st = statSync(path);
+    return st.isDirectory() && st.uid === uid;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Detect common tool directories that exist on this host.
  *
- * Only directories that actually exist are returned, keeping the
- * subprocess PATH tight. Covers: bun, node (nvm/fnm/volta), Homebrew,
- * MacPorts, Python (pyenv), Rust (cargo), Go.
+ * Only directories that actually exist AND are owned by the current uid
+ * are returned, keeping the subprocess PATH tight. Home-derived paths
+ * are validated against the real uid to prevent command hijack when
+ * `$HOME` is injected. Fixed system paths (`/opt/homebrew/bin`, etc.)
+ * only need to exist.
  *
  * Closes #1841.
  */
 function detectPathExtensions(): readonly string[] {
   const home = homedir();
-  const candidates: readonly string[] = [
-    join(home, ".bun", "bin"),
-    join(home, ".nvm", "current", "bin"),
-    join(home, ".fnm", "current", "bin"),
-    join(home, ".volta", "bin"),
-    join(home, ".local", "bin"),
-    join(home, ".cargo", "bin"),
-    join(home, "go", "bin"),
-    join(home, ".pyenv", "shims"),
+  const uid = userInfo().uid;
+
+  // Validate home directory ownership before deriving paths from it.
+  // If $HOME points to a directory we do not own, skip all home-derived
+  // candidates to prevent attacker-controlled binaries from shadowing
+  // trusted tools.
+  const homeOwned = isOwnedDir(home, uid);
+  const homeCandidates: readonly string[] = homeOwned
+    ? [
+        join(home, ".bun", "bin"),
+        join(home, ".nvm", "current", "bin"),
+        join(home, ".fnm", "current", "bin"),
+        join(home, ".volta", "bin"),
+        join(home, ".local", "bin"),
+        join(home, ".cargo", "bin"),
+        join(home, "go", "bin"),
+        join(home, ".pyenv", "shims"),
+      ]
+    : [];
+
+  // Fixed system paths — no ownership check needed (system-managed).
+  const systemCandidates: readonly string[] = [
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
     "/usr/local/sbin",
     "/usr/local/go/bin",
   ];
-  return candidates.filter((p) => existsSync(p));
+
+  return [...homeCandidates, ...systemCandidates].filter((p) => existsSync(p));
 }
 
 /** Maximum wait for SIGTERM→SIGKILL drain on resetSessionState (ms). */

@@ -494,6 +494,32 @@ describe("buildSafeEnv", () => {
     expect(path).toStartWith("/custom/path:");
     expect(path).toEndWith(SAFE_ENV.PATH ?? "");
   });
+
+  test("rejects empty string entries (POSIX cwd injection)", () => {
+    const env = buildSafeEnv(["", "/valid/path", ""]);
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("::");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("rejects non-absolute paths", () => {
+    const env = buildSafeEnv(["relative/path", "./local", "/valid/path"]);
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("relative");
+    expect(path).not.toContain("./local");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("rejects entries containing colons (segment injection)", () => {
+    const env = buildSafeEnv(["/safe/bin:/evil/bin", "/valid/path"]);
+    const path = env.PATH ?? "";
+    expect(path).not.toContain("/evil/bin");
+    expect(path).toStartWith("/valid/path:");
+  });
+
+  test("returns SAFE_ENV when all entries are invalid", () => {
+    expect(buildSafeEnv(["", "relative", "/has:colon"])).toBe(SAFE_ENV);
+  });
 });
 
 describe("createBashTool — pathExtensions (#1841)", () => {

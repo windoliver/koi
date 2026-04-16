@@ -33,7 +33,12 @@ export const SAFE_ENV: Readonly<Record<string, string>> = {
  */
 export function buildSafeEnv(pathExtensions: readonly string[]): Readonly<Record<string, string>> {
   if (pathExtensions.length === 0) return SAFE_ENV;
-  const extendedPath = [...pathExtensions, SAFE_ENV.PATH].join(":");
+  // Reject entries that are empty, non-absolute, or contain ":" (which
+  // would inject extra PATH segments). Empty segments mean "search cwd"
+  // in POSIX PATH, enabling repo-local command hijacking.
+  const safe = pathExtensions.filter((p) => p.length > 0 && p.startsWith("/") && !p.includes(":"));
+  if (safe.length === 0) return SAFE_ENV;
+  const extendedPath = [...safe, SAFE_ENV.PATH].join(":");
   return { ...SAFE_ENV, PATH: extendedPath };
 }
 
