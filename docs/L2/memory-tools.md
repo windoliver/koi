@@ -59,9 +59,9 @@ atomic call that returns a discriminated union:
 |---------|------------------------|--------|
 | `false` | exists, same payload | `stored: true, replayed: true` (retry-safe) |
 | `false` | exists, different payload | `stored: false, duplicate: { id, name }` |
-| `false` | no match | `stored: true, id, filePath` |
+| `false` | no match | `stored: true, id` |
 | `true` | exists | `stored: true, updated: true` |
-| `true` | no match | `stored: true, id, filePath` |
+| `true` | no match | `stored: true, id` |
 
 No check-then-act race — uniqueness is enforced by the backend atomically.
 
