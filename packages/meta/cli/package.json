@@ -88,6 +88,7 @@
     "@koi/tools-core": "workspace:*",
     "@koi/tools-web": "workspace:*",
     "@koi/tui": "workspace:*",
+    "@opentelemetry/api": "1.9.1",
     "@opentelemetry/exporter-trace-otlp-http": "0.214.0",
     "@opentelemetry/sdk-trace-base": "2.6.1",
     "@opentui/core": "0.1.96",
