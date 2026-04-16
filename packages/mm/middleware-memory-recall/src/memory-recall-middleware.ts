@@ -47,7 +47,7 @@ interface SessionRecallState {
   memoryCount: number;
   tokenCount: number;
   memoryManifest: readonly MemoryManifestEntry[];
-  frozenPaths: ReadonlySet<string>;
+  frozenIds: ReadonlySet<string>;
   selectorNeeded: boolean;
 }
 
@@ -58,7 +58,7 @@ function createEmptyState(): SessionRecallState {
     memoryCount: 0,
     tokenCount: 0,
     memoryManifest: [],
-    frozenPaths: new Set(),
+    frozenIds: new Set(),
     selectorNeeded: false,
   };
 }
@@ -100,7 +100,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           timestamp: Date.now(),
         };
 
-        state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
+        state.frozenIds = new Set(result.selected.map((s) => s.memory.record.id));
       }
 
       if (config.relevanceSelector !== undefined && result.truncated) {
@@ -112,7 +112,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           name: m.record.name,
           description: m.record.description,
           type: m.record.type,
-          filePath: m.record.filePath,
+          id: m.record.id,
         }));
       }
     } catch (_e: unknown) {
@@ -164,26 +164,26 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     }
 
     // Only select from memories NOT already in the frozen snapshot
-    const candidates = state.memoryManifest.filter((m) => !state.frozenPaths.has(m.filePath));
+    const candidates = state.memoryManifest.filter((m) => !state.frozenIds.has(m.id));
     if (candidates.length === 0) return undefined;
 
     const userMessage = extractUserMessage(request);
     if (userMessage.length === 0) return undefined;
 
-    const selectedPaths = await selectRelevantMemories(
+    const selectedIds = await selectRelevantMemories(
       candidates,
       userMessage,
       config.relevanceSelector,
     );
 
-    if (selectedPaths.length === 0) return undefined;
+    if (selectedIds.length === 0) return undefined;
 
     // Load selected memory files via scan (gets parsed MemoryRecord with frontmatter)
     const scanResult = await scanMemoryDirectory(config.fs, {
       memoryDir: config.recall.memoryDir,
     });
-    const selectedSet = new Set(selectedPaths);
-    const selectedMemories = scanResult.memories.filter((m) => selectedSet.has(m.record.filePath));
+    const selectedSet = new Set(selectedIds);
+    const selectedMemories = scanResult.memories.filter((m) => selectedSet.has(m.record.id));
 
     if (selectedMemories.length === 0) return undefined;
 
