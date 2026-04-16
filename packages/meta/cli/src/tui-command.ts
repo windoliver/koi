@@ -1589,6 +1589,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // (see tui-graceful-sigint.ts) so the state matrix — including the
   // #1772 idle-with-background case and its post-double-tap disarm —
   // can be unit-tested without spinning up a TUI or runtime.
+  // let: justified — one-shot latch so repeated Ctrl+C during in-flight
+  // force teardown doesn't spawn overlapping dispose/shutdown sequences.
+  let forceStarted = false;
   const sigintHandler = createTuiSigintHandler({
     hasActiveForegroundStream: () => activeController !== null,
     hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
@@ -1597,24 +1600,83 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       void shutdown(130);
     },
     onForce: () => {
+      // One-shot: subsequent force signals during in-flight teardown
+      // are no-ops. The first force call has its own hard-exit timer
+      // and SIGKILL escalation wait — re-entering would spawn
+      // overlapping dispose sequences. We do NOT process.exit()
+      // immediately here because that would cancel the SIGKILL
+      // escalation window and orphan SIGTERM-resistant subprocesses.
+      if (forceStarted) return;
+      forceStarted = true;
       // Force path: abort the active foreground stream FIRST so no
       // further model/tool work can execute during the exit window,
       // then kick background-task SIGTERM so subprocesses start dying.
       // Without the foreground abort, side-effecting tools could keep
-      // running for the full 3.5s SIGKILL-escalation wait below.
+      // running for the full SIGKILL-escalation wait below.
       abortActiveStream();
+      // Commit exit code immediately so even a natural event-loop drain
+      // (e.g. all ref'd handles gone before dispose settles) reports an
+      // interrupt exit status to the shell / parent process.
+      process.exitCode = 130;
+      // SIGTERM background subprocesses BEFORE dispose so the SIGKILL
+      // escalation timers start early. If dispose wedges and the hard-
+      // exit timer fires, subprocesses have already received SIGTERM
+      // (and possibly SIGKILL). Without this ordering, a wedged dispose
+      // would let the hard-exit fire before subprocesses are ever
+      // signalled — orphaning them.
       const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
-      if (liveTasks) {
-        // Wait long enough for the runtime's SIGKILL escalation window
-        // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
-        // fire before this process — and its in-process escalation
-        // timer — dies. Exiting earlier orphans subprocesses that
-        // ignore SIGTERM, exactly the failure mode "force" is supposed
-        // to handle.
-        setTimeout(() => process.exit(130), 3500);
-        return;
-      }
-      process.exit(130);
+      // #1862: call runtime.dispose() so onSessionEnd fires on ALL
+      // middleware (report, audit, etc.) before the process exits.
+      // Best-effort only — force-quit must always terminate, so a
+      // ref'd hard-exit failsafe caps the dispose window at 4s (enough
+      // for onSessionEnd hooks but short enough to feel responsive).
+      // The timer stays ref'd to guarantee exit even if all other
+      // handles are gone.
+      // Total budget for the entire force-quit sequence. Worst case:
+      // dispose internal timeout (5s) + SIGKILL wait (3.5s) + retry
+      // dispose (5s) = ~13.5s. 15s gives the retry room to complete
+      // while still guaranteeing termination. The timer stays ref'd
+      // and is only cleared immediately before process.exit so there
+      // is always a guaranteed escape path.
+      const FORCE_HARD_EXIT_MS = 15_000;
+      const forceDispose = async (): Promise<void> => {
+        const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
+        try {
+          await runtimeHandle?.runtime.dispose();
+        } catch (disposeErr: unknown) {
+          // Log but don't block — force-quit must always terminate.
+          try {
+            process.stderr.write(
+              `[koi tui] force-quit dispose failed: ${
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+              }\n`,
+            );
+          } catch {
+            /* stderr unwritable — best effort */
+          }
+        }
+        if (liveTasks) {
+          // Wait long enough for the runtime's SIGKILL escalation window
+          // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec)
+          // to fire before this process — and its in-process escalation
+          // timer — dies. Exiting earlier orphans subprocesses that
+          // ignore SIGTERM, exactly the failure mode "force" is supposed
+          // to handle.
+          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+          // Retry dispose after SIGKILL escalation — the runtime contract
+          // expects callers to retry after the wedged child has been killed.
+          // If the first dispose failed (poisoned runtime), this retry can
+          // succeed now that the subprocess is dead.
+          try {
+            await runtimeHandle?.runtime.dispose();
+          } catch {
+            // Best-effort — exit regardless.
+          }
+        }
+        clearTimeout(hardExit);
+        process.exit(130);
+      };
+      void forceDispose();
     },
     write: (msg: string) => {
       process.stderr.write(msg);
@@ -2149,6 +2211,34 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // rather than propagate an unhandled rejection.
       clearPersistFailed = true;
     }
+    // #1862: dispose the runtime BEFORE appHandle.stop(). After stop(),
+    // Bun's event loop drops pending microtasks when the last "real"
+    // handle goes away — even with our ref'd setInterval keepalive.
+    // Awaiting dispose() here, while the renderer is still alive,
+    // ensures onSessionEnd hooks (report MW, audit MW) complete before
+    // the event loop collapses. The resume hint prints after stop()
+    // releases the alt screen, so it is not affected.
+    if (runtimeHandle !== null) {
+      // Only pay the SIGTERM→SIGKILL escalation wait when we actually
+      // had live subprocesses to drain. Idle exits stay immediate.
+      // SIGKILL_ESCALATION_MS = 3000 in the runtime.
+      if (hadLiveTasks) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
+      // #1742 loop-2 round 10: dispose now fails closed on settle
+      // timeout. Catch the throw so the rest of shutdown (approval
+      // store close, process.exit) still runs. The hard-exit timer
+      // is the ultimate failsafe if process.exit itself wedges.
+      try {
+        await runtimeHandle.runtime.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] runtime.dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+    }
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -2201,28 +2291,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // stdout may be closed during abnormal teardown — swallow.
         }
       }
-      batcher.dispose();
+      // #1862: print the buffered run-report after the alt screen is
+      // released so it is visible on the user's terminal. The report
+      // was captured by onReport during runtime.dispose() → onSessionEnd
+      // which runs before appHandle.stop().
       if (runtimeHandle !== null) {
-        // Only pay the SIGTERM→SIGKILL escalation wait when we actually
-        // had live subprocesses to drain. Idle exits stay immediate.
-        // SIGKILL_ESCALATION_MS = 3000 in the runtime.
-        if (hadLiveTasks) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
-        }
-        // #1742 loop-2 round 10: dispose now fails closed on settle
-        // timeout. Catch the throw so the rest of shutdown (approval
-        // store close, process.exit) still runs. The hard-exit timer
-        // is the ultimate failsafe if process.exit itself wedges.
-        try {
-          await runtimeHandle.runtime.dispose();
-        } catch (disposeErr) {
-          process.stderr.write(
-            `[koi tui] runtime.dispose failed during shutdown: ${
-              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
-            }\n`,
-          );
+        const reportText = runtimeHandle.getPendingReport();
+        if (reportText !== undefined) {
+          try {
+            writeSync(2, `[run-report] ${reportText}\n`);
+          } catch {
+            /* stderr unwritable — best effort */
+          }
         }
       }
+      batcher.dispose();
       approvalStore?.close();
       // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
       // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls

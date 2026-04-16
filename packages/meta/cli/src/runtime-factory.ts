@@ -555,6 +555,13 @@ export interface KoiRuntimeHandle {
    */
   readonly sandboxActive: boolean;
   /**
+   * #1862: Formatted run-report text buffered by onSessionEnd. Non-empty
+   * when KOI_REPORT_ENABLED=true and onSessionEnd completed. The TUI
+   * prints this after appHandle.stop() releases the alt screen so the
+   * output is visible on the main screen.
+   */
+  readonly getPendingReport: () => string | undefined;
+  /**
    * Decision ledger factory — creates a per-session ledger reader backed by
    * the in-memory trajectory store. Used by the /trajectory view to show
    * audit entries and source status alongside trajectory steps.
@@ -1604,11 +1611,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // --- Report middleware (opt-in via config.reportEnabled) ---
     // Accumulates model/tool call metrics and emits a RunReport at session
     // end. No shutdown resources — the report is printed via onReport.
+    // let: justified — set once by onReport callback during onSessionEnd.
+    let pendingReportText: string | undefined;
     if (config.reportEnabled === true) {
       const reportHandle = createReportMiddleware({
         objective: config.goals?.join("; "),
         onReport: (_report, formatted) => {
-          console.error("[run-report]", formatted);
+          // #1862: buffer the formatted text instead of printing
+          // immediately. onReport fires during runtime.dispose() →
+          // onSessionEnd, while the TUI alt screen may still be active.
+          // The host prints pendingReportText after appHandle.stop()
+          // releases the alt screen so the output is visible.
+          pendingReportText = formatted;
         },
       });
       auditPresetExtras.push(reportHandle.middleware);
@@ -2133,6 +2147,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         }
         return hadWork;
       },
+      getPendingReport: () => pendingReportText,
     };
   } catch (assemblyErr) {
     // Any failure between manifest resolution and the return above
