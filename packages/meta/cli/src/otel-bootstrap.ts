@@ -23,6 +23,9 @@ import {
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
 
+/** Standard OTLP HTTP traces endpoint — the OTel SDK default. */
+const DEFAULT_OTLP_TRACES_URL = "http://localhost:4318/v1/traces";
+
 /** Return value from initOtelSdk — call shutdown() for graceful flush. */
 export interface OtelSdkHandle {
   /** Flush pending spans and shut down the provider. */
@@ -135,17 +138,10 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
     return new StderrSpanExporter();
   }
 
-  // Explicit "otlp" — require an endpoint.
+  // Explicit "otlp" — use configured endpoint or default to localhost.
   if (envExporter === "otlp") {
-    if (otlpUrl === undefined) {
-      process.stderr.write(
-        "[koi] OTel: OTEL_TRACES_EXPORTER=otlp but no OTLP endpoint configured.\n" +
-          "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n" +
-          "  OTel export disabled for this session.\n",
-      );
-      return undefined;
-    }
-    return new OTLPTraceExporter({ url: otlpUrl });
+    const url = otlpUrl ?? DEFAULT_OTLP_TRACES_URL;
+    return new OTLPTraceExporter({ url });
   }
 
   // Unsupported explicit value — warn and disable.
@@ -167,10 +163,10 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   // TUI mode — use OTLP. Default to localhost:4318 (the standard OTel
   // collector endpoint). Shutdown is bounded to 5s, so a missing collector
   // won't stall exit — it just means spans are lost (acceptable for local dev).
-  const url = otlpUrl ?? "http://localhost:4318/v1/traces";
+  const url = otlpUrl ?? DEFAULT_OTLP_TRACES_URL;
   if (otlpUrl === undefined) {
     process.stderr.write(
-      "[koi] OTel: using default OTLP endpoint http://localhost:4318/v1/traces\n" +
+      `[koi] OTel: using default OTLP endpoint ${DEFAULT_OTLP_TRACES_URL}\n` +
         "  If no collector is running, spans will be silently lost.\n" +
         "  Set OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_TRACES_EXPORTER=console\n",
     );
