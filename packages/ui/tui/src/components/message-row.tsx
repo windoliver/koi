@@ -116,6 +116,7 @@ function UserContentBlock(props: { readonly block: ContentBlock }): JSX.Element 
 type UserMessage_ = TuiMessage & { readonly kind: "user" };
 type AssistantMessage_ = TuiMessage & { readonly kind: "assistant" };
 type SystemMessage_ = TuiMessage & { readonly kind: "system" };
+type InfoMessage_ = TuiMessage & { readonly kind: "info" };
 
 function UserMessage(props: { readonly message: UserMessage_ }): JSX.Element {
   return (
@@ -225,6 +226,21 @@ function SystemMessage(props: { readonly message: SystemMessage_ }): JSX.Element
   );
 }
 
+function InfoMessage(props: { readonly message: InfoMessage_ }): JSX.Element {
+  return (
+    <box
+      flexDirection="column"
+      border
+      borderStyle="rounded"
+      borderColor="cyan"
+      paddingLeft={1}
+      paddingRight={1}
+    >
+      <text fg="cyan">{props.message.message}</text>
+    </box>
+  );
+}
+
 export function MessageRow(props: MessageRowProps): JSX.Element {
   return (
     <Switch>
@@ -249,6 +265,9 @@ export function MessageRow(props: MessageRowProps): JSX.Element {
       </Match>
       <Match when={props.message.kind === "system" ? (props.message as SystemMessage_) : undefined}>
         {(msg: Accessor<SystemMessage_>) => <SystemMessage message={msg()} />}
+      </Match>
+      <Match when={props.message.kind === "info" ? (props.message as InfoMessage_) : undefined}>
+        {(msg: Accessor<InfoMessage_>) => <InfoMessage message={msg()} />}
       </Match>
     </Switch>
   );

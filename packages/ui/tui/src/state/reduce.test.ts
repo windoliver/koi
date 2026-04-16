@@ -1499,24 +1499,25 @@ describe("reduce — add_error", () => {
 // ---------------------------------------------------------------------------
 
 describe("reduce — add_info", () => {
-  test("appends standalone notice when no active turn", () => {
+  test("appends standalone info-kind message when no active turn", () => {
     const state = createInitialState();
     const next = reduce(state, { kind: "add_info", message: "Goal added" });
     expect(next.messages).toHaveLength(1);
     const msg = lastMessage(next);
-    expect(msg.kind).toBe("assistant");
-    if (msg.kind === "assistant") {
-      expect(msg.streaming).toBe(false);
-      expect(msg.blocks).toHaveLength(1);
-      expect(msg.blocks[0]?.kind).toBe("info");
+    expect(msg.kind).toBe("info");
+    if (msg.kind === "info") {
+      expect(msg.message).toBe("Goal added");
     }
   });
 
-  // Regression (#1851 Codex review): add_info dispatched mid-turn must not
-  // strand the active streaming assistant. Inserting it AFTER the streaming
-  // turn would make findLastAssistant target the notice, dropping later
-  // tool_result / turn_end events on the floor.
-  test("inserts BEFORE active streaming assistant (preserves lifecycle target)", () => {
+  // Regression (#1851 round 3 Codex review): info notices must never steal
+  // lifecycle ownership from an active assistant. The earlier fix inserted
+  // notices BEFORE the running assistant, which hid them from the viewport
+  // bottom and made slash commands (`/model`, `/compact`, `/export`) look
+  // like no-ops. Current fix: info has its own TuiMessage kind so
+  // `findLastAssistant` skips it regardless of position, letting us append
+  // at the end and keep the notice visible.
+  test("appends AT END when assistant is streaming — info has its own kind", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "text", text: "working..." },
       { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
@@ -1526,17 +1527,16 @@ describe("reduce — add_info", () => {
     });
     const next = reduce(state, { kind: "add_info", message: "Goal added" });
     expect(next.messages).toHaveLength(2);
-    // Notice inserted FIRST, streaming assistant remains LAST
-    const notice = messageAt(next, 0);
-    expect(notice.kind).toBe("assistant");
-    if (notice.kind === "assistant") {
-      expect(notice.streaming).toBe(false);
-      expect(notice.blocks[0]?.kind).toBe("info");
+    // Notice is the newest row (visible in the bottom-pinned viewport)
+    const notice = lastMessage(next);
+    expect(notice.kind).toBe("info");
+    if (notice.kind === "info") {
+      expect(notice.message).toBe("Goal added");
     }
-    const active = lastMessage(next);
+    // The original streaming assistant is still in the transcript, unchanged
+    const active = messageAt(next, 0);
     expect(active.kind).toBe("assistant");
     if (active.kind === "assistant") {
-      // Streaming assistant unchanged — tool still running, still streaming
       expect(active.streaming).toBe(true);
       const tool = active.blocks.find((b) => b.kind === "tool_call");
       if (tool?.kind === "tool_call") {
@@ -1545,11 +1545,12 @@ describe("reduce — add_info", () => {
     }
   });
 
-  test("subsequent tool_result + turn_end target the original streaming assistant", () => {
-    // Full lifecycle reproduction of the Codex-flagged scenario:
-    // turn_start + tool_call_start + add_info + tool_result + turn_end.
-    // Verify the streaming assistant gets the tool_result and turn_end
-    // (not the info notice) — this would have been broken before the fix.
+  test("info-kind does NOT participate in findLastAssistant routing", () => {
+    // Full lifecycle reproduction: after a notice lands between the
+    // streaming turn and a late tool_result, the reducer must still resolve
+    // tool_result (and subsequent tool_call_end / turn_end) to the original
+    // assistant, not the info row. With info as its own message kind this
+    // is automatic — `findLastAssistant` skips non-assistant messages.
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
     ];
@@ -1558,24 +1559,28 @@ describe("reduce — add_info", () => {
       runningToolCount: 1,
     });
     const afterInfo = reduce(state, { kind: "add_info", message: "Goal added" });
-    // The streaming assistant must still be the LAST message after add_info,
-    // so future findLastAssistant calls hit it (not the notice).
-    const lastIdx = afterInfo.messages.length - 1;
-    const lastAfterInfo = afterInfo.messages[lastIdx];
-    expect(lastAfterInfo?.kind).toBe("assistant");
-    if (lastAfterInfo?.kind === "assistant") {
-      expect(lastAfterInfo.streaming).toBe(true);
-      expect(lastAfterInfo.id).toBe("assistant-active");
+    // Transcript shape: [assistant-active (streaming), info]
+    expect(afterInfo.messages).toHaveLength(2);
+    const assistantIdx = afterInfo.messages.findIndex(
+      (m) => m.kind === "assistant" && m.id === "assistant-active",
+    );
+    expect(assistantIdx).toBeGreaterThanOrEqual(0);
+    const assistantMsgFound = afterInfo.messages[assistantIdx];
+    expect(assistantMsgFound?.kind).toBe("assistant");
+    if (assistantMsgFound?.kind === "assistant") {
+      expect(assistantMsgFound.streaming).toBe(true);
+      // Lifecycle state intact — the notice did not take ownership
+      const tool = assistantMsgFound.blocks.find((b) => b.kind === "tool_call");
+      expect(tool?.kind).toBe("tool_call");
     }
   });
 
-  // Regression (round 2 Codex): `turn_end` closes `streaming`, but long-
-  // running tool_call blocks may still finish later. If add_info is
-  // dispatched in that window, inserting it AFTER the now-non-streaming
-  // assistant would make findLastAssistant target the notice on the
-  // next tool_result, stranding the original tool as `running` and
-  // leaking `runningToolCount`.
-  test("inserts BEFORE assistant with running tool_call even when streaming=false", () => {
+  test("notice still appends AT END when assistant has running tool_call post-turn_end", () => {
+    // Round 2 Codex finding: the earlier "insert before" fix hid the notice
+    // while a post-turn_end tool was still completing. With info-kind
+    // messages, the notice appends at the end — visible to the user — and
+    // late tool_result events still target the correct assistant via
+    // findLastAssistant (which filters by kind === "assistant").
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
     ];
@@ -1586,17 +1591,20 @@ describe("reduce — add_info", () => {
     });
     const next = reduce(state, { kind: "add_info", message: "Goal added" });
     expect(next.messages).toHaveLength(2);
+    // Notice appended at end — visible to user
     const lastMsg = next.messages[next.messages.length - 1];
-    expect(lastMsg?.kind).toBe("assistant");
-    if (lastMsg?.kind === "assistant") {
-      // Original assistant with running tool stays last — notice was inserted before it
-      expect(lastMsg.id).toBe("assistant-post-end");
-      const tool = lastMsg.blocks.find((b) => b.kind === "tool_call");
+    expect(lastMsg?.kind).toBe("info");
+    // Original assistant still in the transcript with running tool intact
+    const original = next.messages[0];
+    expect(original?.kind).toBe("assistant");
+    if (original?.kind === "assistant") {
+      expect(original.id).toBe("assistant-post-end");
+      const tool = original.blocks.find((b) => b.kind === "tool_call");
       expect(tool?.kind).toBe("tool_call");
     }
   });
 
-  test("inserts BEFORE assistant with running spawn_call (spawn lifecycle safety)", () => {
+  test("notice appends AT END when assistant has running spawn_call (spawn safety)", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       {
         kind: "spawn_call",
@@ -1611,14 +1619,15 @@ describe("reduce — add_info", () => {
     });
     const next = reduce(state, { kind: "add_info", message: "Info notice" });
     expect(next.messages).toHaveLength(2);
-    const lastMsg = next.messages[next.messages.length - 1];
-    if (lastMsg?.kind === "assistant") {
-      expect(lastMsg.id).toBe("assistant-with-spawn");
+    // Notice at end; assistant with running spawn preserved earlier in transcript
+    expect(next.messages[next.messages.length - 1]?.kind).toBe("info");
+    const assistant = next.messages[0];
+    if (assistant?.kind === "assistant") {
+      expect(assistant.id).toBe("assistant-with-spawn");
     }
   });
 
-  test("appends at end when no assistant has in-flight lifecycle", () => {
-    // All tool_calls complete, no streaming, no running spawn — safe to append at end
+  test("appends at end when assistant is fully complete", () => {
     const blocks: readonly TuiAssistantBlock[] = [
       { kind: "tool_call", callId: "call-1", toolName: "bash", status: "complete" },
     ];
@@ -1627,11 +1636,8 @@ describe("reduce — add_info", () => {
     });
     const next = reduce(state, { kind: "add_info", message: "Info notice" });
     expect(next.messages).toHaveLength(2);
-    // Notice appended at end since no in-flight lifecycle
     const lastMsg = next.messages[next.messages.length - 1];
-    if (lastMsg?.kind === "assistant") {
-      expect(lastMsg.blocks[0]?.kind).toBe("info");
-    }
+    expect(lastMsg?.kind).toBe("info");
   });
 });
 
