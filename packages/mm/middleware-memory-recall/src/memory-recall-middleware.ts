@@ -14,6 +14,7 @@
  * Priority 310: runs after extraction (305).
  */
 
+import { stat as fsStat } from "node:fs/promises";
 import type {
   CapabilityFragment,
   InboundMessage,
@@ -49,6 +50,12 @@ interface SessionRecallState {
   memoryManifest: readonly MemoryManifestEntry[];
   frozenPaths: ReadonlySet<string>;
   selectorNeeded: boolean;
+  /** mtime of memory dir after frozen scan — skip re-scan when unchanged. */
+  lastDirMtimeMs: number;
+  /** Cached live delta message (new memories since frozen snapshot). */
+  liveMessage: InboundMessage | undefined;
+  /** Paths included in the live delta (for relevance exclusion). */
+  livePaths: ReadonlySet<string>;
 }
 
 function createEmptyState(): SessionRecallState {
@@ -60,6 +67,9 @@ function createEmptyState(): SessionRecallState {
     memoryManifest: [],
     frozenPaths: new Set(),
     selectorNeeded: false,
+    lastDirMtimeMs: 0,
+    liveMessage: undefined,
+    livePaths: new Set(),
   };
 }
 
@@ -114,6 +124,14 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           type: m.record.type,
           filePath: m.record.filePath,
         }));
+      }
+
+      // Record dir mtime so the first wrapModelCall doesn't immediately re-scan.
+      try {
+        const dirStat = await fsStat(config.recall.memoryDir);
+        state.lastDirMtimeMs = dirStat.mtimeMs;
+      } catch {
+        // Dir may not exist yet — leave at 0 so first turn triggers scan.
       }
     } catch (_e: unknown) {
       console.warn("[middleware-memory-recall] recallMemories() failed (swallowed)");
@@ -221,6 +239,75 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       return request;
     }
     return { ...request, messages: [state.cachedMessage, ...request.messages] };
+  }
+
+  /**
+   * Check memory dir mtime and rebuild the live delta if changed.
+   * The delta contains memories created/modified since the frozen snapshot.
+   */
+  async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
+    try {
+      const dirStat = await fsStat(config.recall.memoryDir);
+      if (dirStat.mtimeMs === state.lastDirMtimeMs) {
+        return; // Nothing changed — reuse cached delta (or none).
+      }
+      state.lastDirMtimeMs = dirStat.mtimeMs;
+    } catch {
+      return; // Dir missing or unreadable — skip delta.
+    }
+
+    try {
+      const scanResult = await scanMemoryDirectory(config.fs, {
+        memoryDir: config.recall.memoryDir,
+      });
+
+      // Filter to memories NOT in the frozen snapshot.
+      const newMemories = scanResult.memories.filter(
+        (m) => !state.frozenPaths.has(m.record.filePath),
+      );
+
+      if (newMemories.length === 0) {
+        state.liveMessage = undefined;
+        state.livePaths = new Set();
+        return;
+      }
+
+      // Wrap as ScoredMemory for the trusted formatter (score=1.0).
+      const scored: readonly ScoredMemory[] = newMemories.map((m) => ({
+        memory: m,
+        salienceScore: 1.0,
+        decayScore: 1.0,
+        typeRelevance: 1.0,
+      }));
+
+      const formatted = formatMemorySection(scored, {
+        sectionTitle: "Recently Added Memories",
+        trustingRecallNote: true,
+      });
+
+      state.liveMessage = {
+        content: [{ kind: "text", text: formatted }],
+        senderId: "system:memory-live",
+        timestamp: Date.now(),
+      };
+      state.livePaths = new Set(newMemories.map((m) => m.record.filePath));
+
+      // Update manifest so relevance selector can consider new memories.
+      const newManifestEntries: readonly MemoryManifestEntry[] = newMemories.map((m) => ({
+        name: m.record.name,
+        description: m.record.description,
+        type: m.record.type,
+        filePath: m.record.filePath,
+      }));
+      // Merge: keep existing manifest entries, add new ones (dedup by filePath).
+      const existingPaths = new Set(state.memoryManifest.map((e) => e.filePath));
+      const additions = newManifestEntries.filter((e) => !existingPaths.has(e.filePath));
+      if (additions.length > 0) {
+        state.memoryManifest = [...state.memoryManifest, ...additions];
+      }
+    } catch (_e: unknown) {
+      console.warn("[middleware-memory-recall] refreshLiveDelta() failed (swallowed)");
+    }
   }
 
   return {
