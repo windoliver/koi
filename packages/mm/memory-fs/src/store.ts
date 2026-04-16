@@ -146,6 +146,16 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
         const messages = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
         throw new Error(`Invalid memory record input: ${messages}`);
       }
+      // Untyped JS callers may pass `{ force: "false" }`, `{ force: 1 }`, or
+      // omit `opts` entirely. Reject anything that is not a strict boolean
+      // so the destructive force-update path cannot be entered by accident.
+      if (
+        opts === null ||
+        typeof opts !== "object" ||
+        typeof (opts as { force: unknown }).force !== "boolean"
+      ) {
+        throw new Error("Invalid upsert options: opts.force must be a boolean");
+      }
       const ctx = await getContext();
       const res = await withDirLock(ctx.canonicalDir, () => upsertRecord(ctx, input, opts.force));
       // Index rebuild for any action that mutated disk (created or updated).

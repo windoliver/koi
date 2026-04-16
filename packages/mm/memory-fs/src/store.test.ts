@@ -544,6 +544,35 @@ describe("createMemoryStore", () => {
       ).rejects.toThrow("Invalid memory record input");
     });
 
+    test("rejects non-boolean force from untyped JS callers (data-loss guard)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const input = {
+        name: "Boolean Guard",
+        description: "desc",
+        type: "user" as const,
+        content: "Content that would otherwise be written to disk.",
+      };
+
+      // Simulate untyped JS callers by casting to a loose shape.
+      const looseStore = store as unknown as {
+        readonly upsert: (input: unknown, opts: unknown) => Promise<unknown>;
+      };
+
+      await expect(looseStore.upsert(input, { force: "false" })).rejects.toThrow(
+        "opts.force must be a boolean",
+      );
+      await expect(looseStore.upsert(input, { force: 1 })).rejects.toThrow(
+        "opts.force must be a boolean",
+      );
+      await expect(looseStore.upsert(input, {})).rejects.toThrow("opts.force must be a boolean");
+      await expect(looseStore.upsert(input, null)).rejects.toThrow("opts.force must be a boolean");
+
+      const all = await store.list();
+      expect(all.length).toBe(0);
+    });
+
     test("canonicalizes frontmatter-unsafe name: newline-variant conflicts with plain name (force=false)", async () => {
       const dir = makeDir();
       const store = createMemoryStore({ dir });
