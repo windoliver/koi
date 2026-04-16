@@ -130,15 +130,29 @@ function isOwnedDir(path: string, uid: number): boolean {
  *
  * Closes #1841.
  */
-function detectPathExtensions(): readonly string[] {
+interface ToolEnvConfig {
+  readonly pathExtensions: readonly string[];
+  /** Validated home directory, or undefined when ownership cannot be confirmed. */
+  readonly home: string | undefined;
+}
+
+function detectToolEnv(): ToolEnvConfig {
   const home = homedir();
-  const uid = userInfo().uid;
+  // process.getuid() is the POSIX fallback when os.userInfo() throws
+  // (common in containers / CI images with no passwd entry for the uid).
+  let uid: number | undefined;
+  try {
+    uid = userInfo().uid;
+  } catch {
+    uid = process.getuid?.();
+  }
 
   // Validate home directory ownership before deriving paths from it.
-  // If $HOME points to a directory we do not own, skip all home-derived
-  // candidates to prevent attacker-controlled binaries from shadowing
-  // trusted tools.
-  const homeOwned = isOwnedDir(home, uid);
+  // If $HOME points to a directory we do not own, or we cannot determine
+  // the uid, skip all home-derived candidates AND do not propagate HOME
+  // into the subprocess to prevent attacker-controlled binaries and
+  // config from being used.
+  const homeOwned = uid !== undefined && isOwnedDir(home, uid);
   const homeCandidates: readonly string[] = homeOwned
     ? [
         join(home, ".bun", "bin"),
@@ -160,7 +174,10 @@ function detectPathExtensions(): readonly string[] {
     "/usr/local/go/bin",
   ];
 
-  return [...homeCandidates, ...systemCandidates].filter((p) => existsSync(p));
+  return {
+    pathExtensions: [...homeCandidates, ...systemCandidates].filter((p) => existsSync(p)),
+    home: homeOwned ? home : undefined,
+  };
 }
 
 /** Maximum wait for SIGTERM→SIGKILL drain on resetSessionState (ms). */
@@ -232,15 +249,17 @@ export const executionStack: PresetStack = {
       return decision.kind === "allow" || decision.kind === "always-allow";
     };
 
-    // Detect user-installed tool paths at boot — results are stable for
-    // the process lifetime so we compute once and share across both tools.
-    const pathExtensions = detectPathExtensions();
+    // Detect user-installed tool paths and validated home at boot.
+    // Both PATH extensions and HOME are derived from the same ownership-
+    // validated source so the trust boundary is consistent.
+    const toolEnv = detectToolEnv();
 
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,
       trackCwd: true,
       elicit: bashElicit,
-      pathExtensions,
+      pathExtensions: toolEnv.pathExtensions,
+      home: toolEnv.home,
       ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
         ? { sandboxAdapter, sandboxProfile }
         : {}),
@@ -299,7 +318,8 @@ export const executionStack: PresetStack = {
                   liveSubprocessCount--;
                 },
                 elicit: bashElicit,
-                pathExtensions,
+                pathExtensions: toolEnv.pathExtensions,
+                home: toolEnv.home,
                 ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
                   ? { sandboxAdapter, sandboxProfile }
                   : {}),

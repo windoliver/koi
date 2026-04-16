@@ -31,15 +31,39 @@ export const SAFE_ENV: Readonly<Record<string, string>> = {
  * user-installed tools (bun, node, python, brew) are discoverable
  * without leaking the full parent environment.
  */
-export function buildSafeEnv(pathExtensions: readonly string[]): Readonly<Record<string, string>> {
-  if (pathExtensions.length === 0) return SAFE_ENV;
+/**
+ * Options for building a customized safe environment.
+ */
+export interface SafeEnvOptions {
+  /** Additional PATH directories prepended to the default PATH. */
+  readonly pathExtensions?: readonly string[] | undefined;
+  /**
+   * Validated home directory to use instead of `process.env.HOME`.
+   * When provided, overrides the default HOME in the spawned env.
+   * Use when the caller has verified home directory ownership.
+   */
+  readonly home?: string | undefined;
+}
+
+export function buildSafeEnv(options: SafeEnvOptions): Readonly<Record<string, string>> {
+  const pathExtensions = options.pathExtensions ?? [];
+  const home = options.home;
+  const hasHome = home !== undefined;
+
   // Reject entries that are empty, non-absolute, or contain ":" (which
   // would inject extra PATH segments). Empty segments mean "search cwd"
   // in POSIX PATH, enabling repo-local command hijacking.
   const safe = pathExtensions.filter((p) => p.length > 0 && p.startsWith("/") && !p.includes(":"));
-  if (safe.length === 0) return SAFE_ENV;
-  const extendedPath = [...safe, SAFE_ENV.PATH].join(":");
-  return { ...SAFE_ENV, PATH: extendedPath };
+  if (safe.length === 0 && !hasHome) return SAFE_ENV;
+
+  const basePath = SAFE_ENV.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  const path = safe.length > 0 ? [...safe, basePath].join(":") : basePath;
+
+  return {
+    ...SAFE_ENV,
+    PATH: path,
+    HOME: hasHome ? home : (SAFE_ENV.HOME ?? "/tmp"),
+  };
 }
 
 export interface ExecResult {

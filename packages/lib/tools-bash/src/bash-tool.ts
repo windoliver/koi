@@ -118,7 +118,13 @@ export interface BashToolConfig {
    *
    * Closes #1841.
    */
-  readonly pathExtensions?: readonly string[];
+  readonly pathExtensions?: readonly string[] | undefined;
+  /**
+   * Validated home directory for the subprocess environment.
+   * When provided, overrides `process.env.HOME` in SAFE_ENV.
+   * Use when the caller has verified home directory ownership.
+   */
+  readonly home?: string | undefined;
 }
 
 /** Shape of the bash tool's JSON output on success. */
@@ -199,7 +205,7 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
   const sandboxProfile = config?.sandboxProfile;
   const trackCwd = config?.trackCwd ?? false;
   const elicit = config?.elicit;
-  const env = buildSafeEnv(config?.pathExtensions ?? []);
+  const env = buildSafeEnv({ pathExtensions: config?.pathExtensions, home: config?.home });
 
   // let justified: mutable cwd state for trackCwd — updated after each successful execution.
   // Reset to workspaceRoot on session clear via resetCwd().

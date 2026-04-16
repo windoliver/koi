@@ -477,11 +477,13 @@ describe("createBashTool — trackCwd", () => {
 
 describe("buildSafeEnv", () => {
   test("returns SAFE_ENV unchanged when no extensions", () => {
-    expect(buildSafeEnv([])).toBe(SAFE_ENV);
+    expect(buildSafeEnv({})).toBe(SAFE_ENV);
   });
 
   test("prepends extensions to default PATH", () => {
-    const env = buildSafeEnv(["/opt/homebrew/bin", "/home/user/.bun/bin"]);
+    const env = buildSafeEnv({
+      pathExtensions: ["/opt/homebrew/bin", "/home/user/.bun/bin"],
+    });
     const path = env.PATH ?? "";
     expect(path).toBe("/opt/homebrew/bin:/home/user/.bun/bin:/usr/local/bin:/usr/bin:/bin");
     expect(env.HOME).toBe(SAFE_ENV.HOME);
@@ -489,21 +491,33 @@ describe("buildSafeEnv", () => {
   });
 
   test("single extension prepended correctly", () => {
-    const env = buildSafeEnv(["/custom/path"]);
+    const env = buildSafeEnv({ pathExtensions: ["/custom/path"] });
     const path = env.PATH ?? "";
     expect(path).toStartWith("/custom/path:");
     expect(path).toEndWith(SAFE_ENV.PATH ?? "");
   });
 
+  test("overrides HOME when validated home provided", () => {
+    const env = buildSafeEnv({ home: "/validated/home" });
+    expect(env.HOME).toBe("/validated/home");
+  });
+
+  test("keeps default HOME when no home provided", () => {
+    const env = buildSafeEnv({ pathExtensions: ["/some/path"] });
+    expect(env.HOME).toBe(SAFE_ENV.HOME);
+  });
+
   test("rejects empty string entries (POSIX cwd injection)", () => {
-    const env = buildSafeEnv(["", "/valid/path", ""]);
+    const env = buildSafeEnv({ pathExtensions: ["", "/valid/path", ""] });
     const path = env.PATH ?? "";
     expect(path).not.toContain("::");
     expect(path).toStartWith("/valid/path:");
   });
 
   test("rejects non-absolute paths", () => {
-    const env = buildSafeEnv(["relative/path", "./local", "/valid/path"]);
+    const env = buildSafeEnv({
+      pathExtensions: ["relative/path", "./local", "/valid/path"],
+    });
     const path = env.PATH ?? "";
     expect(path).not.toContain("relative");
     expect(path).not.toContain("./local");
@@ -511,14 +525,16 @@ describe("buildSafeEnv", () => {
   });
 
   test("rejects entries containing colons (segment injection)", () => {
-    const env = buildSafeEnv(["/safe/bin:/evil/bin", "/valid/path"]);
+    const env = buildSafeEnv({
+      pathExtensions: ["/safe/bin:/evil/bin", "/valid/path"],
+    });
     const path = env.PATH ?? "";
     expect(path).not.toContain("/evil/bin");
     expect(path).toStartWith("/valid/path:");
   });
 
   test("returns SAFE_ENV when all entries are invalid", () => {
-    expect(buildSafeEnv(["", "relative", "/has:colon"])).toBe(SAFE_ENV);
+    expect(buildSafeEnv({ pathExtensions: ["", "relative", "/has:colon"] })).toBe(SAFE_ENV);
   });
 });
 

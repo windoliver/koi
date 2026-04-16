@@ -111,6 +111,8 @@ export interface BashBackgroundToolConfig {
    * Closes #1841.
    */
   readonly pathExtensions?: readonly string[] | undefined;
+  /** Validated home directory for the subprocess environment — see BashToolConfig. */
+  readonly home?: string | undefined;
 }
 
 /** Shape of the tool's JSON response on successful task creation. */
@@ -153,7 +155,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
   } = config;
   const workspaceRoot = config.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = { ...DEFAULT_BASH_POLICY, ...config.policy };
-  const env = buildSafeEnv(config.pathExtensions ?? []);
+  const env = buildSafeEnv({ pathExtensions: config.pathExtensions, home: config.home });
 
   return {
     descriptor: {
