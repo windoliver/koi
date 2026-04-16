@@ -199,6 +199,12 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     lineReader.release();
     proc.kill();
     const stderr = await collectStderr(proc);
+    // If stderr drain timed out, the process ignored SIGTERM — force kill it.
+    try {
+      proc.kill(9);
+    } catch {
+      // Already dead — ignore.
+    }
     throw new Error(
       `Failed to start nexus-fs bridge: ${e instanceof Error ? e.message : String(e)}${stderr ? `\nstderr: ${stderr}` : ""}`,
       { cause: e },
@@ -570,7 +576,9 @@ async function collectStderr(proc: {
     return `${trimmed}\n[truncated — exceeded ${String(MAX_STDERR_BYTES)} bytes]`;
   }
   if (timedOut) {
-    return trimmed.length > 0 ? `${trimmed}\n[truncated — stderr drain timed out]` : "";
+    return trimmed.length > 0
+      ? `${trimmed}\n[truncated — stderr drain timed out]`
+      : "[stderr drain timed out — process may have ignored SIGTERM]";
   }
   return trimmed;
 }
