@@ -73,18 +73,30 @@ export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryTool
     store: async (input) => {
       // Route through the atomic upsert path so this entry point cannot
       // silently create logical duplicates via filename-collision
-      // handling (e.g. user_role-2.md). `force: false` preserves the
-      // historical create-or-conflict semantics of backend.store().
+      // handling (e.g. user_role-2.md). Conflicts and corruption are
+      // surfaced as errors — callers that want overwrite semantics
+      // must go through storeWithDedup() with force: true.
       try {
         const result = await store.upsert(input, { force: false });
         switch (result.action) {
           case "created":
           case "updated":
             return ok(result.record);
-          case "conflict":
-            return ok(result.existing);
           case "skipped":
+            // Content-similar record exists. Return the dedup winner —
+            // caller's write was semantically redundant, not a failure.
             return ok(result.record);
+          case "conflict":
+            // A different record already owns this (name, type). Fail
+            // loud so the caller can retry with a fresh name rather
+            // than silently mapping the collision to "ok".
+            return fail(
+              new Error(
+                `Memory record already exists with name=${JSON.stringify(result.existing.name)}, ` +
+                  `type=${result.existing.type} (id=${result.existing.id}). ` +
+                  `Use storeWithDedup({ force: true }) to overwrite or pick a different name.`,
+              ),
+            );
           case "corrupted":
             return fail(
               new Error(

@@ -123,6 +123,40 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).toContain("test content");
   });
 
+  test("adapter.store surfaces (name,type) conflict as a loud error (no silent data loss)", async () => {
+    // First write succeeds normally.
+    const first = await backend.store({
+      name: "dup-name",
+      description: "first",
+      type: "feedback",
+      content: "first payload content body, non-similar to the follow-up",
+    });
+    expect(first.ok).toBe(true);
+
+    // Second write with the same (name, type) but different content must
+    // NOT silently map to ok(existing). That mapping would cause concurrent
+    // extraction-style writes (`extracted-${Date.now()}`) to drop payloads
+    // if they happened to land on the same millisecond. Surface a loud
+    // error so callers can retry with a fresh name instead.
+    const second = await backend.store({
+      name: "dup-name",
+      description: "second",
+      type: "feedback",
+      content: "completely different follow-up payload with no Jaccard overlap",
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.message).toContain("Memory record already exists");
+
+    // The on-disk state must still contain the first payload — only one
+    // file, and its content is the first write's body.
+    const all = await backend.recall("", undefined);
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value.length).toBe(1);
+    expect(all.value[0]?.content).toContain("first payload content body");
+  });
+
   test("adapter storeWithDedup detects name+type conflict", async () => {
     const first = await backend.storeWithDedup(
       { name: "pref", description: "preference desc", type: "user", content: "preference value" },
