@@ -1576,6 +1576,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // (see tui-graceful-sigint.ts) so the state matrix — including the
   // #1772 idle-with-background case and its post-double-tap disarm —
   // can be unit-tested without spinning up a TUI or runtime.
+  // let: justified — one-shot latch so repeated Ctrl+C during in-flight
+  // force teardown doesn't spawn overlapping dispose/shutdown sequences.
+  let forceStarted = false;
   const sigintHandler = createTuiSigintHandler({
     hasActiveForegroundStream: () => activeController !== null,
     hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
@@ -1584,6 +1587,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       void shutdown(130);
     },
     onForce: () => {
+      // One-shot: subsequent force signals during in-flight teardown
+      // escalate to immediate exit rather than re-entering dispose.
+      if (forceStarted) {
+        process.exit(130);
+        return;
+      }
+      forceStarted = true;
       // Force path: abort the active foreground stream FIRST so no
       // further model/tool work can execute during the exit window,
       // then kick background-task SIGTERM so subprocesses start dying.
