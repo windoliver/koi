@@ -3642,8 +3642,9 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(memoryStoreSteps.length).toBeGreaterThan(0);
     expect(memoryStoreSteps[0]?.outcome).toBe("success");
     const storeOutput = memoryStoreSteps[0]?.response?.text ?? "";
-    expect(storeOutput).toContain("testing_approach.md");
+    // #1725: filePath removed from memory_store output — only check for stored+id
     expect(storeOutput).toContain('"stored":true');
+    expect(storeOutput).toContain('"id"');
 
     // In-memory backend correctly populated
     expect(records.size).toBeGreaterThan(0);
@@ -3660,7 +3661,11 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     const finalText = finalModel?.response?.text ?? "";
     // Proves the second turn saw real tool output (not a hardcoded stub)
     expect(finalText.length).toBeGreaterThan(0);
-    expect(finalText.includes("testing_approach.md") || finalText.includes("memories")).toBe(true);
+    expect(
+      finalText.includes("testing_approach") ||
+        finalText.includes("memories") ||
+        finalText.includes("stored"),
+    ).toBe(true);
 
     // Hook + MW spans present
     const hookSteps = steps.filter((s) => s.metadata?.type === "hook_execution");
