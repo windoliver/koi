@@ -167,6 +167,10 @@ describe("memory_store execute", () => {
     });
     expect(result.message).toContain("2 records share");
     expect(result.message).toContain("memory_delete");
+    // The remediation must spell out the full end-to-end recovery: the
+    // "delete all but one + retry" path only succeeds when the caller
+    // passes force: true, so the message must mention that path.
+    expect(result.message).toContain("force: true");
   });
 
   test("returns sanitized internal error when backend.storeWithDedup fails", async () => {

@@ -71,9 +71,29 @@ function mapUpsertResult(result: UpsertResult): StoreWithDedupResult {
 export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryToolBackend {
   return {
     store: async (input) => {
+      // Route through the atomic upsert path so this entry point cannot
+      // silently create logical duplicates via filename-collision
+      // handling (e.g. user_role-2.md). `force: false` preserves the
+      // historical create-or-conflict semantics of backend.store().
       try {
-        const result = await store.write(input);
-        return ok(result.record);
+        const result = await store.upsert(input, { force: false });
+        switch (result.action) {
+          case "created":
+          case "updated":
+            return ok(result.record);
+          case "conflict":
+            return ok(result.existing);
+          case "skipped":
+            return ok(result.record);
+          case "corrupted":
+            return fail(
+              new Error(
+                `Memory store corruption: ${String(result.conflictingIds.length)} records share ` +
+                  `name=${JSON.stringify(result.canonicalName)}. ` +
+                  `Conflicting ids: ${result.conflictingIds.join(", ")}.`,
+              ),
+            );
+        }
       } catch (e: unknown) {
         return fail(e);
       }
