@@ -1447,8 +1447,48 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
       | undefined;
     if (config.auditSqlitePath !== undefined) {
+      // Collision guard: refuse to start if the SQLite path resolves to the
+      // same canonical file as the NDJSON host-level path or any manifest
+      // @koi/middleware-audit entry. Two independent writers (especially
+      // different formats) against the same file corrupt the audit trail.
+      const sqliteCanonical = canonicalizeAuditSinkPath(
+        config.auditSqlitePath,
+        zoneBWorkingDirectory,
+      );
+      if (sqliteCanonical !== undefined) {
+        // Check against host-level NDJSON path.
+        if (config.auditNdjsonPath !== undefined) {
+          const ndjsonCanonical = canonicalizeAuditSinkPath(
+            config.auditNdjsonPath,
+            zoneBWorkingDirectory,
+          );
+          if (ndjsonCanonical === sqliteCanonical) {
+            throw new Error(
+              `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                `the same canonical path as auditNdjsonPath "${config.auditNdjsonPath}". ` +
+                "SQLite and NDJSON sinks use incompatible formats — they cannot share a file.",
+            );
+          }
+        }
+        // Check against manifest @koi/middleware-audit entries.
+        if (config.manifestMiddleware !== undefined) {
+          for (const entry of config.manifestMiddleware) {
+            if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+            const entryPath = entry.options?.filePath;
+            if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+            const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+            if (entryCanonical === sqliteCanonical) {
+              throw new Error(
+                `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                  `the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                  "Two independent writers cannot share the same file.",
+              );
+            }
+          }
+        }
+      }
       const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
-      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink });
       auditPresetExtras.push(sqliteAuditMw);
       auditSqliteMwForShutdown = {
         flush: () => sqliteAuditMw.flush(),
