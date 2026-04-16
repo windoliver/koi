@@ -953,6 +953,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // let: incremented on each /mcp navigation; stale background refreshes drop their dispatch
+  let mcpViewGeneration = 0;
+  // Per-server in-flight auth guard — prevents overlapping OAuth flows
+  const mcpAuthInFlight = new Set<string>();
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1037,6 +1041,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     if (resumedMessagesToPrime.length > 0) {
       handle.transcript.push(...resumedMessagesToPrime);
       resumedMessagesToPrime = [];
+    }
+    // If /mcp was opened during startup, refresh its live status now
+    // that the runtime is ready.
+    if (store.getState().activeView === "mcp") {
+      void (async () => {
+        mcpViewGeneration += 1;
+        const refreshGen = mcpViewGeneration;
+        const live = await handle.getMcpStatus();
+        if (mcpViewGeneration !== refreshGen) return;
+        store.dispatch({
+          kind: "set_mcp_status",
+          servers: live.map((l) => ({
+            name: l.name,
+            status:
+              l.failureCode === undefined
+                ? ("connected" as const)
+                : l.failureCode === "AUTH_REQUIRED"
+                  ? ("needs-auth" as const)
+                  : ("error" as const),
+            toolCount: l.toolCount,
+            detail: l.failureMessage,
+          })),
+        });
+      })();
     }
     return handle;
   });
@@ -2245,8 +2273,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
           })();
           break;
-        case "nav:mcp":
+        case "nav:mcp": {
           // Instant — reads config + checks Keychain. No network, no runtime needed.
+          // Increment the generation so background refreshes from prior
+          // opens can't clobber this one's output.
+          mcpViewGeneration += 1;
+          const navGen = mcpViewGeneration;
           void (async (): Promise<void> => {
             const { loadMcpJsonFile, computeServerKey } = await import("@koi/mcp");
             const { createSecureStorage } = await import("@koi/secure-storage");
@@ -2277,6 +2309,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 void (async () => {
                   const live = await runtimeHandle?.getMcpStatus();
                   if (live === undefined) return;
+                  if (mcpViewGeneration !== navGen) return;
                   store.dispatch({
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
@@ -2369,17 +2402,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     });
                   }
                 }
+                if (mcpViewGeneration !== navGen) return;
                 store.dispatch({ kind: "set_mcp_status", servers: enriched });
               })();
             }
           })();
           break;
+        }
         case "nav:mcp-auth":
           // Triggered by pressing Enter on a needs-auth server in /mcp view.
           // args = server name. Runs `koi mcp auth <name>` inline.
           void (async (): Promise<void> => {
             const serverName = args.trim();
             if (serverName === "") return;
+            // Per-server guard — prevent overlapping OAuth flows from
+            // double-pressing Enter (callback port conflict, timeout race).
+            if (mcpAuthInFlight.has(serverName)) return;
+            mcpAuthInFlight.add(serverName);
             try {
               const { loadMcpJsonFile } = await import("@koi/mcp");
               const { join } = await import("node:path");
@@ -2483,6 +2522,8 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 code: "MCP_AUTH",
                 message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
               });
+            } finally {
+              mcpAuthInFlight.delete(serverName);
             }
           })();
           break;

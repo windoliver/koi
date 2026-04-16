@@ -1173,24 +1173,46 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       );
       if (resolvers.length === 0) return [];
 
-      const toolCounts = new Map<string, number>();
-      const allFailures: import("@koi/mcp").McpServerFailure[] = [];
-      for (const r of resolvers) {
-        const descriptors = await r.discover();
+      // Key by (source, name) so a user-configured `jira` and a
+      // plugin-provided `jira` surface as separate rows — merging by
+      // bare name hides failures in one source behind success in another.
+      const sources: {
+        readonly label: string;
+        readonly resolver: import("@koi/mcp").McpResolver;
+      }[] = [];
+      if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+      if (mcpPluginResolver !== undefined)
+        sources.push({ label: "plugin", resolver: mcpPluginResolver });
+
+      const entries: McpServerStatus[] = [];
+      const seenByKey = new Set<string>();
+      for (const { label, resolver } of sources) {
+        const toolCounts = new Map<string, number>();
+        const descriptors = await resolver.discover();
         for (const d of descriptors) {
           const server = d.server ?? "unknown";
           toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
         }
-        allFailures.push(...r.failures);
-      }
-      const entries: McpServerStatus[] = [];
-      for (const [name, count] of toolCounts) {
-        entries.push({ name, toolCount: count, failureCode: undefined, failureMessage: undefined });
-      }
-      for (const f of allFailures) {
-        if (!toolCounts.has(f.serverName)) {
+        for (const [name, count] of toolCounts) {
+          const displayName = sources.length > 1 ? `${label}:${name}` : name;
+          const key = `${label}:${name}`;
+          if (seenByKey.has(key)) continue;
+          seenByKey.add(key);
           entries.push({
-            name: f.serverName,
+            name: displayName,
+            toolCount: count,
+            failureCode: undefined,
+            failureMessage: undefined,
+          });
+        }
+        for (const f of resolver.failures) {
+          if (toolCounts.has(f.serverName)) continue;
+          const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+          const key = `${label}:${f.serverName}`;
+          if (seenByKey.has(key)) continue;
+          seenByKey.add(key);
+          entries.push({
+            name: displayName,
             toolCount: 0,
             failureCode: f.error.code,
             failureMessage: f.error.message,
