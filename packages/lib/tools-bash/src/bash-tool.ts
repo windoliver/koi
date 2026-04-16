@@ -13,7 +13,7 @@ import type {
   ToolExecuteOptions,
 } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
-import { execSandboxed, spawnBash } from "./exec.js";
+import { buildSafeEnv, execSandboxed, spawnBash } from "./exec.js";
 
 /**
  * Sentinel appended to the command string when `trackCwd` is enabled.
@@ -109,6 +109,16 @@ export interface BashToolConfig {
    * Closes #1634.
    */
   readonly elicit?: ElicitCallback;
+  /**
+   * Additional directories prepended to SAFE_ENV.PATH so user-installed
+   * tools (bun, node, python, brew) are discoverable inside the subprocess.
+   *
+   * Injected at L3 — the TUI runtime detects common tool paths at boot
+   * and threads them here. Does NOT leak the full parent PATH.
+   *
+   * Closes #1841.
+   */
+  readonly pathExtensions?: readonly string[];
 }
 
 /** Shape of the bash tool's JSON output on success. */
@@ -189,6 +199,7 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
   const sandboxProfile = config?.sandboxProfile;
   const trackCwd = config?.trackCwd ?? false;
   const elicit = config?.elicit;
+  const env = buildSafeEnv(config?.pathExtensions ?? []);
 
   // let justified: mutable cwd state for trackCwd — updated after each successful execution.
   // Reset to workspaceRoot on session clear via resetCwd().
@@ -309,8 +320,9 @@ export function createBashToolWithHooks(config?: BashToolConfig): BashToolHandle
               timeoutMs,
               maxOutputBytes,
               signal,
+              env,
             )
-          : await spawnBash(fullCommand, rawCwd, timeoutMs, maxOutputBytes, signal);
+          : await spawnBash(fullCommand, rawCwd, timeoutMs, maxOutputBytes, signal, env);
 
       // Parse and strip cwd sentinel when tracking is active for this call.
       // Only update on exitCode === 0 to avoid updating on partial failures.

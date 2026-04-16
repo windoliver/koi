@@ -48,7 +48,8 @@
  *   callback" channel — the context interface stays narrow.
  */
 
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentId, ApprovalHandler, ManagedTaskBoard } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
@@ -102,6 +103,34 @@ export const TASK_BOARD_TOOLS_HOST_KEY = "taskBoardTools";
  * surface (no bash_background, but task_* + Spawn are intact).
  */
 export const BACKGROUND_SUBPROCESSES_HOST_KEY = "backgroundSubprocesses";
+
+/**
+ * Detect common tool directories that exist on this host.
+ *
+ * Only directories that actually exist are returned, keeping the
+ * subprocess PATH tight. Covers: bun, node (nvm/fnm/volta), Homebrew,
+ * MacPorts, Python (pyenv), Rust (cargo), Go.
+ *
+ * Closes #1841.
+ */
+function detectPathExtensions(): readonly string[] {
+  const home = homedir();
+  const candidates: readonly string[] = [
+    join(home, ".bun", "bin"),
+    join(home, ".nvm", "current", "bin"),
+    join(home, ".fnm", "current", "bin"),
+    join(home, ".volta", "bin"),
+    join(home, ".local", "bin"),
+    join(home, ".cargo", "bin"),
+    join(home, "go", "bin"),
+    join(home, ".pyenv", "shims"),
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/sbin",
+    "/usr/local/go/bin",
+  ];
+  return candidates.filter((p) => existsSync(p));
+}
 
 /** Maximum wait for SIGTERM→SIGKILL drain on resetSessionState (ms). */
 const SUBPROCESS_DRAIN_MS = 3_500;
@@ -172,10 +201,15 @@ export const executionStack: PresetStack = {
       return decision.kind === "allow" || decision.kind === "always-allow";
     };
 
+    // Detect user-installed tool paths at boot — results are stable for
+    // the process lifetime so we compute once and share across both tools.
+    const pathExtensions = detectPathExtensions();
+
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,
       trackCwd: true,
       elicit: bashElicit,
+      pathExtensions,
       ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
         ? { sandboxAdapter, sandboxProfile }
         : {}),
@@ -234,6 +268,7 @@ export const executionStack: PresetStack = {
                   liveSubprocessCount--;
                 },
                 elicit: bashElicit,
+                pathExtensions,
                 ...(sandboxAdapter !== undefined && sandboxProfile !== undefined
                   ? { sandboxAdapter, sandboxProfile }
                   : {}),

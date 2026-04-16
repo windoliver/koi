@@ -24,6 +24,19 @@ export const SAFE_ENV: Readonly<Record<string, string>> = {
   TERM: "dumb",
 } as const;
 
+/**
+ * Build a safe env with additional PATH directories prepended.
+ *
+ * Each entry in `pathExtensions` is prepended to the default PATH so
+ * user-installed tools (bun, node, python, brew) are discoverable
+ * without leaking the full parent environment.
+ */
+export function buildSafeEnv(pathExtensions: readonly string[]): Readonly<Record<string, string>> {
+  if (pathExtensions.length === 0) return SAFE_ENV;
+  const extendedPath = [...pathExtensions, SAFE_ENV.PATH].join(":");
+  return { ...SAFE_ENV, PATH: extendedPath };
+}
+
 export interface ExecResult {
   readonly stdout: string;
   readonly stderr: string;
@@ -97,13 +110,14 @@ export async function execSandboxed(
   timeoutMs: number,
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
+  env: Readonly<Record<string, string>> = SAFE_ENV,
 ): Promise<ExecResult> {
   const start = Date.now();
   const instance = await adapter.create(profile);
   try {
     const r = await instance.exec("bash", ["--noprofile", "--norc", "-c", command], {
       cwd,
-      env: SAFE_ENV,
+      env,
       timeoutMs,
       maxOutputBytes,
       ...(signal !== undefined ? { signal } : {}),
@@ -138,6 +152,7 @@ export async function spawnBash(
   timeoutMs: number,
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
+  env: Readonly<Record<string, string>> = SAFE_ENV,
 ): Promise<ExecResult> {
   const start = Date.now();
 
@@ -172,7 +187,7 @@ export async function spawnBash(
   const proc = spawnChild("bash", ["--noprofile", "--norc", "-c", command], {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
-    env: SAFE_ENV,
+    env,
     detached: true,
   });
 
