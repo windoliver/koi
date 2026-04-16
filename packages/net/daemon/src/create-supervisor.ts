@@ -43,13 +43,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
   // Fan-in event bus — collects events from all worker watch loops.
   const eventBuffer: WorkerEvent[] = [];
-  const eventListeners: Array<(ev: WorkerEvent) => void> = [];
+  const eventWakers: Array<() => void> = [];
 
   const publishEvent = (ev: WorkerEvent): void => {
     eventBuffer.push(ev);
-    const pending = [...eventListeners];
-    eventListeners.length = 0;
-    for (const resolve of pending) resolve(ev);
+    // Wake every pending subscriber once. They will re-read the buffer from
+    // their cursor position on the next iteration — no value is passed through
+    // the promise, to avoid losing events pushed between drain and wakeup.
+    const pending = [...eventWakers];
+    eventWakers.length = 0;
+    for (const wake of pending) wake();
   };
 
   const pickBackend = (kind?: WorkerBackendKind): WorkerBackend | undefined => {
@@ -217,24 +220,21 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
   const watchAll: Supervisor["watchAll"] = async function* (): AsyncIterable<WorkerEvent> {
     // Use a cursor into eventBuffer so late-arriving events (added between yields)
-    // are never missed: check for buffered items before each listener await.
+    // are never missed: check for buffered items before each waker await.
     let cursor = 0;
     while (true) {
-      // Drain any buffered events that arrived since the last yield.
+      // Drain all events available since last yield.
       while (cursor < eventBuffer.length) {
         const ev = eventBuffer[cursor];
         cursor++;
         if (ev !== undefined) yield ev;
       }
-      // Block until the next published event.
-      const ev = await new Promise<WorkerEvent>((resolve) => {
-        eventListeners.push(resolve);
+      // Wait for next event. The wakeup is just a signal — we'll re-check the
+      // buffer above on the next iteration, which handles any burst of events
+      // pushed before we woke up.
+      await new Promise<void>((resolve) => {
+        eventWakers.push(resolve);
       });
-      // The new event is already in eventBuffer (publishEvent pushes before notifying),
-      // so the cursor drain above will yield it on the next iteration.
-      // Advance cursor past it and yield directly to avoid double-yield.
-      cursor = eventBuffer.length;
-      yield ev;
     }
   };
 

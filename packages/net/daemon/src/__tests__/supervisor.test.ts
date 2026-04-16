@@ -157,4 +157,65 @@ describe("supervisor watchAll", () => {
     const crashedWorkerIds = crashedEvents.map((e) => e.split(":")[1]).sort();
     expect(crashedWorkerIds).toEqual(["w1", "w2"]);
   });
+
+  it("delivers events published in the same microtask burst", async () => {
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+
+    await supervisorResult.value.start(makeRequest("ba"));
+    await supervisorResult.value.start(makeRequest("bb"));
+    await supervisorResult.value.start(makeRequest("bc"));
+
+    // Start subscribing BEFORE publishing the burst.
+    const iter = supervisorResult.value.watchAll()[Symbol.asyncIterator]() as AsyncIterator<
+      import("@koi/core").WorkerEvent
+    >;
+
+    // Drain buffered `started` events first — synchronously advance the cursor.
+    // Start 3 workers → 3 started events buffered.
+    const buffered = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<import("@koi/core").WorkerEvent>>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined as never }), 50),
+        ),
+      ]);
+      if (!r.done) buffered.push(r.value);
+    }
+    expect(buffered.length).toBe(3);
+
+    // Now fire three crashes in the same microtask turn — this is the race case.
+    crash(workerId("ba"));
+    crash(workerId("bb"));
+    crash(workerId("bc"));
+
+    // All three crashed events must arrive — none dropped.
+    const crashed: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<import("@koi/core").WorkerEvent>>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined as never }), 100),
+        ),
+      ]);
+      if (!r.done && r.value.kind === "crashed") {
+        crashed.push(r.value.workerId);
+      }
+    }
+    crashed.sort();
+    expect(crashed).toEqual(["ba", "bb", "bc"]);
+  });
 });
