@@ -32,6 +32,7 @@ export function createInitialState(): TuiState {
     expandedToolCallIds: new Set(),
     expandedBodyToolCallIds: new Set(),
     activeSpawns: new Map(),
+    finishedSpawns: [],
     maxContextTokens: null,
     retryState: null,
     agentDepth: 0,
@@ -45,7 +46,9 @@ export function createInitialState(): TuiState {
     ledgerSources: null,
     runReportSummary: null,
     showThinking: true,
+    pluginSummary: null,
     costBreakdown: null,
     tokenRate: null,
+    mcpServers: [],
   };
 }

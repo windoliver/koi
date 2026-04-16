@@ -13,17 +13,25 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createCliChannel } from "@koi/channel-cli";
-import type { ApprovalHandler, EngineEvent, EngineInput, InboundMessage } from "@koi/core";
+import type {
+  ApprovalHandler,
+  EngineEvent,
+  EngineInput,
+  FileSystemBackend,
+  InboundMessage,
+} from "@koi/core";
 import { sessionId } from "@koi/core";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createCliHarness, renderEngineEvent, shouldRender } from "@koi/harness";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
+import { resolveFileSystem } from "@koi/runtime";
 import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { initOtelSdk } from "../otel-bootstrap.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
@@ -108,6 +116,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // remote/bridge storage, which would silently grant a repo-local
   // manifest unreviewed access to data outside the workspace.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  let manifestFilesystemBackend: FileSystemBackend | undefined;
+  let manifestMiddleware: import("../manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
     const manifestResult = await loadManifestConfig(flags.manifest);
     if (!manifestResult.ok) {
@@ -118,6 +128,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     manifestInstructions = manifestResult.value.instructions;
     manifestStacks = manifestResult.value.stacks;
     manifestPlugins = manifestResult.value.plugins;
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
 
     // Fail fast on settings that `koi start` cannot honor, rather
     // than silently discarding them. A shared manifest that targets
@@ -140,24 +154,67 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       return ExitCode.FAILURE;
     }
 
-    // #1777: reject `backend: "nexus"` outright. The CLI's auto-allow
-    // permission backend is path-agnostic, so wiring a manifest-supplied
-    // remote/bridge filesystem would grant a repo-local manifest
-    // unreviewed read/write access to storage outside the workspace and
-    // outside the local host — a real trust-boundary regression.
-    // Backend-aware approvals + audit paths are follow-up work; the
-    // parse/validate/path-anchor plumbing in `loadManifestConfig` is
-    // already in place so this rejection is the only thing gating full
-    // nexus support here.
+    // #1777 two-gate trust boundary for nexus backends:
+    //   Gate 1 — manifest must declare scope (root + mode in options)
+    //   Gate 2 — operator must pass --allow-remote-fs to explicitly
+    //             authorize remote storage access at the CLI level.
+    // Both gates must pass; failing closed at gate 1 catches manifests
+    // that omit scope accidentally, and failing closed at gate 2 ensures
+    // the operator (not just the manifest author) has reviewed the risk.
     if (manifestResult.value.filesystem?.backend === "nexus") {
-      process.stderr.write(
-        "koi start: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
-          "  The CLI's auto-allow permission backend cannot enforce backend-aware\n" +
-          "  approvals, so wiring a remote/bridge filesystem from a repo-local\n" +
-          "  manifest would grant unreviewed access to storage outside the workspace.\n" +
-          "  Omit the `filesystem:` block or use `backend: local`.\n",
-      );
-      return ExitCode.FAILURE;
+      const scope = manifestResult.value.filesystem.options;
+      const root = typeof scope?.root === "string" ? scope.root : undefined;
+      const mode = scope?.mode;
+
+      // Gate 1: manifest must declare scope
+      if (root === undefined || (mode !== "ro" && mode !== "rw")) {
+        process.stderr.write(
+          "koi start: nexus backends require 'filesystem.options.root' and 'filesystem.options.mode' " +
+            "in the manifest.\n" +
+            "Add filesystem.options.root and filesystem.options.mode to your manifest, or use 'koi tui'.\n",
+        );
+        return ExitCode.FAILURE;
+      }
+
+      // Gate 2: operator must opt in
+      if (!flags.allowRemoteFs) {
+        process.stderr.write(
+          "koi start: nexus filesystem backends require --allow-remote-fs.\n" +
+            "This flag confirms the operator (not the manifest) authorizes remote storage access.\n" +
+            `Scope: ${root} (mode: ${mode})\n`,
+        );
+        return ExitCode.FAILURE;
+      }
+    }
+
+    // OAuth-gated schemes require interactive auth UI (koi tui).
+    // `koi start` cannot route `auth_required` notifications back to the
+    // user because it has no channel-aware auth handler — accepting these
+    // schemes and silently failing on first filesystem call would give a
+    // confusing mid-session error. Reject deterministically here.
+    if (manifestResult.value.filesystem?.options !== undefined) {
+      const opts = manifestResult.value.filesystem.options as Record<string, unknown>;
+      const uri = opts.mountUri;
+      if (typeof uri === "string" && /^(gdrive|gmail|s3|dropbox):\/\//i.test(uri)) {
+        process.stderr.write(
+          `koi start: OAuth-gated mount '${uri.split("://")[0]}://' requires interactive authentication.\n` +
+            "Use 'koi tui' for OAuth-gated mounts.\n",
+        );
+        return ExitCode.FAILURE;
+      }
+      // Local bridge transport (options.transport === "local") requires the
+      // async resolver (subprocess lifecycle, auth notification wiring) which
+      // koi start does not support. Reject explicitly rather than letting the
+      // sync resolver fail with a confusing "invalid nexus config" error.
+      if (opts.transport === "local") {
+        process.stderr.write(
+          "koi start: local-bridge transport (transport: local) requires 'koi tui'.\n" +
+            "  The local bridge spawns a subprocess that needs async lifecycle management\n" +
+            "  not available in the non-interactive koi start host.\n" +
+            "  Use 'koi tui' for local-bridge nexus mounts, or switch to transport: http.\n",
+        );
+        return ExitCode.FAILURE;
+      }
     }
 
     // Apply the `FileSystemConfig.operations` contract's `["read"]`
@@ -175,12 +232,14 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // `execution`) to strip the bash provider entirely.
     if (manifestResult.value.filesystem !== undefined) {
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
+      // Resolve the manifest filesystem backend (local or nexus) so koi start
+      // uses the correct backend, not the default local one. The sync path is
+      // sufficient here — koi start rejects OAuth mounts above, and the async
+      // path (local bridge subprocess) is only needed for OAuth-gated mounts.
+      manifestFilesystemBackend = resolveFileSystem(manifestResult.value.filesystem, process.cwd());
     }
 
-    if (
-      manifestResult.value.stacks !== undefined &&
-      manifestResult.value.stacks.includes("spawn")
-    ) {
+    if (manifestResult.value.stacks?.includes("spawn")) {
       process.stderr.write(
         'koi start: manifest.stacks including "spawn" is not supported on this host.\n' +
           "  Spawn enables coordinator workflows that poll task_output while waiting on\n" +
@@ -292,48 +351,76 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
 
-  const runtimeHandle = await createKoiRuntime({
-    modelAdapter,
-    modelName: model,
-    approvalHandler: autoApproveHandler,
-    cwd: process.cwd(),
-    engineId: "koi-cli",
-    hostId: "koi-cli",
-    permissionBackend: createPatternPermissionBackend({
-      rules: { allow: ["*"], deny: [], ask: [] },
-    }),
-    permissionsDescription: "koi start — auto-allow",
-    // `koi start` runs without `bash_background` because main's
-    // pre-refactor `koi start` never exposed that tool. The shared
-    // execution stack wires it by default for TUI, so we explicitly
-    // opt out here.
-    //
-    // `loopDetection` is left at the engine default (undefined →
-    // detector enabled) because the auto-allow permission backend
-    // makes the detector the only narrow guard against runaway
-    // mutating calls before governance caps trip.
-    //
-    // The full `task_*` tool set stays wired regardless, but the
-    // `spawn` stack is filtered out below — without sub-agents to
-    // orchestrate, `task_output` polling has no reason to fire and
-    // can't trip the detector's 3-in-8 threshold. This matches
-    // main's pre-refactor `koi start` capability surface (no
-    // Spawn, no bash_background, no coordinator workflows).
-    backgroundSubprocesses: false,
-    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
-    // When the user passes an explicit manifest.stacks, we honor
-    // it verbatim (including re-enabling `spawn` if they really
-    // want coordinator flows under `koi start`). When they don't,
-    // we filter `spawn` out of the default set so the detector
-    // stays compatible with the remaining tool surface.
-    ...(manifestStacks !== undefined
-      ? { stacks: manifestStacks }
-      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
-    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
-    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
-    getGeneration: () => transcriptGeneration,
-  });
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("headless") : undefined;
+
+  let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
+  try {
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter,
+      modelName: model,
+      approvalHandler: autoApproveHandler,
+      cwd: process.cwd(),
+      engineId: "koi-cli",
+      hostId: "koi-cli",
+      permissionBackend: createPatternPermissionBackend({
+        rules: { allow: ["*"], deny: [], ask: [] },
+      }),
+      permissionsDescription: "koi start — auto-allow",
+      // `koi start` runs without `bash_background` because main's
+      // pre-refactor `koi start` never exposed that tool. The shared
+      // execution stack wires it by default for TUI, so we explicitly
+      // opt out here.
+      //
+      // `loopDetection` is left at the engine default (undefined →
+      // detector enabled) because the auto-allow permission backend
+      // makes the detector the only narrow guard against runaway
+      // mutating calls before governance caps trip.
+      //
+      // The full `task_*` tool set stays wired regardless, but the
+      // `spawn` stack is filtered out below — without sub-agents to
+      // orchestrate, `task_output` polling has no reason to fire and
+      // can't trip the detector's 3-in-8 threshold. This matches
+      // main's pre-refactor `koi start` capability surface (no
+      // Spawn, no bash_background, no coordinator workflows).
+      backgroundSubprocesses: false,
+      ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+      // When the user passes an explicit manifest.stacks, we honor
+      // it verbatim (including re-enabling `spawn` if they really
+      // want coordinator flows under `koi start`). When they don't,
+      // we filter `spawn` out of the default set so the detector
+      // stays compatible with the remaining tool surface.
+      ...(manifestStacks !== undefined
+        ? { stacks: manifestStacks }
+        : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
+      ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+      ...(manifestFilesystemOps !== undefined
+        ? { filesystemOperations: manifestFilesystemOps }
+        : {}),
+      ...(manifestFilesystemBackend !== undefined ? { filesystem: manifestFilesystemBackend } : {}),
+      // Zone B — manifest-declared middleware. Resolved inside the
+      // factory; unknown names throw, core names are blocked by the
+      // loader, and composed entries run INSIDE the security guard.
+      //
+      // `allowManifestFileSinks` gates the built-in audit entry
+      // (which opens a file at resolution time). Controlled by the
+      // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+      // manifest so repo content cannot flip it.
+      ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+      ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { allowManifestFileSinks: true }
+        : {}),
+      ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+      getGeneration: () => transcriptGeneration,
+      ...(otelEnabled ? { otel: true as const } : {}),
+    });
+  } catch (e: unknown) {
+    // Ensure OTel provider is shut down even if runtime assembly fails.
+    await otelHandle?.shutdown();
+    throw e;
+  }
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
 
@@ -426,6 +513,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }\n`,
       );
     }
+    // Flush OTel spans before process exit
+    await otelHandle?.shutdown();
   };
   // Pre-populate the runtime's in-memory transcript with the resumed
   // messages so the model sees prior context on the first turn.

@@ -69,6 +69,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "View real-time cost breakdown per model, agent, and provider",
     category: "navigation",
   },
+  {
+    id: "nav:plugins",
+    label: "Plugins",
+    description: "View loaded plugins and discovery errors",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {
@@ -170,6 +176,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     label: "Zoom",
     description: "Adjust terminal zoom level",
     category: "system",
+  },
+  {
+    id: "nav:mcp",
+    label: "MCP Servers",
+    description: "View MCP server connections and authentication status",
+    category: "navigation",
   },
   {
     id: "system:quit",

@@ -6,7 +6,7 @@
  * Used by tui-runtime, start command, and mcp CLI commands.
  */
 
-import type { McpConnection, McpServerConfig } from "@koi/mcp";
+import type { McpConnection, McpServerConfig, OAuthAuthProvider } from "@koi/mcp";
 import { createMcpConnection, createOAuthAuthProvider, resolveServerConfig } from "@koi/mcp";
 import { createSecureStorage } from "@koi/secure-storage";
 import { createCliOAuthRuntime } from "./commands/mcp-oauth-runtime.js";
@@ -14,8 +14,14 @@ import { createCliOAuthRuntime } from "./commands/mcp-oauth-runtime.js";
 /**
  * Creates an MCP connection, attaching an OAuth auth provider when the
  * server config includes an `oauth` field.
+ *
+ * When `authProviderSink` is provided, stores the auth provider keyed
+ * by server name so the auth tool factory can access it later.
  */
-export function createOAuthAwareMcpConnection(server: McpServerConfig): McpConnection {
+export function createOAuthAwareMcpConnection(
+  server: McpServerConfig,
+  authProviderSink?: Map<string, OAuthAuthProvider>,
+): McpConnection {
   const resolved = resolveServerConfig(server);
 
   if (server.kind === "http" && server.oauth !== undefined) {
@@ -31,6 +37,8 @@ export function createOAuthAwareMcpConnection(server: McpServerConfig): McpConne
       runtime,
       storage,
     });
+
+    authProviderSink?.set(server.name, provider);
 
     return createMcpConnection(resolved, provider, {
       onUnauthorized: () => provider.handleUnauthorized(),

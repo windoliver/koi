@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Agent, Resolver, Tool, ToolDescriptor } from "@koi/core";
-import { agentId, isAttachResult } from "@koi/core";
+import { agentId, DEFAULT_UNSANDBOXED_POLICY, isAttachResult } from "@koi/core";
 import { createMockConnection } from "./__tests__/mock-connection.js";
+import type { AuthToolFactory } from "./component-provider.js";
 import { createMcpComponentProvider } from "./component-provider.js";
 import { createMcpResolver } from "./resolver.js";
 
@@ -214,6 +215,157 @@ describe("createMcpComponentProvider failures", () => {
     if (isAttachResult(result)) {
       expect(result.components.size).toBe(0);
       expect(result.skipped).toHaveLength(0);
+    }
+
+    resolver.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ComponentProvider: auth tool factory
+// ---------------------------------------------------------------------------
+
+describe("createMcpComponentProvider auth tool factory", () => {
+  test("AUTH_REQUIRED failure produces auth tools when factory provided", async () => {
+    const conn = createMockConnection(
+      "jira",
+      [],
+      {},
+      {
+        shouldFailConnect: true,
+        connectError: {
+          code: "AUTH_REQUIRED",
+          message: "Authentication required",
+          retryable: false,
+        },
+      },
+    );
+    const resolver = createMcpResolver([conn]);
+
+    const mockAuthTool: Tool = {
+      descriptor: {
+        name: "jira__authenticate",
+        description: "Authenticate with jira",
+        inputSchema: { type: "object", properties: {}, additionalProperties: false },
+        origin: "operator",
+        server: "jira",
+      },
+      origin: "operator",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    };
+
+    const createAuthTools: AuthToolFactory = (failure) => {
+      expect(failure.serverName).toBe("jira");
+      expect(failure.error.code).toBe("AUTH_REQUIRED");
+      return [mockAuthTool];
+    };
+
+    const provider = createMcpComponentProvider({ resolver, createAuthTools });
+    const result = await provider.attach(createMockAgent());
+
+    if (isAttachResult(result)) {
+      // Auth tool should be in components, not in skipped
+      expect(result.components.size).toBe(1);
+      expect(result.skipped).toHaveLength(0);
+      const keys = [...result.components.keys()];
+      expect(keys.some((k) => k.includes("authenticate"))).toBe(true);
+    }
+
+    resolver.dispose();
+  });
+
+  test("non-AUTH_REQUIRED failure still goes to skipped even with factory", async () => {
+    const conn = createMockConnection("bad", [], {}, { shouldFailConnect: true });
+    const resolver = createMcpResolver([conn]);
+
+    const createAuthTools: AuthToolFactory = () => {
+      throw new Error("should not be called for non-AUTH_REQUIRED failures");
+    };
+
+    const provider = createMcpComponentProvider({ resolver, createAuthTools });
+    const result = await provider.attach(createMockAgent());
+
+    if (isAttachResult(result)) {
+      expect(result.components.size).toBe(0);
+      expect(result.skipped.length).toBeGreaterThan(0);
+    }
+
+    resolver.dispose();
+  });
+
+  test("AUTH_REQUIRED failure goes to skipped when no factory provided (backward compat)", async () => {
+    const conn = createMockConnection(
+      "jira",
+      [],
+      {},
+      {
+        shouldFailConnect: true,
+        connectError: {
+          code: "AUTH_REQUIRED",
+          message: "Authentication required",
+          retryable: false,
+        },
+      },
+    );
+    const resolver = createMcpResolver([conn]);
+    const provider = createMcpComponentProvider({ resolver });
+    const result = await provider.attach(createMockAgent());
+
+    if (isAttachResult(result)) {
+      expect(result.components.size).toBe(0);
+      expect(result.skipped.length).toBeGreaterThan(0);
+      expect(result.skipped.some((s) => s.name.includes("jira"))).toBe(true);
+    }
+
+    resolver.dispose();
+  });
+
+  test("mixed: auth-needed server gets tools, other failures get skipped", async () => {
+    const authNeeded = createMockConnection(
+      "jira",
+      [],
+      {},
+      {
+        shouldFailConnect: true,
+        connectError: {
+          code: "AUTH_REQUIRED",
+          message: "Authentication required",
+          retryable: false,
+        },
+      },
+    );
+    const timeout = createMockConnection("slow", [], {}, { shouldFailConnect: true });
+    const good = createMockConnection(
+      "echo",
+      [{ name: "say", description: "Echo", inputSchema: { type: "object" } }],
+      { say: { ok: true, value: "hi" } },
+    );
+
+    const resolver = createMcpResolver([authNeeded, timeout, good]);
+
+    const mockAuthTool: Tool = {
+      descriptor: {
+        name: "jira__authenticate",
+        description: "Authenticate",
+        inputSchema: { type: "object", properties: {} },
+        origin: "operator",
+      },
+      origin: "operator",
+      policy: DEFAULT_UNSANDBOXED_POLICY,
+      execute: async () => ({}),
+    };
+
+    const createAuthTools: AuthToolFactory = () => [mockAuthTool];
+    const provider = createMcpComponentProvider({ resolver, createAuthTools });
+    const result = await provider.attach(createMockAgent());
+
+    if (isAttachResult(result)) {
+      // 1 real tool (echo__say) + 1 auth tool (jira__authenticate) = 2
+      expect(result.components.size).toBe(2);
+      // 1 skipped (slow server with EXTERNAL error)
+      expect(result.skipped.length).toBe(1);
+      expect(result.skipped[0]?.name).toContain("slow");
     }
 
     resolver.dispose();

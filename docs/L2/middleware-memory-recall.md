@@ -1,36 +1,50 @@
-# @koi/middleware-memory-recall — Frozen-Snapshot Memory Recall
+# @koi/middleware-memory-recall — Frozen Snapshot + Live Delta
 
 `@koi/middleware-memory-recall` is an L2 middleware that injects persisted
-memories at session start using the frozen-snapshot pattern: scan once, cache,
-prepend to every model call. Replaces the turn-interval approach from
-`@koi/middleware-hot-memory` (v1, archived).
+memories into every model call using a two-layer strategy: a **frozen snapshot**
+prepended once per session (prefix-cache stable) plus a **live delta** appended
+mid-conversation when memories change (Hermes-style). Replaces the turn-interval
+approach from `@koi/middleware-hot-memory` (v1, archived).
 
 ---
 
-## Why frozen snapshot
+## Why frozen snapshot + live delta
 
-Both Claude Code and Hermes use frozen snapshots. The recalled memories are
-injected once at session start and never refreshed mid-session. This:
+Pure frozen snapshot (Claude Code) keeps the prefix cache stable but hides
+mid-session memory writes until the next session. Pure per-turn rebuild
+(OpenCode) invalidates the prefix every turn. Koi combines both:
 
-- **Preserves prompt cache** — the prefix stays stable across turns
-- **Avoids mid-session context drift** — model sees consistent memory state
-- **Is simpler** — no cache invalidation, no store-change notification wiring
-- **Doesn't compete with explicit recall** — model has `memory_recall` tool
-  for mid-session lookups when needed
+- **Frozen snapshot** prepended once at session start — stable prefix, prompt
+  cache preserved across turns
+- **Live delta** appended after the conversation history (before the current
+  user message) when the memory directory signature changes — new/modified
+  memories appear automatically, no cache invalidation of the prefix
+- **Fast path** — a cheap `list()` signature gate (name + mtimeMs + size)
+  skips the scan when nothing changed; per-turn cost is one directory list
+- **Transcript safety** — delta injected *before* the last user turn so that
+  `messages.at(-1)` in downstream transcript middleware still points at the
+  user's latest message
 
 ---
 
 ## How it works
 
 ```
-Session start → first model call → recallMemories() → cache → done
+Session start → first model call → recallMemories() → frozen cache
                                          │
                      scan .md files ──────┤
                      score by salience ───┤
                      budget to 8000 tok ──┤
                      format as Markdown ──┘
 
-Subsequent model calls → prepend cached message → next()
+Every turn:
+  1. list() → fingerprint (name + mtimeMs + size)
+     ├── unchanged → reuse cached delta (or none)
+     └── changed → scan, diff vs session baseline signatures
+                    → build/refresh live delta (budgeted)
+  2. Prepend frozen snapshot   (before history, stable prefix)
+  3. Insert live delta          (after history, before last user turn)
+  4. Optional relevance overlay (after delta, before last user turn)
 ```
 
 ### Pipeline
@@ -39,7 +53,20 @@ Subsequent model calls → prepend cached message → next()
 2. **Score** — exponential decay (30-day half-life) + type relevance weights
 3. **Budget** — greedy selection by salience, no mid-content truncation
 4. **Format** — Markdown with `<memory-data>` trust boundary tags
-5. **Inject** — prepended as an `InboundMessage` with `senderId: "system:memory-recall"`
+5. **Inject** — frozen snapshot prepended; live delta + relevance overlay
+   inserted *before* the last user turn as `InboundMessage`s with distinct
+   `senderId`s (`system:memory-recall`, `system:memory-live`, `system:memory-relevant`)
+
+### Change detection
+
+Per turn, the middleware computes a fingerprint over the `list()` entries
+(name + mtimeMs + size). If the fingerprint matches the previous turn's, no
+scan runs. When it changes, the middleware performs a single recursive scan
+and compares each file's **FNV-1a content signature** (over name + description
++ type + content) against the session-start baseline to identify genuinely
+new or modified memories — this catches in-place edits where mtime or size
+didn't change. Deletions are tracked as "stale frozen IDs" so the overlay
+stops offering them as relevance candidates.
 
 ### Priority
 
@@ -56,12 +83,13 @@ const mw = createMemoryRecallMiddleware({
   fs: fileSystemBackend,    // reads .md files
   recall: {
     memoryDir: "/path/to/memory",
-    tokenBudget: 8000,      // default
+    tokenBudget: 8000,      // default (frozen snapshot)
     salience: {
       decay: { halfLifeDays: 30 },
       typeWeights: { feedback: 1.2, user: 1.0, project: 1.0, reference: 0.8 },
     },
   },
+  liveDeltaMaxTokens: 4000, // default — budget for the live delta block
 });
 ```
 
@@ -101,15 +129,45 @@ Deep Go expertise, new to React.
 
 ---
 
+## Relevance selector (optional)
+
+When the frozen snapshot is truncated (memory count exceeds token budget), an
+optional per-turn relevance selector picks the most relevant non-frozen memories
+for the current user query via a lightweight model side-query.
+
+The selector prompt uses opaque memory record IDs — never filesystem paths or
+filenames. Selected IDs are mapped back to records server-side and injected
+through the same trusted `<memory-data>` formatting as the frozen snapshot.
+
+Configured via `relevanceSelector` in the middleware config:
+
+```typescript
+const mw = createMemoryRecallMiddleware({
+  fs: fileSystemBackend,
+  recall: { memoryDir: "/path/to/memory" },
+  relevanceSelector: {
+    modelCall: adapter.complete,  // lightweight model (Haiku)
+    maxFiles: 5,
+    maxTokens: 4000,             // budget for relevance overlay
+  },
+});
+```
+
+---
+
 ## Lifecycle
 
 | Event | Behavior |
 |-------|----------|
-| `onSessionStart` | Reset cache — next model call will re-scan |
-| First `wrapModelCall` | Call `recallMemories()`, cache result |
-| Subsequent `wrapModelCall` | Prepend cached message |
+| `onSessionStart` | Reset per-session state (frozen cache, baseline signatures, live delta, fingerprint) |
+| First `wrapModelCall` | Call `recallMemories()`, record baseline signatures + fingerprint, cache frozen snapshot |
+| Subsequent `wrapModelCall` | List → fingerprint → reuse or refresh live delta, inject frozen + delta + (optional) relevance overlay |
 | `wrapModelStream` | Same injection, yield chunks |
-| `recallMemories()` error | Warn and proceed without injection |
+| `recallMemories()` error | Warn and proceed without injection (fail-open) |
+
+Per-session state is isolated per `sessionId` — concurrent sessions do not
+share caches. State keys are pruned when a session's `onSessionStart` fires
+again.
 
 ---
 
@@ -125,9 +183,9 @@ Deep Go expertise, new to React.
 
 | Aspect | v1 hot-memory | v2 memory-recall |
 |--------|--------------|------------------|
-| Recall frequency | Every N turns (default 5) | Once per session (frozen) |
-| Cache invalidation | Store-change notification | None needed |
-| Prompt cache impact | Breaks on refresh turns | Stable prefix |
+| Recall frequency | Every N turns (default 5) | Frozen snapshot (once) + live delta (per turn, signature-gated) |
+| Cache invalidation | Store-change notification | Per-turn `list()` fingerprint + FNV-1a content signatures |
+| Prompt cache impact | Breaks on refresh turns | Stable prefix; delta inserted after history |
 | Data source | `MemoryComponent.recall()` | `FileSystemBackend` + disk scan |
 | Scoring | None (raw recall) | Salience: decay + type weights |
 | Trust boundary | Raw text injection | `<memory-data>` escaping |

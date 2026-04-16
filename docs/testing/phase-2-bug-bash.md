@@ -49,7 +49,7 @@ export KOI_FALLBACK_MODEL="openai/gpt-4o"     # Enable model-router failover
 export KOI_OTEL_ENABLED=true                   # Enable OpenTelemetry spans (optional)
 ```
 
-MCP servers configured via `.mcp.json` at project root or `$KOI_HOME/.claude/.mcp.json`:
+MCP servers configured via `.mcp.json` at project root or `~/.koi/.mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -438,7 +438,6 @@ bun run test --filter=@koi/memory-team-sync
 | Q67 | Double-tap SIGINT | Ctrl+C twice rapidly during tool exec | State machine handles correctly; no crash |
 | Q68 | Malformed tool args | `Edit src/math.ts to rename 'add' to 'sum' everywhere.` | Agent self-corrects; turn doesn't crash |
 | Q69 | Stream disconnect | Briefly disconnect network mid-turn | Partial output rendered; error surfaced; retry offered |
-| Q70 | Config hot-reload | Edit config file while TUI running | Next turn uses new config |
 | Q71 | Very large file | Create 10MB `bigfile.txt`, ask `Read bigfile.txt, count lines` | No OOM; no hang; answer directional |
 | Q72 | Sandbox blocks forbidden write (macOS) — see harness note below | `Write "bad" to /etc/koi-test` | Sandbox denies; `/etc/koi-test` does not exist |
 | Q73 | Sandbox allows permitted write (macOS) | `Write "ok" to $FIXTURE/output.txt` | Write succeeds within project root |
@@ -871,7 +870,6 @@ Columns = scenarios. `T` = test-suite-only (not testable via TUI).
 | @koi/permissions | — | — | — | — | — | Q19,Q20 | — | — | — | — | — | — | |
 | @koi/bash-security | — | — | — | Q14 | — | — | — | — | — | — | — | — | |
 | @koi/bash-ast | — | — | — | Q14 | — | — | — | — | — | — | — | — | |
-| @koi/config | — | — | — | — | — | — | — | — | — | — | — | Q70 | |
 | @koi/query-engine | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | `*` | |
 | @koi/context-manager | — | — | — | — | — | — | Q23 | — | — | — | Q51 | — | |
 | @koi/snapshot-store-sqlite | — | — | — | — | — | — | — | — | — | — | Q53 | — | |

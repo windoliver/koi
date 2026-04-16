@@ -31,10 +31,12 @@ import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
   ApprovalHandler,
+  FileSystemBackend,
   InboundMessage,
   KoiMiddleware,
   ModelAdapter,
@@ -48,7 +50,7 @@ import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
 import { createKoi } from "@koi/engine";
-import { resolveFsPath } from "@koi/fs-local";
+import { createLocalFileSystem, resolveFsPath } from "@koi/fs-local";
 import type { PromptModelCaller } from "@koi/hook-prompt";
 import { createAuditMiddleware } from "@koi/middleware-audit";
 import { createExfiltrationGuardMiddleware } from "@koi/middleware-exfiltration-guard";
@@ -56,14 +58,28 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import { composeRuntimeMiddleware } from "./compose-middleware.js";
+import {
+  buildInheritedMiddlewareForChildren,
+  composeRuntimeMiddleware,
+} from "./compose-middleware.js";
 import { budgetConfigForModel, createTranscriptAdapter } from "./engine-adapter.js";
+import type { ManifestMiddlewareEntry } from "./manifest.js";
+import {
+  canonicalizeAuditSinkPath,
+  createBuiltinManifestRegistry,
+  type ManifestMiddlewareContext,
+  type MiddlewareRegistry,
+  resolveManifestMiddleware,
+} from "./middleware-registry.js";
+import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
+import { enforceRequiredMiddleware } from "./required-middleware.js";
 import {
   buildCoreMiddleware,
   buildCoreProviders,
@@ -103,6 +119,62 @@ const DEFAULT_MAX_TURNS = 25;
 const MAX_TRANSCRIPT_MESSAGES = 100;
 
 // ---------------------------------------------------------------------------
+// TUI permission constants (exported for testing — #1845)
+// ---------------------------------------------------------------------------
+
+/**
+ * Interactive approval timeout for the TUI — 60 minutes.
+ *
+ * Agent-to-agent callers keep the 30s engine default (fail-closed).
+ * The TUI uses a long timeout so real users are never auto-denied while
+ * reading a permission prompt. Finite (not Infinity) so a wedged renderer
+ * eventually fails closed rather than hanging forever.
+ *
+ * @see docs/L2/tui.md §approval-timeout
+ */
+export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
+
+/**
+ * Static TUI allow rules — tools that are auto-allowed without user approval.
+ *
+ * Excludes `fs_read` (needs dynamic `cwd`-scoped context) — those are appended
+ * at runtime inside `createKoiRuntime`.
+ *
+ * Allowlist reasoning:
+ * - Glob, Grep, ToolSearch — filesystem search, no mutations
+ * - task_* — task board reads/writes (own state, not workspace files)
+ * - Skill — skill invocation (own state)
+ * - memory_store/recall/search — sandboxed to .koi/memory/, non-destructive
+ *
+ * Tools that fall to "ask" (mode-default for unmatched tools):
+ * - Bash, bash_background, web_fetch, fs_write, fs_edit
+ * - memory_delete — deletes durable cross-session state
+ * - notebook_* — read/write .ipynb files on disk; notebook_read bypasses
+ *   the filesystemOperations gate if auto-allowed, so all notebook tools
+ *   stay gated for consistency with fs_read
+ *
+ * The TUI sets TUI_APPROVAL_TIMEOUT_MS (60 min) so interactive users are
+ * never auto-denied while reading an "ask" prompt (#1845).
+ */
+export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
+  // Memory tools — non-destructive ops sandboxed to .koi/memory/
+  // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
+  { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
+] as const;
+
+// ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
@@ -128,6 +200,14 @@ export interface KoiRuntimeConfig {
    * mode". `koi start` passes "koi start — auto-allow".
    */
   readonly permissionsDescription?: string | undefined;
+  /**
+   * Approval timeout in ms for permission "ask" decisions. Defaults to
+   * the middleware's 30s fail-closed posture (suitable for agent-to-agent
+   * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
+   * (60 min) so interactive users are never auto-denied while reading a
+   * permission prompt (#1845).
+   */
+  readonly approvalTimeoutMs?: number | undefined;
   /**
    * Stable identifier used as the `hostId` on spawn events, decision-
    * ledger lookups, and permission persistentAgentId. Defaults to
@@ -165,6 +245,62 @@ export interface KoiRuntimeConfig {
    * key; see `loadManifestConfig`.
    */
   readonly plugins?: readonly string[] | undefined;
+  /**
+   * Zone B — ordered, user-controlled middleware resolved from
+   * `manifest.middleware`. Each entry names a middleware registered
+   * in `middlewareRegistry` and carries optional factory options.
+   * Order is authoritative within zone B; the resolved chain
+   * always sits between zone A (preset stacks) and zone C
+   * (required core), per `composeRuntimeMiddleware`.
+   *
+   * Unknown names throw `UnknownManifestMiddlewareError` at factory
+   * time with the full registered-name list. Core middleware names
+   * (`hook`, `permissions`, `exfiltration-guard`, etc.) are rejected
+   * earlier by the manifest loader and never reach this field.
+   */
+  readonly manifestMiddleware?: readonly ManifestMiddlewareEntry[] | undefined;
+  /**
+   * Registry used to resolve `manifestMiddleware` entry names to
+   * concrete factories. When omitted, the factory constructs
+   * `createBuiltinManifestRegistry({allowFileBackedSinks: config.allowManifestFileSinks})`.
+   * Pass `createDefaultManifestRegistry()` for an empty registry
+   * when you want full control over the available names (useful
+   * for tests or plugins), or pass a custom populated registry to
+   * register host-specific factories.
+   */
+  readonly middlewareRegistry?: MiddlewareRegistry | undefined;
+  /**
+   * Host-controlled opt-in for file-backed manifest middleware
+   * (currently only `@koi/middleware-audit`, which creates an
+   * NDJSON sink at resolution time). Default: `false`.
+   *
+   * When `false`, the default built-in registry does NOT register
+   * `@koi/middleware-audit`, so manifest entries naming it throw
+   * `UnknownManifestMiddlewareError`. When `true`, the audit
+   * middleware is available subject to path validation.
+   *
+   * Repo-authored `koi.yaml` cannot flip this flag — it is passed
+   * programmatically by the host (CLI flag, env var, or
+   * out-of-band policy). Letting committed manifests trigger
+   * filesystem side effects is a trust-boundary regression we
+   * deliberately avoid.
+   */
+  readonly allowManifestFileSinks?: boolean | undefined;
+  /**
+   * Host capability flag consumed by the required-middleware
+   * enforcer. Terminal-capable runtimes (e.g. `koi tui`, `koi
+   * start`) ship interactive shell / bash / web_fetch and must
+   * boot with the full security baseline: `hooks`, `permissions`,
+   * `exfiltration-guard`. Headless / CI runtimes (analysis agents,
+   * programmatic embedders) only require `hooks` and may omit
+   * the terminal-only layers.
+   *
+   * Defaults to `true` — the conservative posture that matches
+   * the existing terminal hosts. Embedders assembling a headless
+   * runtime pass `false` explicitly, and the enforcer relaxes
+   * the baseline accordingly.
+   */
+  readonly terminalCapable?: boolean | undefined;
   /**
    * Engine loop-detection override. Passed verbatim to `createKoi`.
    *
@@ -286,12 +422,41 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional absolute path to a SQLite audit database file.
+   *
+   * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
+   * — set to an absolute file path before launching `koi tui`. The file
+   * is created if it doesn't exist. Sink resources (WAL, timer) are
+   * owned by the runtime and closed during shutdown.
+   */
+  readonly auditSqlitePath?: string | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
+   * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
+   */
+  readonly reportEnabled?: boolean | undefined;
+  /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
    * list through here. Honored by `buildCoreProviders`.
    */
   readonly filesystemOperations?: readonly ("read" | "write" | "edit")[] | undefined;
+  /**
+   * Active filesystem backend to use for `fs_read`, `fs_write`, and
+   * `fs_edit` tools, AND for the checkpoint preset stack's backend
+   * discriminator (capture + rewind dispatch).
+   *
+   * When omitted, the factory creates a default `@koi/fs-local` backend
+   * rooted at `cwd` with `allowExternalPaths: true` — the same backend
+   * `buildCoreProviders` previously created internally. Pass an explicit
+   * backend here when the session uses a non-local filesystem (e.g.
+   * Nexus via `resolveFileSystemAsync`) so the checkpoint middleware
+   * stamps the correct backend name on `FileOpRecord` entries and the
+   * restore protocol can dispatch compensating ops through the right
+   * backend during rewind.
+   */
+  readonly filesystem?: FileSystemBackend | undefined;
 }
 
 export interface KoiRuntimeHandle {
@@ -390,11 +555,38 @@ export interface KoiRuntimeHandle {
    */
   readonly sandboxActive: boolean;
   /**
+   * #1862: Formatted run-report text buffered by onSessionEnd. Non-empty
+   * when KOI_REPORT_ENABLED=true and onSessionEnd completed. The TUI
+   * prints this after appHandle.stop() releases the alt screen so the
+   * output is visible on the main screen.
+   */
+  readonly getPendingReport: () => string | undefined;
+  /**
    * Decision ledger factory — creates a per-session ledger reader backed by
    * the in-memory trajectory store. Used by the /trajectory view to show
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * MCP server status — returns configured servers, their connection states,
+   * and tool counts. Used by the `/mcp` TUI command. Returns empty array when
+   * no MCP servers are configured.
+   */
+  readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+  /**
+   * Plugin discovery summary — loaded plugins + any errors.
+   * Static for the lifetime of the runtime. Used by the TUI to populate
+   * the /plugins view and inject plugin awareness into the system prompt.
+   */
+  readonly pluginSummary: PluginDiscoverySummary;
+}
+
+/** Status entry for a single MCP server (used by /mcp TUI command). */
+export interface McpServerStatus {
+  readonly name: string;
+  readonly toolCount: number;
+  readonly failureCode: string | undefined;
+  readonly failureMessage: string | undefined;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -600,6 +792,35 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
 
+  // Surface skipped middleware as a warning in the plugin summary so
+  // /plugins shows it, but don't block the plugin's other components.
+  const middlewareWarnings =
+    pluginComponents.middlewareNames.length > 0
+      ? [
+          {
+            plugin: "(middleware)",
+            error: `Skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+          },
+        ]
+      : [];
+  const pluginSummary: PluginDiscoverySummary = {
+    loaded: pluginComponents.discovered,
+    errors: [...pluginComponents.errors, ...middlewareWarnings],
+  };
+  if (pluginSummary.loaded.length > 0) {
+    // Sanitize plugin-derived strings before logging to prevent terminal
+    // control sequence injection from malicious plugin manifests.
+    const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+    const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
+    const names = pluginSummary.loaded
+      .map((p) => `${sanitizeLog(p.name)}@${sanitizeLog(p.version)}`)
+      .join(", ");
+    console.error(
+      `[koi/${hostId}] ${String(pluginSummary.loaded.length)} plugin(s) loaded: ${names}`,
+    );
+  }
+
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
   // and can't be rotated after createKoi assembly. The prune is awaited to
@@ -641,6 +862,16 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // capability).
   const spawnStackActive = enabledStackIds === undefined || enabledStackIds.has("spawn");
 
+  // Zone B + spawn used to be a fail-closed combination because
+  // children would otherwise have shared the parent's mutable
+  // middleware instances (audit queues, hash chains, session
+  // lifecycle state). The spawn preset stack now accepts a
+  // `perChildMiddlewareFactory` that re-resolves manifest
+  // middleware fresh per child, so children get their own
+  // per-session state without escaping manifest-enforced policy.
+  // The factory itself is built and stashed below, after the
+  // manifest registry is constructed.
+
   // `bash_background` depends on the task-board surface for job
   // status / output inspection. If the caller requested
   // `backgroundSubprocesses: true` but the spawn stack (which
@@ -663,6 +894,23 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         "backgroundSubprocesses: false to silence this warning.",
     );
   }
+
+  // --- Filesystem backend — shared by tools and the checkpoint stack ---
+  // When the caller supplies an explicit filesystem backend (e.g. a Nexus
+  // backend from resolveFileSystemAsync), use it; otherwise fall back to
+  // the default local backend so the checkpoint stack receives the same
+  // instance that fs_write / fs_edit tools use.
+  //
+  // The backend is passed into StackActivationContext.filesystem so the
+  // checkpoint preset stack can:
+  //   1. Stamp `FileOpRecord.backend` with the backend name during capture.
+  //   2. Build the `backends` map for the restore protocol's rewind dispatch.
+  //
+  // For the default local backend (`name === "local"`), the checkpoint
+  // stack skips both — the restore protocol treats absent/local ops as
+  // direct local I/O, which is the existing behavior.
+  const filesystemBackend: FileSystemBackend =
+    config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
@@ -688,6 +936,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     cwd,
     hostId,
     modelAdapter,
+    filesystem: filesystemBackend,
     ...(config.session !== undefined ? { sessionTranscript: config.session.transcript } : {}),
     host: earlyContextHost,
   };
@@ -768,24 +1017,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Default mode: read-only tools are pre-allowed; shell/network/write tools
-  // require user approval. Unmatched tools fall through to "ask" (mode default).
-  //
-  // Allowlist reasoning:
-  //   Glob, Grep, ToolSearch — filesystem search, no mutations
-  //   fs_read                — read-only file access
-  //   task_*                 — task board reads/writes (own state, not workspace)
-  //
-  // Bash, bash_background, web_fetch, fs_write, fs_edit are intentionally not listed
-  // so they fall to "ask" — the mode-default fallback for unmatched tools.
-  // fs_read path rules: workspace paths are auto-allowed, out-of-workspace
-  // paths trigger an "ask" prompt. The permission middleware injects
-  // context.path via resolveToolPath, and the rule evaluator matches
-  // glob patterns on it. Rules evaluated in order — first match wins.
+  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
+  // See TUI_ALLOW_RULES (above) for allowlist reasoning.
   const tuiAllowRules: readonly SourcedRule[] = [
-    { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
+    ...TUI_ALLOW_RULES,
     {
       pattern: "fs_read",
       action: "invoke",
@@ -800,18 +1035,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       source: "policy",
       reason: "File is outside the workspace — approve to read",
     },
-    { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
-    // Memory tools — sandboxed to .koi/memory/, own state, not workspace files
-    { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
-    // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   ] as const;
   // Permission backend: caller may override (koi start passes an
   // auto-allow pattern backend). Default to the TUI's tiered default
@@ -827,6 +1050,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
+    ...(config.approvalTimeoutMs !== undefined
+      ? { approvalTimeoutMs: config.approvalTimeoutMs }
+      : {}),
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -860,6 +1086,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // TUI contributes its hooks-enabled Bash variant via the `bashTool` field.
   const coreProviders = buildCoreProviders({
     cwd,
+    filesystemBackend,
     ...(bashHandle !== undefined ? { bashTool: bashHandle.tool } : {}),
     ...(config.filesystemOperations !== undefined
       ? { filesystemOperations: config.filesystemOperations }
@@ -941,366 +1168,997 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const systemPromptMw = coreSlots.systemPrompt;
   const sessionTranscriptMw = coreSlots.sessionTranscript;
 
-  // --- Late-phase stack activation (spawn + any future late stacks) ---
-  // Now that the core middleware is built, publish the child-
-  // inheritance list into the late context's `host` bag and fire the
-  // late pass. Spawn reads `LATE_PHASE_HOST_KEYS.inheritedMiddleware`
-  // and composes its child adapter around it.
-  const inheritedMiddlewareForChildren: readonly KoiMiddleware[] = [
-    permMw,
-    exfiltrationGuardMw,
-    hookMw,
-    ...(systemPromptMw !== undefined ? [systemPromptMw] : []),
-  ];
-  const lateContext: import("./preset-stacks.js").StackActivationContext = {
-    ...earlyContext,
-    host: {
-      ...earlyContextHost,
-      [LATE_PHASE_HOST_KEYS.inheritedMiddleware]: inheritedMiddlewareForChildren,
-    },
-  };
-  const lateContribution = await activateStacks(lateContext, {
-    phase: "late",
-    ...(enabledStackIds !== undefined ? { enabled: enabledStackIds } : {}),
-  });
-  const stackContribution = mergeStackContributions(earlyContribution, lateContribution);
-
-  // --- Checkpoint handle exported by the checkpoint preset stack ---
-  // Read here for the returned KoiRuntimeHandle.checkpoint field.
-  const checkpointHandle = stackContribution.exports.checkpointHandle as
-    | import("@koi/checkpoint").Checkpoint
-    | undefined;
-
-  // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
-  // Build the NDJSON sink + hash-chained audit middleware when the host
-  // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
-  // owns both the middleware and the underlying sink's writer/timer;
-  // `shutdownBackgroundTasks` below flushes and closes on shutdown.
-  // let: retained so shutdown can flush+close.
-  let auditMwForShutdown:
-    | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
-    | undefined;
-  const auditPresetExtras: KoiMiddleware[] = [];
-  if (config.auditNdjsonPath !== undefined) {
-    const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
-    const auditMw = createAuditMiddleware({ sink: auditSink });
-    auditPresetExtras.push(auditMw);
-    auditMwForShutdown = {
-      flush: () => auditMw.flush(),
-      close: () => auditSink.close(),
-    };
-  }
-
-  // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
-  // The ordering (outermost → innermost) is defined in one place —
-  // compose-middleware.ts. Preset stacks (observability, checkpoint,
-  // memory, execution, etc.) plug in via `presetExtras`; the named
-  // slots here are the ALWAYS-ON core layers only.
-  const allMiddleware = composeRuntimeMiddleware({
-    hook: hookMw,
-    permissions: permMw,
-    exfiltrationGuard: exfiltrationGuardMw,
-    ...(config.modelRouterMiddleware !== undefined
-      ? { modelRouter: config.modelRouterMiddleware }
-      : {}),
-    ...(goalMw !== undefined ? { goal: goalMw } : {}),
-    presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
-    ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
-    ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
-  });
-  // Wrap every middleware with the trace wrapper when the observability
-  // stack is active (provides `trajectoryStore`). When the stack is
-  // disabled via `config.stacks` (e.g. a CI runner opting for a
-  // minimal assembly), trace wrapping is skipped — the middleware
-  // runs without per-span ATIF recording.
-  // Monotonic counter avoids Date.now() millisecond collisions on the
-  // trace store's idempotent dedup.
-  // let: mutable — incremented on each trace step
-  let traceCounter = Date.now();
-  const tracedMiddleware =
-    trajectoryStore !== undefined
-      ? allMiddleware.map((mw) =>
-          wrapMiddlewareWithTrace(mw, {
-            store: trajectoryStore,
-            docId: trajectoryDocId,
-            clock: () => traceCounter++,
-          }),
-        )
-      : allMiddleware;
-
-  // --- Assemble runtime via createKoi ---
-  // When a session is configured, thread `config.session.sessionId` into
-  // createKoi as its `sessionId` override so the engine's factory-level
-  // session id (used as the JSONL routing key) matches the plain, user-
-  // typable UUID the host minted — rather than the default verbose
-  // `agent:{agentId}:{uuid}` form. This is what makes the post-quit resume
-  // hint short and copy-pasteable.
+  // --- Zone B: resolve manifest-declared middleware ---
+  // Resolved BEFORE late-phase stack activation and BEFORE the
+  // child-inheritance snapshot below, so that:
+  //   (1) spawned child agents inherit the same manifest-declared
+  //       middleware as the parent — preventing a split-brain where
+  //       delegated work silently escapes manifest policy.
+  //   (2) resolved entries can read early-phase stack exports
+  //       (bashHandle, trajectoryStore, ...) via
+  //       `ManifestMiddlewareContext.stackExports`.
   //
-  // Also pass `rotateSessionId` so `cycleSession()` (fired by
-  // `resetSessionState` on `/clear`/`/new`) preserves the host's
-  // id format. Without this, the engine would mint a default
-  // `agent:{agentId}:{uuid}` on every rotation — the host-owned
-  // JSONL file name, post-quit resume hint, and everything else
-  // keyed off the stable id would silently diverge from where the
-  // session-transcript middleware actually writes subsequent
-  // turns (see `session-transcript.ts` — routing reads
-  // `ctx.session.sessionId`, which is the engine's rotated id).
-  // The rotation callback reads from a mutable ref that tracks
-  // the LIVE session id rather than capturing the construction-
-  // time `sess.sessionId` value. Hosts may call
-  // `runtime.rebindSessionId(...)` between construction and a
-  // later `cycleSession()` (e.g. `koi tui` rebinds after a
-  // successful `/rewind` so future writes land on the rewound
-  // session). With a snapshotted callback, the next `/clear`
-  // would snap the engine back to the original startup id —
-  // checkpoint reset would prune the wrong chain and the live
-  // session's pre-clear snapshots would survive the boundary.
-  // The runtime ref is assigned immediately after `createKoi`
-  // returns; the engine never invokes `rotateSessionId` during
-  // construction, only during a later `cycleSession()`, so the
-  // ref is always populated by the time the callback fires.
-  // let justified: assigned on the line below
-  let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
-  const runtime = await createKoi({
-    manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
-    adapter: engineAdapter,
-    middleware: tracedMiddleware,
-    ...((): { sessionId: SessionId; rotateSessionId: () => SessionId } | Record<string, never> => {
-      const sess = config.session;
-      if (sess === undefined) return {};
-      return {
-        sessionId: sess.sessionId,
-        rotateSessionId: (): SessionId => {
-          // Read from the live runtime so a prior `rebindSessionId`
-          // is honored. If somehow the callback fires before the
-          // assignment below (it shouldn't — the engine only calls
-          // it from `cycleSession()`, which can't run during
-          // construction), fall back to the construction id.
-          const liveId = runtimeForRotation?.sessionId;
-          return (liveId ?? sess.sessionId) as SessionId;
-        },
-      };
-    })(),
-    providers: [...coreProviders, ...stackContribution.providers],
-    approvalHandler,
-    userId: userInfo().username,
-    // Loop detection defaults to ENABLED (createKoi's default).
-    // Callers explicitly opt out: `koi tui` passes `false` because its
-    // per-submit iteration budget reset + governance caps already
-    // bound spirals, and the interactive surface makes false
-    // positives expensive. `koi start` omits this field so the
-    // default stays on — the auto-allow permission backend means a
-    // bad iteration would otherwise hammer tools until the broader
-    // caps trip, which is exactly what the detector exists to
-    // prevent.
-    ...(config.loopDetection !== undefined ? { loopDetection: config.loopDetection } : {}),
-    // #1742: each user submit in the TUI is a logically fresh request,
-    // so opt in to per-iteration budget reset for turn count and
-    // duration. Token usage stays CUMULATIVE across the runtime
-    // lifetime so the process retains a hard ceiling on total spend.
-    //
-    // The cumulative token ceiling is raised from the 100k default to
-    // 1M — a 10x relaxation, not 50x — because 100k trips inside a
-    // single moderately-long TUI session but 1M still bounds runaway
-    // tool/model loops well before they become a real cost incident
-    // (~$3-15 worst case on Sonnet 4.6). The per-iteration maxTurns:25
-    // reset above is the primary loop guard; this token ceiling is the
-    // secondary "user keeps submitting expensive prompts" guard.
-    //
-    // Cost tracking (`maxCostUsd`) is left at the default-disabled
-    // value because costPerInputToken/costPerOutputToken default to 0
-    // and we don't have a model-aware pricing source wired in. When
-    // a host wires real token pricing, also set `cost.maxCostUsd` here
-    // for a stricter dollar-denominated cap.
-    resetIterationBudgetPerRun: true,
-    governance: {
-      iteration: {
-        // Per-iteration UX budgets (reset on every run via
-        // resetIterationBudgetPerRun above):
-        maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
-        maxDurationMs: 300_000, // 5 min per submit
-        // Cumulative spend ceiling (NOT reset by iteration_reset):
-        maxTokens: 1_000_000,
-      },
-    },
-  });
-  // Hand the live runtime to the rotation closure above. The
-  // engine never invokes `rotateSessionId` during construction
-  // (only from a later `cycleSession()`), so this assignment
-  // happens before any rotation can fire.
-  runtimeForRotation = runtime;
-
-  return {
-    runtime,
-    checkpoint: checkpointHandle,
-    transcript,
-    sandboxActive,
-    createDecisionLedger: () =>
-      createDecisionLedger({
-        // The observability stack stores all trajectory data under a
-        // fixed doc ID. When the stack is disabled, the ledger gets a
-        // stub that reports empty — decision view shows nothing but
-        // nothing breaks.
-        trajectoryStore: {
-          getDocument: () =>
-            trajectoryStore !== undefined
-              ? trajectoryStore.getDocument(trajectoryDocId)
-              : Promise.resolve([]),
-        },
-      }),
-    getTrajectorySteps: async () => {
-      if (trajectoryStore === undefined) return [];
-      const steps = await trajectoryStore.getDocument(trajectoryDocId);
-      // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
-      return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
-    },
-    appendTrajectoryStep: async (step: RichTrajectoryStep): Promise<void> => {
-      if (trajectoryStore === undefined) return;
-      await trajectoryStore.append(trajectoryDocId, [step]);
-    },
-    resetSessionState: async (signal: AbortSignal, options?: { readonly truncate?: boolean }) => {
-      // `truncate` signals the host's intent: `true` for destructive
-      // boundaries like `/clear` or `/new` that wipe persisted state,
-      // `false` (or omitted) for non-destructive resets like a picker
-      // session switch or a post-rewind in-memory rebuild. Stacks
-      // that hold per-session durable state (checkpoint chains)
-      // gate destructive cleanup on this flag — pruning the chain
-      // on a picker load or a successful rewind would silently
-      // erase history the user explicitly opted to keep.
-      const truncate = options?.truncate === true;
-      // C4-A: Fail fast if caller forgot to abort the active run first.
-      if (!signal.aborted) {
-        throw new Error(
-          "resetSessionState: active AbortSignal must be aborted before resetting. " +
-            "Call controller.abort() first to cancel in-flight tool calls.",
+  // Unknown names throw with the full registered-name list. Core
+  // middleware names are rejected by the manifest loader earlier
+  // and cannot reach this code path. The composed chain wraps
+  // zone B from outside with `hook`/`permissions`/`exfiltration-
+  // guard` so repo-authored content only sees already-gated,
+  // already-redacted traffic (see `compose-middleware.ts`).
+  //
+  // (The manifest+spawn incompatibility check runs earlier —
+  // BEFORE activateStacks — so a rejected config cannot mutate
+  // disk through checkpoint/MCP/etc. stack activation before the
+  // error surfaces.)
+  const manifestMiddlewareRegistry =
+    config.middlewareRegistry ??
+    createBuiltinManifestRegistry({
+      allowFileBackedSinks: config.allowManifestFileSinks === true,
+    });
+  // workingDirectory is threaded from `config.cwd` (same source as
+  // file tools and permission scope) rather than `process.cwd()`, so
+  // embedders that build runtimes for workspaces other than the
+  // launcher process directory get consistent path resolution across
+  // audit sinks, fs_read permissions, and Bash tool working dir.
+  const zoneBWorkingDirectory = config.cwd ?? process.cwd();
+  // Cleanup callbacks registered by file-backed manifest middleware
+  // factories (currently only @koi/middleware-audit, which opens an
+  // NDJSON writer at resolution time). Fired from runtime.dispose()
+  // on the returned handle in the success path, and from the
+  // assembly-failure unwind below when any step between resolution
+  // and the return throws.
+  const manifestMiddlewareShutdownHooks: Array<() => Promise<void> | void> = [];
+  // Unwind helper: fires registered cleanup callbacks in reverse
+  // order, swallowing individual errors. Used by the post-resolution
+  // assembly-failure path (see the top-level try/catch below).
+  const unwindManifestMiddlewareHooks = async (): Promise<void> => {
+    for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+      try {
+        await hook();
+      } catch (cleanupErr) {
+        console.warn(
+          `[koi/${hostId}] manifest-middleware cleanup failed during error unwind: ${
+            cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)
+          }`,
         );
       }
+    }
+  };
+  // Track whether ownership of manifest resources has been
+  // transferred to the returned runtime handle. Set to `true`
+  // immediately before `return` below. If any error escapes the
+  // assembly between here and the return, the outer catch at the
+  // end of the function invokes `unwindManifestMiddlewareHooks` to
+  // release file descriptors / flush timers before rethrowing.
+  // `let` is justified because the flag is mutated at the success
+  // exit point.
+  let handleOwnershipTransferred = false;
+  // Runtime-wide shared sink cache for file-backed manifest
+  // middleware. Parent resolve + every per-child re-resolution
+  // share this map so a single NDJSON writer serves one canonical
+  // filePath regardless of how many spawns run. See the block
+  // comment on `ManifestMiddlewareContext.sharedAuditSinks` for
+  // why independent writers per child would corrupt the trail.
+  const sharedAuditSinks: ManifestMiddlewareContext["sharedAuditSinks"] = new Map();
+  // Parent-scoped accumulator for failures that happen during
+  // per-child manifest cleanup (audit sink close, release hook
+  // throws, etc). drainHooks() in the per-child factory appends
+  // here instead of only logging, and wrappedDispose surfaces
+  // any accumulated entries as part of its AggregateError on the
+  // next parent-visible dispose — guaranteeing host observability
+  // even when children outlive the parent's first dispose call.
+  const childManifestCleanupFailures: unknown[] = [];
+  let zoneBMiddleware: readonly KoiMiddleware[];
+  try {
+    zoneBMiddleware = await resolveManifestMiddleware(
+      config.manifestMiddleware,
+      manifestMiddlewareRegistry,
+      {
+        sessionId: config.session?.sessionId ?? "no-session",
+        hostId,
+        workingDirectory: zoneBWorkingDirectory,
+        stackExports: earlyContribution.exports,
+        registerShutdown: (fn) => {
+          manifestMiddlewareShutdownHooks.push(fn);
+        },
+        sharedAuditSinks,
+      },
+    );
+  } catch (err) {
+    // Resolution itself threw (unknown-name, blocklist, audit path
+    // validation, etc.). Unwind any partially-constructed resources
+    // from factories that registered before the failure, then
+    // rethrow.
+    await unwindManifestMiddlewareHooks();
+    throw err;
+  }
 
-      // 1. Cycle middleware session lifecycle BEFORE destructive cleanup.
-      //    This awaits the in-flight run's settle (bounded by ~5s in the
-      //    engine). On success the prior run is fully unwound. On settle
-      //    timeout / onSessionEnd failure cycleSession throws — we
-      //    propagate so callers surface a "restart required" error and
-      //    the prior session stays inspectable. NO destructive cleanup
-      //    has happened yet.
-      //
-      //    Capture the OLD sessionId before the cycle so we can clear
-      //    the prior session's permission state below. cycleSession()
-      //    rotates `runtime.sessionId`; reading it after rotation would
-      //    target the empty new session and leak old approvals.
-      const priorSessionId = runtime.sessionId;
-      await runtime.cycleSession?.();
-
-      // 2. Fire stack-contributed reset hooks. Each preset stack clears
-      //    its own session-scoped state: observability prunes the
-      //    trajectory store, memory wipes the backend, execution aborts
-      //    the bgController, waits for subprocess drain, resets bash
-      //    CWD, rotates the controller, and atomically swaps the task
-      //    board. Run sequentially so failures stay isolated but
-      //    ordered.
-      //
-      //    Collect errors from each hook instead of swallowing them.
-      //    Every sibling still gets a chance to run (one wedged stack
-      //    must not block the others) but a non-empty error list makes
-      //    this function fail closed — the host catches the throw,
-      //    flags the reset as unpersisted, and suppresses downstream
-      //    affordances like the post-quit resume hint. Load-bearing
-      //    for stacks whose state carries cross-boundary invariants:
-      //    e.g. the checkpoint stack prunes the on-disk chain so
-      //    `/rewind` after quit+resume cannot walk back into pre-
-      //    clear snapshots; a swallowed prune failure would report
-      //    `/clear` as successful while leaving the snapshots intact.
-      //
-      //    `resetContext.sessionId` is the LIVE runtime session id
-      //    read at hook-call time. Callers may have invoked
-      //    `runtime.rebindSessionId` between stack activation and
-      //    reset (e.g. `koi tui` rebinds after `/rewind`), so a
-      //    snapshot captured during activation is not safe here.
-      const resetContext = {
-        sessionId: runtime.sessionId as SessionId,
-        truncate,
-      } as const;
-      const hookErrors: unknown[] = [];
-      for (const hook of stackContribution.resetSessionHooks) {
+  // Post-resolution assembly is wrapped so any subsequent failure
+  // (late-phase stack activation, middleware composition, tracing
+  // setup, createKoi, session rotation wiring, etc.) unwinds the
+  // manifest resources that were opened at resolution time. Without
+  // this, an error after resolve would leak the NDJSON writer +
+  // flush timer of an open audit sink for the life of the process.
+  try {
+    // --- Late-phase stack activation (spawn + any future late stacks) ---
+    // Now that the core middleware and zone B are both built, publish
+    // the child-inheritance list into the late context's `host` bag
+    // and fire the late pass. Spawn reads
+    // `LATE_PHASE_HOST_KEYS.inheritedMiddleware` and composes its
+    // child adapter around it.
+    //
+    // Zone B is INTENTIONALLY NOT inherited — see
+    // `buildInheritedMiddlewareForChildren` for the rationale. Sharing
+    // parent middleware instances with children would interleave
+    // mutable per-session state (e.g. audit queues + hash chains).
+    //
+    // (The spawn+zoneB incompatibility check runs earlier, BEFORE
+    // manifest middleware is resolved, so that a rejected config
+    // cannot cause any factory to open files or allocate resources.)
+    const inheritedMiddlewareForChildren = buildInheritedMiddlewareForChildren({
+      permissions: permMw,
+      exfiltrationGuard: exfiltrationGuardMw,
+      hook: hookMw,
+      ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+    });
+    // Build the per-child manifest-middleware factory. Each call
+    // re-runs `resolveManifestMiddleware` with a fresh context so
+    // the child gets its own middleware instances (own audit
+    // queue, own lifecycle hooks) rather than sharing the parent's
+    // mutable state. The child context's sessionId includes a
+    // unique per-spawn `childRunId` so sibling children never
+    // collapse onto one derived identifier.
+    //
+    // The shared-sink cache (created above, captured in closure)
+    // is passed to every per-child resolve too. File-backed
+    // middleware (audit) checks the cache and reuses the parent's
+    // already-open writer instead of opening a new one per child.
+    // One writer per canonical file → no interleaved independent
+    // writers → no corrupted hash chains. Each child still gets
+    // its own middleware instance (own queue, own lifecycle
+    // hooks) routed through the shared sink.
+    //
+    // Cleanup callbacks: only the FIRST resolver to open a sink
+    // registers the close hook. Per-child resolutions that reuse
+    // the cached sink do NOT re-register close, so the dispose
+    // chain closes each sink exactly once.
+    const buildPerChildManifestMiddlewareFactory = ():
+      | ((childCtx: {
+          readonly childRunId: string;
+          readonly parentAgentId: string;
+          readonly childAgentId: string;
+          readonly childAgentName: string;
+        }) => Promise<{
+          readonly middleware: readonly KoiMiddleware[];
+          readonly unwind?: () => Promise<void> | void;
+        }>)
+      | undefined => {
+      if ((config.manifestMiddleware ?? []).length === 0) {
+        return undefined;
+      }
+      return async (childCtx) => {
+        // Read the LIVE parent runtime session id, not a static
+        // manifest label. `runtimeForRotation` is the mutable
+        // reference the factory populates once the engine runtime
+        // is constructed; it rotates on cycleSession() and rebinds
+        // on resume. Reading it here means children spawned after
+        // a /clear or /rewind correctly inherit the rotated parent
+        // session id as their prefix. Fall back to a neutral label
+        // on the (normally unreachable) pre-assignment path.
+        const liveParentSessionId = runtimeForRotation?.sessionId ?? "parent-session";
+        // Per-child registerShutdown collects hooks into a local
+        // array that is invoked via a synthetic cleanup middleware
+        // on the child's `onSessionEnd`. This gives third-party
+        // factories a real per-child cleanup channel without ever
+        // touching the parent runtime's shutdown array — so cleanup
+        // fires exactly at child-session boundary and never
+        // accumulates one-per-spawn on long-lived parents.
+        //
+        // Built-ins (@koi/middleware-audit) hit the sharedAuditSinks
+        // cache and skip registerShutdown entirely on the per-child
+        // path, so this channel stays empty for them and no synthetic
+        // middleware is appended.
+        const perChildShutdownHooks: Array<() => Promise<void> | void> = [];
+        // Per-hook completion tracking mirrors the parent dispose
+        // path: a transient failure on one hook (e.g. flaky audit
+        // flush) must stay retryable on the next drainHooks call,
+        // while already-successful hooks stay latched and do not
+        // re-run. A single `drained` flag would either drop the
+        // failed hook forever or re-run already-successful hooks
+        // and risk double-close.
+        const completedChildHooks = new WeakSet<() => Promise<void> | void>();
+        const drainHooks = async (): Promise<void> => {
+          // Reverse order so later registrations unwind first,
+          // matching the parent's registerShutdown semantics.
+          // Collect every hook failure: push onto the parent-
+          // scoped accumulator so wrappedDispose can surface it
+          // on the next parent-visible lifecycle operation, AND
+          // throw an AggregateError so the immediate caller
+          // (onSessionEnd / unwind) sees the failure too.
+          const errors: unknown[] = [];
+          for (const hook of [...perChildShutdownHooks].reverse()) {
+            if (completedChildHooks.has(hook)) continue;
+            try {
+              await hook();
+              completedChildHooks.add(hook);
+            } catch (err) {
+              errors.push(err);
+              childManifestCleanupFailures.push(err);
+            }
+          }
+          if (errors.length > 0) {
+            throw new AggregateError(
+              errors,
+              `per-child manifest cleanup had ${errors.length} failure(s) at child session end. ` +
+                "Audit sinks or other file-backed child cleanup may not have fully flushed — " +
+                "the failures have also been attached to the parent runtime's dispose chain so the " +
+                "host's shutdown-reporting path will observe them. A subsequent drain (e.g. retry " +
+                "from wrappedDispose) will retry only the hooks that failed.",
+            );
+          }
+        };
+        let childMiddleware: readonly KoiMiddleware[];
         try {
-          await hook(signal, resetContext);
+          childMiddleware = await resolveManifestMiddleware(
+            config.manifestMiddleware,
+            manifestMiddlewareRegistry,
+            {
+              // Label the child session by the CHILD agent id +
+              // runId, not the parent agent id. Operators
+              // correlating a child audit stream back to the
+              // spawned agent need the child identity in the
+              // prefix; parentAgentId is retained in
+              // `parent:` so the lineage is still recoverable.
+              sessionId: `${liveParentSessionId}/parent:${childCtx.parentAgentId}/child:${childCtx.childAgentName}:${childCtx.childAgentId}:${childCtx.childRunId}`,
+              hostId,
+              workingDirectory: zoneBWorkingDirectory,
+              // Child re-resolution inherits the parent's stack
+              // exports. This keeps the parent and spawned
+              // children on the same manifest-middleware policy:
+              // any factory that legitimately reads a parent-
+              // exported handle (bashHandle, trajectory store,
+              // checkpoint, ...) keeps working on the child
+              // path instead of silently degrading when
+              // delegated. The Readonly<Record<string, unknown>>
+              // shape advertised by ManifestMiddlewareContext
+              // remains the contract: factories must treat
+              // inherited handles as read-only and never mutate
+              // parent-scoped state. A child runtime that needs
+              // its own early-phase exports must run through a
+              // full independent runtime-factory assembly — out
+              // of scope for per-child manifest re-resolution.
+              stackExports: earlyContribution.exports,
+              registerShutdown: (fn) => {
+                perChildShutdownHooks.push(fn);
+              },
+              sharedAuditSinks,
+            },
+          );
+        } catch (resolveErr) {
+          // Factory partially allocated resources before throwing.
+          // Drain whatever has been registered so nothing leaks,
+          // then re-throw so the engine converts it to a
+          // SpawnResult.error.
+          await drainHooks();
+          throw resolveErr;
+        }
+        if (perChildShutdownHooks.length === 0) {
+          return { middleware: childMiddleware };
+        }
+        // Append a synthetic cleanup middleware that drains the
+        // collected hooks at child session end. Observe-phase +
+        // low priority so it runs after every real middleware's
+        // own onSessionEnd. drainHooks() is idempotent: whichever
+        // path fires first (normal completion via onSessionEnd
+        // OR post-resolution failure via `unwind`) wins, and the
+        // other becomes a no-op.
+        const cleanupMiddleware: KoiMiddleware = {
+          name: "per-child-cleanup",
+          phase: "observe",
+          priority: 999,
+          concurrent: true,
+          describeCapabilities: () => undefined,
+          onSessionEnd: async () => {
+            await drainHooks();
+          },
+        };
+        return {
+          middleware: [...childMiddleware, cleanupMiddleware],
+          unwind: drainHooks,
+        };
+      };
+    };
+    const perChildManifestMiddlewareFactory = buildPerChildManifestMiddlewareFactory();
+    const lateContext: import("./preset-stacks.js").StackActivationContext = {
+      ...earlyContext,
+      host: {
+        ...earlyContextHost,
+        [LATE_PHASE_HOST_KEYS.inheritedMiddleware]: inheritedMiddlewareForChildren,
+        ...(perChildManifestMiddlewareFactory !== undefined
+          ? {
+              [LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory]:
+                perChildManifestMiddlewareFactory,
+            }
+          : {}),
+      },
+    };
+    const lateContribution = await activateStacks(lateContext, {
+      phase: "late",
+      ...(enabledStackIds !== undefined ? { enabled: enabledStackIds } : {}),
+    });
+    const stackContribution = mergeStackContributions(earlyContribution, lateContribution);
+
+    // --- Checkpoint handle exported by the checkpoint preset stack ---
+    // Read here for the returned KoiRuntimeHandle.checkpoint field.
+    const checkpointHandle = stackContribution.exports.checkpointHandle as
+      | import("@koi/checkpoint").Checkpoint
+      | undefined;
+
+    // --- MCP resolvers exported by the MCP preset stack ---
+    // Read here for the returned KoiRuntimeHandle.getMcpStatus().
+    const mcpResolver = stackContribution.exports.mcpResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+    const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+
+    // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
+    // Build the NDJSON sink + hash-chained audit middleware when the host
+    // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
+    // owns both the middleware and the underlying sink's writer/timer;
+    // `shutdownBackgroundTasks` below flushes and closes on shutdown.
+    // let: retained so shutdown can flush+close.
+    let auditMwForShutdown:
+      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+      | undefined;
+    const auditPresetExtras: KoiMiddleware[] = [];
+    if (config.auditNdjsonPath !== undefined) {
+      // Collision guard: refuse to start if the legacy host-level
+      // audit path (env-driven KOI_AUDIT_NDJSON / config.auditNdjsonPath)
+      // points at the same canonical file as any enabled
+      // `@koi/middleware-audit` manifest entry. Two independent
+      // writers against the same NDJSON file would interleave
+      // records, corrupt the hash/signing chain, and break the
+      // integrity story that the manifest audit path is trying
+      // to harden. Hosts that want both paths active must target
+      // different files.
+      const legacyCanonical = canonicalizeAuditSinkPath(
+        config.auditNdjsonPath,
+        zoneBWorkingDirectory,
+      );
+      if (legacyCanonical !== undefined && config.manifestMiddleware !== undefined) {
+        for (const entry of config.manifestMiddleware) {
+          if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+          const entryPath = entry.options?.filePath;
+          if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+          const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+          if (entryCanonical === legacyCanonical) {
+            throw new Error(
+              `audit sink collision: host-level auditNdjsonPath "${config.auditNdjsonPath}" ` +
+                `resolves to the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                "Two independent writers cannot share the same NDJSON file — they would interleave " +
+                "records and corrupt the hash/signing chain. Point one path at a different file, or " +
+                "disable one of the audit surfaces.",
+            );
+          }
+        }
+      }
+      const auditSink = createNdjsonAuditSink({ filePath: config.auditNdjsonPath });
+      const auditMw = createAuditMiddleware({ sink: auditSink, signing: true });
+      auditPresetExtras.push(auditMw);
+      auditMwForShutdown = {
+        flush: () => auditMw.flush(),
+        close: () => auditSink.close(),
+      };
+    }
+
+    // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
+    // Parallel to NDJSON above. Both can be active simultaneously (tee
+    // pattern) as long as they target different files.
+    let auditSqliteMwForShutdown:
+      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+      | undefined;
+    if (config.auditSqlitePath !== undefined) {
+      // Collision guard: refuse to start if the SQLite path resolves to the
+      // same canonical file as the NDJSON host-level path or any manifest
+      // @koi/middleware-audit entry. Two independent writers (especially
+      // different formats) against the same file corrupt the audit trail.
+      const sqliteCanonical = canonicalizeAuditSinkPath(
+        config.auditSqlitePath,
+        zoneBWorkingDirectory,
+      );
+      if (sqliteCanonical !== undefined) {
+        // Check against host-level NDJSON path.
+        if (config.auditNdjsonPath !== undefined) {
+          const ndjsonCanonical = canonicalizeAuditSinkPath(
+            config.auditNdjsonPath,
+            zoneBWorkingDirectory,
+          );
+          if (ndjsonCanonical === sqliteCanonical) {
+            throw new Error(
+              `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                `the same canonical path as auditNdjsonPath "${config.auditNdjsonPath}". ` +
+                "SQLite and NDJSON sinks use incompatible formats — they cannot share a file.",
+            );
+          }
+        }
+        // Check against manifest @koi/middleware-audit entries.
+        if (config.manifestMiddleware !== undefined) {
+          for (const entry of config.manifestMiddleware) {
+            if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+            const entryPath = entry.options?.filePath;
+            if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+            const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+            if (entryCanonical === sqliteCanonical) {
+              throw new Error(
+                `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                  `the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                  "Two independent writers cannot share the same file.",
+              );
+            }
+          }
+        }
+      }
+      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink, signing: true });
+      auditPresetExtras.push(sqliteAuditMw);
+      auditSqliteMwForShutdown = {
+        flush: () => sqliteAuditMw.flush(),
+        close: async () => sqliteSink.close(),
+      };
+    }
+
+    // --- Report middleware (opt-in via config.reportEnabled) ---
+    // Accumulates model/tool call metrics and emits a RunReport at session
+    // end. No shutdown resources — the report is printed via onReport.
+    // let: justified — set once by onReport callback during onSessionEnd.
+    let pendingReportText: string | undefined;
+    if (config.reportEnabled === true) {
+      const reportHandle = createReportMiddleware({
+        objective: config.goals?.join("; "),
+        onReport: (_report, formatted) => {
+          // #1862: buffer the formatted text instead of printing
+          // immediately. onReport fires during runtime.dispose() →
+          // onSessionEnd, while the TUI alt screen may still be active.
+          // The host prints pendingReportText after appHandle.stop()
+          // releases the alt screen so the output is visible.
+          pendingReportText = formatted;
+        },
+      });
+      auditPresetExtras.push(reportHandle.middleware);
+      // TODO(#1858): expose reportHandle.getReport / getProgress on
+      // KoiRuntimeHandle so the TUI can surface progress in a status
+      // bar or /report command.
+    }
+
+    // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
+    // The ordering (outermost → innermost) is defined in one place —
+    // compose-middleware.ts. Preset stacks (observability, checkpoint,
+    // memory, execution, etc.) plug in via `presetExtras`; user-
+    // controlled manifest middleware plugs in via `manifestMiddleware`;
+    // the named slots here are the ALWAYS-ON core layers only.
+    const allMiddleware = composeRuntimeMiddleware({
+      hook: hookMw,
+      permissions: permMw,
+      exfiltrationGuard: exfiltrationGuardMw,
+      ...(config.modelRouterMiddleware !== undefined
+        ? { modelRouter: config.modelRouterMiddleware }
+        : {}),
+      ...(goalMw !== undefined ? { goal: goalMw } : {}),
+      // presetExtras includes both the code-owned stack middleware
+      // and main's env-var-gated audit preset extras (from
+      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), kept for backward
+      // compatibility with that host opt-in. Zone B manifest
+      // middleware flows through the separate `manifestMiddleware`
+      // slot and is composed strictly INSIDE the security core
+      // layers, regardless of array position here.
+      presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
+      manifestMiddleware: zoneBMiddleware,
+      ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+      ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
+    });
+
+    // --- Required-set invariant: refuse to boot with a gutted chain ---
+    // Runs after composition so it checks the actually-assembled list,
+    // not the intended inputs. This is the last line of defense
+    // against a programmatic caller that constructs a chain without
+    // the core security layers. Terminal-capable runtimes (koi tui,
+    // koi start) always require hooks + permissions +
+    // exfiltration-guard. See `required-middleware.ts`.
+    enforceRequiredMiddleware(allMiddleware, {
+      terminalCapable: config.terminalCapable ?? true,
+    });
+    // Wrap every middleware with the trace wrapper when the observability
+    // stack is active (provides `trajectoryStore`). When the stack is
+    // disabled via `config.stacks` (e.g. a CI runner opting for a
+    // minimal assembly), trace wrapping is skipped — the middleware
+    // runs without per-span ATIF recording.
+    // Monotonic counter avoids Date.now() millisecond collisions on the
+    // trace store's idempotent dedup.
+    // let: mutable — incremented on each trace step
+    let traceCounter = Date.now();
+    const tracedMiddleware =
+      trajectoryStore !== undefined
+        ? allMiddleware.map((mw) =>
+            wrapMiddlewareWithTrace(mw, {
+              store: trajectoryStore,
+              docId: trajectoryDocId,
+              clock: () => traceCounter++,
+            }),
+          )
+        : allMiddleware;
+
+    // --- Assemble runtime via createKoi ---
+    // When a session is configured, thread `config.session.sessionId` into
+    // createKoi as its `sessionId` override so the engine's factory-level
+    // session id (used as the JSONL routing key) matches the plain, user-
+    // typable UUID the host minted — rather than the default verbose
+    // `agent:{agentId}:{uuid}` form. This is what makes the post-quit resume
+    // hint short and copy-pasteable.
+    //
+    // Also pass `rotateSessionId` so `cycleSession()` (fired by
+    // `resetSessionState` on `/clear`/`/new`) preserves the host's
+    // id format. Without this, the engine would mint a default
+    // `agent:{agentId}:{uuid}` on every rotation — the host-owned
+    // JSONL file name, post-quit resume hint, and everything else
+    // keyed off the stable id would silently diverge from where the
+    // session-transcript middleware actually writes subsequent
+    // turns (see `session-transcript.ts` — routing reads
+    // `ctx.session.sessionId`, which is the engine's rotated id).
+    // The rotation callback reads from a mutable ref that tracks
+    // the LIVE session id rather than capturing the construction-
+    // time `sess.sessionId` value. Hosts may call
+    // `runtime.rebindSessionId(...)` between construction and a
+    // later `cycleSession()` (e.g. `koi tui` rebinds after a
+    // successful `/rewind` so future writes land on the rewound
+    // session). With a snapshotted callback, the next `/clear`
+    // would snap the engine back to the original startup id —
+    // checkpoint reset would prune the wrong chain and the live
+    // session's pre-clear snapshots would survive the boundary.
+    // The runtime ref is assigned immediately after `createKoi`
+    // returns; the engine never invokes `rotateSessionId` during
+    // construction, only during a later `cycleSession()`, so the
+    // ref is always populated by the time the callback fires.
+    // let justified: assigned on the line below
+    let runtimeForRotation: import("@koi/engine").KoiRuntime | undefined;
+    const runtime = await createKoi({
+      manifest: { name: "koi-tui", version: "0.1.0", model: { name: modelName } },
+      adapter: engineAdapter,
+      middleware: tracedMiddleware,
+      ...(():
+        | { sessionId: SessionId; rotateSessionId: () => SessionId }
+        | Record<string, never> => {
+        const sess = config.session;
+        if (sess === undefined) return {};
+        return {
+          sessionId: sess.sessionId,
+          rotateSessionId: (): SessionId => {
+            // Read from the live runtime so a prior `rebindSessionId`
+            // is honored. If somehow the callback fires before the
+            // assignment below (it shouldn't — the engine only calls
+            // it from `cycleSession()`, which can't run during
+            // construction), fall back to the construction id.
+            const liveId = runtimeForRotation?.sessionId;
+            return (liveId ?? sess.sessionId) as SessionId;
+          },
+        };
+      })(),
+      providers: [...coreProviders, ...stackContribution.providers],
+      approvalHandler,
+      userId: userInfo().username,
+      // Loop detection defaults to ENABLED (createKoi's default).
+      // Callers explicitly opt out: `koi tui` passes `false` because its
+      // per-submit iteration budget reset + governance caps already
+      // bound spirals, and the interactive surface makes false
+      // positives expensive. `koi start` omits this field so the
+      // default stays on — the auto-allow permission backend means a
+      // bad iteration would otherwise hammer tools until the broader
+      // caps trip, which is exactly what the detector exists to
+      // prevent.
+      ...(config.loopDetection !== undefined ? { loopDetection: config.loopDetection } : {}),
+      // #1742: each user submit in the TUI is a logically fresh request,
+      // so opt in to per-iteration budget reset for turn count and
+      // duration. Token usage stays CUMULATIVE across the runtime
+      // lifetime so the process retains a hard ceiling on total spend.
+      //
+      // The cumulative token ceiling is raised from the 100k default to
+      // 1M — a 10x relaxation, not 50x — because 100k trips inside a
+      // single moderately-long TUI session but 1M still bounds runaway
+      // tool/model loops well before they become a real cost incident
+      // (~$3-15 worst case on Sonnet 4.6). The per-iteration maxTurns:25
+      // reset above is the primary loop guard; this token ceiling is the
+      // secondary "user keeps submitting expensive prompts" guard.
+      //
+      // Cost tracking (`maxCostUsd`) is left at the default-disabled
+      // value because costPerInputToken/costPerOutputToken default to 0
+      // and we don't have a model-aware pricing source wired in. When
+      // a host wires real token pricing, also set `cost.maxCostUsd` here
+      // for a stricter dollar-denominated cap.
+      resetIterationBudgetPerRun: true,
+      governance: {
+        iteration: {
+          // Per-iteration UX budgets (reset on every run via
+          // resetIterationBudgetPerRun above):
+          maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
+          maxDurationMs: 300_000, // 5 min per submit
+          // Cumulative spend ceiling (NOT reset by iteration_reset):
+          maxTokens: 1_000_000,
+        },
+      },
+    });
+    // Hand the live runtime to the rotation closure above. The
+    // engine never invokes `rotateSessionId` during construction
+    // (only from a later `cycleSession()`), so this assignment
+    // happens before any rotation can fire.
+    runtimeForRotation = runtime;
+
+    // Wrap runtime.dispose so manifest-middleware cleanup (audit sink
+    // close, etc.) runs AFTER the engine's dispose path completes.
+    // Engine dispose triggers middleware onSessionEnd hooks, which is
+    // when audit writes its final `session_end` record. Closing the
+    // sink before dispose would drop that record. We also remove the
+    // cleanup from shutdownBackgroundTasks below so it is only wired
+    // through this one authoritative path.
+    //
+    // IMPORTANT: cleanup runs ONLY if `engineDispose()` resolves
+    // successfully. The engine's poisoned-runtime contract says that
+    // when dispose throws or times out, onSessionEnd/adapter teardown
+    // was skipped and in-flight middleware state is still live. The
+    // caller is expected to SIGKILL the wedged tool and retry dispose
+    // later. Closing manifest resources here would:
+    //   1. Prevent the retry dispose from emitting the final
+    //      session_end audit record (writer/timer already torn down).
+    //   2. Race with any still-running middleware that has not had
+    //      onSessionEnd called.
+    // On dispose failure we therefore leave manifest hooks registered
+    // so a subsequent successful retry can still fire them.
+    //
+    // The wrapper uses a Proxy so live getters on the underlying
+    // runtime (notably `sessionId`, which is a getter that changes
+    // after `cycleSession()` or `rebindSessionId()`) are forwarded
+    // through `Reflect.get` instead of being snapshotted by
+    // object-spread. An object-spread wrapper would copy the value
+    // of the sessionId getter at construction time and freeze it,
+    // breaking every post-reset/rebind caller that later reads
+    // `runtimeHandle.runtime.sessionId` to locate transcript or
+    // checkpoint state for the current session.
+    const engineDispose = runtime.dispose.bind(runtime);
+    // Latch: manifest cleanup runs at most once across repeated
+    // dispose() calls. The engine's own dispose() is a documented
+    // no-op on second call; the wrapped dispose must preserve that
+    // contract, otherwise retry/idempotent shutdown paths would
+    // re-call `sink.close()` on an already-ended writer and throw.
+    //
+    // Tracking is per-hook rather than a single global flag: a
+    // transient failure on one hook (e.g. a flaky audit flush)
+    // must be retryable on the next dispose() while already-
+    // successful hooks stay latched and do not re-run. A single
+    // global flag would either:
+    //   - mark cleanup done on any partial completion, silently
+    //     dropping the failed hook forever (data loss), or
+    //   - leave cleanup unmarked, re-running ALL hooks (including
+    //     successful ones) and risking double-close on the
+    //     already-ended writers.
+    // Per-hook tracking gives precise retry semantics.
+    const completedManifestHooks = new WeakSet<() => Promise<void> | void>();
+    const wrappedDispose = async (): Promise<void> => {
+      await engineDispose();
+      // Fire manifest-middleware cleanup in reverse registration
+      // order, skipping hooks that already ran successfully. Each
+      // surviving hook is awaited so audit sinks' final flush +
+      // writer.end() complete before dispose resolves.
+      //
+      // Cleanup failures are aggregated into a single error and
+      // thrown after every unfinished hook has been attempted.
+      // Audit and similar file-backed middleware treat finalization
+      // as a correctness/security property: silently downgrading a
+      // failed flush to a successful shutdown would let buffered
+      // records never hit disk while the host reports success.
+      // Hooks that succeed mid-pass are marked complete BEFORE the
+      // throw so a retry dispose() re-runs only the ones that
+      // failed.
+      const hookErrors: unknown[] = [];
+      for (const hook of [...manifestMiddlewareShutdownHooks].reverse()) {
+        if (completedManifestHooks.has(hook)) {
+          continue;
+        }
+        try {
+          await hook();
+          completedManifestHooks.add(hook);
         } catch (hookErr) {
           console.warn(
-            `[koi/${hostId}] preset stack onResetSession hook failed: ${
+            `[koi/${hostId}] manifest-middleware shutdown hook failed during dispose: ${
               hookErr instanceof Error ? hookErr.message : String(hookErr)
             }`,
           );
           hookErrors.push(hookErr);
         }
       }
-
-      // 3. Clear the OLD session's approval state (always-allow, caches,
-      //    trackers). Not a stack concern — permissions is a core slot.
-      //    Always runs even if a hook failed — approval state is cheap
-      //    to clear and leaving it stale after a partial reset would
-      //    leak cross-session grants.
-      permMw.clearSessionApprovals(priorSessionId);
-
-      // 4. If any hook failed, fail closed. `AggregateError` is the
-      //    standard JS primitive for "multiple errors from sibling
-      //    operations". The host's reset barrier catches this and
-      //    flips `clearPersistFailed` so the post-quit resume hint
-      //    is suppressed / the UI surfaces "reset may be incomplete".
+      // Drain any deferred per-child cleanup failures accumulated
+      // while children were still running after a prior parent
+      // dispose call. Each call to wrappedDispose resets the
+      // accumulator so the same errors aren't surfaced twice on
+      // repeated dispose attempts.
+      const pendingChildErrors = childManifestCleanupFailures.splice(0);
+      hookErrors.push(...pendingChildErrors);
       if (hookErrors.length > 0) {
         throw new AggregateError(
           hookErrors,
-          `resetSessionState: ${hookErrors.length} preset stack reset hook(s) failed. ` +
-            "Runtime state may be partially cleaned — host should flag this reset as unpersisted.",
+          `manifest-middleware shutdown had ${hookErrors.length} failure(s) during runtime.dispose ` +
+            `(${pendingChildErrors.length} from per-child cleanup). Audit sinks or other file-backed cleanup may not have ` +
+            "fully flushed — treat shutdown as failed and surface this error to the host's shutdown-reporting path. " +
+            "A subsequent runtime.dispose() call will retry the failed parent hooks without re-running the ones that " +
+            "already completed.",
         );
       }
-    },
-    hasActiveBackgroundTasks: () =>
-      stackContribution.activeWorkPredicates.some((predicate) => predicate()),
-    shutdownBackgroundTasks: () => {
-      // Fire every stack's onShutdown hook and OR their "had live
-      // work" return values. Execution stack aborts its bgController
-      // and returns true when bash_background subprocesses were live;
-      // other stacks currently contribute no shutdown hooks.
-      let hadWork = false;
-      for (const hook of stackContribution.shutdownHooks) {
-        try {
-          if (hook()) hadWork = true;
-        } catch (hookErr) {
-          console.warn(
-            `[koi/${hostId}] preset stack onShutdown hook failed: ${
-              hookErr instanceof Error ? hookErr.message : String(hookErr)
-            }`,
+    };
+    const wrappedRuntime: typeof runtime = new Proxy(runtime, {
+      get(target, prop, receiver): unknown {
+        if (prop === "dispose") return wrappedDispose;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    // Handle is about to be constructed and returned. Flip the flag
+    // so the outer catch below treats a successful return as "ownership
+    // transferred" and does NOT fire unwindManifestMiddlewareHooks.
+    handleOwnershipTransferred = true;
+    return {
+      runtime: wrappedRuntime,
+      checkpoint: checkpointHandle,
+      transcript,
+      sandboxActive,
+      pluginSummary,
+      createDecisionLedger: () =>
+        createDecisionLedger({
+          // The observability stack stores all trajectory data under a
+          // fixed doc ID. When the stack is disabled, the ledger gets a
+          // stub that reports empty — decision view shows nothing but
+          // nothing breaks.
+          trajectoryStore: {
+            getDocument: () =>
+              trajectoryStore !== undefined
+                ? trajectoryStore.getDocument(trajectoryDocId)
+                : Promise.resolve([]),
+          },
+        }),
+      getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
+        // Merge user + plugin MCP resolvers — key by (source, name)
+        // so duplicate names from different sources surface as
+        // separate rows instead of hiding failures behind successes.
+        const sources: {
+          readonly label: string;
+          readonly resolver: import("@koi/mcp").McpResolver;
+        }[] = [];
+        if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+        if (mcpPluginResolver !== undefined)
+          sources.push({ label: "plugin", resolver: mcpPluginResolver });
+        if (sources.length === 0) return [];
+
+        const entries: McpServerStatus[] = [];
+        const seenByKey = new Set<string>();
+        for (const { label, resolver } of sources) {
+          const toolCounts = new Map<string, number>();
+          const descriptors = await resolver.discover();
+          for (const d of descriptors) {
+            const server = d.server ?? "unknown";
+            toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+          }
+          for (const [name, count] of toolCounts) {
+            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            const key = `${label}:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: count,
+              failureCode: undefined,
+              failureMessage: undefined,
+            });
+          }
+          for (const f of resolver.failures) {
+            if (toolCounts.has(f.serverName)) continue;
+            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const key = `${label}:${f.serverName}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: 0,
+              failureCode: f.error.code,
+              failureMessage: f.error.message,
+            });
+          }
+        }
+        return entries;
+      },
+      getTrajectorySteps: async () => {
+        if (trajectoryStore === undefined) return [];
+        const steps = await trajectoryStore.getDocument(trajectoryDocId);
+        // Cap at MAX_TRAJECTORY_STEPS — return the most recent steps.
+        return steps.length > MAX_TRAJECTORY_STEPS ? steps.slice(-MAX_TRAJECTORY_STEPS) : steps;
+      },
+      appendTrajectoryStep: async (step: RichTrajectoryStep): Promise<void> => {
+        if (trajectoryStore === undefined) return;
+        await trajectoryStore.append(trajectoryDocId, [step]);
+      },
+      resetSessionState: async (signal: AbortSignal, options?: { readonly truncate?: boolean }) => {
+        // `truncate` signals the host's intent: `true` for destructive
+        // boundaries like `/clear` or `/new` that wipe persisted state,
+        // `false` (or omitted) for non-destructive resets like a picker
+        // session switch or a post-rewind in-memory rebuild. Stacks
+        // that hold per-session durable state (checkpoint chains)
+        // gate destructive cleanup on this flag — pruning the chain
+        // on a picker load or a successful rewind would silently
+        // erase history the user explicitly opted to keep.
+        const truncate = options?.truncate === true;
+        // C4-A: Fail fast if caller forgot to abort the active run first.
+        if (!signal.aborted) {
+          throw new Error(
+            "resetSessionState: active AbortSignal must be aborted before resetting. " +
+              "Call controller.abort() first to cancel in-flight tool calls.",
           );
         }
-      }
-      // configHotReload is factory-bootstrap, not a stack feature —
-      // dispose directly.
-      configHotReload?.dispose();
-      // Flush + close runtime-owned audit sink (opt-in via
-      // config.auditNdjsonPath). Fire-and-forget because
-      // shutdownBackgroundTasks is sync; any error is logged but does
-      // not block shutdown. The process exits after this returns, so
-      // the fire-and-forget close must complete synchronously relative
-      // to the event loop before exit — createNdjsonAuditSink drains
-      // its internal timer queue synchronously on close().
-      if (auditMwForShutdown !== undefined) {
-        const audit = auditMwForShutdown;
-        void (async () => {
+
+        // 1. Cycle middleware session lifecycle BEFORE destructive cleanup.
+        //    This awaits the in-flight run's settle (bounded by ~5s in the
+        //    engine). On success the prior run is fully unwound. On settle
+        //    timeout / onSessionEnd failure cycleSession throws — we
+        //    propagate so callers surface a "restart required" error and
+        //    the prior session stays inspectable. NO destructive cleanup
+        //    has happened yet.
+        //
+        //    Capture the OLD sessionId before the cycle so we can clear
+        //    the prior session's permission state below. cycleSession()
+        //    rotates `runtime.sessionId`; reading it after rotation would
+        //    target the empty new session and leak old approvals.
+        const priorSessionId = runtime.sessionId;
+        await runtime.cycleSession?.();
+
+        // 2. Fire stack-contributed reset hooks. Each preset stack clears
+        //    its own session-scoped state: observability prunes the
+        //    trajectory store, memory wipes the backend, execution aborts
+        //    the bgController, waits for subprocess drain, resets bash
+        //    CWD, rotates the controller, and atomically swaps the task
+        //    board. Run sequentially so failures stay isolated but
+        //    ordered.
+        //
+        //    Collect errors from each hook instead of swallowing them.
+        //    Every sibling still gets a chance to run (one wedged stack
+        //    must not block the others) but a non-empty error list makes
+        //    this function fail closed — the host catches the throw,
+        //    flags the reset as unpersisted, and suppresses downstream
+        //    affordances like the post-quit resume hint. Load-bearing
+        //    for stacks whose state carries cross-boundary invariants:
+        //    e.g. the checkpoint stack prunes the on-disk chain so
+        //    `/rewind` after quit+resume cannot walk back into pre-
+        //    clear snapshots; a swallowed prune failure would report
+        //    `/clear` as successful while leaving the snapshots intact.
+        //
+        //    `resetContext.sessionId` is the LIVE runtime session id
+        //    read at hook-call time. Callers may have invoked
+        //    `runtime.rebindSessionId` between stack activation and
+        //    reset (e.g. `koi tui` rebinds after `/rewind`), so a
+        //    snapshot captured during activation is not safe here.
+        const resetContext = {
+          sessionId: runtime.sessionId as SessionId,
+          truncate,
+        } as const;
+        const hookErrors: unknown[] = [];
+        for (const hook of stackContribution.resetSessionHooks) {
           try {
-            await audit.flush();
-            await audit.close();
-          } catch (err) {
+            await hook(signal, resetContext);
+          } catch (hookErr) {
             console.warn(
-              `[koi/${hostId}] audit shutdown failed: ${
-                err instanceof Error ? err.message : String(err)
+              `[koi/${hostId}] preset stack onResetSession hook failed: ${
+                hookErr instanceof Error ? hookErr.message : String(hookErr)
+              }`,
+            );
+            hookErrors.push(hookErr);
+          }
+        }
+
+        // 3. Clear the OLD session's approval state (always-allow, caches,
+        //    trackers). Not a stack concern — permissions is a core slot.
+        //    Always runs even if a hook failed — approval state is cheap
+        //    to clear and leaving it stale after a partial reset would
+        //    leak cross-session grants.
+        permMw.clearSessionApprovals(priorSessionId);
+
+        // 4. If any hook failed, fail closed. `AggregateError` is the
+        //    standard JS primitive for "multiple errors from sibling
+        //    operations". The host's reset barrier catches this and
+        //    flips `clearPersistFailed` so the post-quit resume hint
+        //    is suppressed / the UI surfaces "reset may be incomplete".
+        if (hookErrors.length > 0) {
+          throw new AggregateError(
+            hookErrors,
+            `resetSessionState: ${hookErrors.length} preset stack reset hook(s) failed. ` +
+              "Runtime state may be partially cleaned — host should flag this reset as unpersisted.",
+          );
+        }
+      },
+      hasActiveBackgroundTasks: () =>
+        stackContribution.activeWorkPredicates.some((predicate) => predicate()),
+      shutdownBackgroundTasks: () => {
+        // Fire every stack's onShutdown hook and OR their "had live
+        // work" return values. Execution stack aborts its bgController
+        // and returns true when bash_background subprocesses were live;
+        // other stacks currently contribute no shutdown hooks.
+        let hadWork = false;
+        for (const hook of stackContribution.shutdownHooks) {
+          try {
+            if (hook()) hadWork = true;
+          } catch (hookErr) {
+            console.warn(
+              `[koi/${hostId}] preset stack onShutdown hook failed: ${
+                hookErr instanceof Error ? hookErr.message : String(hookErr)
               }`,
             );
           }
-        })();
-      }
-      return hadWork;
-    },
-  };
+        }
+        // Manifest-middleware cleanup (audit sink close, etc.) is
+        // deliberately NOT fired here. It runs on runtime.dispose()
+        // AFTER the engine's onSessionEnd hooks complete, so audit
+        // middleware's final `session_end` record is flushed to the
+        // file before the writer is closed. shutdownBackgroundTasks
+        // may be called before dispose (to drain bg work), which
+        // would otherwise close the sink too early. See wrapping of
+        // runtime.dispose above.
+        // configHotReload is factory-bootstrap, not a stack feature —
+        // dispose directly.
+        configHotReload?.dispose();
+        // Flush + close runtime-owned audit sink (opt-in via
+        // config.auditNdjsonPath). Fire-and-forget because
+        // shutdownBackgroundTasks is sync; any error is logged but does
+        // not block shutdown. The process exits after this returns, so
+        // the fire-and-forget close must complete synchronously relative
+        // to the event loop before exit — createNdjsonAuditSink drains
+        // its internal timer queue synchronously on close().
+        if (auditMwForShutdown !== undefined) {
+          const audit = auditMwForShutdown;
+          void (async () => {
+            try {
+              await audit.flush();
+              await audit.close();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        if (auditSqliteMwForShutdown !== undefined) {
+          const sqliteAudit = auditSqliteMwForShutdown;
+          void (async () => {
+            try {
+              await sqliteAudit.flush();
+              await sqliteAudit.close();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] SQLite audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        return hadWork;
+      },
+      getPendingReport: () => pendingReportText,
+    };
+  } catch (assemblyErr) {
+    // Any failure between manifest resolution and the return above
+    // leaks any audit sinks/writers created at resolution time.
+    // Unwind the registered cleanup callbacks before rethrowing so
+    // partially-constructed resources are released.
+    if (!handleOwnershipTransferred) {
+      await unwindManifestMiddlewareHooks();
+    }
+    throw assemblyErr;
+  }
 }
 
 // ---------------------------------------------------------------------------

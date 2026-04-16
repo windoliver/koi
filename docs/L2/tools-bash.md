@@ -77,7 +77,8 @@ Output (truncated):
 4. **Hard-deny on shell-escape ambiguity**: `too-complex` reasons (`word`, `string_content`, `prefilter:line-continuation`) hard-deny regardless of path — the raw-text regex is fooled by the same escapes the walker rejects, AND a user asked about `cat \/etc\/passwd` can't reliably distinguish it from benign `cat /etc/passwd`.
 5. **One-time async init**: `initializeBashAst()` is called inside `execute()` before the classifier reads the cached parser. Idempotent via cached-promise; rejection resets the cache so subsequent callers retry fresh (no permanent DoS from a transient disk error).
 6. **Hardened spawn**: `bash --noprofile --norc -c "set -euo pipefail; <cmd>"`
-7. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`)
+7. **Environment isolation**: minimal env (`PATH`, `HOME`, `LANG`). `SAFE_ENV.HOME` defaults to `/tmp` — callers must supply a validated home via `buildSafeEnv({ home })` to propagate the real home directory. `buildSafeEnv()` validates home is a non-empty absolute path pointing to an existing directory.
+8. **PATH extensions** (#1841): `pathExtensions` on `BashToolConfig` / `BashBackgroundToolConfig` prepends caller-supplied directories to `SAFE_ENV.PATH`. Each entry is validated: must be non-empty, absolute, and cannot contain `:` (prevents POSIX cwd injection via empty PATH segments). The execution preset stack auto-detects common tool paths (`~/.bun/bin`, `/opt/homebrew/bin`, `~/.cargo/bin`, etc.) with per-directory uid ownership checks. HOME-dependent shim paths (nvm, volta, pyenv) are only included in unsandboxed mode.
 8. **AbortSignal wiring**: SIGTERM + SIGKILL escalation after grace period
 9. **Output budget**: configurable `maxOutputBytes` (default 1 MB) prevents OOM
 10. **Destructive-pattern defense-in-depth** (#1721): the classifier includes a `destructive` category covering catastrophic shell ops — `rm -rf` on system paths (`/`, `/etc`, `/usr`, `/bin`, etc.), `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`/`halt`/`poweroff`, `init 0/6`. These fire inside `bash-tool.ts`'s execution path **after** the permission modal, so a session-wide `[a] Always allow Bash` grant does not authorize catastrophic commands. Workspace-scoped ops (`rm -rf /tmp/x`, `rm -rf node_modules`) are intentionally not caught.
@@ -115,7 +116,13 @@ Both tools share `exec.ts` for spawn/drain logic:
 
 - `spawnBash()`: hardened process spawn with `--noprofile --norc`, process-group
   kill, SIGTERM→SIGKILL escalation after 3s grace period, safe minimal env.
+  Accepts optional `env` parameter (defaults to `SAFE_ENV`).
 - `execSandboxed()`: routes execution through a `SandboxAdapter` when provided.
+  Accepts optional `env` parameter (defaults to `SAFE_ENV`).
+- `buildSafeEnv()`: constructs a safe env with optional PATH extensions and
+  validated HOME override. Validates all inputs (absolute paths, no colons,
+  existing directory for HOME). Returns `SAFE_ENV` unchanged when no
+  extensions or overrides.
 - `drainStream()`: shared byte-budget-aware stream draining that prevents pipe-buffer
   deadlock by continuing to drain after budget exhaustion.
 

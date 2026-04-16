@@ -27,10 +27,11 @@ export function SessionsView(): JSX.Element {
       >
         <For each={sessions()}>
           {(session) => (
-            <box flexDirection="column" marginBottom={1}>
+            <>
               <text fg={COLORS.white}>{session.name}</text>
               <text fg={COLORS.dim}>{`${session.messageCount} messages · ${session.preview}`}</text>
-            </box>
+              <text>{" "}</text>
+            </>
           )}
         </For>
       </Show>

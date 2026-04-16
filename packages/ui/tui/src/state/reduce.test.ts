@@ -1,3 +1,4 @@
+// Cache-bust: snapshot regenerated for #1728 plugin summary state field.
 import { describe, expect, test } from "bun:test";
 import { createInitialState } from "./initial.js";
 import { reduce } from "./reduce.js";
@@ -14,8 +15,13 @@ import {
   toolResult,
   userMsg,
 } from "./test-helpers.js";
-import type { TuiAction, TuiAssistantBlock, TuiMessage } from "./types.js";
-import { COMPACT_THRESHOLD, MAX_MESSAGES, MAX_TOOL_RESULT_BYTES } from "./types.js";
+import type { PluginSummary, TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
+import {
+  COMPACT_THRESHOLD,
+  MAX_FINISHED_SPAWNS,
+  MAX_MESSAGES,
+  MAX_TOOL_RESULT_BYTES,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Shared output fixture for "done" events
@@ -1637,7 +1643,9 @@ describe("reduce — message compaction", () => {
 
 describe("createInitialState", () => {
   test("initial state shape", () => {
-    expect(createInitialState()).toMatchSnapshot();
+    // structuredClone strips SolidJS reactive proxy symbols that leak
+    // into snapshots when bunfig.toml preloads the Solid runtime.
+    expect(structuredClone(createInitialState())).toMatchSnapshot();
   });
 });
 
@@ -2642,14 +2650,20 @@ describe("reduce — engine_event — spawn", () => {
     expect(next.activeSpawns.has("child-ok")).toBe(false);
   });
 
-  test("set_spawn_terminal is a no-op when agentId is not in activeSpawns", () => {
+  test("set_spawn_terminal synthesizes record when agentId is not in activeSpawns (#1855)", () => {
     const state = createInitialState();
     const next = reduce(state, {
       kind: "set_spawn_terminal",
       agentId: "unknown",
       outcome: "failed",
+      agentName: "orphan-agent",
+      description: "lost spawn",
     });
-    expect(next).toBe(state);
+    // #1855: no longer a no-op — synthesize a finished record so the spawn is visible
+    expect(next).not.toBe(state);
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("unknown");
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
   });
 
   test("agent_status_changed (running) is a no-op for non-terminal status", () => {
@@ -2682,6 +2696,257 @@ describe("reduce — engine_event — spawn", () => {
       }),
     );
     expect(next).toBe(state);
+  });
+
+  // Regression for #1792: /agents view showed "No active agents" immediately
+  // after successful spawns — no history retained.
+  test("set_spawn_terminal appends SpawnRecord to finishedSpawns with outcome", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-hist-1",
+        agentName: "historian",
+        description: "research the past",
+        status: "running",
+      },
+    ];
+    const startedAt = Date.now() - 1250;
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        ["child-hist-1", { agentName: "historian", description: "research the past", startedAt }],
+      ]),
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-hist-1",
+      outcome: "failed",
+    });
+    expect(next.finishedSpawns.length).toBe(1);
+    const rec = next.finishedSpawns[0];
+    expect(rec).toBeDefined();
+    if (rec) {
+      expect(rec.agentId).toBe("child-hist-1");
+      expect(rec.agentName).toBe("historian");
+      expect(rec.description).toBe("research the past");
+      expect(rec.outcome).toBe("failed");
+      expect(rec.startedAt).toBe(startedAt);
+      expect(rec.durationMs).toBeGreaterThanOrEqual(1250);
+      expect(rec.finishedAt).toBeGreaterThanOrEqual(rec.startedAt);
+    }
+  });
+
+  test("agent_status_changed (terminated) appends SpawnRecord with outcome=complete", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-hist-2",
+        agentName: "worker",
+        description: "Do work",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        [
+          "child-hist-2",
+          { agentName: "worker", description: "Do work", startedAt: Date.now() - 10 },
+        ],
+      ]),
+    });
+    const next = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-hist-2" as import("@koi/core/ecs").AgentId,
+        agentName: "worker",
+        status: "terminated",
+      }),
+    );
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("child-hist-2");
+    expect(next.finishedSpawns[0]?.outcome).toBe("complete");
+  });
+
+  test("finishedSpawns is ordered most-recent-first and capped at MAX_FINISHED_SPAWNS", () => {
+    let state: TuiState = createInitialState();
+    // Push 25 terminal spawns; the buffer should retain the last 20 in
+    // most-recent-first order.
+    for (let i = 0; i < 25; i++) {
+      const id = `child-${i}`;
+      const withBlock: readonly TuiAssistantBlock[] = [
+        {
+          kind: "spawn_call",
+          agentId: id,
+          agentName: `a${i}`,
+          description: `d${i}`,
+          status: "running",
+        },
+      ];
+      state = stateWith({
+        ...state,
+        messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks: withBlock })],
+        activeSpawns: new Map([
+          [id, { agentName: `a${i}`, description: `d${i}`, startedAt: Date.now() - 1 }],
+        ]),
+      });
+      state = reduce(state, { kind: "set_spawn_terminal", agentId: id, outcome: "complete" });
+    }
+    expect(state.finishedSpawns.length).toBe(MAX_FINISHED_SPAWNS);
+    // Newest at index 0, oldest retained at the tail.
+    expect(state.finishedSpawns[0]?.agentId).toBe("child-24");
+    expect(state.finishedSpawns[MAX_FINISHED_SPAWNS - 1]?.agentId).toBe("child-5");
+  });
+
+  // Regression: agent_status_changed(terminated) arrives before set_spawn_terminal(failed).
+  // The authoritative failure outcome must not be lost.
+  test("set_spawn_terminal overwrites agent_status_changed record when it arrives second", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "child-race-1",
+        agentName: "racer",
+        description: "race condition test",
+        status: "running",
+      },
+    ];
+    const startedAt = Date.now() - 500;
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-0", streaming: false, blocks })],
+      activeSpawns: new Map([
+        ["child-race-1", { agentName: "racer", description: "race condition test", startedAt }],
+      ]),
+    });
+
+    // Step 1: generic termination arrives first — records as "complete"
+    const afterGeneric = reduce(
+      state,
+      engineEvent({
+        kind: "agent_status_changed",
+        agentId: "child-race-1" as import("@koi/core/ecs").AgentId,
+        agentName: "racer",
+        status: "terminated",
+      }),
+    );
+    expect(afterGeneric.finishedSpawns.length).toBe(1);
+    expect(afterGeneric.finishedSpawns[0]?.outcome).toBe("complete");
+    expect(afterGeneric.activeSpawns.has("child-race-1")).toBe(false);
+
+    // Step 2: authoritative terminal arrives — must overwrite to "failed"
+    const afterTerminal = reduce(afterGeneric, {
+      kind: "set_spawn_terminal",
+      agentId: "child-race-1",
+      outcome: "failed",
+    });
+    expect(afterTerminal.finishedSpawns.length).toBe(1);
+    expect(afterTerminal.finishedSpawns[0]?.outcome).toBe("failed");
+    expect(afterTerminal.finishedSpawns[0]?.agentId).toBe("child-race-1");
+
+    // Block status should also be updated to "failed"
+    const lastMsg = afterTerminal.messages[afterTerminal.messages.length - 1];
+    expect(lastMsg?.kind).toBe("assistant");
+    if (lastMsg?.kind === "assistant") {
+      const spawnBlock = lastMsg.blocks.find(
+        (b) => b.kind === "spawn_call" && b.agentId === "child-race-1",
+      );
+      expect(spawnBlock).toBeDefined();
+      if (spawnBlock && spawnBlock.kind === "spawn_call") {
+        expect(spawnBlock.status).toBe("failed");
+      }
+    }
+  });
+
+  // Regression: clear_messages must reset finishedSpawns so /agents doesn't
+  // leak stale history into fresh sessions.
+  test("clear_messages resets finishedSpawns to empty", () => {
+    const state = stateWith({
+      finishedSpawns: [
+        {
+          agentId: "child-old",
+          agentName: "stale",
+          description: "should be gone",
+          startedAt: Date.now() - 5000,
+          finishedAt: Date.now() - 4000,
+          durationMs: 1000,
+          outcome: "complete",
+        },
+      ],
+    });
+    expect(state.finishedSpawns.length).toBe(1);
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next.finishedSpawns).toEqual([]);
+  });
+
+  // Regression: set_spawn_terminal corrects finishedSpawns even when the
+  // spawn_call block is no longer in the last assistant message.
+  test("set_spawn_terminal corrects finishedSpawns even when block is missing from messages", () => {
+    // Simulate: agent_status_changed already cleared activeSpawns and recorded
+    // a "complete" entry, then messages were compacted/cleared so the spawn_call
+    // block is gone. set_spawn_terminal(failed) must still correct the record.
+    const state = stateWith({
+      messages: [assistantMsg("some later text", { id: "assistant-1", streaming: false })],
+      finishedSpawns: [
+        {
+          agentId: "child-gone-1",
+          agentName: "ghost",
+          description: "vanished block",
+          startedAt: Date.now() - 2000,
+          finishedAt: Date.now() - 1000,
+          durationMs: 1000,
+          outcome: "complete",
+        },
+      ],
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "child-gone-1",
+      outcome: "failed",
+    });
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
+    expect(next.finishedSpawns[0]?.agentId).toBe("child-gone-1");
+  });
+
+  // Regression #1855: set_spawn_terminal synthesizes a record when spawn_requested
+  // dispatch was lost (callback threw), so the child is still visible in the UI.
+  test("set_spawn_terminal synthesizes record when spawn_requested was lost (#1855)", () => {
+    // No spawn_requested was ever dispatched — activeSpawns and finishedSpawns are empty
+    const state = stateWith({
+      messages: [assistantMsg("thinking...", { id: "assistant-1", streaming: true })],
+    });
+    const next = reduce(state, {
+      kind: "set_spawn_terminal",
+      agentId: "orphan-1",
+      outcome: "failed",
+      agentName: "reviewer",
+      description: "Review src/math.ts",
+    });
+    // Record was synthesized despite no prior spawn_requested
+    expect(next.finishedSpawns.length).toBe(1);
+    expect(next.finishedSpawns[0]?.agentId).toBe("orphan-1");
+    expect(next.finishedSpawns[0]?.agentName).toBe("reviewer");
+    expect(next.finishedSpawns[0]?.outcome).toBe("failed");
+  });
+
+  // clear_messages no-op guard must consider finishedSpawns
+  test("clear_messages is not a no-op when only finishedSpawns is populated", () => {
+    const state = stateWith({
+      finishedSpawns: [
+        {
+          agentId: "child-only",
+          agentName: "lonely",
+          description: "only spawn data",
+          startedAt: Date.now() - 1000,
+          finishedAt: Date.now(),
+          durationMs: 1000,
+          outcome: "complete",
+        },
+      ],
+    });
+    const next = reduce(state, { kind: "clear_messages" });
+    expect(next).not.toBe(state);
+    expect(next.finishedSpawns).toEqual([]);
   });
 });
 
@@ -2835,5 +3100,29 @@ describe("reduce — set_trajectory_data", () => {
     });
     const next = reduce(state, { kind: "set_trajectory_data", steps: [] });
     expect(next.trajectorySteps).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// set_plugin_summary
+// ---------------------------------------------------------------------------
+
+describe("reduce — set_plugin_summary", () => {
+  test("sets pluginSummary when dispatched", () => {
+    const summary: PluginSummary = {
+      loaded: [
+        { name: "hello-plugin", version: "0.0.1", description: "A test plugin", source: "user" },
+      ],
+      errors: [],
+    };
+    const next = reduce(createInitialState(), { kind: "set_plugin_summary", summary });
+    expect(next.pluginSummary).toEqual(summary);
+  });
+
+  test("returns same state when summary is identical reference", () => {
+    const summary: PluginSummary = { loaded: [], errors: [] };
+    const state = { ...createInitialState(), pluginSummary: summary };
+    const next = reduce(state, { kind: "set_plugin_summary", summary });
+    expect(next).toBe(state);
   });
 });

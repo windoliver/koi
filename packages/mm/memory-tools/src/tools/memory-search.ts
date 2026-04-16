@@ -67,7 +67,9 @@ async function executeSearch(
   try {
     const result = await backend.search(filter);
     if (!result.ok) return safeBackendError(result.error, "Failed to search memories");
-    return { results: result.value, count: result.value.length };
+    // Strip filePath — internal implementation detail, not useful to the model (#1725)
+    const results = result.value.map(({ filePath: _, ...rest }) => rest);
+    return { results, count: results.length };
   } catch {
     return safeCatchError("Failed to search memories");
   }

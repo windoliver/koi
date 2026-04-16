@@ -318,8 +318,21 @@ declare function createMcpResolver(connections: readonly McpConnection[], option
  * failed servers as SkippedComponent entries in AttachResult.
  */
 
+/**
+ * Factory that creates auth pseudo-tools for servers requiring OAuth.
+ * Injected by the host (CLI) which owns the OAuth runtime.
+ * Called once per \`AUTH_REQUIRED\` failure during \`attach()\`.
+ */
+type AuthToolFactory = (failure: McpServerFailure) => readonly Tool[];
 interface McpComponentProviderOptions {
     readonly resolver: McpResolver;
+    /**
+     * Optional factory for creating authentication pseudo-tools.
+     * When provided and a server failure has code \`AUTH_REQUIRED\`,
+     * the factory is called to produce Tool objects instead of
+     * recording the server as a skipped component.
+     */
+    readonly createAuthTools?: AuthToolFactory | undefined;
 }
 /**
  * Creates a ComponentProvider that attaches MCP tools to agents.
@@ -621,6 +634,6 @@ declare function mapMcpToolInfoToDescriptor(toolInfo: McpToolInfo, serverName: s
  */
 declare function mapMcpToolToKoi(toolInfo: McpToolInfo, connection: McpConnection, serverName: string): Tool;
 
-export { type AuthChallenge, type AuthServerMetadata, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
+export { type AuthChallenge, type AuthServerMetadata, type AuthToolFactory, type ConnectionDeps, type CreateTransportFn, type CreateTransportOptions, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_MAX_RECONNECT_ATTEMPTS, DEFAULT_TIMEOUT_MS, type ExternalServerConfig, type HttpServerConfig, type KoiMcpTransport, type McpAuthProvider, type McpComponentProviderOptions, type McpConnection, type McpErrorContext, type McpJsonConfig, type McpOAuthConfig, type McpOAuthExternalConfig, type McpResolver, type McpResolverOptions, type McpServerConfig, type McpServerFailure, type McpToolInfo, type McpTransportKind, type NormalizeResult, type OAuthAuthProvider, type OAuthProviderOptions, type OAuthRuntime, type OAuthTokens, type PkceChallenge, type ResolveOptions, type ResolvedMcpServerConfig, type SseServerConfig, type StdioServerConfig, type TokenManager, type TokenManagerOptions, type TransportEvent, type TransportEventListener, type TransportState, type TransportStateListener, type TransportStateMachine, computeServerKey, connectionTimeoutError, createBearerAuthProvider, createMcpComponentProvider, createMcpConnection, createMcpResolver, createOAuthAuthProvider, createPkceChallenge, createTokenManager, createTransport, createTransportStateMachine, discoverAuthServer, expandEnvVars, expandEnvVarsInRecord, externalServerConfigSchema, loadMcpJsonFile, loadMcpJsonString, mapMcpError, mapMcpToolInfoToDescriptor, mapMcpToolToKoi, mcpJsonSchema, namespacedToolName, normalizeMcpServers, normalizeToolSchema, notConnectedError, parseNamespacedToolName, reconnectExhaustedError, resolveServerConfig, sessionExpiredError, validateMcpJson, validateServerName };
 "
 `;

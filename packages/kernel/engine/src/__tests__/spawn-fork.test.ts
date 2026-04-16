@@ -1,14 +1,14 @@
 /**
- * spawn-fork — unit tests for fork recursion guard and maxTurns default.
+ * spawn-fork — unit tests for fork inheritance guard and maxTurns default.
  *
  * Tests the applyForkDenylist() and applyForkMaxTurns() pure helpers directly.
  * These helpers are part of the defense-in-depth enforcement for:
- *   - Recursion guard: fork children cannot use the "Spawn" tool
+ *   - Inheritance guard: fork children cannot INHERIT the parent's Spawn closure
  *   - Turn cap: fork children default to DEFAULT_FORK_MAX_TURNS when maxTurns is unset
  *
- * The primary recursion guard is in create-agent-spawn-fn.ts (!isFork suppresses the
- * Spawn provider entirely). applyForkDenylist is defense-in-depth on the inherited-tool
- * path — it ensures "Spawn" is denied even if the provider check were somehow bypassed.
+ * Fork children CAN spawn via a fresh Spawn provider when `allowNestedSpawn` is set
+ * (bounded by the depth guard). applyForkDenylist prevents inheriting the parent's
+ * closure-bound Spawn tool, which would mis-attribute nested spawns to the ancestor.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -58,13 +58,13 @@ describe("applyForkDenylist", () => {
     expect(base).toEqual(before);
   });
 
-  test("fork children have Spawn denied (contract: no recursive delegation from forks)", () => {
-    // This pins the behavioral contract: fork children MUST NOT receive Spawn.
-    // The primary guard is create-agent-spawn-fn.ts (!isFork suppresses the provider).
-    // This test pins the defense-in-depth layer: the denylist also blocks inheritance.
+  test("fork children have Spawn denied in inheritance path (prevents parent closure leak)", () => {
+    // Fork children CAN spawn via a fresh provider (bounded by depth guard), but they
+    // must NOT inherit the parent's closure-bound Spawn tool — that would mis-attribute
+    // nested spawns to the ancestor. This test pins the inheritance guard.
     const base = new Set<string>();
     const result = applyForkDenylist(base, true);
-    expect(result.has("Spawn")).toBe(true); // contract: Spawn is always denied for forks
+    expect(result.has("Spawn")).toBe(true); // inheritance denied; fresh provider still allowed
   });
 });
 

@@ -81,6 +81,8 @@ interface ScannerConfig {
 | `SSRF` | Requests to cloud metadata, RFC 1918, loopback; IP encoding bypass detection | CRITICAL–HIGH |
 | `SECRETS` | AWS keys, GitHub tokens, Slack tokens, private keys, Anthropic/OpenAI keys | CRITICAL–MEDIUM |
 | `PROMPT_INJECTION` | System override phrases, role hijacking, data extraction, zero-width chars | HIGH–MEDIUM |
+| `FILESYSTEM_ABUSE` (prose) | Destructive shell commands in plain markdown prose: `rm -rf /`, fork bomb, `mkfs /dev/*`, `dd of=/dev/sd*`, `chmod -R 777 /` | HIGH |
+| `EXFILTRATION` (prose) | Credential environment-variable references in prose: `$OPENROUTER_API_KEY`, `$ANTHROPIC_API_KEY`, `$ACCESS_TOKEN`, `${SECRET_KEY}`, etc. | HIGH |
 | `UNPARSEABLE` | Code that fails to parse (partial AST still scanned) | HIGH |
 
 ## Usage Example

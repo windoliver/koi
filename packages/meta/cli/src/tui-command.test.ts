@@ -38,13 +38,17 @@ async function* makeErrorStream(): AsyncGenerator<EngineEvent> {
 // ---------------------------------------------------------------------------
 
 describe("drainEngineStream — happy path", () => {
-  test("sets connected before streaming and disconnected after", async () => {
+  test("sets connected before streaming and stays connected after (#1753)", async () => {
     const store = createStore(createInitialState());
     const batcher = createEventBatcher<EngineEvent>(() => {});
 
     expect(store.getState().connectionStatus).toBe("disconnected");
     await drainEngineStream(makeStream([]), store, batcher);
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    // Regression: drainEngineStream used to unconditionally flip the
+    // status back to "disconnected" in a `finally` block, which made
+    // /doctor report a false-negative connection state after every
+    // successful turn.
+    expect(store.getState().connectionStatus).toBe("connected");
   });
 
   test("text_delta events go directly to store.streamDelta, not batcher", async () => {
@@ -90,6 +94,282 @@ describe("drainEngineStream — happy path", () => {
 
     expect(flushed.length).toBe(2);
     expect((flushed[0] as { kind: string }).kind).toBe("tool_call_start");
+  });
+});
+
+describe("drainEngineStream — catch-time disposal race (#1753 review r6)", () => {
+  test("batcher disposed between catch-time flush and synthetic done reports settled via UI-reset path", async () => {
+    // Regression for round-6 finding: once the pre-abort
+    // batcher.flushSync() succeeded, the old code blindly enqueued a
+    // synthetic `done` and flushed it again. If something disposed
+    // the batcher in that window (e.g. resetConversation() racing
+    // the drain), enqueue+flush became no-ops, the terminal event
+    // never reached the reducer, and the drain still returned
+    // "settled" — producing bookkeeping against half-finalized state.
+    //
+    // After the fix, the catch branch re-checks batcher.isDisposed
+    // and falls through to finalizeAbandonedStream so the caller
+    // sees the same "UI reset" outcome as mid-stream disposal.
+    const store = createStore(createInitialState());
+    let flushCallCount = 0;
+    const batcher = createEventBatcher<EngineEvent>(() => {
+      flushCallCount += 1;
+    });
+    const controller = new AbortController();
+
+    async function* s(): AsyncGenerator<EngineEvent> {
+      yield { kind: "turn_start", turnIndex: 0 } as EngineEvent;
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    // Dispose the batcher as soon as the catch-time flushSync fires
+    // its onFlush callback — simulating a resetConversation() that
+    // ran during that microtask.
+    const origFlush = batcher.flushSync.bind(batcher);
+    batcher.flushSync = (): void => {
+      origFlush();
+      if (flushCallCount >= 1) batcher.dispose();
+    };
+
+    const outcome = await drainEngineStream(s(), store, batcher, controller.signal);
+
+    // #1753 review round 7: the intentional UI reset is reported as
+    // "abandoned" so the submit path skips cost/trajectory bookkeeping
+    // that would otherwise overwrite the freshly reset session.
+    expect(outcome).toBe("abandoned");
+  });
+});
+
+describe("drainEngineStream — DrainOutcome contract (#1753 review r4)", () => {
+  test("returns 'settled' on happy path", async () => {
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const outcome = await drainEngineStream(makeStream([]), store, batcher);
+    expect(outcome).toBe("settled");
+  });
+
+  test("abandoned path publishes 'disconnected' so a reset-race failure cannot leave /doctor green (#1753 review r10)", async () => {
+    // Regression for round-10 finding: the drain's entry dispatch of
+    // `connected` used to persist across every abandoned exit. If
+    // resetConversation() disposes the batcher AND then fails closed
+    // without publishing a replacement connection state, /doctor
+    // could report a healthy engine for a torn-down turn. The drain
+    // now flips to `disconnected` on every abandoned branch so the
+    // UI defaults to the safe state; the caller can re-assert
+    // `connected` once the replacement session is ready.
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    async function* s(): AsyncGenerator<EngineEvent> {
+      yield { kind: "text_delta", delta: "x" } as EngineEvent;
+      batcher.dispose();
+      yield { kind: "text_delta", delta: "y" } as EngineEvent;
+    }
+    const outcome = await drainEngineStream(s(), store, batcher);
+    expect(outcome).toBe("abandoned");
+    expect(store.getState().connectionStatus).toBe("disconnected");
+  });
+
+  test("returns 'abandoned' when batcher is disposed mid-stream (#1753 review r7)", async () => {
+    // Regression: UI resets (/clear, /new, session switch) dispose
+    // the batcher mid-drain. Previously these returned "settled" and
+    // the submit path ran cost/trajectory bookkeeping that republished
+    // stale data into the freshly reset session.
+    const store = createStore(createInitialState());
+    const flushed: EngineEvent[] = [];
+    const batcher = createEventBatcher<EngineEvent>((batch) => {
+      flushed.push(...batch);
+    });
+    async function* s(): AsyncGenerator<EngineEvent> {
+      yield { kind: "text_delta", delta: "before" } as EngineEvent;
+      batcher.dispose();
+      yield { kind: "text_delta", delta: "after" } as EngineEvent;
+    }
+    const outcome = await drainEngineStream(s(), store, batcher);
+    expect(outcome).toBe("abandoned");
+  });
+
+  test("returns 'settled' on user abort with clean finalization", async () => {
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const controller = new AbortController();
+    async function* s(): AsyncGenerator<EngineEvent> {
+      yield* [];
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }
+    const outcome = await drainEngineStream(s(), store, batcher, controller.signal);
+    expect(outcome).toBe("settled");
+  });
+
+  test("returns 'engine_error' on a real ENGINE_ERROR so refresh runs but rewind does not advance (#1753 review r5+r9)", async () => {
+    // Regression:
+    // - r5: rounds 4 initially marked real engine errors as "failed",
+    //   which caused the TUI submit path to skip the only post-turn
+    //   refreshTrajectoryData() call. Clean ENGINE_ERRORs must keep
+    //   their observability refresh.
+    // - r9: rounds 5 over-corrected and used plain "settled", which
+    //   caused the submit path to increment `postClearTurnCount` for
+    //   failed turns even though no rewindable checkpoint was
+    //   produced, allowing `/rewind` to step across a clear boundary.
+    // The fix splits the outcomes: ENGINE_ERROR is "engine_error",
+    // which the submit path treats as refresh-safe but
+    // rewind-unsafe.
+    const store = createStore(createInitialState());
+    const batcher = createEventBatcher<EngineEvent>(() => {});
+    const outcome = await drainEngineStream(makeErrorStream(), store, batcher);
+    expect(outcome).toBe("engine_error");
+    // And the error was still surfaced + connection marked disconnected.
+    expect(store.getState().connectionStatus).toBe("disconnected");
+  });
+
+  test("returns 'failed' when a catch-time flush drops buffered events", async () => {
+    const store = createStore(createInitialState());
+    let callCount = 0;
+    const batcher = createEventBatcher<EngineEvent>(() => {
+      callCount += 1;
+      if (callCount === 1) throw new Error("boom");
+    });
+    const controller = new AbortController();
+    async function* s(): AsyncGenerator<EngineEvent> {
+      yield {
+        kind: "tool_call_start",
+        callId: "c1" as import("@koi/core").ToolCallId,
+        toolName: "Bash",
+      } as EngineEvent;
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }
+    const outcome = await drainEngineStream(s(), store, batcher, controller.signal);
+    expect(outcome).toBe("failed");
+  });
+});
+
+describe("drainEngineStream — fail-closed when pre-abort flush drops buffered events (#1753 review r3)", () => {
+  test("abort-looking error with a first-flush that throws fails closed instead of reporting clean abort", async () => {
+    // Regression for round-3 review finding: EventBatcher.flushSync()
+    // clears its buffer before invoking onFlush, so if the reducer
+    // crashes during the pre-abort flush the buffered events are lost
+    // permanently. Previously drainEngineStream swallowed that throw
+    // and continued into the clean-abort branch, leaving the channel
+    // "connected" and surfacing no error.
+    const store = createStore(createInitialState());
+    // First flush throws (simulates reducer crash on a buffered
+    // tool_call_start); subsequent flushes succeed so the synthetic
+    // abort `done` path would otherwise run cleanly.
+    // let: flips after the first throw to exercise the drop-then-
+    // continue scenario the review reproduced.
+    let callCount = 0;
+    const batcher = createEventBatcher<EngineEvent>(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("reducer exploded on buffered tool_call_start");
+      }
+    });
+    const controller = new AbortController();
+
+    async function* abortStream(): AsyncGenerator<EngineEvent> {
+      yield {
+        kind: "tool_call_start",
+        callId: "c1" as import("@koi/core").ToolCallId,
+        toolName: "Bash",
+      } as EngineEvent;
+      controller.abort();
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    const dispatchSpy = spyOn(store, "dispatch");
+    await drainEngineStream(abortStream(), store, batcher, controller.signal);
+
+    expect(store.getState().connectionStatus).toBe("disconnected");
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBeGreaterThanOrEqual(1);
+    expect((errorCalls[0]?.[0] as { code: string }).code).toBe("ENGINE_ERROR");
+  });
+});
+
+describe("drainEngineStream — fail-closed on abort-path flush throw (#1753 review r2)", () => {
+  test("user abort with a throwing reducer still marks disconnected and surfaces ENGINE_ERROR", async () => {
+    // Regression for round-2 review finding: previously the abort
+    // branch swallowed flush failures from the synthetic `done` flush
+    // and still marked the turn as terminally handled, so a crashing
+    // reducer during abort finalization left /doctor reporting
+    // "connected" with no error visible.
+    const store = createStore(createInitialState());
+    // let: toggled to "poisoned" right before the synthetic done flush
+    // so earlier pre-catch flushes (happy-path lifecycle / swallowed
+    // inner catch flush) do not short-circuit the abort branch.
+    let poisoned = false;
+    const batcher = createEventBatcher<EngineEvent>(() => {
+      if (poisoned) throw new Error("reducer exploded during abort");
+    });
+    const controller = new AbortController();
+
+    async function* abortStream(): AsyncGenerator<EngineEvent> {
+      yield* []; // satisfy useYield
+      controller.abort();
+      poisoned = true;
+      throw new DOMException("aborted", "AbortError");
+    }
+
+    const dispatchSpy = spyOn(store, "dispatch");
+    await drainEngineStream(abortStream(), store, batcher, controller.signal);
+
+    expect(store.getState().connectionStatus).toBe("disconnected");
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBeGreaterThanOrEqual(1);
+    expect((errorCalls[0]?.[0] as { code: string }).code).toBe("ENGINE_ERROR");
+  });
+});
+
+describe("drainEngineStream — fail-closed on flush throw (#1753 review)", () => {
+  test("thrown flush during stream completion still marks disconnected and surfaces ENGINE_ERROR", async () => {
+    // Regression for review finding: previously a `finally` block
+    // always marked the channel disconnected. Removing it to fix
+    // #1753 must not open a hole where a throwing flush (buffered
+    // reducer callback crashes) silently leaves /doctor "connected"
+    // with no error surfaced. The catch branch must fail closed.
+    const store = createStore(createInitialState());
+    const throwOnFlush = createEventBatcher<EngineEvent>(() => {
+      throw new Error("reducer exploded during flush");
+    });
+    const dispatchSpy = spyOn(store, "dispatch");
+
+    // Lifecycle events go through batcher.flushSync() — the throw
+    // from onFlush will bubble out of the try block into the catch.
+    const events: EngineEvent[] = [
+      { kind: "turn_start", turnIndex: 0 } as EngineEvent,
+      {
+        kind: "done",
+        output: {
+          content: [],
+          stopReason: "completed",
+          metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+        },
+      } as EngineEvent,
+    ];
+
+    await drainEngineStream(makeStream(events), store, throwOnFlush);
+
+    expect(store.getState().connectionStatus).toBe("disconnected");
+    const errorCalls = dispatchSpy.mock.calls.filter(
+      (c) =>
+        c[0] !== null &&
+        typeof c[0] === "object" &&
+        (c[0] as { kind: string }).kind === "add_error",
+    );
+    expect(errorCalls.length).toBeGreaterThanOrEqual(1);
+    expect((errorCalls[0]?.[0] as { code: string }).code).toBe("ENGINE_ERROR");
   });
 });
 
@@ -177,9 +457,10 @@ describe("drainEngineStream — abort handling", () => {
 
     await drainEngineStream(abortStream(), store, batcher);
 
-    // drainEngineStream catches all errors (including AbortError) and
-    // dispatches add_error. This is correct behavior — the TUI shows the error.
-    // The key assertion: it doesn't crash and always sets disconnected.
+    // AbortError without a caller-provided AbortSignal falls through to
+    // the generic error branch: the turn failed from drain's point of
+    // view, so it is surfaced as a plain engine error and the channel
+    // is marked disconnected.
     expect(store.getState().connectionStatus).toBe("disconnected");
 
     // Verify we still get an error dispatch (abort is still surfaced)
@@ -192,17 +473,24 @@ describe("drainEngineStream — abort handling", () => {
     expect(errorCalls.length).toBe(1);
   });
 
-  test("sets disconnected status after abort", async () => {
+  test("user-initiated abort keeps the channel connected (#1753)", async () => {
+    // With a caller-provided AbortSignal that is already aborted when
+    // the generator throws AbortError, drainEngineStream treats this as
+    // a clean user cancel — synthesizes a terminal `done` and returns
+    // early without flipping connection status. The LLM connection is
+    // still healthy; the user just pressed Ctrl+C.
     const store = createStore(createInitialState());
     const batcher = createEventBatcher<EngineEvent>(() => {});
+    const controller = new AbortController();
 
     async function* abortStream(): AsyncGenerator<EngineEvent> {
       yield* []; // satisfy useYield lint — generator must have at least one yield point
+      controller.abort();
       throw new DOMException("aborted", "AbortError");
     }
 
-    await drainEngineStream(abortStream(), store, batcher);
-    expect(store.getState().connectionStatus).toBe("disconnected");
+    await drainEngineStream(abortStream(), store, batcher, controller.signal);
+    expect(store.getState().connectionStatus).toBe("connected");
   });
 
   test("streamDelta is called for text_delta before abort", async () => {
@@ -252,6 +540,12 @@ describe("drainEngineStream — abort handling", () => {
     // should be visible. The critical assertion is absence of leaks.
     expect(flushed.some((e) => (e as { delta?: string }).delta === "after-dispose")).toBe(false);
     expect(flushed.some((e) => (e as { delta?: string }).delta === "still-after")).toBe(false);
+    // #1753 review round 10: batcher disposal takes the drain's
+    // abandoned branch, which flips the connection to disconnected
+    // so a subsequent failed resetConversation() cannot leave
+    // /doctor reporting a healthy engine for a torn-down turn.
+    // The replacement session is responsible for re-asserting
+    // "connected" on its first successful turn.
     expect(store.getState().connectionStatus).toBe("disconnected");
   });
 

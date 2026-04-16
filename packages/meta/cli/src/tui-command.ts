@@ -46,6 +46,7 @@ import { sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -54,6 +55,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -74,14 +76,16 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
+import { createAuthInterceptor } from "./auth-interceptor.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
+import { initOtelSdk } from "./otel-bootstrap.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
-import { createKoiRuntime } from "./runtime-factory.js";
+import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
@@ -511,12 +515,45 @@ function finalizeAbandonedStream(
   store.dispatch({ kind: "engine_event", event: syntheticDone });
 }
 
+/**
+ * Outcome of a drainEngineStream run.
+ *
+ * `settled` — the stream finalized into a checkpoint-producing
+ * terminal state: happy path (real `done` event observed) or user
+ * abort with a clean synthetic done. A snapshot is guaranteed to
+ * have been written for this turn, so ALL post-turn bookkeeping is
+ * safe, including rewind-budget increment. The happy path still
+ * increments rewind; the abort path is filtered out by the existing
+ * `!signal.aborted` guard.
+ *
+ * `engine_error` — a real ENGINE_ERROR was cleanly dispatched. Trace
+ * data was captured up to the failure, so observability refresh
+ * (trajectory, audit view) must still run — operators debugging a
+ * provider failure need to see it. But no rewindable checkpoint was
+ * produced, so `postClearTurnCount` MUST NOT advance on this outcome
+ * or `/rewind` can step across a clear/resume boundary. (#1753
+ * review round 9.)
+ *
+ * `abandoned` — `resetConversation()` (or another caller) disposed
+ * the batcher mid-drain, so the turn was intentionally dropped and
+ * the session has already advanced to a new trajectory generation.
+ * Any post-turn bookkeeping at this point would write stale cost /
+ * trajectory data into the freshly reset UI. Callers MUST skip all
+ * bookkeeping on this outcome. (#1753 review round 7.)
+ *
+ * `failed` — the drain hit a fail-closed path: buffered flush threw
+ * and lost events, the finalization handler crashed, or finally had
+ * to fail-close itself. The reducer may be in an inconsistent state
+ * and callers MUST skip post-turn bookkeeping on this outcome.
+ */
+export type DrainOutcome = "settled" | "engine_error" | "abandoned" | "failed";
+
 export async function drainEngineStream(
   stream: AsyncIterable<EngineEvent>,
   store: TuiStore,
   batcher: EventBatcher<EngineEvent>,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<DrainOutcome> {
   store.dispatch({ kind: "set_connection_status", status: "connected" });
   // Track partial usage yielded as `custom` events so an aborted stream
   // (which throws instead of emitting a real terminal `done`) can still
@@ -529,6 +566,19 @@ export async function drainEngineStream(
   // double-count tokens when multiple usage updates arrive.
   let partialInputTokens = 0;
   let partialOutputTokens = 0;
+  // #1753 review: track whether the function has reached one of its
+  // intended terminal states (success, clean UI reset, user abort, or
+  // real ENGINE_ERROR with its own dispatches). If the function exits
+  // with this still false, a flush or dispatch threw somewhere we did
+  // not anticipate — the finally block below must fail closed so
+  // /doctor cannot report a healthy engine for a drain that crashed
+  // during finalization.
+  let terminalStateApplied = false;
+  // #1753 review round 4: distinguish "drain produced a coherent
+  // terminal state" from "finalization failed". Callers gate post-turn
+  // bookkeeping (rewind count, cost delta, trajectory refresh) on
+  // "settled" so a broken drain cannot advance the session.
+  let outcome: DrainOutcome = "failed";
   try {
     // `let` justified: tracks last yield time for frame-rate-aligned yielding
     let lastYieldAt = Date.now();
@@ -544,7 +594,16 @@ export async function drainEngineStream(
       // cleanly; the caller's finally block handles connection-status reset.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
 
       // Debug: log each event kind + timing to stderr when KOI_DEBUG_STREAM=1
@@ -619,7 +678,16 @@ export async function drainEngineStream(
       // check and this enqueue. enqueue is a no-op on disposed batcher.
       if (batcher.isDisposed) {
         finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-        return;
+        // #1753 review round 10: a batcher disposed mid-drain
+        // means the current turn was torn down. A subsequent
+        // resetConversation() may fail closed and never publish
+        // a replacement connection state, so the drain must not
+        // leave the store asserting "connected" for a channel
+        // it no longer owns.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        terminalStateApplied = true;
+        outcome = "abandoned";
+        return outcome;
       }
       if (
         event.kind === "tool_call_start" ||
@@ -644,9 +712,18 @@ export async function drainEngineStream(
     // UI can stay stuck in "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
     batcher.flushSync();
+    // Happy path: the stream completed cleanly and the final flush
+    // landed. The channel stays "connected" and the finally below is a
+    // no-op.
+    terminalStateApplied = true;
+    outcome = "settled";
   } catch (e: unknown) {
     // #1742: the batcher may have been disposed by resetConversation() while
     // the stream was still producing. Finalize the active turn before
@@ -654,9 +731,47 @@ export async function drainEngineStream(
     // with the reducer in idle/error state instead of stuck "processing".
     if (batcher.isDisposed) {
       finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
-      return;
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
     }
-    batcher.flushSync();
+    // Flush buffered pre-error events so the UI reflects what the
+    // stream produced before it threw. If this flush itself throws,
+    // the batcher has already dropped its buffer without applying
+    // it — buffered events are lost permanently. That is exactly the
+    // partial-failure state /doctor must surface, so fail closed here
+    // instead of continuing into the clean-abort branch (#1753 review
+    // round 3).
+    try {
+      batcher.flushSync();
+    } catch (flushErr: unknown) {
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      store.dispatch({
+        kind: "add_error",
+        code: "ENGINE_ERROR",
+        message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+      });
+      terminalStateApplied = true;
+      outcome = "failed";
+      return outcome;
+    }
+    // #1753 review round 6: the batcher may have been disposed in the
+    // window between the per-iteration check and this catch-time flush
+    // (e.g. resetConversation() raced us). After dispose, `enqueue` and
+    // `flushSync` are no-ops — if we still took the abort branch, the
+    // synthetic `done` would be silently dropped and the caller would
+    // see "settled" for a turn that never finalized. Fall back to the
+    // same UI-reset path as the mid-stream dispose detector above.
+    if (batcher.isDisposed) {
+      finalizeAbandonedStream(store, partialInputTokens, partialOutputTokens);
+      // #1753 review round 10: see the mid-loop abandoned branch.
+      store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+      terminalStateApplied = true;
+      outcome = "abandoned";
+      return outcome;
+    }
     // User-initiated aborts must surface as a clean interrupted turn, not
     // a generic engine error. Narrow the translation to: (1) the caller
     // passed a signal, (2) that signal is actually aborted at the time of
@@ -689,17 +804,70 @@ export async function drainEngineStream(
         },
       };
       batcher.enqueue(syntheticDone);
-      batcher.flushSync();
-      return;
+      try {
+        batcher.flushSync();
+        // Synthetic `done` landed: user abort is a clean interrupt,
+        // connection stays connected, finally is a no-op.
+        terminalStateApplied = true;
+        outcome = "settled";
+      } catch (flushErr: unknown) {
+        // #1753 review round 2: if the reducer/store crashes while
+        // finalizing the aborted turn, do NOT let the outer finally
+        // leave the drain looking "settled". Fail closed right here so
+        // /doctor cannot report a healthy engine for an abort that
+        // never actually finalized.
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: flushErr instanceof Error ? flushErr.message : String(flushErr),
+        });
+        terminalStateApplied = true;
+        outcome = "failed";
+      }
+      return outcome;
     }
+    // Real engine failure — the model call errored out. Mark the channel
+    // disconnected so /doctor reflects the true last-known state, and
+    // surface the error toast. (#1753: previously a `finally` block set
+    // disconnected unconditionally, including on the happy path, so
+    // /doctor reported "disconnected" after every successful turn.)
+    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
     store.dispatch({
       kind: "add_error",
       code: "ENGINE_ERROR",
       message: e instanceof Error ? e.message : String(e),
     });
+    terminalStateApplied = true;
+    // #1753 review rounds 5 + 9: a cleanly dispatched ENGINE_ERROR is
+    // a *coherent* terminal state — the error toast is in the store
+    // and trace data was captured up to the failure, so trajectory /
+    // audit refresh must still run. But no rewindable checkpoint was
+    // produced for this turn, so callers gate `postClearTurnCount++`
+    // on `outcome === "settled"` specifically and skip it here.
+    outcome = "engine_error";
   } finally {
-    store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+    // #1753 review: fail-closed cleanup. Reaching this with the flag
+    // still false means a flush or dispatch threw from a path we did
+    // not intercept above — force the channel to "disconnected" and
+    // raise an error toast so /doctor cannot report a healthy engine
+    // for a drain that crashed during finalization.
+    if (!terminalStateApplied) {
+      try {
+        store.dispatch({ kind: "set_connection_status", status: "disconnected" });
+        store.dispatch({
+          kind: "add_error",
+          code: "ENGINE_ERROR",
+          message: "drainEngineStream finalization failed",
+        });
+      } catch {
+        // Store itself is unrecoverable — nothing left we can do
+        // from this frame. The next turn will reinitialize state.
+      }
+      outcome = "failed";
+    }
   }
+  return outcome;
 }
 
 /**
@@ -752,16 +920,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
   // #1777: the manifest filesystem block is parsed+validated by
-  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
-  // `backend: "local"` on the host-default local backend path.
-  // `backend: "nexus"` is rejected here because the TUI permission
-  // middleware and checkpoint stack both assume the filesystem
-  // backend is rooted at `cwd`; approving or rewinding against a
-  // non-cwd backend would break trust-boundary and rollback
-  // invariants.
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports both
+  // `backend: "local"` and `backend: "nexus"` (with or without scope).
+  // For nexus with local-bridge transport, the TUI wires the OAuth auth
+  // loop: createAuthNotificationHandler (outbound) + createAuthInterceptor
+  // (inbound) so the user can complete OAuth flows inline.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  // Full filesystem config for nexus async resolution — stored here so the
+  // async resolve can run just before createKoiRuntime (after TUI setup).
+  let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
+  let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+    // Pass allowOAuthSchemes so the manifest loader skips the local-only
+    // scheme allowlist for this host — the TUI wires the auth loop below.
+    const manifestResult = await loadManifestConfig(flags.manifest, { allowOAuthSchemes: true });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
       process.exit(1);
@@ -773,17 +945,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     if (manifestResult.value.filesystem !== undefined) {
-      if (manifestResult.value.filesystem.backend === "nexus") {
-        process.stderr.write(
-          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
-            "  The TUI permission middleware and checkpoint stack both assume the\n" +
-            "  filesystem backend is rooted at the session cwd, and approving or\n" +
-            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
-            "  rollback invariants. Omit the `filesystem:` block or use\n" +
-            "  `backend: local`.\n",
-        );
-        process.exit(1);
-      }
+      // Store the full config for async resolution before runtime assembly.
       // Apply the `FileSystemConfig.operations` contract's `["read"]`
       // default at the host level. `buildCoreProviders` honors
       // `filesystemOperations` verbatim. NOTE: this gates only the
@@ -792,9 +954,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // mutate the workspace via shell commands. Manifest authors who
       // need a true read-only posture should also omit `execution`
       // from `manifest.stacks`.
+      manifestFilesystemConfig = manifestResult.value.filesystem;
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
+    manifestMiddleware =
+      manifestResult.value.middleware !== undefined
+        ? [...manifestResult.value.middleware]
+        : undefined;
   }
+
+  // Previously this block auto-disabled the spawn preset stack
+  // whenever manifest.middleware was non-empty, because children
+  // inheriting the parent's mutable middleware instances would
+  // corrupt per-session state. The spawn preset stack now reads
+  // a per-child factory from the runtime factory's host bag
+  // (`LATE_PHASE_HOST_KEYS.perChildManifestMiddlewareFactory`)
+  // and re-resolves manifest middleware fresh per spawn, so
+  // children get their own audit queue + lifecycle hooks without
+  // sharing parent state. The auto-disable is no longer needed.
 
   // ---------------------------------------------------------------------------
   // 1. API configuration
@@ -1003,14 +1180,136 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // resumable — matches koi start --until-pass semantics.
   const isLoopMode = flags.untilPass.length > 0;
 
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("tui") : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Auth loop wiring — nexus local-bridge transport (Tasks 11 + 14)
+  // ---------------------------------------------------------------------------
+  //
+  // When the manifest declares a nexus backend with a local-bridge transport,
+  // we resolve the filesystem async so the bridge subprocess starts before the
+  // runtime is assembled. Two auth hooks are wired here:
+  //
+  //   Outbound: `createAuthNotificationHandler(channel)` is subscribed to
+  //   transport notifications so `auth_required` / `auth_progress` /
+  //   `auth_complete` events are forwarded to the TUI channel as chat
+  //   messages.
+  //
+  //   Inbound: `createAuthInterceptor(transport)` is held in
+  //   `tuiAuthInterceptor` and checked in `onSubmit` before the message
+  //   is passed to the engine. When the user pastes a localhost redirect
+  //   URL, the interceptor routes it to `transport.submitAuthCode(...)` and
+  //   swallows the text so it never reaches the model.
+  //
+  // `tuiAuthCorrelationId` tracks the `correlationId` from the most-recent
+  // `auth_required` notification with `mode: "remote"` — forwarded to
+  // `submitAuthCode` so the bridge can correlate the pasted URL to the
+  // pending OAuth flow.
+
+  // Channel adapter for auth notifications — wraps the TUI store so
+  // `createAuthNotificationHandler` can dispatch messages. Only `send` is
+  // meaningful here; the other ChannelAdapter fields are no-ops because this
+  // channel is used only for fire-and-forget auth notification delivery.
+  const tuiChannelForAuth: import("@koi/core").ChannelAdapter = {
+    name: "koi-tui-auth-notifications",
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: false,
+      supportsA2ui: false,
+    },
+    connect: async (): Promise<void> => {},
+    disconnect: async (): Promise<void> => {},
+    send: async (message): Promise<void> => {
+      const textBlock = message.content.find((b) => b.kind === "text");
+      if (textBlock !== undefined && textBlock.kind === "text") {
+        store.dispatch({
+          kind: "add_user_message",
+          id: `auth-notice-${Date.now()}`,
+          blocks: [{ kind: "text", text: textBlock.text }],
+        });
+      }
+    },
+    onMessage: () => () => {},
+  };
+
+  // let: set when nexus local-bridge transport is resolved; undefined otherwise
+  let tuiAuthInterceptor:
+    | ((message: string, correlationId: string | undefined) => { readonly intercepted: boolean })
+    | undefined;
+  // let: updated when auth_required fires with mode:"remote"
+  let tuiAuthCorrelationId: string | undefined;
+
+  // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
+  // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
+  let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+
+  if (manifestFilesystemConfig !== undefined) {
+    const fsResolved = await resolveFileSystemAsync(
+      manifestFilesystemConfig,
+      process.cwd(),
+      createAuthNotificationHandler(tuiChannelForAuth),
+    );
+    resolvedFilesystemBackend = fsResolved.backend;
+    // If `fsResolved.operations` is set, it overrides the manifest-derived ops
+    // (the two should agree, but resolveFileSystemAsync is authoritative).
+    if (fsResolved.operations !== undefined) {
+      manifestFilesystemOps = fsResolved.operations;
+    }
+    // Wire inbound OAuth interceptor when a local-bridge transport is available.
+    if (fsResolved.transport !== undefined) {
+      const transport = fsResolved.transport;
+      // Subscribe extra: track correlationId from auth_required (mode: "remote").
+      transport.subscribe((n) => {
+        if (n.method === "auth_required" && n.params.mode === "remote") {
+          tuiAuthCorrelationId = n.params.correlation_id;
+        } else if (n.method === "auth_complete") {
+          tuiAuthCorrelationId = undefined;
+        }
+      });
+      tuiAuthInterceptor = createAuthInterceptor(transport);
+    }
+  }
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Task 13: when the backend is nexus, prefix fs_* tool approval reason
+  // with "[nexus: <transport>]" so the user can tell at a glance that the
+  // operation targets a remote filesystem, not a local path. The label is
+  // derived from the resolved backend name (e.g. "nexus-local:gdrive://...").
+  const FS_TOOL_NAMES = new Set<string>(["fs_read", "fs_write", "fs_edit"]);
+  const nexusBackendLabel =
+    resolvedFilesystemBackend !== undefined && resolvedFilesystemBackend.name !== "local"
+      ? `[nexus: ${resolvedFilesystemBackend.name.startsWith("nexus-local:") ? "local" : resolvedFilesystemBackend.name}]`
+      : undefined;
+  const labeledApprovalHandler: import("@koi/core").ApprovalHandler =
+    nexusBackendLabel !== undefined
+      ? async (request) => {
+          const labeled = FS_TOOL_NAMES.has(request.toolId)
+            ? { ...request, reason: `${nexusBackendLabel} ${request.reason}` }
+            : request;
+          return permissionBridge.handler(labeled);
+        }
+      : permissionBridge.handler;
+
+  // let: incremented on each /mcp navigation; stale background refreshes drop their dispatch
+  let mcpViewGeneration = 0;
+  // Per-server in-flight auth guard — prevents overlapping OAuth flows
+  const mcpAuthInFlight = new Set<string>();
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
-    approvalHandler: permissionBridge.handler,
+    approvalHandler: labeledApprovalHandler,
+    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
@@ -1035,6 +1334,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Nexus backend (when resolved above) is passed through so the checkpoint
+    // stack stamps the correct backend name and the restore protocol dispatches
+    // compensating ops through the right backend. Omitted when undefined —
+    // factory falls back to the default local backend rooted at cwd.
+    ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
+    // Zone B — manifest-declared middleware. Resolved inside the
+    // factory via the default built-in registry. Runs INSIDE the
+    // security guard so repo-authored content cannot observe raw
+    // traffic before `exfiltration-guard` redacts secrets.
+    //
+    // `allowManifestFileSinks` gates the built-in audit entry
+    // (which opens a file at resolution time). Controlled by the
+    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+    // manifest so repo content cannot flip it.
+    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
     // TUI defaults `backgroundSubprocesses` to `true` (the factory
     // default) because its interactive surface makes long-running
     // jobs observable. A manifest setting wins if provided.
@@ -1042,42 +1357,65 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       ? { backgroundSubprocesses: manifestBackgroundSubprocesses }
       : {}),
     // KOI_OTEL_ENABLED=true opts into OTel span emission for the TUI session.
-    // Requires an OTel SDK initialised before this point (e.g. via OTLP exporter).
-    ...(process.env.KOI_OTEL_ENABLED === "true" ? { otel: true as const } : {}),
+    // initOtelSdk() registers a global TracerProvider so middleware-otel's
+    // trace.getTracer() returns a real tracer. Must be called before createKoiRuntime.
+    ...(otelEnabled ? { otel: true as const } : {}),
     // KOI_AUDIT_NDJSON=<absolute path> opts into security-grade audit
     // logging. Wires @koi/middleware-audit + @koi/audit-sink-ndjson so
     // every model/tool call is recorded as a hash-chained NDJSON entry.
     ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
       ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
       : {}),
+    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
+    // every model/tool call is recorded in a WAL-mode SQLite database.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
+      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+      : {}),
+    // KOI_REPORT_ENABLED=true opts into run-report middleware.
+    // Wires @koi/middleware-report so a RunReport is printed at session end.
+    ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
     onSpawnEvent: (event): void => {
-      if (event.kind === "spawn_requested") {
-        store.dispatch({
-          kind: "engine_event",
-          event: {
-            kind: "spawn_requested",
-            childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
-            request: {
-              agentName: event.agentName,
-              description: event.description,
-              signal: new AbortController().signal,
+      // Defense-in-depth: store.dispatch can throw if the reducer or
+      // SolidJS reactivity hits an edge case. A throwing callback must
+      // not crash the spawn flow — the engine wraps this in safeSpawnEvent
+      // too, but belt-and-braces keeps the TUI safe even if the engine
+      // guard is ever removed.
+      try {
+        if (event.kind === "spawn_requested") {
+          store.dispatch({
+            kind: "engine_event",
+            event: {
+              kind: "spawn_requested",
+              childAgentId: event.agentId as unknown as import("@koi/core").AgentId,
+              request: {
+                agentName: event.agentName,
+                description: event.description,
+                signal: new AbortController().signal,
+              },
             },
-          },
-        });
-      } else {
-        // agent_status_changed: use the dedicated set_spawn_terminal action so the
-        // outcome (complete vs failed) is preserved. The engine's ProcessState only
-        // has a single "terminated" value — routing through that path would collapse
-        // failures into successes.
-        const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
-        store.dispatch({
-          kind: "set_spawn_terminal",
-          agentId: event.agentId,
-          outcome,
-        });
+          });
+        } else {
+          // agent_status_changed: use the dedicated set_spawn_terminal action so the
+          // outcome (complete vs failed) is preserved. The engine's ProcessState only
+          // has a single "terminated" value — routing through that path would collapse
+          // failures into successes.
+          const outcome: "complete" | "failed" = event.status === "failed" ? "failed" : "complete";
+          store.dispatch({
+            kind: "set_spawn_terminal",
+            agentId: event.agentId,
+            outcome,
+            // Pass metadata so the reducer can synthesize a record when
+            // spawn_requested dispatch was lost (#1855).
+            agentName: event.agentName,
+            description: event.description,
+          });
+        }
+      } catch (e: unknown) {
+        console.warn("[koi:tui] onSpawnEvent dispatch failed — spawn UI may be stale", e);
       }
     },
   }).then((handle) => {
@@ -1092,6 +1430,71 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       handle.transcript.push(...resumedMessagesToPrime);
       resumedMessagesToPrime = [];
     }
+    // If /mcp was opened during startup, refresh its live status now
+    // that the runtime is ready.
+    if (store.getState().activeView === "mcp") {
+      void (async () => {
+        mcpViewGeneration += 1;
+        const refreshGen = mcpViewGeneration;
+        const live = await handle.getMcpStatus();
+        if (mcpViewGeneration !== refreshGen) return;
+        store.dispatch({
+          kind: "set_mcp_status",
+          servers: live.map((l) => ({
+            name: l.name,
+            status:
+              l.failureCode === undefined
+                ? ("connected" as const)
+                : l.failureCode === "AUTH_REQUIRED"
+                  ? ("needs-auth" as const)
+                  : ("error" as const),
+            toolCount: l.toolCount,
+            detail: l.failureMessage,
+          })),
+        });
+      })();
+    }
+
+    // Dispatch plugin summary to TUI store (#1728)
+    store.dispatch({
+      kind: "set_plugin_summary",
+      summary: handle.pluginSummary,
+    });
+
+    // Surface plugin status as inline TUI notice (#1728).
+    // UI-only — not injected into the model transcript to avoid a trust
+    // boundary issue (plugin descriptions are untrusted metadata).
+    // Agent awareness comes through the /plugins view and startup log.
+    //
+    // Plugin-derived strings are sanitized to strip ANSI escape sequences
+    // and control characters before display.
+    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+      // Strip ANSI escapes and control characters from untrusted plugin text.
+      // Uses RegExp constructor to avoid Biome noControlCharactersInRegex lint.
+      const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+      const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+      const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
+
+      const parts: string[] = [];
+      if (handle.pluginSummary.loaded.length > 0) {
+        const pluginLines = handle.pluginSummary.loaded
+          .map((p) => `- ${sanitize(p.name)} v${sanitize(p.version)}`)
+          .join("\n");
+        parts.push(`[Loaded Plugins]\n${pluginLines}`);
+      }
+      if (handle.pluginSummary.errors.length > 0) {
+        const errorLines = handle.pluginSummary.errors
+          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+          .join("\n");
+        parts.push(`[Plugin Load Errors]\n${errorLines}`);
+      }
+      store.dispatch({
+        kind: "add_user_message",
+        id: `plugin-status-${String(Date.now())}`,
+        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+      });
+    }
+
     return handle;
   });
 
@@ -1105,7 +1508,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // middleware's finally-block append (which runs on turns that
   // already observed a `done` chunk before the caller aborted) can
   // land AFTER the truncate and silently resurrect pre-clear history.
-  let activeRunPromise: Promise<void> | null = null;
+  let activeRunPromise: Promise<DrainOutcome> | null = null;
 
   // --- Cost bridge: wire @koi/cost-aggregator into TUI lifecycle ---
   // Async: fetches live pricing from models.dev (5s timeout, disk cached).
@@ -1186,6 +1589,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // (see tui-graceful-sigint.ts) so the state matrix — including the
   // #1772 idle-with-background case and its post-double-tap disarm —
   // can be unit-tested without spinning up a TUI or runtime.
+  // let: justified — one-shot latch so repeated Ctrl+C during in-flight
+  // force teardown doesn't spawn overlapping dispose/shutdown sequences.
+  let forceStarted = false;
   const sigintHandler = createTuiSigintHandler({
     hasActiveForegroundStream: () => activeController !== null,
     hasActiveBackgroundTasks: () => runtimeHandle?.hasActiveBackgroundTasks() ?? false,
@@ -1194,24 +1600,83 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       void shutdown(130);
     },
     onForce: () => {
+      // One-shot: subsequent force signals during in-flight teardown
+      // are no-ops. The first force call has its own hard-exit timer
+      // and SIGKILL escalation wait — re-entering would spawn
+      // overlapping dispose sequences. We do NOT process.exit()
+      // immediately here because that would cancel the SIGKILL
+      // escalation window and orphan SIGTERM-resistant subprocesses.
+      if (forceStarted) return;
+      forceStarted = true;
       // Force path: abort the active foreground stream FIRST so no
       // further model/tool work can execute during the exit window,
       // then kick background-task SIGTERM so subprocesses start dying.
       // Without the foreground abort, side-effecting tools could keep
-      // running for the full 3.5s SIGKILL-escalation wait below.
+      // running for the full SIGKILL-escalation wait below.
       abortActiveStream();
+      // Commit exit code immediately so even a natural event-loop drain
+      // (e.g. all ref'd handles gone before dispose settles) reports an
+      // interrupt exit status to the shell / parent process.
+      process.exitCode = 130;
+      // SIGTERM background subprocesses BEFORE dispose so the SIGKILL
+      // escalation timers start early. If dispose wedges and the hard-
+      // exit timer fires, subprocesses have already received SIGTERM
+      // (and possibly SIGKILL). Without this ordering, a wedged dispose
+      // would let the hard-exit fire before subprocesses are ever
+      // signalled — orphaning them.
       const liveTasks = runtimeHandle?.shutdownBackgroundTasks() ?? false;
-      if (liveTasks) {
-        // Wait long enough for the runtime's SIGKILL escalation window
-        // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec) to
-        // fire before this process — and its in-process escalation
-        // timer — dies. Exiting earlier orphans subprocesses that
-        // ignore SIGTERM, exactly the failure mode "force" is supposed
-        // to handle.
-        setTimeout(() => process.exit(130), 3500);
-        return;
-      }
-      process.exit(130);
+      // #1862: call runtime.dispose() so onSessionEnd fires on ALL
+      // middleware (report, audit, etc.) before the process exits.
+      // Best-effort only — force-quit must always terminate, so a
+      // ref'd hard-exit failsafe caps the dispose window at 4s (enough
+      // for onSessionEnd hooks but short enough to feel responsive).
+      // The timer stays ref'd to guarantee exit even if all other
+      // handles are gone.
+      // Total budget for the entire force-quit sequence. Worst case:
+      // dispose internal timeout (5s) + SIGKILL wait (3.5s) + retry
+      // dispose (5s) = ~13.5s. 15s gives the retry room to complete
+      // while still guaranteeing termination. The timer stays ref'd
+      // and is only cleared immediately before process.exit so there
+      // is always a guaranteed escape path.
+      const FORCE_HARD_EXIT_MS = 15_000;
+      const forceDispose = async (): Promise<void> => {
+        const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
+        try {
+          await runtimeHandle?.runtime.dispose();
+        } catch (disposeErr: unknown) {
+          // Log but don't block — force-quit must always terminate.
+          try {
+            process.stderr.write(
+              `[koi tui] force-quit dispose failed: ${
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+              }\n`,
+            );
+          } catch {
+            /* stderr unwritable — best effort */
+          }
+        }
+        if (liveTasks) {
+          // Wait long enough for the runtime's SIGKILL escalation window
+          // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec)
+          // to fire before this process — and its in-process escalation
+          // timer — dies. Exiting earlier orphans subprocesses that
+          // ignore SIGTERM, exactly the failure mode "force" is supposed
+          // to handle.
+          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+          // Retry dispose after SIGKILL escalation — the runtime contract
+          // expects callers to retry after the wedged child has been killed.
+          // If the first dispose failed (poisoned runtime), this retry can
+          // succeed now that the subprocess is dead.
+          try {
+            await runtimeHandle?.runtime.dispose();
+          } catch {
+            // Best-effort — exit regardless.
+          }
+        }
+        clearTimeout(hardExit);
+        process.exit(130);
+      };
+      void forceDispose();
     },
     write: (msg: string) => {
       process.stderr.write(msg);
@@ -1672,9 +2137,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const SHUTDOWN_HARD_EXIT_MS = 8000;
   // let: justified — set once on first shutdown call
   let shutdownStarted = false;
-  const shutdown = async (exitCode = 0): Promise<void> => {
+  const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    if (reason !== undefined) {
+      try {
+        process.stderr.write(`[koi tui] shutdown: ${reason}\n`);
+      } catch {
+        /* stderr unwritable after hangup — best effort */
+      }
+    }
     // Abort the active foreground run FIRST so no further model/tool
     // work can execute during teardown. Without this, long-running or
     // non-cooperative tools can keep mutating local/remote state during
@@ -1739,6 +2211,34 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // rather than propagate an unhandled rejection.
       clearPersistFailed = true;
     }
+    // #1862: dispose the runtime BEFORE appHandle.stop(). After stop(),
+    // Bun's event loop drops pending microtasks when the last "real"
+    // handle goes away — even with our ref'd setInterval keepalive.
+    // Awaiting dispose() here, while the renderer is still alive,
+    // ensures onSessionEnd hooks (report MW, audit MW) complete before
+    // the event loop collapses. The resume hint prints after stop()
+    // releases the alt screen, so it is not affected.
+    if (runtimeHandle !== null) {
+      // Only pay the SIGTERM→SIGKILL escalation wait when we actually
+      // had live subprocesses to drain. Idle exits stay immediate.
+      // SIGKILL_ESCALATION_MS = 3000 in the runtime.
+      if (hadLiveTasks) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
+      }
+      // #1742 loop-2 round 10: dispose now fails closed on settle
+      // timeout. Catch the throw so the rest of shutdown (approval
+      // store close, process.exit) still runs. The hard-exit timer
+      // is the ultimate failsafe if process.exit itself wedges.
+      try {
+        await runtimeHandle.runtime.dispose();
+      } catch (disposeErr) {
+        process.stderr.write(
+          `[koi tui] runtime.dispose failed during shutdown: ${
+            disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
+          }\n`,
+        );
+      }
+    }
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -1791,31 +2291,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // stdout may be closed during abnormal teardown — swallow.
         }
       }
-      batcher.dispose();
+      // #1862: print the buffered run-report after the alt screen is
+      // released so it is visible on the user's terminal. The report
+      // was captured by onReport during runtime.dispose() → onSessionEnd
+      // which runs before appHandle.stop().
       if (runtimeHandle !== null) {
-        // Only pay the SIGTERM→SIGKILL escalation wait when we actually
-        // had live subprocesses to drain. Idle exits stay immediate.
-        // SIGKILL_ESCALATION_MS = 3000 in the runtime.
-        if (hadLiveTasks) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 3_500));
-        }
-        // #1742 loop-2 round 10: dispose now fails closed on settle
-        // timeout. Catch the throw so the rest of shutdown (approval
-        // store close, process.exit) still runs. The hard-exit timer
-        // is the ultimate failsafe if process.exit itself wedges.
-        try {
-          await runtimeHandle.runtime.dispose();
-        } catch (disposeErr) {
-          process.stderr.write(
-            `[koi tui] runtime.dispose failed during shutdown: ${
-              disposeErr instanceof Error ? disposeErr.message : String(disposeErr)
-            }\n`,
-          );
+        const reportText = runtimeHandle.getPendingReport();
+        if (reportText !== undefined) {
+          try {
+            writeSync(2, `[run-report] ${reportText}\n`);
+          } catch {
+            /* stderr unwritable — best effort */
+          }
         }
       }
+      batcher.dispose();
       approvalStore?.close();
+      // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
+      // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
+      // complete before the transport is closed.
+      await resolvedFilesystemBackend?.dispose?.();
     } finally {
       clearInterval(shutdownKeepAlive);
+      // Flush OTel spans before process exit
+      await otelHandle?.shutdown();
       process.exit(exitCode);
     }
   };
@@ -2296,6 +2795,284 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   "File changes made during those turns are not recorded and may remain on disk — " +
                   "verify the workspace state manually if anything looks off.",
               });
+            }
+          })();
+          break;
+        case "nav:mcp": {
+          // Instant — reads config + checks Keychain. No network, no runtime needed.
+          // Increment the generation so background refreshes from prior
+          // opens can't clobber this one's output.
+          mcpViewGeneration += 1;
+          const navGen = mcpViewGeneration;
+          void (async (): Promise<void> => {
+            const { loadMcpJsonFile, computeServerKey } = await import("@koi/mcp");
+            const { createSecureStorage } = await import("@koi/secure-storage");
+            const { join } = await import("node:path");
+            const { homedir } = await import("node:os");
+
+            // Same precedence as runtime: only fall back to home config
+            // when project file is truly absent, not invalid.
+            const projectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+            let config: typeof projectResult | undefined;
+            if (projectResult.ok) {
+              // Valid config (including empty {mcpServers:{}}) takes priority.
+              // Empty project config is an explicit opt-out — do not fall
+              // back to home config.
+              config = projectResult;
+            } else if (projectResult.error.code === "NOT_FOUND") {
+              const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+              if (homeResult.ok) config = homeResult;
+            }
+
+            if (config === undefined || !config.ok || config.value.servers.length === 0) {
+              // No file servers — render empty view immediately, then do
+              // live plugin discovery in the background (may block on
+              // unhealthy plugin servers; must not stall navigation).
+              store.dispatch({ kind: "set_mcp_status", servers: [] });
+              store.dispatch({ kind: "set_view", view: "mcp" });
+              if (runtimeHandle !== null) {
+                void (async () => {
+                  const live = await runtimeHandle?.getMcpStatus();
+                  if (live === undefined) return;
+                  if (mcpViewGeneration !== navGen) return;
+                  store.dispatch({
+                    kind: "set_mcp_status",
+                    servers: live.map((l) => ({
+                      name: l.name,
+                      status:
+                        l.failureCode === undefined
+                          ? ("connected" as const)
+                          : l.failureCode === "AUTH_REQUIRED"
+                            ? ("needs-auth" as const)
+                            : ("error" as const),
+                      toolCount: l.toolCount,
+                      detail: l.failureMessage ?? "plugin",
+                    })),
+                  });
+                })();
+              }
+              return;
+            }
+
+            // Check token storage for each OAuth server — fast Keychain lookup, no network
+            const storage = createSecureStorage();
+            const servers: import("@koi/tui").McpServerInfo[] = await Promise.all(
+              config.value.servers.map(async (s) => {
+                const hasOAuth = s.kind === "http" && s.oauth !== undefined;
+                if (!hasOAuth) {
+                  // Non-OAuth server — assume configured/ready
+                  return {
+                    name: s.name,
+                    status: "connected" as const,
+                    toolCount: 0,
+                    detail: `${s.kind} transport`,
+                  };
+                }
+                // Check Keychain for stored tokens
+                const key = computeServerKey(s.name, s.kind === "http" ? s.url : "");
+                const raw = await storage.get(key);
+                const hasTokens = raw !== undefined;
+                return {
+                  name: s.name,
+                  status: hasTokens ? ("connected" as const) : ("needs-auth" as const),
+                  toolCount: 0,
+                  detail: hasTokens ? "Authenticated (tokens stored)" : undefined,
+                };
+              }),
+            );
+
+            // Show immediately from Keychain state — no blocking.
+            store.dispatch({ kind: "set_mcp_status", servers });
+            store.dispatch({ kind: "set_view", view: "mcp" });
+
+            // Background: enrich with live tool counts if runtime is ready.
+            // Does NOT block the view — user sees instant status, then
+            // tool counts update asynchronously.
+            if (runtimeHandle !== null) {
+              void (async () => {
+                const live = await runtimeHandle?.getMcpStatus();
+                if (live === undefined) return;
+                // Live entries may be source-keyed ("user:jira") when both
+                // user and plugin resolvers exist. Strip the "user:" prefix
+                // when matching against config-backed server names.
+                const stripUserPrefix = (n: string): string =>
+                  n.startsWith("user:") ? n.slice(5) : n;
+                const liveUserMap = new Map<string, (typeof live)[number]>();
+                const liveOther: (typeof live)[number][] = [];
+                for (const l of live) {
+                  if (l.name.startsWith("user:")) {
+                    liveUserMap.set(stripUserPrefix(l.name), l);
+                  } else if (!l.name.includes(":")) {
+                    liveUserMap.set(l.name, l);
+                  } else {
+                    liveOther.push(l);
+                  }
+                }
+                // Enrich config-based entries with live data (match by bare name)
+                const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
+                  const l = liveUserMap.get(entry.name);
+                  if (l === undefined) return entry;
+                  const liveStatus: "connected" | "needs-auth" | "error" =
+                    l.failureCode === undefined
+                      ? "connected"
+                      : l.failureCode === "AUTH_REQUIRED"
+                        ? "needs-auth"
+                        : "error";
+                  return {
+                    name: entry.name,
+                    status: liveStatus,
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? entry.detail,
+                  };
+                });
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                for (const l of liveOther) {
+                  enriched.push({
+                    name: l.name,
+                    status:
+                      l.failureCode === undefined
+                        ? "connected"
+                        : l.failureCode === "AUTH_REQUIRED"
+                          ? "needs-auth"
+                          : "error",
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? "plugin",
+                  });
+                }
+                if (mcpViewGeneration !== navGen) return;
+                store.dispatch({ kind: "set_mcp_status", servers: enriched });
+              })();
+            }
+          })();
+          break;
+        }
+        case "nav:mcp-auth":
+          // Triggered by pressing Enter on a needs-auth server in /mcp view.
+          // args = server name. Runs `koi mcp auth <name>` inline.
+          void (async (): Promise<void> => {
+            const rawName = args.trim();
+            if (rawName === "") return;
+            // Strip source prefix. Plugin-backed servers can't auth here.
+            if (rawName.startsWith("plugin:")) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message:
+                  `Cannot authenticate "${rawName}" from /mcp — plugin-provided ` +
+                  `servers must be authenticated through the plugin's own flow.`,
+              });
+              return;
+            }
+            const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
+            // Per-server guard — prevent overlapping OAuth flows from
+            // double-pressing Enter (callback port conflict, timeout race).
+            if (mcpAuthInFlight.has(serverName)) return;
+            mcpAuthInFlight.add(serverName);
+            try {
+              const { loadMcpJsonFile } = await import("@koi/mcp");
+              const { join } = await import("node:path");
+              const { homedir } = await import("node:os");
+              const { createSecureStorage } = await import("@koi/secure-storage");
+              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
+              const { createOAuthAuthProvider } = await import("@koi/mcp");
+
+              // Find the server config — same precedence as runtime
+              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
+              if (authProjectResult.ok) {
+                authConfigs.push(authProjectResult);
+              } else if (authProjectResult.error.code === "NOT_FOUND") {
+                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+                if (authHomeResult.ok) authConfigs.push(authHomeResult);
+              }
+              let authMatched = false;
+              for (const r of authConfigs) {
+                if (!r.ok) continue;
+                const server = r.value.servers.find((s) => s.name === serverName);
+                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
+                  continue;
+                authMatched = true;
+
+                const storage = createSecureStorage();
+                const runtime = createCliOAuthRuntime();
+                const provider = createOAuthAuthProvider({
+                  serverName: server.name,
+                  serverUrl: server.url,
+                  oauthConfig: server.oauth,
+                  runtime,
+                  storage,
+                });
+
+                const success = await provider.startAuthFlow();
+                if (success) {
+                  // Refresh /mcp view with updated Keychain state
+                  const { computeServerKey: computeKey } = await import("@koi/mcp");
+                  const freshStorage = createSecureStorage();
+                  const refreshed: import("@koi/tui").McpServerInfo[] = await Promise.all(
+                    r.value.servers.map(async (s2) => {
+                      const hasOAuth2 = s2.kind === "http" && s2.oauth !== undefined;
+                      if (!hasOAuth2) {
+                        return {
+                          name: s2.name,
+                          status: "connected" as const,
+                          toolCount: 0,
+                          detail: `${s2.kind} transport`,
+                        };
+                      }
+                      const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
+                      const raw2 = await freshStorage.get(key2);
+                      // The server we just authed shows "auth-pending-restart"
+                      // because the live runtime still has the pseudo-tool only
+                      // — tools won't load until the next TUI launch.
+                      if (s2.name === serverName && raw2 !== undefined) {
+                        return {
+                          name: s2.name,
+                          status: "auth-pending-restart" as const,
+                          toolCount: 0,
+                          detail: "Tokens stored. Restart the TUI to load tools.",
+                        };
+                      }
+                      return {
+                        name: s2.name,
+                        status: (raw2 !== undefined ? "connected" : "needs-auth") as
+                          | "connected"
+                          | "needs-auth",
+                        toolCount: 0,
+                        detail: raw2 !== undefined ? "Authenticated" : undefined,
+                      };
+                    }),
+                  );
+                  store.dispatch({ kind: "set_mcp_status", servers: refreshed });
+                } else {
+                  store.dispatch({
+                    kind: "add_error",
+                    code: "MCP_AUTH",
+                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
+                  });
+                }
+                break;
+              }
+              if (!authMatched) {
+                // Server is listed in /mcp (e.g. plugin-provided) but we
+                // don't have a file-config entry to auth against. Fail
+                // loudly instead of silently doing nothing.
+                store.dispatch({
+                  kind: "add_error",
+                  code: "MCP_AUTH",
+                  message:
+                    `Cannot authenticate "${serverName}" from this view — ` +
+                    `server is not in .mcp.json (likely plugin-provided). ` +
+                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+                });
+              }
+            } catch (e: unknown) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
+              });
+            } finally {
+              mcpAuthInFlight.delete(serverName);
             }
           })();
           break;
@@ -2986,6 +3763,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
+        // Task 11: check OAuth redirect URL interceptor before passing to engine.
+        // When a nexus local-bridge transport is wired and the user pastes a
+        // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
+        // the interceptor routes it to `transport.submitAuthCode(...)` and
+        // returns `{ intercepted: true }` so the text never reaches the model.
+        if (tuiAuthInterceptor !== undefined) {
+          const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
+          if (interceptResult.intercepted) {
+            // Show a brief notice so the user knows the URL was consumed.
+            store.dispatch({
+              kind: "add_user_message",
+              id: `auth-redirect-${Date.now()}`,
+              blocks: [
+                {
+                  kind: "text",
+                  text: "_OAuth redirect URL received — submitting to auth bridge..._",
+                },
+              ],
+            });
+            activeController = null;
+            return;
+          }
+        }
+
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
@@ -3025,13 +3826,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         const costBefore = cm.costUsd;
         const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
         activeRunPromise = drainPromise;
-        await drainPromise;
+        const drainOutcome = await drainPromise;
 
-        // Count the turn for rewind boundary enforcement, but ONLY when
-        // the turn completed uninterrupted. Checkpoint capture only
-        // runs on real engine-complete turns; counting an aborted turn
-        // would let `/rewind 1` walk past the clear boundary.
-        if (rewindBoundaryActive && !controller.signal.aborted) {
+        // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
+        // layered. `abandoned` and `failed` drains cannot advance any
+        // session state, so they return early. `engine_error` is a
+        // coherent terminal state — the error is already in the store
+        // and trace data was captured up to the failure — so cost
+        // delta + trajectory refresh must still run so operators can
+        // diagnose the failure, but the rewind budget must NOT be
+        // advanced (no rewindable checkpoint was produced).
+        if (drainOutcome === "abandoned" || drainOutcome === "failed") {
+          return;
+        }
+
+        // Count the turn for rewind boundary enforcement, but ONLY
+        // when the turn completed uninterrupted AND produced a
+        // real checkpoint. Aborted turns are filtered by the signal
+        // guard; engine-errored turns are filtered by `drainOutcome
+        // === "settled"` because ENGINE_ERRORs return `"engine_error"`
+        // (#1753 review round 9).
+        if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
         }
 
@@ -3130,8 +3945,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSigterm = (): void => {
     void shutdown(143);
   };
+  // SIGHUP (#1750): tmux sends SIGHUP when a session is killed. Without
+  // this handler the TUI survives as an orphan (PPID 1). 129 = 128 + 1.
+  const onProcessSighup = (): void => {
+    void shutdown(129, "SIGHUP received (terminal hangup)");
+  };
+  // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
+  // the fd fires 'close'. Does NOT require resume() (avoids perturbing
+  // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
+  // prevent false triggers in test/pipe contexts. Uses exit code 129
+  // (same as SIGHUP) because PTY close IS a hangup — using a generic
+  // error code would mask the real termination cause for supervisors.
+  // let: justified — set to false when done() resolves, preventing the
+  // stdin close handler from force-exiting during external/host teardown.
+  let tuiRunning = false;
+  const onStdinClose = (): void => {
+    // Only treat stdin close as a hangup when the TUI is actively
+    // running AND no orderly shutdown is in progress. In embedded/test
+    // callers the host may close stdin during normal teardown — that
+    // should not force process.exit(129).
+    if (tuiRunning && !shutdownStarted) {
+      void shutdown(129, "stdin closed (parent terminal gone)");
+    }
+  };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
+  process.once("SIGHUP", onProcessSighup);
+
+  // Register stdin close listener and set tuiRunning BEFORE start() so
+  // PTY teardown during startup is not missed. tuiRunning is cleared in
+  // the finally block to prevent false positives during host teardown.
+  tuiRunning = true;
+  if (process.stdin.isTTY) {
+    process.stdin.once("close", onStdinClose);
+  }
 
   try {
     await result.value.start();
@@ -3148,9 +3995,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal handlers and armed double-tap timers without explicit cleanup.
     await result.value.done();
   } finally {
+    tuiRunning = false;
     sigintHandler.dispose();
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
+    process.removeListener("SIGHUP", onProcessSighup);
+    process.stdin.removeListener("close", onStdinClose);
   }
 }
 

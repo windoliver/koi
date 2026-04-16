@@ -15,6 +15,10 @@
     "@koi/memory": "workspace:*",
     "@koi/token-estimator": "workspace:*"
   },
+  "devDependencies": {
+    "@koi/fs-local": "workspace:*",
+    "@koi/memory-fs": "workspace:*"
+  },
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",

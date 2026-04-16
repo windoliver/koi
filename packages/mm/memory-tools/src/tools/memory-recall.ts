@@ -58,7 +58,9 @@ async function executeRecall(
   try {
     const result = await backend.recall(queryResult.value, options);
     if (!result.ok) return safeBackendError(result.error, "Failed to recall memories");
-    return { results: result.value, count: result.value.length };
+    // Strip filePath — internal implementation detail, not useful to the model (#1725)
+    const results = result.value.map(({ filePath: _, ...rest }) => rest);
+    return { results, count: results.length };
   } catch {
     return safeCatchError("Failed to recall memories");
   }

@@ -64,6 +64,51 @@ export interface CreateAgentSpawnFnOptions {
   /** Inherited middleware (observe-phase: tracing, telemetry). */
   readonly inheritedMiddleware?: readonly KoiMiddleware[] | undefined;
   /**
+   * Optional async factory invoked once per spawned child to
+   * produce fresh middleware instances for that child. Used by
+   * hosts that resolve manifest-declared middleware so each child
+   * gets its own middleware state (its own audit queue, its own
+   * lifecycle hooks) rather than sharing mutable parent state.
+   *
+   * The factory receives a unique `childRunId` per invocation so
+   * sibling spawns from the same parent do not collapse onto one
+   * derived session identifier, plus the parent `agentId` for
+   * correlation.
+   *
+   * Note that we deliberately do NOT pass the parent runtime's
+   * session id here — the engine does not own runtime-session
+   * state and `manifest.name` is a static label that would be
+   * mis-attributed after `/clear` / session rotation / resume.
+   * Hosts that need the live parent session read it themselves
+   * from a captured runtime reference inside the factory body.
+   *
+   * The resulting middleware is appended to the inherited chain
+   * before `systemPrompt` is injected. Return an empty array when
+   * there is nothing to add.
+   */
+  readonly perChildMiddlewareFactory?:
+    | ((childCtx: {
+        readonly childRunId: string;
+        readonly parentAgentId: string;
+        readonly childAgentId: string;
+        readonly childAgentName: string;
+      }) => Promise<{
+        readonly middleware: readonly KoiMiddleware[];
+        /**
+         * Optional unwind callback invoked by the engine when
+         * spawn assembly fails AFTER the factory has already
+         * allocated child-scoped resources (slot acquisition,
+         * governance, child runtime build, delivery setup, or
+         * any synchronous throw from `spawnChildAgent`). The
+         * callback must be idempotent — the happy-path cleanup
+         * is owned by the returned middleware's own lifecycle
+         * hooks (e.g. `onSessionEnd`), so unwind and normal
+         * completion may race; whichever fires first wins.
+         */
+        readonly unwind?: () => Promise<void> | void;
+      }>)
+    | undefined;
+  /**
    * ReportStore for on_demand delivery. Required when spawning agents with
    * `delivery.kind === "on_demand"` — fail-fast if absent to prevent silent drops.
    */
@@ -105,8 +150,15 @@ export interface CreateAgentSpawnFnOptions {
  * 6. Wrap in AgentExecutionContext for identity isolation
  */
 export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn {
-  const { resolver, base, adapter, manifestTemplate, inheritedMiddleware, allowDynamicAgents } =
-    options;
+  const {
+    resolver,
+    base,
+    adapter,
+    manifestTemplate,
+    inheritedMiddleware,
+    allowDynamicAgents,
+    perChildMiddlewareFactory,
+  } = options;
 
   return async (request: SpawnRequest): Promise<SpawnResult> => {
     // Issue 16: fast-path for already-expired deadlines. If the caller set an absolute
@@ -236,20 +288,26 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       }
     }
 
-    // 4. Build middleware: inherited + system prompt injection
-    const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
-    if (systemPrompt !== undefined) {
-      childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
+    // 5. Fail fast on conflicting list fields before any side-effectful work
+    //    (e.g. spawnProviderFactory allocation).
+    const validation = validateSpawnRequest(request);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
     }
 
-    // 5. Map SpawnRequest constraint fields to SpawnChildOptions.
+    // 6. Map SpawnRequest constraint fields to SpawnChildOptions.
     //    Attach a fresh Spawn provider for the child only when ALL of the following hold:
     //      a) The parent manifest's spawn ceiling allows Spawn for children
-    //      b) The child is not a fork (fork recursion guard — forks never delegate further)
+    //      b) The child is not a fork, OR fork with allowNestedSpawn=true
     //      c) The child manifest's selfCeiling includes "Spawn" (or declares no ceiling)
-    //    The selfCeiling check ensures built-ins like coordinator can't receive Spawn from a
-    //    privileged parent even if (a) and (b) would otherwise allow it.
+    //    Fork children default to leaf-worker mode (no Spawn) for backwards compatibility.
+    //    Set allowNestedSpawn=true to enable the coordinator pattern (fork child that
+    //    spawns grandchildren), bounded by the depth guard (maxDepth).
+    //    The fork denylist in spawn-child.ts strips Spawn from the *inherited* tool path
+    //    (preventing closure-bound parent-attribution issues); the fresh provider creates
+    //    a new closure correctly bound to the child.
     const isFork = request.fork === true;
+    const forkAllowsSpawn = !isFork || request.allowNestedSpawn === true;
     const spawnAllowedByManifest = isSpawnAllowedByManifest(
       base.parentAgent.manifest.spawn,
       request.toolDenylist,
@@ -261,15 +319,111 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     const childProviders: ComponentProvider[] =
       options.spawnProviderFactory !== undefined &&
       spawnAllowedByManifest &&
-      !isFork &&
+      forkAllowsSpawn &&
       selfCeilingAllowsSpawn
         ? [options.spawnProviderFactory()]
         : [];
 
-    // Fail fast on conflicting list fields before building child options.
-    const validation = validateSpawnRequest(request);
-    if (!validation.ok) {
-      return { ok: false, error: validation.error };
+    // 6b. Resolve delivery policy: request override > base default > manifest > streaming
+    //     Resolved BEFORE middleware building so the delivery-mode validation
+    //     gate below can reject invalid non-streaming spawns without paying
+    //     for per-child middleware resolution.
+    const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
+
+    // 6c. Delivery-mode sink validation — fail fast before middleware build.
+    //     on_demand needs a ReportStore; deferred needs the parent inbox.
+    //     Without the appropriate sink the child runs but output is silently lost.
+    //     Validated up front so rejected spawns cost zero per-child resources.
+    if (policy.kind === "on_demand" && options.reportStore === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
+          retryable: false,
+        },
+      };
+    }
+    if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "VALIDATION",
+          message:
+            "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
+          retryable: false,
+        },
+      };
+    }
+
+    // 7. Build middleware: inherited + per-child freshly-resolved + system prompt injection
+    //
+    // Per-child middleware resolution is deferred until AFTER every
+    // validation gate above returns ok. Resolution may allocate
+    // resources (audit sinks, timers, etc.) that are otherwise
+    // non-trivial to unwind if the spawn is rejected. Running
+    // resolution only on the happy path means failed spawn
+    // requests cost zero per-child resources.
+    const childMiddleware: KoiMiddleware[] = [...(inheritedMiddleware ?? [])];
+    // Captured here so post-resolution failure paths below can
+    // unwind any child-scoped resources the factory allocated
+    // before `spawnChildAgent` was even attempted. Happy-path
+    // cleanup flows through the middleware's own lifecycle hooks.
+    let perChildUnwind: (() => Promise<void> | void) | undefined;
+    if (perChildMiddlewareFactory !== undefined) {
+      // Unique per-spawn id so sibling children from the same
+      // parent never collapse onto one derived session label.
+      const childRunId = crypto.randomUUID();
+      // Child identity — computed here so the factory can label
+      // session prefixes by the child agent rather than the
+      // parent. Mirror the agentContext construction below so
+      // both identities stay in sync.
+      const childAgentId = request.agentId ?? `spawn-${manifest.name}-${Date.now()}`;
+      // Convert factory throws into a structured SpawnResult error
+      // rather than letting them escape the SpawnFn contract. A
+      // throwing factory would otherwise abort the parent turn and
+      // bypass all the caller machinery that expects the `{ ok:
+      // false, error }` shape for assembly-time spawn failures.
+      try {
+        const factoryResult = await perChildMiddlewareFactory({
+          childRunId,
+          parentAgentId: base.parentAgent.pid.id,
+          childAgentId,
+          childAgentName: manifest.name,
+        });
+        childMiddleware.push(...factoryResult.middleware);
+        perChildUnwind = factoryResult.unwind;
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : String(e);
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `Per-child middleware factory failed for "${request.agentName}": ${message}`,
+            retryable: false,
+          },
+        };
+      }
+    }
+    // Best-effort unwind helper: invoked from every post-resolution
+    // failure path below so partially allocated child-scoped
+    // resources do not leak when spawn assembly fails after the
+    // factory has run. Errors inside unwind are swallowed and
+    // logged; the original failure is what the caller sees.
+    const tryUnwindPerChild = async (): Promise<void> => {
+      if (perChildUnwind === undefined) return;
+      try {
+        await perChildUnwind();
+      } catch (unwindErr) {
+        console.error(
+          `[agent-spawn] per-child unwind failed during spawn-failure cleanup for "${request.agentName}"`,
+          unwindErr,
+        );
+      }
+    };
+    if (systemPrompt !== undefined) {
+      childMiddleware.push(createSystemPromptMiddleware(systemPrompt));
     }
     // Apply DEFAULT_FORK_MAX_TURNS when fork=true and maxTurns not explicitly set.
     const effectiveMaxTurns = applyForkMaxTurns(request.maxTurns, isFork);
@@ -294,9 +448,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
       },
     };
 
-    // 6. Resolve delivery policy: request override > base default > manifest > streaming
-    const policy = resolveDeliveryPolicy(request.delivery ?? base.delivery, manifest.delivery);
-
     // 7. Wrap in agent context for identity isolation
     const agentContext = {
       agentId: request.agentId ?? `spawn-${manifest.name}-${Date.now()}`,
@@ -308,31 +459,6 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
     //     The real output flows to the parent's inbox or ReportStore per policy.
     //     Return immediately — the SpawnResult output will be empty for async delivery.
     if (policy.kind !== "streaming") {
-      // Fail fast: non-streaming delivery requires a sink for the result.
-      // on_demand needs a ReportStore; deferred needs the parent inbox.
-      // Without the appropriate sink the child runs but output is silently lost.
-      if (policy.kind === "on_demand" && options.reportStore === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "on_demand delivery requires a ReportStore — provide it via CreateAgentSpawnFnOptions.reportStore",
-            retryable: false,
-          },
-        };
-      }
-      if (policy.kind === "deferred" && base.parentAgent.component(INBOX) === undefined) {
-        return {
-          ok: false,
-          error: {
-            code: "VALIDATION",
-            message:
-              "deferred delivery requires a parent inbox — the parent agent must have an INBOX component",
-            retryable: false,
-          },
-        };
-      }
       return runWithAgentContext(agentContext, async (): Promise<SpawnResult> => {
         // Wrap spawnChildAgent() so slot-acquisition, governance, assembly, and
         // cancellation failures all return SpawnResult instead of throwing.
@@ -341,6 +467,11 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
         try {
           spawnResult = await spawnChildAgent(spawnOptions);
         } catch (e: unknown) {
+          // spawnChildAgent failed after per-child middleware was
+          // already resolved. Drain the factory's unwind before
+          // surfacing the error so any allocated child-scoped
+          // resources (file handles, timers) are released.
+          await tryUnwindPerChild();
           if (e instanceof KoiRuntimeError) {
             return { ok: false, error: e.toKoiError() };
           }
@@ -458,9 +589,95 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
           } finally {
             spawnResult.handle.terminate();
             await spawnResult.handle.waitForCompletion();
-            await spawnResult.runtime.dispose();
+            // dispose() can reject when manifest-middleware
+            // cleanup (e.g. refcounted audit close, per-child
+            // drain) surfaces accumulated failures. That failure
+            // is security-relevant for the audit integrity
+            // story, so route it to parentInbox instead of
+            // letting it escape as an unhandled rejection.
+            try {
+              await spawnResult.runtime.dispose();
+            } catch (disposeErr: unknown) {
+              const disposeMsg =
+                disposeErr instanceof Error ? disposeErr.message : String(disposeErr);
+              console.error(
+                `[agent-spawn] ${policy.kind} child dispose failed for "${manifest.name}"`,
+                disposeErr,
+              );
+              if (parentInbox !== undefined) {
+                const disposeItem: InboxItem = {
+                  id: `dispose-error-${spawnResult.childPid.id}-${Date.now()}`,
+                  from: spawnResult.childPid.id,
+                  mode: "collect",
+                  content: `[dispose-error] agent "${manifest.name}" (${policy.kind}) cleanup failed: ${disposeMsg}`,
+                  priority: 0,
+                  createdAt: Date.now(),
+                };
+                const accepted = parentInbox.push(disposeItem);
+                if (!accepted) {
+                  console.error(
+                    `[agent-spawn] UNRECOVERABLE: parent inbox full — child dispose error dropped for agent "${manifest.name}" (child: ${spawnResult.childPid.id}). Dispose error: ${disposeMsg}`,
+                  );
+                }
+              }
+              // on_demand consumers read reportStore, not inbox —
+              // write a critical cleanup-failure report under the
+              // same delivery-<childId> session key so a caller
+              // querying the store sees a failed outcome rather
+              // than the optimistic one that may have been
+              // written by deliveryHandle.runChild success.
+              if (policy.kind === "on_demand" && options.reportStore !== undefined) {
+                const childId = spawnResult.childPid.id;
+                void Promise.resolve(
+                  options.reportStore.put({
+                    agentId: childId,
+                    sessionId: `delivery-${childId}` as ReturnType<
+                      typeof import("@koi/core").sessionId
+                    >,
+                    runId: `delivery-${childId}-dispose-error-${Date.now()}` as ReturnType<
+                      typeof import("@koi/core").runId
+                    >,
+                    summary: `[CLEANUP-FAILED] ${disposeMsg}`,
+                    duration: {
+                      startedAt: Date.now(),
+                      completedAt: Date.now(),
+                      durationMs: 0,
+                      totalTurns: 0,
+                      totalActions: 0,
+                      truncated: false,
+                    },
+                    actions: [],
+                    artifacts: [],
+                    issues: [
+                      {
+                        severity: "critical",
+                        message: `child runtime dispose failed; audit trail may be incomplete: ${disposeMsg}`,
+                        turnIndex: 0,
+                        resolved: false,
+                      },
+                    ],
+                    cost: { totalTokens: 0, inputTokens: 0, outputTokens: 0 },
+                    recommendations: [],
+                  }),
+                ).catch((storeErr: unknown) => {
+                  console.error(
+                    `[agent-spawn] failed to write dispose-error report for child "${childId}"`,
+                    storeErr,
+                  );
+                });
+              }
+            }
           }
-        })();
+        })().catch((bgErr: unknown) => {
+          // Terminal safety net: nothing in the async block above
+          // should escape, but if it does, log loudly so the
+          // failure is visible in process output rather than
+          // becoming an unhandled rejection that crashes Node.
+          console.error(
+            `[agent-spawn] UNRECOVERABLE: background ${policy.kind} task for "${manifest.name}" threw past its own error handlers`,
+            bgErr,
+          );
+        });
         // Return the child ID so callers can retrieve on_demand reports.
         // on_demand stores reports under sessionId("delivery-<childId>") —
         // callers can reconstruct the lookup key from this ID.
@@ -482,13 +699,34 @@ export function createAgentSpawnFn(options: CreateAgentSpawnFnOptions): SpawnFn 
             AbortSignal.timeout(Math.max(0, effectiveDeadlineMs - Date.now())),
           ])
         : request.signal;
-    return runWithAgentContext(agentContext, () =>
-      runSpawnedAgent({
-        spawnOptions,
-        input: { kind: "text", text: request.description, signal: streamingSignal },
-        collector: createTextCollector(),
-      }),
-    );
+    // Streaming path: runSpawnedAgent owns the child runtime
+    // lifecycle end-to-end, so happy-path unwind flows through
+    // the middleware's own onSessionEnd. But if runSpawnedAgent
+    // itself throws before the session starts (assembly /
+    // governance failure), the factory's cleanup never fires.
+    // Wrap the call so we unwind on that failure too.
+    // drainHooks in the factory is idempotent, so a successful
+    // run's onSessionEnd will no-op when called again.
+    try {
+      const streamingResult = await runWithAgentContext(agentContext, () =>
+        runSpawnedAgent({
+          spawnOptions,
+          input: { kind: "text", text: request.description, signal: streamingSignal },
+          collector: createTextCollector(),
+        }),
+      );
+      // On a structured ok:false result from runSpawnedAgent the
+      // child session may not have reached onSessionEnd — unwind
+      // defensively. On ok:true the cleanup already ran and
+      // drainHooks's idempotency guard makes this a no-op.
+      if (!streamingResult.ok) {
+        await tryUnwindPerChild();
+      }
+      return streamingResult;
+    } catch (e: unknown) {
+      await tryUnwindPerChild();
+      throw e;
+    }
   };
 }
 

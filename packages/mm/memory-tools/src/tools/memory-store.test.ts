@@ -56,7 +56,9 @@ describe("memory_store execute", () => {
     const result = (await tool.execute(validArgs)) as Record<string, unknown>;
     expect(result.stored).toBe(true);
     expect(result.id).toBe(record.id);
-    expect(result.filePath).toBe(record.filePath);
+    // #1725: filePath removed from output — it was a bare filename that
+    // misled the model about where data was written.
+    expect("filePath" in result).toBe(false);
   });
 
   test("returns dedup warning when duplicate exists", async () => {

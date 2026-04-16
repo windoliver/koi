@@ -10,7 +10,7 @@
 export type { McpAuthProvider } from "./auth.js";
 export { createBearerAuthProvider } from "./auth.js";
 // Component provider
-export type { McpComponentProviderOptions } from "./component-provider.js";
+export type { AuthToolFactory, McpComponentProviderOptions } from "./component-provider.js";
 export { createMcpComponentProvider } from "./component-provider.js";
 // Config — external schema (CC-compatible)
 // Config — internal types (Koi convention)
