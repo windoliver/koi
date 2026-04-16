@@ -300,7 +300,7 @@ describe("createCheckpoint — rewind aborts when required backend unavailable",
         return { ok: true, value: { path, bytesWritten: content.length } };
       },
       edit: () => ({ ok: false, error: { code: "NOT_FOUND", message: "n/a", retryable: false } }),
-      list: () => ({ ok: false, error: { code: "NOT_FOUND", message: "n/a", retryable: false } }),
+      list: () => ({ ok: true, value: { entries: [], truncated: false } }),
       search: () => ({
         ok: false,
         error: { code: "NOT_FOUND", message: "n/a", retryable: false },

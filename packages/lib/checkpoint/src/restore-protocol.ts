@@ -146,6 +146,46 @@ export async function runRestore(input: RestoreInput): Promise<RewindResult> {
     };
   }
 
+  // ---- Step 1c: liveness check for non-local backends ----
+  // Map membership alone is not sufficient — the backend object may exist
+  // but its transport/subprocess may be dead. Probe each required non-local
+  // backend with a lightweight list(".") call before any filesystem writes.
+  if (backends !== undefined) {
+    const requiredBackends = new Set<string>();
+    for (const snap of snapshotsToUndo) {
+      for (const op of snap.data.fileOps) {
+        const b = op.backend;
+        if (b !== undefined && b !== "local") {
+          requiredBackends.add(b);
+        }
+      }
+    }
+    for (const name of requiredBackends) {
+      const backend = backends.get(name);
+      if (backend !== undefined) {
+        try {
+          const probe = backend.list(".");
+          const result = probe instanceof Promise ? await probe : probe;
+          if (!result.ok) {
+            return {
+              ok: false,
+              error: internal(
+                `Rewind aborted — backend '${name}' failed liveness check: ${result.error.message}. No changes were made.`,
+              ),
+            };
+          }
+        } catch (e: unknown) {
+          return {
+            ok: false,
+            error: internal(
+              `Rewind aborted — backend '${name}' is unresponsive. No changes were made.`,
+            ),
+          };
+        }
+      }
+    }
+  }
+
   // ---- Step 2: compute compensating ops ----
   const ops = computeCompensatingOps(snapshotsToUndo);
 

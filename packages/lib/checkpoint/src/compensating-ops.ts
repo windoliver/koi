@@ -268,8 +268,25 @@ async function applyRestoreViaBackend(
   }
 
   try {
-    // FileSystemBackend.write accepts a string; decode bytes as UTF-8.
-    const content = new TextDecoder().decode(bytes);
+    // FileSystemBackend.write accepts a string, not bytes. Decode as UTF-8
+    // but reject content that is not valid UTF-8 — silently decoding binary
+    // content would corrupt the restored file. The local restore path writes
+    // raw bytes directly, so this limitation only affects non-local backends.
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let content: string;
+    try {
+      content = decoder.decode(bytes);
+    } catch {
+      return {
+        kind: "error",
+        path,
+        cause: new Error(
+          `Cannot restore '${path}' through backend '${backend.name}': ` +
+            `file content is not valid UTF-8. Non-text files cannot be restored ` +
+            `through non-local backends (FileSystemBackend.write accepts string only).`,
+        ),
+      };
+    }
     const result = await backend.write(path, content, { createDirectories: true, overwrite: true });
     if (!result.ok) {
       return { kind: "error", path, cause: result.error };

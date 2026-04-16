@@ -193,11 +193,25 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
     // schemes and silently failing on first filesystem call would give a
     // confusing mid-session error. Reject deterministically here.
     if (manifestResult.value.filesystem?.options !== undefined) {
-      const uri = (manifestResult.value.filesystem.options as Record<string, unknown>).mountUri;
+      const opts = manifestResult.value.filesystem.options as Record<string, unknown>;
+      const uri = opts.mountUri;
       if (typeof uri === "string" && /^(gdrive|gmail|s3|dropbox):\/\//i.test(uri)) {
         process.stderr.write(
           `koi start: OAuth-gated mount '${uri.split("://")[0]}://' requires interactive authentication.\n` +
             "Use 'koi tui' for OAuth-gated mounts.\n",
+        );
+        return ExitCode.FAILURE;
+      }
+      // Local bridge transport (options.transport === "local") requires the
+      // async resolver (subprocess lifecycle, auth notification wiring) which
+      // koi start does not support. Reject explicitly rather than letting the
+      // sync resolver fail with a confusing "invalid nexus config" error.
+      if (opts.transport === "local") {
+        process.stderr.write(
+          "koi start: local-bridge transport (transport: local) requires 'koi tui'.\n" +
+            "  The local bridge spawns a subprocess that needs async lifecycle management\n" +
+            "  not available in the non-interactive koi start host.\n" +
+            "  Use 'koi tui' for local-bridge nexus mounts, or switch to transport: http.\n",
         );
         return ExitCode.FAILURE;
       }

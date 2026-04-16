@@ -111,8 +111,8 @@ function makeMockBackend(): {
       error: { code: "NOT_FOUND", message: "not impl", retryable: false } as never,
     }),
     list: () => ({
-      ok: false,
-      error: { code: "NOT_FOUND", message: "not impl", retryable: false } as never,
+      ok: true,
+      value: { entries: [], truncated: false },
     }),
     search: () => ({
       ok: false,
