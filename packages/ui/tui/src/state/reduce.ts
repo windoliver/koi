@@ -750,6 +750,22 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: maybeCompact([...state.messages, implicit]) };
     }
 
+    case "add_info": {
+      // Info notices use their own `kind: "info"` TuiMessage so they don't
+      // shadow assistant lookups. `findLastAssistant` filters by
+      // `kind === "assistant"`, so late tool_result / spawn_end /
+      // agent_status_changed events always resolve to the real in-flight
+      // turn regardless of where the info row lands. Always append — the
+      // notice stays visible as the newest row, and lifecycle routing is
+      // no longer coupled to transcript order.
+      const implicit: TuiMessage = {
+        kind: "info",
+        id: `info-${state.messages.length}`,
+        message: action.message,
+      };
+      return { ...state, messages: maybeCompact([...state.messages, implicit]) };
+    }
+
     case "clear_messages":
       if (
         state.messages.length === 0 &&

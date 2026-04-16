@@ -12,6 +12,10 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
 - **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
 - **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
+- **Slash-command UX fixes (#1851)** — three related changes in `tui-command.ts`:
+  1. **Arg preservation on both dispatch paths.** `handleSlashSubmit` (Enter) and `handleSlashSelect` (Tab/overlay accept) now both receive the full text after `/` via `detectSlashFullText`, so commands like `/rewind 3`, `/export <path>`, `/zoom 2` deliver their args regardless of whether the user pressed Enter or Tab to accept.
+  2. **`dispatchNotice()` now emits `add_info`, not `add_user_message`.** Session lifecycle notices (`/model`, `/cost`, `/tokens`, `/compact`, `/export`, `/zoom`) render as a cyan `InfoMessage` row rather than a synthetic `You:` turn, so they no longer pollute the rewind-hint heuristic or look like user input.
+  3. **Info notices decoupled from lifecycle routing.** `add_info` uses a dedicated `TuiMessage` kind `"info"` (see @koi/tui doc). `findLastAssistant` filters by `kind === "assistant"`, so a slash-command confirmation dispatched while a late `tool_call` / `spawn_call` is still resolving post-`turn_end` is always appended at the end (visible) without stealing ownership of the late event.
 
 ---
 
