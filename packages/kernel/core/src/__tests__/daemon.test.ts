@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SupervisorConfig, WorkerBackend } from "../daemon.js";
-import { validateSupervisorConfig } from "../daemon.js";
+import { validateSupervisorConfig, workerId } from "../daemon.js";
 
 const fakeBackend = {
   kind: "in-process",
@@ -43,5 +43,22 @@ describe("validateSupervisorConfig", () => {
       backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
     });
     expect(result.ok).toBe(true);
+  });
+
+  it("rejects negative shutdownDeadlineMs", () => {
+    const result = validateSupervisorConfig({
+      maxWorkers: 4,
+      shutdownDeadlineMs: -1,
+      backends: { "in-process": fakeBackend } as SupervisorConfig["backends"],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("VALIDATION");
+  });
+});
+
+describe("workerId", () => {
+  it("preserves string value in branded cast", () => {
+    const id = workerId("w-1");
+    expect(id).toBe("w-1");
   });
 });
