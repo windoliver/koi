@@ -1013,6 +1013,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
     }
 
+    case "set_plugin_summary":
+      return action.summary === state.pluginSummary
+        ? state
+        : { ...state, pluginSummary: action.summary };
+
     case "set_cost_breakdown":
       return {
         ...state,

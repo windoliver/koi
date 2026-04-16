@@ -43,7 +43,8 @@ export type TuiView =
   | "agents"
   | "trajectory"
   | "cost"
-  | "mcp";
+  | "mcp"
+  | "plugins";
 
 /** MCP server status entry for the /mcp view. */
 export interface McpServerInfo {
@@ -51,6 +52,27 @@ export interface McpServerInfo {
   readonly status: "connected" | "needs-auth" | "error" | "pending" | "auth-pending-restart";
   readonly toolCount: number;
   readonly detail: string | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Plugin summary (populated once at startup — static for session lifetime)
+// ---------------------------------------------------------------------------
+
+export interface PluginSummaryEntry {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly source: "bundled" | "user" | "managed";
+}
+
+export interface PluginSummaryError {
+  readonly plugin: string;
+  readonly error: string;
+}
+
+export interface PluginSummary {
+  readonly loaded: readonly PluginSummaryEntry[];
+  readonly errors: readonly PluginSummaryError[];
 }
 
 /** Risk level for permission prompts — computed by permissions middleware. */
@@ -384,6 +406,8 @@ export interface TuiState {
   readonly showThinking: boolean;
   /** MCP server status list — populated by host on /mcp command. */
   readonly mcpServers: readonly McpServerInfo[];
+  /** Plugin discovery results — null before runtime reports. */
+  readonly pluginSummary: PluginSummary | null;
   /** Cost breakdown injected by host — null before first cost data push. */
   readonly costBreakdown: CostBreakdown | null;
   /** Token throughput rate (tokens/sec) — null before first data push. */
@@ -605,4 +629,8 @@ export type TuiAction =
       readonly tokenRate?:
         | { readonly inputPerSecond: number; readonly outputPerSecond: number }
         | undefined;
+    }
+  | {
+      readonly kind: "set_plugin_summary";
+      readonly summary: PluginSummary;
     };
