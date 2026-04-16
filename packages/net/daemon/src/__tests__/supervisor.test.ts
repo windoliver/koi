@@ -55,3 +55,50 @@ describe("createSupervisor.start", () => {
     if (started.ok) expect(started.value.backendKind).toBe("subprocess");
   });
 });
+
+describe("supervisor stop/shutdown", () => {
+  it("gracefully stops a worker within deadline", async () => {
+    const { backend, isAlive } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("w1"));
+    const stopped = await supervisorResult.value.stop(workerId("w1"), "test");
+    expect(stopped.ok).toBe(true);
+    expect(isAlive(workerId("w1"))).toBe(false);
+  });
+
+  it("shutdown stops every worker in parallel", async () => {
+    const { backend, liveWorkerCount } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("w1"));
+    await supervisorResult.value.start(makeRequest("w2"));
+    await supervisorResult.value.start(makeRequest("w3"));
+    expect(liveWorkerCount()).toBe(3);
+    await supervisorResult.value.shutdown("SIGTERM");
+    // Small yield to let the crash-watch IIFE observe exit events
+    await new Promise((r) => setTimeout(r, 20));
+    expect(liveWorkerCount()).toBe(0);
+  });
+
+  it("returns NOT_FOUND when stopping an unknown worker", async () => {
+    const { backend } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    const result = await supervisorResult.value.stop(workerId("ghost"), "test");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+});

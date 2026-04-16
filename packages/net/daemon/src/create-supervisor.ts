@@ -139,13 +139,43 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     return { ok: true, value: spawned.value };
   };
 
-  const stop: Supervisor["stop"] = async (_id, _reason) => {
-    // Implemented in Task 6
+  const stop: Supervisor["stop"] = async (id, reason) => {
+    const entry = pool.get(id);
+    if (entry === undefined) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Worker ${id} not tracked`,
+          retryable: false,
+        },
+      };
+    }
+    // Remove from pool before terminating so the crash-watch IIFE's subsequent
+    // `pool.get` returns undefined and no restart is attempted.
+    pool.delete(id);
+
+    // Race graceful terminate against the deadline. If terminate takes longer
+    // than shutdownDeadlineMs, force-kill.
+    let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+    const terminatePromise = entry.backend.terminate(id, reason);
+    const deadlinePromise = new Promise<"deadline">((resolve) => {
+      deadlineHandle = setTimeout(() => resolve("deadline"), config.shutdownDeadlineMs);
+    });
+    const winner = await Promise.race([
+      terminatePromise.then(() => "terminated" as const),
+      deadlinePromise,
+    ]);
+    clearTimeout(deadlineHandle);
+    if (winner === "deadline") {
+      await entry.backend.kill(id);
+    }
     return { ok: true, value: undefined };
   };
 
-  const shutdown: Supervisor["shutdown"] = async (_reason) => {
-    // Implemented in Task 6
+  const shutdown: Supervisor["shutdown"] = async (reason) => {
+    const ids = [...pool.keys()];
+    await Promise.all(ids.map((id) => stop(id, reason)));
     return { ok: true, value: undefined };
   };
 
