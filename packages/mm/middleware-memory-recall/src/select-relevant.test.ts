@@ -57,8 +57,8 @@ describe("parseSelectorResponse", () => {
 describe("buildSelectorPrompt", () => {
   test("includes manifest entries and user message", () => {
     const manifest: readonly MemoryManifestEntry[] = [
-      { name: "Role", description: "User is an engineer", type: "user", filePath: "role.md" },
-      { name: "DB tip", description: "Use integration tests", type: "feedback", filePath: "db.md" },
+      { name: "Role", description: "User is an engineer", type: "user", id: "role.md" },
+      { name: "DB tip", description: "Use integration tests", type: "feedback", id: "db.md" },
     ];
     const prompt = buildSelectorPrompt(manifest, "How do I test the database?", 3);
 
@@ -75,31 +75,31 @@ describe("buildSelectorPrompt", () => {
 
 describe("selectRelevantMemories", () => {
   const manifest: readonly MemoryManifestEntry[] = [
-    { name: "Role", description: "User is a senior engineer", type: "user", filePath: "role.md" },
+    { name: "Role", description: "User is a senior engineer", type: "user", id: "role.md" },
     {
       name: "DB testing",
       description: "Use integration tests for DB",
       type: "feedback",
-      filePath: "db.md",
+      id: "db.md",
     },
-    { name: "Dark mode", description: "User prefers dark mode", type: "user", filePath: "dark.md" },
+    { name: "Dark mode", description: "User prefers dark mode", type: "user", id: "dark.md" },
     {
       name: "Deploy notes",
       description: "Deploy to staging first",
       type: "project",
-      filePath: "deploy.md",
+      id: "deploy.md",
     },
     {
       name: "Slack ref",
       description: "Bugs in #eng-bugs channel",
       type: "reference",
-      filePath: "slack.md",
+      id: "slack.md",
     },
     {
       name: "API key",
       description: "OpenRouter key in .env",
       type: "reference",
-      filePath: "api.md",
+      id: "api.md",
     },
   ];
 

@@ -3236,14 +3236,13 @@ describe("memory-store ATIF trajectory (golden file)", () => {
     );
     expect(toolSteps.length).toBeGreaterThanOrEqual(2); // memory_store + memory_recall (memory_search optional)
 
-    // memory_store output contains stored: true and filePath
+    // memory_store output contains stored: true (filePath removed in #1725)
     const storeStep = toolSteps.find((s) => {
       const content = s.observation?.results?.[0]?.content ?? "";
-      return content.includes("stored") && content.includes("filePath");
+      return content.includes("stored");
     });
     expect(storeStep).toBeDefined();
     const storeContent = storeStep?.observation?.results?.[0]?.content ?? "";
-    expect(storeContent).toContain("testing_approach.md");
     expect(storeContent).toContain('"stored":true');
   });
 
@@ -3643,8 +3642,11 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(memoryStoreSteps.length).toBeGreaterThan(0);
     expect(memoryStoreSteps[0]?.outcome).toBe("success");
     const storeOutput = memoryStoreSteps[0]?.response?.text ?? "";
-    expect(storeOutput).toContain("testing_approach.md");
+    // #1725: filePath removed from memory_store output — only check for stored+id
     expect(storeOutput).toContain('"stored":true');
+    expect(storeOutput).toContain('"id"');
+    // Negative assertion: filePath must NOT appear in live runtime output (#1725)
+    expect(storeOutput).not.toContain('"filePath"');
 
     // In-memory backend correctly populated
     expect(records.size).toBeGreaterThan(0);
@@ -3652,16 +3654,35 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(storedRecord?.name).toBe("testing approach");
     expect(storedRecord?.type).toBe("feedback");
 
-    // Final model turn: derived from tool output, not hardcoded
+    // #1725 regression: memory_recall must succeed and return stored content
+    // through the full runtime pipeline (not just the adapter layer).
+    const memoryRecallSteps = steps.filter(
+      (s) => s.kind === "tool_call" && s.identifier === "memory_recall",
+    );
+    expect(memoryRecallSteps.length).toBeGreaterThan(0);
+    expect(memoryRecallSteps[0]?.outcome).toBe("success");
+    const recallOutput = memoryRecallSteps[0]?.response?.text ?? "";
+    expect(recallOutput).toContain('"count"');
+    expect(recallOutput).toContain('"results"');
+    // The recalled record must include the stored content — proves full round-trip
+    expect(recallOutput).toContain("testing approach");
+    // #1725: filePath must NOT appear in recall output (stripped at tool level)
+    expect(recallOutput).not.toContain('"filePath"');
+
+    // Final model turn: must reference recall-specific content, not just store output
     const modelSteps = steps.filter(
       (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
     );
     expect(modelSteps.length).toBeGreaterThanOrEqual(2); // initial intent + post-tool summary
     const finalModel = modelSteps[modelSteps.length - 1];
     const finalText = finalModel?.response?.text ?? "";
-    // Proves the second turn saw real tool output (not a hardcoded stub)
+    // Proves the final turn saw real tool output — must include recall/memory content
     expect(finalText.length).toBeGreaterThan(0);
-    expect(finalText.includes("testing_approach.md") || finalText.includes("memories")).toBe(true);
+    expect(
+      finalText.includes("testing_approach") ||
+        finalText.includes("memories") ||
+        finalText.includes("Retrieved"),
+    ).toBe(true);
 
     // Hook + MW spans present
     const hookSteps = steps.filter((s) => s.metadata?.type === "hook_execution");

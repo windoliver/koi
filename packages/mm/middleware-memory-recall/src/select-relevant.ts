@@ -18,7 +18,8 @@ export interface MemoryManifestEntry {
   readonly name: string;
   readonly description: string;
   readonly type: string;
-  readonly filePath: string;
+  /** Opaque identifier for the memory record (used for selection, not shown to users). */
+  readonly id: string;
 }
 
 /** Configuration for the relevance selector. */
@@ -42,7 +43,7 @@ const DEFAULT_MAX_FILES = 5;
 /**
  * Builds the selector prompt. The model receives a manifest of memory
  * file descriptions and the user's current message, then returns a
- * JSON array of selected file paths.
+ * JSON array of selected memory IDs.
  */
 export function buildSelectorPrompt(
   manifest: readonly MemoryManifestEntry[],
@@ -50,12 +51,12 @@ export function buildSelectorPrompt(
   maxFiles: number,
 ): string {
   const entries = manifest
-    .map((m) => `- [${m.type}] "${m.name}" (${m.filePath}): ${m.description}`)
+    .map((m) => `- [${m.type}] "${m.name}" (id: ${m.id}): ${m.description}`)
     .join("\n");
 
-  return `You are a memory relevance selector. Given a user's message and a list of stored memory files, pick the ${String(maxFiles)} most relevant files.
+  return `You are a memory relevance selector. Given a user's message and a list of stored memories, pick the ${String(maxFiles)} most relevant ones.
 
-## Memory files
+## Stored memories
 
 ${entries}
 
@@ -65,11 +66,11 @@ ${userMessage}
 
 ## Instructions
 
-Return ONLY a JSON array of file paths for the most relevant memories. Pick at most ${String(maxFiles)}.
+Return ONLY a JSON array of memory IDs for the most relevant memories. Pick at most ${String(maxFiles)}.
 Only include memories you are confident will be helpful based on their name and description.
 If none are relevant, return an empty array.
 
-Example response: ["/path/file1.md", "/path/file2.md"]`;
+Example response: ["mem-1", "mem-2"]`;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ export async function selectRelevantMemories(
 
   // Skip selector if manifest fits within maxFiles — all are relevant
   if (manifest.length <= maxFiles) {
-    return manifest.map((m) => m.filePath);
+    return manifest.map((m) => m.id);
   }
 
   const prompt = buildSelectorPrompt(manifest, userMessage, maxFiles);
@@ -160,9 +161,9 @@ export async function selectRelevantMemories(
 
     const selected = parseSelectorResponse(responseText);
 
-    // Validate paths exist in the manifest
-    const validPaths = new Set(manifest.map((m) => m.filePath));
-    return selected.filter((p) => validPaths.has(p));
+    // Validate IDs exist in the manifest
+    const validIds = new Set(manifest.map((m) => m.id));
+    return selected.filter((id) => validIds.has(id));
   } catch (_e: unknown) {
     console.warn("[memory-recall] relevance selector failed (swallowed)");
     return [];
