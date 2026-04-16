@@ -3326,12 +3326,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // prevent false triggers in test/pipe contexts. Uses exit code 129
   // (same as SIGHUP) because PTY close IS a hangup — using a generic
   // error code would mask the real termination cause for supervisors.
+  // let: justified — set to false when done() resolves, preventing the
+  // stdin close handler from force-exiting during external/host teardown.
+  let tuiRunning = false;
   const onStdinClose = (): void => {
-    // Only treat stdin close as a hangup when no orderly shutdown is
-    // already in progress. In embedded/test callers the host may close
-    // stdin during normal teardown after calling stop() — that should
-    // not force process.exit(129).
-    if (!shutdownStarted) {
+    // Only treat stdin close as a hangup when the TUI is actively
+    // running AND no orderly shutdown is in progress. In embedded/test
+    // callers the host may close stdin during normal teardown — that
+    // should not force process.exit(129).
+    if (tuiRunning && !shutdownStarted) {
       void shutdown(129, "stdin closed (parent terminal gone)");
     }
   };
@@ -3341,6 +3344,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
 
   try {
     await result.value.start();
+    tuiRunning = true;
 
     if (process.stdin.isTTY) {
       process.stdin.once("close", onStdinClose);
@@ -3358,6 +3362,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal handlers and armed double-tap timers without explicit cleanup.
     await result.value.done();
   } finally {
+    tuiRunning = false;
     sigintHandler.dispose();
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
