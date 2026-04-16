@@ -613,8 +613,10 @@ sys.exit(1)
     } catch (e: unknown) {
       expect(e).toBeInstanceOf(Error);
       const err = e as Error;
-      // Must chain the original error as cause
+      // Must chain the original error as cause with the specific startup failure
       expect(err.cause).toBeInstanceOf(Error);
+      const cause = err.cause as Error;
+      expect(cause.message).toMatch(/Stream ended|exited with code/);
     }
   });
 
@@ -647,6 +649,14 @@ sys.exit(1)
       expect(err.message).toContain("bytes]");
       // Should still contain early frames
       expect(err.message).toContain("frame 0:");
+      // Late frames (near 6000) must NOT appear — they exceed the 256KiB cap
+      expect(err.message).not.toContain("frame 5999:");
+      // Verify the stderr portion is bounded near the cap (256KiB + marker overhead)
+      const stderrStart = err.message.indexOf("stderr:");
+      if (stderrStart !== -1) {
+        const stderrPortion = err.message.slice(stderrStart);
+        expect(stderrPortion.length).toBeLessThan(300_000); // 256KiB + some overhead
+      }
     }
   });
 

@@ -556,11 +556,7 @@ async function collectStderr(proc: {
     // Stream error — use whatever we collected so far
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    try {
-      reader.cancel();
-    } catch {
-      // Ignore — best-effort cleanup
-    }
+    await reader.cancel().catch(() => {});
     try {
       reader.releaseLock();
     } catch {
