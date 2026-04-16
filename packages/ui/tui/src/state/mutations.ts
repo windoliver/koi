@@ -103,6 +103,21 @@ function findLastAssistantIdx(messages: readonly TuiMessage[]): number {
   return -1;
 }
 
+/**
+ * Returns true if an assistant message still owns in-flight lifecycle
+ * state (streaming, running tool_call, running spawn_call). `add_info`
+ * uses this to avoid stealing ownership of late events that arrive
+ * after `turn_end` closes the streaming flag.
+ */
+function hasInflightLifecycle(msg: AssistantMessage): boolean {
+  if (msg.streaming) return true;
+  for (const block of msg.blocks) {
+    if (block.kind === "tool_call" && block.status === "running") return true;
+    if (block.kind === "spawn_call" && block.status === "running") return true;
+  }
+  return false;
+}
+
 /** Get the last assistant message, cast to mutable. */
 function lastAssistant(state: Draft): AssistantMessage | undefined {
   const idx = findLastAssistantIdx(state.messages);
@@ -582,12 +597,14 @@ export function mutate(state: Draft, action: TuiAction): void {
         blocks: [infoBlock],
         streaming: false,
       };
-      // Insert BEFORE any active streaming assistant so tool/turn
-      // lifecycle helpers (findLastAssistantIdx) still resolve to the
-      // real in-flight turn rather than this notice.
+      // Insert BEFORE any assistant with in-flight lifecycle state so
+      // later engine events (tool_result, spawn_progress/end,
+      // agent_status_changed) still resolve to the real turn. `streaming`
+      // is not sufficient: `turn_end` closes streaming while long-running
+      // tool_call / spawn_call blocks may still complete later.
       const activeIdx = findLastAssistantIdx(state.messages);
       const active = activeIdx >= 0 ? (state.messages[activeIdx] as AssistantMessage) : undefined;
-      if (active?.streaming) {
+      if (active !== undefined && hasInflightLifecycle(active)) {
         (state.messages as TuiMessage[]).splice(activeIdx, 0, implicit);
       } else {
         (state.messages as TuiMessage[]).push(implicit);

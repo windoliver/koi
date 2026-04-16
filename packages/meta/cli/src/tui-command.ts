@@ -116,19 +116,23 @@ const SESSION_PREVIEW_MAX = 80;
 // ---------------------------------------------------------------------------
 
 /**
- * Dispatch a system-generated notice as a synthetic user message.
+ * Dispatch a system-generated notice as an info block.
  *
  * Used by /model, /cost, /tokens, /compact, /export, /zoom to surface
  * slash-command output in the conversation stream without polluting the
- * runtime.transcript (which feeds the next model call). Mirrors the fork
- * notice pattern (see the `add_user_message` dispatch in the fork flow).
+ * runtime.transcript (which feeds the next model call).
+ *
+ * Previously dispatched via `add_user_message`, which rendered notices
+ * as synthetic `You:` turns and satisfied the rewind-hint heuristic
+ * (`messages.some(m => m.kind === "user")`) even when no rewindable turn
+ * existed. Now routes through `add_info` → `InfoBlock` (cyan neutral
+ * styling), so notices no longer look like user input and don't
+ * falsely enable the rewind hint. The `tag` parameter is retained at
+ * the call site for traceability but unused (add_info ids are derived
+ * from message index).
  */
-function dispatchNotice(store: TuiStore, tag: string, text: string): void {
-  store.dispatch({
-    kind: "add_user_message",
-    id: `${tag}-${Date.now()}`,
-    blocks: [{ kind: "text", text }],
-  });
+function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
+  store.dispatch({ kind: "add_info", message: text });
 }
 
 /** Render a displayable transcript as a Markdown document for /export. */
@@ -1334,8 +1338,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // and control characters before display.
     if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
       // Strip ANSI escapes and control characters from untrusted plugin text.
-      // Uses RegExp constructor to avoid Biome noControlCharactersInRegex lint.
+      // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
+      // literal regex still trip the rule). The `useRegexLiterals` warning on
+      // the next two lines is a false positive in that case.
+      // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
       const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+      // biome-ignore lint/complexity/useRegexLiterals: constructor avoids noControlCharactersInRegex
       const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
       const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
 

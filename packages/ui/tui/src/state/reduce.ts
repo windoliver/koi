@@ -56,6 +56,24 @@ function findLastAssistant(messages: readonly TuiMessage[]): FoundAssistant | un
   return undefined;
 }
 
+/**
+ * Returns true if an assistant message still owns in-flight lifecycle state
+ * that later engine events (tool_result, spawn_progress/end,
+ * agent_status_changed) will resolve via `findLastAssistant`.
+ *
+ * Used by `add_info` to keep notices from stealing ownership of late
+ * events that arrive AFTER `turn_end` has closed the streaming flag but
+ * BEFORE long-running tool / spawn blocks have finished.
+ */
+function hasInflightLifecycle(msg: TuiMessage & { readonly kind: "assistant" }): boolean {
+  if (msg.streaming) return true;
+  for (const block of msg.blocks) {
+    if (block.kind === "tool_call" && block.status === "running") return true;
+    if (block.kind === "spawn_call" && block.status === "running") return true;
+  }
+  return false;
+}
+
 /** Replace a single element in a readonly array by index. */
 function replaceAt<T>(arr: readonly T[], idx: number, value: T): readonly T[] {
   return arr.with(idx, value);
@@ -758,13 +776,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         blocks: [infoBlock],
         streaming: false,
       };
-      // If a streaming assistant is active (mid-turn tool call etc.),
-      // insert the info BEFORE it so findLastAssistant still resolves to
-      // the real in-flight turn. Otherwise later tool_result / turn_end
-      // events would target the info message and strand the real turn's
-      // tool/runningTool state.
+      // Insert BEFORE any assistant message that still owns in-flight
+      // lifecycle state so late engine events still reach the real turn:
+      //   - streaming: true            (turn_end not seen yet)
+      //   - running tool_call blocks   (tool_result may arrive after turn_end)
+      //   - running spawn_call blocks  (spawn_progress/spawn_end may arrive late)
+      // Locating by `findLastAssistant` is load-bearing: the reducer's
+      // later dispatches (tool_result, agent_status_changed, spawn_end)
+      // all resolve their target via that helper, so a notice must never
+      // become the last assistant while any of these are still pending.
       const active = findLastAssistant(state.messages);
-      if (active?.msg.streaming) {
+      if (active && hasInflightLifecycle(active.msg)) {
         const before = state.messages.slice(0, active.idx);
         const after = state.messages.slice(active.idx);
         return { ...state, messages: maybeCompact([...before, implicit, ...after]) };

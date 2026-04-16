@@ -1568,6 +1568,71 @@ describe("reduce — add_info", () => {
       expect(lastAfterInfo.id).toBe("assistant-active");
     }
   });
+
+  // Regression (round 2 Codex): `turn_end` closes `streaming`, but long-
+  // running tool_call blocks may still finish later. If add_info is
+  // dispatched in that window, inserting it AFTER the now-non-streaming
+  // assistant would make findLastAssistant target the notice on the
+  // next tool_result, stranding the original tool as `running` and
+  // leaking `runningToolCount`.
+  test("inserts BEFORE assistant with running tool_call even when streaming=false", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "running" },
+    ];
+    const state = stateWith({
+      // streaming=false simulates post-turn_end state
+      messages: [assistantMsg("", { id: "assistant-post-end", streaming: false, blocks })],
+      runningToolCount: 1,
+    });
+    const next = reduce(state, { kind: "add_info", message: "Goal added" });
+    expect(next.messages).toHaveLength(2);
+    const lastMsg = next.messages[next.messages.length - 1];
+    expect(lastMsg?.kind).toBe("assistant");
+    if (lastMsg?.kind === "assistant") {
+      // Original assistant with running tool stays last — notice was inserted before it
+      expect(lastMsg.id).toBe("assistant-post-end");
+      const tool = lastMsg.blocks.find((b) => b.kind === "tool_call");
+      expect(tool?.kind).toBe("tool_call");
+    }
+  });
+
+  test("inserts BEFORE assistant with running spawn_call (spawn lifecycle safety)", () => {
+    const blocks: readonly TuiAssistantBlock[] = [
+      {
+        kind: "spawn_call",
+        agentId: "agent-1",
+        agentName: "researcher",
+        description: "Research task",
+        status: "running",
+      },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("", { id: "assistant-with-spawn", streaming: false, blocks })],
+    });
+    const next = reduce(state, { kind: "add_info", message: "Info notice" });
+    expect(next.messages).toHaveLength(2);
+    const lastMsg = next.messages[next.messages.length - 1];
+    if (lastMsg?.kind === "assistant") {
+      expect(lastMsg.id).toBe("assistant-with-spawn");
+    }
+  });
+
+  test("appends at end when no assistant has in-flight lifecycle", () => {
+    // All tool_calls complete, no streaming, no running spawn — safe to append at end
+    const blocks: readonly TuiAssistantBlock[] = [
+      { kind: "tool_call", callId: "call-1", toolName: "bash", status: "complete" },
+    ];
+    const state = stateWith({
+      messages: [assistantMsg("done", { id: "assistant-complete", streaming: false, blocks })],
+    });
+    const next = reduce(state, { kind: "add_info", message: "Info notice" });
+    expect(next.messages).toHaveLength(2);
+    // Notice appended at end since no in-flight lifecycle
+    const lastMsg = next.messages[next.messages.length - 1];
+    if (lastMsg?.kind === "assistant") {
+      expect(lastMsg.blocks[0]?.kind).toBe("info");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
