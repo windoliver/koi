@@ -6,8 +6,8 @@
  * assembly.
  */
 
-import type { ComponentProvider, KoiError, Result, Tool } from "@koi/core";
-import { COMPONENT_PRIORITY } from "@koi/core";
+import type { ComponentProvider, KoiError, Result, SkillComponent, Tool } from "@koi/core";
+import { COMPONENT_PRIORITY, isAttachResult, skillToken } from "@koi/core";
 import { createToolComponentProvider } from "@koi/tools-core";
 import {
   DEFAULT_PREFIX,
@@ -15,11 +15,15 @@ import {
   DEFAULT_SEARCH_LIMIT,
   validateMemoryDir,
 } from "./constants.js";
+import { generateMemoryToolSkillContent } from "./skill.js";
 import { createMemoryDeleteTool } from "./tools/memory-delete.js";
 import { createMemoryRecallTool } from "./tools/memory-recall.js";
 import { createMemorySearchTool } from "./tools/memory-search.js";
 import { createMemoryStoreTool } from "./tools/memory-store.js";
 import type { MemoryToolProviderConfig } from "./types.js";
+
+/** Skill component name for memory tool behavioral guidance. */
+const MEMORY_SKILL_NAME = "memory" as const;
 
 /**
  * Create a ComponentProvider that attaches all 4 memory tools to agents.
@@ -54,11 +58,32 @@ export function createMemoryToolProvider(
 
   const tools: readonly Tool[] = results.flatMap((r) => (r.ok ? [r.value] : []));
 
-  const provider = createToolComponentProvider({
+  const inner = createToolComponentProvider({
     name: `${prefix}-tools`,
     tools,
     priority,
   });
+
+  const skill: SkillComponent = {
+    name: MEMORY_SKILL_NAME,
+    description:
+      "When and how to use memory tools — storage types, recall strategy, decay tiers, and best practices",
+    content: generateMemoryToolSkillContent({ prefix, baseDir: memoryDir }),
+    tags: ["memory", "best-practices"],
+  };
+
+  const provider: ComponentProvider = {
+    name: inner.name,
+    ...(inner.priority !== undefined ? { priority: inner.priority } : {}),
+    async attach(agent) {
+      const result = await inner.attach(agent);
+      const components = isAttachResult(result) ? result.components : result;
+      const merged = new Map(components);
+      merged.set(skillToken(MEMORY_SKILL_NAME) as string, skill);
+      const skipped = isAttachResult(result) ? result.skipped : [];
+      return { components: merged, skipped };
+    },
+  };
 
   return { ok: true, value: provider };
 }

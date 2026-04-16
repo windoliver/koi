@@ -917,6 +917,157 @@ describe("Golden: @koi/model-router", () => {
 
 import { createOtelMiddleware } from "@koi/middleware-otel";
 
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-memory-recall (2 queries)
+// ---------------------------------------------------------------------------
+
+import type {
+  FileListResult,
+  FileReadResult,
+  FileSystemBackend,
+  KoiError,
+  Result,
+} from "@koi/core";
+import { createMemoryRecallMiddleware } from "@koi/middleware-memory-recall";
+
+function makeRecallMockFs(
+  files: ReadonlyArray<{
+    readonly path: string;
+    readonly content: string;
+    readonly modifiedAt: number;
+  }>,
+): FileSystemBackend {
+  return {
+    name: "golden-mock-fs",
+    read(path): Result<FileReadResult, KoiError> {
+      const file = files.find((f) => f.path === path);
+      if (!file)
+        return { ok: false, error: { code: "NOT_FOUND", message: "not found", retryable: false } };
+      return {
+        ok: true,
+        value: { content: file.content, path: file.path, size: file.content.length },
+      };
+    },
+    list(path): Result<FileListResult, KoiError> {
+      const entries = files
+        .filter((f) => f.path.startsWith(path) && f.path.endsWith(".md"))
+        .map((f) => ({
+          path: f.path,
+          kind: "file" as const,
+          size: f.content.length,
+          modifiedAt: f.modifiedAt,
+        }));
+      return { ok: true, value: { entries, truncated: false } };
+    },
+    write() {
+      return {
+        ok: false,
+        error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+      };
+    },
+    edit() {
+      return {
+        ok: false,
+        error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+      };
+    },
+    search() {
+      return {
+        ok: false,
+        error: { code: "INTERNAL" as const, message: "not implemented", retryable: false },
+      };
+    },
+  };
+}
+
+describe("Golden: @koi/middleware-memory-recall", () => {
+  test("frozen snapshot: recalls memories once and injects into model calls", async () => {
+    const now = Date.now();
+    const fs = makeRecallMockFs([
+      {
+        path: "/mem/role.md",
+        content: "---\nname: Role\ndescription: user role\ntype: user\n---\n\nSenior engineer",
+        modifiedAt: now,
+      },
+    ]);
+    const mw = createMemoryRecallMiddleware({ fs, recall: { memoryDir: "/mem", now } });
+
+    expect(mw.name).toBe("koi:memory-recall");
+    expect(mw.priority).toBe(310);
+
+    let captured: ModelRequest | undefined;
+    const next = async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return {
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: "stop",
+      };
+    };
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [{ content: [{ kind: "text", text: "hi" }], senderId: "user", timestamp: now }] },
+      next,
+    );
+
+    expect(captured).toBeDefined();
+    if (captured === undefined) return;
+    expect(captured.messages.length).toBe(2);
+    expect(captured.messages[0]?.senderId).toBe("system:memory-recall");
+    const text = (
+      captured.messages[0]?.content[0] as { readonly kind: "text"; readonly text: string }
+    )?.text;
+    expect(text).toContain("Senior engineer");
+  });
+
+  test("graceful degradation: empty dir produces no injection", async () => {
+    const fs = makeRecallMockFs([]);
+    const mw = createMemoryRecallMiddleware({ fs, recall: { memoryDir: "/mem" } });
+
+    let captured: ModelRequest | undefined;
+    const next = async (req: ModelRequest): Promise<ModelResponse> => {
+      captured = req;
+      return {
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        stopReason: "stop",
+      };
+    };
+    const ctx = {
+      session: { agentId: "a", sessionId: "s" as never, runId: "r" as never, metadata: {} },
+      turnIndex: 0,
+      turnId: "t" as never,
+      messages: [],
+      metadata: {},
+    };
+
+    await mw.wrapModelCall?.(
+      ctx,
+      {
+        messages: [
+          { content: [{ kind: "text", text: "hi" }], senderId: "user", timestamp: Date.now() },
+        ],
+      },
+      next,
+    );
+
+    if (captured === undefined) return;
+    expect(captured.messages.length).toBe(1);
+    expect(captured.messages[0]?.senderId).toBe("user");
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
+  });
+});
+
 describe("Golden: @koi/middleware-otel", () => {
   test("createOtelMiddleware returns valid handle with correct middleware shape", () => {
     const handle = createOtelMiddleware();

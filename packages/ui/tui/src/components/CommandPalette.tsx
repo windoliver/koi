@@ -14,7 +14,7 @@
 import type { KeyEvent } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
-import { createMemo, createEffect, createSignal, useContext } from "solid-js";
+import { createMemo, createEffect, createSignal, Show, useContext } from "solid-js";
 import {
   COMMAND_DEFINITIONS,
   filterCommands,
@@ -169,7 +169,9 @@ export function CommandPalette(props: CommandPaletteProps): JSX.Element {
       <box paddingLeft={1} paddingBottom={1}>
         <text fg={COLORS.textMuted}>{"/ "}</text>
         <text fg={COLORS.white}>{query()}</text>
-        {props.focused ? <text fg={COLORS.blueAccent}>{"▌"}</text> : null}
+        <Show when={props.focused}>
+          <text fg={COLORS.blueAccent}>{"▌"}</text>
+        </Show>
       </box>
 
       {/* Command list */}

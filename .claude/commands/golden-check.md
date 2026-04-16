@@ -93,7 +93,7 @@ After recording, validate the trajectory files:
    - No error steps unless the query is designed to test errors
 3. Run the test suite to verify assertions pass:
    ```bash
-   bun test --filter=@koi/runtime packages/meta/runtime/src/__tests__/golden-replay.test.ts
+   bun run test --filter=@koi/runtime -- packages/meta/runtime/src/__tests__/golden-replay.test.ts
    ```
 4. Adversarially review the trajectory by invoking `/codex:adversarial-review` with the trajectory file path as focus (e.g. `packages/meta/runtime/fixtures/<name>.trajectory.json`). Apply any critical/high-confidence findings before moving on.
 
@@ -116,7 +116,7 @@ If tests fail:
 
 Run the full CI gate for the runtime package:
 ```bash
-bun test --filter=@koi/runtime && bun run check:orphans && bun run check:golden-queries
+bun run test --filter=@koi/runtime && bun run check:orphans && bun run check:golden-queries
 ```
 
 Report the final status.
