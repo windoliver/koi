@@ -1579,6 +1579,32 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (agent.state === "running") {
           agent.transition({ kind: "complete", stopReason: "interrupted" });
         }
+        // #1682: self-cleaning pre-iteration abort. If the host
+        // aborts before the consumer iterates — either by calling
+        // interrupt() immediately after run() or by passing an
+        // already-aborted input.signal — the generator body may
+        // never run. Without this, `running`, the registry slot,
+        // and the published controller/signal would leak until a
+        // later cycleSession/dispose sweep. Check `preIterationCleanup`
+        // as the invariant: it's set in run(), cleared as the first
+        // statement inside streamEvents' try block. If it's still
+        // set, the generator has NOT taken ownership of cleanup, so
+        // we do it here.
+        if (preIterationCleanup !== undefined) {
+          preIterationCleanup();
+          preIterationCleanup = undefined;
+          // Safe to release: the running guard prevented a parallel
+          // run() from stealing the latch, and the generator body
+          // has not started (would have cleared preIterationCleanup).
+          // If the consumer later iterates the abandoned iterable,
+          // the stale-epoch / disposed / inflight guards at the top
+          // of streamEvents still fire first (epoch won't change
+          // unless cycleSession runs); if none trip, the pre-start
+          // abort short-circuit yields the terminal `done` and the
+          // finally runs idempotent cleanup.
+          running = false;
+          runningEpoch = undefined;
+        }
       };
       runSignal.addEventListener("abort", onAbort, { once: true });
 
@@ -1619,6 +1645,17 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       };
       running = true;
       runningEpoch = sessionEpoch;
+      // #1682: AbortSignal.addEventListener does NOT fire for an
+      // already-aborted signal. A caller who passes an already-aborted
+      // input.signal would otherwise never get self-cleanup. Fire
+      // onAbort manually AFTER preIterationCleanup and running are set,
+      // so onAbort's pre-iteration check can find and invoke the cleanup.
+      // The `{ once: true }` contract is honored by removing the listener
+      // first to prevent double-fire on a future abort event.
+      if (runSignal.aborted) {
+        runSignal.removeEventListener("abort", onAbort);
+        onAbort();
+      }
       // #1742: currentRunSettled / currentRunResolveSettled are initialized
       // INSIDE streamEvents on its first iteration, not here. Round 9 review:
       // setting them in run() synchronously meant an abandoned async iterable

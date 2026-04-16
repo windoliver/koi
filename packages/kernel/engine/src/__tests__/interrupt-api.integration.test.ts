@@ -410,3 +410,74 @@ describe("abandoned iterable cleanup", () => {
     expect(registry.listActive()).not.toContain(sid);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 8: Pre-iteration abort self-cleanup (#1682)
+// ---------------------------------------------------------------------------
+
+describe("pre-iteration abort self-cleanup", () => {
+  test("interrupt before iteration releases all state — subsequent run() succeeds", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+    const sid = sessionId(runtime.sessionId);
+
+    const _abandoned = runtime.run({ kind: "text", text: "hello" });
+    expect(registry.listActive()).toContain(sid);
+
+    // Interrupt before ANY iteration.
+    expect(registry.interrupt(sid)).toBe(true);
+
+    // Registry entry gone. A fresh run is accepted.
+    expect(registry.listActive()).not.toContain(sid);
+
+    const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
+    // should NOT throw "Agent is already running"
+    while (!(await iter.next()).done) {}
+
+    await runtime.dispose();
+  });
+
+  test("already-aborted input.signal triggers self-cleanup synchronously", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+    const sid = sessionId(runtime.sessionId);
+
+    const ctrl = new AbortController();
+    ctrl.abort("pre-aborted");
+
+    const _abandoned = runtime.run({ kind: "text", text: "hello", signal: ctrl.signal });
+    // After run() returns, the self-clean path should have fired.
+    expect(registry.listActive()).not.toContain(sid);
+
+    // Subsequent run() accepted.
+    const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
+    while (!(await iter.next()).done) {}
+
+    await runtime.dispose();
+  });
+
+  test("runtime.interrupt() before iteration releases state", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      // NOTE: no sessionRegistry — tests fallback path too.
+    });
+
+    const _abandoned = runtime.run({ kind: "text", text: "hello" });
+    expect(runtime.interrupt("pre-iter")).toBe(true);
+
+    // Subsequent run() accepted, no "Agent is already running".
+    const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
+    while (!(await iter.next()).done) {}
+
+    await runtime.dispose();
+  });
+});
