@@ -139,8 +139,12 @@ export async function discoverSkills(
  * Fails gracefully: if the file can't be read or frontmatter is invalid,
  * returns minimal metadata (name from dirName, empty description).
  * The full load() will still fail with a proper VALIDATION error in that case.
+ *
+ * Exported for the discover-time rescan path in `createSkillsRuntime`
+ * (issue #1722): targeted blocked-skill recovery must re-parse frontmatter
+ * so edits made during recovery are reflected by `discover()`/`query()`.
  */
-async function readSkillMetadata(
+export async function readSkillMetadata(
   dirName: string,
   dirPath: string,
   source: SkillSource,
@@ -162,6 +166,92 @@ async function readSkillMetadata(
   if (!fmResult.ok) return fallback;
 
   return mapFrontmatterToMetadata(fmResult.value, source, dirPath);
+}
+
+/**
+ * Re-resolves a single skill name across all configured tiers (highest to
+ * lowest priority), returning the tier-winning DiscoveredSkillEntry or a
+ * tri-state indicating why no winner was found.
+ *
+ * Used by the blocked-skill recovery path in `createSkillsRuntime` so that
+ * `invalidate(name)` respects project > user > bundled precedence instead of
+ * only re-reading the old dirPath captured in a stale blocked entry.
+ *
+ * Tri-state result (issue #1722 round 7):
+ * - `"not-found"` — every tier confirmed the skill is gone. Safe to release
+ *   any blocked reservation.
+ * - `"unreadable"` — a tier's SKILL.md is present but currently unreadable
+ *   (transient I/O, mid-atomic-save, permission flake). Caller should keep
+ *   the blocked reservation in place to stay fail-closed.
+ * - `DiscoveredSkillEntry` — a tier owns the skill and its SKILL.md was
+ *   read. Caller rescans the body and decides clean/blocked.
+ */
+export async function resolveSingleSkill(
+  name: string,
+  config: DiscoverConfig,
+): Promise<DiscoveredSkillEntry | "not-found" | "unreadable"> {
+  if (!isValidSkillName(name)) return "not-found";
+
+  const tiers = buildTierMap(config);
+  // let: all-tiers-confirmed-missing flag. A single uninspectable tier
+  // (unresolvable root, failed exists() probe, missing permission) flips
+  // this to false and we return "unreadable" to stay fail-closed.
+  let allConfiguredTiersInspected = true;
+
+  // Walk tiers in priority order: project > user > bundled.
+  for (const tier of ["project", "user", "bundled"] as const) {
+    const root = tiers.get(tier);
+    // `undefined` here means "default root suppressed by explicit config";
+    // `null` (only for bundled) means "tier disabled entirely". Both are
+    // legitimate non-configured states — they do not count as uninspected.
+    if (root === undefined || root === null) continue;
+
+    let resolvedRoot: string; // let: assigned in try/catch
+    try {
+      resolvedRoot = await realpath(resolve(root));
+    } catch (err: unknown) {
+      // Match `discoverSkills()` semantics: a tier root that simply does
+      // not exist (ENOENT) is treated as an empty tier — we keep walking
+      // and can still return "not-found" if all other tiers confirm it.
+      // Any other error (permission denied, I/O failure, etc.) is a real
+      // "cannot inspect" signal and forces fail-closed.
+      const code = (err as { code?: string }).code;
+      if (code !== "ENOENT") {
+        allConfiguredTiersInspected = false;
+      }
+      continue;
+    }
+
+    const dirPath = join(resolvedRoot, name);
+    const skillMdPath = join(dirPath, "SKILL.md");
+    const file = Bun.file(skillMdPath);
+
+    // Probe for presence — any failure in the probe itself is also an
+    // "uninspectable" signal (e.g. stat EACCES on a readable parent).
+    let exists: boolean;
+    try {
+      exists = await file.exists();
+    } catch {
+      allConfiguredTiersInspected = false;
+      continue;
+    }
+
+    if (!exists) continue;
+
+    // File is present → build the entry. The metadata uses the tier's
+    // current frontmatter so edits made during recovery are reflected.
+    const metadata = await readSkillMetadata(name, dirPath, tier);
+    return {
+      source: tier,
+      dirPath,
+      skillsRoot: resolvedRoot,
+      metadata,
+    };
+  }
+
+  // Only declare the skill gone if every configured tier was successfully
+  // inspected AND reported absence. Otherwise stay fail-closed.
+  return allConfiguredTiersInspected ? "not-found" : "unreadable";
 }
 
 function buildTierMap(config: DiscoverConfig): ReadonlyMap<SkillSource, string | null | undefined> {
