@@ -16,7 +16,6 @@
  * Priority 310: runs after extraction (305).
  */
 
-import { stat as fsStat } from "node:fs/promises";
 import type {
   CapabilityFragment,
   InboundMessage,
@@ -28,7 +27,7 @@ import type {
   SessionId,
   TurnContext,
 } from "@koi/core";
-import type { ScoredMemory } from "@koi/memory";
+import type { ScannedMemory, ScoredMemory } from "@koi/memory";
 import { formatMemorySection, recallMemories, scanMemoryDirectory } from "@koi/memory";
 import { estimateTokens } from "@koi/token-estimator";
 import type { MemoryManifestEntry } from "./select-relevant.js";
@@ -51,10 +50,12 @@ interface SessionRecallState {
   tokenCount: number;
   memoryManifest: readonly MemoryManifestEntry[];
   frozenPaths: ReadonlySet<string>;
+  /** updatedAt per frozen file — detects in-place overwrites of frozen records. */
+  frozenFileMtimes: ReadonlyMap<string, number>;
   selectorNeeded: boolean;
-  /** mtime of memory dir after frozen scan — skip re-scan when unchanged. */
-  lastDirMtimeMs: number;
-  /** Cached live delta message (new memories since frozen snapshot). */
+  /** Fingerprint of last directory listing — skip re-scan when unchanged. */
+  lastListFingerprint: string;
+  /** Cached live delta message (new/modified memories since frozen snapshot). */
   liveMessage: InboundMessage | undefined;
   /** Paths included in the live delta (for relevance exclusion). */
   livePaths: ReadonlySet<string>;
@@ -68,11 +69,41 @@ function createEmptyState(): SessionRecallState {
     tokenCount: 0,
     memoryManifest: [],
     frozenPaths: new Set(),
+    frozenFileMtimes: new Map(),
     selectorNeeded: false,
-    lastDirMtimeMs: 0,
+    lastListFingerprint: "",
     liveMessage: undefined,
     livePaths: new Set(),
   };
+}
+
+/**
+ * Compute a fingerprint of the memory directory listing.
+ *
+ * Uses `FileSystemBackend.list()` to get per-file `modifiedAt` values, then
+ * builds a stable string from sorted `(path, modifiedAt)` pairs. Any added,
+ * removed, or modified file changes the fingerprint. This abstracts over
+ * the backend (local FS, in-memory mock, remote) — we never call node:fs
+ * directly, which would break non-local backends.
+ *
+ * Returns "" on any error (disables the mtime guard — treat as "changed").
+ */
+async function computeListFingerprint(
+  fs: MemoryRecallMiddlewareConfig["fs"],
+  memoryDir: string,
+): Promise<string> {
+  try {
+    const result = fs.list(memoryDir);
+    const settled = await Promise.resolve(result);
+    if (!settled.ok) return "";
+    const entries = [...settled.value.entries]
+      .filter((e) => e.path.endsWith(".md"))
+      .map((e) => `${e.path}:${String(e.modifiedAt ?? 0)}`)
+      .sort();
+    return entries.join("|");
+  } catch {
+    return "";
+  }
 }
 
 export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
@@ -113,6 +144,12 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         };
 
         state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
+        // Track per-file mtimes so refreshLiveDelta can detect in-place
+        // overwrites of frozen records (e.g. `memory_store` with force=true
+        // that updates an existing memory file).
+        state.frozenFileMtimes = new Map(
+          result.selected.map((s) => [s.memory.record.filePath, s.memory.record.updatedAt]),
+        );
       }
 
       if (config.relevanceSelector !== undefined && result.truncated) {
@@ -128,13 +165,10 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         }));
       }
 
-      // Record dir mtime so the first wrapModelCall doesn't immediately re-scan.
-      try {
-        const dirStat = await fsStat(config.recall.memoryDir);
-        state.lastDirMtimeMs = dirStat.mtimeMs;
-      } catch {
-        // Dir may not exist yet — leave at 0 so first turn triggers scan.
-      }
+      // Record listing fingerprint so the first wrapModelCall doesn't
+      // immediately re-scan. Uses config.fs.list() — abstracts over backend
+      // so the middleware works with non-local FileSystemBackend implementations.
+      state.lastListFingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
     } catch (_e: unknown) {
       console.warn("[middleware-memory-recall] recallMemories() failed (swallowed)");
     }
@@ -246,38 +280,86 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
   }
 
   /**
-   * Check memory dir mtime and rebuild the live delta if changed.
-   * The delta contains memories created/modified since the frozen snapshot.
+   * Token budget for the live delta. Defaults to 4000 tokens — prevents
+   * a chatty session from dumping tens of thousands of tokens of freshly
+   * stored memories into every subsequent turn. Memories are sorted by
+   * recency (updatedAt desc) and packed until the budget is hit.
+   */
+  const liveDeltaBudget = config.liveDeltaMaxTokens ?? 4000;
+
+  /**
+   * Check the memory directory listing fingerprint and rebuild the live
+   * delta if any file was added, removed, or modified.
+   *
+   * The delta contains:
+   *  - Memories created since the frozen snapshot (not in frozenPaths)
+   *  - Memories whose frozen file was overwritten in place (updatedAt
+   *    newer than what we recorded at init time) — `memory_store` with
+   *    `force: true` updates an existing file, so the filePath stays the
+   *    same but the content changed. We must re-inject these so the model
+   *    sees the new value instead of the stale frozen copy.
+   *
+   * The delta is token-budgeted (liveDeltaBudget) to prevent a chatty
+   * session from crowding out the conversation.
    */
   async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
-    try {
-      const dirStat = await fsStat(config.recall.memoryDir);
-      if (dirStat.mtimeMs === state.lastDirMtimeMs) {
-        return; // Nothing changed — reuse cached delta (or none).
-      }
-      state.lastDirMtimeMs = dirStat.mtimeMs;
-    } catch {
-      return; // Dir missing or unreadable — skip delta.
+    const fingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
+    if (fingerprint === state.lastListFingerprint && fingerprint !== "") {
+      return; // Nothing changed — reuse cached delta (or none).
     }
+    state.lastListFingerprint = fingerprint;
 
     try {
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
       });
 
-      // Filter to memories NOT in the frozen snapshot.
-      const newMemories = scanResult.memories.filter(
-        (m) => !state.frozenPaths.has(m.record.filePath),
-      );
+      // Include:
+      //   (a) memories NOT in frozen snapshot (new files), and
+      //   (b) frozen-path memories whose updatedAt exceeds the recorded mtime
+      //       (in-place overwrites — same file, new content).
+      const changedMemories = scanResult.memories.filter((m) => {
+        const path = m.record.filePath;
+        if (!state.frozenPaths.has(path)) return true; // (a)
+        const frozenMtime = state.frozenFileMtimes.get(path);
+        if (frozenMtime === undefined) return true; // unknown — treat as new
+        return m.record.updatedAt > frozenMtime; // (b)
+      });
 
-      if (newMemories.length === 0) {
+      if (changedMemories.length === 0) {
+        state.liveMessage = undefined;
+        state.livePaths = new Set();
+        return;
+      }
+
+      // Budget-pack: sort by recency desc, include memories until we'd
+      // exceed liveDeltaBudget. The oldest new memories drop off first.
+      const byRecency = [...changedMemories].sort(
+        (a, b) => b.record.updatedAt - a.record.updatedAt,
+      );
+      const packed: ScannedMemory[] = [];
+      // let — accumulator for token budget packing
+      let packedTokens = 0;
+      for (const m of byRecency) {
+        // Approximate per-memory tokens from content + name + description.
+        const approxTokens = estimateTokens(
+          `${m.record.name}\n${m.record.description}\n${m.record.content}`,
+        );
+        if (packed.length > 0 && packedTokens + approxTokens > liveDeltaBudget) {
+          break; // Adding this would exceed budget — stop (keep what fits).
+        }
+        packed.push(m);
+        packedTokens += approxTokens;
+      }
+
+      if (packed.length === 0) {
         state.liveMessage = undefined;
         state.livePaths = new Set();
         return;
       }
 
       // Wrap as ScoredMemory for the trusted formatter (score=1.0).
-      const scored: readonly ScoredMemory[] = newMemories.map((m) => ({
+      const scored: readonly ScoredMemory[] = packed.map((m) => ({
         memory: m,
         salienceScore: 1.0,
         decayScore: 1.0,
@@ -294,10 +376,10 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         senderId: "system:memory-live",
         timestamp: Date.now(),
       };
-      state.livePaths = new Set(newMemories.map((m) => m.record.filePath));
+      state.livePaths = new Set(packed.map((m) => m.record.filePath));
 
       // Update manifest so relevance selector can consider new memories.
-      const newManifestEntries: readonly MemoryManifestEntry[] = newMemories.map((m) => ({
+      const newManifestEntries: readonly MemoryManifestEntry[] = packed.map((m) => ({
         name: m.record.name,
         description: m.record.description,
         type: m.record.type,

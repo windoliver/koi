@@ -688,5 +688,109 @@ describe("createMemoryRecallMiddleware", () => {
       expect(chunks).toHaveLength(1);
       expect(chunks[0]?.kind).toBe("text_delta");
     });
+
+    test("in-place overwrite of a frozen memory surfaces in live delta", async () => {
+      // Seed one memory — it will be captured in the frozen snapshot.
+      const originalPath = join(dir, "color.md");
+      await writeFile(
+        originalPath,
+        makeMemoryFileContent("Color", "user", "Favorite color is blue"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // Init — frozen snapshot contains "blue".
+      let firstRequest: ModelRequest | undefined;
+      const firstNext = async (req: ModelRequest): Promise<ModelResponse> => {
+        firstRequest = req;
+        return mockNext(req);
+      };
+      await mw.wrapModelCall?.(createTurnCtx(), request, firstNext);
+      expect(firstRequest?.messages.length).toBe(2);
+      expect(getMessageText(firstRequest, 0)).toContain("blue");
+
+      // Overwrite the SAME file mid-session (same filePath, new content).
+      // This simulates `memory_store` with force=true.
+      await writeFile(
+        originalPath,
+        makeMemoryFileContent("Color", "user", "Favorite color is green"),
+      );
+      const future = new Date(Date.now() + 5000);
+      await utimes(originalPath, future, future);
+      await utimes(dir, future, future);
+
+      // Next turn — the live delta MUST surface the updated content.
+      // Without the fix, the filter `!frozenPaths.has(filePath)` would
+      // exclude this record (same path), leaving the model with stale "blue".
+      let secondRequest: ModelRequest | undefined;
+      const secondNext = async (req: ModelRequest): Promise<ModelResponse> => {
+        secondRequest = req;
+        return mockNext(req);
+      };
+      await mw.wrapModelCall?.(createTurnCtx(), request, secondNext);
+
+      expect(secondRequest).toBeDefined();
+      if (secondRequest === undefined) return;
+      expect(secondRequest.messages.length).toBe(3);
+      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(secondRequest, 2);
+      expect(deltaText).toContain("green");
+    });
+
+    test("live delta respects token budget and drops oldest when over cap", async () => {
+      // Seed one frozen memory.
+      await writeFile(
+        join(dir, "frozen.md"),
+        makeMemoryFileContent("Frozen", "user", "Frozen content"),
+      );
+
+      // Budget only large enough for ~2 medium memories.
+      const mw = createMemoryRecallMiddleware({
+        ...createRealFsConfig(dir),
+        liveDeltaMaxTokens: 100,
+      });
+
+      // Init — frozen snapshot only.
+      const initNext = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), initNext);
+
+      // Add several new memories, each large enough that fitting all of
+      // them would exceed the 100-token budget.
+      const filler = "filler ".repeat(40); // ~80 tokens per memory content
+      for (let i = 0; i < 5; i++) {
+        const path = join(dir, `new${String(i)}.md`);
+        await writeFile(path, makeMemoryFileContent(`New${String(i)}`, "user", filler));
+        // Stagger updatedAt so we can predict which ones get kept (newest first).
+        const mtime = new Date(Date.now() + 5000 + i * 1000);
+        await utimes(path, mtime, mtime);
+      }
+      const future = new Date(Date.now() + 20_000);
+      await utimes(dir, future, future);
+
+      let capturedRequest: ModelRequest | undefined;
+      const next = async (req: ModelRequest): Promise<ModelResponse> => {
+        capturedRequest = req;
+        return mockNext(req);
+      };
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), next);
+
+      expect(capturedRequest).toBeDefined();
+      if (capturedRequest === undefined) return;
+      // Live delta present — budget forces truncation, doesn't drop the block.
+      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(capturedRequest, 2);
+      // The NEWEST memory (New4) must be in the delta.
+      expect(deltaText).toContain("New4");
+      // At least one of the oldest must be DROPPED (5 memories ~= 400+ tokens,
+      // budget 100 tokens, so we keep at most 1-2).
+      const containsAllFive =
+        deltaText.includes("New0") &&
+        deltaText.includes("New1") &&
+        deltaText.includes("New2") &&
+        deltaText.includes("New3") &&
+        deltaText.includes("New4");
+      expect(containsAllFive).toBe(false);
+    });
   });
 });
