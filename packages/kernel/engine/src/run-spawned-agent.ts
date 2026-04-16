@@ -7,6 +7,7 @@
 
 import type { CapabilityFragment, EngineInput, KoiMiddleware, SpawnResult } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+
 import type { OutputCollector } from "./output-collector.js";
 import { spawnChildAgent } from "./spawn-child.js";
 import type { SpawnChildOptions } from "./types.js";
