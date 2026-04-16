@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryRecordId } from "@koi/core/memory";
@@ -102,6 +102,105 @@ describe("createMemoryStore", () => {
         content: "The user uses vim keybindings in VS Code.",
       });
       expect(result.action).toBe("created");
+    });
+  });
+
+  describe("uniqueness invariant on low-level mutations", () => {
+    test("write() rejects name-variant that canonicalizes onto an existing (name,type)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.write({
+        name: "foo bar",
+        description: "first",
+        type: "user",
+        content: "First body that differs enough to not Jaccard-match.",
+      });
+
+      await expect(
+        store.write({
+          name: "foo\nbar",
+          description: "second",
+          type: "user",
+          content: "Second body, different enough to not trigger Jaccard dedup.",
+        }),
+      ).rejects.toThrow(/already exists/);
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("write() conflicts on same-key near-duplicate edit (no silent drop)", async () => {
+      // A same-key write with *different* content must not be allowed
+      // to silently resolve as `skipped` via a broad Jaccard match
+      // against an unrelated record. Seed two records: one that owns
+      // the (name, type) key, and one that happens to have similar
+      // content. A retry with the key + different-enough-from-first
+      // content must fail loud, not silently skip against the
+      // similar-content record.
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.write({
+        name: "Owned Key",
+        description: "first",
+        type: "user",
+        content: "original body that owns the key",
+      });
+
+      // Same key, slightly edited content. With the old ordering this
+      // could false-skip against a near-duplicate record with a
+      // different name. Now the (name, type) collision fires first
+      // and we surface the error.
+      await expect(
+        store.write({
+          name: "Owned Key",
+          description: "edited",
+          type: "user",
+          content: "edited body for the same key — different enough to matter",
+        }),
+      ).rejects.toThrow(/already exists/);
+
+      // Exact-payload retry still resolves as a `skipped` replay.
+      const replay = await store.write({
+        name: "Owned Key",
+        description: "first",
+        type: "user",
+        content: "original body that owns the key",
+      });
+      expect(replay.action).toBe("skipped");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("update() rejects rename onto an existing (name,type)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.write({
+        name: "alpha",
+        description: "alpha desc",
+        type: "feedback",
+        content: "First record body, no Jaccard overlap with the second.",
+      });
+      const second = await store.write({
+        name: "beta",
+        description: "beta desc",
+        type: "feedback",
+        content: "Second record body, no Jaccard overlap with the first.",
+      });
+
+      // Attempt to rename second onto first's (name, type).
+      await expect(store.update(second.record.id, { name: "alpha" })).rejects.toThrow(
+        /already owned by/,
+      );
+
+      // First record must still own (name="alpha", type="feedback").
+      const all = await store.list();
+      expect(all.length).toBe(2);
+      const stillOwnsAlpha = await store.read(first.record.id);
+      expect(stillOwnsAlpha?.name).toBe("alpha");
     });
   });
 
@@ -358,6 +457,331 @@ describe("createMemoryStore", () => {
           content: "content",
         }),
       ).rejects.toThrow("Invalid memory record input");
+    });
+  });
+
+  describe("upsert", () => {
+    test("creates new record when no name+type match and no Jaccard match", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const result = await store.upsert(
+        {
+          name: "Unique Entry",
+          description: "Brand new record",
+          type: "user" as const,
+          content: "Completely unique content that matches nothing else in the store.",
+        },
+        { force: false },
+      );
+
+      expect(result.action).toBe("created");
+      if (result.action !== "created") throw new Error("unreachable");
+      expect(result.record.name).toBe("Unique Entry");
+      expect(result.record.type).toBe("user");
+      expect(result.record.content).toBe(
+        "Completely unique content that matches nothing else in the store.",
+      );
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("returns conflict when name+type match exists and force=false", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.upsert(
+        {
+          name: "Dup Entry",
+          description: "First version",
+          type: "feedback" as const,
+          content: "Original content for the duplicate entry test.",
+        },
+        { force: false },
+      );
+      expect(first.action).toBe("created");
+
+      const second = await store.upsert(
+        {
+          name: "Dup Entry",
+          description: "Second version",
+          type: "feedback" as const,
+          content: "Totally different content so Jaccard does not trigger.",
+        },
+        { force: false },
+      );
+      expect(second.action).toBe("conflict");
+      if (second.action !== "conflict") throw new Error("unreachable");
+      expect(second.existing.name).toBe("Dup Entry");
+      expect(second.existing.type).toBe("feedback");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("updates in place when name+type match exists and force=true", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.upsert(
+        {
+          name: "Mutable Entry",
+          description: "Will be overwritten",
+          type: "project" as const,
+          content: "Initial content before the forced update replaces it.",
+        },
+        { force: false },
+      );
+
+      const updated = await store.upsert(
+        {
+          name: "Mutable Entry",
+          description: "Overwritten description",
+          type: "project" as const,
+          content: "Replaced content after force upsert overwrites the record.",
+        },
+        { force: true },
+      );
+
+      expect(updated.action).toBe("updated");
+      if (updated.action !== "updated") throw new Error("unreachable");
+      expect(updated.record.content).toBe(
+        "Replaced content after force upsert overwrites the record.",
+      );
+      expect(updated.record.description).toBe("Overwritten description");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("skips when no name+type match but Jaccard content is similar", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir, dedupThreshold: 0.7 });
+
+      const first = await store.upsert(
+        {
+          name: "Alpha",
+          description: "First entry",
+          type: "user" as const,
+          content: "The user prefers dark mode in all editors and terminals.",
+        },
+        { force: false },
+      );
+      expect(first.action).toBe("created");
+      if (first.action !== "created") throw new Error("unreachable");
+
+      const second = await store.upsert(
+        {
+          name: "Beta",
+          description: "Different name but same content",
+          type: "reference" as const,
+          content: "The user prefers dark mode in all editors and terminals.",
+        },
+        { force: false },
+      );
+
+      expect(second.action).toBe("skipped");
+      if (second.action !== "skipped") throw new Error("unreachable");
+      expect(second.duplicateOf).toBe(first.record.id);
+      expect(second.similarity).toBe(1);
+    });
+
+    test("name+type match takes precedence over Jaccard", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir, dedupThreshold: 0.7 });
+
+      // Write a record via write() with content X.
+      const contentX = "The user prefers dark mode in all editors and terminals.";
+      await store.write({
+        name: "Decoy",
+        description: "Record with content X",
+        type: "user" as const,
+        content: contentX,
+      });
+
+      // Upsert a record "Target/user" with different content.
+      await store.upsert(
+        {
+          name: "Target",
+          description: "First upsert",
+          type: "user" as const,
+          content: "Completely unrelated content about quantum computing research.",
+        },
+        { force: false },
+      );
+
+      // Upsert "Target/user" again with content X — should conflict on
+      // name+type (not skip on Jaccard match against "Decoy").
+      const result = await store.upsert(
+        {
+          name: "Target",
+          description: "Second upsert with content X",
+          type: "user" as const,
+          content: contentX,
+        },
+        { force: false },
+      );
+
+      expect(result.action).toBe("conflict");
+    });
+
+    test("validates input before any filesystem side effect", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await expect(
+        store.upsert(
+          {
+            name: "",
+            description: "desc",
+            type: "user" as const,
+            content: "content",
+          },
+          { force: false },
+        ),
+      ).rejects.toThrow("Invalid memory record input");
+    });
+
+    test("rejects non-boolean force from untyped JS callers (data-loss guard)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const input = {
+        name: "Boolean Guard",
+        description: "desc",
+        type: "user" as const,
+        content: "Content that would otherwise be written to disk.",
+      };
+
+      // Simulate untyped JS callers by casting to a loose shape.
+      const looseStore = store as unknown as {
+        readonly upsert: (input: unknown, opts: unknown) => Promise<unknown>;
+      };
+
+      await expect(looseStore.upsert(input, { force: "false" })).rejects.toThrow(
+        "opts.force must be a boolean",
+      );
+      await expect(looseStore.upsert(input, { force: 1 })).rejects.toThrow(
+        "opts.force must be a boolean",
+      );
+      await expect(looseStore.upsert(input, {})).rejects.toThrow("opts.force must be a boolean");
+      await expect(looseStore.upsert(input, null)).rejects.toThrow("opts.force must be a boolean");
+
+      const all = await store.list();
+      expect(all.length).toBe(0);
+    });
+
+    test("canonicalizes frontmatter-unsafe name: newline-variant conflicts with plain name (force=false)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      const first = await store.upsert(
+        {
+          name: "foo bar",
+          description: "plain space name",
+          type: "user" as const,
+          content: "Original content that will not Jaccard-match the follow-up.",
+        },
+        { force: false },
+      );
+      expect(first.action).toBe("created");
+
+      const second = await store.upsert(
+        {
+          name: "foo\nbar",
+          description: "newline variant",
+          type: "user" as const,
+          content: "Totally different follow-up content, no Jaccard overlap whatsoever.",
+        },
+        { force: false },
+      );
+
+      expect(second.action).toBe("conflict");
+      if (second.action !== "conflict") throw new Error("unreachable");
+      expect(second.existing.name).toBe("foo bar");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+    });
+
+    test("returns 'corrupted' for legacy duplicate (name,type) records on disk", async () => {
+      // Seed two .md files with the same logical (name, type) — simulating
+      // corruption left over from a pre-atomic-upsert race on main.
+      const dir = makeDir();
+      await mkdir(dir, { recursive: true });
+
+      const fm = (name: string) =>
+        `---\nname: ${name}\ndescription: legacy description\ntype: user\n---\n\n`;
+      await writeFile(
+        join(dir, "dup-key.md"),
+        `${fm("Dup Key")}First legacy body for the duplicate (name, type).`,
+      );
+      await writeFile(
+        join(dir, "dup-key-2.md"),
+        `${fm("Dup Key")}Second legacy body for the duplicate (name, type).`,
+      );
+
+      const store = createMemoryStore({ dir });
+
+      const input = {
+        name: "Dup Key",
+        description: "new description",
+        type: "user" as const,
+        content: "Fresh content that would overwrite one of the duplicates.",
+      };
+
+      // Both force=false and force=true must return a structured corruption
+      // result. The higher layer can then surface the conflicting ids to
+      // the operator and reconcile via delete() + retry.
+      for (const force of [false, true]) {
+        const res = await store.upsert(input, { force });
+        expect(res.action).toBe("corrupted");
+        if (res.action !== "corrupted") throw new Error("unreachable");
+        expect(res.canonicalName).toBe("Dup Key");
+        expect(res.type).toBe("user");
+        expect(res.conflictingIds.length).toBe(2);
+      }
+
+      // Both files must still be on disk — corruption return never mutated.
+      const all = await store.list();
+      expect(all.length).toBe(2);
+    });
+
+    test("canonicalizes frontmatter-unsafe name: newline-variant updates plain name (force=true)", async () => {
+      const dir = makeDir();
+      const store = createMemoryStore({ dir });
+
+      await store.upsert(
+        {
+          name: "alpha beta",
+          description: "first version",
+          type: "feedback" as const,
+          content: "Initial content before the force overwrite replaces it.",
+        },
+        { force: false },
+      );
+
+      const updated = await store.upsert(
+        {
+          name: "alpha\u0001\nbeta",
+          description: "second version with control chars and newline",
+          type: "feedback" as const,
+          content: "Replacement content written through the canonicalized name path.",
+        },
+        { force: true },
+      );
+
+      expect(updated.action).toBe("updated");
+      if (updated.action !== "updated") throw new Error("unreachable");
+      expect(updated.record.name).toBe("alpha beta");
+      expect(updated.record.description).toBe("second version with control chars and newline");
+
+      const all = await store.list();
+      expect(all.length).toBe(1);
+      expect(all[0]?.content).toBe(
+        "Replacement content written through the canonicalized name path.",
+      );
     });
   });
 });
