@@ -2257,15 +2257,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // when project file is truly absent, not invalid.
             const projectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
             let config: typeof projectResult | undefined;
-            if (projectResult.ok && projectResult.value.servers.length > 0) {
+            if (projectResult.ok) {
+              // Valid config (including empty {mcpServers:{}}) takes priority.
+              // Empty project config is an explicit opt-out — do not fall
+              // back to home config.
               config = projectResult;
             } else if (projectResult.error.code === "NOT_FOUND") {
               const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
-              if (homeResult.ok && homeResult.value.servers.length > 0) config = homeResult;
+              if (homeResult.ok) config = homeResult;
             }
 
-            if (config === undefined || !config.ok) {
-              // No file config — still check runtime for plugin servers
+            if (config === undefined || !config.ok || config.value.servers.length === 0) {
+              // No file servers — still check runtime for plugin servers
               if (runtimeHandle !== null) {
                 const live = await runtimeHandle.getMcpStatus();
                 store.dispatch({
@@ -2390,11 +2393,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
                 if (authHomeResult.ok) authConfigs.push(authHomeResult);
               }
+              let authMatched = false;
               for (const r of authConfigs) {
                 if (!r.ok) continue;
                 const server = r.value.servers.find((s) => s.name === serverName);
                 if (server === undefined || server.kind !== "http" || server.oauth === undefined)
                   continue;
+                authMatched = true;
 
                 const storage = createSecureStorage();
                 const runtime = createCliOAuthRuntime();
@@ -2443,6 +2448,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   });
                 }
                 break;
+              }
+              if (!authMatched) {
+                // Server is listed in /mcp (e.g. plugin-provided) but we
+                // don't have a file-config entry to auth against. Fail
+                // loudly instead of silently doing nothing.
+                store.dispatch({
+                  kind: "add_error",
+                  code: "MCP_AUTH",
+                  message:
+                    `Cannot authenticate "${serverName}" from this view — ` +
+                    `server is not in .mcp.json (likely plugin-provided). ` +
+                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+                });
               }
             } catch (e: unknown) {
               store.dispatch({

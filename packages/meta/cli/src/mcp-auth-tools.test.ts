@@ -89,7 +89,9 @@ describe("createCliAuthToolFactory", () => {
 
     const desc = tools[0]?.descriptor.description ?? "";
     expect(desc).toContain('"jira"');
-    expect(desc).toContain("https://maas.example.com/jira/mcp");
+    // URL is redacted to origin-only (no path/query)
+    expect(desc).toContain("https://maas.example.com");
+    expect(desc).not.toContain("/jira/mcp");
     expect(desc).toContain("authentication");
   });
 

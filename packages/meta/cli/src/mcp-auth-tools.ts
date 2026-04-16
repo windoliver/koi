@@ -56,10 +56,18 @@ function createAuthenticateTool(
   entry: AuthServerEntry,
   rediscover: () => Promise<readonly unknown[]>,
 ): Tool {
+  // Redact full URL to origin-only — never expose raw URLs (which may
+  // contain internal hostnames, query tokens, or credentials) to the model.
+  let redactedOrigin = "[internal]";
+  try {
+    redactedOrigin = new URL(entry.url).origin;
+  } catch {
+    // Keep placeholder on malformed URLs
+  }
   const descriptor: ToolDescriptor = {
     name: `${serverName}__authenticate`,
     description:
-      `The "${serverName}" MCP server (http at ${entry.url}) requires authentication. ` +
+      `The "${serverName}" MCP server (${redactedOrigin}) requires authentication. ` +
       `Call this tool to start the OAuth flow — a browser window will open ` +
       `for the user to authorize access. After authentication, tokens are ` +
       `stored and the server's tools will load on the next TUI restart.`,
