@@ -163,7 +163,7 @@ export function createScopedFileSystem(
           if (resolved !== compiled.root && !resolved.startsWith(compiled.rootWithSep)) {
             return undefined;
           }
-          return resolveFn(path);
+          return resolveFn(resolved);
         },
       }
     : {};

@@ -513,6 +513,25 @@ describe("createScopedFileSystem", () => {
     expect(scoped.resolvePath?.("/workspace/src/../other")).toBeUndefined();
   });
 
+  test("resolvePath passes resolved absolute path to inner backend (not raw relative)", () => {
+    let receivedPath = "";
+    const backend: FileSystemBackend = {
+      name: "spy",
+      read: () => ({ ok: true, value: { content: "", path: "", size: 0 } }),
+      write: () => ({ ok: true, value: { path: "", bytesWritten: 0 } }),
+      edit: () => ({ ok: true, value: { path: "", hunksApplied: 0 } }),
+      list: () => ({ ok: true, value: { entries: [], truncated: false } }),
+      search: () => ({ ok: true, value: { matches: [], truncated: false } }),
+      resolvePath: (p: string) => {
+        receivedPath = p;
+        return p;
+      },
+    };
+    const scoped = createScopedFileSystem(backend, { root: "/workspace", mode: "rw" });
+    scoped.resolvePath?.("src/foo.ts");
+    expect(receivedPath).toBe("/workspace/src/foo.ts");
+  });
+
   test("preserves dispose from backend", () => {
     let disposed = false;
     const backend: FileSystemBackend = {
