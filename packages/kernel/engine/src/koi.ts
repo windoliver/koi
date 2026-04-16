@@ -414,6 +414,10 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   async function* streamEvents(
     input: EngineInput,
     expectedEpoch: number,
+    abortController: AbortController,
+    runSignal: AbortSignal,
+    onAbort: () => void,
+    unregisterFromRegistry: (() => void) | undefined,
   ): AsyncGenerator<EngineEvent> {
     // #1742 round 10: refuse to attach to a rotated session. If
     // cycleSession() bumped sessionEpoch between run() and the first
@@ -468,29 +472,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let currentTurnIndex = 0;
     // Sync the outer mutable ref so defaultToolTerminal can read it
     outerCurrentTurnIndex = 0;
-
-    // AbortSignal: compose caller signal with internal controller
-    const abortController = new AbortController();
-    const runSignal =
-      input.signal !== undefined
-        ? AbortSignal.any([input.signal, abortController.signal])
-        : abortController.signal;
-
-    // #1682: placeholders — the actual register happens inside the try block
-    // below so a throwing register propagates through the existing finally
-    // and does not leak running=true / currentRunSettled / activeController.
-    // let justified: set inside try; cleared in finally.
-    let unregisterFromRegistry: (() => void) | undefined;
-    let registeredSessionId: SessionId | undefined;
-
-    // Abort listener: immediate agent transition for external observers.
-    // The generator's finally block handles resource cleanup.
-    const onAbort = (): void => {
-      if (agent.state === "running") {
-        agent.transition({ kind: "complete", stopReason: "interrupted" });
-      }
-    };
-    runSignal.addEventListener("abort", onAbort, { once: true });
 
     // let justified: mutable forged descriptor cache, refreshed at turn boundaries
     let forgedDescriptorsCache: readonly ToolDescriptor[] = [];
@@ -596,19 +577,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     let unsubRegistryWatch: (() => void) | undefined;
 
     try {
-      // #1682: expose the controller to runtime.interrupt() and, if a registry
-      // is configured, register this run for external-caller interrupt. Runs
-      // inside try so a throwing register triggers the full finally cleanup.
-      // The registration key is captured at entry; cycleSession() cannot fire
-      // here because it waits on currentRunSettled.
-      activeController = abortController;
-      activeRunSignal = runSignal;
-      registeredSessionId = factorySessionId;
-      unregisterFromRegistry = options.sessionRegistry?.register(
-        registeredSessionId,
-        abortController,
-      );
-
       // --- Run / session initialization ---
       // onSessionStart fires exactly once across the runtime's lifetime,
       // on the first run() call, with this run's sessionCtx (tests rely on
@@ -1455,11 +1423,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // let cycleSession()/dispose() skip the wait while the adapter
       // iterator was still being torn down. The flag is lowered only
       // after every cleanup step AND the resolver have completed.
-      // #1682: release our registry slot and clear the activeController ref
-      // so runtime.interrupt() returns false between runs.
-      unregisterFromRegistry?.();
-      activeController = undefined;
-      activeRunSignal = undefined;
       if (unsubRegistryWatch !== undefined) unsubRegistryWatch();
       cleanupForgeSubscription();
       runSignal.removeEventListener("abort", onAbort);
@@ -1477,6 +1440,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (agent.state === "running" || agent.state === "idle") {
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
+
+      // #1682: release the registry slot AFTER adapter teardown so a wedged
+      // adapter.return() keeps the session visible and interruptible; hosts
+      // can still observe the stuck run via listActive() and retry/escalate
+      // via interrupt() until cleanup truly finishes.
+      unregisterFromRegistry?.();
+      activeController = undefined;
+      activeRunSignal = undefined;
 
       // #1742: signal that this run has fully unwound so a queued
       // cycleSession() / dispose() can safely proceed.
@@ -1547,32 +1518,75 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       if (running) {
         throw KoiRuntimeError.from("VALIDATION", "Agent is already running");
       }
+
+      // #1682: create and publish the per-run cancel handle SYNCHRONOUSLY
+      // before marking `running`, so interrupt() works from the moment
+      // run() is externally observable as active — not only after the
+      // consumer issues its first .next(). A host that starts a run in
+      // the background and immediately issues a cancel must reach the
+      // registry/runtime, not fall through to false.
+      const abortController = new AbortController();
+      const runSignal =
+        input.signal !== undefined
+          ? AbortSignal.any([input.signal, abortController.signal])
+          : abortController.signal;
+      const onAbort = (): void => {
+        if (agent.state === "running") {
+          agent.transition({ kind: "complete", stopReason: "interrupted" });
+        }
+      };
+      runSignal.addEventListener("abort", onAbort, { once: true });
+
+      // Publish the handles for runtime.interrupt() / runtime.isInterrupted()
+      // and (optionally) register with the session registry. Registration
+      // runs BEFORE `running = true` so a throwing custom registry rolls
+      // back the listener and does not leave running latched.
+      activeController = abortController;
+      activeRunSignal = runSignal;
+      const registeredSessionId = factorySessionId;
+      // let justified: assigned under try so a throwing register unwinds cleanly.
+      let unregisterFromRegistry: (() => void) | undefined;
+      try {
+        unregisterFromRegistry = options.sessionRegistry?.register(
+          registeredSessionId,
+          abortController,
+        );
+      } catch (err) {
+        activeController = undefined;
+        activeRunSignal = undefined;
+        runSignal.removeEventListener("abort", onAbort);
+        throw err;
+      }
+
       running = true;
       runningEpoch = sessionEpoch;
-      // #1742: currentRunSettled / currentRunResolveSettled are now
-      // initialized INSIDE streamEvents on its first iteration, not
-      // here. Round 9 review: setting them in run() synchronously meant
-      // an abandoned async iterable (caller called run() but never
-      // iterated) left a never-resolving promise behind, so the next
-      // cycleSession() / dispose() spent the full settle timeout
-      // waiting for a run that never started — and falsely poisoned
-      // the runtime.
+      // #1742: currentRunSettled / currentRunResolveSettled are initialized
+      // INSIDE streamEvents on its first iteration, not here. Round 9 review:
+      // setting them in run() synchronously meant an abandoned async iterable
+      // (caller called run() but never iterated) left a never-resolving
+      // promise behind, so the next cycleSession() / dispose() spent the
+      // full settle timeout waiting for a run that never started — and
+      // falsely poisoned the runtime.
       //
-      // #1742 round 10: snapshot the current session epoch. The
-      // generator validates this on its first iteration so an iterable
-      // that crosses a `cycleSession()` boundary is rejected instead
-      // of attaching to the new session and running pre-clear input
-      // against freshly cleared state.
+      // #1742 round 10: snapshot the current session epoch. The generator
+      // validates this on its first iteration so an iterable that crosses
+      // a `cycleSession()` boundary is rejected instead of attaching to
+      // the new session and running pre-clear input against freshly
+      // cleared state.
       const runEpoch = sessionEpoch;
       return {
         [Symbol.asyncIterator]: () => {
           // #1742 loop-3 round 1: capture the generator so cycleSession()
           // / dispose() can call .return() to fast-path abandoned-after-
-          // iteration cleanup. The generator overwrites currentGenerator
-          // for itself on first iteration (via the same closure since
-          // we set it here at iterator creation, before any consumer
-          // .next() can race in).
-          const gen = streamEvents(input, runEpoch);
+          // iteration cleanup.
+          const gen = streamEvents(
+            input,
+            runEpoch,
+            abortController,
+            runSignal,
+            onAbort,
+            unregisterFromRegistry,
+          );
           currentGenerator = gen;
           return gen;
         },
