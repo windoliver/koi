@@ -51,21 +51,24 @@ export const checkpointStack: PresetStack = {
 
     // Backend discriminator wiring.
     //
-    // When the session uses a non-local filesystem backend (e.g. Nexus),
-    // captured `FileOpRecord` entries must carry the backend name so the
-    // restore protocol can dispatch compensating ops to the right backend
-    // during rewind. We stamp the name on every captured record and supply
-    // the live backend instance for rewind dispatch.
-    //
-    // For the default local backend (`name === "local"`), both fields are
-    // omitted: `buildFileOpRecord` leaves `backend` unset (equivalent to
-    // `"local"`) and `runRestore` uses direct local I/O.
+    // Checkpoint capture reads file pre/post images from the LOCAL filesystem
+    // (via Bun.file + CAS hashing). For non-local backends (nexus), the files
+    // live remotely and cannot be captured through local I/O. Until checkpoint
+    // capture is wired through FileSystemBackend.read(), disable checkpoint
+    // for non-local backends to avoid creating unrecoverable snapshots.
     const fsBackend: FileSystemBackend | undefined = ctx.filesystem;
     const isNonLocal = fsBackend !== undefined && fsBackend.name !== "local";
-    const backendName: string | undefined = isNonLocal ? fsBackend.name : undefined;
-    const backends: ReadonlyMap<string, FileSystemBackend> | undefined = isNonLocal
-      ? new Map([[fsBackend.name, fsBackend]])
-      : undefined;
+
+    if (isNonLocal) {
+      // Return a no-op StackContribution — checkpoint is disabled for non-local backends.
+      // This preserves the existing contract (no crash, no middleware gap) while avoiding
+      // the creation of snapshots that reference remote paths but capture local content.
+      process.stderr.write(
+        `[checkpoint] /rewind disabled for non-local backend '${fsBackend.name}'. ` +
+          `Checkpoint capture requires local filesystem access.\n`,
+      );
+      return { middleware: [], providers: [] };
+    }
 
     const checkpointHandle = createCheckpoint({
       store: createSnapshotStoreSqlite({ path: snapshotPath }),
@@ -74,8 +77,6 @@ export const checkpointStack: PresetStack = {
         driftDetector: null,
         resolvePath: resolveCheckpointPath,
         ...(ctx.sessionTranscript !== undefined ? { transcript: ctx.sessionTranscript } : {}),
-        ...(backendName !== undefined ? { backendName } : {}),
-        ...(backends !== undefined ? { backends } : {}),
       },
     });
 

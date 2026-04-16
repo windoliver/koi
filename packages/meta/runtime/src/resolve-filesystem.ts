@@ -73,19 +73,30 @@ export function validateFileSystemConfig(raw: unknown): Result<FileSystemConfig,
 function extractScope(
   options: Record<string, unknown> | undefined,
   cwd: string,
+  backendType: "local" | "nexus",
 ): { readonly root: string; readonly mode: "ro" | "rw" } | undefined {
   if (options === undefined || options === null) return undefined;
   const root = options.root;
   const mode = options.mode;
   if (typeof root !== "string" || root.length === 0) return undefined;
   if (mode !== "ro" && mode !== "rw") return undefined;
-  // Use realpathSync to match the local filesystem backend's own root normalization,
-  // ensuring symlink-based paths (e.g. /var/folders → /private/var/folders on macOS) agree.
+
   let resolvedRoot: string;
-  try {
-    resolvedRoot = realpathSync(resolve(cwd, root));
-  } catch {
-    // Directory may not exist yet — fall back to resolve() without realpath.
+  if (backendType === "local") {
+    // Use realpathSync for local backends to match fs-local's own root
+    // normalization, ensuring symlink-based paths (e.g. /var/folders →
+    // /private/var/folders on macOS) agree.
+    try {
+      resolvedRoot = realpathSync(resolve(cwd, root));
+    } catch {
+      // Directory may not exist yet — fall back to resolve() without realpath.
+      resolvedRoot = resolve(cwd, root);
+    }
+  } else {
+    // For nexus/remote backends, keep the path lexical. realpathSync would
+    // resolve against the HOST filesystem, rewriting remote paths through
+    // local symlinks — a trust-boundary violation that can redirect or reject
+    // valid remote paths based on the operator's local directory layout.
     resolvedRoot = resolve(cwd, root);
   }
   return { root: resolvedRoot, mode };
@@ -109,7 +120,11 @@ export function resolveFileSystem(
 ): FileSystemBackend {
   const backendKind = config?.backend ?? "local";
   // Extract scope early so local backend can use the scope root as its cwd.
-  const scope = extractScope(config?.options as Record<string, unknown> | undefined, cwd);
+  const scope = extractScope(
+    config?.options as Record<string, unknown> | undefined,
+    cwd,
+    backendKind,
+  );
 
   let backend: FileSystemBackend;
   if (backendKind === "local") {
@@ -251,7 +266,11 @@ export async function resolveFileSystemAsync(
   const operations = config?.operations;
 
   // Extract scope once — applied to every backend return path below.
-  const scope = extractScope(config?.options as Record<string, unknown> | undefined, cwd);
+  const scope = extractScope(
+    config?.options as Record<string, unknown> | undefined,
+    cwd,
+    fsBackend,
+  );
 
   // Non-nexus or nexus-http → synchronous resolution (no async needed)
   if (fsBackend === "local") {
