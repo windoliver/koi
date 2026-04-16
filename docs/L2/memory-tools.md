@@ -62,8 +62,19 @@ atomic call that returns a discriminated union:
 | `false` | no match | `stored: true, id` |
 | `true` | exists | `stored: true, updated: true` |
 | `true` | no match | `stored: true, id` |
+| any | legacy corruption (2+ records share canonical key) | `stored: false, corrupted: { canonicalName, conflictingIds }` |
 
 No check-then-act race — uniqueness is enforced by the backend atomically.
+
+### Legacy corruption handling
+
+When the backend encounters multiple records sharing the same canonical
+`(name, type)` — a state that could arise from the pre-atomic
+`list→find→write` race on older code paths — `storeWithDedup` returns
+`action: "corrupted"` with the conflicting record IDs. The `memory_store`
+tool surfaces actionable remediation: delete all conflicting IDs via
+`memory_delete` and retry, or delete all but one and retry with
+`force: true` to overwrite the survivor.
 
 ### Idempotent delete
 
