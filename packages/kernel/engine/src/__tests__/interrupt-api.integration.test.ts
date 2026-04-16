@@ -140,9 +140,10 @@ describe("registry-driven interrupt", () => {
     const doneEvents = remaining.filter((e) => e.kind === "done");
     expect(doneEvents.length).toBeGreaterThan(0);
     const doneEvt = doneEvents[0];
-    if (doneEvt?.kind === "done") {
-      expect(doneEvt.output.stopReason).toBe("interrupted");
-    }
+    expect(doneEvt).toBeDefined();
+    // After toBeDefined, narrow via type assertion done by a runtime check:
+    if (doneEvt === undefined) throw new Error("unreachable: doneEvt is defined");
+    expect(doneEvt.output.stopReason).toBe("interrupted");
 
     // Auto-cleanup: session must be removed from registry after run completes
     expect(registry.listActive()).not.toContain(sid);
