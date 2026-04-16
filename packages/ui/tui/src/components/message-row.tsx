@@ -9,6 +9,7 @@ import { createEffect, createSignal, For, Match, on, Show, Switch } from "solid-
 import type { TuiAssistantBlock, TuiMessage } from "../state/types.js";
 import { useTuiStore } from "../store-context.js";
 import { ErrorBlock } from "./error-block.js";
+import { InfoBlock } from "./info-block.js";
 import { SpawnBlock } from "./SpawnBlock.js";
 import { DEFAULT_SPINNER } from "./spinners.js";
 import { TextBlock } from "./text-block.js";
@@ -20,6 +21,7 @@ type ThinkingBlock_ = TuiAssistantBlock & { readonly kind: "thinking" };
 type ToolCallBlock_ = TuiAssistantBlock & { readonly kind: "tool_call" };
 type SpawnCallBlock_ = TuiAssistantBlock & { readonly kind: "spawn_call" };
 type ErrorBlock_ = TuiAssistantBlock & { readonly kind: "error" };
+type InfoBlock_ = TuiAssistantBlock & { readonly kind: "info" };
 
 interface MessageRowProps {
   readonly message: TuiMessage;
@@ -75,6 +77,9 @@ function AssistantBlock(props: {
       </Match>
       <Match when={props.block.kind === "error" ? (props.block as ErrorBlock_) : undefined}>
         {(b: Accessor<ErrorBlock_>) => <ErrorBlock block={b()} />}
+      </Match>
+      <Match when={props.block.kind === "info" ? (props.block as InfoBlock_) : undefined}>
+        {(b: Accessor<InfoBlock_>) => <InfoBlock block={b()} />}
       </Match>
     </Switch>
   );

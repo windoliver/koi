@@ -750,6 +750,17 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       return { ...state, messages: maybeCompact([...state.messages, implicit]) };
     }
 
+    case "add_info": {
+      const infoBlock: TuiAssistantBlock = { kind: "info", message: action.message };
+      const implicit: TuiMessage = {
+        kind: "assistant",
+        id: `assistant-info-${state.messages.length}`,
+        blocks: [infoBlock],
+        streaming: false,
+      };
+      return { ...state, messages: maybeCompact([...state.messages, implicit]) };
+    }
+
     case "clear_messages":
       if (
         state.messages.length === 0 &&
