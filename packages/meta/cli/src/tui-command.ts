@@ -1252,6 +1252,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
       ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
       : {}),
+    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
+    // every model/tool call is recorded in a WAL-mode SQLite database.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
+      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+      : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

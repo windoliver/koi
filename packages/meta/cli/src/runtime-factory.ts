@@ -31,6 +31,7 @@ import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
@@ -418,6 +419,15 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditNdjsonPath?: string | undefined;
+  /**
+   * Optional absolute path to a SQLite audit database file.
+   *
+   * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
+   * — set to an absolute file path before launching `koi tui`. The file
+   * is created if it doesn't exist. Sink resources (WAL, timer) are
+   * owned by the runtime and closed during shutdown.
+   */
+  readonly auditSqlitePath?: string | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -1494,6 +1504,62 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       };
     }
 
+    // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
+    // Parallel to NDJSON above. Both can be active simultaneously (tee
+    // pattern) as long as they target different files.
+    let auditSqliteMwForShutdown:
+      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+      | undefined;
+    if (config.auditSqlitePath !== undefined) {
+      // Collision guard: refuse to start if the SQLite path resolves to the
+      // same canonical file as the NDJSON host-level path or any manifest
+      // @koi/middleware-audit entry. Two independent writers (especially
+      // different formats) against the same file corrupt the audit trail.
+      const sqliteCanonical = canonicalizeAuditSinkPath(
+        config.auditSqlitePath,
+        zoneBWorkingDirectory,
+      );
+      if (sqliteCanonical !== undefined) {
+        // Check against host-level NDJSON path.
+        if (config.auditNdjsonPath !== undefined) {
+          const ndjsonCanonical = canonicalizeAuditSinkPath(
+            config.auditNdjsonPath,
+            zoneBWorkingDirectory,
+          );
+          if (ndjsonCanonical === sqliteCanonical) {
+            throw new Error(
+              `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                `the same canonical path as auditNdjsonPath "${config.auditNdjsonPath}". ` +
+                "SQLite and NDJSON sinks use incompatible formats — they cannot share a file.",
+            );
+          }
+        }
+        // Check against manifest @koi/middleware-audit entries.
+        if (config.manifestMiddleware !== undefined) {
+          for (const entry of config.manifestMiddleware) {
+            if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+            const entryPath = entry.options?.filePath;
+            if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+            const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+            if (entryCanonical === sqliteCanonical) {
+              throw new Error(
+                `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                  `the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                  "Two independent writers cannot share the same file.",
+              );
+            }
+          }
+        }
+      }
+      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink });
+      auditPresetExtras.push(sqliteAuditMw);
+      auditSqliteMwForShutdown = {
+        flush: () => sqliteAuditMw.flush(),
+        close: async () => sqliteSink.close(),
+      };
+    }
+
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
     // The ordering (outermost → innermost) is defined in one place —
     // compose-middleware.ts. Preset stacks (observability, checkpoint,
@@ -1987,6 +2053,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             } catch (err) {
               console.warn(
                 `[koi/${hostId}] audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        if (auditSqliteMwForShutdown !== undefined) {
+          const sqliteAudit = auditSqliteMwForShutdown;
+          void (async () => {
+            try {
+              await sqliteAudit.flush();
+              await sqliteAudit.close();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] SQLite audit shutdown failed: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
