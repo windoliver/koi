@@ -1372,6 +1372,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
       ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
       : {}),
+    // KOI_REPORT_ENABLED=true opts into run-report middleware.
+    // Wires @koi/middleware-report so a RunReport is printed at session end.
+    ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.

@@ -58,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
@@ -429,6 +430,11 @@ export interface KoiRuntimeConfig {
    * owned by the runtime and closed during shutdown.
    */
   readonly auditSqlitePath?: string | undefined;
+  /**
+   * Opt-in: activate `@koi/middleware-report` to emit a RunReport at
+   * session end. The TUI surfaces this via `KOI_REPORT_ENABLED=true`.
+   */
+  readonly reportEnabled?: boolean | undefined;
   /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
@@ -1593,6 +1599,22 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         flush: () => sqliteAuditMw.flush(),
         close: async () => sqliteSink.close(),
       };
+    }
+
+    // --- Report middleware (opt-in via config.reportEnabled) ---
+    // Accumulates model/tool call metrics and emits a RunReport at session
+    // end. No shutdown resources — the report is printed via onReport.
+    if (config.reportEnabled === true) {
+      const reportHandle = createReportMiddleware({
+        objective: config.goals?.join("; "),
+        onReport: (_report, formatted) => {
+          console.error("[run-report]", formatted);
+        },
+      });
+      auditPresetExtras.push(reportHandle.middleware);
+      // TODO(#1858): expose reportHandle.getReport / getProgress on
+      // KoiRuntimeHandle so the TUI can surface progress in a status
+      // bar or /report command.
     }
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
