@@ -43,43 +43,58 @@ const PARENT_SIGTERM_ESCALATION_MS = 10_000;
  * SIGHUP (#1750): tmux sends SIGHUP when a session is killed. Without
  * a handler, the parent ignores it and hangs on `proc.exited`, orphaning
  * the child. Forward as SIGTERM to trigger the child's graceful shutdown.
+ *
+ * All forwarding state is per-installation (closure-local), so sequential
+ * re-exec children in one process each get independent signal forwarding.
  */
 export function installTuiReexecSignalHandlers(proc: Subprocess): void {
+  // let: justified — set once on first forward call to prevent double-
+  // escalation when both SIGHUP and SIGTERM arrive (e.g. tmux kill-session
+  // + supervisor). Per-child, not module-global.
+  let forwardingStarted = false;
+
+  const forward = (): void => {
+    if (forwardingStarted) return;
+    forwardingStarted = true;
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      // Child already exited — `await proc.exited` will unblock on the
+      // next tick.
+    }
+    const escalate = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Nothing more to do.
+      }
+      process.exit(143);
+    }, PARENT_SIGTERM_ESCALATION_MS);
+    if (typeof escalate === "object" && escalate !== null && "unref" in escalate) {
+      (escalate as { unref: () => void }).unref();
+    }
+  };
+
+  const onSigterm = (): void => {
+    forward();
+  };
+  const onSighup = (): void => {
+    forward();
+  };
+
   process.on("SIGINT", noopSigintHandler);
-  process.on("SIGTERM", () => {
-    forwardSigtermWithEscalation(proc);
-  });
-  process.on("SIGHUP", () => {
-    forwardSigtermWithEscalation(proc);
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGHUP", onSighup);
+
+  // Clean up listeners when the child exits so a later re-exec child in
+  // the same process starts from a clean state.
+  void proc.exited.then(() => {
+    process.removeListener("SIGINT", noopSigintHandler);
+    process.removeListener("SIGTERM", onSigterm);
+    process.removeListener("SIGHUP", onSighup);
   });
 }
 
 function noopSigintHandler(): void {
   // Intentional no-op — see module docstring.
-}
-
-// let: justified — set once on first forward call to prevent double-escalation
-// when both SIGHUP and SIGTERM arrive (e.g. tmux kill-session + supervisor).
-let forwardingStarted = false;
-
-function forwardSigtermWithEscalation(proc: Subprocess): void {
-  if (forwardingStarted) return;
-  forwardingStarted = true;
-  try {
-    proc.kill("SIGTERM");
-  } catch {
-    // Child already exited — `await proc.exited` will unblock on the
-    // next tick.
-  }
-  const escalate = setTimeout(() => {
-    try {
-      proc.kill("SIGKILL");
-    } catch {
-      // Nothing more to do.
-    }
-    process.exit(143);
-  }, PARENT_SIGTERM_ESCALATION_MS);
-  if (typeof escalate === "object" && escalate !== null && "unref" in escalate) {
-    (escalate as { unref: () => void }).unref();
-  }
 }

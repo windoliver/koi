@@ -86,7 +86,7 @@ const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
 
 Callers:
 - SIGHUP: `shutdown(129, "SIGHUP received (terminal hangup)")`
-- stdin EOF: `shutdown(1, "stdin closed (parent terminal gone)")`
+- stdin EOF: `shutdown(129, "stdin closed (parent terminal gone)")` (PTY close IS a hangup)
 - SIGTERM: `shutdown(143)` (no change — already well-understood)
 - SIGINT/graceful: `shutdown(130)` (no change)
 
@@ -131,7 +131,7 @@ the forward+escalation+hard-exit sequence rather than hanging on `await proc.exi
 | Trigger | Exit code | Convention |
 |---------|-----------|------------|
 | Clean quit | 0 | Normal |
-| Stdin EOF | 1 | Generic error (terminal gone) |
+| Stdin EOF | 129 | PTY close = hangup (same as SIGHUP) |
 | SIGINT (Ctrl+C) | 130 | 128 + 2 |
 | SIGHUP | 129 | 128 + 1 |
 | SIGTERM | 143 | 128 + 15 |

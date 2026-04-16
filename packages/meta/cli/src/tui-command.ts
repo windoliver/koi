@@ -3323,9 +3323,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
-  // prevent false triggers in test/pipe contexts.
+  // prevent false triggers in test/pipe contexts. Uses exit code 129
+  // (same as SIGHUP) because PTY close IS a hangup — using a generic
+  // error code would mask the real termination cause for supervisors.
   const onStdinClose = (): void => {
-    void shutdown(1, "stdin closed (parent terminal gone)");
+    // Only treat stdin close as a hangup when no orderly shutdown is
+    // already in progress. In embedded/test callers the host may close
+    // stdin during normal teardown after calling stop() — that should
+    // not force process.exit(129).
+    if (!shutdownStarted) {
+      void shutdown(129, "stdin closed (parent terminal gone)");
+    }
   };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
