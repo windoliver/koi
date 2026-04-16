@@ -2268,27 +2268,31 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             }
 
             if (config === undefined || !config.ok || config.value.servers.length === 0) {
-              // No file servers — still check runtime for plugin servers
-              if (runtimeHandle !== null) {
-                const live = await runtimeHandle.getMcpStatus();
-                store.dispatch({
-                  kind: "set_mcp_status",
-                  servers: live.map((l) => ({
-                    name: l.name,
-                    status:
-                      l.failureCode === undefined
-                        ? ("connected" as const)
-                        : l.failureCode === "AUTH_REQUIRED"
-                          ? ("needs-auth" as const)
-                          : ("error" as const),
-                    toolCount: l.toolCount,
-                    detail: l.failureMessage ?? "plugin",
-                  })),
-                });
-              } else {
-                store.dispatch({ kind: "set_mcp_status", servers: [] });
-              }
+              // No file servers — render empty view immediately, then do
+              // live plugin discovery in the background (may block on
+              // unhealthy plugin servers; must not stall navigation).
+              store.dispatch({ kind: "set_mcp_status", servers: [] });
               store.dispatch({ kind: "set_view", view: "mcp" });
+              if (runtimeHandle !== null) {
+                void (async () => {
+                  const live = await runtimeHandle?.getMcpStatus();
+                  if (live === undefined) return;
+                  store.dispatch({
+                    kind: "set_mcp_status",
+                    servers: live.map((l) => ({
+                      name: l.name,
+                      status:
+                        l.failureCode === undefined
+                          ? ("connected" as const)
+                          : l.failureCode === "AUTH_REQUIRED"
+                            ? ("needs-auth" as const)
+                            : ("error" as const),
+                      toolCount: l.toolCount,
+                      detail: l.failureMessage ?? "plugin",
+                    })),
+                  });
+                })();
+              }
               return;
             }
 
