@@ -24,6 +24,7 @@ import { createJsonlTranscript } from "@koi/session";
 import type { StartFlags } from "../args/start.js";
 import { resolveApiConfig } from "../env.js";
 import { loadManifestConfig } from "../manifest.js";
+import { initOtelSdk } from "../otel-bootstrap.js";
 import { DEFAULT_STACKS } from "../preset-stacks.js";
 import { createKoiRuntime } from "../runtime-factory.js";
 import { resumeSessionFromJsonl } from "../shared-wiring.js";
@@ -182,10 +183,7 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
 
-    if (
-      manifestResult.value.stacks !== undefined &&
-      manifestResult.value.stacks.includes("spawn")
-    ) {
+    if (manifestResult.value.stacks?.includes("spawn")) {
       process.stderr.write(
         'koi start: manifest.stacks including "spawn" is not supported on this host.\n' +
           "  Spawn enables coordinator workflows that poll task_output while waiting on\n" +
@@ -297,58 +295,75 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
   // would replay all failed attempts as part of the user context.
   const isLoopMode = flags.mode.kind === "prompt" && flags.untilPass.length > 0;
 
-  const runtimeHandle = await createKoiRuntime({
-    modelAdapter,
-    modelName: model,
-    approvalHandler: autoApproveHandler,
-    cwd: process.cwd(),
-    engineId: "koi-cli",
-    hostId: "koi-cli",
-    permissionBackend: createPatternPermissionBackend({
-      rules: { allow: ["*"], deny: [], ask: [] },
-    }),
-    permissionsDescription: "koi start — auto-allow",
-    // `koi start` runs without `bash_background` because main's
-    // pre-refactor `koi start` never exposed that tool. The shared
-    // execution stack wires it by default for TUI, so we explicitly
-    // opt out here.
-    //
-    // `loopDetection` is left at the engine default (undefined →
-    // detector enabled) because the auto-allow permission backend
-    // makes the detector the only narrow guard against runaway
-    // mutating calls before governance caps trip.
-    //
-    // The full `task_*` tool set stays wired regardless, but the
-    // `spawn` stack is filtered out below — without sub-agents to
-    // orchestrate, `task_output` polling has no reason to fire and
-    // can't trip the detector's 3-in-8 threshold. This matches
-    // main's pre-refactor `koi start` capability surface (no
-    // Spawn, no bash_background, no coordinator workflows).
-    backgroundSubprocesses: false,
-    ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
-    // When the user passes an explicit manifest.stacks, we honor
-    // it verbatim (including re-enabling `spawn` if they really
-    // want coordinator flows under `koi start`). When they don't,
-    // we filter `spawn` out of the default set so the detector
-    // stays compatible with the remaining tool surface.
-    ...(manifestStacks !== undefined
-      ? { stacks: manifestStacks }
-      : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
-    ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
-    ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
-    // Zone B — manifest-declared middleware. Resolved inside the
-    // factory; unknown names throw, core names are blocked by the
-    // loader, and composed entries run INSIDE the security guard.
-    //
-    // `allowManifestFileSinks` gates the built-in audit entry
-    // (which opens a file at resolution time). Controlled by the
-    // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
-    // manifest so repo content cannot flip it.
-    ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
-    ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1" ? { allowManifestFileSinks: true } : {}),
-    ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
-    getGeneration: () => transcriptGeneration,
-  });
+  // OTel SDK bootstrap — must happen before createKoiRuntime so the global
+  // TracerProvider is registered before middleware-otel calls trace.getTracer().
+  const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
+  const otelHandle = otelEnabled ? initOtelSdk("headless") : undefined;
+
+  let runtimeHandle: Awaited<ReturnType<typeof createKoiRuntime>>;
+  try {
+    runtimeHandle = await createKoiRuntime({
+      modelAdapter,
+      modelName: model,
+      approvalHandler: autoApproveHandler,
+      cwd: process.cwd(),
+      engineId: "koi-cli",
+      hostId: "koi-cli",
+      permissionBackend: createPatternPermissionBackend({
+        rules: { allow: ["*"], deny: [], ask: [] },
+      }),
+      permissionsDescription: "koi start — auto-allow",
+      // `koi start` runs without `bash_background` because main's
+      // pre-refactor `koi start` never exposed that tool. The shared
+      // execution stack wires it by default for TUI, so we explicitly
+      // opt out here.
+      //
+      // `loopDetection` is left at the engine default (undefined →
+      // detector enabled) because the auto-allow permission backend
+      // makes the detector the only narrow guard against runaway
+      // mutating calls before governance caps trip.
+      //
+      // The full `task_*` tool set stays wired regardless, but the
+      // `spawn` stack is filtered out below — without sub-agents to
+      // orchestrate, `task_output` polling has no reason to fire and
+      // can't trip the detector's 3-in-8 threshold. This matches
+      // main's pre-refactor `koi start` capability surface (no
+      // Spawn, no bash_background, no coordinator workflows).
+      backgroundSubprocesses: false,
+      ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+      // When the user passes an explicit manifest.stacks, we honor
+      // it verbatim (including re-enabling `spawn` if they really
+      // want coordinator flows under `koi start`). When they don't,
+      // we filter `spawn` out of the default set so the detector
+      // stays compatible with the remaining tool surface.
+      ...(manifestStacks !== undefined
+        ? { stacks: manifestStacks }
+        : { stacks: DEFAULT_STACKS_WITHOUT_SPAWN }),
+      ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
+      ...(manifestFilesystemOps !== undefined
+        ? { filesystemOperations: manifestFilesystemOps }
+        : {}),
+      // Zone B — manifest-declared middleware. Resolved inside the
+      // factory; unknown names throw, core names are blocked by the
+      // loader, and composed entries run INSIDE the security guard.
+      //
+      // `allowManifestFileSinks` gates the built-in audit entry
+      // (which opens a file at resolution time). Controlled by the
+      // KOI_ALLOW_MANIFEST_FILE_SINKS env var rather than the
+      // manifest so repo content cannot flip it.
+      ...(manifestMiddleware !== undefined ? { manifestMiddleware } : {}),
+      ...(process.env.KOI_ALLOW_MANIFEST_FILE_SINKS === "1"
+        ? { allowManifestFileSinks: true }
+        : {}),
+      ...(isLoopMode ? {} : { session: { transcript: jsonlTranscript, sessionId: sid } }),
+      getGeneration: () => transcriptGeneration,
+      ...(otelEnabled ? { otel: true as const } : {}),
+    });
+  } catch (e: unknown) {
+    // Ensure OTel provider is shut down even if runtime assembly fails.
+    await otelHandle?.shutdown();
+    throw e;
+  }
   const runtime = runtimeHandle.runtime;
   const transcript = runtimeHandle.transcript;
 
@@ -441,6 +456,8 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         }\n`,
       );
     }
+    // Flush OTel spans before process exit
+    await otelHandle?.shutdown();
   };
   // Pre-populate the runtime's in-memory transcript with the resumed
   // messages so the model sees prior context on the first turn.
