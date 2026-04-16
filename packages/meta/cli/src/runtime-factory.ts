@@ -1608,10 +1608,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       const reportHandle = createReportMiddleware({
         objective: config.goals?.join("; "),
         onReport: (_report, formatted) => {
-          console.log("[run-report]", formatted);
+          console.error("[run-report]", formatted);
         },
       });
       auditPresetExtras.push(reportHandle.middleware);
+      // TODO(#1858): expose reportHandle.getReport / getProgress on
+      // KoiRuntimeHandle so the TUI can surface progress in a status
+      // bar or /report command.
     }
 
     // --- Compose middleware via the standalone `composeRuntimeMiddleware` ---
