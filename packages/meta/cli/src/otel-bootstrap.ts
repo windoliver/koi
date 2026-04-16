@@ -18,7 +18,6 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
   BasicTracerProvider,
   BatchSpanProcessor,
-  type ExportResult,
   type ReadableSpan,
   type SpanExporter,
 } from "@opentelemetry/sdk-trace-base";
@@ -187,7 +186,7 @@ function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
  * stream where redirection (`2>/tmp/spans.log`) captures them cleanly.
  */
 class StderrSpanExporter implements SpanExporter {
-  export(spans: readonly ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
+  export(spans: readonly ReadableSpan[], resultCallback: (result: { code: number }) => void): void {
     for (const span of spans) {
       const obj = {
         traceId: span.spanContext().traceId,
@@ -204,7 +203,7 @@ class StderrSpanExporter implements SpanExporter {
       };
       process.stderr.write(`${JSON.stringify(obj)}\n`);
     }
-    resultCallback({ code: 0 });
+    resultCallback({ code: 0 }); // 0 = ExportResultCode.SUCCESS
   }
 
   async shutdown(): Promise<void> {
