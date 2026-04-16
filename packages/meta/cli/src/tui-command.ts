@@ -2937,16 +2937,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     liveOther.push(l);
                   }
                 }
+                // Derive auth capability from the freshly-loaded config rather
+                // than l.transport/l.hasOAuth (which are runtime startup
+                // snapshots and may be stale if .mcp.json changed). This keeps
+                // config-backed rows accurate after an oauth block is added
+                // while the TUI is running.
+                const configTransportByName = new Map<string, "http" | "stdio" | "sse">(
+                  config.value.servers.map((s) => [s.name, s.kind]),
+                );
+                const configOAuthByName = new Set<string>(
+                  config.value.servers
+                    .filter((s) => s.kind === "http" && s.oauth !== undefined)
+                    .map((s) => s.name),
+                );
                 // Enrich config-based entries with live data (match by bare name).
-                // Use l.transport from McpServerStatus (threaded from config in getMcpStatus)
-                // rather than the closure transportByName map — both carry the same data but
-                // l.transport also covers plugin-provided servers correctly.
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
                   return {
                     name: entry.name,
-                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
+                    status: computeLiveMcpStatus(
+                      l.failureCode,
+                      configTransportByName.get(entry.name),
+                      configOAuthByName.has(entry.name),
+                    ),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
