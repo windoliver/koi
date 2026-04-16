@@ -707,7 +707,9 @@ describe("createMemoryRecallMiddleware", () => {
         return mockNext(req);
       };
       await mw.wrapModelCall?.(createTurnCtx(), request, firstNext);
-      expect(firstRequest?.messages.length).toBe(2);
+      expect(firstRequest).toBeDefined();
+      if (firstRequest === undefined) return;
+      expect(firstRequest.messages.length).toBe(2);
       expect(getMessageText(firstRequest, 0)).toContain("blue");
 
       // Overwrite the SAME file mid-session (same filePath, new content).

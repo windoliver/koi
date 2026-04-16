@@ -50,8 +50,16 @@ interface SessionRecallState {
   tokenCount: number;
   memoryManifest: readonly MemoryManifestEntry[];
   frozenPaths: ReadonlySet<string>;
-  /** updatedAt per frozen file — detects in-place overwrites of frozen records. */
-  frozenFileMtimes: ReadonlyMap<string, number>;
+  /**
+   * updatedAt for EVERY memory file present at session start — not just the
+   * frozen-snapshot subset. The live delta uses this as the baseline: a
+   * record qualifies for injection only if its path isn't in this map
+   * (new file) or its updatedAt exceeds the recorded value (in-place
+   * overwrite). Without this, truncated sessions where the frozen snapshot
+   * is a subset of the full memory set would pull pre-existing overflow
+   * memories into the "Recently Added Memories" delta on the next write.
+   */
+  sessionStartMtimes: ReadonlyMap<string, number>;
   selectorNeeded: boolean;
   /** Fingerprint of last directory listing — skip re-scan when unchanged. */
   lastListFingerprint: string;
@@ -69,7 +77,7 @@ function createEmptyState(): SessionRecallState {
     tokenCount: 0,
     memoryManifest: [],
     frozenPaths: new Set(),
-    frozenFileMtimes: new Map(),
+    sessionStartMtimes: new Map(),
     selectorNeeded: false,
     lastListFingerprint: "",
     liveMessage: undefined,
@@ -80,22 +88,24 @@ function createEmptyState(): SessionRecallState {
 /**
  * Compute a fingerprint of the memory directory listing.
  *
- * Uses `FileSystemBackend.list()` to get per-file `modifiedAt` values, then
- * builds a stable string from sorted `(path, modifiedAt)` pairs. Any added,
- * removed, or modified file changes the fingerprint. This abstracts over
- * the backend (local FS, in-memory mock, remote) — we never call node:fs
- * directly, which would break non-local backends.
+ * Uses `FileSystemBackend.list()` with the same recursive `**\/*.md` options
+ * as `scanMemoryDirectory()` so the two stay in sync — any file the scan
+ * would see, the fingerprint sees too. Builds a stable string from sorted
+ * `(path, modifiedAt)` pairs. Any added, removed, or modified file changes
+ * the fingerprint.
  *
- * Returns "" on any error (disables the mtime guard — treat as "changed").
+ * Returns "" on any error OR when the backend reports `truncated: true`
+ * (fail-open: force a rescan because we cannot trust a partial listing).
  */
 async function computeListFingerprint(
   fs: MemoryRecallMiddlewareConfig["fs"],
   memoryDir: string,
 ): Promise<string> {
   try {
-    const result = fs.list(memoryDir);
+    const result = fs.list(memoryDir, { glob: "**/*.md", recursive: true });
     const settled = await Promise.resolve(result);
     if (!settled.ok) return "";
+    if (settled.value.truncated) return ""; // fail-open on partial listings
     const entries = [...settled.value.entries]
       .filter((e) => e.path.endsWith(".md"))
       .map((e) => `${e.path}:${String(e.modifiedAt ?? 0)}`)
@@ -144,19 +154,23 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         };
 
         state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
-        // Track per-file mtimes so refreshLiveDelta can detect in-place
-        // overwrites of frozen records (e.g. `memory_store` with force=true
-        // that updates an existing memory file).
-        state.frozenFileMtimes = new Map(
-          result.selected.map((s) => [s.memory.record.filePath, s.memory.record.updatedAt]),
-        );
       }
+
+      // Always scan the full memory dir at init to build the session-start
+      // baseline. This is used by refreshLiveDelta to answer "what is new
+      // since session start" — critical for truncated sessions where the
+      // frozen snapshot is a subset of all memories on disk.
+      //
+      // Also populates the manifest for the relevance selector if configured.
+      const scanResult = await scanMemoryDirectory(config.fs, {
+        memoryDir: config.recall.memoryDir,
+      });
+      state.sessionStartMtimes = new Map(
+        scanResult.memories.map((m) => [m.record.filePath, m.record.updatedAt]),
+      );
 
       if (config.relevanceSelector !== undefined && result.truncated) {
         state.selectorNeeded = true;
-        const scanResult = await scanMemoryDirectory(config.fs, {
-          memoryDir: config.recall.memoryDir,
-        });
         state.memoryManifest = scanResult.memories.map((m) => ({
           name: m.record.name,
           description: m.record.description,
@@ -291,13 +305,17 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * Check the memory directory listing fingerprint and rebuild the live
    * delta if any file was added, removed, or modified.
    *
-   * The delta contains:
-   *  - Memories created since the frozen snapshot (not in frozenPaths)
-   *  - Memories whose frozen file was overwritten in place (updatedAt
-   *    newer than what we recorded at init time) — `memory_store` with
-   *    `force: true` updates an existing file, so the filePath stays the
-   *    same but the content changed. We must re-inject these so the model
-   *    sees the new value instead of the stale frozen copy.
+   * The delta contains memories that appeared OR were modified since
+   * session start — diffed against `sessionStartMtimes` which snapshots
+   * every memory file at init, not just the frozen subset. Using the full
+   * baseline is critical for truncated sessions: otherwise pre-existing
+   * overflow memories (on disk at session start but not frozen) would be
+   * misclassified as "recently added" on the first subsequent write.
+   *
+   * A memory qualifies when either:
+   *  - Its filePath is not in sessionStartMtimes (genuinely new file), or
+   *  - Its updatedAt exceeds the recorded mtime (in-place overwrite —
+   *    `memory_store` with `force: true` reuses the same filePath).
    *
    * The delta is token-budgeted (liveDeltaBudget) to prevent a chatty
    * session from crowding out the conversation.
@@ -314,16 +332,15 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         memoryDir: config.recall.memoryDir,
       });
 
-      // Include:
-      //   (a) memories NOT in frozen snapshot (new files), and
-      //   (b) frozen-path memories whose updatedAt exceeds the recorded mtime
-      //       (in-place overwrites — same file, new content).
+      // Include memories that are new or were modified since session start.
+      // Diff against sessionStartMtimes (the FULL baseline), not frozenPaths —
+      // otherwise overflow memories would be pulled into the delta on first
+      // write.
       const changedMemories = scanResult.memories.filter((m) => {
         const path = m.record.filePath;
-        if (!state.frozenPaths.has(path)) return true; // (a)
-        const frozenMtime = state.frozenFileMtimes.get(path);
-        if (frozenMtime === undefined) return true; // unknown — treat as new
-        return m.record.updatedAt > frozenMtime; // (b)
+        const baseline = state.sessionStartMtimes.get(path);
+        if (baseline === undefined) return true; // genuinely new file
+        return m.record.updatedAt > baseline; // in-place overwrite
       });
 
       if (changedMemories.length === 0) {
