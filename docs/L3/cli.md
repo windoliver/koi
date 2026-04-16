@@ -157,7 +157,7 @@ koi tui
 | `OPENAI_API_KEY` | one of these | — | Key for OpenAI (`api.openai.com/v1`) |
 | `KOI_MODEL` | no | `anthropic/claude-sonnet-4-6` | Model name passed to the provider |
 | `OPENAI_BASE_URL` / `OPENROUTER_BASE_URL` | no | — | Override the provider base URL |
-| `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call (requires a tracer provider registered before launch) |
+| `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call. The CLI auto-initializes a `BasicTracerProvider` with `BatchSpanProcessor` — no external SDK setup needed. Headless (`koi start`) exports spans as JSON to stderr; TUI (`koi tui`) exports via OTLP to `localhost:4318` by default. Override with `OTEL_TRACES_EXPORTER` (`console`, `otlp`, `none`) and `OTEL_EXPORTER_OTLP_ENDPOINT`. (#1770) |
 | `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
@@ -367,6 +367,9 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/task-tools` | L2 | LLM-callable task tools (create/get/update/list/stop/output/delegate) + ComponentProvider. `task_update(completed)` defaults `output` when omitted (#1785) |
 | `@koi/tasks` | L2 | Task board stores + runtime task system (output streaming, task kinds, registry, runner). Supports `onEngineEvent` bridging for plan/progress visibility (#1555). Task kind validation, unsupported lifecycle stubs, atomic `killIfPending()` (#1242) |
 | `@koi/runtime` | L3 | Full-stack runtime used transitively |
+| `@opentelemetry/api` | ext | OTel API — `trace.getTracer()`, `trace.setGlobalTracerProvider()` |
+| `@opentelemetry/sdk-trace-base` | ext | `BasicTracerProvider`, `BatchSpanProcessor` — OTel SDK bootstrap (#1770) |
+| `@opentelemetry/exporter-trace-otlp-http` | ext | `OTLPTraceExporter` — OTLP HTTP span export for TUI mode (#1770) |
 | `@koi/bash-ast` | L0u | AST-based bash classifier (PR #1660) — `classifyBashCommand()`, `initializeBashAst()`, `matchSimpleCommand()`. Replaces the regex-only `@koi/bash-security` classifier for `@koi/tools-bash` |
 | `@koi/bash-security` | L0u | Prefilter (injection + path validation) + transitional regex TTP fallback for `@koi/bash-ast` `too-complex` outcomes |
 | `@koi/tools-bash` | L2 | Bash execution tool — `createBashTool()` and `createBashBackgroundTool()`, both routed through `@koi/bash-ast` for classification. Classifier includes a `destructive` category (#1721) enforced inside `execute()` after the permission modal, so session-wide `[a]` grants cannot authorize catastrophic commands (`rm -rf /`, `mkfs*`, `dd of=/dev/*`, fork bomb, `chmod -R 777 /`, `shutdown`/`reboot`) |
