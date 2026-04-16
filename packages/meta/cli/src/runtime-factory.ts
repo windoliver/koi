@@ -1516,6 +1516,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
       | ReadonlySet<string>
       | undefined;
+    const mcpPluginOAuthCapableNames = stackContribution.exports.mcpPluginOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -1959,11 +1962,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             label: "plugin",
             resolver: mcpPluginResolver,
             transportMap: mcpPluginTransportByName,
-            // Plugin-backed servers cannot be authenticated via nav:mcp-auth
-            // (the handler rejects plugin: prefixed names). hasOAuth is forced
-            // to false so needs-auth is never surfaced for plugin rows,
-            // regardless of their oauth config.
-            oauthNames: undefined,
+            oauthNames: mcpPluginOAuthCapableNames,
           });
         if (sources.length === 0) return [];
 
