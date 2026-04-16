@@ -24,6 +24,8 @@ export interface StartFlags extends BaseFlags {
   readonly logFormat: "text" | "json";
   /** Force raw-stdout output even when @koi/tui is available. */
   readonly noTui: boolean;
+  /** Operator opt-in for nexus filesystem backends. Required with --manifest when backend is nexus. */
+  readonly allowRemoteFs: boolean;
   /**
    * Maximum number of transcript messages to include in each model request.
    * Defaults to 100 (≈50 turns). Lower values reduce token costs for long sessions.
@@ -107,6 +109,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly "verifier-timeout": string | undefined;
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
+    readonly "allow-remote-fs": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -127,6 +130,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         "verifier-timeout": { type: "string" },
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
+        "allow-remote-fs": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -224,6 +228,7 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     workingDir: undefined,
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
+    allowRemoteFs: values["allow-remote-fs"] ?? false,
   };
 }
 

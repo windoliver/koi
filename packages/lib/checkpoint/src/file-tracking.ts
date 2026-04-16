@@ -79,6 +79,7 @@ interface BuildFileOpInput {
   readonly eventIndex: number;
   readonly pre: PreImage;
   readonly post: PostImage;
+  readonly backend?: string;
 }
 
 /**
@@ -98,6 +99,7 @@ interface BuildFileOpInput {
 export function buildFileOpRecord(input: BuildFileOpInput): FileOpRecord | undefined {
   const { callId, path, turnIndex, eventIndex, pre, post } = input;
   const timestamp = Date.now();
+  const backendField = input.backend !== undefined ? { backend: input.backend } : {};
 
   if (!pre.existed && !post.existed) {
     return undefined;
@@ -112,6 +114,7 @@ export function buildFileOpRecord(input: BuildFileOpInput): FileOpRecord | undef
       turnIndex,
       eventIndex,
       timestamp,
+      ...backendField,
     };
   }
 
@@ -124,6 +127,7 @@ export function buildFileOpRecord(input: BuildFileOpInput): FileOpRecord | undef
       turnIndex,
       eventIndex,
       timestamp,
+      ...backendField,
     };
   }
 
@@ -144,6 +148,7 @@ export function buildFileOpRecord(input: BuildFileOpInput): FileOpRecord | undef
       turnIndex,
       eventIndex,
       timestamp,
+      ...backendField,
     };
   }
 

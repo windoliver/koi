@@ -87,6 +87,13 @@ Drift warnings appear on the snapshot a beat after creation. The rewind UI does 
 
 Renames are captured as a `delete + create` pair sharing a `renameId`. The rewind UI may present them as a single operation; the storage layer treats them as two independent ops.
 
+### `FileOpRecord.backend` field (nexus support)
+
+`FileOpRecord` carries an optional `backend` field (`"local" | "nexus"`) indicating which filesystem backend performed the operation. When absent, `"local"` is assumed for backwards compatibility.
+
+- **Backend-aware rewind**: The restore protocol checks `backend` on each record and routes compensating ops to the correct backend (local CAS write vs. nexus PUT). A pre-flight liveness check runs against the nexus backend before any compensating ops are applied — if the backend is unreachable the rewind aborts early rather than leaving the workspace in a partial state.
+- **Nexus backends disabled**: Checkpoint capture is disabled when the active filesystem backend is nexus — ops performed through a remote nexus backend cannot be reliably hashed client-side and the CAS blob store has no network-aware write path. The middleware logs a warning and records `SNAPSHOT_STATUS_KEY = "nexus-skip"` on every turn. Rewind remains available for any snapshots captured before the nexus backend was activated.
+
 ## Restore protocol
 
 `/rewind n` restores both file state and conversation atomically via an **ordered + idempotent** protocol — no two-phase commit:

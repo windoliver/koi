@@ -1964,6 +1964,12 @@ interface FileOpRecordBase {
      * rename. Lets the rewind UI present them as one operation.
      */
     readonly renameId?: string;
+    /**
+     * Backend that owns this file. \`"local"\` for the host filesystem,
+     * \`"nexus:<transport>"\` for nexus backends (e.g., \`"nexus:local-bridge"\`).
+     * Undefined means \`"local"\` (backwards-compatible default for existing snapshots).
+     */
+    readonly backend?: string;
 }
 /**
  * Record of a single file operation captured during a tool call.
@@ -2003,9 +2009,11 @@ type CompensatingOp = {
     readonly kind: "restore";
     readonly path: string;
     readonly contentHash: string;
+    readonly backend?: string;
 } | {
     readonly kind: "delete";
     readonly path: string;
+    readonly backend?: string;
 };
 /**
  * Status of a snapshot record. Snapshots are written to the chain store
