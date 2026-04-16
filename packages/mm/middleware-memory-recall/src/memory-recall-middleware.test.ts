@@ -255,7 +255,7 @@ describe("createMemoryRecallMiddleware", () => {
     expect(capturedRequest.messages[0]?.senderId).toBe("user");
   });
 
-  test("caches result and reuses on subsequent model calls", async () => {
+  test("caches frozen snapshot — only initializes once per session", async () => {
     const files = [
       {
         path: "/mem/role.md",
@@ -267,15 +267,20 @@ describe("createMemoryRecallMiddleware", () => {
     const mw = createMemoryRecallMiddleware(createConfig(fs));
     const request = createModelRequest();
 
-    const recallSpy = spyOn(memoryModule, "recallMemories");
+    // The frozen snapshot is built from a single scan at init time.
+    // Subsequent turns reuse the cached message; only the live-delta
+    // refresh re-scans. Verify init's scoring/select pipeline runs once
+    // by spying on scoreMemories.
+    const scoreSpy = spyOn(memoryModule, "scoreMemories");
 
     const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
 
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
 
-    // recallMemories should only be called once despite two model calls
-    expect(recallSpy).toHaveBeenCalledTimes(1);
+    // scoreMemories should only be called once at init — subsequent
+    // turns reuse the cached frozen snapshot.
+    expect(scoreSpy).toHaveBeenCalledTimes(1);
   });
 
   test("resets cache on session start", async () => {
@@ -290,20 +295,20 @@ describe("createMemoryRecallMiddleware", () => {
     const mw = createMemoryRecallMiddleware(createConfig(fs));
     const request = createModelRequest();
 
-    const recallSpy = spyOn(memoryModule, "recallMemories");
+    const scoreSpy = spyOn(memoryModule, "scoreMemories");
 
     const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
 
-    // First model call — triggers recall
+    // First model call — triggers init.
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
-    expect(recallSpy).toHaveBeenCalledTimes(1);
+    expect(scoreSpy).toHaveBeenCalledTimes(1);
 
-    // Reset via session start
+    // Reset via session start.
     await mw.onSessionStart?.(createSessionCtx());
 
-    // Second model call — triggers recall again because cache was reset
+    // Second model call — re-inits because session state was cleared.
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
-    expect(recallSpy).toHaveBeenCalledTimes(2);
+    expect(scoreSpy).toHaveBeenCalledTimes(2);
   });
 
   test("handles recallMemories failure gracefully", async () => {
@@ -409,22 +414,29 @@ describe("createMemoryRecallMiddleware", () => {
     expect(chunks[0]?.kind).toBe("text_delta");
   });
 
-  test("does not re-recall after failure", async () => {
+  test("does not re-init after failure", async () => {
     const fs = createThrowingFs();
     const mw = createMemoryRecallMiddleware(createConfig(fs));
     const request = createModelRequest();
 
-    const recallSpy = spyOn(memoryModule, "recallMemories");
+    const scanSpy = spyOn(memoryModule, "scanMemoryDirectory");
 
     const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
 
-    // First call — recall attempted and fails
+    // First call — init attempted and fails (throwing FS).
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
-    // Second call — should NOT retry recall (initialized flag prevents it)
+    const callsAfterInit = scanSpy.mock.calls.length;
+    // Second call — should NOT retry init (initialized flag prevents it).
+    // refreshLiveDelta still tries to scan but that's a separate path
+    // — what matters is initialize() doesn't re-fire.
     await mw.wrapModelCall?.(createTurnCtx(), request, next);
 
-    // recallMemories is only attempted once
-    expect(recallSpy).toHaveBeenCalledTimes(1);
+    // initialize's scan is only attempted once.
+    // (refreshLiveDelta may still scan on each turn — that's fine, it's
+    // a separate retry-tolerant path. We only verify init doesn't loop.)
+    // Verify call count after the second call equals call count after init
+    // plus exactly one refreshLiveDelta scan (one per turn).
+    expect(scanSpy.mock.calls.length).toBe(callsAfterInit + 1);
   });
 
   test("prepends memory message before existing messages", async () => {
@@ -538,11 +550,11 @@ describe("createMemoryRecallMiddleware", () => {
       // 3 messages: frozen (prepended) + live delta (before user) + user.
       expect(secondRequest.messages.length).toBe(3);
       expect(secondRequest.messages[0]?.senderId).toBe("system:memory-recall");
-      expect(secondRequest.messages[1]?.senderId).toBe("system:memory-live");
-      expect(secondRequest.messages[2]?.senderId).toBe("user");
+      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
+      expect(secondRequest.messages[1]?.senderId).toBe("user");
 
       // Live delta contains the new memory, not the frozen one.
-      const liveText = getMessageText(secondRequest, 1);
+      const liveText = getMessageText(secondRequest, 2);
       expect(liveText).toContain("Live delta content");
       expect(liveText).not.toContain("Frozen snapshot content");
 
@@ -616,8 +628,8 @@ describe("createMemoryRecallMiddleware", () => {
       if (req2 === undefined) return;
       // frozen + live (before user) + user
       expect(req2.messages.length).toBe(3);
-      expect(req2.messages[1]?.senderId).toBe("system:memory-live");
-      const live2 = getMessageText(req2, 1);
+      expect(req2.messages[2]?.senderId).toBe("system:memory-live");
+      const live2 = getMessageText(req2, 2);
       expect(live2).toContain("Second memory");
 
       // Add 3rd file — delta should contain BOTH additions (second + third).
@@ -637,8 +649,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(req3).toBeDefined();
       if (req3 === undefined) return;
       expect(req3.messages.length).toBe(3);
-      expect(req3.messages[1]?.senderId).toBe("system:memory-live");
-      const live3 = getMessageText(req3, 1);
+      expect(req3.messages[2]?.senderId).toBe("system:memory-live");
+      const live3 = getMessageText(req3, 2);
       expect(live3).toContain("Second memory");
       expect(live3).toContain("Third memory");
       expect(live3).not.toContain("Original memory"); // frozen-only, excluded from delta
@@ -690,10 +702,10 @@ describe("createMemoryRecallMiddleware", () => {
       if (capturedRequest === undefined) return;
       expect(capturedRequest.messages.length).toBe(3);
       expect(capturedRequest.messages[0]?.senderId).toBe("system:memory-recall");
-      expect(capturedRequest.messages[1]?.senderId).toBe("system:memory-live");
-      expect(capturedRequest.messages[2]?.senderId).toBe("user");
+      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
+      expect(capturedRequest.messages[1]?.senderId).toBe("user");
 
-      const liveText = getMessageText(capturedRequest, 1);
+      const liveText = getMessageText(capturedRequest, 2);
       expect(liveText).toContain("Streaming delta");
       expect(liveText).not.toContain("Streaming frozen");
 
@@ -748,9 +760,9 @@ describe("createMemoryRecallMiddleware", () => {
       expect(secondRequest).toBeDefined();
       if (secondRequest === undefined) return;
       expect(secondRequest.messages.length).toBe(3);
-      expect(secondRequest.messages[1]?.senderId).toBe("system:memory-live");
-      expect(secondRequest.messages[2]?.senderId).toBe("user");
-      const deltaText = getMessageText(secondRequest, 1);
+      expect(secondRequest.messages[2]?.senderId).toBe("system:memory-live");
+      expect(secondRequest.messages[1]?.senderId).toBe("user");
+      const deltaText = getMessageText(secondRequest, 2);
       expect(deltaText).toContain("green");
     });
 
@@ -795,8 +807,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(capturedRequest).toBeDefined();
       if (capturedRequest === undefined) return;
       // Live delta present — budget forces truncation, doesn't drop the block.
-      expect(capturedRequest.messages[1]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(capturedRequest, 1);
+      expect(capturedRequest.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(capturedRequest, 2);
       // The NEWEST memory (New4) must be in the delta.
       expect(deltaText).toContain("New4");
       // At least one of the oldest must be DROPPED (5 memories with full
@@ -850,8 +862,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(secondReq).toBeDefined();
       if (secondReq === undefined) return;
       expect(secondReq.messages.length).toBe(3);
-      expect(secondReq.messages[1]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(secondReq, 1);
+      expect(secondReq.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(secondReq, 2);
       expect(deltaText).toContain("pink");
     });
 
@@ -905,8 +917,8 @@ describe("createMemoryRecallMiddleware", () => {
 
       expect(captured).toBeDefined();
       if (captured === undefined) return;
-      expect(captured.messages[1]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(captured, 1);
+      expect(captured.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(captured, 2);
       // Old was updated MOST recently, so it must win any budget-based
       // ranking against New1/New2 whose detectedAt is older.
       expect(deltaText).toContain("freshly updated content");
@@ -961,8 +973,8 @@ describe("createMemoryRecallMiddleware", () => {
       expect(secondReq).toBeDefined();
       if (secondReq === undefined) return;
       expect(secondReq.messages.length).toBe(3);
-      expect(secondReq.messages[1]?.senderId).toBe("system:memory-live");
-      const deltaText = getMessageText(secondReq, 1);
+      expect(secondReq.messages[2]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(secondReq, 2);
       expect(deltaText).toContain("green");
     });
 
@@ -1016,16 +1028,138 @@ describe("createMemoryRecallMiddleware", () => {
       expect(captured).toBeDefined();
       if (captured === undefined) return;
       // Expected order: frozen(0) -> prior_user(1) -> prior_assistant(2) ->
-      //                 live_delta(3) -> current_user(4).
-      // Crucially: live delta is BEFORE the current user message, not after.
+      //                 current_user(3) -> live_delta(4).
+      // Live delta APPENDS after conversation so the prefix
+      //   [frozen, prior_user, prior_assistant, current_user]
+      // remains byte-stable across turns and stays in the prompt cache.
       expect(captured.messages.length).toBe(5);
       expect(captured.messages[0]?.senderId).toBe("system:memory-recall");
       expect(captured.messages[1]?.senderId).toBe("user");
       expect(getMessageText(captured, 1)).toBe("prior user question");
       expect(captured.messages[2]?.senderId).toBe("assistant");
-      expect(captured.messages[3]?.senderId).toBe("system:memory-live");
-      expect(captured.messages[4]?.senderId).toBe("user");
-      expect(getMessageText(captured, 4)).toBe("current user question");
+      expect(captured.messages[3]?.senderId).toBe("user");
+      expect(getMessageText(captured, 3)).toBe("current user question");
+      expect(captured.messages[4]?.senderId).toBe("system:memory-live");
+    });
+
+    test("supersession: section title flags overwrites of frozen entries", async () => {
+      // When a live-delta memory has the same path as a frozen-snapshot
+      // entry, the model needs to know which is authoritative. Without
+      // an explicit signal it would see TWO copies (stale frozen +
+      // updated live) and have to guess. The section title should make
+      // precedence explicit.
+      const { createMemoryStore } = await import("@koi/memory-fs");
+      const store = createMemoryStore({ dir });
+
+      const seeded = await store.write({
+        name: "Pref",
+        description: "Theme preference",
+        type: "user",
+        content: "Light mode",
+      });
+      expect(seeded.action).toBe("created");
+      if (seeded.action !== "created") return;
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // Init — frozen captures "Light mode".
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => mockNext(r));
+
+      // Overwrite via store.update() — same path, new content.
+      await store.update(seeded.record.id, { content: "Dark mode" });
+
+      let captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        captured = r;
+        return mockNext(r);
+      });
+
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      const liveText = getMessageText(captured, 2);
+      // The supersession section header must explicitly tell the model
+      // these entries override same-name entries from the earlier section.
+      expect(liveText).toMatch(/supersede/i);
+      expect(liveText).toContain("Dark mode");
+    });
+
+    test("frozen prefix is byte-stable across consecutive turns (cache invariant)", async () => {
+      // Regression for prompt-cache breakage: the prefix
+      //   [system:memory-recall, prior conversation..., current user]
+      // must be IDENTICAL across consecutive turns. The live delta must
+      // be appended AFTER the user message so it cannot perturb the
+      // cached prefix when memory changes mid-session.
+      await writeFile(
+        join(dir, "role.md"),
+        makeMemoryFileContent("Role", "user", "Cache invariant content"),
+      );
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+
+      const turn1Request: ModelRequest = {
+        messages: [
+          {
+            content: [{ kind: "text", text: "first turn user msg" }],
+            senderId: "user",
+            timestamp: Date.now() - 1000,
+          },
+        ],
+      };
+
+      let turn1Captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), turn1Request, async (r) => {
+        turn1Captured = r;
+        return mockNext(r);
+      });
+      expect(turn1Captured?.messages.length).toBe(2); // frozen + user
+
+      // Mid-session memory write — would break cache if it perturbed prefix.
+      await writeFile(join(dir, "new.md"), makeMemoryFileContent("New", "user", "added later"));
+      const future = new Date(Date.now() + 5000);
+      await utimes(dir, future, future);
+
+      // Turn 2 includes turn 1's user message + assistant + new user.
+      const turn2Request: ModelRequest = {
+        messages: [
+          ...turn1Request.messages,
+          {
+            content: [{ kind: "text", text: "assistant reply 1" }],
+            senderId: "assistant",
+            timestamp: Date.now() - 500,
+          },
+          {
+            content: [{ kind: "text", text: "second turn user msg" }],
+            senderId: "user",
+            timestamp: Date.now(),
+          },
+        ],
+      };
+
+      let turn2Captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), turn2Request, async (r) => {
+        turn2Captured = r;
+        return mockNext(r);
+      });
+
+      expect(turn2Captured).toBeDefined();
+      if (turn2Captured === undefined || turn1Captured === undefined) return;
+
+      // Turn 1 layout: [frozen, turn1_user]. Length 2.
+      // Turn 2 layout: [frozen, turn1_user, asst, turn2_user, live_delta]. Length 5.
+      expect(turn2Captured.messages.length).toBe(5);
+
+      // The PREFIX of turn 2's messages (positions 0..1) must equal
+      // turn 1's full message array. Identical sender + content.
+      for (let i = 0; i < turn1Captured.messages.length; i++) {
+        const t1 = turn1Captured.messages[i];
+        const t2 = turn2Captured.messages[i];
+        expect(t2?.senderId).toBe(t1?.senderId ?? "");
+        expect(getMessageText(turn2Captured, i)).toBe(getMessageText(turn1Captured, i));
+      }
+
+      // Live delta is the LAST message in turn 2 — does not perturb prefix.
+      expect(turn2Captured.messages[4]?.senderId).toBe("system:memory-live");
     });
   });
 });
