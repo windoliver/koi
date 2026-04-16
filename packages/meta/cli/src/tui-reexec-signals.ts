@@ -22,7 +22,7 @@ import type { Subprocess } from "bun";
 const PARENT_SIGTERM_ESCALATION_MS = 10_000;
 
 /**
- * Install SIGINT and SIGTERM handlers on the re-exec parent process.
+ * Install SIGINT, SIGTERM, and SIGHUP handlers on the re-exec parent process.
  *
  * SIGINT: the terminal delivers Ctrl+C to the whole foreground process
  * group, so the child already receives it directly. Forwarding would
@@ -39,10 +39,17 @@ const PARENT_SIGTERM_ESCALATION_MS = 10_000;
  * SIGTERM: PID-directed from supervisors only hits the parent, so
  * forwarding is the only path. The 10s SIGKILL escalation guarantees
  * the wrapper cannot hang forever if the child refuses to exit.
+ *
+ * SIGHUP (#1750): tmux sends SIGHUP when a session is killed. Without
+ * a handler, the parent ignores it and hangs on `proc.exited`, orphaning
+ * the child. Forward as SIGTERM to trigger the child's graceful shutdown.
  */
 export function installTuiReexecSignalHandlers(proc: Subprocess): void {
   process.on("SIGINT", noopSigintHandler);
   process.on("SIGTERM", () => {
+    forwardSigtermWithEscalation(proc);
+  });
+  process.on("SIGHUP", () => {
     forwardSigtermWithEscalation(proc);
   });
 }
@@ -51,7 +58,13 @@ function noopSigintHandler(): void {
   // Intentional no-op — see module docstring.
 }
 
+// let: justified — set once on first forward call to prevent double-escalation
+// when both SIGHUP and SIGTERM arrive (e.g. tmux kill-session + supervisor).
+let forwardingStarted = false;
+
 function forwardSigtermWithEscalation(proc: Subprocess): void {
+  if (forwardingStarted) return;
+  forwardingStarted = true;
   try {
     proc.kill("SIGTERM");
   } catch {
