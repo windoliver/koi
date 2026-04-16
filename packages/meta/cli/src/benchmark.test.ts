@@ -176,6 +176,7 @@ describe("startup-latency probe (#1637) — production-purity contract", () => {
       "terminated",
       "terminatedExitCode",
       "bindChild",
+      "childExit",
       // setTimeout yield for signal flush (#1750)
       "new",
       "Promise",

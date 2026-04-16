@@ -132,7 +132,11 @@ switch (result.kind) {
       },
     );
     guard.bindChild(proc);
-    process.exit(await proc.exited);
+    const childExit = await proc.exited;
+    // If the parent handled a SIGHUP, preserve that exit code instead
+    // of the child's SIGTERM exit (143). Supervisors need to distinguish
+    // terminal hangup (129) from operator kill (143).
+    process.exit(guard.terminated ? guard.terminatedExitCode : childExit);
     break;
   }
   case "tui": {
