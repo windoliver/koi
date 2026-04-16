@@ -1619,11 +1619,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // for onSessionEnd hooks but short enough to feel responsive).
       // The timer stays ref'd to guarantee exit even if all other
       // handles are gone.
-      // Total budget for the entire force-quit sequence (first dispose +
-      // SIGKILL wait + retry dispose). The timer stays ref'd and is only
-      // cleared immediately before process.exit so there is always a
-      // guaranteed escape path — even if a retry dispose wedges.
-      const FORCE_HARD_EXIT_MS = 8_000;
+      // Total budget for the entire force-quit sequence. Worst case:
+      // dispose internal timeout (5s) + SIGKILL wait (3.5s) + retry
+      // dispose (5s) = ~13.5s. 15s gives the retry room to complete
+      // while still guaranteeing termination. The timer stays ref'd
+      // and is only cleared immediately before process.exit so there
+      // is always a guaranteed escape path.
+      const FORCE_HARD_EXIT_MS = 15_000;
       const forceDispose = async (): Promise<void> => {
         const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
         try {
