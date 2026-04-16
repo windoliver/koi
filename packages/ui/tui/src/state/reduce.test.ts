@@ -1643,7 +1643,9 @@ describe("reduce — message compaction", () => {
 
 describe("createInitialState", () => {
   test("initial state shape", () => {
-    expect(createInitialState()).toMatchSnapshot();
+    // structuredClone strips SolidJS reactive proxy symbols that leak
+    // into snapshots when bunfig.toml preloads the Solid runtime.
+    expect(structuredClone(createInitialState())).toMatchSnapshot();
   });
 });
 
