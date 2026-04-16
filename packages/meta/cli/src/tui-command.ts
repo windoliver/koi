@@ -1619,9 +1619,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // for onSessionEnd hooks but short enough to feel responsive).
       // The timer stays ref'd to guarantee exit even if all other
       // handles are gone.
-      const FORCE_DISPOSE_TIMEOUT_MS = 4_000;
+      // Total budget for the entire force-quit sequence (first dispose +
+      // SIGKILL wait + retry dispose). The timer stays ref'd and is only
+      // cleared immediately before process.exit so there is always a
+      // guaranteed escape path — even if a retry dispose wedges.
+      const FORCE_HARD_EXIT_MS = 8_000;
       const forceDispose = async (): Promise<void> => {
-        const hardExit = setTimeout(() => process.exit(130), FORCE_DISPOSE_TIMEOUT_MS);
+        const hardExit = setTimeout(() => process.exit(130), FORCE_HARD_EXIT_MS);
         try {
           await runtimeHandle?.runtime.dispose();
         } catch (disposeErr: unknown) {
@@ -1636,7 +1640,6 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             /* stderr unwritable — best effort */
           }
         }
-        clearTimeout(hardExit);
         if (liveTasks) {
           // Wait long enough for the runtime's SIGKILL escalation window
           // (SIGKILL_ESCALATION_MS = 3000ms in tui-runtime / bash exec)
@@ -1655,6 +1658,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // Best-effort — exit regardless.
           }
         }
+        clearTimeout(hardExit);
         process.exit(130);
       };
       void forceDispose();
