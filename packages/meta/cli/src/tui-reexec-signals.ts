@@ -112,7 +112,10 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     forward();
   };
 
-  process.on("SIGINT", noopSigintHandler);
+  // Only arm SIGTERM/SIGHUP pre-spawn. SIGINT (Ctrl+C) must NOT be
+  // masked before the child exists — otherwise a user pressing Ctrl+C
+  // during startup would be silently ignored and the TUI would launch.
+  // The SIGINT no-op handler is installed in bindChild after spawn.
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
 
@@ -122,6 +125,9 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     },
     bindChild(proc: Subprocess): void {
       child = proc;
+      // Now that the child exists, install the SIGINT no-op so the
+      // parent doesn't exit before the child's graceful interrupt flow.
+      process.on("SIGINT", noopSigintHandler);
       // Replay: if a signal arrived between arm and bind, forward now.
       if (pendingSignal) {
         forwardToChild(proc);
