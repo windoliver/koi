@@ -552,24 +552,34 @@ describe("createMemoryRecallMiddleware", () => {
       expect(frozenText).not.toContain("Live delta content");
     });
 
-    test("skips re-scan when mtime unchanged", async () => {
+    test("live delta is empty when nothing changed since session start", async () => {
+      // The middleware intentionally re-scans every turn because
+      // mtime/size gating cannot detect same-size mtime-preserving
+      // overwrites (the memory-fs update path). What matters for the
+      // "unchanged" contract is that NO live-delta message is emitted
+      // when no file changed — not that the scan itself is skipped.
       await writeFile(join(dir, "role.md"), makeMemoryFileContent("Role", "user", "Stable memory"));
-
-      const scanSpy = spyOn(memoryModule, "scanMemoryDirectory");
 
       const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
       const request = createModelRequest();
-      const next = async (req: ModelRequest): Promise<ModelResponse> => mockNext(req);
 
-      // Call wrapModelCall multiple times without touching the dir.
-      await mw.wrapModelCall?.(createTurnCtx(), request, next);
-      const callsAfterInit = scanSpy.mock.calls.length;
+      let captured: ModelRequest | undefined;
+      const next = async (req: ModelRequest): Promise<ModelResponse> => {
+        captured = req;
+        return mockNext(req);
+      };
 
+      // First call — init frozen snapshot.
+      await mw.wrapModelCall?.(createTurnCtx(), request, next);
+      // Subsequent calls with no dir changes — no live-delta block.
       await mw.wrapModelCall?.(createTurnCtx(), request, next);
       await mw.wrapModelCall?.(createTurnCtx(), request, next);
 
-      // mtime guard prevents additional scans on subsequent calls.
-      expect(scanSpy.mock.calls.length).toBe(callsAfterInit);
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      // Expect frozen + user only — no system:memory-live.
+      expect(captured.messages.length).toBe(2);
+      expect(captured.messages.some((m) => m.senderId === "system:memory-live")).toBe(false);
     });
 
     test("live delta updates on subsequent mtime changes", async () => {
@@ -798,6 +808,108 @@ describe("createMemoryRecallMiddleware", () => {
         deltaText.includes("New3") &&
         deltaText.includes("New4");
       expect(containsAllFive).toBe(false);
+    });
+
+    test("detects same-length overwrite via memory-fs update() (mtime+size both preserved)", async () => {
+      // Hardest regression: update() preserves mtime AND the content
+      // length happens to match. Only content hashing catches this.
+      const { createMemoryStore } = await import("@koi/memory-fs");
+      const store = createMemoryStore({ dir });
+
+      const first = await store.write({
+        name: "Color",
+        description: "Favorite color",
+        type: "user",
+        content: "blue", // 4 chars
+      });
+      expect(first.action).toBe("created");
+      if (first.action !== "created") return;
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      let firstReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        firstReq = r;
+        return mockNext(r);
+      });
+      expect(firstReq).toBeDefined();
+      if (firstReq === undefined) return;
+      expect(getMessageText(firstReq, 0)).toContain("blue");
+
+      // Same-length overwrite: "blue" -> "pink" (both 4 chars).
+      // memory-fs.update() preserves mtime, so mtime+size would both
+      // match baseline. Content hash MUST catch this.
+      await store.update(first.record.id, { content: "pink" });
+
+      let secondReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        secondReq = r;
+        return mockNext(r);
+      });
+      expect(secondReq).toBeDefined();
+      if (secondReq === undefined) return;
+      expect(secondReq.messages.length).toBe(3);
+      expect(secondReq.messages[1]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(secondReq, 1);
+      expect(deltaText).toContain("pink");
+    });
+
+    test("ranks changed memories by observation time, not file mtime", async () => {
+      // Regression for mtime-preserving stores: an OLD memory that was
+      // just corrected must not be evicted under budget pressure in
+      // favor of newer memories that were actually unchanged. We rank
+      // by state.detectedAt (observation time), which increases each
+      // time we first see a file change — immune to mtime preservation.
+      const { createMemoryStore } = await import("@koi/memory-fs");
+      const store = createMemoryStore({ dir });
+
+      // Seed an "old" memory.
+      const old = await store.write({
+        name: "Old",
+        description: "Ancient memory",
+        type: "user",
+        content: "old content",
+      });
+      expect(old.action).toBe("created");
+      if (old.action !== "created") return;
+
+      const mw = createMemoryRecallMiddleware({
+        ...createRealFsConfig(dir),
+        // Tight budget — at most one memory fits.
+        liveDeltaMaxTokens: 200,
+      });
+
+      // Init — Old in frozen snapshot.
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => mockNext(r));
+
+      // Wait a bit, then add two unrelated NEW memories.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await writeFile(join(dir, "new1.md"), makeMemoryFileContent("New1", "user", "new one"));
+      await writeFile(join(dir, "new2.md"), makeMemoryFileContent("New2", "user", "new two"));
+
+      // Trigger one refresh so detectedAt is stamped for New1 and New2.
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => mockNext(r));
+
+      // NOW update the OLD memory (memory-fs preserves mtime).
+      // observation time of Old > New1/New2 even though mtime of Old
+      // is ancient (stamped back).
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await store.update(old.record.id, { content: "freshly updated content" });
+
+      let captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => {
+        captured = r;
+        return mockNext(r);
+      });
+
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      expect(captured.messages[1]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(captured, 1);
+      // Old was updated MOST recently, so it must win any budget-based
+      // ranking against New1/New2 whose detectedAt is older.
+      expect(deltaText).toContain("freshly updated content");
     });
 
     test("detects in-place overwrite via real memory-fs store (mtime-preserving update)", async () => {

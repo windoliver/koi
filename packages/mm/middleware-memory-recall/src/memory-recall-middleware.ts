@@ -4,14 +4,19 @@
  * Three layers:
  *   1. Frozen snapshot (always): scans memory dir once at session start,
  *      scores by salience, budgets to token limit, caches as stable prefix.
- *   2. Live delta (per-turn): stats the memory dir, re-scans when mtime
- *      changes, injects new/changed memories after conversation history.
+ *   2. Live delta (per-turn): rescans memory dir each turn, computes a
+ *      content-hash signature per file, compares against the session-start
+ *      baseline. New files or changed content emit the new "system:memory-live"
+ *      block. Content hashing (not mtime) is required because @koi/memory-fs
+ *      update() preserves mtime to keep createdAt stable.
  *   3. Relevance overlay (optional): per-turn side-query asks a lightweight
  *      model to pick the N most relevant memories for the current message.
  *
  * The frozen snapshot preserves prompt cache (stable prefix). The live delta
- * and relevance overlay are appended after conversation history so they never
- * invalidate the cached prefix.
+ * and relevance overlay are INSERTED BEFORE the last user message so the new
+ * memory arrives as prior context, not as a post-hoc instruction, while
+ * keeping the prefix (system prompt + frozen snapshot + prior conversation)
+ * untouched for cache hits.
  *
  * Priority 310: runs after extraction (305).
  */
@@ -51,22 +56,28 @@ interface SessionRecallState {
   memoryManifest: readonly MemoryManifestEntry[];
   frozenPaths: ReadonlySet<string>;
   /**
-   * Per-file signatures (mtime + size) for EVERY memory file present at
-   * session start — not just the frozen-snapshot subset. The live delta
-   * uses this as the baseline: a record qualifies for injection only if
-   * its path isn't in this map (new file) OR its signature differs from
+   * Content-hash signatures for EVERY memory file present at session
+   * start — not just the frozen-snapshot subset. The live delta uses
+   * this as the baseline: a record qualifies for injection only if its
+   * path isn't in this map (new file) OR its content hash differs from
    * the recorded value (in-place overwrite).
    *
-   * Size is part of the signature because `@koi/memory-fs` update() does
-   * atomic write+rename+utimes, stamping mtime back to the original
-   * createdAt to preserve it across updates. So mtime alone cannot detect
-   * in-place overwrites via the standard store. Size reliably changes for
-   * any real content change.
+   * Content hash (not mtime) because `@koi/memory-fs.update()` stamps
+   * mtime back to preserve createdAt — size-preserving overwrites
+   * ("blue" -> "pink") would be undetectable otherwise.
    */
   sessionStartSignatures: ReadonlyMap<string, FileSignature>;
   selectorNeeded: boolean;
-  /** Fingerprint of last directory listing — skip re-scan when unchanged. */
-  lastListFingerprint: string;
+  /**
+   * Per-path timestamp of when the middleware first OBSERVED the path
+   * as changed (new or modified). Used to rank changed memories under
+   * token-budget pressure: we cannot trust `record.updatedAt` because
+   * scanMemoryDirectory populates it from file mtime, which memory-fs
+   * deliberately preserves across updates. Our observation time is the
+   * most reliable monotonic mutation signal available without L0
+   * changes to FileSystemBackend.
+   */
+  detectedAt: Map<string, number>;
   /** Cached live delta message (new/modified memories since frozen snapshot). */
   liveMessage: InboundMessage | undefined;
   /** Paths included in the live delta (for relevance exclusion). */
@@ -83,81 +94,68 @@ function createEmptyState(): SessionRecallState {
     frozenPaths: new Set(),
     sessionStartSignatures: new Map(),
     selectorNeeded: false,
-    lastListFingerprint: "",
+    detectedAt: new Map(),
     liveMessage: undefined,
     livePaths: new Set(),
   };
 }
 
 /**
- * Per-file signature used both for the directory fingerprint and the
- * session-start baseline. Combines `modifiedAt` (mtime) and `size` so
- * that an in-place overwrite is detected even when the backing store
- * resets mtime to preserve createdAt (e.g. `@koi/memory-fs` update()
- * does atomic write+rename+utimes, stamping mtime back to the original
- * creation time). Size typically differs for any real content change.
+ * Per-file signature — the scan result's full content hash plus size.
+ *
+ * Uses a content hash (not mtime) because `@koi/memory-fs.update()` does
+ * atomic write+rename+utimes, stamping mtime back to the original
+ * creation time to preserve createdAt. That means mtime alone — and
+ * even mtime+size — miss same-size in-place overwrites like "blue" ->
+ * "pink". The content hash detects any change, regardless of what the
+ * store does with stat metadata.
+ *
+ * The hash is a cheap FNV-1a over the parsed content string. Collisions
+ * are effectively impossible for natural text; an adversarial user
+ * would have to construct a specific pre-image, which is out of scope
+ * for a local-memory middleware.
  */
 interface FileSignature {
-  readonly modifiedAt: number;
+  readonly hash: number;
   readonly size: number;
 }
 
 function signatureChanged(a: FileSignature, b: FileSignature): boolean {
-  return a.modifiedAt !== b.modifiedAt || a.size !== b.size;
-}
-
-function signatureKey(s: FileSignature): string {
-  return `${String(s.modifiedAt)}:${String(s.size)}`;
+  return a.hash !== b.hash || a.size !== b.size;
 }
 
 /**
- * List the memory directory and return a map of relative paths to
- * per-file signatures. Used for the session-start baseline (uncapped —
- * must include EVERY memory file, not just the newest 200) and also as
- * the source of the per-turn fingerprint.
- *
- * Returns undefined on any error or truncation (fail-open: callers
- * treat this as "cannot trust listing, force rescan").
- *
- * Paths are stored relative to `memoryDir` so keys match what
- * `scanMemoryDirectory()` surfaces via `record.filePath`.
+ * FNV-1a 32-bit hash — fast, stable, no dependencies. Sufficient for
+ * change detection on small text files (~1-10KB per memory record).
  */
-async function listFileSignatures(
-  fs: MemoryRecallMiddlewareConfig["fs"],
-  memoryDir: string,
-): Promise<ReadonlyMap<string, FileSignature> | undefined> {
-  try {
-    const result = fs.list(memoryDir, { glob: "**/*.md", recursive: true });
-    const settled = await Promise.resolve(result);
-    if (!settled.ok) return undefined;
-    if (settled.value.truncated) return undefined;
-    const base = `${memoryDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
-    const out = new Map<string, FileSignature>();
-    for (const entry of settled.value.entries) {
-      if (!entry.path.endsWith(".md")) continue;
-      if (entry.kind !== "file") continue;
-      const normalized = entry.path.replace(/\\/g, "/");
-      if (!normalized.startsWith(base)) continue;
-      const relative = normalized.slice(base.length);
-      if (relative.length === 0) continue;
-      out.set(relative, {
-        modifiedAt: entry.modifiedAt ?? 0,
-        size: entry.size ?? 0,
-      });
-    }
-    return out;
-  } catch {
-    return undefined;
+function fnv1a(text: string): number {
+  // let — classic FNV-1a accumulator loop
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
   }
+  return h >>> 0;
+}
+
+function signatureFromContent(content: string): FileSignature {
+  return { hash: fnv1a(content), size: content.length };
 }
 
 /**
- * Compute a stable fingerprint from a signature map. Any added, removed,
- * or modified file (mtime OR size change) produces a different string.
+ * Build a session-start signature baseline from a scan result.
+ *
+ * The scan already reads every memory file's content (to parse
+ * frontmatter), so computing a content hash per record is free.
  */
-function fingerprintSignatures(sigs: ReadonlyMap<string, FileSignature>): string {
-  const entries = [...sigs.entries()].map(([path, sig]) => `${path}:${signatureKey(sig)}`).sort();
-  return entries.join("|");
+function buildSignatureBaseline(
+  memories: readonly ScannedMemory[],
+): ReadonlyMap<string, FileSignature> {
+  const out = new Map<string, FileSignature>();
+  for (const m of memories) {
+    out.set(m.record.filePath, signatureFromContent(m.record.content));
+  }
+  return out;
 }
 
 export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
@@ -200,26 +198,18 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
       }
 
-      // Build the session-start baseline from an UNCAPPED list() — must
+      // Build the session-start baseline from an UNCAPPED scan — must
       // include every memory file, not just the newest 200 (scan's default
-      // maxFiles). Without the full baseline, pre-existing overflow
-      // memories would be misclassified as "recently added" on the first
-      // subsequent write.
-      const signatures = await listFileSignatures(config.fs, config.recall.memoryDir);
-      if (signatures !== undefined) {
-        state.sessionStartSignatures = signatures;
-        state.lastListFingerprint = fingerprintSignatures(signatures);
-      }
+      // maxFiles). Content hashes are computed from the parsed content so
+      // same-size, mtime-preserving overwrites are still detectable.
+      const scanResult = await scanMemoryDirectory(config.fs, {
+        memoryDir: config.recall.memoryDir,
+        maxFiles: Number.MAX_SAFE_INTEGER,
+      });
+      state.sessionStartSignatures = buildSignatureBaseline(scanResult.memories);
 
       if (config.relevanceSelector !== undefined && result.truncated) {
         state.selectorNeeded = true;
-        // Scan for the manifest (needs parsed frontmatter — name/description/type).
-        // Separate from the signature baseline which needs only metadata.
-        const scanResult = await scanMemoryDirectory(config.fs, {
-          memoryDir: config.recall.memoryDir,
-          // Use a large cap to cover the full directory for the manifest.
-          maxFiles: Number.MAX_SAFE_INTEGER,
-        });
         state.memoryManifest = scanResult.memories.map((m) => ({
           name: m.record.name,
           description: m.record.description,
@@ -396,42 +386,39 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * session from crowding out the conversation.
    */
   async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
-    const currentSigs = await listFileSignatures(config.fs, config.recall.memoryDir);
-    if (currentSigs === undefined) {
-      // Listing failed or was truncated — fail-open: force a rescan on
-      // next turn by invalidating the cache.
-      state.lastListFingerprint = "";
-      return;
-    }
-    const fingerprint = fingerprintSignatures(currentSigs);
-    if (fingerprint === state.lastListFingerprint) {
-      return; // Nothing changed — reuse cached delta (or none).
-    }
-    // Update cache before scanning — on interleaved turns, a failing scan
-    // will still leave the fingerprint advanced so we don't loop trying
-    // the same broken state repeatedly.
-    state.lastListFingerprint = fingerprint;
-
     try {
+      // Always scan. Content hashing requires reading file content, which
+      // is what scan does anyway. An optimization to gate on cheap metadata
+      // (list size/mtime) would miss same-size mtime-preserving overwrites
+      // — the exact case memory-fs.update() produces. Always-scan is
+      // correct and costs one scan per turn (~ms on local FS for ~dozens
+      // of files). For very large memory dirs this could be added as a
+      // fast-path, but correctness comes first.
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
-        // Use a large cap so truncated dirs don't hide real memories from
-        // the delta. Scan defaults to 200 which is the index cap, not a
-        // fundamental limit on stored memories.
+        // Uncapped: truncated listings would hide real memories from delta.
         maxFiles: Number.MAX_SAFE_INTEGER,
       });
 
       // Include memories that are NEW (absent from baseline) or whose
-      // signature (mtime + size) differs from session start. Using both
-      // fields catches in-place overwrites via memory-fs update() which
-      // stamps mtime back to createdAt but changes content size.
+      // content-hash signature differs from session start. Hashing the
+      // content survives mtime preservation AND size preservation.
+      const now = Date.now();
       const changedMemories = scanResult.memories.filter((m) => {
         const path = m.record.filePath;
         const baseline = state.sessionStartSignatures.get(path);
-        if (baseline === undefined) return true; // genuinely new file
-        const current = currentSigs.get(path);
-        if (current === undefined) return false; // listed but vanished — skip
-        return signatureChanged(current, baseline);
+        const current = signatureFromContent(m.record.content);
+        if (baseline === undefined) {
+          // Genuinely new file — record first-observation time for ranking.
+          if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
+          return true;
+        }
+        if (signatureChanged(current, baseline)) {
+          if (!state.detectedAt.has(path)) state.detectedAt.set(path, now);
+          return true;
+        }
+        // Signature matches baseline — unchanged.
+        return false;
       });
 
       if (changedMemories.length === 0) {
@@ -448,9 +435,14 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // split the memory). This also re-measures after formatting, which
       // accounts for section headers, XML boundary tags, and metadata
       // JSON that `estimateTokens(content)` alone misses.
-      const byRecency = [...changedMemories].sort(
-        (a, b) => b.record.updatedAt - a.record.updatedAt,
-      );
+      // Rank by OUR observation time, not record.updatedAt. record.updatedAt
+      // comes from file mtime and is stale for mtime-preserving stores —
+      // a freshly-corrected old memory would rank as ancient. detectedAt
+      // is the true "middleware first saw this change" time: monotonic,
+      // backend-independent, and reflects mutation ordering.
+      const rankOf = (m: ScannedMemory): number =>
+        state.detectedAt.get(m.record.filePath) ?? m.record.updatedAt;
+      const byRecency = [...changedMemories].sort((a, b) => rankOf(b) - rankOf(a));
       const packed: ScannedMemory[] = [];
       // let — accumulator built by incrementally adding memories and
       // re-measuring the formatted output against the budget.
