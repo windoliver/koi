@@ -816,6 +816,8 @@ describe("computeLiveMcpStatus", () => {
 
   test("AUTH_REQUIRED on http without OAuth → error (no usable auth flow)", () => {
     // Static-token / API-key / basic-auth HTTP servers can't be fixed via TUI OAuth.
+    // Also covers plugin-backed HTTP servers: getMcpStatus() forces hasOAuth=false for
+    // all plugin entries because nav:mcp-auth rejects plugin: prefixed names (#1852).
     expect(computeLiveMcpStatus("AUTH_REQUIRED", "http", false)).toBe("error");
   });
 
