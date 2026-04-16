@@ -468,14 +468,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
 
         // The schema recovery `continue` skips the normal doom-loop
-        // updateStreaks call. Feed the invalid turn's keys through
-        // updateStreaks so old streaks for different arg variants are
-        // dropped naturally (streak broken by a different call shape).
-        // This preserves streaks for unrelated tools while breaking
-        // streaks for the tool name that just failed validation.
+        // updateStreaks call. Feed only the invalid call keys through
+        // updateStreaks so their streaks are broken. Valid co-batched
+        // calls must NOT advance streaks since they never executed.
         if (doomLoopThreshold >= 2) {
-          const currentKeys = validToolCalls.map(toolCallKey);
-          doomLoopStreaks = updateStreaks(doomLoopStreaks, currentKeys);
+          const invalidKeys = validToolCalls
+            .filter((tc) => schemaErrorsByCallId.has(tc.callId))
+            .map(toolCallKey);
+          doomLoopStreaks = updateStreaks(doomLoopStreaks, invalidKeys);
         }
 
         // Transition to continue so the model gets a recovery turn.
@@ -799,10 +799,14 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
           state = transitionTurn(state, { kind: "tools_done" });
           // #1754: successful tool execution proves the model recovered.
           // Clear schema-recovery state so unrelated later mistakes
-          // still get one recovery attempt. Also clear stale errorMetadata.
+          // still get one recovery attempt. Only clear errorMetadata if
+          // it's from schema_validation — preserve other error sources.
           if (schemaValidationRecoveryPending) {
             schemaValidationRecoveryPending = false;
-            errorMetadata = undefined;
+            const source = (errorMetadata as { source?: unknown } | undefined)?.source;
+            if (source === "schema_validation") {
+              errorMetadata = undefined;
+            }
           }
         }
       } catch (e: unknown) {
