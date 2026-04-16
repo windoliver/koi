@@ -172,6 +172,8 @@ describe("startup-latency probe (#1637) — production-purity contract", () => {
       // command-dispatch benchmark scenario short-circuits before
       // tui-reexec is ever taken.
       "armTuiReexecSignalHandlers",
+      "guard",
+      "terminated",
       "bindChild",
     ]);
 

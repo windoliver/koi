@@ -57,7 +57,14 @@ const PARENT_SIGTERM_ESCALATION_MS = 10_000;
  * All forwarding state is per-installation (closure-local), so sequential
  * re-exec children in one process each get independent signal forwarding.
  */
-export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
+export interface TuiReexecSignalGuard {
+  /** True if a termination signal arrived before bindChild was called. */
+  readonly terminated: boolean;
+  /** Bind the child process. Replays any pending signal immediately. */
+  readonly bindChild: (proc: Subprocess) => void;
+}
+
+export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // let: justified — mutable child ref, set once when caller binds.
   let child: Subprocess | null = null;
   // let: justified — set once on first forward call to prevent double-
@@ -109,19 +116,24 @@ export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
 
-  return (proc: Subprocess): void => {
-    child = proc;
-    // Replay: if a signal arrived between arm and bind, forward now.
-    if (pendingSignal) {
-      forwardToChild(proc);
-    }
-    // Clean up listeners when the child exits so a later re-exec child
-    // in the same process starts from a clean state.
-    void proc.exited.then(() => {
-      process.removeListener("SIGINT", noopSigintHandler);
-      process.removeListener("SIGTERM", onSigterm);
-      process.removeListener("SIGHUP", onSighup);
-    });
+  return {
+    get terminated(): boolean {
+      return pendingSignal;
+    },
+    bindChild(proc: Subprocess): void {
+      child = proc;
+      // Replay: if a signal arrived between arm and bind, forward now.
+      if (pendingSignal) {
+        forwardToChild(proc);
+      }
+      // Clean up listeners when the child exits so a later re-exec child
+      // in the same process starts from a clean state.
+      void proc.exited.then(() => {
+        process.removeListener("SIGINT", noopSigintHandler);
+        process.removeListener("SIGTERM", onSigterm);
+        process.removeListener("SIGHUP", onSighup);
+      });
+    },
   };
 }
 
@@ -130,7 +142,7 @@ export function armTuiReexecSignalHandlers(): (proc: Subprocess) => void {
  * Kept for backward compatibility — calls arm + bind in one step.
  */
 export function installTuiReexecSignalHandlers(proc: Subprocess): void {
-  armTuiReexecSignalHandlers()(proc);
+  armTuiReexecSignalHandlers().bindChild(proc);
 }
 
 function noopSigintHandler(): void {
