@@ -60,7 +60,6 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
-import type { PluginSummary } from "@koi/tui";
 import {
   buildInheritedMiddlewareForChildren,
   composeRuntimeMiddleware,
@@ -74,6 +73,7 @@ import {
   type MiddlewareRegistry,
   resolveManifestMiddleware,
 } from "./middleware-registry.js";
+import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
 import { enforceRequiredMiddleware } from "./required-middleware.js";
@@ -469,7 +469,7 @@ export interface KoiRuntimeHandle {
    * Static for the lifetime of the runtime. Used by the TUI to populate
    * the /plugins view and inject plugin awareness into the system prompt.
    */
-  readonly pluginSummary: PluginSummary;
+  readonly pluginSummary: PluginDiscoverySummary;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -675,7 +675,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
 
-  const pluginSummary: PluginSummary = {
+  const pluginSummary: PluginDiscoverySummary = {
     loaded: pluginComponents.discovered,
     errors: pluginComponents.errors,
   };

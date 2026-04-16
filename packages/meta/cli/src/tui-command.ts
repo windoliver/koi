@@ -54,7 +54,6 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
-import { createGatedRegistry } from "@koi/plugins";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -1170,27 +1169,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     }
     return parts.sort().join("\n\n---\n\n");
   })();
-  // Pre-discover plugins for system prompt injection (#1728).
-  // Discovery is cheap (filesystem reads); the factory re-discovers internally.
-  const pluginUserRoot = join(homedir(), ".koi", "plugins");
-  const preDiscoveryRegistry = createGatedRegistry({ userRoot: pluginUserRoot }, pluginUserRoot);
-  const preDiscoveredPlugins = await preDiscoveryRegistry.discover();
-
-  let pluginSystemContext = "";
-  if (preDiscoveredPlugins.length > 0) {
-    const pluginLines = preDiscoveredPlugins
-      .map((p) => `- ${p.name} v${p.version}: ${p.description}`)
-      .join("\n");
-    pluginSystemContext = `\n\n[Loaded Plugins]\n${pluginLines}`;
-  }
-
   // Manifest instructions replace DEFAULT_SYSTEM_PROMPT when supplied —
   // mirrors `koi start --manifest` behavior. Skills still prepend
   // because they're filesystem-discovered, not part of the manifest.
   const baseSystemPrompt = manifestInstructions ?? DEFAULT_SYSTEM_PROMPT;
   const systemPrompt =
-    (skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt) +
-    pluginSystemContext;
+    skillContent.length > 0 ? `${skillContent}\n\n${baseSystemPrompt}` : baseSystemPrompt;
 
   // Loop mode (--until-pass): each user turn becomes a runUntilPass
   // invocation that iterates the agent against the verifier until
@@ -1312,15 +1296,29 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       summary: handle.pluginSummary,
     });
 
-    // Surface plugin errors as inline startup warning (#1728)
-    if (handle.pluginSummary.errors.length > 0) {
-      const errorLines = handle.pluginSummary.errors
-        .map((e) => `  \u2022 ${e.plugin}: ${e.error}`)
-        .join("\n");
+    // Surface plugin status as inline startup context (#1728).
+    // Plugin info is injected here (post-runtime) rather than in the system
+    // prompt because the factory applies the manifest allowlist during
+    // discovery — pre-discovery would list phantom plugins the factory
+    // subsequently excludes.
+    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+      const parts: string[] = [];
+      if (handle.pluginSummary.loaded.length > 0) {
+        const pluginLines = handle.pluginSummary.loaded
+          .map((p) => `  \u2022 ${p.name} v${p.version}: ${p.description}`)
+          .join("\n");
+        parts.push(`[Loaded Plugins]\n${pluginLines}`);
+      }
+      if (handle.pluginSummary.errors.length > 0) {
+        const errorLines = handle.pluginSummary.errors
+          .map((e) => `  \u2022 ${e.plugin}: ${e.error}`)
+          .join("\n");
+        parts.push(`\u26a0 Plugin load errors:\n${errorLines}`);
+      }
       store.dispatch({
         kind: "add_user_message",
-        id: `plugin-error-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: `\u26a0 Plugin load errors:\n${errorLines}` }],
+        id: `plugin-status-${String(Date.now())}`,
+        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
       });
     }
 

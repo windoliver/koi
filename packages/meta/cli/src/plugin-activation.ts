@@ -36,6 +36,12 @@ export interface PluginComponents {
   readonly discovered: readonly DiscoveredPluginInfo[];
 }
 
+/** Plugin discovery summary for host consumption (TUI, headless, etc.). */
+export interface PluginDiscoverySummary {
+  readonly loaded: readonly DiscoveredPluginInfo[];
+  readonly errors: readonly PluginActivationError[];
+}
+
 export interface PluginActivationError {
   readonly plugin: string;
   readonly error: string;
