@@ -9,20 +9,83 @@
  */
 
 import { spawn as spawnChild } from "node:child_process";
+import { statSync } from "node:fs";
 import { Readable } from "node:stream";
 import type { SandboxAdapter, SandboxProfile } from "@koi/core";
 
 /** Grace period before escalating SIGTERM to SIGKILL on cancellation. */
 export const SIGKILL_ESCALATION_MS = 3_000;
 
-/** Safe minimal environment for spawned bash processes. */
+/**
+ * Safe minimal environment for spawned bash processes.
+ *
+ * HOME defaults to /tmp — a neutral directory that prevents subprocess
+ * tools from reading config/credentials from a potentially injected
+ * $HOME. Callers that have validated home ownership should pass a
+ * trusted home via `buildSafeEnv({ home })`.
+ */
 export const SAFE_ENV: Readonly<Record<string, string>> = {
   PATH: "/usr/local/bin:/usr/bin:/bin",
-  HOME: process.env.HOME ?? "/tmp",
+  HOME: "/tmp",
   LANG: "en_US.UTF-8",
   LC_ALL: "en_US.UTF-8",
   TERM: "dumb",
 } as const;
+
+/**
+ * Build a safe env with additional PATH directories prepended.
+ *
+ * Each entry in `pathExtensions` is prepended to the default PATH so
+ * user-installed tools (bun, node, python, brew) are discoverable
+ * without leaking the full parent environment.
+ */
+/**
+ * Options for building a customized safe environment.
+ */
+export interface SafeEnvOptions {
+  /** Additional PATH directories prepended to the default PATH. */
+  readonly pathExtensions?: readonly string[] | undefined;
+  /**
+   * Validated home directory to use instead of `process.env.HOME`.
+   * When provided, overrides the default HOME in the spawned env.
+   * Use when the caller has verified home directory ownership.
+   */
+  readonly home?: string | undefined;
+}
+
+function validateHome(home: string | undefined): string | undefined {
+  if (home === undefined || home.length === 0 || !home.startsWith("/")) return undefined;
+  try {
+    return statSync(home).isDirectory() ? home : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildSafeEnv(options: SafeEnvOptions): Readonly<Record<string, string>> {
+  const pathExtensions = options.pathExtensions ?? [];
+  const rawHome = options.home;
+  // Validate home: must be non-empty absolute path pointing to an
+  // existing directory. Reject relative, empty, or non-directory values
+  // to prevent repo-local config poisoning from arbitrary callers.
+  const home = validateHome(rawHome);
+  const hasHome = home !== undefined;
+
+  // Reject entries that are empty, non-absolute, or contain ":" (which
+  // would inject extra PATH segments). Empty segments mean "search cwd"
+  // in POSIX PATH, enabling repo-local command hijacking.
+  const safe = pathExtensions.filter((p) => p.length > 0 && p.startsWith("/") && !p.includes(":"));
+  if (safe.length === 0 && !hasHome) return SAFE_ENV;
+
+  const basePath = SAFE_ENV.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+  const path = safe.length > 0 ? [...safe, basePath].join(":") : basePath;
+
+  return {
+    ...SAFE_ENV,
+    PATH: path,
+    HOME: hasHome ? home : (SAFE_ENV.HOME ?? "/tmp"),
+  };
+}
 
 export interface ExecResult {
   readonly stdout: string;
@@ -97,13 +160,14 @@ export async function execSandboxed(
   timeoutMs: number,
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
+  env: Readonly<Record<string, string>> = SAFE_ENV,
 ): Promise<ExecResult> {
   const start = Date.now();
   const instance = await adapter.create(profile);
   try {
     const r = await instance.exec("bash", ["--noprofile", "--norc", "-c", command], {
       cwd,
-      env: SAFE_ENV,
+      env,
       timeoutMs,
       maxOutputBytes,
       ...(signal !== undefined ? { signal } : {}),
@@ -138,6 +202,7 @@ export async function spawnBash(
   timeoutMs: number,
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
+  env: Readonly<Record<string, string>> = SAFE_ENV,
 ): Promise<ExecResult> {
   const start = Date.now();
 
@@ -172,7 +237,7 @@ export async function spawnBash(
   const proc = spawnChild("bash", ["--noprofile", "--norc", "-c", command], {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
-    env: SAFE_ENV,
+    env,
     detached: true,
   });
 
