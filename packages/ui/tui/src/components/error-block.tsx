@@ -17,23 +17,20 @@ interface ErrorBlockProps {
 
 export function ErrorBlock(props: ErrorBlockProps): JSX.Element {
   const displayMessage = () => unwrapErrorMessage(props.block.message);
-  // Info-style rendering for non-error codes (e.g., /goal feedback)
-  const isInfo = () => !props.block.code.includes("ERROR") && !props.block.code.includes("error");
-  const color = () => (isInfo() ? "cyan" : "red");
 
   return (
     <box
       flexDirection="column"
       border
       borderStyle="rounded"
-      borderColor={color()}
+      borderColor="red"
       paddingLeft={1}
       paddingRight={1}
     >
-      <text fg={color()}>
-        <b>{isInfo() ? props.block.code : `Error: ${props.block.code}`}</b>
+      <text fg="red">
+        <b>Error: {props.block.code}</b>
       </text>
-      <text fg={color()}>{displayMessage()}</text>
+      <text fg="red">{displayMessage()}</text>
     </box>
   );
 }

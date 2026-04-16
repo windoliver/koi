@@ -139,4 +139,32 @@ describe("MessageList — rendering", () => {
     expect(frame).toContain("TIMEOUT");
     expect(frame).toContain("Request timed out");
   });
+
+  // Regression: error codes without "ERROR" substring must still render as
+  // errors (not info). Earlier iteration of ErrorBlock inferred severity
+  // from the code text, downgrading legit failures like RESET_FAILED to
+  // cyan info boxes.
+  test.each([
+    ["RESET_FAILED", "Session reset failed"],
+    ["REWIND_FAILED", "Nothing to rewind"],
+    ["REWIND_INVALID_ARGS", "Usage: /rewind [n]"],
+    ["EXPORT_EMPTY", "No session to export"],
+    ["MCP_AUTH", "Authentication required"],
+    ["COMMAND_NOT_IMPLEMENTED", "Command not yet available"],
+  ])("renders %s as error (not info)", async (code, message) => {
+    const state = buildState([{ kind: "add_error", code, message }]);
+    const frame = await renderList(state);
+    expect(frame).toContain(`Error: ${code}`);
+    expect(frame).toContain(message);
+  });
+
+  test("renders info block (add_info)", async () => {
+    const state = buildState([
+      { kind: "add_info", message: "Goals:\n[ ] Write tests" },
+    ]);
+    const frame = await renderList(state);
+    // Info blocks do NOT have "Error:" prefix
+    expect(frame).not.toContain("Error:");
+    expect(frame).toContain("Write tests");
+  });
 });
