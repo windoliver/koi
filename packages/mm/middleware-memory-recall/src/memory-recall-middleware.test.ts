@@ -751,10 +751,11 @@ describe("createMemoryRecallMiddleware", () => {
         makeMemoryFileContent("Frozen", "user", "Frozen content"),
       );
 
-      // Budget only large enough for ~2 medium memories.
+      // Budget large enough to fit 1-2 medium memories once formatting
+      // overhead (XML tags, section headers, JSON metadata) is included.
       const mw = createMemoryRecallMiddleware({
         ...createRealFsConfig(dir),
-        liveDeltaMaxTokens: 100,
+        liveDeltaMaxTokens: 300,
       });
 
       // Init — frozen snapshot only.
@@ -762,8 +763,8 @@ describe("createMemoryRecallMiddleware", () => {
       await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), initNext);
 
       // Add several new memories, each large enough that fitting all of
-      // them would exceed the 100-token budget.
-      const filler = "filler ".repeat(40); // ~80 tokens per memory content
+      // them would exceed the budget.
+      const filler = "filler ".repeat(30); // ~60 tokens per memory content
       for (let i = 0; i < 5; i++) {
         const path = join(dir, `new${String(i)}.md`);
         await writeFile(path, makeMemoryFileContent(`New${String(i)}`, "user", filler));
@@ -788,8 +789,8 @@ describe("createMemoryRecallMiddleware", () => {
       const deltaText = getMessageText(capturedRequest, 1);
       // The NEWEST memory (New4) must be in the delta.
       expect(deltaText).toContain("New4");
-      // At least one of the oldest must be DROPPED (5 memories ~= 400+ tokens,
-      // budget 100 tokens, so we keep at most 1-2).
+      // At least one of the oldest must be DROPPED (5 memories with full
+      // formatting overhead blow past 300 tokens, so at least one drops).
       const containsAllFive =
         deltaText.includes("New0") &&
         deltaText.includes("New1") &&
@@ -797,6 +798,60 @@ describe("createMemoryRecallMiddleware", () => {
         deltaText.includes("New3") &&
         deltaText.includes("New4");
       expect(containsAllFive).toBe(false);
+    });
+
+    test("detects in-place overwrite via real memory-fs store (mtime-preserving update)", async () => {
+      // Regression: memory-fs update() does atomic write+rename+utimes,
+      // stamping mtime BACK to the original createdAt to preserve it.
+      // Size changes reliably, so the middleware must use mtime+size to
+      // detect these overwrites. Uses the real store (not raw utimes).
+      const { createMemoryStore } = await import("@koi/memory-fs");
+      const store = createMemoryStore({ dir });
+
+      // Seed via the real store — writes the original memory.
+      const first = await store.write({
+        name: "Color",
+        description: "Favorite color",
+        type: "user",
+        content: "Favorite color is blue",
+      });
+      expect(first.action).toBe("created");
+      if (first.action !== "created") return;
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // Init — frozen captures "blue".
+      let firstReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        firstReq = r;
+        return mockNext(r);
+      });
+      expect(firstReq).toBeDefined();
+      if (firstReq === undefined) return;
+      expect(getMessageText(firstReq, 0)).toContain("blue");
+
+      // Overwrite via the real store's update() — this is what
+      // memory_store force=true triggers in production. The update
+      // stamps mtime back to createdAt, so mtime-only detection would miss
+      // it. Size changes (blue=15 chars vs green-much-longer), so the
+      // signature comparison catches it.
+      await store.update(first.record.id, {
+        content: "Favorite color is actually green and has always been",
+      });
+
+      // Next turn — live delta MUST include the updated memory.
+      let secondReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        secondReq = r;
+        return mockNext(r);
+      });
+      expect(secondReq).toBeDefined();
+      if (secondReq === undefined) return;
+      expect(secondReq.messages.length).toBe(3);
+      expect(secondReq.messages[1]?.senderId).toBe("system:memory-live");
+      const deltaText = getMessageText(secondReq, 1);
+      expect(deltaText).toContain("green");
     });
 
     test("injection preserves canonical order: frozen -> prior -> live -> user", async () => {

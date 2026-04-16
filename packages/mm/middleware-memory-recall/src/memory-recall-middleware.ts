@@ -51,15 +51,19 @@ interface SessionRecallState {
   memoryManifest: readonly MemoryManifestEntry[];
   frozenPaths: ReadonlySet<string>;
   /**
-   * updatedAt for EVERY memory file present at session start — not just the
-   * frozen-snapshot subset. The live delta uses this as the baseline: a
-   * record qualifies for injection only if its path isn't in this map
-   * (new file) or its updatedAt exceeds the recorded value (in-place
-   * overwrite). Without this, truncated sessions where the frozen snapshot
-   * is a subset of the full memory set would pull pre-existing overflow
-   * memories into the "Recently Added Memories" delta on the next write.
+   * Per-file signatures (mtime + size) for EVERY memory file present at
+   * session start — not just the frozen-snapshot subset. The live delta
+   * uses this as the baseline: a record qualifies for injection only if
+   * its path isn't in this map (new file) OR its signature differs from
+   * the recorded value (in-place overwrite).
+   *
+   * Size is part of the signature because `@koi/memory-fs` update() does
+   * atomic write+rename+utimes, stamping mtime back to the original
+   * createdAt to preserve it across updates. So mtime alone cannot detect
+   * in-place overwrites via the standard store. Size reliably changes for
+   * any real content change.
    */
-  sessionStartMtimes: ReadonlyMap<string, number>;
+  sessionStartSignatures: ReadonlyMap<string, FileSignature>;
   selectorNeeded: boolean;
   /** Fingerprint of last directory listing — skip re-scan when unchanged. */
   lastListFingerprint: string;
@@ -77,7 +81,7 @@ function createEmptyState(): SessionRecallState {
     tokenCount: 0,
     memoryManifest: [],
     frozenPaths: new Set(),
-    sessionStartMtimes: new Map(),
+    sessionStartSignatures: new Map(),
     selectorNeeded: false,
     lastListFingerprint: "",
     liveMessage: undefined,
@@ -86,41 +90,74 @@ function createEmptyState(): SessionRecallState {
 }
 
 /**
- * Compute a fingerprint of the memory directory listing.
- *
- * Uses `FileSystemBackend.list()` with the same recursive `**\/*.md` options
- * as `scanMemoryDirectory()` so the two stay in sync — any file the scan
- * would see, the fingerprint sees too. Builds a stable string from sorted
- * `(path, modifiedAt)` pairs. Any added, removed, or modified file changes
- * the fingerprint.
- *
- * Returns "" on any error OR when the backend reports `truncated: true`
- * (fail-open: force a rescan because we cannot trust a partial listing).
- *
- * Cost note: this is one list() call per turn. Most turns have no memory
- * changes so this is the only cost paid (early return before scan).
- * Changed turns pay this list() plus a second list() inside
- * `scanMemoryDirectory()`. See `fingerprintFromScan()` for the inverse:
- * refreshing the fingerprint cache directly from scan output so that
- * consecutive turns don't redo work if nothing changes between them.
+ * Per-file signature used both for the directory fingerprint and the
+ * session-start baseline. Combines `modifiedAt` (mtime) and `size` so
+ * that an in-place overwrite is detected even when the backing store
+ * resets mtime to preserve createdAt (e.g. `@koi/memory-fs` update()
+ * does atomic write+rename+utimes, stamping mtime back to the original
+ * creation time). Size typically differs for any real content change.
  */
-async function computeListFingerprint(
+interface FileSignature {
+  readonly modifiedAt: number;
+  readonly size: number;
+}
+
+function signatureChanged(a: FileSignature, b: FileSignature): boolean {
+  return a.modifiedAt !== b.modifiedAt || a.size !== b.size;
+}
+
+function signatureKey(s: FileSignature): string {
+  return `${String(s.modifiedAt)}:${String(s.size)}`;
+}
+
+/**
+ * List the memory directory and return a map of relative paths to
+ * per-file signatures. Used for the session-start baseline (uncapped —
+ * must include EVERY memory file, not just the newest 200) and also as
+ * the source of the per-turn fingerprint.
+ *
+ * Returns undefined on any error or truncation (fail-open: callers
+ * treat this as "cannot trust listing, force rescan").
+ *
+ * Paths are stored relative to `memoryDir` so keys match what
+ * `scanMemoryDirectory()` surfaces via `record.filePath`.
+ */
+async function listFileSignatures(
   fs: MemoryRecallMiddlewareConfig["fs"],
   memoryDir: string,
-): Promise<string> {
+): Promise<ReadonlyMap<string, FileSignature> | undefined> {
   try {
     const result = fs.list(memoryDir, { glob: "**/*.md", recursive: true });
     const settled = await Promise.resolve(result);
-    if (!settled.ok) return "";
-    if (settled.value.truncated) return ""; // fail-open on partial listings
-    const entries = [...settled.value.entries]
-      .filter((e) => e.path.endsWith(".md"))
-      .map((e) => `${e.path}:${String(e.modifiedAt ?? 0)}`)
-      .sort();
-    return entries.join("|");
+    if (!settled.ok) return undefined;
+    if (settled.value.truncated) return undefined;
+    const base = `${memoryDir.replace(/\\/g, "/").replace(/\/$/, "")}/`;
+    const out = new Map<string, FileSignature>();
+    for (const entry of settled.value.entries) {
+      if (!entry.path.endsWith(".md")) continue;
+      if (entry.kind !== "file") continue;
+      const normalized = entry.path.replace(/\\/g, "/");
+      if (!normalized.startsWith(base)) continue;
+      const relative = normalized.slice(base.length);
+      if (relative.length === 0) continue;
+      out.set(relative, {
+        modifiedAt: entry.modifiedAt ?? 0,
+        size: entry.size ?? 0,
+      });
+    }
+    return out;
   } catch {
-    return "";
+    return undefined;
   }
+}
+
+/**
+ * Compute a stable fingerprint from a signature map. Any added, removed,
+ * or modified file (mtime OR size change) produces a different string.
+ */
+function fingerprintSignatures(sigs: ReadonlyMap<string, FileSignature>): string {
+  const entries = [...sigs.entries()].map(([path, sig]) => `${path}:${signatureKey(sig)}`).sort();
+  return entries.join("|");
 }
 
 export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfig): KoiMiddleware {
@@ -163,21 +200,26 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         state.frozenPaths = new Set(result.selected.map((s) => s.memory.record.filePath));
       }
 
-      // Always scan the full memory dir at init to build the session-start
-      // baseline. This is used by refreshLiveDelta to answer "what is new
-      // since session start" — critical for truncated sessions where the
-      // frozen snapshot is a subset of all memories on disk.
-      //
-      // Also populates the manifest for the relevance selector if configured.
-      const scanResult = await scanMemoryDirectory(config.fs, {
-        memoryDir: config.recall.memoryDir,
-      });
-      state.sessionStartMtimes = new Map(
-        scanResult.memories.map((m) => [m.record.filePath, m.record.updatedAt]),
-      );
+      // Build the session-start baseline from an UNCAPPED list() — must
+      // include every memory file, not just the newest 200 (scan's default
+      // maxFiles). Without the full baseline, pre-existing overflow
+      // memories would be misclassified as "recently added" on the first
+      // subsequent write.
+      const signatures = await listFileSignatures(config.fs, config.recall.memoryDir);
+      if (signatures !== undefined) {
+        state.sessionStartSignatures = signatures;
+        state.lastListFingerprint = fingerprintSignatures(signatures);
+      }
 
       if (config.relevanceSelector !== undefined && result.truncated) {
         state.selectorNeeded = true;
+        // Scan for the manifest (needs parsed frontmatter — name/description/type).
+        // Separate from the signature baseline which needs only metadata.
+        const scanResult = await scanMemoryDirectory(config.fs, {
+          memoryDir: config.recall.memoryDir,
+          // Use a large cap to cover the full directory for the manifest.
+          maxFiles: Number.MAX_SAFE_INTEGER,
+        });
         state.memoryManifest = scanResult.memories.map((m) => ({
           name: m.record.name,
           description: m.record.description,
@@ -185,11 +227,6 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           filePath: m.record.filePath,
         }));
       }
-
-      // Record listing fingerprint so the first wrapModelCall doesn't
-      // immediately re-scan. Uses config.fs.list() — abstracts over backend
-      // so the middleware works with non-local FileSystemBackend implementations.
-      state.lastListFingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
     } catch (_e: unknown) {
       console.warn("[middleware-memory-recall] recallMemories() failed (swallowed)");
     }
@@ -359,8 +396,15 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    * session from crowding out the conversation.
    */
   async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
-    const fingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
-    if (fingerprint === state.lastListFingerprint && fingerprint !== "") {
+    const currentSigs = await listFileSignatures(config.fs, config.recall.memoryDir);
+    if (currentSigs === undefined) {
+      // Listing failed or was truncated — fail-open: force a rescan on
+      // next turn by invalidating the cache.
+      state.lastListFingerprint = "";
+      return;
+    }
+    const fingerprint = fingerprintSignatures(currentSigs);
+    if (fingerprint === state.lastListFingerprint) {
       return; // Nothing changed — reuse cached delta (or none).
     }
     // Update cache before scanning — on interleaved turns, a failing scan
@@ -371,17 +415,23 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     try {
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
+        // Use a large cap so truncated dirs don't hide real memories from
+        // the delta. Scan defaults to 200 which is the index cap, not a
+        // fundamental limit on stored memories.
+        maxFiles: Number.MAX_SAFE_INTEGER,
       });
 
-      // Include memories that are new or were modified since session start.
-      // Diff against sessionStartMtimes (the FULL baseline), not frozenPaths —
-      // otherwise overflow memories would be pulled into the delta on first
-      // write.
+      // Include memories that are NEW (absent from baseline) or whose
+      // signature (mtime + size) differs from session start. Using both
+      // fields catches in-place overwrites via memory-fs update() which
+      // stamps mtime back to createdAt but changes content size.
       const changedMemories = scanResult.memories.filter((m) => {
         const path = m.record.filePath;
-        const baseline = state.sessionStartMtimes.get(path);
+        const baseline = state.sessionStartSignatures.get(path);
         if (baseline === undefined) return true; // genuinely new file
-        return m.record.updatedAt > baseline; // in-place overwrite
+        const current = currentSigs.get(path);
+        if (current === undefined) return false; // listed but vanished — skip
+        return signatureChanged(current, baseline);
       });
 
       if (changedMemories.length === 0) {
@@ -390,44 +440,68 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         return;
       }
 
-      // Budget-pack: sort by recency desc, include memories until we'd
-      // exceed liveDeltaBudget. The oldest new memories drop off first.
+      // Budget-pack: sort by recency desc, include memories until the
+      // fully-formatted section would exceed liveDeltaBudget. Unlike the
+      // previous loop, a single oversized memory is NOT granted a budget
+      // bypass — if even one memory exceeds the cap on its own, we stop
+      // including anything (caller should raise liveDeltaMaxTokens or
+      // split the memory). This also re-measures after formatting, which
+      // accounts for section headers, XML boundary tags, and metadata
+      // JSON that `estimateTokens(content)` alone misses.
       const byRecency = [...changedMemories].sort(
         (a, b) => b.record.updatedAt - a.record.updatedAt,
       );
       const packed: ScannedMemory[] = [];
-      // let — accumulator for token budget packing
-      let packedTokens = 0;
+      // let — accumulator built by incrementally adding memories and
+      // re-measuring the formatted output against the budget.
+      let formatted = "";
       for (const m of byRecency) {
-        // Approximate per-memory tokens from content + name + description.
-        const approxTokens = estimateTokens(
-          `${m.record.name}\n${m.record.description}\n${m.record.content}`,
-        );
-        if (packed.length > 0 && packedTokens + approxTokens > liveDeltaBudget) {
-          break; // Adding this would exceed budget — stop (keep what fits).
+        const candidate = [...packed, m];
+        const candidateScored: readonly ScoredMemory[] = candidate.map((sm) => ({
+          memory: sm,
+          salienceScore: 1.0,
+          decayScore: 1.0,
+          typeRelevance: 1.0,
+        }));
+        const candidateFormatted = formatMemorySection(candidateScored, {
+          sectionTitle: "Recently Added Memories",
+          trustingRecallNote: true,
+        });
+        if (estimateTokens(candidateFormatted) > liveDeltaBudget) {
+          break; // Adding this would exceed the cap — stop.
         }
         packed.push(m);
-        packedTokens += approxTokens;
+        formatted = candidateFormatted;
       }
 
-      if (packed.length === 0) {
+      if (packed.length === 0 || formatted.length === 0) {
+        // Nothing fits (even a single memory exceeds the budget).
+        // Leave the cached delta cleared and enable the relevance selector
+        // so overflow remains reachable.
         state.liveMessage = undefined;
         state.livePaths = new Set();
+        if (
+          changedMemories.length > 0 &&
+          config.relevanceSelector !== undefined &&
+          !state.selectorNeeded
+        ) {
+          state.selectorNeeded = true;
+        }
+        // Fall through: still update manifest below so overflow is
+        // selectable later.
+        const allChangedEntries: readonly MemoryManifestEntry[] = changedMemories.map((m) => ({
+          name: m.record.name,
+          description: m.record.description,
+          type: m.record.type,
+          filePath: m.record.filePath,
+        }));
+        const existingPaths0 = new Set(state.memoryManifest.map((e) => e.filePath));
+        const additions0 = allChangedEntries.filter((e) => !existingPaths0.has(e.filePath));
+        if (additions0.length > 0) {
+          state.memoryManifest = [...state.memoryManifest, ...additions0];
+        }
         return;
       }
-
-      // Wrap as ScoredMemory for the trusted formatter (score=1.0).
-      const scored: readonly ScoredMemory[] = packed.map((m) => ({
-        memory: m,
-        salienceScore: 1.0,
-        decayScore: 1.0,
-        typeRelevance: 1.0,
-      }));
-
-      const formatted = formatMemorySection(scored, {
-        sectionTitle: "Recently Added Memories",
-        trustingRecallNote: true,
-      });
 
       state.liveMessage = {
         content: [{ kind: "text", text: formatted }],
