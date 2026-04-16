@@ -131,7 +131,10 @@ function isOwnedDir(path: string, uid: number): boolean {
  * Closes #1841.
  */
 interface ToolEnvConfig {
+  /** PATH directories containing self-contained binaries (safe with any HOME). */
   readonly pathExtensions: readonly string[];
+  /** PATH directories containing shims that depend on HOME for state (nvm, volta, pyenv). */
+  readonly shimPathExtensions: readonly string[];
   /** Validated home directory, or undefined when ownership cannot be confirmed. */
   readonly home: string | undefined;
 }
@@ -154,19 +157,33 @@ function detectToolEnv(): ToolEnvConfig {
   // Fall back to env-derived home ONLY when it matches the canonical
   // home. If os.userInfo() failed entirely (no passwd entry), skip
   // home-derived paths since we cannot verify ownership.
-  const envHome = homedir();
+  // homedir() can also throw on degraded NSS/passwd — guard it.
+  let envHome: string | undefined;
+  try {
+    envHome = homedir();
+  } catch {
+    // Degraded host — no home discovery possible
+  }
   const home = canonicalHome ?? undefined;
   const homeOwned =
     home !== undefined && uid !== undefined && home === envHome && isOwnedDir(home, uid);
-  const homeCandidates: readonly string[] = homeOwned
+  // Self-contained binaries — work correctly regardless of HOME value.
+  const selfContainedCandidates: readonly string[] = homeOwned
     ? [
         join(home, ".bun", "bin"),
-        join(home, ".nvm", "current", "bin"),
-        join(home, ".fnm", "current", "bin"),
-        join(home, ".volta", "bin"),
         join(home, ".local", "bin"),
         join(home, ".cargo", "bin"),
         join(home, "go", "bin"),
+      ]
+    : [];
+
+  // Shim-based managers — depend on HOME for state resolution.
+  // Only safe when HOME is propagated (unsandboxed mode).
+  const shimCandidates: readonly string[] = homeOwned
+    ? [
+        join(home, ".nvm", "current", "bin"),
+        join(home, ".fnm", "current", "bin"),
+        join(home, ".volta", "bin"),
         join(home, ".pyenv", "shims"),
       ]
     : [];
@@ -180,7 +197,8 @@ function detectToolEnv(): ToolEnvConfig {
   ];
 
   return {
-    pathExtensions: [...homeCandidates, ...systemCandidates].filter((p) => existsSync(p)),
+    pathExtensions: [...selfContainedCandidates, ...systemCandidates].filter((p) => existsSync(p)),
+    shimPathExtensions: shimCandidates.filter((p) => existsSync(p)),
     home: homeOwned ? home : undefined,
   };
 }
@@ -262,14 +280,19 @@ export const executionStack: PresetStack = {
     // When sandboxed, keep HOME=/tmp (the SAFE_ENV default) because
     // the sandbox write-allowlist does not include $HOME — propagating
     // the real home would cause tool cache/config writes to fail.
+    // Also exclude HOME-dependent shim paths (nvm, volta, pyenv) since
+    // they require HOME for state resolution.
     const sandboxed = sandboxAdapter !== undefined && sandboxProfile !== undefined;
     const effectiveHome = sandboxed ? undefined : toolEnv.home;
+    const effectivePaths = sandboxed
+      ? toolEnv.pathExtensions
+      : [...toolEnv.pathExtensions, ...toolEnv.shimPathExtensions];
 
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,
       trackCwd: true,
       elicit: bashElicit,
-      pathExtensions: toolEnv.pathExtensions,
+      pathExtensions: effectivePaths,
       home: effectiveHome,
       ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
     });
@@ -327,7 +350,7 @@ export const executionStack: PresetStack = {
                   liveSubprocessCount--;
                 },
                 elicit: bashElicit,
-                pathExtensions: toolEnv.pathExtensions,
+                pathExtensions: effectivePaths,
                 home: effectiveHome,
                 ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
