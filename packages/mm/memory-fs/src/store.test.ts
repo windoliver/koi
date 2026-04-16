@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryRecordId } from "@koi/core/memory";
@@ -604,6 +604,48 @@ describe("createMemoryStore", () => {
 
       const all = await store.list();
       expect(all.length).toBe(1);
+    });
+
+    test("fails loudly on legacy duplicate (name,type) records on disk", async () => {
+      // Seed two .md files with the same logical (name, type) — simulating
+      // corruption left over from a pre-atomic-upsert race on main.
+      const dir = makeDir();
+      await mkdir(dir, { recursive: true });
+
+      const fm = (name: string) =>
+        `---\nname: ${name}\ndescription: legacy description\ntype: user\n---\n\n`;
+      await writeFile(
+        join(dir, "dup-key.md"),
+        `${fm("Dup Key")}First legacy body for the duplicate (name, type).`,
+      );
+      await writeFile(
+        join(dir, "dup-key-2.md"),
+        `${fm("Dup Key")}Second legacy body for the duplicate (name, type).`,
+      );
+
+      const store = createMemoryStore({ dir });
+
+      // Both force=false and force=true must refuse to act. The adapter
+      // should surface the corruption rather than silently picking one
+      // duplicate as the winner and updating it.
+      const input = {
+        name: "Dup Key",
+        description: "new description",
+        type: "user" as const,
+        content: "Fresh content that would overwrite one of the duplicates.",
+      };
+
+      await expect(store.upsert(input, { force: false })).rejects.toThrow(
+        /Memory store corruption: 2 records share/,
+      );
+      await expect(store.upsert(input, { force: true })).rejects.toThrow(
+        /Memory store corruption: 2 records share/,
+      );
+
+      // Both files must still be on disk — the upsert aborted before any
+      // mutation occurred.
+      const all = await store.list();
+      expect(all.length).toBe(2);
     });
 
     test("canonicalizes frontmatter-unsafe name: newline-variant updates plain name (force=true)", async () => {

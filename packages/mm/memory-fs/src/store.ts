@@ -350,11 +350,31 @@ async function upsertRecord(
     description: canonicalDescription,
   };
 
-  // Step 1: Name+type exact match (against canonicalized name)
-  const nameTypeMatch = existing.find(
+  // Step 1: Name+type exact match (against canonicalized name).
+  //
+  // We intentionally collect ALL matches rather than taking the first one.
+  // Legacy records written before this atomic path existed may have been
+  // created by a non-atomic list→find→write race that produced multiple
+  // files sharing the same logical (name,type). In that state, silently
+  // picking `existing.find(...)` would non-deterministically update one
+  // duplicate and leave the rest as invisible stale recalls. Fail loudly
+  // and surface the corruption so an operator can reconcile manually via
+  // `delete` + `rebuildIndex`.
+  const nameTypeMatches = existing.filter(
     (r) => r.name === canonicalName && r.type === canonicalInput.type,
   );
 
+  if (nameTypeMatches.length > 1) {
+    const ids = nameTypeMatches.map((r) => r.id).join(", ");
+    throw new Error(
+      `Memory store corruption: ${String(nameTypeMatches.length)} records share ` +
+        `(name=${JSON.stringify(canonicalName)}, type=${canonicalInput.type}). ` +
+        `Resolve manually via delete() on the stale ids before retrying upsert(). ` +
+        `Conflicting ids: ${ids}`,
+    );
+  }
+
+  const nameTypeMatch = nameTypeMatches[0];
   if (nameTypeMatch !== undefined) {
     if (!force) {
       return { action: "conflict", existing: nameTypeMatch };
