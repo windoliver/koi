@@ -1869,9 +1869,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const SHUTDOWN_HARD_EXIT_MS = 8000;
   // let: justified — set once on first shutdown call
   let shutdownStarted = false;
-  const shutdown = async (exitCode = 0): Promise<void> => {
+  const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    if (reason !== undefined) {
+      try {
+        process.stderr.write(`[koi tui] shutdown: ${reason}\n`);
+      } catch {
+        /* stderr unwritable after hangup — best effort */
+      }
+    }
     // Abort the active foreground run FIRST so no further model/tool
     // work can execute during teardown. Without this, long-running or
     // non-cooperative tools can keep mutating local/remote state during
@@ -3343,8 +3350,40 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSigterm = (): void => {
     void shutdown(143);
   };
+  // SIGHUP (#1750): tmux sends SIGHUP when a session is killed. Without
+  // this handler the TUI survives as an orphan (PPID 1). 129 = 128 + 1.
+  const onProcessSighup = (): void => {
+    void shutdown(129, "SIGHUP received (terminal hangup)");
+  };
+  // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
+  // the fd fires 'close'. Does NOT require resume() (avoids perturbing
+  // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
+  // prevent false triggers in test/pipe contexts. Uses exit code 129
+  // (same as SIGHUP) because PTY close IS a hangup — using a generic
+  // error code would mask the real termination cause for supervisors.
+  // let: justified — set to false when done() resolves, preventing the
+  // stdin close handler from force-exiting during external/host teardown.
+  let tuiRunning = false;
+  const onStdinClose = (): void => {
+    // Only treat stdin close as a hangup when the TUI is actively
+    // running AND no orderly shutdown is in progress. In embedded/test
+    // callers the host may close stdin during normal teardown — that
+    // should not force process.exit(129).
+    if (tuiRunning && !shutdownStarted) {
+      void shutdown(129, "stdin closed (parent terminal gone)");
+    }
+  };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
+  process.once("SIGHUP", onProcessSighup);
+
+  // Register stdin close listener and set tuiRunning BEFORE start() so
+  // PTY teardown during startup is not missed. tuiRunning is cleared in
+  // the finally block to prevent false positives during host teardown.
+  tuiRunning = true;
+  if (process.stdin.isTTY) {
+    process.stdin.once("close", onStdinClose);
+  }
 
   try {
     await result.value.start();
@@ -3361,9 +3400,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // signal handlers and armed double-tap timers without explicit cleanup.
     await result.value.done();
   } finally {
+    tuiRunning = false;
     sigintHandler.dispose();
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
+    process.removeListener("SIGHUP", onProcessSighup);
+    process.stdin.removeListener("close", onStdinClose);
   }
 }
 
