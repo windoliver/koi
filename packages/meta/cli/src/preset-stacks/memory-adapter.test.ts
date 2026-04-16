@@ -123,6 +123,35 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).toContain("test content");
   });
 
+  test("adapter.store replay-safe across frontmatter normalization (newline/whitespace in description)", async () => {
+    // First write with a description that requires frontmatter
+    // canonicalization (newlines get replaced with spaces, runs are
+    // collapsed). The persisted record's description will be the
+    // canonical form "foo bar baz".
+    const first = await backend.store({
+      name: "replay-canon",
+      description: "foo\n  bar   baz",
+      type: "project",
+      content: "Identical payload across the retry.",
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Second write with the SAME caller input. The raw description
+    // differs from the persisted form, so a naive `===` replay check
+    // would false-conflict. The adapter must canonicalize before
+    // comparing — a successful retry returns ok with the same id.
+    const second = await backend.store({
+      name: "replay-canon",
+      description: "foo\n  bar   baz",
+      type: "project",
+      content: "Identical payload across the retry.",
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.id).toBe(first.value.id);
+  });
+
   test("adapter.store is replay-safe: identical retry returns ok without error", async () => {
     const input = {
       name: "replay-safe",

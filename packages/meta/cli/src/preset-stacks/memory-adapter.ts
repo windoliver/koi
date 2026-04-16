@@ -11,6 +11,7 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import { sanitizeFrontmatterValue } from "@koi/core/memory";
 import type { MemoryStore, UpsertResult } from "@koi/memory-fs";
 import type { DeleteResult, MemoryToolBackend, StoreWithDedupResult } from "@koi/memory-tools";
 
@@ -94,8 +95,17 @@ export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryTool
             // Only surface a loud error when the payloads actually
             // differ — in that case the caller picked a colliding
             // name and must retry with a fresh one.
+            //
+            // The persisted description has already been canonicalized
+            // by the serializer (sanitizeFrontmatterValue strips
+            // newlines, control chars, and collapses whitespace). The
+            // caller's input may still be raw, so canonicalize it
+            // before comparing — otherwise a retry with
+            // `description: "foo\nbar"` after a first write persisted
+            // as `"foo bar"` would spuriously look like a conflict.
+            // Content is persisted verbatim, so compare it raw.
             const replay =
-              result.existing.description === input.description &&
+              result.existing.description === sanitizeFrontmatterValue(input.description) &&
               result.existing.content === input.content;
             if (replay) return ok(result.existing);
             return fail(
