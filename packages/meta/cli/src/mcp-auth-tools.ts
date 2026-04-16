@@ -56,18 +56,13 @@ function createAuthenticateTool(
   entry: AuthServerEntry,
   rediscover: () => Promise<readonly unknown[]>,
 ): Tool {
-  // Redact full URL to origin-only — never expose raw URLs (which may
-  // contain internal hostnames, query tokens, or credentials) to the model.
-  let redactedOrigin = "[internal]";
-  try {
-    redactedOrigin = new URL(entry.url).origin;
-  } catch {
-    // Keep placeholder on malformed URLs
-  }
+  // Never include server URL/hostname in the description — tool descriptors
+  // are sent to the model/provider, and private MCP deployments must not
+  // leak hostnames through auth pseudo-tools.
   const descriptor: ToolDescriptor = {
     name: `${serverName}__authenticate`,
     description:
-      `The "${serverName}" MCP server (${redactedOrigin}) requires authentication. ` +
+      `The "${serverName}" MCP server requires authentication. ` +
       `Call this tool to start the OAuth flow — a browser window will open ` +
       `for the user to authorize access. After authentication, tokens are ` +
       `stored and the server's tools will load on the next TUI restart.`,
@@ -81,53 +76,73 @@ function createAuthenticateTool(
   };
 
   const execute = async (_args: JsonObject): Promise<unknown> => {
-    const success = await entry.provider.startAuthFlow();
-    if (!success) {
+    // Wrap the full auth flow — startAuthFlow() can throw on timeout,
+    // callback port bind failure, OAuth error responses, etc. Convert
+    // those to structured tool errors so one bad attempt doesn't abort
+    // the turn.
+    try {
+      const success = await entry.provider.startAuthFlow();
+      if (!success) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication failed for "${serverName}". The OAuth flow ` +
+                `did not complete — the user may not have authorized in time, ` +
+                `or the authorization server could not be reached. ` +
+                `The user can also try: koi mcp auth ${serverName}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Reconnect now that tokens are stored
+      const connectResult = await entry.connection.connect();
+      if (!connectResult.ok) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `Authentication succeeded for "${serverName}" but reconnection ` +
+                `failed: ${connectResult.error.message}. The server's tools ` +
+                `should appear on the next turn.`,
+            },
+          ],
+        };
+      }
+
+      // Re-discover so the resolver picks up real tools from the now-connected server
+      await rediscover();
+
       return {
         content: [
           {
             type: "text",
             text:
-              `Authentication failed for "${serverName}". The OAuth flow ` +
-              `did not complete — the user may not have authorized in time, ` +
-              `or the authorization server could not be reached. ` +
-              `The user can also try: koi mcp auth ${serverName}`,
+              `Authentication successful for "${serverName}". ` +
+              `Tokens are stored. Restart the TUI (quit and relaunch) ` +
+              `to load the server's tools into this runtime.`,
+          },
+        ],
+      };
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Authentication error for "${serverName}": ${message}. ` +
+              `Common causes: callback port already in use, auth timeout ` +
+              `(2min), or browser couldn't open. Try: koi mcp auth ${serverName}`,
           },
         ],
         isError: true,
       };
     }
-
-    // Reconnect now that tokens are stored
-    const connectResult = await entry.connection.connect();
-    if (!connectResult.ok) {
-      return {
-        content: [
-          {
-            type: "text",
-            text:
-              `Authentication succeeded for "${serverName}" but reconnection ` +
-              `failed: ${connectResult.error.message}. The server's tools ` +
-              `should appear on the next turn.`,
-          },
-        ],
-      };
-    }
-
-    // Re-discover so the resolver picks up real tools from the now-connected server
-    await rediscover();
-
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Authentication successful for "${serverName}". ` +
-            `Tokens are stored. Restart the TUI (quit and relaunch) ` +
-            `to load the server's tools into this runtime.`,
-        },
-      ],
-    };
   };
 
   return { descriptor, origin: "operator", policy: DEFAULT_UNSANDBOXED_POLICY, execute };

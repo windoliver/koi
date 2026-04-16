@@ -24,6 +24,11 @@ const STATUS_CONFIG: Record<
 > = {
   connected: { icon: "✓", color: COLORS.success, label: "connected" },
   "needs-auth": { icon: "△", color: COLORS.amber, label: "needs authentication" },
+  "auth-pending-restart": {
+    icon: "↻",
+    color: COLORS.blueAccent,
+    label: "authenticated, restart required",
+  },
   error: { icon: "✗", color: COLORS.danger, label: "error" },
   pending: { icon: "○", color: COLORS.textMuted, label: "connecting" },
 };

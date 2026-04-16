@@ -48,7 +48,7 @@ export type TuiView =
 /** MCP server status entry for the /mcp view. */
 export interface McpServerInfo {
   readonly name: string;
-  readonly status: "connected" | "needs-auth" | "error" | "pending";
+  readonly status: "connected" | "needs-auth" | "error" | "pending" | "auth-pending-restart";
   readonly toolCount: number;
   readonly detail: string | undefined;
 }

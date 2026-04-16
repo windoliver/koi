@@ -2429,6 +2429,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                       }
                       const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
                       const raw2 = await freshStorage.get(key2);
+                      // The server we just authed shows "auth-pending-restart"
+                      // because the live runtime still has the pseudo-tool only
+                      // — tools won't load until the next TUI launch.
+                      if (s2.name === serverName && raw2 !== undefined) {
+                        return {
+                          name: s2.name,
+                          status: "auth-pending-restart" as const,
+                          toolCount: 0,
+                          detail: "Tokens stored. Restart the TUI to load tools.",
+                        };
+                      }
                       return {
                         name: s2.name,
                         status: (raw2 !== undefined ? "connected" : "needs-auth") as

@@ -9,10 +9,16 @@ import { createCliAuthToolFactory } from "./mcp-auth-tools.js";
 
 function createMockAuthProvider(opts?: {
   readonly startAuthFlowResult?: boolean;
+  readonly startAuthFlowThrows?: string;
 }): OAuthAuthProvider {
   return {
     token: () => undefined,
-    startAuthFlow: mock(async () => opts?.startAuthFlowResult ?? true),
+    startAuthFlow: mock(async () => {
+      if (opts?.startAuthFlowThrows !== undefined) {
+        throw new Error(opts.startAuthFlowThrows);
+      }
+      return opts?.startAuthFlowResult ?? true;
+    }),
     handleUnauthorized: mock(async () => {}),
   };
 }
@@ -77,7 +83,7 @@ describe("createCliAuthToolFactory", () => {
     expect(tools[0]?.descriptor.name).toBe("jira__authenticate");
   });
 
-  test("authenticate tool description includes server name and URL", () => {
+  test("authenticate tool description includes server name but never URL/hostname", () => {
     const provider = createMockAuthProvider();
     const connection = createMockConnection("jira");
     const servers = new Map<string, AuthServerEntry>([
@@ -89,8 +95,9 @@ describe("createCliAuthToolFactory", () => {
 
     const desc = tools[0]?.descriptor.description ?? "";
     expect(desc).toContain('"jira"');
-    // URL is redacted to origin-only (no path/query)
-    expect(desc).toContain("https://maas.example.com");
+    // URL/hostname must not leak to model-visible descriptor
+    expect(desc).not.toContain("https://");
+    expect(desc).not.toContain("maas.example.com");
     expect(desc).not.toContain("/jira/mcp");
     expect(desc).toContain("authentication");
   });
@@ -170,5 +177,29 @@ describe("createCliAuthToolFactory", () => {
     // Auth succeeded but reconnect failed — should still report partial success
     expect(content.content[0]?.text).toContain("reconnection");
     expect(content.content[0]?.text).toContain("failed");
+  });
+
+  test("authenticate execute converts thrown auth errors to structured tool error", async () => {
+    const provider = createMockAuthProvider({
+      startAuthFlowThrows: "callback port 8912 already in use",
+    });
+    const connection = createMockConnection("jira");
+    const servers = new Map<string, AuthServerEntry>([
+      ["jira", { provider, connection, url: "https://example.com/mcp" }],
+    ]);
+
+    const factory = createCliAuthToolFactory({ servers, rediscover: async () => [] });
+    const tools = factory(makeFailure("jira"));
+    expect(tools[0]).toBeDefined();
+    const result = await (tools[0] as (typeof tools)[number]).execute({});
+    const content = result as {
+      readonly content: readonly { readonly type: string; readonly text: string }[];
+      readonly isError: boolean;
+    };
+
+    // Thrown error must become an isError response, not an uncaught exception
+    expect(content.isError).toBe(true);
+    expect(content.content[0]?.text).toContain("callback port 8912 already in use");
+    expect(content.content[0]?.text).toContain("koi mcp auth jira");
   });
 });
