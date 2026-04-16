@@ -41,6 +41,17 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   const pool = new Map<WorkerId, PoolEntry>();
   const defaultPolicy = config.restart ?? DEFAULT_WORKER_RESTART_POLICY;
 
+  // Fan-in event bus — collects events from all worker watch loops.
+  const eventBuffer: WorkerEvent[] = [];
+  const eventListeners: Array<(ev: WorkerEvent) => void> = [];
+
+  const publishEvent = (ev: WorkerEvent): void => {
+    eventBuffer.push(ev);
+    const pending = [...eventListeners];
+    eventListeners.length = 0;
+    for (const resolve of pending) resolve(ev);
+  };
+
   const pickBackend = (kind?: WorkerBackendKind): WorkerBackend | undefined => {
     if (kind !== undefined) return config.backends[kind];
     for (const k of BACKEND_PREFERENCE) {
@@ -87,6 +98,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     void (async () => {
       try {
         for await (const ev of backend.watch(request.workerId)) {
+          publishEvent(ev);
           if (ev.kind !== "exited" && ev.kind !== "crashed") continue;
 
           const entry = pool.get(request.workerId);
@@ -131,8 +143,18 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           }
           return;
         }
-      } catch {
-        // Backend watch stream closed unexpectedly — treat as exit with no restart.
+      } catch (e) {
+        // Surface unexpected backend watch-stream closure as a synthetic crashed event.
+        publishEvent({
+          kind: "crashed",
+          workerId: request.workerId,
+          at: Date.now(),
+          error: {
+            code: "INTERNAL",
+            message: `Backend watch stream closed: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: false,
+          },
+        });
       }
     })();
 
@@ -193,10 +215,27 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     return out;
   };
 
-  const emptyEvents: readonly WorkerEvent[] = [];
   const watchAll: Supervisor["watchAll"] = async function* (): AsyncIterable<WorkerEvent> {
-    // Implemented in Task 7
-    yield* emptyEvents;
+    // Use a cursor into eventBuffer so late-arriving events (added between yields)
+    // are never missed: check for buffered items before each listener await.
+    let cursor = 0;
+    while (true) {
+      // Drain any buffered events that arrived since the last yield.
+      while (cursor < eventBuffer.length) {
+        const ev = eventBuffer[cursor];
+        cursor++;
+        if (ev !== undefined) yield ev;
+      }
+      // Block until the next published event.
+      const ev = await new Promise<WorkerEvent>((resolve) => {
+        eventListeners.push(resolve);
+      });
+      // The new event is already in eventBuffer (publishEvent pushes before notifying),
+      // so the cursor drain above will yield it on the next iteration.
+      // Advance cursor past it and yield directly to avoid double-yield.
+      cursor = eventBuffer.length;
+      yield ev;
+    }
   };
 
   return { ok: true, value: { start, stop, shutdown, list, watchAll } };

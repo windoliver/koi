@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { SupervisorConfig, WorkerSpawnRequest } from "@koi/core";
+import type { SupervisorConfig, WorkerEvent, WorkerSpawnRequest } from "@koi/core";
 import { agentId, workerId } from "@koi/core";
 import { createSupervisor } from "../create-supervisor.js";
 import { createFakeBackend } from "./fake-backend.js";
@@ -100,5 +100,61 @@ describe("supervisor stop/shutdown", () => {
     const result = await supervisorResult.value.stop(workerId("ghost"), "test");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
+  });
+});
+
+describe("supervisor watchAll", () => {
+  it("yields events from all workers", async () => {
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      // Disable restart so we can cleanly observe crash events without respawn noise.
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+
+    await supervisorResult.value.start(makeRequest("w1"));
+    await supervisorResult.value.start(makeRequest("w2"));
+
+    const collected: string[] = [];
+    const iter = supervisorResult.value
+      .watchAll()
+      [Symbol.asyncIterator]() as AsyncIterator<WorkerEvent>;
+
+    // Trigger two crashes after subscribing so events land in the queue.
+    crash(workerId("w1"));
+    crash(workerId("w2"));
+
+    // Drain up to 4 events (2 started + 2 crashed) with short timeouts.
+    for (let i = 0; i < 4; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<WorkerEvent>>((resolve) =>
+          setTimeout(
+            () => resolve({ done: true, value: undefined as unknown as WorkerEvent }),
+            100,
+          ),
+        ),
+      ]);
+      if (!r.done && r.value !== undefined) {
+        const ev = r.value;
+        collected.push(`${ev.kind}:${ev.workerId}`);
+      } else {
+        break;
+      }
+    }
+
+    // We should see crashed events for both workers, in some order.
+    const crashedEvents = collected.filter((e) => e.startsWith("crashed:"));
+    const crashedWorkerIds = crashedEvents.map((e) => e.split(":")[1]).sort();
+    expect(crashedWorkerIds).toEqual(["w1", "w2"]);
   });
 });
