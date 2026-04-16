@@ -170,6 +170,7 @@ koi tui
 | `KOI_OTEL_ENABLED` | no | unset | Set to `true` to emit OpenTelemetry GenAI spans for every model/tool call. The CLI auto-initializes a `BasicTracerProvider` with `BatchSpanProcessor` — no external SDK setup needed. Headless (`koi start`) exports spans as JSON to stderr; TUI (`koi tui`) exports via OTLP to `localhost:4318` by default. Override with `OTEL_TRACES_EXPORTER` (`console`, `otlp`, `none`) and `OTEL_EXPORTER_OTLP_ENDPOINT`. (#1770) |
 | `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
 | `KOI_AUDIT_SQLITE` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-sqlite`. Same audit coverage as NDJSON but stored in a WAL-mode SQLite database. Both `KOI_AUDIT_NDJSON` and `KOI_AUDIT_SQLITE` can be set simultaneously (tee pattern) as long as they target different files — a collision guard rejects startup if paths overlap (#1849) |
+| `KOI_REPORT_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-report`. Emits a RunReport to stderr at session end with turn count, action count, duration, and token usage. If goals are configured, the report includes the objective. (#1858) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
@@ -403,6 +404,7 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
+| `@koi/middleware-report` | L2 | Run report middleware — opt-in via `KOI_REPORT_ENABLED=true`. Accumulates model/tool call metrics and emits a RunReport at session end (#1858) |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. |
 | `@koi/memory` | L0u | Session-start memory recall — scan, score by salience, budget to 8K tokens, format with `<memory-data>` trust boundary |
