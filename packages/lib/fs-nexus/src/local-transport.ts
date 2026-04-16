@@ -527,8 +527,11 @@ async function collectStderr(proc: {
         const { value, done } = await reader.read();
         if (done) break;
         if (value !== undefined) {
+          const remaining = MAX_STDERR_BYTES - bytes;
           bytes += value.byteLength;
           if (bytes > MAX_STDERR_BYTES) {
+            // Clip the overflow chunk to fit within the cap
+            output += decoder.decode(value.subarray(0, remaining), { stream: true });
             truncated = true;
             break;
           }

@@ -618,6 +618,38 @@ sys.exit(1)
     }
   });
 
+  test("truncates stderr exceeding size cap and includes marker", async () => {
+    // Write >256KiB to stderr to trigger the size cap
+    const bridgePath = writeMockBridge(
+      tmpDir,
+      "mock-large-stderr",
+      `
+import sys
+# Write ~300KiB — exceeds the 256KiB cap
+for i in range(6000):
+    sys.stderr.write(f"frame {i}: " + "x" * 45 + "\\n")
+sys.stderr.flush()
+sys.exit(1)
+`,
+    );
+
+    try {
+      await createLocalTransport({
+        mountUri: "local://./",
+        _bridgePath: bridgePath,
+        startupTimeoutMs: 5_000,
+      });
+      expect(true).toBe(false);
+    } catch (e: unknown) {
+      expect(e).toBeInstanceOf(Error);
+      const err = e as Error;
+      expect(err.message).toContain("[truncated");
+      expect(err.message).toContain("bytes]");
+      // Should still contain early frames
+      expect(err.message).toContain("frame 0:");
+    }
+  });
+
   test("handles bridge that writes nothing to stderr before crashing", async () => {
     const bridgePath = writeMockBridge(
       tmpDir,
