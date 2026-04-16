@@ -1,3 +1,4 @@
+// Cache-bust: snapshot regenerated for #1728 plugin summary state field.
 import { describe, expect, test } from "bun:test";
 import { createInitialState } from "./initial.js";
 import { reduce } from "./reduce.js";
