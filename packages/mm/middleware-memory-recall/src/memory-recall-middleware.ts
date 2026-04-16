@@ -1,15 +1,17 @@
 /**
- * Memory recall middleware — frozen snapshot + optional per-turn relevance.
+ * Memory recall middleware — frozen snapshot + live delta + optional relevance.
  *
- * Two layers:
+ * Three layers:
  *   1. Frozen snapshot (always): scans memory dir once at session start,
  *      scores by salience, budgets to token limit, caches as stable prefix.
- *   2. Relevance overlay (optional): per-turn side-query asks a lightweight
+ *   2. Live delta (per-turn): stats the memory dir, re-scans when mtime
+ *      changes, injects new/changed memories after conversation history.
+ *   3. Relevance overlay (optional): per-turn side-query asks a lightweight
  *      model to pick the N most relevant memories for the current message.
- *      Selected files are loaded and injected alongside the frozen snapshot.
  *
- * The frozen snapshot preserves prompt cache (stable prefix). The relevance
- * overlay adds per-turn context without breaking the cache (appended after).
+ * The frozen snapshot preserves prompt cache (stable prefix). The live delta
+ * and relevance overlay are appended after conversation history so they never
+ * invalidate the cached prefix.
  *
  * Priority 310: runs after extraction (305).
  */
@@ -181,8 +183,10 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       return undefined;
     }
 
-    // Only select from memories NOT already in the frozen snapshot
-    const candidates = state.memoryManifest.filter((m) => !state.frozenPaths.has(m.filePath));
+    // Only select from memories NOT already in the frozen snapshot or live delta
+    const candidates = state.memoryManifest.filter(
+      (m) => !state.frozenPaths.has(m.filePath) && !state.livePaths.has(m.filePath),
+    );
     if (candidates.length === 0) return undefined;
 
     const userMessage = extractUserMessage(request);
@@ -344,14 +348,27 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         await initialize(state);
       }
 
+      // 1. Frozen snapshot — prepend (prefix-stable).
       let effectiveRequest = injectFrozenSnapshot(state, request);
 
+      // 2. Live delta — check mtime, scan if changed, append after conversation.
+      await refreshLiveDelta(state);
+      if (state.liveMessage !== undefined) {
+        effectiveRequest = {
+          ...effectiveRequest,
+          messages: [...effectiveRequest.messages, state.liveMessage],
+        };
+      }
+
+      // 3. Relevance overlay — append after delta.
       if (config.relevanceSelector !== undefined) {
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            const messages = [...effectiveRequest.messages, relevantMsg];
-            effectiveRequest = { ...effectiveRequest, messages };
+            effectiveRequest = {
+              ...effectiveRequest,
+              messages: [...effectiveRequest.messages, relevantMsg],
+            };
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");
@@ -372,14 +389,27 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         await initialize(state);
       }
 
+      // 1. Frozen snapshot — prepend (prefix-stable).
       let effectiveRequest = injectFrozenSnapshot(state, request);
 
+      // 2. Live delta — check mtime, scan if changed, append after conversation.
+      await refreshLiveDelta(state);
+      if (state.liveMessage !== undefined) {
+        effectiveRequest = {
+          ...effectiveRequest,
+          messages: [...effectiveRequest.messages, state.liveMessage],
+        };
+      }
+
+      // 3. Relevance overlay — append after delta.
       if (config.relevanceSelector !== undefined) {
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            const messages = [...effectiveRequest.messages, relevantMsg];
-            effectiveRequest = { ...effectiveRequest, messages };
+            effectiveRequest = {
+              ...effectiveRequest,
+              messages: [...effectiveRequest.messages, relevantMsg],
+            };
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");
