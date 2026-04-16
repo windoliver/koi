@@ -276,12 +276,13 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // AND the relevance manifest from one scanResult so a memory write
       // landing between two scans cannot disappear from both layers.
       // Inlines what recallMemories() does internally — same pipeline,
-      // shared scan output.
+      // shared scan output. Honors caller's maxFiles/maxCandidates so
+      // large memory dirs stay bounded; memories past the cap won't be
+      // tracked for delta detection (consistent with their absence from
+      // the prompt-visible recall).
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
-        // Uncapped maxFiles: baseline must include EVERY file, not just
-        // newest 200. Honor caller's maxCandidates for I/O bound.
-        maxFiles: Number.MAX_SAFE_INTEGER,
+        ...(config.recall.maxFiles !== undefined ? { maxFiles: config.recall.maxFiles } : {}),
         ...(config.recall.maxCandidates !== undefined
           ? { maxCandidates: config.recall.maxCandidates }
           : {}),
@@ -555,16 +556,25 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
    */
   async function refreshLiveDelta(state: SessionRecallState): Promise<void> {
     // Fast-path gate: if the cheap fingerprint (path+mtime+size hash
-    // from fs.list) matches the previous turn, the directory looks
-    // unchanged. Skip the expensive content-reading scan entirely.
+    // from fs.list, includes MEMORY.md) matches the previous turn,
+    // the directory looks unchanged and we skip the expensive
+    // content-reading scan.
     //
-    // Limitation: misses same-size, mtime-preserving overwrites (the
-    // case memory-fs.update() produces) until something else in the
-    // directory changes. This is the trade-off: an O(n) scan on every
-    // turn is unacceptable for large memory dirs / long sessions, and
-    // most updates change either size or mtime (or another file). On
-    // the next directory change, the content-hash signature catches
-    // up to the missed edit.
+    // memory-fs.update() preserves mtime AND can preserve size on
+    // equal-length corrections — taken alone, the memory file's
+    // fingerprint entry would not change. But memory-fs rebuilds
+    // MEMORY.md after every mutation with a fresh mtime, and that
+    // index update changes the directory fingerprint, forcing the
+    // content-hash rescan to catch the same-length edit. The
+    // detection is verified by the test "same-size mtime-preserving
+    // edit IS detected via index-rebuild side effect".
+    //
+    // For backends that don't write a MEMORY.md index, same-size
+    // mtime-preserving edits would not be detected by this gate
+    // alone. memory-fs is currently the only backend used in
+    // production; if a non-indexing backend is ever added, this
+    // gate must be revisited (e.g. switch to ctime if exposed by
+    // FileListEntry, or always-scan with caller-controlled bounds).
     const currentFingerprint = await computeListFingerprint(config.fs, config.recall.memoryDir);
     if (currentFingerprint !== "" && currentFingerprint === state.lastListFingerprint) {
       return; // Nothing changed at the metadata level.
@@ -574,10 +584,12 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
     try {
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
-        // Uncapped maxFiles so we see every memory's signature for the
-        // change check. maxCandidates honors the caller's I/O budget —
-        // limits the per-scan read count for large/poisoned directories.
-        maxFiles: Number.MAX_SAFE_INTEGER,
+        // Honor caller's maxFiles/maxCandidates — same bounds as the
+        // session-start scan so the delta only tracks memories the
+        // recall pipeline considers in scope. Memories beyond the cap
+        // are also excluded from prompt-visible recall, so consistency
+        // is correct: the agent never sees them either way.
+        ...(config.recall.maxFiles !== undefined ? { maxFiles: config.recall.maxFiles } : {}),
         ...(config.recall.maxCandidates !== undefined
           ? { maxCandidates: config.recall.maxCandidates }
           : {}),

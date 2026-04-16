@@ -1413,6 +1413,106 @@ describe("createMemoryRecallMiddleware", () => {
       expect(overlayText).not.toContain(huge);
     });
 
+    test("same-size mtime-preserving edit IS detected via index-rebuild side effect", async () => {
+      // memory-fs.update() preserves mtime AND can preserve serialized
+      // file size for equal-length corrections. On those edits the
+      // memory file's (mtime, size) pair stays the same, so the fast-
+      // path fingerprint would skip the rescan IF it only saw the
+      // memory file.
+      //
+      // In practice the fingerprint also includes MEMORY.md, which
+      // memory-fs rebuilds after every mutation (with a fresh mtime).
+      // That index update breaks the fingerprint, forces a rescan,
+      // and the content-hash signature catches the same-length edit.
+      //
+      // This regression test pins that behavior so future changes
+      // (e.g. excluding MEMORY.md from the fingerprint) cannot
+      // silently regress same-size edit detection without an
+      // alternative change signal in place.
+      const { createMemoryStore } = await import("@koi/memory-fs");
+      const store = createMemoryStore({ dir });
+
+      const seeded = await store.write({
+        name: "Pref",
+        description: "Color preference",
+        type: "user",
+        content: "blue",
+      });
+      expect(seeded.action).toBe("created");
+      if (seeded.action !== "created") return;
+
+      const mw = createMemoryRecallMiddleware(createRealFsConfig(dir));
+      const request = createModelRequest();
+
+      // Init.
+      let firstReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        firstReq = r;
+        return mockNext(r);
+      });
+      expect(firstReq).toBeDefined();
+      if (firstReq === undefined) return;
+      expect(getMessageText(firstReq, 0)).toContain("blue");
+
+      // Same-length overwrite: "blue" -> "pink" (both 4 chars).
+      // memory-fs preserves mtime. The MEMORY.md rebuild side-effect
+      // changes the dir fingerprint, forcing a rescan.
+      await store.update(seeded.record.id, { content: "pink" });
+
+      let secondReq: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), request, async (r) => {
+        secondReq = r;
+        return mockNext(r);
+      });
+      expect(secondReq).toBeDefined();
+      if (secondReq === undefined) return;
+      // Live-delta block IS emitted with the corrected value.
+      const liveMsg = secondReq.messages.find((m) => m.senderId === "system:memory-live");
+      expect(liveMsg).toBeDefined();
+      const liveText =
+        (liveMsg?.content[0] as { readonly kind: "text"; readonly text: string })?.text ?? "";
+      expect(liveText).toContain("pink");
+    });
+
+    test("honors caller's recall.maxFiles bound for both init and refresh scans", async () => {
+      // Regression: previously initialize and refreshLiveDelta hardcoded
+      // maxFiles=Number.MAX_SAFE_INTEGER, removing the configured cap
+      // and risking unbounded I/O on large memory dirs. Now both honor
+      // config.recall.maxFiles when set.
+      // Seed 5 small memories.
+      for (let i = 0; i < 5; i++) {
+        await writeFile(
+          join(dir, `mem${String(i)}.md`),
+          makeMemoryFileContent(`Mem${String(i)}`, "user", `content ${String(i)}`),
+        );
+        // Stagger mtimes so the cap selects a deterministic newest subset.
+        const mtime = new Date(Date.now() + i * 1000);
+        await utimes(join(dir, `mem${String(i)}.md`), mtime, mtime);
+      }
+
+      // Cap to 2 — only the newest 2 should be in scope.
+      const mw = createMemoryRecallMiddleware({
+        fs: createLocalFileSystem(dir),
+        recall: { memoryDir: dir, now: Date.now(), maxFiles: 2 },
+      });
+
+      let captured: ModelRequest | undefined;
+      await mw.wrapModelCall?.(createTurnCtx(), createModelRequest(), async (r) => {
+        captured = r;
+        return mockNext(r);
+      });
+
+      expect(captured).toBeDefined();
+      if (captured === undefined) return;
+      const frozenText = getMessageText(captured, 0);
+      // Newest two memories (mem3, mem4) should be present.
+      expect(frozenText).toContain("content 4");
+      expect(frozenText).toContain("content 3");
+      // Older memories should NOT be in the frozen snapshot.
+      expect(frozenText).not.toContain("content 0");
+      expect(frozenText).not.toContain("content 1");
+    });
+
     test("oversized newest memory does not block smaller older updates", async () => {
       // Regression: the budget loop used to `break` on the first
       // candidate that exceeded liveDeltaMaxTokens. Sorted by recency
