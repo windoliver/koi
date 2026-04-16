@@ -16,6 +16,7 @@ import type {
   ModelRequest,
   ModelResponse,
   TurnContext,
+  TurnId,
 } from "@koi/core";
 import { GOVERNANCE } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
@@ -777,11 +778,33 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
   // Cache GovernanceController lookup — fixed after assembly, no need to look up per-call
   const governance = agent?.component<GovernanceController>(GOVERNANCE);
 
-  // let justified: mutable per-agent fan-out counter
+  // let justified: mutable concurrent in-flight child counter. Matters if
+  // a future engine parallelises tool dispatch — protects against literal
+  // simultaneous runaway children.
   let directChildren = 0;
+  // let justified: mutable per-turn spawn counter. Required because today's
+  // engines (see @koi/query-engine turn-runner) execute batched tool calls
+  // sequentially via `for … await`, so the in-flight counter never exceeds
+  // 1 and burst fan-out within one tool_use batch was silently bypassed
+  // (#1793). Keyed off `TurnContext.turnId` so cooperating adapters that
+  // call the model multiple times per turn (stop-gate retries, planner→
+  // executor loops) share a single per-turn budget.
+  let spawnsThisTurn = 0;
+  // let justified: mutable last-seen turn id — the true turn-boundary
+  // signal. Model-call hooks alone are not, because adapters may call the
+  // model many times per turn.
+  let lastTurnId: TurnId | undefined;
 
-  // let justified: mutable flag to fire fan-out warning at most once
+  // let justified: mutable flag to fire fan-out warning at most once per session
   let firedFanOutWarning = false;
+
+  /** Reset the per-turn counter iff we've crossed into a new turn. */
+  function syncTurnBoundary(ctx: TurnContext): void {
+    if (ctx.turnId !== lastTurnId) {
+      lastTurnId = ctx.turnId;
+      spawnsThisTurn = 0;
+    }
+  }
 
   return {
     name: "koi:spawn-guard",
@@ -790,10 +813,17 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
 
     onSessionStart: async () => {
       directChildren = 0;
+      spawnsThisTurn = 0;
+      lastTurnId = undefined;
       firedFanOutWarning = false;
     },
 
-    wrapToolCall: async (_ctx, request, next) => {
+    wrapToolCall: async (ctx, request, next) => {
+      // Reset the per-turn burst counter at the true turn boundary — a
+      // change in TurnContext.turnId. This is the #1793 enforcement point
+      // for sequential tool-batch execution.
+      syncTurnBoundary(ctx);
+
       // 0. Check depth-based tool restrictions (applies to ALL tools)
       if (deniedTools?.has(request.toolId)) {
         throw KoiRuntimeError.from(
@@ -832,38 +862,83 @@ export function createSpawnGuard(options?: CreateSpawnGuardOptions): KoiMiddlewa
         }
       }
 
-      // 3. Check fan-out (transient, RATE_LIMIT — retryable when child completes)
+      // 3. Check fan-out — dual enforcement:
+      //    a) `directChildren` — live child lifetime (matters if tools run
+      //       in parallel; released when the child terminates).
+      //    b) `spawnsThisTurn` — per-turn batch cumulative (catches sequential
+      //       fan-out bursts that today's serialised tool runner couldn't
+      //       detect via the in-flight counter, #1793).
+      //    Both check against the same maxFanOut — whichever hits first
+      //    throws RATE_LIMIT (retryable: a follow-up turn resets the burst
+      //    counter and freed child slots replenish the in-flight counter).
       if (directChildren >= policy.maxFanOut) {
         throw KoiRuntimeError.from(
           "RATE_LIMIT",
-          `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} children`,
+          `Max fan-out exceeded: ${directChildren}/${policy.maxFanOut} concurrent children`,
           {
             retryable: true,
-            context: { directChildren, maxFanOut: policy.maxFanOut },
+            context: { directChildren, maxFanOut: policy.maxFanOut, reason: "concurrent" },
+          },
+        );
+      }
+      if (spawnsThisTurn >= policy.maxFanOut) {
+        throw KoiRuntimeError.from(
+          "RATE_LIMIT",
+          `Max fan-out exceeded: ${spawnsThisTurn}/${policy.maxFanOut} children in this turn`,
+          {
+            retryable: true,
+            context: { spawnsThisTurn, maxFanOut: policy.maxFanOut, reason: "per_turn_burst" },
           },
         );
       }
 
-      // 4. Optimistic: increment fan-out before next()
+      // 4. Optimistic: increment both counters before next()
       directChildren++;
+      spawnsThisTurn++;
 
-      // 5. Fire fan-out warning (synchronous, at most once)
+      // 5. Fire fan-out warning — at most once per session, and cover
+      //    BOTH enforcement paths. In the sequential turn-runner path
+      //    directChildren dips back to 0 between awaited spawns, so the
+      //    warning would never fire for same-turn bursts if it were
+      //    keyed only off directChildren (#1793).
       if (
         !firedFanOutWarning &&
         policy.fanOutWarningAt !== undefined &&
-        policy.onWarning !== undefined &&
-        directChildren >= policy.fanOutWarningAt
+        policy.onWarning !== undefined
       ) {
-        firedFanOutWarning = true;
-        policy.onWarning({
-          kind: "fan_out",
-          current: directChildren,
-          limit: policy.maxFanOut,
-          warningAt: policy.fanOutWarningAt,
-        });
+        const concurrentTriggered = directChildren >= policy.fanOutWarningAt;
+        const burstTriggered = spawnsThisTurn >= policy.fanOutWarningAt;
+        if (concurrentTriggered || burstTriggered) {
+          firedFanOutWarning = true;
+          // Prefer whichever counter is higher so operators see the most
+          // pressing pressure first. On ties, prefer "concurrent" because
+          // in-flight children are the more immediate resource pressure.
+          const useBurst =
+            burstTriggered && (!concurrentTriggered || spawnsThisTurn > directChildren);
+          policy.onWarning({
+            kind: "fan_out",
+            reason: useBurst ? "per_turn_burst" : "concurrent",
+            current: useBurst ? spawnsThisTurn : directChildren,
+            limit: policy.maxFanOut,
+            warningAt: policy.fanOutWarningAt,
+          });
+        }
       }
 
-      // 6. Execute spawn — release fan-out slot when child completes (success or failure)
+      // 6. Execute spawn:
+      //    - directChildren always decrements (the in-flight slot is
+      //      freed when this tool call unwinds).
+      //    - spawnsThisTurn is NEVER refunded. This is deliberate:
+      //      attempting to differentiate pre-admission from post-
+      //      admission failures (by error code, or by a tagged
+      //      context flag) either lets a parent spam fast-failing
+      //      children past the cap (child-propagated codes) or lets
+      //      a parent spam pre-admission validation errors without
+      //      any per-turn bound (unbounded DoS on the admission
+      //      path). Counting every spawn attempt against the cap
+      //      closes both bypasses. The UX tradeoff — malformed
+      //      spawns burn the per-turn budget — is bounded to
+      //      maxFanOut per turn and recoverable on the next turn.
       try {
         return await next(request);
       } finally {
