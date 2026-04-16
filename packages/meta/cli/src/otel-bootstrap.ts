@@ -54,6 +54,13 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
 
   const exporter = createExporter(mode);
 
+  // No exporter = export disabled for this session. Middleware still wires
+  // (spans are created but discarded by the no-op tracer), so switching to
+  // a real provider at runtime or in a future session is zero-config.
+  if (exporter === undefined) {
+    return { shutdown: async () => {} };
+  }
+
   const provider = new BasicTracerProvider({
     spanProcessors: [new BatchSpanProcessor(exporter)],
   });
@@ -79,43 +86,74 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
 }
 
 /**
- * Select span exporter based on mode and env vars.
+ * Select span exporter based on OTEL_TRACES_EXPORTER env var and mode.
  *
- * Priority:
- *   1. OTEL_TRACES_EXPORTER=console → ConsoleSpanExporter (any mode)
- *   2. headless → ConsoleSpanExporter (stderr is safe)
- *   3. tui → OTLPTraceExporter (console corrupts renderer)
+ * Honors the standard OTel env var first, then applies mode defaults:
+ *   - "console" → ConsoleSpanExporter (any mode)
+ *   - "otlp"    → OTLPTraceExporter (requires OTEL_EXPORTER_OTLP_*ENDPOINT)
+ *   - "none"    → no export (returns undefined)
+ *   - unset     → mode default: headless=console, tui=otlp (if endpoint set) else none
+ *
+ * Returns undefined when export should be disabled (no exporter to wire).
  */
-function createExporter(mode: "tui" | "headless"): SpanExporter {
+function createExporter(mode: "tui" | "headless"): SpanExporter | undefined {
   const envExporter = process.env.OTEL_TRACES_EXPORTER;
+  const otlpUrl =
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
-  // Explicit console override — user knows what they're doing
+  // Explicit "none" — user wants OTel middleware wired but no export.
+  if (envExporter === "none") {
+    return undefined;
+  }
+
+  // Explicit "console" — user knows what they're doing (may corrupt TUI).
   if (envExporter === "console") {
     return new ConsoleSpanExporter();
   }
 
-  // Headless mode — console is always safe
+  // Explicit "otlp" — require an endpoint.
+  if (envExporter === "otlp") {
+    if (otlpUrl === undefined) {
+      process.stderr.write(
+        "[koi] OTel: OTEL_TRACES_EXPORTER=otlp but no OTLP endpoint configured.\n" +
+          "  Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n" +
+          "  OTel export disabled for this session.\n",
+      );
+      return undefined;
+    }
+    return new OTLPTraceExporter({ url: otlpUrl });
+  }
+
+  // Unsupported explicit value — warn and disable.
+  if (envExporter !== undefined) {
+    process.stderr.write(
+      `[koi] OTel: unsupported OTEL_TRACES_EXPORTER="${envExporter}". ` +
+        'Supported: "console", "otlp", "none". OTel export disabled.\n',
+    );
+    return undefined;
+  }
+
+  // --- No explicit exporter — apply mode defaults ---
+
+  // Headless mode — console is safe (no renderer to corrupt).
   if (mode === "headless") {
     return new ConsoleSpanExporter();
   }
 
-  // TUI mode — use OTLP only when the user explicitly configured an endpoint.
-  // Defaulting to localhost:4318 when no collector is running would cause
-  // silent export failures and stall shutdown. Console output corrupts the
-  // TUI renderer, so when no OTLP endpoint is set we fall back to console
-  // with a warning that the user should redirect stderr.
-  const otlpUrl =
-    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-
+  // TUI mode — use OTLP only when endpoint is explicitly configured.
+  // Console output would corrupt the TUI renderer, and defaulting to
+  // localhost:4318 when no collector is running causes silent failures.
+  // Fail closed: no endpoint = no export.
   if (otlpUrl !== undefined) {
     return new OTLPTraceExporter({ url: otlpUrl });
   }
 
-  // No OTLP endpoint configured — fall back to console (user should redirect stderr).
   process.stderr.write(
-    "[koi] OTel: no OTLP endpoint configured. Using ConsoleSpanExporter.\n" +
-      "  Redirect stderr to avoid TUI corruption: koi tui 2>/tmp/spans.log\n" +
-      "  Or set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n",
+    "[koi] OTel: TUI mode requires an OTLP endpoint for span export.\n" +
+      "  Console export would corrupt the renderer. Options:\n" +
+      "  - Set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n" +
+      "  - Set OTEL_TRACES_EXPORTER=console and redirect stderr: 2>/tmp/spans.log\n" +
+      "  OTel export disabled for this session.\n",
   );
-  return new ConsoleSpanExporter();
+  return undefined;
 }
