@@ -3652,6 +3652,19 @@ describe("Full-loop replay: memory-store cassette → createKoi → live ATIF", 
     expect(storedRecord?.name).toBe("testing approach");
     expect(storedRecord?.type).toBe("feedback");
 
+    // #1725 regression: memory_recall must succeed and return stored content
+    // through the full runtime pipeline (not just the adapter layer).
+    const memoryRecallSteps = steps.filter(
+      (s) => s.kind === "tool_call" && s.identifier === "memory_recall",
+    );
+    expect(memoryRecallSteps.length).toBeGreaterThan(0);
+    expect(memoryRecallSteps[0]?.outcome).toBe("success");
+    const recallOutput = memoryRecallSteps[0]?.response?.text ?? "";
+    expect(recallOutput).toContain('"count"');
+    expect(recallOutput).toContain('"results"');
+    // The recalled record must include the stored content — proves full round-trip
+    expect(recallOutput).toContain("testing approach");
+
     // Final model turn: derived from tool output, not hardcoded
     const modelSteps = steps.filter(
       (s) => s.kind === "model_call" && !s.identifier.startsWith("middleware:"),
