@@ -192,6 +192,25 @@ function buildSpawnToolSchema(allowDynamic: boolean): JsonObject {
 }
 
 // ---------------------------------------------------------------------------
+// Safe callback wrapper — observational callbacks must never crash spawn flow
+// ---------------------------------------------------------------------------
+
+/** Fire onSpawnEvent safely — a throwing callback must not crash the spawn flow. */
+function safeSpawnEvent(
+  onSpawnEvent: SpawnToolProviderConfig["onSpawnEvent"],
+  event: Parameters<NonNullable<SpawnToolProviderConfig["onSpawnEvent"]>>[0],
+): void {
+  try {
+    onSpawnEvent?.(event);
+  } catch (e: unknown) {
+    console.warn(
+      `[koi:spawn] onSpawnEvent(${event.kind}) threw — ignoring to preserve spawn flow`,
+      e,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Spawn executor — extracted for independent testability (Issue 2)
 // ---------------------------------------------------------------------------
 
@@ -229,7 +248,7 @@ export function createSpawnExecutor(
     // to render an inline spawn_call block and populate /agents view state.
     // Use a synthetic agentId since the real one is allocated inside spawnFn.
     const spawnAgentId = `spawn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    onSpawnEvent?.({
+    safeSpawnEvent(onSpawnEvent, {
       kind: "spawn_requested",
       agentId: spawnAgentId,
       agentName,
@@ -265,7 +284,7 @@ export function createSpawnExecutor(
       });
 
       if (!result.ok) {
-        onSpawnEvent?.({
+        safeSpawnEvent(onSpawnEvent, {
           kind: "agent_status_changed",
           agentId: spawnAgentId,
           agentName,
@@ -277,7 +296,7 @@ export function createSpawnExecutor(
         // rather than a success payload with embedded error fields.
         throw new KoiRuntimeError(result.error);
       }
-      onSpawnEvent?.({
+      safeSpawnEvent(onSpawnEvent, {
         kind: "agent_status_changed",
         agentId: spawnAgentId,
         agentName,
@@ -288,7 +307,7 @@ export function createSpawnExecutor(
     } catch (e: unknown) {
       // Unexpected error (not a SpawnResult.error) — also emit failed status
       if (!(e instanceof KoiRuntimeError)) {
-        onSpawnEvent?.({
+        safeSpawnEvent(onSpawnEvent, {
           kind: "agent_status_changed",
           agentId: spawnAgentId,
           agentName,

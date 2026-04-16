@@ -340,4 +340,68 @@ describe("createSpawnToolProvider", () => {
     const tool2 = components2.get("tool:Spawn");
     expect(tool1).not.toBe(tool2);
   });
+
+  // ---------------------------------------------------------------------------
+  // Regression: #1855 — throwing onSpawnEvent must not crash spawn executor
+  // ---------------------------------------------------------------------------
+
+  test("onSpawnEvent throwing on spawn_requested does not crash the executor", async () => {
+    const mockSpawnFn = async () => ({
+      ok: true as const,
+      output: "child-output",
+    });
+    const throwingCallback = (): void => {
+      throw new Error("store.dispatch exploded");
+    };
+
+    const execute = createSpawnExecutor(mockSpawnFn, throwingCallback);
+    const result = (await execute({
+      agentName: "reviewer",
+      description: "Review src/math.ts",
+    })) as { output: string };
+
+    // Spawn succeeds despite callback throwing — callback is observational
+    expect(result.output).toBe("child-output");
+  });
+
+  test("onSpawnEvent throwing on success status does not prevent result return", async () => {
+    let callCount = 0;
+    const mockSpawnFn = async () => ({
+      ok: true as const,
+      output: "review-result",
+    });
+    const throwOnSecondCall = (): void => {
+      callCount += 1;
+      // First call (spawn_requested) succeeds; second call (status: complete) throws
+      if (callCount >= 2) {
+        throw new Error("reducer crash on complete status");
+      }
+    };
+
+    const execute = createSpawnExecutor(mockSpawnFn, throwOnSecondCall);
+    const result = (await execute({
+      agentName: "reviewer",
+      description: "Review code",
+    })) as { output: string };
+
+    expect(result.output).toBe("review-result");
+    expect(callCount).toBe(2);
+  });
+
+  test("onSpawnEvent throwing on failure status does not mask the spawn error", async () => {
+    const mockSpawnFn = async () => ({
+      ok: false as const,
+      error: { code: "INTERNAL" as const, message: "model_stream failed", retryable: false },
+    });
+    const throwingCallback = (): void => {
+      throw new Error("store.dispatch exploded on failure");
+    };
+
+    const execute = createSpawnExecutor(mockSpawnFn, throwingCallback);
+    // The executor should still throw the KoiRuntimeError from the spawn failure,
+    // NOT the Error from the callback
+    await expect(execute({ agentName: "reviewer", description: "Review code" })).rejects.toThrow(
+      "model_stream failed",
+    );
+  });
 });
