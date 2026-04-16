@@ -1028,6 +1028,169 @@ describe("runTurn", () => {
         expect(done.output.stopReason).toBe("completed");
       }
     });
+
+    test("schema failure on last allowed turn fails closed (no budget for recovery)", async () => {
+      const toolCalls: string[] = [];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          // Tool call with missing required "path" on the only allowed turn
+          return toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}');
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "should-not-run" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [], maxTurns: 1 }));
+
+      expect(toolCalls).toEqual([]);
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        // Must be schema_validation error, NOT max_turns
+        expect(done.output.stopReason).toBe("error");
+        expect(done.output.metadata).toBeDefined();
+        if (done.output.metadata !== undefined) {
+          expect(done.output.metadata.source).toBe("schema_validation");
+        }
+      }
+    });
+
+    test("recovered schema failure does not disable recovery for unrelated later mistake", async () => {
+      const toolCalls: string[] = [];
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: bad args (missing required)
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model corrects and uses tool successfully
+        createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+        // Turn 2: model makes an unrelated mistake later (wrong type)
+        () => toolCallStreamGen("readFile", "tc-3", '{"path":123}'),
+        // Turn 3: model corrects again
+        createTextStream("Fixed it."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (request: ToolRequest): Promise<ToolResponse> => {
+          toolCalls.push(request.toolId);
+          return { output: "file-content" };
+        },
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      // Tool was called once on the successful correction (tc-2)
+      expect(toolCalls).toEqual(["readFile"]);
+      // Should complete — the second schema failure also got recovery
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+      }
+    });
+
+    test("successful recovery clears stale error metadata from done event", async () => {
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: bad args
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model retries with correct args (successful tool execution)
+        createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
+        // Turn 2: model responds with text
+        createTextStream("Here is the content."),
+      ];
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            throw new Error(`unexpected model call #${streamCallIndex}`);
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (): Promise<ToolResponse> => ({ output: "file-content" }),
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(runTurn({ callHandlers: handlers, messages: [] }));
+
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("completed");
+        // Stale schema_validation metadata must NOT leak into completed done
+        expect(done.output.metadata).toBeUndefined();
+      }
+    });
+
+    test("text-only recovery does not reset recovery budget (invalid -> text -> invalid = hard error)", async () => {
+      // let justified: mutable counter so the mock cycles through streams
+      let streamCallIndex = 0;
+      const streams: Array<() => AsyncIterable<ModelChunk>> = [
+        // Turn 0: bad args
+        () => toolCallStreamGen("readFile", "tc-1", '{"encoding":"utf8"}'),
+        // Turn 1: model apologizes with text (does NOT reset recovery)
+        createTextStream("Sorry, let me try again."),
+      ];
+      // Stop gate re-prompts after text-only turn so the model tries again
+      // let justified: mutable gate counter
+      let gateCallCount = 0;
+
+      const handlers: ComposedCallHandlers = {
+        modelCall: async (): Promise<ModelResponse> => DONE_RESPONSE,
+        modelStream: (): AsyncIterable<ModelChunk> => {
+          const factory = streams[streamCallIndex];
+          if (factory === undefined) {
+            // Turn 2: bad args again after text-only turn
+            return toolCallStreamGen("readFile", "tc-2", '{"path":123}');
+          }
+          streamCallIndex += 1;
+          return factory();
+        },
+        toolCall: async (): Promise<ToolResponse> => ({ output: "unused" }),
+        tools: [READ_FILE_TOOL],
+      };
+
+      const events = await collect(
+        runTurn({
+          callHandlers: handlers,
+          messages: [],
+          stopGate: async () => {
+            gateCallCount++;
+            if (gateCallCount === 1) {
+              return { kind: "block", reason: "not done yet", blockedBy: "test" };
+            }
+            return { kind: "continue" };
+          },
+        }),
+      );
+
+      // Second schema failure after text-only turn should be hard error
+      const done = events.find((e) => e.kind === "done");
+      expect(done).toBeDefined();
+      if (done?.kind === "done") {
+        expect(done.output.stopReason).toBe("error");
+        expect(done.output.metadata).toBeDefined();
+        if (done.output.metadata !== undefined) {
+          expect(done.output.metadata.source).toBe("schema_validation");
+        }
+      }
+    });
   });
 
   test("error metadata is included in done event for model stream errors", async () => {

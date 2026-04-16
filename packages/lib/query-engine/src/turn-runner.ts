@@ -114,10 +114,12 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
   // let justified: mutable per-run flag, set in the truncation recovery block
   let truncationRecoveryUsed = false;
 
-  // #1754: cap schema-validation recovery to ONE re-prompt. If the model
-  // sends invalid args twice, the problem is structural — fail closed.
-  // let justified: mutable per-run flag, set in the schema validation block
-  let schemaValidationRecoveryUsed = false;
+  // #1754: cap schema-validation recovery to ONE consecutive re-prompt.
+  // If the model sends invalid args on the very next turn after recovery,
+  // the problem is structural — fail closed. Reset after any successful
+  // tool-execution turn so unrelated later mistakes still get recovery.
+  // let justified: mutable flag, set/cleared across turns
+  let schemaValidationRecoveryPending = false;
 
   // Pre-flight: handle already-aborted signal before entering the state machine.
   // The idle state only accepts "start", so we short-circuit here.
@@ -422,17 +424,21 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
       if (schemaErrors.length > 0) {
         errorMetadata = { source: "schema_validation", errors: schemaErrors };
 
-        // #1754: first failure → feed error back as synthetic tool_result
-        // so the model can retry with corrected args. Second failure → hard error.
-        if (schemaValidationRecoveryUsed) {
+        // #1754: consecutive schema failure after a recovery turn → hard error.
+        // Also hard-fail when maxTurns is exhausted — the recovery turn would
+        // be consumed by the budget check, misclassifying the failure as max_turns.
+        const turnBudgetExhausted = maxTurns !== undefined && state.turnIndex + 1 >= maxTurns;
+        if (schemaValidationRecoveryPending || turnBudgetExhausted) {
           state = transitionTurn(state, {
             kind: "error",
-            message: `tool argument validation failed again after recovery turn — ${schemaErrors.join("; ")}`,
+            message: schemaValidationRecoveryPending
+              ? `tool argument validation failed again after recovery turn — ${schemaErrors.join("; ")}`
+              : `tool argument validation failed and no turn budget for recovery — ${schemaErrors.join("; ")}`,
           });
           yield { kind: "turn_end", turnIndex: state.turnIndex };
           break;
         }
-        schemaValidationRecoveryUsed = true;
+        schemaValidationRecoveryPending = true;
 
         // Record the assistant's tool-call intents in the transcript so
         // every streamed tool_call event has a matching intent.
@@ -469,6 +475,17 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         yield { kind: "turn_end", turnIndex: state.turnIndex - 1 };
         continue;
       }
+    }
+
+    // If we got here with tool calls that passed validation, clear
+    // schema-recovery state. Text-only turns do NOT reset — the model
+    // must prove it can produce valid tool calls before earning another
+    // recovery attempt. This prevents invalid→text→invalid churn.
+    if (schemaValidationRecoveryPending && validToolCalls.length > 0) {
+      schemaValidationRecoveryPending = false;
+      // Clear stale errorMetadata from the prior recovery so the final
+      // done event reflects the actual terminal state, not a recovered one.
+      errorMetadata = undefined;
     }
 
     // Dedup: within this turn, skip tool calls with identical (toolName + args).
