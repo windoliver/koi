@@ -392,12 +392,23 @@ export function createGoalMiddleware(config: GoalMiddlewareConfig): GoalMiddlewa
       });
     }
 
-    // Append goal block to END of messages to preserve prompt cache.
-    // System prompt + conversation history stay at the same positions;
-    // only the small goal block (~50 tokens) is uncached at the tail.
+    // Insert goal block just before the last message to preserve prompt cache.
+    // Order: [system_prompt, memory, history..., goal_block, new_user_message]
+    // System prompt + memory + prior history stay at stable positions (cached).
+    // Goal block + new message are both uncached tail content.
     const enrichedRequest =
       goalBlock !== undefined
-        ? { ...request, messages: [...request.messages, buildGoalMessage(goalBlock)] }
+        ? {
+            ...request,
+            messages:
+              request.messages.length > 0
+                ? [
+                    ...request.messages.slice(0, -1),
+                    buildGoalMessage(goalBlock),
+                    request.messages[request.messages.length - 1]!,
+                  ]
+                : [buildGoalMessage(goalBlock)],
+          }
         : request;
 
     return { enrichedRequest, goalBlock };
