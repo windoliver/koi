@@ -1,6 +1,6 @@
 {
   "name": "@koi/fs-scoped",
-  "description": "Scoped filesystem wrapper — restricts a FileSystemBackend to a root path with configurable read-only or read-write access",
+  "description": "Scoped filesystem wrapper — restricts a FileSystemBackend to a root with configurable ro/rw access",
   "version": "0.0.0",
   "private": true,
   "type": "module",
