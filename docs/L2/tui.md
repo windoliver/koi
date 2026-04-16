@@ -136,7 +136,7 @@ Two-layer navigation: persistent **views** and transient **modals**.
 
 | Type | Members | Behavior |
 |------|---------|----------|
-| View | `conversation`, `sessions`, `doctor`, `help`, `trajectory` | Screen-level, one active |
+| View | `conversation`, `sessions`, `doctor`, `help`, `trajectory`, `plugins` | Screen-level, one active |
 | Modal | `command-palette`, `permission-prompt`, `session-picker` | Overlay, preserves underlying view |
 
 Modals are nullable. Dismissing returns to the underlying view without state loss.
@@ -609,5 +609,7 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > **Spawn history in /agents view (#1792):** `/agents` previously showed "No active agents" the instant a spawn finished, making it useless for multi-agent debugging. New `finishedSpawns: readonly SpawnRecord[]` state field — a session-scoped ring buffer (cap `MAX_FINISHED_SPAWNS = 20`, most-recent-first) populated from both `set_spawn_terminal` and `agent_status_changed(terminated)`. `AgentsView` now renders an "Active" section and a "Recent" section; finished agents show name, description, final duration, and a ✓/✗ outcome badge. `SpawnRecord` carries `agentId`, `agentName`, `description`, `startedAt`, `finishedAt`, `durationMs`, and `outcome: "complete" | "failed"`. `formatDuration()` extracted to `AgentsView` for shared active/finished rendering.
 
 > **Connection status stays connected after successful turns (#1753):** `engine_done` no longer dispatches `set_connection_status: "disconnected"`. It is a healthy end-of-turn signal — the worker is still alive and ready for the next turn. Disconnect is now reserved for `engine_error`, worker `onerror`, and `channel.dispose()`. This fixes `/doctor` reporting `Connection ○ disconnected` after every successful model turn. `dispose()` is hardened with per-message resilient teardown: each `approval_response` denial is posted in isolation so one failed `postMessage` cannot strand remaining pending requests, and any stranded approvals are surfaced via `add_error` so the operator knows to terminate the worker. `dispose()` also flips connection status to `disconnected` so `/doctor` cannot report a healthy engine for a torn-down channel.
+
+> **Plugin TUI observability (#1728):** Added `/plugins` nav command with `PluginsView` component showing loaded plugins (name, version, source, description) and discovery errors. New `PluginSummary`, `PluginSummaryEntry`, `PluginSummaryError` types, `pluginSummary: PluginSummary | null` state field, and `set_plugin_summary` reducer action. Plugin status surfaced as inline TUI notice at startup (UI-only, not injected into model transcript). All plugin-derived text sanitized to strip ANSI escape sequences and control characters before display. `buildPluginDisplayLines` pure function extracted for testability.
 
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
