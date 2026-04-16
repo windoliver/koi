@@ -200,6 +200,14 @@ export interface KoiRuntimeConfig {
    */
   readonly permissionsDescription?: string | undefined;
   /**
+   * Approval timeout in ms for permission "ask" decisions. Defaults to
+   * the middleware's 30s fail-closed posture (suitable for agent-to-agent
+   * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
+   * (60 min) so interactive users are never auto-denied while reading a
+   * permission prompt (#1845).
+   */
+  readonly approvalTimeoutMs?: number | undefined;
+  /**
    * Stable identifier used as the `hostId` on spawn events, decision-
    * ledger lookups, and permission persistentAgentId. Defaults to
    * "koi-tui" for backward compatibility. `koi start` passes "koi-cli".
@@ -938,7 +946,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
-    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
+    ...(config.approvalTimeoutMs !== undefined
+      ? { approvalTimeoutMs: config.approvalTimeoutMs }
+      : {}),
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
