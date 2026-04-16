@@ -197,10 +197,21 @@ export async function createLocalTransport(config: LocalTransportConfig): Promis
     mounts = ready.mounts ?? [];
   } catch (e: unknown) {
     lineReader.release();
-    proc.kill();
+    try {
+      proc.kill();
+    } catch {
+      // Bridge may have already exited (e.g. procExit race) — proceed to drain stderr.
+    }
     const stderr = await collectStderr(proc);
+    // If stderr drain timed out, the process ignored SIGTERM — force kill it.
+    try {
+      proc.kill(9);
+    } catch {
+      // Already dead — ignore.
+    }
     throw new Error(
       `Failed to start nexus-fs bridge: ${e instanceof Error ? e.message : String(e)}${stderr ? `\nstderr: ${stderr}` : ""}`,
+      { cause: e },
     );
   }
 
@@ -502,21 +513,79 @@ async function procExit(proc: { readonly exited: Promise<number> }): Promise<nev
   throw new Error(`Bridge process exited with code ${String(code)}`);
 }
 
-/** Collect stderr output for error messages. */
+/** Max bytes to capture from stderr before truncating. */
+const MAX_STDERR_BYTES = 256 * 1024; // 256 KiB
+
+/** Max time to wait for stderr EOF after process kill (ms). */
+const STDERR_DRAIN_TIMEOUT_MS = 3_000;
+
+/** Collect stderr output for error messages. Drains until EOF, with bounded time and size. */
 async function collectStderr(proc: {
   readonly stderr: ReadableStream<Uint8Array>;
 }): Promise<string> {
+  const reader = proc.stderr.getReader();
+  const decoder = new TextDecoder();
+  let output = "";
+  let bytes = 0;
+  let truncated = false;
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
   try {
-    const reader = proc.stderr.getReader();
-    const decoder = new TextDecoder();
-    let output = "";
-    const { value, done } = await reader.read();
-    if (!done && value !== undefined) {
-      output = decoder.decode(value);
-    }
-    reader.releaseLock();
-    return output.trim();
+    const drain = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value !== undefined) {
+          const remaining = MAX_STDERR_BYTES - bytes;
+          bytes += value.byteLength;
+          if (bytes > MAX_STDERR_BYTES) {
+            // Clip the overflow chunk to fit within the cap
+            output += decoder.decode(value.subarray(0, remaining), { stream: true });
+            truncated = true;
+            break;
+          }
+          output += decoder.decode(value, { stream: true });
+        }
+      }
+    })();
+
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), STDERR_DRAIN_TIMEOUT_MS);
+    });
+
+    const result = await Promise.race([drain.then(() => "done" as const), timeout]);
+    timedOut = result === "timeout";
   } catch {
-    return "";
+    // Stream error — use whatever we collected so far
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    // Fire-and-forget cancel — do NOT await, as the stream may be backed by a
+    // process that ignored SIGTERM and is keeping stderr open. Awaiting cancel()
+    // would hang and nullify the drain timeout. Release lock after cancel settles.
+    void reader
+      .cancel()
+      .catch(() => {})
+      .then(() => {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore — may already be released
+        }
+      });
   }
+
+  // Flush any remaining bytes in the decoder
+  output += decoder.decode();
+  const trimmed = output.trim();
+
+  if (truncated) {
+    return `${trimmed}\n[truncated — exceeded ${String(MAX_STDERR_BYTES)} bytes]`;
+  }
+  if (timedOut) {
+    return trimmed.length > 0
+      ? `${trimmed}\n[truncated — stderr drain timed out]`
+      : "[stderr drain timed out — process may have ignored SIGTERM]";
+  }
+  return trimmed;
 }
