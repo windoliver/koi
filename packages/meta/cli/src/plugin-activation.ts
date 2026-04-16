@@ -168,20 +168,20 @@ export async function loadPluginComponents(
   for (const pluginMeta of plugins) {
     if (allowlist !== undefined && !allowlist.has(pluginMeta.name)) continue;
 
-    // Capture metadata before load (for summary even if load fails)
-    discovered.push({
-      name: pluginMeta.name,
-      version: pluginMeta.version,
-      description: pluginMeta.description,
-      source: pluginMeta.source,
-    });
-
     const loadResult = await registry.load(pluginMeta.name);
     if (!loadResult.ok) {
       errors.push({ plugin: pluginMeta.name, error: loadResult.error.message });
       continue;
     }
     const plugin = loadResult.value;
+
+    // Record successfully loaded plugin metadata for summary
+    discovered.push({
+      name: plugin.name,
+      version: plugin.version,
+      description: plugin.description,
+      source: plugin.source,
+    });
 
     // Hooks
     if (plugin.hookConfigPath !== undefined) {
