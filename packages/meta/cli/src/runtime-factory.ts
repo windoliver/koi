@@ -60,6 +60,7 @@ import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
 import { wrapMiddlewareWithTrace } from "@koi/runtime";
 import type { SkillsRuntime } from "@koi/skills-runtime";
+import type { PluginSummary } from "@koi/tui";
 import {
   buildInheritedMiddlewareForChildren,
   composeRuntimeMiddleware,
@@ -463,6 +464,12 @@ export interface KoiRuntimeHandle {
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * Plugin discovery summary — loaded plugins + any errors.
+   * Static for the lifetime of the runtime. Used by the TUI to populate
+   * the /plugins view and inject plugin awareness into the system prompt.
+   */
+  readonly pluginSummary: PluginSummary;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -666,6 +673,17 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // Register plugin skills with the SkillsRuntime (if any)
   if (skillsRuntime !== undefined && pluginComponents.skillMetadata.length > 0) {
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
+  }
+
+  const pluginSummary: PluginSummary = {
+    loaded: pluginComponents.discovered,
+    errors: pluginComponents.errors,
+  };
+  if (pluginSummary.loaded.length > 0) {
+    const names = pluginSummary.loaded.map((p) => `${p.name}@${p.version}`).join(", ");
+    console.error(
+      `[koi/${hostId}] ${String(pluginSummary.loaded.length)} plugin(s) loaded: ${names}`,
+    );
   }
 
   // Session generation counter — incremented on each reset.
@@ -1671,6 +1689,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,
+      pluginSummary,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a

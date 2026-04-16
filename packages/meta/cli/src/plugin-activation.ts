@@ -19,12 +19,21 @@ import type { SkillMetadata } from "@koi/skills-runtime";
 // Types
 // ---------------------------------------------------------------------------
 
+export interface DiscoveredPluginInfo {
+  readonly name: string;
+  readonly version: string;
+  readonly description: string;
+  readonly source: "bundled" | "user" | "managed";
+}
+
 export interface PluginComponents {
   readonly hooks: readonly HookConfig[];
   readonly mcpServers: readonly McpServerConfig[];
   readonly skillMetadata: readonly SkillMetadata[];
   readonly middlewareNames: readonly string[];
   readonly errors: readonly PluginActivationError[];
+  /** Discovered plugin metadata (name, version, description, source). */
+  readonly discovered: readonly DiscoveredPluginInfo[];
 }
 
 export interface PluginActivationError {
@@ -148,8 +157,19 @@ export async function loadPluginComponents(
   const registry = createGatedRegistry({ userRoot }, userRoot);
   const plugins = await registry.discover();
 
+  const discovered: DiscoveredPluginInfo[] = [];
+
   for (const pluginMeta of plugins) {
     if (allowlist !== undefined && !allowlist.has(pluginMeta.name)) continue;
+
+    // Capture metadata before load (for summary even if load fails)
+    discovered.push({
+      name: pluginMeta.name,
+      version: pluginMeta.version,
+      description: pluginMeta.description,
+      source: pluginMeta.source,
+    });
+
     const loadResult = await registry.load(pluginMeta.name);
     if (!loadResult.ok) {
       errors.push({ plugin: pluginMeta.name, error: loadResult.error.message });
@@ -198,5 +218,5 @@ export async function loadPluginComponents(
     middlewareNames.push(...plugin.middlewareNames);
   }
 
-  return { hooks, mcpServers, skillMetadata, middlewareNames, errors };
+  return { hooks, mcpServers, skillMetadata, middlewareNames, errors, discovered };
 }
