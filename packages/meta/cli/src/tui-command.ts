@@ -46,6 +46,7 @@ import { sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
+import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
 import { createApprovalStore } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
@@ -54,6 +55,7 @@ import {
   createModelRouterMiddleware,
   validateRouterConfig,
 } from "@koi/model-router";
+import { resolveFileSystemAsync } from "@koi/runtime";
 import { createJsonlTranscript, resumeForSession } from "@koi/session";
 import { createSkillsRuntime } from "@koi/skills-runtime";
 import { HEURISTIC_ESTIMATOR } from "@koi/token-estimator";
@@ -74,6 +76,7 @@ import {
 import { getTreeSitterClient, SyntaxStyle } from "@opentui/core";
 import type { TuiFlags } from "./args.js";
 import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.js";
+import { createAuthInterceptor } from "./auth-interceptor.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
@@ -917,17 +920,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let manifestPlugins: readonly string[] | undefined;
   let manifestBackgroundSubprocesses: boolean | undefined;
   // #1777: the manifest filesystem block is parsed+validated by
-  // `loadManifestConfig` (see manifest.ts). `koi tui` supports
-  // `backend: "local"` on the host-default local backend path.
-  // `backend: "nexus"` is rejected here because the TUI permission
-  // middleware and checkpoint stack both assume the filesystem
-  // backend is rooted at `cwd`; approving or rewinding against a
-  // non-cwd backend would break trust-boundary and rollback
-  // invariants.
+  // `loadManifestConfig` (see manifest.ts). `koi tui` supports both
+  // `backend: "local"` and `backend: "nexus"` (with or without scope).
+  // For nexus with local-bridge transport, the TUI wires the OAuth auth
+  // loop: createAuthNotificationHandler (outbound) + createAuthInterceptor
+  // (inbound) so the user can complete OAuth flows inline.
   let manifestFilesystemOps: readonly ("read" | "write" | "edit")[] | undefined;
+  // Full filesystem config for nexus async resolution — stored here so the
+  // async resolve can run just before createKoiRuntime (after TUI setup).
+  let manifestFilesystemConfig: import("@koi/core").FileSystemConfig | undefined;
   let manifestMiddleware: import("./manifest.js").ManifestMiddlewareEntry[] | undefined;
   if (flags.manifest !== undefined) {
-    const manifestResult = await loadManifestConfig(flags.manifest);
+    // Pass allowOAuthSchemes so the manifest loader skips the local-only
+    // scheme allowlist for this host — the TUI wires the auth loop below.
+    const manifestResult = await loadManifestConfig(flags.manifest, { allowOAuthSchemes: true });
     if (!manifestResult.ok) {
       process.stderr.write(`koi tui: invalid manifest — ${manifestResult.error}\n`);
       process.exit(1);
@@ -939,17 +945,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     manifestBackgroundSubprocesses = manifestResult.value.backgroundSubprocesses;
 
     if (manifestResult.value.filesystem !== undefined) {
-      if (manifestResult.value.filesystem.backend === "nexus") {
-        process.stderr.write(
-          "koi tui: manifest.filesystem.backend: nexus is not supported on this host yet.\n" +
-            "  The TUI permission middleware and checkpoint stack both assume the\n" +
-            "  filesystem backend is rooted at the session cwd, and approving or\n" +
-            "  rewinding against a non-cwd backend would break trust-boundary and\n" +
-            "  rollback invariants. Omit the `filesystem:` block or use\n" +
-            "  `backend: local`.\n",
-        );
-        process.exit(1);
-      }
+      // Store the full config for async resolution before runtime assembly.
       // Apply the `FileSystemConfig.operations` contract's `["read"]`
       // default at the host level. `buildCoreProviders` honors
       // `filesystemOperations` verbatim. NOTE: this gates only the
@@ -958,6 +954,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // mutate the workspace via shell commands. Manifest authors who
       // need a true read-only posture should also omit `execution`
       // from `manifest.stacks`.
+      manifestFilesystemConfig = manifestResult.value.filesystem;
       manifestFilesystemOps = manifestResult.value.filesystem.operations ?? (["read"] as const);
     }
     manifestMiddleware =
@@ -1188,14 +1185,126 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const otelEnabled = process.env.KOI_OTEL_ENABLED === "true";
   const otelHandle = otelEnabled ? initOtelSdk("tui") : undefined;
 
+  // ---------------------------------------------------------------------------
+  // Auth loop wiring — nexus local-bridge transport (Tasks 11 + 14)
+  // ---------------------------------------------------------------------------
+  //
+  // When the manifest declares a nexus backend with a local-bridge transport,
+  // we resolve the filesystem async so the bridge subprocess starts before the
+  // runtime is assembled. Two auth hooks are wired here:
+  //
+  //   Outbound: `createAuthNotificationHandler(channel)` is subscribed to
+  //   transport notifications so `auth_required` / `auth_progress` /
+  //   `auth_complete` events are forwarded to the TUI channel as chat
+  //   messages.
+  //
+  //   Inbound: `createAuthInterceptor(transport)` is held in
+  //   `tuiAuthInterceptor` and checked in `onSubmit` before the message
+  //   is passed to the engine. When the user pastes a localhost redirect
+  //   URL, the interceptor routes it to `transport.submitAuthCode(...)` and
+  //   swallows the text so it never reaches the model.
+  //
+  // `tuiAuthCorrelationId` tracks the `correlationId` from the most-recent
+  // `auth_required` notification with `mode: "remote"` — forwarded to
+  // `submitAuthCode` so the bridge can correlate the pasted URL to the
+  // pending OAuth flow.
+
+  // Channel adapter for auth notifications — wraps the TUI store so
+  // `createAuthNotificationHandler` can dispatch messages. Only `send` is
+  // meaningful here; the other ChannelAdapter fields are no-ops because this
+  // channel is used only for fire-and-forget auth notification delivery.
+  const tuiChannelForAuth: import("@koi/core").ChannelAdapter = {
+    name: "koi-tui-auth-notifications",
+    capabilities: {
+      text: true,
+      images: false,
+      files: false,
+      buttons: false,
+      audio: false,
+      video: false,
+      threads: false,
+      supportsA2ui: false,
+    },
+    connect: async (): Promise<void> => {},
+    disconnect: async (): Promise<void> => {},
+    send: async (message): Promise<void> => {
+      const textBlock = message.content.find((b) => b.kind === "text");
+      if (textBlock !== undefined && textBlock.kind === "text") {
+        store.dispatch({
+          kind: "add_user_message",
+          id: `auth-notice-${Date.now()}`,
+          blocks: [{ kind: "text", text: textBlock.text }],
+        });
+      }
+    },
+    onMessage: () => () => {},
+  };
+
+  // let: set when nexus local-bridge transport is resolved; undefined otherwise
+  let tuiAuthInterceptor:
+    | ((message: string, correlationId: string | undefined) => { readonly intercepted: boolean })
+    | undefined;
+  // let: updated when auth_required fires with mode:"remote"
+  let tuiAuthCorrelationId: string | undefined;
+
+  // Resolved nexus backend (if any). Passed to `createKoiRuntime` via `filesystem`.
+  // The `dispose()` on this backend closes the bridge subprocess and unsubscribes.
+  let resolvedFilesystemBackend: import("@koi/core").FileSystemBackend | undefined;
+
+  if (manifestFilesystemConfig !== undefined) {
+    const fsResolved = await resolveFileSystemAsync(
+      manifestFilesystemConfig,
+      process.cwd(),
+      createAuthNotificationHandler(tuiChannelForAuth),
+    );
+    resolvedFilesystemBackend = fsResolved.backend;
+    // If `fsResolved.operations` is set, it overrides the manifest-derived ops
+    // (the two should agree, but resolveFileSystemAsync is authoritative).
+    if (fsResolved.operations !== undefined) {
+      manifestFilesystemOps = fsResolved.operations;
+    }
+    // Wire inbound OAuth interceptor when a local-bridge transport is available.
+    if (fsResolved.transport !== undefined) {
+      const transport = fsResolved.transport;
+      // Subscribe extra: track correlationId from auth_required (mode: "remote").
+      transport.subscribe((n) => {
+        if (n.method === "auth_required" && n.params.mode === "remote") {
+          tuiAuthCorrelationId = n.params.correlation_id;
+        } else if (n.method === "auth_complete") {
+          tuiAuthCorrelationId = undefined;
+        }
+      });
+      tuiAuthInterceptor = createAuthInterceptor(transport);
+    }
+  }
+
   // Runtime assembly happens in parallel with TUI rendering (P2-A).
   // The runtimeReady promise resolves before the first submit.
   // let: set once when the promise resolves
   let runtimeHandle: KoiRuntimeHandle | null = null;
+  // Task 13: when the backend is nexus, prefix fs_* tool approval reason
+  // with "[nexus: <transport>]" so the user can tell at a glance that the
+  // operation targets a remote filesystem, not a local path. The label is
+  // derived from the resolved backend name (e.g. "nexus-local:gdrive://...").
+  const FS_TOOL_NAMES = new Set<string>(["fs_read", "fs_write", "fs_edit"]);
+  const nexusBackendLabel =
+    resolvedFilesystemBackend !== undefined && resolvedFilesystemBackend.name !== "local"
+      ? `[nexus: ${resolvedFilesystemBackend.name.startsWith("nexus-local:") ? "local" : resolvedFilesystemBackend.name}]`
+      : undefined;
+  const labeledApprovalHandler: import("@koi/core").ApprovalHandler =
+    nexusBackendLabel !== undefined
+      ? async (request) => {
+          const labeled = FS_TOOL_NAMES.has(request.toolId)
+            ? { ...request, reason: `${nexusBackendLabel} ${request.reason}` }
+            : request;
+          return permissionBridge.handler(labeled);
+        }
+      : permissionBridge.handler;
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
-    approvalHandler: permissionBridge.handler,
+    approvalHandler: labeledApprovalHandler,
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
@@ -1220,6 +1329,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(manifestStacks !== undefined ? { stacks: manifestStacks } : {}),
     ...(manifestPlugins !== undefined ? { plugins: manifestPlugins } : {}),
     ...(manifestFilesystemOps !== undefined ? { filesystemOperations: manifestFilesystemOps } : {}),
+    // Nexus backend (when resolved above) is passed through so the checkpoint
+    // stack stamps the correct backend name and the restore protocol dispatches
+    // compensating ops through the right backend. Omitted when undefined —
+    // factory falls back to the default local backend rooted at cwd.
+    ...(resolvedFilesystemBackend !== undefined ? { filesystem: resolvedFilesystemBackend } : {}),
     // Zone B — manifest-declared middleware. Resolved inside the
     // factory via the default built-in registry. Runs INSIDE the
     // security guard so repo-authored content cannot observe raw
@@ -2018,6 +2132,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       }
       approvalStore?.close();
+      // Dispose nexus filesystem backend (closes bridge subprocess + unsubscribes).
+      // Must run after runtimeHandle.runtime.dispose() so in-flight tool calls
+      // complete before the transport is closed.
+      await resolvedFilesystemBackend?.dispose?.();
     } finally {
       clearInterval(shutdownKeepAlive);
       // Flush OTel spans before process exit
@@ -3192,6 +3310,30 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // multiplexing stream below surfaces all iterations' EngineEvents
         // into drainEngineStream so the TUI renders each iteration's model
         // output naturally.
+        // Task 11: check OAuth redirect URL interceptor before passing to engine.
+        // When a nexus local-bridge transport is wired and the user pastes a
+        // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
+        // the interceptor routes it to `transport.submitAuthCode(...)` and
+        // returns `{ intercepted: true }` so the text never reaches the model.
+        if (tuiAuthInterceptor !== undefined) {
+          const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
+          if (interceptResult.intercepted) {
+            // Show a brief notice so the user knows the URL was consumed.
+            store.dispatch({
+              kind: "add_user_message",
+              id: `auth-redirect-${Date.now()}`,
+              blocks: [
+                {
+                  kind: "text",
+                  text: "_OAuth redirect URL received — submitting to auth bridge..._",
+                },
+              ],
+            });
+            activeController = null;
+            return;
+          }
+        }
+
         // #10: resolve @-mention file references before sending to the engine.
         // Parses @path and @path#L10-20, reads files, injects content so the
         // model sees the file directly without needing to call Glob/fs_read.
