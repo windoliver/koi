@@ -153,6 +153,18 @@ function extractChips(
   return chips;
 }
 
+/** Extract the first non-empty string arg value (for MCP tool subtitles). */
+function extractFirstStringArg(args: Readonly<Record<string, unknown>>): string {
+  // Try SUBTITLE_KEYS first for common patterns
+  const fromKeys = extractSubtitle(args, undefined);
+  if (fromKeys !== "") return fromKeys;
+  // Fall back to any string arg
+  for (const value of Object.values(args)) {
+    if (typeof value === "string" && value !== "") return truncate(value);
+  }
+  return "";
+}
+
 function truncate(text: string): string {
   if (text.length <= MAX_SUBTITLE_LENGTH) return text;
   return `${text.slice(0, MAX_SUBTITLE_LENGTH - 1)}…`;
@@ -173,6 +185,25 @@ export function getToolDisplay(
   toolName: string,
   args: Readonly<Record<string, unknown>>,
 ): ToolDisplay {
+  // MCP-namespaced tools: "server__tool_name" → display as "Server ▸ tool_name"
+  // Must check BEFORE suffix matching so "jira__jira_search" doesn't become "Web Search".
+  const mcpSep = toolName.indexOf("__");
+  if (mcpSep > 0) {
+    const server = toolName.slice(0, mcpSep);
+    const tool = toolName.slice(mcpSep + 2);
+    // Capitalize server name for display
+    const serverLabel = server.charAt(0).toUpperCase() + server.slice(1);
+    // Clean up tool name: strip server prefix if duplicated (jira__jira_search → search)
+    const cleanTool = tool.startsWith(`${server}_`) ? tool.slice(server.length + 1) : tool;
+    // Try to find a meaningful subtitle from args; fall back to cleaned tool name
+    const argSubtitle = extractFirstStringArg(args);
+    return {
+      title: `${serverLabel} ▸`,
+      subtitle: argSubtitle || cleanTool.replaceAll("_", " "),
+      chips: extractChips(args, undefined),
+    };
+  }
+
   const entry = findEntry(toolName);
   if (entry !== undefined) {
     return {
@@ -182,7 +213,7 @@ export function getToolDisplay(
     };
   }
 
-  // Generic fallback for MCP / unknown tools
+  // Generic fallback for unknown tools
   return {
     title: toolName,
     subtitle: extractSubtitle(args, undefined),

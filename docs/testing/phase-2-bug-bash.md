@@ -49,7 +49,7 @@ export KOI_FALLBACK_MODEL="openai/gpt-4o"     # Enable model-router failover
 export KOI_OTEL_ENABLED=true                   # Enable OpenTelemetry spans (optional)
 ```
 
-MCP servers configured via `.mcp.json` at project root or `$KOI_HOME/.claude/.mcp.json`:
+MCP servers configured via `.mcp.json` at project root or `~/.koi/.mcp.json`:
 ```json
 {
   "mcpServers": {

@@ -85,7 +85,7 @@ import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
-import { createKoiRuntime } from "./runtime-factory.js";
+import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
@@ -1301,10 +1301,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       : permissionBridge.handler;
 
+  // let: incremented on each /mcp navigation; stale background refreshes drop their dispatch
+  let mcpViewGeneration = 0;
+  // Per-server in-flight auth guard — prevents overlapping OAuth flows
+  const mcpAuthInFlight = new Set<string>();
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
     approvalHandler: labeledApprovalHandler,
+    approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
@@ -1361,6 +1366,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     ...(process.env.KOI_AUDIT_NDJSON !== undefined && process.env.KOI_AUDIT_NDJSON !== ""
       ? { auditNdjsonPath: process.env.KOI_AUDIT_NDJSON }
       : {}),
+    // KOI_AUDIT_SQLITE=<absolute path> opts into SQLite-backed audit
+    // logging. Wires @koi/middleware-audit + @koi/audit-sink-sqlite so
+    // every model/tool call is recorded in a WAL-mode SQLite database.
+    ...(process.env.KOI_AUDIT_SQLITE !== undefined && process.env.KOI_AUDIT_SQLITE !== ""
+      ? { auditSqlitePath: process.env.KOI_AUDIT_SQLITE }
+      : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
@@ -1403,6 +1414,71 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       handle.transcript.push(...resumedMessagesToPrime);
       resumedMessagesToPrime = [];
     }
+    // If /mcp was opened during startup, refresh its live status now
+    // that the runtime is ready.
+    if (store.getState().activeView === "mcp") {
+      void (async () => {
+        mcpViewGeneration += 1;
+        const refreshGen = mcpViewGeneration;
+        const live = await handle.getMcpStatus();
+        if (mcpViewGeneration !== refreshGen) return;
+        store.dispatch({
+          kind: "set_mcp_status",
+          servers: live.map((l) => ({
+            name: l.name,
+            status:
+              l.failureCode === undefined
+                ? ("connected" as const)
+                : l.failureCode === "AUTH_REQUIRED"
+                  ? ("needs-auth" as const)
+                  : ("error" as const),
+            toolCount: l.toolCount,
+            detail: l.failureMessage,
+          })),
+        });
+      })();
+    }
+
+    // Dispatch plugin summary to TUI store (#1728)
+    store.dispatch({
+      kind: "set_plugin_summary",
+      summary: handle.pluginSummary,
+    });
+
+    // Surface plugin status as inline TUI notice (#1728).
+    // UI-only — not injected into the model transcript to avoid a trust
+    // boundary issue (plugin descriptions are untrusted metadata).
+    // Agent awareness comes through the /plugins view and startup log.
+    //
+    // Plugin-derived strings are sanitized to strip ANSI escape sequences
+    // and control characters before display.
+    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+      // Strip ANSI escapes and control characters from untrusted plugin text.
+      // Uses RegExp constructor to avoid Biome noControlCharactersInRegex lint.
+      const ANSI_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+      const CTRL_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+      const sanitize = (s: string): string => s.replace(ANSI_RE, "").replace(CTRL_RE, "");
+
+      const parts: string[] = [];
+      if (handle.pluginSummary.loaded.length > 0) {
+        const pluginLines = handle.pluginSummary.loaded
+          .map((p) => `- ${sanitize(p.name)} v${sanitize(p.version)}`)
+          .join("\n");
+        parts.push(`[Loaded Plugins]\n${pluginLines}`);
+      }
+      if (handle.pluginSummary.errors.length > 0) {
+        const errorLines = handle.pluginSummary.errors
+          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+          .join("\n");
+        parts.push(`[Plugin Load Errors]\n${errorLines}`);
+      }
+      store.dispatch({
+        kind: "add_user_message",
+        id: `plugin-status-${String(Date.now())}`,
+        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+      });
+    }
+
     return handle;
   });
 
@@ -2620,6 +2696,284 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   "File changes made during those turns are not recorded and may remain on disk — " +
                   "verify the workspace state manually if anything looks off.",
               });
+            }
+          })();
+          break;
+        case "nav:mcp": {
+          // Instant — reads config + checks Keychain. No network, no runtime needed.
+          // Increment the generation so background refreshes from prior
+          // opens can't clobber this one's output.
+          mcpViewGeneration += 1;
+          const navGen = mcpViewGeneration;
+          void (async (): Promise<void> => {
+            const { loadMcpJsonFile, computeServerKey } = await import("@koi/mcp");
+            const { createSecureStorage } = await import("@koi/secure-storage");
+            const { join } = await import("node:path");
+            const { homedir } = await import("node:os");
+
+            // Same precedence as runtime: only fall back to home config
+            // when project file is truly absent, not invalid.
+            const projectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+            let config: typeof projectResult | undefined;
+            if (projectResult.ok) {
+              // Valid config (including empty {mcpServers:{}}) takes priority.
+              // Empty project config is an explicit opt-out — do not fall
+              // back to home config.
+              config = projectResult;
+            } else if (projectResult.error.code === "NOT_FOUND") {
+              const homeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+              if (homeResult.ok) config = homeResult;
+            }
+
+            if (config === undefined || !config.ok || config.value.servers.length === 0) {
+              // No file servers — render empty view immediately, then do
+              // live plugin discovery in the background (may block on
+              // unhealthy plugin servers; must not stall navigation).
+              store.dispatch({ kind: "set_mcp_status", servers: [] });
+              store.dispatch({ kind: "set_view", view: "mcp" });
+              if (runtimeHandle !== null) {
+                void (async () => {
+                  const live = await runtimeHandle?.getMcpStatus();
+                  if (live === undefined) return;
+                  if (mcpViewGeneration !== navGen) return;
+                  store.dispatch({
+                    kind: "set_mcp_status",
+                    servers: live.map((l) => ({
+                      name: l.name,
+                      status:
+                        l.failureCode === undefined
+                          ? ("connected" as const)
+                          : l.failureCode === "AUTH_REQUIRED"
+                            ? ("needs-auth" as const)
+                            : ("error" as const),
+                      toolCount: l.toolCount,
+                      detail: l.failureMessage ?? "plugin",
+                    })),
+                  });
+                })();
+              }
+              return;
+            }
+
+            // Check token storage for each OAuth server — fast Keychain lookup, no network
+            const storage = createSecureStorage();
+            const servers: import("@koi/tui").McpServerInfo[] = await Promise.all(
+              config.value.servers.map(async (s) => {
+                const hasOAuth = s.kind === "http" && s.oauth !== undefined;
+                if (!hasOAuth) {
+                  // Non-OAuth server — assume configured/ready
+                  return {
+                    name: s.name,
+                    status: "connected" as const,
+                    toolCount: 0,
+                    detail: `${s.kind} transport`,
+                  };
+                }
+                // Check Keychain for stored tokens
+                const key = computeServerKey(s.name, s.kind === "http" ? s.url : "");
+                const raw = await storage.get(key);
+                const hasTokens = raw !== undefined;
+                return {
+                  name: s.name,
+                  status: hasTokens ? ("connected" as const) : ("needs-auth" as const),
+                  toolCount: 0,
+                  detail: hasTokens ? "Authenticated (tokens stored)" : undefined,
+                };
+              }),
+            );
+
+            // Show immediately from Keychain state — no blocking.
+            store.dispatch({ kind: "set_mcp_status", servers });
+            store.dispatch({ kind: "set_view", view: "mcp" });
+
+            // Background: enrich with live tool counts if runtime is ready.
+            // Does NOT block the view — user sees instant status, then
+            // tool counts update asynchronously.
+            if (runtimeHandle !== null) {
+              void (async () => {
+                const live = await runtimeHandle?.getMcpStatus();
+                if (live === undefined) return;
+                // Live entries may be source-keyed ("user:jira") when both
+                // user and plugin resolvers exist. Strip the "user:" prefix
+                // when matching against config-backed server names.
+                const stripUserPrefix = (n: string): string =>
+                  n.startsWith("user:") ? n.slice(5) : n;
+                const liveUserMap = new Map<string, (typeof live)[number]>();
+                const liveOther: (typeof live)[number][] = [];
+                for (const l of live) {
+                  if (l.name.startsWith("user:")) {
+                    liveUserMap.set(stripUserPrefix(l.name), l);
+                  } else if (!l.name.includes(":")) {
+                    liveUserMap.set(l.name, l);
+                  } else {
+                    liveOther.push(l);
+                  }
+                }
+                // Enrich config-based entries with live data (match by bare name)
+                const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
+                  const l = liveUserMap.get(entry.name);
+                  if (l === undefined) return entry;
+                  const liveStatus: "connected" | "needs-auth" | "error" =
+                    l.failureCode === undefined
+                      ? "connected"
+                      : l.failureCode === "AUTH_REQUIRED"
+                        ? "needs-auth"
+                        : "error";
+                  return {
+                    name: entry.name,
+                    status: liveStatus,
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? entry.detail,
+                  };
+                });
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                for (const l of liveOther) {
+                  enriched.push({
+                    name: l.name,
+                    status:
+                      l.failureCode === undefined
+                        ? "connected"
+                        : l.failureCode === "AUTH_REQUIRED"
+                          ? "needs-auth"
+                          : "error",
+                    toolCount: l.toolCount,
+                    detail: l.failureMessage ?? "plugin",
+                  });
+                }
+                if (mcpViewGeneration !== navGen) return;
+                store.dispatch({ kind: "set_mcp_status", servers: enriched });
+              })();
+            }
+          })();
+          break;
+        }
+        case "nav:mcp-auth":
+          // Triggered by pressing Enter on a needs-auth server in /mcp view.
+          // args = server name. Runs `koi mcp auth <name>` inline.
+          void (async (): Promise<void> => {
+            const rawName = args.trim();
+            if (rawName === "") return;
+            // Strip source prefix. Plugin-backed servers can't auth here.
+            if (rawName.startsWith("plugin:")) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message:
+                  `Cannot authenticate "${rawName}" from /mcp — plugin-provided ` +
+                  `servers must be authenticated through the plugin's own flow.`,
+              });
+              return;
+            }
+            const serverName = rawName.startsWith("user:") ? rawName.slice(5) : rawName;
+            // Per-server guard — prevent overlapping OAuth flows from
+            // double-pressing Enter (callback port conflict, timeout race).
+            if (mcpAuthInFlight.has(serverName)) return;
+            mcpAuthInFlight.add(serverName);
+            try {
+              const { loadMcpJsonFile } = await import("@koi/mcp");
+              const { join } = await import("node:path");
+              const { homedir } = await import("node:os");
+              const { createSecureStorage } = await import("@koi/secure-storage");
+              const { createCliOAuthRuntime } = await import("./commands/mcp-oauth-runtime.js");
+              const { createOAuthAuthProvider } = await import("@koi/mcp");
+
+              // Find the server config — same precedence as runtime
+              const authProjectResult = await loadMcpJsonFile(join(process.cwd(), ".mcp.json"));
+              const authConfigs: Awaited<ReturnType<typeof loadMcpJsonFile>>[] = [];
+              if (authProjectResult.ok) {
+                authConfigs.push(authProjectResult);
+              } else if (authProjectResult.error.code === "NOT_FOUND") {
+                const authHomeResult = await loadMcpJsonFile(join(homedir(), ".koi", ".mcp.json"));
+                if (authHomeResult.ok) authConfigs.push(authHomeResult);
+              }
+              let authMatched = false;
+              for (const r of authConfigs) {
+                if (!r.ok) continue;
+                const server = r.value.servers.find((s) => s.name === serverName);
+                if (server === undefined || server.kind !== "http" || server.oauth === undefined)
+                  continue;
+                authMatched = true;
+
+                const storage = createSecureStorage();
+                const runtime = createCliOAuthRuntime();
+                const provider = createOAuthAuthProvider({
+                  serverName: server.name,
+                  serverUrl: server.url,
+                  oauthConfig: server.oauth,
+                  runtime,
+                  storage,
+                });
+
+                const success = await provider.startAuthFlow();
+                if (success) {
+                  // Refresh /mcp view with updated Keychain state
+                  const { computeServerKey: computeKey } = await import("@koi/mcp");
+                  const freshStorage = createSecureStorage();
+                  const refreshed: import("@koi/tui").McpServerInfo[] = await Promise.all(
+                    r.value.servers.map(async (s2) => {
+                      const hasOAuth2 = s2.kind === "http" && s2.oauth !== undefined;
+                      if (!hasOAuth2) {
+                        return {
+                          name: s2.name,
+                          status: "connected" as const,
+                          toolCount: 0,
+                          detail: `${s2.kind} transport`,
+                        };
+                      }
+                      const key2 = computeKey(s2.name, s2.kind === "http" ? s2.url : "");
+                      const raw2 = await freshStorage.get(key2);
+                      // The server we just authed shows "auth-pending-restart"
+                      // because the live runtime still has the pseudo-tool only
+                      // — tools won't load until the next TUI launch.
+                      if (s2.name === serverName && raw2 !== undefined) {
+                        return {
+                          name: s2.name,
+                          status: "auth-pending-restart" as const,
+                          toolCount: 0,
+                          detail: "Tokens stored. Restart the TUI to load tools.",
+                        };
+                      }
+                      return {
+                        name: s2.name,
+                        status: (raw2 !== undefined ? "connected" : "needs-auth") as
+                          | "connected"
+                          | "needs-auth",
+                        toolCount: 0,
+                        detail: raw2 !== undefined ? "Authenticated" : undefined,
+                      };
+                    }),
+                  );
+                  store.dispatch({ kind: "set_mcp_status", servers: refreshed });
+                } else {
+                  store.dispatch({
+                    kind: "add_error",
+                    code: "MCP_AUTH",
+                    message: `Authentication failed for "${serverName}". Try: koi mcp auth ${serverName}`,
+                  });
+                }
+                break;
+              }
+              if (!authMatched) {
+                // Server is listed in /mcp (e.g. plugin-provided) but we
+                // don't have a file-config entry to auth against. Fail
+                // loudly instead of silently doing nothing.
+                store.dispatch({
+                  kind: "add_error",
+                  code: "MCP_AUTH",
+                  message:
+                    `Cannot authenticate "${serverName}" from this view — ` +
+                    `server is not in .mcp.json (likely plugin-provided). ` +
+                    `Plugin-backed OAuth must be completed through the plugin's own flow.`,
+                });
+              }
+            } catch (e: unknown) {
+              store.dispatch({
+                kind: "add_error",
+                code: "MCP_AUTH",
+                message: `Auth error: ${e instanceof Error ? e.message : String(e)}`,
+              });
+            } finally {
+              mcpAuthInFlight.delete(serverName);
             }
           })();
           break;

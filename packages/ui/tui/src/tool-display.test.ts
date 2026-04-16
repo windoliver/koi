@@ -184,13 +184,29 @@ describe("getToolDisplay — generic fallback", () => {
     expect(d.chips).toEqual(["count=5", "active=true", "tag=important"]);
   });
 
-  test("MCP tool with server prefix uses raw name as title", () => {
+  test("MCP tool with server prefix shows server label and first arg", () => {
     const d = getToolDisplay("golden-mcp__weather", {
       location: "San Francisco",
       units: "celsius",
     });
-    expect(d.title).toBe("golden-mcp__weather");
-    expect(d.chips).toEqual(["location=San Francisco", "units=celsius"]);
+    expect(d.title).toBe("Golden-mcp ▸");
+    // "location" is not in SUBTITLE_KEYS but extractFirstStringArg finds it
+    expect(d.subtitle).toBe("San Francisco");
+  });
+
+  test("MCP tool strips duplicated server prefix from tool name", () => {
+    const d = getToolDisplay("jira__jira_search", {
+      jql: 'assignee = "tafeng"',
+    });
+    expect(d.title).toBe("Jira ▸");
+    // "jql" is not in SUBTITLE_KEYS but extractFirstStringArg finds it
+    expect(d.subtitle).toBe('assignee = "tafeng"');
+  });
+
+  test("MCP tool with no string args falls back to cleaned tool name", () => {
+    const d = getToolDisplay("slack__post_message", {});
+    expect(d.title).toBe("Slack ▸");
+    expect(d.subtitle).toBe("post message");
   });
 
   test("drops array and object values from chips", () => {

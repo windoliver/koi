@@ -160,6 +160,17 @@ type BridgeNotification =
 
 ---
 
+## Startup Failure Diagnostics
+
+When the Python bridge crashes during startup, `createLocalTransport` captures the full stderr output (e.g. Python tracebacks) and includes it in the thrown error message. This is bounded for safety:
+
+- **Time**: stderr drain races against a 3-second timeout — if the bridge ignores SIGTERM and keeps stderr open, the drain gives up and preserves whatever was already collected
+- **Size**: stderr capture is capped at 256 KiB — output exceeding the cap is clipped with a `[truncated]` marker
+- **Cleanup**: after stderr drain, a SIGKILL fallback ensures the bridge process is always terminated, even if it ignored the initial SIGTERM
+- **Cause chain**: the original startup error (e.g. "Stream ended before newline" or "Bridge process exited with code N") is preserved as `error.cause` for programmatic access
+
+---
+
 ## Path Safety
 
 All user-provided paths are normalized through `computeFullPath()` which:

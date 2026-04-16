@@ -47,6 +47,8 @@ export function createMockConnection(
     readonly initialState?: TransportState;
     /** Delay connect() by this many ms (simulates slow/hung server). */
     readonly connectDelayMs?: number;
+    /** Custom error to return on connect failure (default: EXTERNAL). */
+    readonly connectError?: KoiError;
   },
 ): MockConnection {
   let currentTools = [...tools]; // let justified: mutable for test simulation
@@ -62,15 +64,13 @@ export function createMockConnection(
       await new Promise((resolve) => setTimeout(resolve, options.connectDelayMs));
     }
     if (options?.shouldFailConnect === true) {
-      currentState = {
-        kind: "error",
-        error: { code: "EXTERNAL", message: `Mock connect failed: ${name}`, retryable: false },
+      const err: KoiError = options.connectError ?? {
+        code: "EXTERNAL",
+        message: `Mock connect failed: ${name}`,
         retryable: false,
       };
-      return {
-        ok: false,
-        error: { code: "EXTERNAL", message: `Mock connect failed: ${name}`, retryable: false },
-      };
+      currentState = { kind: "error", error: err, retryable: err.retryable };
+      return { ok: false, error: err };
     }
     currentState = { kind: "connected" };
     for (const listener of stateChangeListeners) {

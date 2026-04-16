@@ -695,6 +695,9 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     case "set_view":
       return action.view === state.activeView ? state : { ...state, activeView: action.view };
 
+    case "set_mcp_status":
+      return { ...state, mcpServers: action.servers };
+
     case "set_modal":
       return action.modal === null && state.modal === null
         ? state
@@ -1009,6 +1012,11 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
       // Prepend history before any live messages accumulated since load_history was queued.
       return { ...state, messages: maybeCompact([...historical, ...state.messages]) };
     }
+
+    case "set_plugin_summary":
+      return action.summary === state.pluginSummary
+        ? state
+        : { ...state, pluginSummary: action.summary };
 
     case "set_cost_breakdown":
       return {

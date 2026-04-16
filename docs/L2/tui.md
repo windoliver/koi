@@ -1,10 +1,16 @@
 # @koi/tui — State Layer + UI Components
 
-> TUI rendering state, reducer, command palette, status bar, and session picker.
+> TUI rendering state, reducer, command palette, status bar, session picker, and `/mcp` server status view.
 
 **Layer:** UI (depends on `@koi/core` only)
 **Location:** `packages/ui/tui/src/`
 **Issues:** #1265 (Phase 2j-1), #1268 (Phase 2j-4)
+
+## Recent additions
+
+- **`/mcp` MCP server status view** (`McpView.tsx`): full-screen two-column interactive view, arrow-key navigation, Enter-to-authenticate. Status is sourced from Keychain check (instant) + live `getMcpStatus()` enrichment. Five status states: `connected`, `needs-auth`, `auth-pending-restart`, `error`, `pending`.
+- **`McpServerInfo`** state type and `set_mcp_status` reducer action for the new view.
+- **MCP tool display** (`tool-display.ts`): MCP-namespaced tools (`server__tool`) render as `Server ▸ subtitle` instead of falling through to suffix matching that mislabels them (e.g., previously `jira__jira_search` showed as "Web Search").
 
 ## Purpose
 
@@ -136,7 +142,7 @@ Two-layer navigation: persistent **views** and transient **modals**.
 
 | Type | Members | Behavior |
 |------|---------|----------|
-| View | `conversation`, `sessions`, `doctor`, `help`, `trajectory` | Screen-level, one active |
+| View | `conversation`, `sessions`, `doctor`, `help`, `trajectory`, `plugins` | Screen-level, one active |
 | Modal | `command-palette`, `permission-prompt`, `session-picker` | Overlay, preserves underlying view |
 
 Modals are nullable. Dismissing returns to the underlying view without state loss.
@@ -598,6 +604,7 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 
 ## Changelog
 
+- **Fix SessionsView row overlap (#1776):** Removed nested `<box flexDirection="column">` wrapper inside the parent column flex that OpenTUI collapsed, merging session name into the metadata line. The two `<text>` elements are now direct children of the parent column box with a spacer for visual separation. Note: `SessionsView` is currently inactive (superseded by `SessionPicker` modal in #1783) but the layout fix is preserved for future re-use.
 - **Wire host-dispatched slash commands (#1752):** `/model`, `/cost`, `/tokens`, `/compact`, `/export`, `/zoom` previously fell through to `COMMAND_NOT_IMPLEMENTED`. `COMMAND_DEFINITIONS` copy for `system:cost` / `system:tokens` is now scoped to "this process" — the cost aggregator is process-local and does not backfill on `--resume`. `agent:compact` description relabeled to "Drop oldest messages to shrink the context window" to match its truncation semantics (the handler calls `microcompact()` from `@koi/context-manager`, not an LLM summary).
 - **Ctrl+N new session keybinding (#1783):** Global `isCtrlN` predicate + handler in `handleGlobalKey`, guarded against modal, non-conversation views, and inline slash/@ overlays. `session:new` preserves old transcript and rotates `tuiSessionId` + rebinds engine so old sessions are resumable via `/sessions`.
 - **Unified `/sessions` command (#1783):** Removed redundant `nav:sessions` read-only view. Renamed `session:resume` → `session:sessions`. Single command opens the session picker modal (browse + resume). `createEffect` on modal auto-refreshes session list from any source (palette, slash command, SpawnBlock click).
@@ -608,5 +615,7 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > **Spawn history in /agents view (#1792):** `/agents` previously showed "No active agents" the instant a spawn finished, making it useless for multi-agent debugging. New `finishedSpawns: readonly SpawnRecord[]` state field — a session-scoped ring buffer (cap `MAX_FINISHED_SPAWNS = 20`, most-recent-first) populated from both `set_spawn_terminal` and `agent_status_changed(terminated)`. `AgentsView` now renders an "Active" section and a "Recent" section; finished agents show name, description, final duration, and a ✓/✗ outcome badge. `SpawnRecord` carries `agentId`, `agentName`, `description`, `startedAt`, `finishedAt`, `durationMs`, and `outcome: "complete" | "failed"`. `formatDuration()` extracted to `AgentsView` for shared active/finished rendering.
 
 > **Connection status stays connected after successful turns (#1753):** `engine_done` no longer dispatches `set_connection_status: "disconnected"`. It is a healthy end-of-turn signal — the worker is still alive and ready for the next turn. Disconnect is now reserved for `engine_error`, worker `onerror`, and `channel.dispose()`. This fixes `/doctor` reporting `Connection ○ disconnected` after every successful model turn. `dispose()` is hardened with per-message resilient teardown: each `approval_response` denial is posted in isolation so one failed `postMessage` cannot strand remaining pending requests, and any stranded approvals are surfaced via `add_error` so the operator knows to terminate the worker. `dispose()` also flips connection status to `disconnected` so `/doctor` cannot report a healthy engine for a torn-down channel.
+
+> **Plugin TUI observability (#1728):** Added `/plugins` nav command with `PluginsView` component showing loaded plugins (name, version, source, description) and discovery errors. New `PluginSummary`, `PluginSummaryEntry`, `PluginSummaryError` types, `pluginSummary: PluginSummary | null` state field, and `set_plugin_summary` reducer action. Plugin status surfaced as inline TUI notice at startup (UI-only, not injected into model transcript). All plugin-derived text sanitized to strip ANSI escape sequences and control characters before display. `buildPluginDisplayLines` pure function extracted for testability.
 
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.

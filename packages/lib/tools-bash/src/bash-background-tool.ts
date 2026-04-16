@@ -27,7 +27,7 @@ import type {
   ToolExecuteOptions,
 } from "@koi/core";
 import { DEFAULT_SANDBOXED_POLICY, DEFAULT_UNSANDBOXED_POLICY, taskItemId } from "@koi/core";
-import { execSandboxed, spawnBash } from "./exec.js";
+import { buildSafeEnv, type ExecResult, execSandboxed, spawnBash } from "./exec.js";
 
 /** Default timeout for background tasks — 30 minutes (long-running builds, installs). */
 const DEFAULT_BACKGROUND_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -106,6 +106,13 @@ export interface BashBackgroundToolConfig {
    * Closes #1634.
    */
   readonly elicit?: ElicitCallback | undefined;
+  /**
+   * Additional directories prepended to SAFE_ENV.PATH — see BashToolConfig.
+   * Closes #1841.
+   */
+  readonly pathExtensions?: readonly string[] | undefined;
+  /** Validated home directory for the subprocess environment — see BashToolConfig. */
+  readonly home?: string | undefined;
 }
 
 /** Shape of the tool's JSON response on successful task creation. */
@@ -148,6 +155,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
   } = config;
   const workspaceRoot = config.workspaceRoot ?? process.cwd();
   const policy: BashPolicy = { ...DEFAULT_BASH_POLICY, ...config.policy };
+  const env = buildSafeEnv({ pathExtensions: config.pathExtensions, home: config.home });
 
   return {
     descriptor: {
@@ -302,6 +310,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         sandboxAdapter,
         sandboxProfile,
         combinedSignal,
+        env,
       ).finally(() => onSubprocessEnd?.());
 
       return {
@@ -336,10 +345,11 @@ async function runBackground(
   sandboxAdapter: SandboxAdapter | undefined,
   sandboxProfile: SandboxProfile | undefined,
   shutdownSignal: AbortSignal | undefined,
+  env: Readonly<Record<string, string>>,
 ): Promise<void> {
   const fullCommand = `set -euo pipefail\n${command}`;
   try {
-    const result =
+    const result: ExecResult =
       sandboxAdapter !== undefined && sandboxProfile !== undefined
         ? await execSandboxed(
             sandboxAdapter,
@@ -349,6 +359,7 @@ async function runBackground(
             DEFAULT_BACKGROUND_TIMEOUT_MS,
             DEFAULT_MAX_OUTPUT_BYTES,
             shutdownSignal,
+            env,
           )
         : await spawnBash(
             fullCommand,
@@ -356,6 +367,7 @@ async function runBackground(
             DEFAULT_BACKGROUND_TIMEOUT_MS,
             DEFAULT_MAX_OUTPUT_BYTES,
             shutdownSignal,
+            env,
           );
 
     // Build output string: stdout, then stderr if non-empty

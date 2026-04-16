@@ -519,6 +519,7 @@
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
+        "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
         "@koi/checkpoint": "workspace:*",
         "@koi/context-manager": "workspace:*",

@@ -31,6 +31,7 @@ import { appendFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
+import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
 import type {
@@ -74,6 +75,7 @@ import {
   type MiddlewareRegistry,
   resolveManifestMiddleware,
 } from "./middleware-registry.js";
+import type { PluginDiscoverySummary } from "./plugin-activation.js";
 import { loadPluginComponents } from "./plugin-activation.js";
 import { activateStacks, LATE_PHASE_HOST_KEYS, mergeStackContributions } from "./preset-stacks.js";
 import { enforceRequiredMiddleware } from "./required-middleware.js";
@@ -116,6 +118,62 @@ const DEFAULT_MAX_TURNS = 25;
 const MAX_TRANSCRIPT_MESSAGES = 100;
 
 // ---------------------------------------------------------------------------
+// TUI permission constants (exported for testing — #1845)
+// ---------------------------------------------------------------------------
+
+/**
+ * Interactive approval timeout for the TUI — 60 minutes.
+ *
+ * Agent-to-agent callers keep the 30s engine default (fail-closed).
+ * The TUI uses a long timeout so real users are never auto-denied while
+ * reading a permission prompt. Finite (not Infinity) so a wedged renderer
+ * eventually fails closed rather than hanging forever.
+ *
+ * @see docs/L2/tui.md §approval-timeout
+ */
+export const TUI_APPROVAL_TIMEOUT_MS: number = 60 * 60 * 1_000; // 3_600_000
+
+/**
+ * Static TUI allow rules — tools that are auto-allowed without user approval.
+ *
+ * Excludes `fs_read` (needs dynamic `cwd`-scoped context) — those are appended
+ * at runtime inside `createKoiRuntime`.
+ *
+ * Allowlist reasoning:
+ * - Glob, Grep, ToolSearch — filesystem search, no mutations
+ * - task_* — task board reads/writes (own state, not workspace files)
+ * - Skill — skill invocation (own state)
+ * - memory_store/recall/search — sandboxed to .koi/memory/, non-destructive
+ *
+ * Tools that fall to "ask" (mode-default for unmatched tools):
+ * - Bash, bash_background, web_fetch, fs_write, fs_edit
+ * - memory_delete — deletes durable cross-session state
+ * - notebook_* — read/write .ipynb files on disk; notebook_read bypasses
+ *   the filesystemOperations gate if auto-allowed, so all notebook tools
+ *   stay gated for consistency with fs_read
+ *
+ * The TUI sets TUI_APPROVAL_TIMEOUT_MS (60 min) so interactive users are
+ * never auto-denied while reading an "ask" prompt (#1845).
+ */
+export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
+  // Memory tools — non-destructive ops sandboxed to .koi/memory/
+  // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
+  { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
+] as const;
+
+// ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
@@ -141,6 +199,14 @@ export interface KoiRuntimeConfig {
    * mode". `koi start` passes "koi start — auto-allow".
    */
   readonly permissionsDescription?: string | undefined;
+  /**
+   * Approval timeout in ms for permission "ask" decisions. Defaults to
+   * the middleware's 30s fail-closed posture (suitable for agent-to-agent
+   * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
+   * (60 min) so interactive users are never auto-denied while reading a
+   * permission prompt (#1845).
+   */
+  readonly approvalTimeoutMs?: number | undefined;
   /**
    * Stable identifier used as the `hostId` on spawn events, decision-
    * ledger lookups, and permission persistentAgentId. Defaults to
@@ -355,6 +421,15 @@ export interface KoiRuntimeConfig {
    */
   readonly auditNdjsonPath?: string | undefined;
   /**
+   * Optional absolute path to a SQLite audit database file.
+   *
+   * The TUI surfaces this via the `KOI_AUDIT_SQLITE` environment variable
+   * — set to an absolute file path before launching `koi tui`. The file
+   * is created if it doesn't exist. Sink resources (WAL, timer) are
+   * owned by the runtime and closed during shutdown.
+   */
+  readonly auditSqlitePath?: string | undefined;
+  /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
@@ -479,6 +554,26 @@ export interface KoiRuntimeHandle {
    * audit entries and source status alongside trajectory steps.
    */
   readonly createDecisionLedger: () => DecisionLedgerReader;
+  /**
+   * MCP server status — returns configured servers, their connection states,
+   * and tool counts. Used by the `/mcp` TUI command. Returns empty array when
+   * no MCP servers are configured.
+   */
+  readonly getMcpStatus: () => Promise<readonly McpServerStatus[]>;
+  /**
+   * Plugin discovery summary — loaded plugins + any errors.
+   * Static for the lifetime of the runtime. Used by the TUI to populate
+   * the /plugins view and inject plugin awareness into the system prompt.
+   */
+  readonly pluginSummary: PluginDiscoverySummary;
+}
+
+/** Status entry for a single MCP server (used by /mcp TUI command). */
+export interface McpServerStatus {
+  readonly name: string;
+  readonly toolCount: number;
+  readonly failureCode: string | undefined;
+  readonly failureMessage: string | undefined;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -684,6 +779,35 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     skillsRuntime.registerExternal(pluginComponents.skillMetadata);
   }
 
+  // Surface skipped middleware as a warning in the plugin summary so
+  // /plugins shows it, but don't block the plugin's other components.
+  const middlewareWarnings =
+    pluginComponents.middlewareNames.length > 0
+      ? [
+          {
+            plugin: "(middleware)",
+            error: `Skipped (no factory registry): ${pluginComponents.middlewareNames.join(", ")}`,
+          },
+        ]
+      : [];
+  const pluginSummary: PluginDiscoverySummary = {
+    loaded: pluginComponents.discovered,
+    errors: [...pluginComponents.errors, ...middlewareWarnings],
+  };
+  if (pluginSummary.loaded.length > 0) {
+    // Sanitize plugin-derived strings before logging to prevent terminal
+    // control sequence injection from malicious plugin manifests.
+    const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
+    const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
+    const names = pluginSummary.loaded
+      .map((p) => `${sanitizeLog(p.name)}@${sanitizeLog(p.version)}`)
+      .join(", ");
+    console.error(
+      `[koi/${hostId}] ${String(pluginSummary.loaded.length)} plugin(s) loaded: ${names}`,
+    );
+  }
+
   // Session generation counter — incremented on each reset.
   // The trace wrapper and event-trace MW capture the doc ID at construction
   // and can't be rotated after createKoi assembly. The prune is awaited to
@@ -880,24 +1004,10 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // `coreSlots.hook` instead.
 
   // --- @koi/permissions + @koi/middleware-permissions ---
-  // Default mode: read-only tools are pre-allowed; shell/network/write tools
-  // require user approval. Unmatched tools fall through to "ask" (mode default).
-  //
-  // Allowlist reasoning:
-  //   Glob, Grep, ToolSearch — filesystem search, no mutations
-  //   fs_read                — read-only file access
-  //   task_*                 — task board reads/writes (own state, not workspace)
-  //
-  // Bash, bash_background, web_fetch, fs_write, fs_edit are intentionally not listed
-  // so they fall to "ask" — the mode-default fallback for unmatched tools.
-  // fs_read path rules: workspace paths are auto-allowed, out-of-workspace
-  // paths trigger an "ask" prompt. The permission middleware injects
-  // context.path via resolveToolPath, and the rule evaluator matches
-  // glob patterns on it. Rules evaluated in order — first match wins.
+  // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
+  // See TUI_ALLOW_RULES (above) for allowlist reasoning.
   const tuiAllowRules: readonly SourcedRule[] = [
-    { pattern: "Glob", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "Grep", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "ToolSearch", action: "invoke", effect: "allow", source: "policy" },
+    ...TUI_ALLOW_RULES,
     {
       pattern: "fs_read",
       action: "invoke",
@@ -912,18 +1022,6 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       source: "policy",
       reason: "File is outside the workspace — approve to read",
     },
-    { pattern: "task_get", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_list", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_output", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_create", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
-    // Memory tools — sandboxed to .koi/memory/, own state, not workspace files
-    { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
-    { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
-    // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   ] as const;
   // Permission backend: caller may override (koi start passes an
   // auto-allow pattern backend). Default to the TUI's tiered default
@@ -939,6 +1037,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
+    ...(config.approvalTimeoutMs !== undefined
+      ? { approvalTimeoutMs: config.approvalTimeoutMs }
+      : {}),
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,
@@ -1379,6 +1480,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       | import("@koi/checkpoint").Checkpoint
       | undefined;
 
+    // --- MCP resolvers exported by the MCP preset stack ---
+    // Read here for the returned KoiRuntimeHandle.getMcpStatus().
+    const mcpResolver = stackContribution.exports.mcpResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+    const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
+      | import("@koi/mcp").McpResolver
+      | undefined;
+
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
     // host opted in (KOI_AUDIT_NDJSON env var in the TUI). The runtime
@@ -1426,6 +1536,62 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       auditMwForShutdown = {
         flush: () => auditMw.flush(),
         close: () => auditSink.close(),
+      };
+    }
+
+    // --- SQLite audit middleware (opt-in via config.auditSqlitePath) ---
+    // Parallel to NDJSON above. Both can be active simultaneously (tee
+    // pattern) as long as they target different files.
+    let auditSqliteMwForShutdown:
+      | { readonly flush: () => Promise<void>; readonly close: () => Promise<void> }
+      | undefined;
+    if (config.auditSqlitePath !== undefined) {
+      // Collision guard: refuse to start if the SQLite path resolves to the
+      // same canonical file as the NDJSON host-level path or any manifest
+      // @koi/middleware-audit entry. Two independent writers (especially
+      // different formats) against the same file corrupt the audit trail.
+      const sqliteCanonical = canonicalizeAuditSinkPath(
+        config.auditSqlitePath,
+        zoneBWorkingDirectory,
+      );
+      if (sqliteCanonical !== undefined) {
+        // Check against host-level NDJSON path.
+        if (config.auditNdjsonPath !== undefined) {
+          const ndjsonCanonical = canonicalizeAuditSinkPath(
+            config.auditNdjsonPath,
+            zoneBWorkingDirectory,
+          );
+          if (ndjsonCanonical === sqliteCanonical) {
+            throw new Error(
+              `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                `the same canonical path as auditNdjsonPath "${config.auditNdjsonPath}". ` +
+                "SQLite and NDJSON sinks use incompatible formats — they cannot share a file.",
+            );
+          }
+        }
+        // Check against manifest @koi/middleware-audit entries.
+        if (config.manifestMiddleware !== undefined) {
+          for (const entry of config.manifestMiddleware) {
+            if (entry.enabled === false || entry.name !== "@koi/middleware-audit") continue;
+            const entryPath = entry.options?.filePath;
+            if (typeof entryPath !== "string" || entryPath.length === 0) continue;
+            const entryCanonical = canonicalizeAuditSinkPath(entryPath, zoneBWorkingDirectory);
+            if (entryCanonical === sqliteCanonical) {
+              throw new Error(
+                `audit sink collision: auditSqlitePath "${config.auditSqlitePath}" resolves to ` +
+                  `the same canonical path as manifest @koi/middleware-audit entry "${entryPath}". ` +
+                  "Two independent writers cannot share the same file.",
+              );
+            }
+          }
+        }
+      }
+      const sqliteSink = createSqliteAuditSink({ dbPath: config.auditSqlitePath });
+      const sqliteAuditMw = createAuditMiddleware({ sink: sqliteSink });
+      auditPresetExtras.push(sqliteAuditMw);
+      auditSqliteMwForShutdown = {
+        flush: () => sqliteAuditMw.flush(),
+        close: async () => sqliteSink.close(),
       };
     }
 
@@ -1706,6 +1872,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       checkpoint: checkpointHandle,
       transcript,
       sandboxActive,
+      pluginSummary,
       createDecisionLedger: () =>
         createDecisionLedger({
           // The observability stack stores all trajectory data under a
@@ -1719,6 +1886,56 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
                 : Promise.resolve([]),
           },
         }),
+      getMcpStatus: async (): Promise<readonly McpServerStatus[]> => {
+        // Merge user + plugin MCP resolvers — key by (source, name)
+        // so duplicate names from different sources surface as
+        // separate rows instead of hiding failures behind successes.
+        const sources: {
+          readonly label: string;
+          readonly resolver: import("@koi/mcp").McpResolver;
+        }[] = [];
+        if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+        if (mcpPluginResolver !== undefined)
+          sources.push({ label: "plugin", resolver: mcpPluginResolver });
+        if (sources.length === 0) return [];
+
+        const entries: McpServerStatus[] = [];
+        const seenByKey = new Set<string>();
+        for (const { label, resolver } of sources) {
+          const toolCounts = new Map<string, number>();
+          const descriptors = await resolver.discover();
+          for (const d of descriptors) {
+            const server = d.server ?? "unknown";
+            toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
+          }
+          for (const [name, count] of toolCounts) {
+            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            const key = `${label}:${name}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: count,
+              failureCode: undefined,
+              failureMessage: undefined,
+            });
+          }
+          for (const f of resolver.failures) {
+            if (toolCounts.has(f.serverName)) continue;
+            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const key = `${label}:${f.serverName}`;
+            if (seenByKey.has(key)) continue;
+            seenByKey.add(key);
+            entries.push({
+              name: displayName,
+              toolCount: 0,
+              failureCode: f.error.code,
+              failureMessage: f.error.message,
+            });
+          }
+        }
+        return entries;
+      },
       getTrajectorySteps: async () => {
         if (trajectoryStore === undefined) return [];
         const steps = await trajectoryStore.getDocument(trajectoryDocId);
@@ -1871,6 +2088,21 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             } catch (err) {
               console.warn(
                 `[koi/${hostId}] audit shutdown failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
+          })();
+        }
+        if (auditSqliteMwForShutdown !== undefined) {
+          const sqliteAudit = auditSqliteMwForShutdown;
+          void (async () => {
+            try {
+              await sqliteAudit.flush();
+              await sqliteAudit.close();
+            } catch (err) {
+              console.warn(
+                `[koi/${hostId}] SQLite audit shutdown failed: ${
                   err instanceof Error ? err.message : String(err)
                 }`,
               );
