@@ -96,7 +96,7 @@ async function executeStore(args: JsonObject, backend: MemoryToolBackend): Promi
     const { value } = result;
     switch (value.action) {
       case "created":
-        return { stored: true, id: value.record.id, filePath: value.record.filePath };
+        return { stored: true, id: value.record.id };
       case "updated":
         return { stored: true, id: value.record.id, updated: true };
       case "conflict": {
