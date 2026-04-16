@@ -62,7 +62,17 @@ export function initOtelSdk(mode: "tui" | "headless"): OtelSdkHandle {
 
   return {
     shutdown: async () => {
-      await provider.shutdown();
+      // Best-effort: OTel export must never block or crash host shutdown.
+      // Bound flush to 5s — if the exporter is slow or the collector is
+      // absent, we give up and exit cleanly.
+      try {
+        await Promise.race([
+          provider.shutdown(),
+          new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+        ]);
+      } catch {
+        // Swallow — telemetry export failure must not destabilize shutdown.
+      }
       trace.disable();
     },
   };
@@ -89,12 +99,23 @@ function createExporter(mode: "tui" | "headless"): SpanExporter {
     return new ConsoleSpanExporter();
   }
 
-  // TUI mode — use OTLP exporter (direct dependency, static import at top).
-  // Console output would corrupt the TUI renderer; OTLP sends spans to a
-  // collector over HTTP without touching stdout/stderr.
-  const url =
-    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ??
-    process.env.OTEL_EXPORTER_OTLP_ENDPOINT ??
-    "http://localhost:4318/v1/traces";
-  return new OTLPTraceExporter({ url });
+  // TUI mode — use OTLP only when the user explicitly configured an endpoint.
+  // Defaulting to localhost:4318 when no collector is running would cause
+  // silent export failures and stall shutdown. Console output corrupts the
+  // TUI renderer, so when no OTLP endpoint is set we fall back to console
+  // with a warning that the user should redirect stderr.
+  const otlpUrl =
+    process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+
+  if (otlpUrl !== undefined) {
+    return new OTLPTraceExporter({ url: otlpUrl });
+  }
+
+  // No OTLP endpoint configured — fall back to console (user should redirect stderr).
+  process.stderr.write(
+    "[koi] OTel: no OTLP endpoint configured. Using ConsoleSpanExporter.\n" +
+      "  Redirect stderr to avoid TUI corruption: koi tui 2>/tmp/spans.log\n" +
+      "  Or set OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318\n",
+  );
+  return new ConsoleSpanExporter();
 }

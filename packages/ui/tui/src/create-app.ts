@@ -517,9 +517,14 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           // Suppress only the known stdin-fd-invalid case (#1770):
           // renderer.destroy() calls setRawMode(false) which throws EBADF/ENOENT
           // when stdin fd is closed (stderr redirected, tmux detach).
-          const isRawModeError =
-            e instanceof Error && /setRawMode|EBADF|ENOENT|errno: 2/.test(e.message);
-          if (!isRawModeError) throw e;
+          // Check both the errno code AND setRawMode in the message to avoid
+          // swallowing unrelated ENOENT/EBADF errors from other destroy paths.
+          const errno = (e as NodeJS.ErrnoException).code;
+          const isStdinRawModeError =
+            e instanceof Error &&
+            (errno === "EBADF" || errno === "ENOENT") &&
+            /setRawMode|errno: 2/.test(e.message);
+          if (!isStdinRawModeError) throw e;
         }
       }
       activeRenderer = undefined;
