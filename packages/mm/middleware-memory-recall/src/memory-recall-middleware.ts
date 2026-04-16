@@ -5,22 +5,26 @@
  *   1. Frozen snapshot (always): single atomic scan at session start derives
  *      both the formatted snapshot AND the per-file signature baseline used
  *      by the live delta. Prepended to messages — part of the cached prefix.
- *   2. Live delta (per-turn): rescans memory dir each turn, hashes file
- *      content, compares against the session-start baseline. New files or
- *      changed content emit a "system:memory-live" block APPENDED to the
- *      messages so the prefix stays cache-stable. When a delta entry's
- *      path collides with a frozen-snapshot entry, the section title makes
- *      precedence explicit ("these supersede same-name entries above").
+ *   2. Live delta (per-turn): rescans memory dir each turn, hashes the full
+ *      record (name + description + type + content), compares against the
+ *      session-start baseline. New files or changed records emit a
+ *      "system:memory-live" block INSERTED BEFORE the last user message.
+ *      When a delta entry's path collides with a frozen-snapshot entry,
+ *      the section title makes precedence explicit ("these supersede
+ *      same-name entries above").
  *   3. Relevance overlay (optional): per-turn side-query asks a lightweight
  *      model to pick the N most relevant memories for the current message.
- *      Also appended after conversation.
+ *      Also inserted before the last user message.
  *
  * Message order on a turn with a live delta:
- *   [frozen snapshot, prior conversation..., current user, live delta, relevance]
+ *   [frozen snapshot, prior conversation..., live delta, relevance, current user]
  *
- * The cache-stable prefix `[frozen, conversation..., current user]` is
- * identical across turns even when delta/relevance change. Providers
- * attend to the full prompt regardless of memory's array position.
+ * Why before-user (not appended at the end): the session transcript
+ * middleware records `request.messages.at(-1)` as the inbound user turn.
+ * Appending memory blocks at the end would replace the user message in
+ * the persisted transcript, losing user input on resume/replay. We accept
+ * a partial cache miss (memory blocks land mid-conversation) for
+ * correctness on resume.
  *
  * Priority 310: runs after extraction (305).
  */
@@ -36,6 +40,7 @@ import type {
   SessionId,
   TurnContext,
 } from "@koi/core";
+import { memoryRecordId, parseMemoryFrontmatter } from "@koi/core/memory";
 import type { ScannedMemory, ScoredMemory } from "@koi/memory";
 import {
   formatMemorySection,
@@ -221,8 +226,12 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // shared scan output.
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
-        // Uncapped: baseline must include EVERY file, not just newest 200.
+        // Uncapped maxFiles: baseline must include EVERY file, not just
+        // newest 200. Honor caller's maxCandidates for I/O bound.
         maxFiles: Number.MAX_SAFE_INTEGER,
+        ...(config.recall.maxCandidates !== undefined
+          ? { maxCandidates: config.recall.maxCandidates }
+          : {}),
       });
 
       // Always build the baseline (for delta detection) even if the
@@ -335,17 +344,37 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
 
     if (selectedPaths.length === 0) return undefined;
 
-    // Load selected memory files via scan. Use uncapped maxFiles so the
-    // scan covers the full directory — the manifest can include paths
-    // beyond the default 200 cap, and we must be able to load any of
-    // them. Without this, older memories that the selector picks would
-    // silently disappear from the overlay.
-    const scanResult = await scanMemoryDirectory(config.fs, {
-      memoryDir: config.recall.memoryDir,
-      maxFiles: Number.MAX_SAFE_INTEGER,
-    });
-    const selectedSet = new Set(selectedPaths);
-    const selectedMemories = scanResult.memories.filter((m) => selectedSet.has(m.record.filePath));
+    // Load only the selected paths via direct fs.read instead of a full
+    // directory scan. Replaces the previous scanMemoryDirectory() that
+    // was both wasteful (read N files, kept K) and bound by the 200-file
+    // default cap. Direct reads are O(K) where K = selected paths.
+    const baseDir = config.recall.memoryDir.replace(/\\/g, "/").replace(/\/$/, "");
+    const selectedMemories: ScannedMemory[] = [];
+    for (const relPath of selectedPaths) {
+      try {
+        const absPath = `${baseDir}/${relPath}`;
+        const readResult = config.fs.read(absPath);
+        const settled = await Promise.resolve(readResult);
+        if (!settled.ok) continue;
+        const parsed = parseMemoryFrontmatter(settled.value.content);
+        if (parsed === undefined) continue;
+        selectedMemories.push({
+          record: {
+            id: memoryRecordId(relPath.endsWith(".md") ? relPath.slice(0, -3) : relPath),
+            name: parsed.frontmatter.name,
+            description: parsed.frontmatter.description,
+            type: parsed.frontmatter.type,
+            content: parsed.content,
+            filePath: relPath,
+            createdAt: 0,
+            updatedAt: 0,
+          },
+          fileSize: settled.value.size,
+        });
+      } catch {
+        // Skip unreadable selections rather than failing the whole overlay.
+      }
+    }
 
     if (selectedMemories.length === 0) return undefined;
 
@@ -386,22 +415,45 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
   }
 
   /**
-   * Append a memory block AFTER the conversation history (at the end of
-   * messages). This is the cache-stable position: the prefix
-   * `[frozen snapshot, prior conversation, current user]` is identical
-   * across turns, so consecutive turns get prompt-cache hits even when
-   * the live delta or relevance block changes.
+   * Insert a memory block BEFORE the last user message in the request.
    *
-   * Inserting BEFORE the last user message would split the conversation
-   * with a mutable block, breaking the prefix on every turn that emits
-   * a delta. The trade-off — the block lands "after" the user question
-   * in the message array — is accepted because providers (OpenAI,
-   * Anthropic) attend to the full prompt and surface the memory to the
-   * model regardless of position; the marginal recency benefit of
-   * before-user placement does not justify destroying prefix caching.
+   * Why this position (not appended at the end): downstream session
+   * transcript middleware (`@koi/session/transcript`) records
+   * `request.messages.at(-1)` as the inbound user turn. If memory were
+   * appended at the end, the transcript would persist the memory block
+   * AS the user message, losing the real user input on resume/replay.
+   *
+   * Why this position (not prepended after the system snapshot): the
+   * model interprets order; placing dynamic memory immediately before
+   * the current user keeps it semantically tied to the question being
+   * answered.
+   *
+   * Cache implication: a delta that lands mid-conversation does break
+   * prompt-cache hits at the insertion point on subsequent turns. We
+   * accept this — losing user input on replay is a correctness bug,
+   * cache miss is a cost optimization. The frozen snapshot stays in
+   * the cached prefix; only the live delta and relevance overlay are
+   * cache-uncached when present.
+   *
+   * Falls back to appending if no user message is found (defensive —
+   * the middleware must not lose context).
    */
-  function appendBlock(request: ModelRequest, block: InboundMessage): ModelRequest {
-    return { ...request, messages: [...request.messages, block] };
+  function insertBeforeLastUser(request: ModelRequest, block: InboundMessage): ModelRequest {
+    const messages = request.messages;
+    // let — reverse-iteration cursor for the insert position.
+    let insertAt = messages.length;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg === undefined) continue;
+      if (msg.senderId === "user" || msg.senderId.startsWith("user")) {
+        insertAt = i;
+        break;
+      }
+    }
+    return {
+      ...request,
+      messages: [...messages.slice(0, insertAt), block, ...messages.slice(insertAt)],
+    };
   }
 
   /**
@@ -442,8 +494,13 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // fast-path, but correctness comes first.
       const scanResult = await scanMemoryDirectory(config.fs, {
         memoryDir: config.recall.memoryDir,
-        // Uncapped: truncated listings would hide real memories from delta.
+        // Uncapped maxFiles so we see every memory's signature for the
+        // change check. maxCandidates honors the caller's I/O budget —
+        // limits the per-scan read count for large/poisoned directories.
         maxFiles: Number.MAX_SAFE_INTEGER,
+        ...(config.recall.maxCandidates !== undefined
+          ? { maxCandidates: config.recall.maxCandidates }
+          : {}),
       });
 
       // Include memories that are NEW (absent from baseline) or whose
@@ -505,11 +562,11 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         ? "Recent Memory Updates (these supersede same-name entries in the earlier Memory section)"
         : "Recently Added Memories";
 
-      // Budget-pack: sort by recency desc, include memories until the
-      // fully-formatted section would exceed liveDeltaBudget. A single
-      // oversized memory is NOT granted a budget bypass — if even one
-      // memory exceeds the cap on its own, we stop. Re-measures after
-      // formatting to account for section headers and XML overhead.
+      // Budget-pack: sort by recency desc, include memories whose
+      // formatted addition fits the budget. SKIP (not break on)
+      // oversized candidates so a single huge newest memory does not
+      // suppress smaller older updates. Re-measures after formatting
+      // to account for section headers and XML overhead.
       // Rank by OUR observation time, not record.updatedAt — for
       // mtime-preserving stores, mtime is stale on every update.
       const rankOf = (m: ScannedMemory): number =>
@@ -532,7 +589,10 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
           trustingRecallNote: true,
         });
         if (estimateTokens(candidateFormatted) > liveDeltaBudget) {
-          break; // Adding this would exceed the cap — stop.
+          // Skip this oversized candidate — try the next smaller/older
+          // entry. Don't break: an oversized newest entry must not block
+          // smaller older entries from being included in the delta.
+          continue;
         }
         packed.push(m);
         formatted = candidateFormatted;
@@ -613,7 +673,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       //    memory arrives as prior context, not as a post-hoc instruction.
       await refreshLiveDelta(state);
       if (state.liveMessage !== undefined) {
-        effectiveRequest = appendBlock(effectiveRequest, state.liveMessage);
+        effectiveRequest = insertBeforeLastUser(effectiveRequest, state.liveMessage);
       }
 
       // 3. Relevance overlay — insert before last user, after live delta.
@@ -621,7 +681,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            effectiveRequest = appendBlock(effectiveRequest, relevantMsg);
+            effectiveRequest = insertBeforeLastUser(effectiveRequest, relevantMsg);
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");
@@ -650,7 +710,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
       // 2. Live delta — insert BEFORE the last user message.
       await refreshLiveDelta(state);
       if (state.liveMessage !== undefined) {
-        effectiveRequest = appendBlock(effectiveRequest, state.liveMessage);
+        effectiveRequest = insertBeforeLastUser(effectiveRequest, state.liveMessage);
       }
 
       // 3. Relevance overlay — insert before last user, after live delta.
@@ -658,7 +718,7 @@ export function createMemoryRecallMiddleware(config: MemoryRecallMiddlewareConfi
         try {
           const relevantMsg = await selectRelevant(state, request);
           if (relevantMsg !== undefined) {
-            effectiveRequest = appendBlock(effectiveRequest, relevantMsg);
+            effectiveRequest = insertBeforeLastUser(effectiveRequest, relevantMsg);
           }
         } catch (_e: unknown) {
           console.warn("[middleware-memory-recall] relevance selector failed (swallowed)");
