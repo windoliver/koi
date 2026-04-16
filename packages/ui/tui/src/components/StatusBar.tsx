@@ -122,7 +122,9 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
   return (
     <box flexDirection="row" width="100%" paddingLeft={1} paddingRight={1} gap={2}>
       <ModelChip info={sessionInfo()} />
-      {showMetrics() ? <MetricsChip metrics={cumulativeMetrics()} /> : null}
+      <Show when={showMetrics()}>
+        <MetricsChip metrics={cumulativeMetrics()} />
+      </Show>
       {/* #17 context usage indicator */}
       <Show when={contextPct() !== null}>
         <text fg={COLORS.textMuted}>{`ctx ${contextPct()}%`}</text>

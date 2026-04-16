@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { toolToken } from "@koi/core";
+import type { SkillComponent } from "@koi/core";
+import { isAttachResult, skillToken, toolToken } from "@koi/core";
 import { createMemoryToolProvider } from "./provider.js";
 import { mockBackend, TEST_MEMORY_DIR } from "./tools/__test-utils.js";
 
@@ -58,6 +59,46 @@ describe("createMemoryToolProvider", () => {
     expect(components.has(toolToken("m_recall") as string)).toBe(true);
     expect(components.has(toolToken("m_search") as string)).toBe(true);
     expect(components.has(toolToken("m_delete") as string)).toBe(true);
+  });
+
+  test("attach includes SkillComponent with memory guidance", async () => {
+    const result = createMemoryToolProvider(validConfig);
+    if (!result.ok) throw new Error("Expected ok");
+
+    const mockAgent = {} as Parameters<typeof result.value.attach>[0];
+    const attachResult = await result.value.attach(mockAgent);
+
+    if (!isAttachResult(attachResult)) throw new Error("Expected AttachResult");
+    const skill = attachResult.components.get(skillToken("memory") as string) as
+      | SkillComponent
+      | undefined;
+
+    expect(skill).toBeDefined();
+    expect(skill?.name).toBe("memory");
+    expect(skill?.content).toContain("Memory Management");
+    expect(skill?.content).toContain("memory_store");
+    expect(skill?.content).toContain(TEST_MEMORY_DIR);
+    expect(skill?.tags).toContain("memory");
+  });
+
+  test("SkillComponent content uses custom prefix", async () => {
+    const result = createMemoryToolProvider({
+      ...validConfig,
+      prefix: "agent",
+    });
+    if (!result.ok) throw new Error("Expected ok");
+
+    const mockAgent = {} as Parameters<typeof result.value.attach>[0];
+    const attachResult = await result.value.attach(mockAgent);
+
+    if (!isAttachResult(attachResult)) throw new Error("Expected AttachResult");
+    const skill = attachResult.components.get(skillToken("memory") as string) as
+      | SkillComponent
+      | undefined;
+
+    expect(skill).toBeDefined();
+    expect(skill?.content).toContain("agent_store");
+    expect(skill?.content).toContain("agent_recall");
   });
 
   test("rejects missing memoryDir", () => {
