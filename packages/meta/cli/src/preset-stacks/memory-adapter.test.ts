@@ -79,14 +79,9 @@ describe("memory tool round-trip (#1725 regression)", () => {
     })) as Record<string, unknown>;
 
     expect(storeOutput.stored).toBe(true);
-    // Bug #1725 bug 2: filePath should not be a bare filename that looks
-    // like a relative path. Either omit it or provide the full absolute path.
-    if ("filePath" in storeOutput) {
-      // If filePath is present, it must be an absolute path (starts with /)
-      // to avoid misleading the model about where data was written.
-      expect(typeof storeOutput.filePath).toBe("string");
-      expect((storeOutput.filePath as string).startsWith("/")).toBe(true);
-    }
+    // #1725: filePath must be absent — internal implementation detail
+    // that leaked local filesystem paths to model output.
+    expect("filePath" in storeOutput).toBe(false);
   });
 });
 
