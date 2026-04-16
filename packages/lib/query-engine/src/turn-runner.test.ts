@@ -1226,7 +1226,7 @@ describe("runTurn", () => {
       }
     });
 
-    test("schema-invalid turn breaks doom-loop streaks so corrected retry executes", async () => {
+    test("schema recovery followed by different args does not doom-loop", async () => {
       const toolCalls: string[] = [];
       // let justified: mutable counter so the mock cycles through streams
       let streamCallIndex = 0;
@@ -1235,10 +1235,10 @@ describe("runTurn", () => {
         createToolCallStream("readFile", "tc-1", '{"path":"/foo"}'),
         // Turn 1: valid readFile("/foo") again
         createToolCallStream("readFile", "tc-2", '{"path":"/foo"}'),
-        // Turn 2: schema-invalid (missing required path) — breaks streak
+        // Turn 2: schema-invalid (missing required path)
         () => toolCallStreamGen("readFile", "tc-3", '{"encoding":"utf8"}'),
-        // Turn 3 (recovery): model retries readFile("/foo") — must NOT be doom-looped
-        createToolCallStream("readFile", "tc-4", '{"path":"/foo"}'),
+        // Turn 3 (recovery): model retries with DIFFERENT args — not doom-looped
+        createToolCallStream("readFile", "tc-4", '{"path":"/bar"}'),
         // Turn 4: done
         createTextStream("Here is the content."),
       ];
@@ -1267,10 +1267,10 @@ describe("runTurn", () => {
         }),
       );
 
-      // readFile should have executed 3 times (turns 0, 1, 3) — NOT blocked by doom loop
+      // readFile executed 3 times (turns 0, 1, 3 with different args)
       expect(toolCalls).toEqual(["readFile", "readFile", "readFile"]);
 
-      // No doom_loop_detected event
+      // No doom_loop_detected event (different args break the streak)
       const doomEvent = events.find(
         (e) => e.kind === "custom" && (e as { type: string }).type === "doom_loop_detected",
       );

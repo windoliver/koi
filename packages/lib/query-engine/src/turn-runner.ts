@@ -468,15 +468,10 @@ export async function* runTurn(config: TurnRunnerConfig): AsyncGenerator<EngineE
         }
 
         // The schema recovery `continue` skips the normal doom-loop
-        // updateStreaks call. Feed only the invalid call keys through
-        // updateStreaks so their streaks are broken. Valid co-batched
-        // calls must NOT advance streaks since they never executed.
-        if (doomLoopThreshold >= 2) {
-          const invalidKeys = validToolCalls
-            .filter((tc) => schemaErrorsByCallId.has(tc.callId))
-            .map(toolCallKey);
-          doomLoopStreaks = updateStreaks(doomLoopStreaks, invalidKeys);
-        }
+        // updateStreaks call. Do NOT update streaks here — the invalid
+        // turn did not execute any tools, so it should not advance or
+        // reset streak counters. Existing streaks are preserved as-is;
+        // the next normal turn will update them through the regular path.
 
         // Transition to continue so the model gets a recovery turn.
         state = transitionTurn(state, { kind: "model_done", hasToolCalls: false });
