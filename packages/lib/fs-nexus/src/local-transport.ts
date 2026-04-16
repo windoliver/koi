@@ -503,7 +503,13 @@ async function procExit(proc: { readonly exited: Promise<number> }): Promise<nev
   throw new Error(`Bridge process exited with code ${String(code)}`);
 }
 
-/** Collect all stderr output for error messages. Drains until EOF. */
+/** Max bytes to capture from stderr before truncating. */
+const MAX_STDERR_BYTES = 256 * 1024; // 256 KiB
+
+/** Max time to wait for stderr EOF after process kill (ms). */
+const STDERR_DRAIN_TIMEOUT_MS = 3_000;
+
+/** Collect stderr output for error messages. Drains until EOF, with bounded time and size. */
 async function collectStderr(proc: {
   readonly stderr: ReadableStream<Uint8Array>;
 }): Promise<string> {
@@ -511,17 +517,33 @@ async function collectStderr(proc: {
     const reader = proc.stderr.getReader();
     const decoder = new TextDecoder();
     let output = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value !== undefined) {
-        output += decoder.decode(value, { stream: true });
+    let bytes = 0;
+    let truncated = false;
+
+    const drain = (async () => {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value !== undefined) {
+          bytes += value.byteLength;
+          if (bytes > MAX_STDERR_BYTES) {
+            truncated = true;
+            break;
+          }
+          output += decoder.decode(value, { stream: true });
+        }
       }
-    }
+    })();
+
+    await Promise.race([drain, rejectAfter(STDERR_DRAIN_TIMEOUT_MS, "stderr drain timeout")]);
+
     // Flush any remaining bytes in the decoder
     output += decoder.decode();
     reader.releaseLock();
-    return output.trim();
+    const trimmed = output.trim();
+    return truncated
+      ? `${trimmed}\n[truncated — exceeded ${String(MAX_STDERR_BYTES)} bytes]`
+      : trimmed;
   } catch {
     return "";
   }
