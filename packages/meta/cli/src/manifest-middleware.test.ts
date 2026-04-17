@@ -1384,4 +1384,21 @@ describe("buildInheritedMiddlewareForChildren", () => {
       "plan",
     ]);
   });
+
+  test("plan precedes systemPrompt in child chain so precedence matches the parent", () => {
+    // Reviewer R26: in composeRuntimeMiddleware (parent), plan is in
+    // Zone C-bottom BEFORE systemPrompt so the host's system prompt
+    // is the innermost/latest instruction layer. Children must
+    // preserve that ordering so system-instruction precedence does
+    // not drift between parent and delegated runs.
+    const chain = buildInheritedMiddlewareForChildren({
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      hook: stubMiddleware("hooks"),
+      plan: stubMiddleware("plan"),
+      systemPrompt: stubMiddleware("system-prompt"),
+    });
+    const names = chain.map((mw) => mw.name);
+    expect(names.indexOf("plan")).toBeLessThan(names.indexOf("system-prompt"));
+  });
 });

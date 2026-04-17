@@ -168,17 +168,27 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
-  // write_plan — internal planning bookkeeping; the middleware
-  // intercepts before the tool executor runs, so this rule only
-  // exists so the default "ask" policy doesn't prompt the user for
-  // every plan write. There's no external side-effect to authorize.
-  { pattern: "write_plan", action: "invoke", effect: "allow", source: "policy" },
   // Memory tools — non-destructive ops sandboxed to .koi/memory/
   // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
 ] as const;
+
+/**
+ * Auto-allow rule for `write_plan`. Opt-in only: installed ONLY when
+ * `config.planningEnabled === true`. Matched by bare tool name, which
+ * is the same matching the rest of the allowlist uses — but since it
+ * is gated on planningEnabled, a host that does not opt into the
+ * planning middleware will never install this rule even if a
+ * third-party tool happens to share the name.
+ */
+export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
+  pattern: "write_plan",
+  action: "invoke",
+  effect: "allow",
+  source: "policy",
+};
 
 // ---------------------------------------------------------------------------
 // Config & return types
@@ -1041,9 +1051,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   // --- @koi/permissions + @koi/middleware-permissions ---
   // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning.
+  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
+  // write_plan rule is appended only when planning is opted in so
+  // hosts that do not install @koi/middleware-planning cannot have
+  // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
+    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
     {
       pattern: "fs_read",
       action: "invoke",

@@ -170,7 +170,13 @@ export function composeRuntimeMiddleware(
  * know their manifest policy does not apply to delegated work.
  *
  * Order mirrors the parent chain structure minus zone B:
- *   permissions → exfiltration-guard → hook → systemPrompt? → plan?
+ *   permissions → exfiltration-guard → hook → plan? → systemPrompt?
+ *
+ * `plan` sits BEFORE `systemPrompt` to match the parent chain's
+ * Zone C-bottom order (see composeRuntimeMiddleware). That keeps
+ * system-instruction precedence identical between parent and child
+ * runs — the host's systemPrompt remains the innermost/latest
+ * instruction layer in both.
  *
  * Planning middleware IS inherited: the parent advertises the
  * `write_plan` tool through its provider, and inherited-component-
@@ -199,7 +205,7 @@ export function buildInheritedMiddlewareForChildren(input: {
     input.permissions,
     input.exfiltrationGuard,
     input.hook,
-    ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
   ];
 }
