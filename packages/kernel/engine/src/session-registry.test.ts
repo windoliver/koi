@@ -10,9 +10,7 @@ describe("createSessionRegistry", () => {
     const ctrl = new AbortController();
     const unregister = registry.register(sid, runId("r-1"), ctrl, ctrl.signal);
     expect(typeof unregister).toBe("function");
-    const list = registry.listActive();
-    expect(list).toHaveLength(1);
-    expect(list[0]?.sessionId).toBe(sid);
+    expect(registry.listActive()).toEqual([sid]);
     unregister();
     expect(registry.listActive()).toHaveLength(0);
   });
@@ -113,9 +111,7 @@ describe("createSessionRegistry", () => {
     const ctrlB = new AbortController();
     registry.register(a, runId("r-a"), ctrlA, ctrlA.signal);
     registry.register(b, runId("r-b"), ctrlB, ctrlB.signal);
-    const list = registry.listActive();
-    const sids = new Set(list.map((e) => e.sessionId));
-    expect(sids).toEqual(new Set([a, b]));
+    expect(new Set(registry.listActive())).toEqual(new Set([a, b]));
     registry.interrupt(a);
     expect(ctrlA.signal.aborted).toBe(true);
     expect(ctrlB.signal.aborted).toBe(false);
@@ -160,8 +156,7 @@ describe("createSessionRegistry", () => {
     registry.register(sid, runId("r-snap"), ctrl, ctrl.signal);
 
     const snapshot = registry.listActive();
-    expect(snapshot).toHaveLength(1);
-    expect(snapshot[0]?.sessionId).toBe(sid);
+    expect(snapshot).toEqual([sid]);
 
     // Two calls return two different array instances, so caller mutation
     // to one cannot leak into a subsequent read.
@@ -172,22 +167,17 @@ describe("createSessionRegistry", () => {
     // registry's internal state.
     (snapshot as unknown as SessionId[]).pop();
     const snapshot3 = registry.listActive();
-    expect(snapshot3).toHaveLength(1);
-    expect(snapshot3[0]?.sessionId).toBe(sid);
+    expect(snapshot3).toEqual([sid]);
   });
 
-  test("forceUnregister requires runId match OR aborted entry (ownership guard)", () => {
+  test("forceUnregister requires runId match (ownership guard)", () => {
     const registry = createSessionRegistry();
     const sid = sessionId("stuck");
     const r1 = runId("r-stuck");
     const ctrl = new AbortController();
     registry.register(sid, r1, ctrl, ctrl.signal);
 
-    // Without runId or abort state, eviction is refused.
-    expect(registry.forceUnregister(sid)).toBe(false);
-    expect(registry.listActive()).toHaveLength(1);
-
-    // Wrong runId — still refused.
+    // Wrong runId — refused.
     expect(registry.forceUnregister(sid, runId("other"))).toBe(false);
     expect(registry.listActive()).toHaveLength(1);
 
@@ -205,21 +195,20 @@ describe("createSessionRegistry", () => {
     expect(registry.forceUnregister(sessionId("nonexistent"), r2)).toBe(false);
   });
 
-  test("forceUnregister removes an aborted entry without runId proof (stale recovery)", () => {
+  test("forceUnregister refuses to evict a live aborted entry without runId match", () => {
     const registry = createSessionRegistry();
-    const sid = sessionId("aborted");
-    const r1 = runId("r-aborted");
+    const sid = sessionId("live-aborted");
+    const r1 = runId("r1");
     const ctrl = new AbortController();
     registry.register(sid, r1, ctrl, ctrl.signal);
-
-    // Not aborted yet — refuse without runId.
-    expect(registry.forceUnregister(sid)).toBe(false);
-
-    // Abort the entry's signal.
     ctrl.abort();
-    // Now the entry is stale; forceUnregister without runId removes it.
-    expect(registry.forceUnregister(sid)).toBe(true);
-    expect(registry.listActive()).toHaveLength(0);
+
+    // Aborted — but no runId match. Still refused (owning runtime may be unwinding).
+    expect(registry.forceUnregister(sid, runId("other"))).toBe(false);
+    expect(registry.listActive()).toHaveLength(1);
+
+    // With runId match, eviction succeeds.
+    expect(registry.forceUnregister(sid, r1)).toBe(true);
   });
 
   test("interrupt with expectedRunId mismatch is a no-op (cross-generation safety)", () => {

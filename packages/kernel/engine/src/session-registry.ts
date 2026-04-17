@@ -12,11 +12,6 @@
 import type { RunId, SessionId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 
-export interface ActiveSession {
-  readonly sessionId: SessionId;
-  readonly runId: RunId;
-}
-
 export interface SessionRegistry {
   /**
    * Register a live run. Returns an unregister function that is safe to call
@@ -51,24 +46,27 @@ export interface SessionRegistry {
    *  (cross-generation cancel) OR unknown session OR already-aborted. */
   readonly interrupt: (sessionId: SessionId, reason?: string, expectedRunId?: RunId) => boolean;
   readonly isInterrupted: (sessionId: SessionId) => boolean;
-  readonly listActive: () => readonly ActiveSession[];
-  /** Force-remove a stale entry for `sessionId`. Intended as a recovery
-   *  escape hatch for hosts that leak or wedge runtimes, freeing the
-   *  sessionId for a fresh registration.
+  /** Snapshot of currently registered sessionIds. Intentionally does NOT
+   *  expose `runId` — exposing runIds would let any caller holding the
+   *  registry cancel or evict another runtime's run. Callers who need
+   *  their own runId can capture it from `runtime.currentRunId` or
+   *  `RunHandle.runId` at run-start. */
+  readonly listActive: () => readonly SessionId[];
+  /** Force-remove a registry entry by its `sessionId`, proving ownership
+   *  with the entry's `runId`. Returns `true` iff an entry was removed.
    *
-   *  Ownership guard — an entry is ONLY removed if at least one of:
-   *    - `expectedRunId` is supplied AND matches the entry's runId
-   *    - the entry's `runSignal` is already aborted (stale; the owner
-   *      merely has not completed its cleanup yet)
-   *  Live, unaborted runs cannot be evicted without proof of ownership.
-   *  Returns `true` iff an entry was actually removed.
+   *  Ownership proof is MANDATORY — without a matching `expectedRunId`,
+   *  the entry cannot be evicted, regardless of its abort state. This
+   *  prevents a replacement runtime from registering on a sessionId
+   *  while the original run is still unwinding (adapter.return() awaiting,
+   *  finally block draining). Typical caller: the owning runtime that
+   *  needs to clean up after a failed `register()` or custom shutdown.
    *
    *  WARNING: this does NOT abort the controller or notify the owning
-   *  runtime; it only evicts the registry entry. A wedged runtime may
-   *  still be consuming resources and should be disposed separately. Use
-   *  sparingly — the normal unregister path runs automatically in the
-   *  generator's finally when the run completes. */
-  readonly forceUnregister: (sessionId: SessionId, expectedRunId?: RunId) => boolean;
+   *  runtime; it only evicts the registry entry. Use sparingly — the
+   *  normal unregister path runs automatically in the generator's
+   *  finally when the run completes. */
+  readonly forceUnregister: (sessionId: SessionId, expectedRunId: RunId) => boolean;
 }
 
 type RegistryEntry = {
@@ -131,22 +129,22 @@ export function createSessionRegistry(): SessionRegistry {
     return entry.runSignal.aborted;
   }
 
-  function listActive(): readonly ActiveSession[] {
-    return Array.from(entries.entries()).map(([sid, entry]) => ({
-      sessionId: sid,
-      runId: entry.runId,
-    }));
+  function listActive(): readonly SessionId[] {
+    return Array.from(entries.keys());
   }
 
-  function forceUnregister(sessionId: SessionId, expectedRunId?: RunId): boolean {
+  function forceUnregister(sessionId: SessionId, expectedRunId: RunId): boolean {
     const entry = entries.get(sessionId);
     if (entry === undefined) return false;
-    // Allow removal only when the caller proves ownership via matching
-    // runId, OR when the entry is already aborted (stale owner that
-    // hasn't reached its cleanup path yet).
-    const hasOwnershipToken = expectedRunId !== undefined && entry.runId === expectedRunId;
-    const isStale = entry.runSignal.aborted;
-    if (!hasOwnershipToken && !isStale) return false;
+    // Eviction requires ownership proof via matching runId. Aborted
+    // entries are NOT evictable without the runId because the owning
+    // runtime may still be unwinding (adapter.return() awaiting, finally
+    // block still draining). Evicting during that window would let a
+    // replacement runtime start work on the same session while the
+    // original is still writing.
+    if (entry.runId !== expectedRunId) {
+      return false;
+    }
     entries.delete(sessionId);
     return true;
   }

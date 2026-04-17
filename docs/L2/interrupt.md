@@ -91,11 +91,6 @@ The state machine is installed in `packages/meta/cli/src/commands/start.ts` and 
 **`SessionRegistry` interface and factory:**
 
 ```ts
-export interface ActiveSession {
-  readonly sessionId: SessionId;
-  readonly runId: RunId;
-}
-
 export interface SessionRegistry {
   /**
    * Register a live run. The caller passes the run's branded `runId`, the
@@ -128,8 +123,12 @@ export interface SessionRegistry {
   /** True iff the active entry's composite run signal is aborted. */
   readonly isInterrupted: (sessionId: SessionId) => boolean;
 
-  /** Snapshot of currently registered entries, each with sessionId + runId. */
-  readonly listActive: () => readonly ActiveSession[];
+  /** Snapshot of currently registered sessionIds. Does NOT expose runIds —
+   *  exposing them would let any caller holding the registry cancel or
+   *  evict another runtime's run. Callers cancel only their own runs,
+   *  whose runIds they already have via `runtime.currentRunId` or
+   *  `RunHandle.runId`. */
+  readonly listActive: () => readonly SessionId[];
 
   /**
    * Administrative recovery: evict a registry entry by sessionId, proving
@@ -276,7 +275,7 @@ registry.interrupt(
 - **`RunHandle` is single-consumer.** Calling `[Symbol.asyncIterator]()` twice on one handle throws — start a new `run()` to get a fresh iterable. `for await` is fine; it calls the method once.
 - **Cross-runtime shared registry.** A `SessionRegistry` shared by multiple `KoiRuntime` instances tracks per-`(sessionId, runId)` entries. Duplicate `register()` on the same sessionId from a *different* runtime throws `CONFLICT` (retryable). Hosts running resume/rebind flows that may collide on sessionIds should use per-runtime registries, or coordinate sessionId uniqueness upstream.
 - **Idle runtime safety.** `runtime.interrupt()` and `runtime.isInterrupted()` fail closed when the specific runtime instance is idle — they never reach across a shared registry into a sibling runtime's entry, even when sessionIds match.
-- **Stuck-runtime recovery.** A wedged runtime whose `finally` cleanup never fires can be evicted from the registry with `registry.forceUnregister(sessionId, runId)`. This does NOT abort the owning runtime — dispose it separately. Use `listActive()` to learn the stuck `runId`.
+- **Stuck-runtime recovery.** A wedged runtime whose `finally` cleanup never fires can be evicted from the registry with `registry.forceUnregister(sessionId, runId)`. This does NOT abort the owning runtime — dispose it separately. Only the owning runtime can force-unregister (it holds its own `runId`); outside callers who don't own a run cannot enumerate runIds to bypass the ownership check.
 - **Registry is in-process.** No cross-process coordination. If your architecture spawns separate processes or threads, each process needs its own registry instance.
 - **`cycleSession()` rotates the sessionId.** Captured sessionIds/runIds from before a rotation become stale; subsequent `registry.interrupt()` calls on them are no-ops. Read `runtime.sessionId` / `runtime.currentRunId` live, or prefer `RunHandle.interrupt()` which captures both transparently.
 

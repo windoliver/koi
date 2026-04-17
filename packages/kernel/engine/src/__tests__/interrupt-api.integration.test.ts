@@ -126,7 +126,7 @@ describe("registry-driven interrupt", () => {
 
     // Session must be registered at this point
     const sid = sessionId(runtime.sessionId);
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(true);
+    expect(registry.listActive().includes(sid)).toBe(true);
 
     // Interrupt via registry
     const interrupted = registry.interrupt(sid, "external");
@@ -153,7 +153,7 @@ describe("registry-driven interrupt", () => {
     expect(doneEvt.output.stopReason).toBe("interrupted");
 
     // Auto-cleanup: session must be removed from registry after run completes
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
 
     await runtime.dispose();
   });
@@ -264,7 +264,7 @@ describe("auto-cleanup on normal completion", () => {
 
     // Session must be auto-cleaned after normal completion
     const sid = sessionId(runtime.sessionId);
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
 
     await runtime.dispose();
   });
@@ -422,13 +422,13 @@ describe("abandoned iterable cleanup", () => {
     const _abandoned = runtime.run({ kind: "text", text: "hello" });
 
     // After run(), the registry should show the session (synchronous register).
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(true);
+    expect(registry.listActive().includes(sid)).toBe(true);
 
     // cycleSession sweeps the abandoned state.
     await runtime.cycleSession?.();
 
     // Registry entry gone; a fresh run is accepted without an "already running" throw.
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
 
     const iter = runtime.run({ kind: "text", text: "hello" });
     await drainEvents(iter); // should not throw
@@ -446,10 +446,10 @@ describe("abandoned iterable cleanup", () => {
 
     const sid = sessionId(runtime.sessionId);
     const _abandoned = runtime.run({ kind: "text", text: "hello" });
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(true);
+    expect(registry.listActive().includes(sid)).toBe(true);
 
     await runtime.dispose();
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
   });
 });
 
@@ -468,13 +468,13 @@ describe("pre-iteration abort self-cleanup", () => {
     const sid = sessionId(runtime.sessionId);
 
     const _abandoned = runtime.run({ kind: "text", text: "hello" });
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(true);
+    expect(registry.listActive().includes(sid)).toBe(true);
 
     // Interrupt before ANY iteration.
     expect(registry.interrupt(sid)).toBe(true);
 
     // Registry entry gone. A fresh run is accepted.
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
 
     const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
     // should NOT throw "Agent is already running"
@@ -497,7 +497,7 @@ describe("pre-iteration abort self-cleanup", () => {
 
     const _abandoned = runtime.run({ kind: "text", text: "hello", signal: ctrl.signal });
     // After run() returns, the self-clean path should have fired.
-    expect(registry.listActive().some((e) => e.sessionId === sid)).toBe(false);
+    expect(registry.listActive().includes(sid)).toBe(false);
 
     // Subsequent run() accepted.
     const iter = runtime.run({ kind: "text", text: "hello" })[Symbol.asyncIterator]();
@@ -577,7 +577,7 @@ describe("pre-iteration abort self-cleanup", () => {
     const sidA = sessionId(runtime.sessionId);
     expect(registry.interrupt(sidA)).toBe(true);
     // Post-abort, all state is released.
-    expect(registry.listActive().some((e) => e.sessionId === sidA)).toBe(false);
+    expect(registry.listActive().includes(sidA)).toBe(false);
 
     // Run B — starts on the fresh (post-abort) latch.
     const iterB = runtime.run({ kind: "text", text: "B" })[Symbol.asyncIterator]();
@@ -704,12 +704,14 @@ describe("RunHandle.interrupt cross-generation safety", () => {
 describe("fallback interrupt reads composite signal", () => {
   test("fallback (no registry) — interrupt returns false after external input.signal abort", async () => {
     // No sessionRegistry wired — exercises the composite-signal fallback.
+    // Pass the caller's signal to pausingAdapter so the adapter exits
+    // promptly on ctrl.abort() instead of waiting the safety timeout.
+    const ctrl = new AbortController();
     const runtime = await createKoi({
       manifest: testManifest(),
-      adapter: pausingAdapter(),
+      adapter: pausingAdapter(ctrl.signal),
       // deliberately NO sessionRegistry
     });
-    const ctrl = new AbortController();
     const iter = runtime
       .run({
         kind: "text",
@@ -880,6 +882,7 @@ describe("cross-runtime ownership: idle runtime cannot read or mutate sibling st
   test("runtime.interrupt() on idle runtime A does NOT abort active runtime B sharing the same registry+sessionId", async () => {
     const sharedRegistry = createSessionRegistry();
     const sid = "shared-sid-xruntime";
+    const bAbortCtrl = new AbortController();
     const runtimeA = await createKoi({
       manifest: testManifest(),
       adapter: completingAdapter(),
@@ -888,7 +891,7 @@ describe("cross-runtime ownership: idle runtime cannot read or mutate sibling st
     });
     const runtimeB = await createKoi({
       manifest: testManifest(),
-      adapter: pausingAdapter(),
+      adapter: pausingAdapter(bAbortCtrl.signal),
       sessionRegistry: sharedRegistry,
       sessionId: sessionId(sid),
     });
@@ -903,12 +906,11 @@ describe("cross-runtime ownership: idle runtime cannot read or mutate sibling st
     expect(runtimeA.interrupt("from-A")).toBe(false);
     expect(runtimeA.isInterrupted()).toBe(false);
 
-    // B must still be running.
+    // B must still be running (not aborted by A's idle call).
     expect(runtimeB.isInterrupted()).toBe(false);
 
-    // B can still interrupt itself normally.
-    expect(runtimeB.interrupt("b-self")).toBe(true);
-
+    // Drain B by aborting the adapter's wait signal.
+    bAbortCtrl.abort("drain");
     while (!(await iterB.next()).done) {}
     await runtimeA.dispose();
     await runtimeB.dispose();
