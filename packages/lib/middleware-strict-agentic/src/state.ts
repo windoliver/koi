@@ -1,15 +1,21 @@
 /**
  * Closure-scoped state store for the strict-agentic middleware.
  *
- * Three maps:
- *   - turnStates:         `turnId -> TurnState` (populated in wrapModelCall,
- *                         read in onBeforeStop, cleared in onAfterTurn).
- *   - turnToSession:      `turnId -> sessionId` reverse index so clearSession
- *                         can purge all outstanding turn entries for a session
- *                         that ends without `onAfterTurn` firing (cancellation,
- *                         crash, transport abort).
- *   - sessionBlockCounts: `sessionId -> consecutive filler blocks` (reset on
- *                         any non-filler turn, cleared on session end).
+ * Four maps:
+ *   - turnStates:       `turnId -> TurnState` (populated in wrapModelCall /
+ *                       wrapModelStream, read in onBeforeStop, cleared in
+ *                       onAfterTurn).
+ *   - turnToSession:    `turnId -> sessionId` reverse index so clearSession
+ *                       can purge all outstanding turn entries for a session
+ *                       that ends without onAfterTurn firing.
+ *   - runBlockCounts:   `runId -> consecutive filler blocks` within that
+ *                       outer run. Keyed by runId (stable per runtime.run()
+ *                       call, new per call) so the counter naturally scopes
+ *                       to one outer request and accumulates across engine
+ *                       re-prompts within that request.
+ *   - runToSession:     `runId -> sessionId` reverse index so clearSession
+ *                       can purge any outstanding run counters for the
+ *                       session.
  *
  * A new store is created per `createStrictAgenticMiddleware` call, so test
  * instances are isolated.
@@ -24,16 +30,17 @@ export interface StateStore {
   readonly recordTurn: (sessionId: string, turnId: string, state: TurnState) => void;
   readonly readTurn: (turnId: string) => TurnState | undefined;
   readonly clearTurn: (turnId: string) => void;
-  readonly incrementBlocks: (sessionId: string) => number;
-  readonly resetBlocks: (sessionId: string) => void;
-  readonly getBlockCount: (sessionId: string) => number;
+  readonly incrementBlocks: (sessionId: string, runId: string) => number;
+  readonly resetBlocks: (runId: string) => void;
+  readonly getBlockCount: (runId: string) => number;
   readonly clearSession: (sessionId: string) => void;
 }
 
 export function createStateStore(): StateStore {
   const turnStates = new Map<string, TurnState>();
   const turnToSession = new Map<string, string>();
-  const sessionBlockCounts = new Map<string, number>();
+  const runBlockCounts = new Map<string, number>();
+  const runToSession = new Map<string, string>();
 
   return {
     recordTurn(sessionId: string, turnId: string, state: TurnState): void {
@@ -47,26 +54,33 @@ export function createStateStore(): StateStore {
       turnStates.delete(turnId);
       turnToSession.delete(turnId);
     },
-    incrementBlocks(sessionId: string): number {
-      const next = (sessionBlockCounts.get(sessionId) ?? 0) + 1;
-      sessionBlockCounts.set(sessionId, next);
+    incrementBlocks(sessionId: string, runId: string): number {
+      const next = (runBlockCounts.get(runId) ?? 0) + 1;
+      runBlockCounts.set(runId, next);
+      runToSession.set(runId, sessionId);
       return next;
     },
-    resetBlocks(sessionId: string): void {
-      sessionBlockCounts.delete(sessionId);
+    resetBlocks(runId: string): void {
+      runBlockCounts.delete(runId);
+      runToSession.delete(runId);
     },
-    getBlockCount(sessionId: string): number {
-      return sessionBlockCounts.get(sessionId) ?? 0;
+    getBlockCount(runId: string): number {
+      return runBlockCounts.get(runId) ?? 0;
     },
     clearSession(sessionId: string): void {
-      sessionBlockCounts.delete(sessionId);
-      // Purge any turn entries that still point at this session. Protects
-      // against onAfterTurn never firing (cancellation, crash) — without this
-      // a stale turn could classify a later turn that happens to reuse an id.
+      // Purge all turn entries for this session (onAfterTurn may never fire
+      // on abnormal session end).
       for (const [turnId, sid] of turnToSession) {
         if (sid === sessionId) {
           turnStates.delete(turnId);
           turnToSession.delete(turnId);
+        }
+      }
+      // Purge all run counters for this session.
+      for (const [rid, sid] of runToSession) {
+        if (sid === sessionId) {
+          runBlockCounts.delete(rid);
+          runToSession.delete(rid);
         }
       }
     },

@@ -15,6 +15,7 @@ export interface StrictAgenticConfig {
   readonly feedbackMessage?: string;
   readonly isUserQuestion?: (output: string) => boolean;
   readonly isExplicitDone?: (output: string) => boolean;
+  readonly isFillerOutput?: (output: string) => boolean;
 }
 
 export interface ResolvedStrictAgenticConfig {
@@ -23,6 +24,7 @@ export interface ResolvedStrictAgenticConfig {
   readonly feedbackMessage: string | undefined;
   readonly isUserQuestion: (output: string) => boolean;
   readonly isExplicitDone: (output: string) => boolean;
+  readonly isFillerOutput: (output: string) => boolean;
 }
 
 export const DEFAULT_STRICT_AGENTIC_CONFIG: {
@@ -54,6 +56,15 @@ const FORWARD_WORK_RE =
 /** Clause terminators: sentence punctuation plus `;` and em-dash variants. */
 const CLAUSE_SPLITTER = /[.!?;—]+/;
 
+/**
+ * Positive filler-language patterns. The classifier blocks ONLY on a match —
+ * plain substantive answers ("10", "Updated 3 files") fall through to `action`
+ * and are allowed to complete. Intentional conservative matching so a
+ * guardrail cannot accidentally re-prompt legitimate completions.
+ */
+const FILLER_PATTERN_RE =
+  /\b(i will|i'll|i am going to|i'm going to|let me|let's|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will)|next step)\b/i;
+
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();
   return trimmed.length > 0 && trimmed.endsWith("?");
@@ -75,6 +86,10 @@ function defaultIsExplicitDone(output: string): boolean {
   // Reject same-clause forward-work: "I finished writing, will proceed".
   if (FORWARD_WORK_RE.test(last)) return false;
   return true;
+}
+
+function defaultIsFillerOutput(output: string): boolean {
+  return FILLER_PATTERN_RE.test(output);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -144,6 +159,11 @@ export function validateStrictAgenticConfig(input: unknown): Result<StrictAgenti
     return isExplicitDoneResult;
   }
 
+  const isFillerOutputResult = extractPredicate(input.isFillerOutput, "isFillerOutput");
+  if (!isFillerOutputResult.ok) {
+    return isFillerOutputResult;
+  }
+
   const value: StrictAgenticConfig = {
     enabled,
     maxFillerRetries: retries,
@@ -153,6 +173,9 @@ export function validateStrictAgenticConfig(input: unknown): Result<StrictAgenti
       : {}),
     ...(isExplicitDoneResult.value !== undefined
       ? { isExplicitDone: isExplicitDoneResult.value }
+      : {}),
+    ...(isFillerOutputResult.value !== undefined
+      ? { isFillerOutput: isFillerOutputResult.value }
       : {}),
   };
 
@@ -168,5 +191,6 @@ export function resolveStrictAgenticConfig(
     feedbackMessage: config.feedbackMessage,
     isUserQuestion: config.isUserQuestion ?? defaultIsUserQuestion,
     isExplicitDone: config.isExplicitDone ?? defaultIsExplicitDone,
+    isFillerOutput: config.isFillerOutput ?? defaultIsFillerOutput,
   };
 }

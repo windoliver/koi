@@ -35,7 +35,8 @@ const MIDDLEWARE_PRIORITY = 410;
 
 export interface StrictAgenticHandle {
   readonly middleware: KoiMiddleware;
-  readonly getBlockCount: (sessionId: string) => number;
+  /** Read the current consecutive-filler block count for a given outer run. */
+  readonly getBlockCount: (runId: string) => number;
 }
 
 function countToolCalls(rich: readonly ModelContentBlock[] | undefined): number {
@@ -65,16 +66,6 @@ export function createStrictAgenticMiddleware(
     name: MIDDLEWARE_NAME,
     priority: MIDDLEWARE_PRIORITY,
     phase: "intercept",
-
-    // Filler-block accounting is scoped to a single outer turn (one run()).
-    // Resetting here prevents one stubborn request from poisoning later
-    // requests in the same long-lived session — otherwise a stale count from
-    // an exhausted prior turn would skip the very first block of the next
-    // request and silently disable the guardrail for the rest of the session.
-    async onBeforeTurn(ctx: TurnContext): Promise<void> {
-      if (!resolved.enabled) return;
-      store.resetBlocks(ctx.session.sessionId);
-    },
 
     async wrapModelCall(
       ctx: TurnContext,
@@ -148,11 +139,15 @@ export function createStrictAgenticMiddleware(
       const result = classifyTurn(turn, resolved);
 
       if (result.kind !== "filler") {
-        store.resetBlocks(ctx.session.sessionId);
+        store.resetBlocks(ctx.session.runId);
         return { kind: "continue" };
       }
 
-      const blocks = store.incrementBlocks(ctx.session.sessionId);
+      // Counter is keyed by runId (stable within a single runtime.run() call,
+      // new per call) so it accumulates across engine re-prompts within the
+      // same outer request and is naturally fresh for the next request — a
+      // stale count from an exhausted prior run cannot poison later work.
+      const blocks = store.incrementBlocks(ctx.session.sessionId, ctx.session.runId);
       // Trip on `>= maxFillerRetries` so the breaker fires BEFORE the engine
       // exhausts its own stop-retry budget (DEFAULT_MAX_STOP_RETRIES = 3). If
       // the middleware waited for `blocks > maxFillerRetries` the runner would
@@ -166,6 +161,7 @@ export function createStrictAgenticMiddleware(
         ctx.reportDecision?.({
           event: "strict-agentic:circuit-broken",
           sessionId: ctx.session.sessionId as unknown as string,
+          runId: ctx.session.runId as unknown as string,
           consecutiveBlocks: blocks,
           maxFillerRetries: resolved.maxFillerRetries,
         });
@@ -198,8 +194,8 @@ export function createStrictAgenticMiddleware(
 
   return {
     middleware,
-    getBlockCount(sessionId: string): number {
-      return store.getBlockCount(sessionId);
+    getBlockCount(runId: string): number {
+      return store.getBlockCount(runId);
     },
   };
 }

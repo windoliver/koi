@@ -39,9 +39,25 @@ describe("classifyTurn", () => {
     expect(r.kind).toBe("filler");
   });
 
-  test("filler on empty output", () => {
+  test("plain empty output is NOT filler — only positive filler patterns block", () => {
+    // Empty text without any planning-language signal is a legitimate (if
+    // terse) completion, not a filler turn. The classifier treats it as
+    // action so the engine can stop instead of re-prompting forever.
     const r = classifyTurn({ toolCallCount: 0, outputText: "" }, resolved);
-    expect(r.kind).toBe("filler");
+    expect(r.kind).toBe("action");
+  });
+
+  test("plain substantive answer is action, not filler", () => {
+    // Regression: a concise final answer like "10" after prior tool use
+    // has toolCallCount=0 and no completion keyword, but it is NOT plan
+    // language and must not be re-prompted.
+    expect(classifyTurn({ toolCallCount: 0, outputText: "10" }, resolved).kind).toBe("action");
+    expect(classifyTurn({ toolCallCount: 0, outputText: "Updated 3 files" }, resolved).kind).toBe(
+      "action",
+    );
+    expect(classifyTurn({ toolCallCount: 0, outputText: "The answer is 42." }, resolved).kind).toBe(
+      "action",
+    );
   });
 
   test("user-question wins over done marker when both match", () => {

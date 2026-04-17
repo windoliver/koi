@@ -46,7 +46,9 @@ describe("createStrictAgenticMiddleware", () => {
   test("no-op when enabled=false", async () => {
     const { middleware } = createStrictAgenticMiddleware({ enabled: false });
     const turn = makeTurn();
-    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("plan text", 0));
+    await middleware.wrapModelCall?.(turn, REQUEST, async () =>
+      response("I will now plan this", 0),
+    );
     const result = await middleware.onBeforeStop?.(turn);
     expect(result).toEqual({ kind: "continue" });
   });
@@ -100,7 +102,7 @@ describe("createStrictAgenticMiddleware", () => {
   test("uses configured feedbackMessage", async () => {
     const { middleware } = createStrictAgenticMiddleware({ feedbackMessage: "CUSTOM FEEDBACK" });
     const turn = makeTurn();
-    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("planning", 0));
+    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("I will plan this", 0));
     const result = await middleware.onBeforeStop?.(turn);
     expect(result?.kind).toBe("block");
     if (result?.kind !== "block") return;
@@ -117,7 +119,7 @@ describe("createStrictAgenticMiddleware", () => {
     const kinds: string[] = [];
     for (const turnId of seq) {
       const turn = makeTurn("s1", turnId);
-      await middleware.wrapModelCall?.(turn, REQUEST, async () => response("planning", 0));
+      await middleware.wrapModelCall?.(turn, REQUEST, async () => response("I will plan this", 0));
       const r = await middleware.onBeforeStop?.(turn);
       kinds.push(r?.kind ?? "unknown");
     }
@@ -127,7 +129,7 @@ describe("createStrictAgenticMiddleware", () => {
     expect(kinds.slice(0, 2)).toEqual(["block", "block"]);
     expect(kinds[2]).toBe("continue");
     expect(kinds[3]).toBe("continue");
-    expect(getBlockCount("s1")).toBeGreaterThanOrEqual(3);
+    expect(getBlockCount("run-1")).toBeGreaterThanOrEqual(3);
   });
 
   test("counter resets after non-filler turn", async () => {
@@ -135,15 +137,17 @@ describe("createStrictAgenticMiddleware", () => {
 
     for (const t of ["t1", "t2"]) {
       const turn = makeTurn("s1", t);
-      await middleware.wrapModelCall?.(turn, REQUEST, async () => response("planning", 0));
+      await middleware.wrapModelCall?.(turn, REQUEST, async () =>
+        response("I will now plan further steps", 0),
+      );
       await middleware.onBeforeStop?.(turn);
     }
-    expect(getBlockCount("s1")).toBe(2);
+    expect(getBlockCount("run-1")).toBe(2);
 
     const actionTurn = makeTurn("s1", "t3");
     await middleware.wrapModelCall?.(actionTurn, REQUEST, async () => response("", 1));
     await middleware.onBeforeStop?.(actionTurn);
-    expect(getBlockCount("s1")).toBe(0);
+    expect(getBlockCount("run-1")).toBe(0);
   });
 
   test("onAfterTurn clears turn cache", async () => {
@@ -158,11 +162,11 @@ describe("createStrictAgenticMiddleware", () => {
   test("onSessionEnd clears block counter", async () => {
     const { middleware, getBlockCount } = createStrictAgenticMiddleware({ maxFillerRetries: 5 });
     const turn = makeTurn();
-    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("plan", 0));
+    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("I will now proceed", 0));
     await middleware.onBeforeStop?.(turn);
-    expect(getBlockCount("s1")).toBe(1);
+    expect(getBlockCount("run-1")).toBe(1);
     await middleware.onSessionEnd?.(turn.session);
-    expect(getBlockCount("s1")).toBe(0);
+    expect(getBlockCount("run-1")).toBe(0);
   });
 
   test("describeCapabilities returns label + description", () => {
@@ -203,49 +207,69 @@ describe("createStrictAgenticMiddleware", () => {
 
     // First filler turn → block, no emission (count=1, 1 < 2).
     const t1 = mkCtx("cb-1");
-    await middleware.wrapModelCall?.(t1, REQUEST, async () => response("plan", 0));
+    await middleware.wrapModelCall?.(t1, REQUEST, async () => response("I will plan this", 0));
     const r1 = await middleware.onBeforeStop?.(t1);
     expect(r1?.kind).toBe("block");
     expect(decisions.length).toBe(0);
 
     // Second filler turn → count=2 >= 2 → release + emit.
     const t2 = mkCtx("cb-2");
-    await middleware.wrapModelCall?.(t2, REQUEST, async () => response("plan", 0));
+    await middleware.wrapModelCall?.(t2, REQUEST, async () => response("I will plan this", 0));
     const r2 = await middleware.onBeforeStop?.(t2);
     expect(r2?.kind).toBe("continue");
     expect(decisions.length).toBe(1);
     const [decision] = decisions as [Record<string, unknown>];
     expect(decision["event"]).toBe("strict-agentic:circuit-broken");
     expect(decision["sessionId"]).toBe("s-cb");
+    expect(decision["runId"]).toBe("run-1");
     expect(decision["consecutiveBlocks"]).toBe(2);
     expect(decision["maxFillerRetries"]).toBe(2);
   });
 
-  test("onBeforeTurn resets block counter — stale state cannot poison next outer turn", async () => {
-    // Regression: without this reset, an exhausted prior request leaves the
-    // session counter at maxFillerRetries; the next unrelated request's first
-    // filler reply would skip blocking immediately (fail-open), silently
-    // disabling the guardrail for the rest of the session.
+  test("block counter is run-scoped — fresh runId starts from zero, not poisoned by prior run", async () => {
+    // Regression: the counter was previously session-scoped, so an exhausted
+    // prior request left a stale count at maxFillerRetries. The first filler
+    // reply of the next request would then fail-open immediately, silently
+    // disabling the guardrail. Keying by runId means each runtime.run() call
+    // starts with a zero counter and cannot inherit poisoned state.
     const { middleware, getBlockCount } = createStrictAgenticMiddleware({
       maxFillerRetries: 2,
     });
 
     // Run 1: two filler turns — second trips the breaker.
+    const run1Session: SessionContext = {
+      ...makeSession("s-outer"),
+      runId: "run-A" as unknown as SessionContext["runId"],
+    };
     for (const tid of ["r1-t1", "r1-t2"]) {
-      const t = makeTurn("s-outer", tid);
-      await middleware.wrapModelCall?.(t, REQUEST, async () => response("plan", 0));
+      const t: TurnContext = {
+        session: run1Session,
+        turnIndex: 0,
+        turnId: tid as unknown as TurnId,
+        messages: [],
+        metadata: {},
+      };
+      await middleware.wrapModelCall?.(t, REQUEST, async () => response("I will plan", 0));
       await middleware.onBeforeStop?.(t);
     }
-    expect(getBlockCount("s-outer")).toBeGreaterThanOrEqual(2);
+    expect(getBlockCount("run-A")).toBeGreaterThanOrEqual(2);
 
-    // Run 2 starts — onBeforeTurn fires at outer-turn boundary; counter resets.
-    const nextTurn = makeTurn("s-outer", "r2-t1");
-    await middleware.onBeforeTurn?.(nextTurn);
-    expect(getBlockCount("s-outer")).toBe(0);
-
-    // First filler of the new run must block, not fail-open.
-    await middleware.wrapModelCall?.(nextTurn, REQUEST, async () => response("plan", 0));
+    // Run 2: brand new runId — counter starts from zero naturally.
+    const run2Session: SessionContext = {
+      ...makeSession("s-outer"),
+      runId: "run-B" as unknown as SessionContext["runId"],
+    };
+    expect(getBlockCount("run-B")).toBe(0);
+    const nextTurn: TurnContext = {
+      session: run2Session,
+      turnIndex: 0,
+      turnId: "r2-t1" as unknown as TurnId,
+      messages: [],
+      metadata: {},
+    };
+    await middleware.wrapModelCall?.(nextTurn, REQUEST, async () => response("I will plan", 0));
     const r = await middleware.onBeforeStop?.(nextTurn);
+    // First filler of new run must block, not fail-open.
     expect(r?.kind).toBe("block");
   });
 });
@@ -383,8 +407,8 @@ describe("wrapModelStream", () => {
     const { middleware } = createStrictAgenticMiddleware({});
     const turn = makeTurn("s-stream", "t-return-early");
     const chunks: ModelChunk[] = [
-      { kind: "text_delta", delta: "Planning without action." },
-      { kind: "done", response: { content: "Planning without action.", model: "test" } },
+      { kind: "text_delta", delta: "I will proceed with the work." },
+      { kind: "done", response: { content: "I will proceed with the work.", model: "test" } },
     ];
     const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
     if (stream === undefined) throw new Error("wrapModelStream missing");
@@ -408,7 +432,7 @@ describe("wrapModelStream", () => {
   test("noop mode passes stream through without recording", async () => {
     const { middleware } = createStrictAgenticMiddleware({ enabled: false });
     const turn = makeTurn("s-stream", "t-stream-4");
-    const chunks: ModelChunk[] = [{ kind: "text_delta", delta: "plan only" }];
+    const chunks: ModelChunk[] = [{ kind: "text_delta", delta: "I will plan only" }];
     const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
     if (stream === undefined) throw new Error("wrapModelStream missing");
     await collect(stream);

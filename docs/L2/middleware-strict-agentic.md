@@ -24,6 +24,7 @@ const { middleware } = createStrictAgenticMiddleware({
 | `feedbackMessage` | `string?` | see below | Override text injected when blocking. |
 | `isUserQuestion` | `(output: string) => boolean` | trimmed output ends with `?` | Exempt turns that ask the user a direct question. |
 | `isExplicitDone` | `(output: string) => boolean` | terminal `done`/`completed`/`finished`/`no further action` in the last 80 chars AND no negation (`not`, `n't`, `yet`, etc.) in that window | Exempt turns that explicitly declare completion. |
+| `isFillerOutput` | `(output: string) => boolean` | matches `/\b(i will\|i'll\|let me\|i'm going to\|here is my plan\|…)\b/i` | Positive match for planning language — the ONLY path that blocks. |
 
 Default feedback:
 
@@ -36,7 +37,10 @@ On each turn, the middleware evaluates in order:
 1. One or more tool calls in the response → **action** (continue).
 2. Output passes `isUserQuestion` → **user-question** (continue).
 3. Output passes `isExplicitDone` → **explicit-done** (continue).
-4. Otherwise → **filler** (block unless circuit breaker is tripped).
+4. Output passes `isFillerOutput` → **filler** (block unless circuit breaker is tripped).
+5. Otherwise → **action** (continue).
+
+Blocking requires a positive filler match. Plain substantive answers like `"10"` or `"Updated 3 files"` — concise final completions after prior tool use — fall through to `action` and are allowed to complete. The gate never re-prompts based on absence of evidence alone.
 
 ## Circuit breaker
 
