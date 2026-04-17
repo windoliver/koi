@@ -17,9 +17,15 @@ import {
   createPlanMiddleware,
   MAX_CONTENT_LENGTH,
   MAX_PLAN_ITEMS,
+  type PlanConfig,
   type PlanItem,
   WRITE_PLAN_TOOL_NAME,
 } from "./index.js";
+
+/** Extract just the KoiMiddleware half of the bundle for tests that exercise hooks directly. */
+function make(config?: PlanConfig) {
+  return createPlanMiddleware(config).middleware;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -71,13 +77,13 @@ function planInput(items: readonly { content: string; status: string }[]): JsonO
 
 describe("createPlanMiddleware — factory", () => {
   it("creates middleware with default config", () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     expect(mw.name).toBe("plan");
     expect(mw.priority).toBe(450);
   });
 
   it("accepts a custom priority", () => {
-    const mw = createPlanMiddleware({ priority: 300 });
+    const mw = make({ priority: 300 });
     expect(mw.priority).toBe(300);
   });
 
@@ -90,6 +96,13 @@ describe("createPlanMiddleware — factory", () => {
       createPlanMiddleware({ onPlanUpdate: "not-a-function" as unknown as never }),
     ).toThrow();
   });
+
+  it("returns a bundle carrying both middleware and a write_plan provider", () => {
+    const bundle = createPlanMiddleware();
+    expect(bundle.middleware.name).toBe("plan");
+    expect(bundle.providers).toHaveLength(1);
+    expect(bundle.providers[0]?.name).toBe("plan-tool");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -98,7 +111,7 @@ describe("createPlanMiddleware — factory", () => {
 
 describe("wrapModelCall — tool + prompt injection", () => {
   it("injects plan system message into request messages", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
 
     let captured: ModelRequest | undefined;
@@ -114,7 +127,7 @@ describe("wrapModelCall — tool + prompt injection", () => {
   });
 
   it("injects the write_plan tool descriptor", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
 
     let captured: readonly ToolDescriptor[] | undefined;
@@ -128,7 +141,7 @@ describe("wrapModelCall — tool + prompt injection", () => {
   });
 
   it("attaches currentPlan to response metadata", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
 
     const response = await mw.wrapModelCall?.(ctx, makeRequest("hello"), async () =>
@@ -138,7 +151,7 @@ describe("wrapModelCall — tool + prompt injection", () => {
   });
 
   it("injects plan state message when a plan is active", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -171,7 +184,7 @@ describe("wrapModelCall — tool + prompt injection", () => {
 
 describe("wrapModelStream", () => {
   it("injects tools into the stream request and yields chunks", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
 
     async function* mockStream(req: ModelRequest): AsyncIterable<ModelChunk> {
@@ -197,7 +210,7 @@ describe("wrapModelStream", () => {
 describe("wrapToolCall — write_plan interception", () => {
   it("stores the plan and invokes onPlanUpdate", async () => {
     let capturedPlan: readonly PlanItem[] | undefined;
-    const mw = createPlanMiddleware({
+    const mw = make({
       onPlanUpdate: (plan) => {
         capturedPlan = plan;
       },
@@ -224,7 +237,7 @@ describe("wrapToolCall — write_plan interception", () => {
   });
 
   it("passes through non-plan tool calls unchanged", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -239,7 +252,7 @@ describe("wrapToolCall — write_plan interception", () => {
   });
 
   it("rejects a second write_plan call in the same turn", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -255,7 +268,7 @@ describe("wrapToolCall — write_plan interception", () => {
   });
 
   it("allows write_plan again in a new turn", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -276,7 +289,7 @@ describe("wrapToolCall — write_plan interception", () => {
   });
 
   it("returns an error for a non-array plan input", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -293,7 +306,7 @@ describe("wrapToolCall — write_plan interception", () => {
   });
 
   it("returns an error for a plan item with an invalid status", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -312,7 +325,7 @@ describe("wrapToolCall — write_plan interception", () => {
   it("atomically replaces the plan across turns", async () => {
     let callCount = 0;
     let lastCapturedPlan: readonly PlanItem[] | undefined;
-    const mw = createPlanMiddleware({
+    const mw = make({
       onPlanUpdate: (plan) => {
         callCount += 1;
         lastCapturedPlan = plan;
@@ -354,7 +367,7 @@ describe("wrapToolCall — write_plan interception", () => {
 
 describe("input caps", () => {
   it("rejects plans exceeding MAX_PLAN_ITEMS", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -375,7 +388,7 @@ describe("input caps", () => {
   });
 
   it("rejects plan items with content exceeding MAX_CONTENT_LENGTH", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -399,7 +412,7 @@ describe("input caps", () => {
 
 describe("prompt-injection containment", () => {
   it("renders active plan state as a user-role (not system) message", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -427,7 +440,7 @@ describe("prompt-injection containment", () => {
   });
 
   it("escapes fence markers and linefeeds in plan item content", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -465,8 +478,8 @@ describe("prompt-injection containment", () => {
 // ---------------------------------------------------------------------------
 
 describe("onPlanUpdate commit-with-rollback", () => {
-  it("surfaces callback failure as a tool error and rolls back the plan", async () => {
-    const mw = createPlanMiddleware({
+  it("surfaces sync callback failure as a tool error and rolls back the plan", async () => {
+    const mw = make({
       onPlanUpdate: () => {
         throw new Error("persist failed");
       },
@@ -486,12 +499,101 @@ describe("onPlanUpdate commit-with-rollback", () => {
     expect((response?.output as Record<string, unknown>).error).toContain("persist failed");
     expect(response?.metadata?.planError).toBe(true);
 
-    // Plan rolled back — next model call sees no active plan.
     const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async () =>
       makeResponse("ok"),
     );
     const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
     expect(plan).toHaveLength(0);
+  });
+
+  it("awaits async callbacks and rolls back on rejection", async () => {
+    let hookRan = false;
+    const mw = make({
+      onPlanUpdate: async () => {
+        hookRan = true;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        throw new Error("async persist rejected");
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "Step 1", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect(hookRan).toBe(true);
+    expect((response?.output as Record<string, unknown>).error).toContain("async persist rejected");
+
+    // Plan rolled back after the async rejection.
+    const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(0);
+  });
+
+  it("commits when the async callback resolves successfully", async () => {
+    const mw = make({
+      onPlanUpdate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "Step 1", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect(response?.output).toContain("Plan updated");
+
+    const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tool provider — fallback when middleware is missing
+// ---------------------------------------------------------------------------
+
+describe("plan tool provider", () => {
+  it("registers write_plan with a clear fallback if the MW is not wired", async () => {
+    const { providers } = createPlanMiddleware();
+    const provider = providers[0];
+    expect(provider?.name).toBe("plan-tool");
+
+    const stubAgent = {} as unknown as Parameters<NonNullable<typeof provider>["attach"]>[0];
+    const attached = await provider?.attach(stubAgent);
+    // createSingleToolProvider returns a bare ReadonlyMap, not an AttachResult.
+    const components = attached as ReadonlyMap<string, unknown> | undefined;
+    const tool = components?.get(`tool:${WRITE_PLAN_TOOL_NAME}`) as
+      | {
+          readonly descriptor: { readonly name: string };
+          readonly execute: (args: JsonObject) => Promise<unknown>;
+        }
+      | undefined;
+
+    expect(tool?.descriptor.name).toBe(WRITE_PLAN_TOOL_NAME);
+
+    // Fallback execute returns an explicit error explaining the missing MW
+    // so that consumers who forget to wire the middleware get a clear
+    // diagnostic instead of a silent data loss.
+    const fallback = (await tool?.execute({ plan: [] })) as { readonly error?: string };
+    expect(fallback.error).toContain("middleware-planning is not registered");
   });
 });
 
@@ -501,7 +603,7 @@ describe("onPlanUpdate commit-with-rollback", () => {
 
 describe("turn concurrency", () => {
   it("gives each turn its own quota even when they overlap", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -526,7 +628,7 @@ describe("turn concurrency", () => {
   });
 
   it("rejects stale writes from an earlier turn after a newer turn has committed", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
 
@@ -565,7 +667,7 @@ describe("turn concurrency", () => {
   });
 
   it("cleans up per-turn write counts on onAfterTurn", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -589,7 +691,7 @@ describe("turn concurrency", () => {
 
 describe("describeCapabilities", () => {
   it("reports no active plan before any write_plan call", () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
     const fragment = mw.describeCapabilities(ctx) as CapabilityFragment;
     expect(fragment.label).toBe("planning");
@@ -597,7 +699,7 @@ describe("describeCapabilities", () => {
   });
 
   it("reports active plan counts after write_plan", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
@@ -626,7 +728,7 @@ describe("describeCapabilities", () => {
 
 describe("session isolation", () => {
   it("keeps plan state separated between sessions", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionA = makeSessionCtx(sessionId("session-a"));
     const sessionB = makeSessionCtx(sessionId("session-b"));
     await mw.onSessionStart?.(sessionA);
@@ -651,7 +753,7 @@ describe("session isolation", () => {
   });
 
   it("clears session state on onSessionEnd", async () => {
-    const mw = createPlanMiddleware();
+    const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);

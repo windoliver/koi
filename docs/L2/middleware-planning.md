@@ -48,30 +48,46 @@ writing a new full plan.
 ```typescript
 import { createPlanMiddleware } from "@koi/middleware-planning";
 
-const mw = createPlanMiddleware({
+const plan = createPlanMiddleware({
   priority: 450, // optional, default 450
-  onPlanUpdate: (plan) => persistPlan(plan), // optional observability
+  onPlanUpdate: async (plan) => persistPlan(plan), // optional, sync or async
+});
+
+await createKoi({
+  middleware: [..., plan.middleware],
+  providers:  [..., ...plan.providers],
 });
 ```
+
+`createPlanMiddleware` returns a `MiddlewareBundle`. The `middleware` half
+wires the `write_plan` interception behavior; the `providers` half
+attaches the `write_plan` Tool to the agent's component graph so the
+query-engine's advertised-tool snapshot recognizes the call as
+declared. **Both halves must be wired** — registering only the
+middleware would cause every real `write_plan` call to be rejected as
+an undeclared tool and fail the turn.
 
 ### PlanConfig
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `priority` | `number` | `450` | Middleware priority. Lower runs earlier. |
-| `onPlanUpdate` | `(plan) => void` | — | Commit hook. See "commit-with-rollback" below. |
+| `onPlanUpdate` | `(plan) => void \| Promise<void>` | — | Commit hook. See "commit-with-rollback" below. |
 
 #### `onPlanUpdate` semantics (commit-with-rollback)
 
-The hook is fired after the new plan is staged but before the tool
-response is returned. It is safe to use for durable persistence.
+The hook is fired after the new plan is staged in memory but before the
+tool response is returned. It may be sync or async — the middleware
+awaits the returned value before finalizing the commit. Safe for
+durable persistence.
 
-- If the hook **returns** normally, the plan commit is finalized and
-  `write_plan` returns success with the plan summary.
-- If the hook **throws**, the middleware rolls the in-memory plan back
-  to its prior state and returns a tool error (`{ error, planError: true }`)
-  so the caller can retry. The in-memory plan never advances past what
-  any configured persistence layer has durably accepted.
+- If the hook **returns (resolves)** normally, the plan commit is
+  finalized and `write_plan` returns success with the plan summary.
+- If the hook **throws (rejects)**, the middleware rolls the in-memory
+  plan back to its prior state and returns a tool error
+  (`{ error, planError: true }`) so the caller can retry. The in-memory
+  plan never advances past what any configured persistence layer has
+  durably accepted.
 
 ### PlanItem
 

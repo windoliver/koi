@@ -15,6 +15,7 @@ import type {
   InboundMessage,
   JsonObject,
   KoiMiddleware,
+  MiddlewareBundle,
   ModelRequest,
   SessionId,
   ToolRequest,
@@ -24,6 +25,7 @@ import type {
 import { KoiRuntimeError } from "@koi/errors";
 import { validatePlanConfig } from "./config.js";
 import { PLAN_SYSTEM_PROMPT, WRITE_PLAN_DESCRIPTOR, WRITE_PLAN_TOOL_NAME } from "./plan-tool.js";
+import { createPlanToolProvider } from "./plan-tool-provider.js";
 import type { PlanConfig, PlanItem, PlanStatus } from "./types.js";
 
 const DEFAULT_PRIORITY = 450;
@@ -149,14 +151,14 @@ function errorResponse(message: string): ToolResponse {
   return { output: { error: message }, metadata: { planError: true } };
 }
 
-function handleWritePlan(
+async function handleWritePlan(
   sessions: Map<SessionId, PlanSessionState>,
   sessionId: SessionId,
   turnIdForQuota: TurnId,
   turnIndex: number,
   request: ToolRequest,
   onPlanUpdate: PlanConfig["onPlanUpdate"],
-): ToolResponse {
+): Promise<ToolResponse> {
   const state = sessions.get(sessionId);
   if (state === undefined) {
     return errorResponse("No active session for plan middleware");
@@ -181,11 +183,12 @@ function handleWritePlan(
     return errorResponse("plan already updated by a newer turn; write rejected as stale");
   }
 
-  // Commit-with-rollback: the callback may be doing durable persistence
-  // (the docs advertise `persistPlan(plan)` as a valid use). If it
-  // throws, we MUST NOT leave the in-memory plan advanced past the
-  // persisted state — a restart/handoff would otherwise roll the plan
-  // back silently. Roll back before surfacing the failure.
+  // Commit-with-rollback: the hook may be doing durable persistence
+  // (the docs advertise `persistPlan(plan)` as a valid use), and may
+  // return a Promise for async I/O. We stage in memory, await the
+  // hook, and on any sync throw OR promise rejection we restore the
+  // prior state before returning an error. This keeps in-memory and
+  // durable state from diverging on I/O failure.
   const prior = state.currentPlan;
   const priorTurnIndex = state.lastUpdateTurnIndex;
   sessions.set(sessionId, {
@@ -196,7 +199,7 @@ function handleWritePlan(
 
   if (onPlanUpdate !== undefined) {
     try {
-      onPlanUpdate(parsed);
+      await onPlanUpdate(parsed);
     } catch (err) {
       sessions.set(sessionId, {
         currentPlan: prior,
@@ -265,11 +268,30 @@ function buildMiddleware(
 
 export { MAX_CONTENT_LENGTH, MAX_PLAN_ITEMS };
 
-export function createPlanMiddleware(config?: PlanConfig): KoiMiddleware {
+/**
+ * Build the planning middleware together with its required tool provider.
+ *
+ * The write_plan tool MUST be registered via the returned provider so the
+ * query-engine's advertised-tool snapshot recognizes the call as declared.
+ * Registering only the middleware (without the provider) causes the model
+ * to see the tool but the runtime to reject the call as undeclared.
+ *
+ * Consumers wire both into `createKoi`:
+ *
+ * ```ts
+ * const plan = createPlanMiddleware();
+ * await createKoi({
+ *   middleware: [..., plan.middleware],
+ *   providers:  [..., ...plan.providers],
+ * });
+ * ```
+ */
+export function createPlanMiddleware(config?: PlanConfig): MiddlewareBundle {
   const validated = validatePlanConfig(config);
   if (!validated.ok) {
     throw KoiRuntimeError.from(validated.error.code, validated.error.message);
   }
   const priority = validated.value.priority ?? DEFAULT_PRIORITY;
-  return buildMiddleware(new Map(), validated.value.onPlanUpdate, priority);
+  const middleware = buildMiddleware(new Map(), validated.value.onPlanUpdate, priority);
+  return { middleware, providers: [createPlanToolProvider()] };
 }

@@ -583,15 +583,19 @@ describe("Golden: @koi/middleware-planning", () => {
       description: "bypass",
     });
 
-    // @koi/middleware-planning
+    // @koi/middleware-planning — bundle includes MW + write_plan provider
+    // so the tool is advertised in the query-engine snapshot.
     const planUpdates: number[] = [];
-    const planMw = createPlanMiddleware({
-      onPlanUpdate: (plan) => planUpdates.push(plan.length),
+    const planBundle = createPlanMiddleware({
+      onPlanUpdate: (plan) => {
+        planUpdates.push(plan.length);
+      },
     });
 
-    // Verify the middleware self-describes correctly.
-    expect(planMw.name).toBe("plan");
-    expect(planMw.priority).toBe(450);
+    expect(planBundle.middleware.name).toBe("plan");
+    expect(planBundle.middleware.priority).toBe(450);
+    expect(planBundle.providers).toHaveLength(1);
+    expect(planBundle.providers[0]?.name).toBe("plan-tool");
 
     // Inner spy captures the streamed ModelRequest so we can confirm the
     // plan MW injected the write_plan tool descriptor upstream of the
@@ -612,7 +616,7 @@ describe("Golden: @koi/middleware-planning", () => {
     const runtime = await createKoi({
       manifest: { name: "planning-test", version: "0.1.0", model: { name: MODEL } },
       adapter,
-      middleware: [eventTrace, planMw, streamSpy, permHandle].map((mw) =>
+      middleware: [eventTrace, planBundle.middleware, streamSpy, permHandle].map((mw) =>
         wrapMiddlewareWithTrace(mw, { store, docId, clock }),
       ),
       providers: [
@@ -621,6 +625,7 @@ describe("Golden: @koi/middleware-planning", () => {
           toolName: "add_numbers",
           createTool: () => addTool,
         }),
+        ...planBundle.providers,
         createBuiltinSearchProvider({ cwd: process.cwd() }),
       ],
       loopDetection: false,
