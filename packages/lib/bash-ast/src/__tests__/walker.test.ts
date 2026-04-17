@@ -268,4 +268,73 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("positional");
   });
+
+  test("command_substitution routes to scope-trackable", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $(date)");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
+  test("expansion ${X:-def} routes to parameter-expansion", async () => {
+    await initializeBashAst();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash parameter expansion
+    const result = analyzeBashCommand("echo ${X:-def}");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("parameter-expansion");
+  });
+
+  test("process_substitution routes to process-substitution", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("cat <(echo hi)");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("process-substitution");
+  });
+
+  test("arithmetic_expansion routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $(( 1 + 2 ))");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("brace_expression routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo {a,b}");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("ansi_c_string routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $'a\\nb'");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("translated_string routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    // Note: tree-sitter-bash only emits `translated_string` when `$"..."`
+    // is the command name (argv[0]) or a variable_assignment value; in a
+    // plain argument position it splits into separate `$` + `string` nodes.
+    const result = analyzeBashCommand('$"msg"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("concatenation routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo foo"$VAR"bar');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
 });

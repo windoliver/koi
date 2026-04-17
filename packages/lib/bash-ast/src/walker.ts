@@ -302,7 +302,7 @@ function walkArgNode(node: Node):
       return tooComplex(
         "adjacent-token concatenation is not supported",
         "concatenation",
-        "unknown",
+        "unsupported-syntax",
       );
     case "simple_expansion": {
       const POSITIONAL_PREFIXES = [
@@ -329,38 +329,50 @@ function walkArgNode(node: Node):
       );
     }
     case "expansion":
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
-      return tooComplex("parameter expansion (${VAR}) is not supported", "expansion", "unknown");
+      return tooComplex(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
+        "parameter expansion (${VAR}) is not supported",
+        "expansion",
+        "parameter-expansion",
+      );
     case "command_substitution":
       return tooComplex(
         "command substitution $( ) is not supported",
         "command_substitution",
-        "unknown",
+        "scope-trackable",
       );
     case "process_substitution":
       return tooComplex(
         "process substitution <( ) is not supported",
         "process_substitution",
-        "unknown",
+        "process-substitution",
       );
     case "arithmetic_expansion":
       return tooComplex(
         "arithmetic expansion $(( )) is not supported",
         "arithmetic_expansion",
-        "unknown",
+        "unsupported-syntax",
       );
     case "brace_expression":
-      return tooComplex("brace expansion {a,b} is not supported", "brace_expression", "unknown");
+      return tooComplex(
+        "brace expansion {a,b} is not supported",
+        "brace_expression",
+        "unsupported-syntax",
+      );
     case "ansi_c_string":
       // $'\xNN' — ANSI-C escapes. Static but easy to use for obfuscation;
       // treat as too-complex so the regex prefilter catches the hex pattern.
-      return tooComplex("ANSI-C string $'...' is not supported", "ansi_c_string", "unknown");
+      return tooComplex(
+        "ANSI-C string $'...' is not supported",
+        "ansi_c_string",
+        "unsupported-syntax",
+      );
     case "translated_string":
       // $"..." — locale-translated strings. Not supported.
       return tooComplex(
         'translated string $"..." is not supported',
         "translated_string",
-        "unknown",
+        "unsupported-syntax",
       );
     default:
       return tooComplex(`unsupported argument node: ${node.type}`, node.type, "unknown");
