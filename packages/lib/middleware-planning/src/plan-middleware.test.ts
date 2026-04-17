@@ -1114,30 +1114,29 @@ describe("write_plan injection dedup", () => {
     expect(plan).toHaveLength(0);
   });
 
-  it("rejects write_plan execution when the most recent model call had it filtered out", async () => {
-    // Reviewer R24: prompt suppression alone is insufficient —
-    // a programmatic caller (or a model that saw the tool on a
-    // prior turn) could still emit the tool request even after
-    // permissions filtered write_plan out of the current turn.
-    // wrapToolCall must reject in that case.
+  it("rejects write_plan on the same turn where the model call had it filtered out", async () => {
+    // Reviewer R25: authorization must be PER-TURN, not session-
+    // scoped. Record the filtered observation for turn N, then try
+    // to execute write_plan on the same turn N — must reject.
     const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
+    const turn = makeTurnCtx(sessionCtx, 0);
 
-    // First observe filtered visibility (lastSeenAdvertised → false).
+    // Record filtered visibility for this turn.
     await mw.wrapModelCall?.(
-      makeTurnCtx(sessionCtx, 0),
+      turn,
       {
         messages: [makeRequest("hi").messages[0] as InboundMessage],
-        tools: [], // permissions stripped everything
+        tools: [],
         model: "test-model",
       },
       async () => makeResponse("ok"),
     );
 
-    // Now attempt to execute write_plan anyway.
+    // Try to execute on the same turn.
     const response = await mw.wrapToolCall?.(
-      makeTurnCtx(sessionCtx, 1),
+      turn,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
         input: planInput([{ content: "unauthorized", status: "pending" }]),
@@ -1146,6 +1145,52 @@ describe("write_plan injection dedup", () => {
     );
     expect((response?.output as Record<string, unknown>).error).toContain("not authorized");
     expect(response?.metadata?.blockedByHook).toBe(true);
+  });
+
+  it("does not let a concurrent turn's visibility leak into a filtered turn's authorization", async () => {
+    // Reviewer R25: two overlapping turns on one session. Turn A
+    // sees write_plan; Turn B has it filtered out. A write_plan
+    // attempt on turn B MUST fail even though turn A's observation
+    // is "advertised".
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const turnA = makeTurnCtx(sessionCtx, 0);
+    const turnB = makeTurnCtx(sessionCtx, 1);
+
+    // Turn A: write_plan advertised → visibility[A] = true.
+    await mw.wrapModelCall?.(
+      turnA,
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        tools: [{ name: WRITE_PLAN_TOOL_NAME, description: "", inputSchema: { type: "object" } }],
+        model: "test-model",
+      },
+      async () => makeResponse("ok"),
+    );
+
+    // Turn B: filtered → visibility[B] = false.
+    await mw.wrapModelCall?.(
+      turnB,
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        tools: [],
+        model: "test-model",
+      },
+      async () => makeResponse("ok"),
+    );
+
+    // write_plan on turn B must still reject, even though turn A
+    // observed the tool advertised just now.
+    const response = await mw.wrapToolCall?.(
+      turnB,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "unauthorized", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((response?.output as Record<string, unknown>).error).toContain("not authorized");
   });
 
   it("suppresses the planning system prompt + state replay when write_plan is filtered out", async () => {

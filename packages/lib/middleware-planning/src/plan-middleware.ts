@@ -107,20 +107,19 @@ interface PlanSessionState {
    */
   readonly teardown: AbortController;
   /**
-   * Per-session visibility observation. Updated on every wrapModelCall/
-   * wrapModelStream based on whether write_plan appears in the
-   * filtered request.tools. wrapToolCall's authorization gate reads
-   * `lastSeenAdvertised`:
-   *   - `true` → authorize (tool was visible in most recent model call)
-   *   - `false` → deny (tool was filtered out; prompt-only suppression
-   *     is insufficient and execution must also be rejected)
-   *   - `undefined` → not yet observed; authorize conservatively so
-   *     sessions that invoke write_plan before any wrapModelCall has
-   *     fired still work. In production this path is unreachable
-   *     because the model can only request a tool it saw in a prior
-   *     model request, which sets the flag.
+   * Per-turn visibility observations. Tool filtering is request-scoped
+   * (the permissions middleware decides per-request), so authorization
+   * MUST be keyed by turnId, not session. Under overlapping turns on
+   * the same session, a turn where write_plan was filtered out must
+   * not be authorized by a concurrent turn's visibility record.
+   *
+   * Map semantics:
+   *   - present && true  → turn observed write_plan advertised
+   *   - present && false → turn observed write_plan filtered out
+   *   - absent           → never observed for this turn; permissive
+   *     so test harnesses that bypass wrapModelCall still work
    */
-  readonly visibility: { lastSeenAdvertised: boolean | undefined };
+  readonly perTurnVisibility: Map<TurnId, boolean>;
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -509,7 +508,7 @@ function buildMiddleware(
         pending: { current: Promise.resolve() },
         closing: { value: false },
         teardown: new AbortController(),
-        visibility: { lastSeenAdvertised: undefined },
+        perTurnVisibility: new Map(),
       });
     },
     async onSessionEnd(ctx) {
@@ -538,7 +537,9 @@ function buildMiddleware(
     },
     describeCapabilities: (ctx) => capabilityFor(sessions.get(ctx.session.sessionId)),
     async onAfterTurn(ctx) {
-      sessions.get(ctx.session.sessionId)?.perTurnWriteCounts.delete(ctx.turnId);
+      const st = sessions.get(ctx.session.sessionId);
+      st?.perTurnWriteCounts.delete(ctx.turnId);
+      st?.perTurnVisibility.delete(ctx.turnId);
     },
     async wrapModelCall(ctx, request, next) {
       // Read the committed plan TWICE: once before the await to inject
@@ -548,10 +549,18 @@ function buildMiddleware(
       // `next()`; publishing the pre-await snapshot would regress any
       // UI/trace that trusts `metadata.currentPlan` as the latest.
       const before = sessions.get(ctx.session.sessionId);
-      // Track the latest visibility observation for describeCapabilities.
+      // Track per-turn visibility so wrapToolCall can authorize
+      // write_plan calls against THIS turn's advertised tool set.
+      // Session-scoped flags would race under overlapping turns.
       if (before !== undefined) {
-        before.visibility.lastSeenAdvertised =
+        const visible =
           request.tools === undefined || request.tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+        before.perTurnVisibility.set(ctx.turnId, visible);
+        while (before.perTurnVisibility.size > MAX_TURN_QUOTA_ENTRIES) {
+          const oldest = before.perTurnVisibility.keys().next().value;
+          if (oldest === undefined || oldest === ctx.turnId) break;
+          before.perTurnVisibility.delete(oldest);
+        }
       }
       const response = await next(
         enrichRequest(request, before?.currentPlan ?? [], injectPlanState),
@@ -577,26 +586,30 @@ function buildMiddleware(
     async *wrapModelStream(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
       if (state !== undefined) {
-        state.visibility.lastSeenAdvertised =
+        const visible =
           request.tools === undefined || request.tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+        state.perTurnVisibility.set(ctx.turnId, visible);
+        while (state.perTurnVisibility.size > MAX_TURN_QUOTA_ENTRIES) {
+          const oldest = state.perTurnVisibility.keys().next().value;
+          if (oldest === undefined || oldest === ctx.turnId) break;
+          state.perTurnVisibility.delete(oldest);
+        }
       }
       yield* next(enrichRequest(request, state?.currentPlan ?? [], injectPlanState));
     },
     async wrapToolCall(ctx, request, next) {
       if (request.toolId !== WRITE_PLAN_TOOL_NAME) return next(request);
-      // Authorization gate: tool visibility from the most recent
-      // wrapModelCall determines whether write_plan is authorized for
-      // this session. Explicit `false` means upstream filtering hid
-      // the tool, so the execution path must also reject (prompt
-      // suppression alone is insufficient — a programmatic caller or
-      // stale model turn could still emit the request). `undefined`
-      // (never observed) is treated as permissive so test harnesses
-      // that bypass wrapModelCall still work.
+      // Authorization gate: check the visibility observation FOR
+      // THIS TURN, not session-wide. Under overlapping turns on the
+      // same session, a turn where write_plan was filtered out must
+      // be rejected even when a concurrent turn most recently saw
+      // the tool advertised. Absent entries (no observation yet for
+      // this turn) are permissive so unit tests that bypass
+      // wrapModelCall still work.
       const authState = sessions.get(ctx.session.sessionId);
-      if (authState !== undefined && authState.visibility.lastSeenAdvertised === false) {
-        return errorResponse(
-          "write_plan is not authorized for this session; tool was not advertised",
-        );
+      const turnVisible = authState?.perTurnVisibility.get(ctx.turnId);
+      if (turnVisible === false) {
+        return errorResponse("write_plan is not authorized for this turn; tool was not advertised");
       }
       return handleWritePlan(
         sessions,
