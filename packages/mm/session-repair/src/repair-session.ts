@@ -117,7 +117,12 @@ function repairInterrupts(
     ) {
       const synthetic: InboundMessage = {
         senderId: "assistant",
-        content: [{ kind: "text", text: "[Turn interrupted before the model produced a reply.]" }],
+        content: [
+          {
+            kind: "text",
+            text: "[Previous turn was interrupted before any reply. Respond to the next user message as a fresh request — do not search for hidden context. If the new message is a follow-up referring back to the interrupted turn, you may acknowledge and resume; otherwise just answer it directly.]",
+          },
+        ],
         metadata: { synthetic: true, repairPhase: "interrupt" },
         timestamp: curr.timestamp,
         ...(curr.threadId !== undefined ? { threadId: curr.threadId } : {}),
