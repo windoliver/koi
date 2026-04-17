@@ -15,7 +15,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:10.378Z",
+      "timestamp": "2026-04-17T04:54:03.635Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -33,7 +33,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:10.379Z",
+      "timestamp": "2026-04-17T04:54:03.636Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -50,7 +50,7 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-17T01:22:10.387Z",
+      "timestamp": "2026-04-17T04:54:03.644Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Use the add_numbers tool to compute 6 + 4. After you see the result, list the tasks currently on the board.",
       "observation": {
@@ -64,7 +64,7 @@
         "prompt_tokens": 195,
         "completion_tokens": 7
       },
-      "duration_ms": 723,
+      "duration_ms": 738,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -84,14 +84,14 @@
     {
       "step_id": 3,
       "source": "tool",
-      "timestamp": "2026-04-17T01:22:11.118Z",
+      "timestamp": "2026-04-17T04:54:04.390Z",
       "tool_calls": [
         {
           "tool_call_id": "call_add_numbers_3",
           "function_name": "add_numbers",
           "arguments": {
-            "b": 4,
-            "a": 6
+            "a": 6,
+            "b": 4
           }
         }
       ],
@@ -109,9 +109,9 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.119Z",
+      "timestamp": "2026-04-17T04:54:04.391Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 726.678834,
+      "duration_ms": 742.690083,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -120,7 +120,7 @@
         "phase": "intercept",
         "priority": 50,
         "nextCalled": true,
-        "_original_timestamp": 1776388931117,
+        "_original_timestamp": 1776401644389,
         "__koi": {
           "identifier": "middleware:exfiltration-guard"
         }
@@ -129,9 +129,9 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.125Z",
+      "timestamp": "2026-04-17T04:54:04.397Z",
       "model_name": "middleware:exfiltration-guard",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -139,7 +139,7 @@
           }
         ]
       },
-      "duration_ms": 2.342084000000341,
+      "duration_ms": 2.0612910000002103,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -164,9 +164,9 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.126Z",
+      "timestamp": "2026-04-17T04:54:04.398Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 725.4109579999999,
+      "duration_ms": 741.406333,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -183,7 +183,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776388931116,
+        "_original_timestamp": 1776401644388,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -192,9 +192,9 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.127Z",
+      "timestamp": "2026-04-17T04:54:04.399Z",
       "model_name": "middleware:permissions",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -202,7 +202,7 @@
           }
         ]
       },
-      "duration_ms": 1.9657500000002983,
+      "duration_ms": 1.7629159999999047,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -215,13 +215,13 @@
           {
             "phase": "execute",
             "toolId": "add_numbers",
-            "toolInput": "{\"b\":4,\"a\":6}",
+            "toolInput": "{\"a\":6,\"b\":4}",
             "action": "allow",
             "durationMs": 0,
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1776388931124,
+        "_original_timestamp": 1776401644396,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -230,9 +230,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.128Z",
+      "timestamp": "2026-04-17T04:54:04.400Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 724.3773339999998,
+      "duration_ms": 740.341542,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -241,7 +241,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776388931115,
+        "_original_timestamp": 1776401644387,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -250,9 +250,9 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.129Z",
+      "timestamp": "2026-04-17T04:54:04.401Z",
       "model_name": "middleware:goal",
-      "duration_ms": 724.2808750000002,
+      "duration_ms": 740.2438329999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -276,7 +276,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] Use the add_numbers tool to compute 6 + 4. After you see the result, list the tasks currently on the board."
           }
         ],
-        "_original_timestamp": 1776388931114,
+        "_original_timestamp": 1776401644386,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -285,9 +285,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.130Z",
+      "timestamp": "2026-04-17T04:54:04.402Z",
       "model_name": "middleware:goal",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -295,7 +295,7 @@
           }
         ]
       },
-      "duration_ms": 1.1982090000001335,
+      "duration_ms": 1.1440419999998994,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -304,7 +304,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1776388931123,
+        "_original_timestamp": 1776401644395,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -313,9 +313,9 @@
     {
       "step_id": 11,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.131Z",
+      "timestamp": "2026-04-17T04:54:04.403Z",
       "model_name": "middleware:task-anchor",
-      "duration_ms": 724.0619159999999,
+      "duration_ms": 740.0271250000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -324,7 +324,7 @@
         "phase": "resolve",
         "priority": 345,
         "nextCalled": true,
-        "_original_timestamp": 1776388931113,
+        "_original_timestamp": 1776401644385,
         "__koi": {
           "identifier": "middleware:task-anchor"
         }
@@ -333,9 +333,9 @@
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.132Z",
+      "timestamp": "2026-04-17T04:54:04.404Z",
       "model_name": "middleware:task-anchor",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -343,7 +343,7 @@
           }
         ]
       },
-      "duration_ms": 1.1842090000000098,
+      "duration_ms": 1.1343749999998636,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -352,7 +352,7 @@
         "phase": "resolve",
         "priority": 345,
         "nextCalled": true,
-        "_original_timestamp": 1776388931122,
+        "_original_timestamp": 1776401644394,
         "__koi": {
           "identifier": "middleware:task-anchor"
         }
@@ -361,9 +361,9 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.133Z",
+      "timestamp": "2026-04-17T04:54:04.405Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 723.9399159999998,
+      "duration_ms": 739.836041,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -379,7 +379,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776388931112,
+        "_original_timestamp": 1776401644384,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -388,9 +388,9 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.134Z",
+      "timestamp": "2026-04-17T04:54:04.406Z",
       "model_name": "middleware:hooks",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -398,7 +398,7 @@
           }
         ]
       },
-      "duration_ms": 1.1429590000002463,
+      "duration_ms": 1.0603340000000117,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -415,7 +415,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776388931121,
+        "_original_timestamp": 1776401644393,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -424,9 +424,9 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.135Z",
+      "timestamp": "2026-04-17T04:54:04.407Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 723.6651670000001,
+      "duration_ms": 739.564875,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -435,7 +435,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776388931111,
+        "_original_timestamp": 1776401644383,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -444,9 +444,9 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.136Z",
+      "timestamp": "2026-04-17T04:54:04.408Z",
       "model_name": "middleware:semantic-retry",
-      "message": "add_numbers({\"b\":4,\"a\":6})",
+      "message": "add_numbers({\"a\":6,\"b\":4})",
       "observation": {
         "results": [
           {
@@ -454,7 +454,7 @@
           }
         ]
       },
-      "duration_ms": 0.8017919999997503,
+      "duration_ms": 0.7057090000000699,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -463,7 +463,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776388931120,
+        "_original_timestamp": 1776401644392,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -472,21 +472,21 @@
     {
       "step_id": 17,
       "source": "agent",
-      "timestamp": "2026-04-17T01:22:11.137Z",
+      "timestamp": "2026-04-17T04:54:04.409Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "{\"result\":10}",
       "observation": {
         "results": [
           {
-            "content": "The result of 6 + 4 is 10.\n\nThe tasks currently on the board are:\n- Audit authentication code\n- Migrate session model\n"
+            "content": "The result of 6 + 4 is 10. The tasks currently on the board are: Audit authentication code and Migrate session model.\n"
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 226,
-        "completion_tokens": 33
+        "prompt_tokens": 254,
+        "completion_tokens": 30
       },
-      "duration_ms": 559,
+      "duration_ms": 577,
       "outcome": "success",
       "extra": {
         "totalMessages": 4,
@@ -501,15 +501,15 @@
         "responseModel": "google/gemini-2.0-flash-001",
         "promptPrefixFingerprint": "54284ae712ed83ad763b2d01624ace12ca671fbd55bad7099fd6b41f513ef584",
         "turnIndex": 1,
-        "_original_timestamp": 1776388931127
+        "_original_timestamp": 1776401644399
       }
     },
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.693Z",
+      "timestamp": "2026-04-17T04:54:04.983Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 570.246083,
+      "duration_ms": 588.1220000000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -526,9 +526,9 @@
     {
       "step_id": 19,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.694Z",
+      "timestamp": "2026-04-17T04:54:04.984Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 570.2323329999999,
+      "duration_ms": 588.1124160000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -545,7 +545,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776388931692,
+        "_original_timestamp": 1776401644982,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -554,9 +554,9 @@
     {
       "step_id": 20,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.695Z",
+      "timestamp": "2026-04-17T04:54:04.985Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 570.152333,
+      "duration_ms": 588.0486250000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -565,7 +565,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776388931691,
+        "_original_timestamp": 1776401644981,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -574,9 +574,9 @@
     {
       "step_id": 21,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.696Z",
+      "timestamp": "2026-04-17T04:54:04.986Z",
       "model_name": "middleware:goal",
-      "duration_ms": 570.141083,
+      "duration_ms": 588.0392920000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -585,7 +585,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1776388931690,
+        "_original_timestamp": 1776401644980,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -594,9 +594,9 @@
     {
       "step_id": 22,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.697Z",
+      "timestamp": "2026-04-17T04:54:04.987Z",
       "model_name": "middleware:task-anchor",
-      "duration_ms": 570.1314579999998,
+      "duration_ms": 588.0332499999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -605,7 +605,7 @@
         "phase": "resolve",
         "priority": 345,
         "nextCalled": true,
-        "_original_timestamp": 1776388931689,
+        "_original_timestamp": 1776401644979,
         "__koi": {
           "identifier": "middleware:task-anchor"
         }
@@ -614,9 +614,9 @@
     {
       "step_id": 23,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.698Z",
+      "timestamp": "2026-04-17T04:54:04.988Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 569.9876250000002,
+      "duration_ms": 587.8499169999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -632,7 +632,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776388931688,
+        "_original_timestamp": 1776401644978,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -641,9 +641,9 @@
     {
       "step_id": 24,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.699Z",
+      "timestamp": "2026-04-17T04:54:04.989Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 569.9374170000001,
+      "duration_ms": 587.8112920000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -652,7 +652,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776388931687,
+        "_original_timestamp": 1776401644977,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -661,7 +661,7 @@
     {
       "step_id": 25,
       "source": "system",
-      "timestamp": "2026-04-17T01:22:11.700Z",
+      "timestamp": "2026-04-17T04:54:04.990Z",
       "model_name": "middleware:hooks",
       "observation": {
         "results": [
@@ -670,7 +670,7 @@
           }
         ]
       },
-      "duration_ms": 0.4050830000001042,
+      "duration_ms": 0.05108300000028976,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -679,7 +679,7 @@
         "phase": "resolve",
         "priority": 400,
         "stopGateResult": "continue",
-        "_original_timestamp": 1776388931695,
+        "_original_timestamp": 1776401644985,
         "__koi": {
           "identifier": "middleware:hooks"
         }

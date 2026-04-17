@@ -7,8 +7,14 @@ export type { TaskAnchorConfig, TaskBoardAccessor, TaskToolPredicate } from "./c
 export {
   DEFAULT_HEADER,
   DEFAULT_IDLE_TURN_THRESHOLD,
+  defaultIsMutatingTaskTool,
   defaultIsTaskTool,
   validateTaskAnchorConfig,
 } from "./config.js";
-export { buildEmptyBoardNudge, buildTaskReminder, formatTaskList } from "./reminder-format.js";
+export {
+  buildEmptyBoardNudge,
+  buildTaskReminder,
+  formatTaskList,
+  sanitizeTaskText,
+} from "./reminder-format.js";
 export { createTaskAnchorMiddleware } from "./task-anchor.js";

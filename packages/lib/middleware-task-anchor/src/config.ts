@@ -18,8 +18,21 @@ export interface TaskAnchorConfig {
   readonly getBoard: TaskBoardAccessor;
   /** K — idle turns before re-anchor fires. Default: 3. */
   readonly idleTurnThreshold?: number | undefined;
-  /** Predicate for task-activity tool ids. Default: `toolId.startsWith("task_")`. */
+  /**
+   * Predicate for tool ids that count as "task board activity" — resets the
+   * idle counter when successfully invoked. Includes both reads and writes
+   * because either indicates the model is engaged with the board.
+   * Default: `toolId.startsWith("task_")`.
+   */
   readonly isTaskTool?: TaskToolPredicate | undefined;
+  /**
+   * Predicate for tool ids that *mutate* the board. Must be a subset of
+   * `isTaskTool`. Only mutations drive the stop-gate rollback path that
+   * suppresses the empty-board nudge on the retry turn (since read-only
+   * calls cannot have completed or created work).
+   * Default: a curated list matching `@koi/task-tools` mutating tools.
+   */
+  readonly isMutatingTaskTool?: TaskToolPredicate | undefined;
   /** When true, nudge model to call `task_create` once the board is empty AND tool activity was seen. Default: true. */
   readonly nudgeOnEmptyBoard?: boolean | undefined;
   /** Header text inside the system-reminder block. Default: `"Current tasks"`. */
@@ -31,6 +44,31 @@ export const DEFAULT_HEADER = "Current tasks";
 
 export function defaultIsTaskTool(toolId: string): boolean {
   return toolId.startsWith("task_");
+}
+
+/**
+ * Best-effort snapshot of `@koi/task-tools` mutating tool names. Kept in sync
+ * manually because L2 packages cannot import each other — a direct import would
+ * be a layer violation. If you add a new mutating task tool upstream, update
+ * this list or — recommended — pass an explicit `isMutatingTaskTool` predicate
+ * derived from the actual registered tool descriptors.
+ *
+ * An unknown mutating tool that is NOT in this set will still match `isTaskTool`
+ * (and reset idle), but won't latch the stop-gate empty-board suppression —
+ * which means a blocked retry could push a generic `task_create` nudge even
+ * though real work was created. Explicit predicates are the safe default for
+ * any caller wiring a custom task-tool surface.
+ */
+const MUTATING_TASK_TOOLS: ReadonlySet<string> = new Set([
+  "task_create",
+  "task_update",
+  "task_delegate",
+  "task_stop",
+]);
+
+/** Matches `@koi/task-tools` mutating tools only. `task_get`/`task_list`/`task_output` are excluded. */
+export function defaultIsMutatingTaskTool(toolId: string): boolean {
+  return MUTATING_TASK_TOOLS.has(toolId);
 }
 
 export function validateTaskAnchorConfig(input: unknown): Result<TaskAnchorConfig, KoiError> {
@@ -84,6 +122,25 @@ export function validateTaskAnchorConfig(input: unknown): Result<TaskAnchorConfi
       },
     };
   }
+
+  if (c.isMutatingTaskTool !== undefined && typeof c.isMutatingTaskTool !== "function") {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "TaskAnchorConfig.isMutatingTaskTool must be a function",
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+
+  // Custom `isTaskTool` without `isMutatingTaskTool` is accepted for backward
+  // compatibility. The default mutating predicate still applies in that case
+  // and will NOT recognize custom mutating tool names — so callers extending
+  // the task-tool surface with mutating tools SHOULD pass `isMutatingTaskTool`
+  // explicitly. Not doing so only means stop-gate rollback protection is
+  // best-effort for custom tools; task-anchor still functions otherwise.
+  // (See docs/L2/middleware-task-anchor.md for wiring guidance.)
 
   if (c.nudgeOnEmptyBoard !== undefined && typeof c.nudgeOnEmptyBoard !== "boolean") {
     return {

@@ -69,9 +69,17 @@ const taskAnchor = createTaskAnchorMiddleware({
 |-------|------|---------|-------------|
 | `getBoard` | `(sid) => TaskBoard \| undefined \| Promise<…>` | — | Live board accessor |
 | `idleTurnThreshold` | `number` | `3` | K — idle turns before re-anchor fires |
-| `isTaskTool` | `(toolId) => boolean` | starts with `"task_"` | What resets the idle counter |
+| `isTaskTool` | `(toolId) => boolean` | starts with `"task_"` | Any task-related tool (reads + writes). Resets the idle counter |
+| `isMutatingTaskTool` | `(toolId) => boolean` | `task_{create,update,delegate,stop}` | Mutating subset. Drives stop-gate rollback that suppresses the empty-board nudge on retries after successful board mutation |
 | `nudgeOnEmptyBoard` | `boolean` | `true` | Suggest `task_create` when board is empty + tool activity seen |
 | `header` | `string` | `"Current tasks"` | Header text inside the reminder |
+
+**Hardening note for `isMutatingTaskTool`:** the default list is a manually
+maintained snapshot of `@koi/task-tools` — a layer boundary forbids importing
+upstream descriptors directly. If you register a custom task-tool surface, pass
+`isMutatingTaskTool: (id) => myMutatingSet.has(id)` explicitly so the rollback
+path recognizes your mutating tools and doesn't suppress the empty-board nudge
+spuriously.
 
 ### Injected message shape
 

@@ -696,12 +696,12 @@ describe("Golden: @koi/middleware-task-anchor", () => {
       blockedBy: () => undefined,
       size: () => 1,
     });
-    expect(body).toBe("- [ ] Write unit tests");
+    expect(body).toBe("- [ ] t1 — Write unit tests");
 
     const reminder = buildTaskReminder("Current tasks", body);
     expect(reminder.startsWith("<system-reminder>")).toBe(true);
-    expect(reminder).toContain("Current tasks:");
-    expect(reminder).toContain("- [ ] Write unit tests");
+    expect(reminder).toContain("Current tasks");
+    expect(reminder).toContain("t1 — Write unit tests");
 
     const nudge = buildEmptyBoardNudge();
     expect(nudge).toContain("task_create");
