@@ -678,6 +678,18 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.commands[0]?.argv).toEqual(["echo", "$ foo"]);
   });
 
+  // Fresh-loop round-2 regression: quoted `$((...))` must route to
+  // unsupported-syntax, matching the standalone case. Previously the
+  // string-child dispatch's default arm sent it to `unknown`,
+  // falsely flagging valid bash as grammar drift.
+  test('arithmetic_expansion inside quotes routes to unsupported-syntax (echo "$((1+2))")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "$((1+2))"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
   test('real expansion inside quotes still routes to scope-trackable (echo "$foo")', async () => {
     await initializeBashAst();
     // Belt-and-suspenders: a real variable reference must still be

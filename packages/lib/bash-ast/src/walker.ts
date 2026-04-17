@@ -433,6 +433,12 @@ function walkArgNode(node: Node):
             // `shell-escape` to preserve the fail-closed invariant.
             childCategory = "shell-escape";
             break;
+          case "arithmetic_expansion":
+            // `"$((1+2))"` inside a double-quoted string. Same handling
+            // as the standalone `arithmetic_expansion` case in walkArgNode
+            // below — known but not implemented.
+            childCategory = "unsupported-syntax";
+            break;
           default:
             childCategory = "unknown";
             break;
