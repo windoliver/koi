@@ -61,10 +61,10 @@ export function validateGovernanceConfig(
   }
   if (c.alertThresholds !== undefined) {
     for (const t of c.alertThresholds) {
-      if (typeof t !== "number" || !Number.isFinite(t) || t < 0 || t > 1) {
+      if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t > 1) {
         return {
           ok: false,
-          error: err("alertThresholds must be numbers in [0, 1]", { threshold: t }),
+          error: err("alertThresholds must be numbers in (0, 1]", { threshold: t }),
         };
       }
     }
