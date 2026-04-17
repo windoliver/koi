@@ -1009,6 +1009,43 @@ describe("write_plan injection dedup", () => {
     expect(count).toBe(1);
   });
 
+  it("does not leak plan contents via metadata.currentPlan when write_plan is filtered out", async () => {
+    // Reviewer R20: even when upstream filtering hides write_plan
+    // from the session, the middleware was still exposing the
+    // committed plan items through response.metadata.currentPlan.
+    // Downstream trace/UI sinks trust that field, so restricted
+    // children could leak plan contents that way.
+    const mw = make({ injectPlanState: true });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Commit a plan while write_plan IS advertised (no tools filter
+    // passed, so enrichRequest synthesizes the tool).
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "sensitive note", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Now make a model call where upstream filtering removed
+    // write_plan. metadata.currentPlan must NOT carry the stored
+    // plan content out through response metadata.
+    const response = await mw.wrapModelCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        tools: [],
+        model: "test-model",
+      },
+      async () => makeResponse("ok"),
+    );
+    const plan = response?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(0);
+  });
+
   it("suppresses the planning system prompt + state replay when write_plan is filtered out", async () => {
     // Reviewer R15: if upstream filtering removed write_plan from
     // request.tools, the model must NOT be instructed to call it.

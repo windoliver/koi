@@ -493,10 +493,21 @@ function buildMiddleware(
       const response = await next(
         enrichRequest(request, before?.currentPlan ?? [], injectPlanState),
       );
+      // Gate metadata.currentPlan emission on the same visibility
+      // check as prompt injection: if upstream filtering removed
+      // write_plan from the advertised tool list, the session was
+      // not authorized to produce plan content in this turn, and
+      // leaking plan items into response metadata would bypass
+      // that visibility boundary for downstream trace/UI sinks.
+      // We still emit an empty array so consumers that unconditionally
+      // read the field see a predictable shape.
+      const writePlanVisible =
+        request.tools === undefined || request.tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
       const after = sessions.get(ctx.session.sessionId);
+      const emittedPlan: readonly PlanItem[] = writePlanVisible ? (after?.currentPlan ?? []) : [];
       const metadata: JsonObject = {
         ...response.metadata,
-        currentPlan: (after?.currentPlan ?? []) as unknown as JsonObject,
+        currentPlan: emittedPlan as unknown as JsonObject,
       };
       return { ...response, metadata };
     },
