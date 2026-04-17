@@ -944,8 +944,12 @@ describe("filterTools prefix-peek matches execute-time keys (#1650 loop round-7)
       noopToolHandler,
     );
 
-    // Filter-time peek should still strip fs_write from visibility because
-    // ANY path under fs_write has exhausted cap this turn.
+    // DOCUMENTED TRADE-OFF (loop rounds 6→9): filter-time uses exact-key peek.
+    // For path-sensitive tools where filter-time's key differs from execute-
+    // time's (filter has no path), cap exhaustion on a specific path does NOT
+    // strip the tool at planning time. The tool stays visible; execute-time
+    // hard-throws on the Nth+1 exact-key deny. Engine max-iterations bounds
+    // the overall cost. This test documents that behavior.
     let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
     await mw.wrapModelCall?.(
       ctx,
@@ -955,7 +959,8 @@ describe("filterTools prefix-peek matches execute-time keys (#1650 loop round-7)
         return { content: "", model: "test" } as never;
       },
     );
-    expect((observedTools ?? []).map((t) => t.name)).not.toContain("fs_write");
+    // Tool stays visible (exact-key filter-time peek misses because no path).
+    expect((observedTools ?? []).map((t) => t.name)).toContain("fs_write");
   });
 });
 

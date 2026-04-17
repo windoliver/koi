@@ -1016,6 +1016,12 @@ export function createPermissionsMiddleware(
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
+    // #1650 loop round-9: capture the FINAL enforced decision per tool so
+    // reportDecision's filteredTools summary reflects what was actually
+    // emitted (hardened reason for soft→hard conversions), not the
+    // pre-conversion soft decision.
+    const enforcedDecisionByIndex = new Map<number, PermissionDecision>();
+
     const filtered = tools.filter((tool, i) => {
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
@@ -1028,6 +1034,7 @@ export function createPermissionsMiddleware(
       // soft decision that was about to be hard-converted. Keeps audit sinks
       // consistent with what was actually enforced.
       const emit = (finalDecision: PermissionDecision): void => {
+        enforcedDecisionByIndex.set(i, finalDecision);
         if (auditSink !== undefined) {
           auditFilterDecision(ctx, tool.name, finalDecision, auditSink);
         }
@@ -1048,17 +1055,25 @@ export function createPermissionsMiddleware(
               disposition: "hard",
               reason: `${decision.reason} (unkeyable context — failing closed)`,
             };
-            sessionTracker.record({
-              toolId: tool.name,
-              reason: decision.reason,
-              timestamp: clock(),
-              principal: ctx.session.agentId,
-              turnIndex: ctx.turnIndex,
-              source: denialSource(decision),
-              queryKey: undefined,
-              softness: "hard",
-              origin: "soft-conversion",
-            });
+            // #1650 loop round-9: dedup unkeyable filter-time records per
+            // (session, turn, toolId). Repeated planning passes in the same
+            // turn with unkeyable context would otherwise churn the 1024-entry
+            // DenialTracker FIFO and evict native hard-deny history.
+            const unkeyableRecordKey = `${sid}\0${ctx.turnIndex}\0unkeyable\0${tool.name}`;
+            if (!filterCapRecordedKeys.has(unkeyableRecordKey)) {
+              filterCapRecordedKeys.add(unkeyableRecordKey);
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: undefined,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+            }
             emit(hardened);
             return false;
           }
@@ -1067,23 +1082,18 @@ export function createPermissionsMiddleware(
           // tool so the model doesn't burn iterations on guaranteed-hard
           // failures.
           //
-          // Round-6/7 key-mismatch fix: execute-time builds queries with
-          // `resolvedPath` (fs tools), but filter-time does not know the
-          // future path. Use a prefix derived from the ACTUAL query's
-          // principal+action+resource so the prefix format matches the stored
-          // counter keys (which are `${turnIndex}\0${decisionCacheKey(q)}`
-          // and decisionCacheKey starts with `${q.principal}\0${q.action}\0${q.resource}\0`).
-          // This catches any path/context variant that has already exhausted
-          // cap. Intentionally over-strips for different intents on the same
-          // tool — accepting it as a safety bias.
+          // Trade-off (loop rounds 6→9): previously used a tool-identity
+          // prefix peek to catch path-sensitive cap exhaustion, but that
+          // over-stripped tools for unrelated intents (different paths) whose
+          // future call would have been allowed. Reverting to exact-key peek
+          // — path-sensitive cap exhaustion is invisible at planning time;
+          // execute-time still enforces (hard-throws on the Nth+1 exact-key
+          // deny) and the outer engine max-iterations bounds the worst case.
+          // For tools WITHOUT a resolveToolPath callback, filter-time keys
+          // match execute-time exactly and this check strips correctly.
           const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
           const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
-          const toolPrefix = `${ctx.turnIndex}\0${query.principal}\0${query.action}\0${query.resource}\0`;
-          const counter = getTurnSoftDenyCounter(sid);
-          const currentCount = Math.max(
-            counter.peek(turnScopedKey),
-            counter.peekMaxByPrefix(toolPrefix),
-          );
+          const currentCount = getTurnSoftDenyCounter(sid).peek(turnScopedKey);
           if (currentCount >= cap) {
             // #1650 loop round-3: record DenialTracker ONCE per (session, turn,
             // cacheKey). Repeated planning passes in the same turn would
@@ -1152,8 +1162,16 @@ export function createPermissionsMiddleware(
 
     const filteredCount = tools.length - filtered.length;
     if (filteredCount > 0) {
+      // #1650 loop round-9: prefer the enforced (possibly hardened) decision
+      // captured during emit over the raw backend decision, so filteredTools
+      // reflects the final reason ("unkeyable context — failing closed" /
+      // "soft-deny retry cap N exceeded this turn") rather than the original
+      // soft-policy reason.
       const filteredDetails = tools
-        .map((t, i) => ({ name: t.name, decision: decisions[i] }))
+        .map((t, i) => {
+          const decision = enforcedDecisionByIndex.get(i) ?? decisions[i];
+          return { name: t.name, decision };
+        })
         .filter(
           (
             d,
