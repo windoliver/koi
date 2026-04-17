@@ -873,7 +873,7 @@ describe("onSessionEnd draining", () => {
       ),
     ]);
     expect((secondResp?.output as Record<string, unknown>).error).toBeDefined();
-    expect(secondResp?.metadata?.blockedByHook).toBe(true);
+    expect(secondResp?.metadata?.planError).toBe(true);
 
     // Head is still pending — never released. Don't await it.
     void head;
@@ -1009,7 +1009,7 @@ describe("onSessionEnd draining", () => {
       async () => ({ output: "x" }),
     );
     expect((second?.output as Record<string, unknown>).error).toContain("shutting down");
-    expect(second?.metadata?.blockedByHook).toBe(true);
+    expect(second?.metadata?.planError).toBe(true);
 
     await Promise.all([first, endPromise]);
   });
@@ -1040,7 +1040,9 @@ describe("aggregate plan budget", () => {
     );
     expect((response?.output as Record<string, unknown>).error).toContain("rendered size");
     expect(response?.metadata?.planError).toBe(true);
-    expect(response?.metadata?.blockedByHook).toBe(true);
+    // Validation failures are recoverable — semantic-retry should be
+    // allowed to retry with corrected input. Do NOT set blockedByHook.
+    expect(response?.metadata?.blockedByHook).toBeUndefined();
   });
 });
 
@@ -1049,7 +1051,11 @@ describe("aggregate plan budget", () => {
 // ---------------------------------------------------------------------------
 
 describe("failure telemetry flag", () => {
-  it("marks plan errors with blockedByHook so shared observers classify them as failures", async () => {
+  it("marks plan errors with planError but reserves blockedByHook for auth denials only", async () => {
+    // Reviewer R29: blockedByHook is semantic-retry's signal for
+    // permanent policy denial. Overloading it for every plan error
+    // (quota, validation, teardown race) would disable retry on
+    // transient/recoverable failures.
     const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
@@ -1072,9 +1078,11 @@ describe("failure telemetry flag", () => {
       async () => ({ output: "x" }),
     );
 
-    expect(second?.metadata?.blockedByHook).toBe(true);
+    // once-per-turn quota violation is NOT a policy denial; retryable
+    // in principle (on a later turn).
     expect(second?.metadata?.planError).toBe(true);
     expect(second?.metadata?.reason).toContain("once per response");
+    expect(second?.metadata?.blockedByHook).toBeUndefined();
   });
 });
 

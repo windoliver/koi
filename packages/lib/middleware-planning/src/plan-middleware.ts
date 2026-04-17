@@ -258,14 +258,27 @@ function capabilityFor(_state: PlanSessionState | undefined): CapabilityFragment
 }
 
 /**
- * Build a ToolResponse for a plan failure. We set `blockedByHook: true`
- * alongside `planError: true` so downstream observers (event-trace,
- * middleware-report) that already classify `blockedByHook` responses
- * as failures also count plan failures — otherwise stale writes,
- * persistence rejections, and cap violations would silently show up
- * as successful tool calls in telemetry.
+ * Plan-internal failure — transient / recoverable / application-level.
+ * Does NOT set `blockedByHook` because semantic-retry treats that flag
+ * as a permanent policy denial and skips retry bookkeeping. Plan
+ * failures of this kind (persistence rejections, teardown races,
+ * stale turn writes, validation errors, once-per-turn violations)
+ * SHOULD be retryable by upstream middleware; reserve `blockedByHook`
+ * for authorization denials below.
  */
 function errorResponse(message: string): ToolResponse {
+  return {
+    output: { error: message },
+    metadata: { planError: true, reason: message },
+  };
+}
+
+/**
+ * Authorization / policy denial — not a transient failure. Sets
+ * `blockedByHook: true` so semantic-retry backs off instead of
+ * retrying a call that policy will keep rejecting.
+ */
+function authErrorResponse(message: string): ToolResponse {
   return {
     output: { error: message },
     metadata: { planError: true, blockedByHook: true, reason: message },
@@ -419,10 +432,15 @@ async function handleWritePlan(
     // retries that fall into the post-hook race window.
     const commitToken = `${String(sessionId)}:${String(acceptedEpoch)}:${String(turnIndex)}`;
 
+    // Post-hook failures are transient/race-condition errors, not
+    // policy denials. Do not set blockedByHook — semantic-retry
+    // should be allowed to retry a plan write whose persistence
+    // hook hit a teardown race. The commitToken lets the host
+    // de-duplicate on the backend side.
     function commitErrorResponse(message: string): ToolResponse {
       return {
         output: { error: message },
-        metadata: { planError: true, blockedByHook: true, reason: message, commitToken },
+        metadata: { planError: true, reason: message, commitToken },
       };
     }
 
@@ -609,7 +627,9 @@ function buildMiddleware(
       const authState = sessions.get(ctx.session.sessionId);
       const turnVisible = authState?.perTurnVisibility.get(ctx.turnId);
       if (turnVisible === false) {
-        return errorResponse("write_plan is not authorized for this turn; tool was not advertised");
+        return authErrorResponse(
+          "write_plan is not authorized for this turn; tool was not advertised",
+        );
       }
       return handleWritePlan(
         sessions,

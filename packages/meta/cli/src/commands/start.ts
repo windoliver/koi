@@ -387,6 +387,10 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
       // Spawn, no bash_background, no coordinator workflows).
       backgroundSubprocesses: false,
       ...(manifestInstructions !== undefined ? { systemPrompt: manifestInstructions } : {}),
+      // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning
+      // (write_plan tool). Default off pending durable persistence
+      // (#1842). See runtime-factory.ts for the trade-off.
+      ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
       // When the user passes an explicit manifest.stacks, we honor
       // it verbatim (including re-enabling `spawn` if they really
       // want coordinator flows under `koi start`). When they don't,
