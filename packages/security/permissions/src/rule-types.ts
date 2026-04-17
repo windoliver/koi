@@ -23,6 +23,14 @@ export interface PermissionRule {
   readonly context?: Readonly<Record<string, string>> | undefined;
   /** Human-readable reason surfaced in deny/ask decisions. */
   readonly reason?: string | undefined;
+  /**
+   * Opt into soft-deny behavior for this rule. Only meaningful when
+   * `effect === "deny"`. If omitted, denial is hard (terminates the tool
+   * call) regardless of the rule's source tier. `"soft"` returns a synthetic
+   * tool response so the agent loop can continue — the rule author explicitly
+   * accepts that the model may probe the boundary and adapt.
+   */
+  readonly on_deny?: "hard" | "soft" | undefined;
 }
 
 /**

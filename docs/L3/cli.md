@@ -626,3 +626,13 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 - **Fix TUI orphan text crash (#1768)** — `StatusBar.tsx` and `CommandPalette.tsx` ternaries returning `null` inside `<box>` replaced with `<Show>` to prevent OpenTUI orphan text node errors under Solid's server runtime.
 - **Retain spawn history in /agents view (#1792)** — `/agents` now shows both active and recently-finished spawns. Session-scoped ring buffer (`finishedSpawns`, cap 20) populated from `set_spawn_terminal` and `agent_status_changed(terminated)`. Finished agents display name, description, duration, and ✓/✗ outcome badge.
 - **Plugin TUI observability (#1728)** — Plugin loading now observable from TUI. `KoiRuntimeHandle` exposes `pluginSummary` (`PluginDiscoverySummary` from `plugin-activation.ts`). After runtime ready, `tui-command.ts` dispatches `set_plugin_summary` to TUI store and surfaces plugin status as inline notice. `/plugins` nav command opens `PluginsView` showing loaded plugins and errors. Plugin activation refactored to atomic commit: per-plugin hooks/MCP/skills buffered locally and merged only if all steps succeed. Startup log sanitizes plugin-derived strings (ANSI/control character stripping). Middleware-declaring plugins load other components but middleware skip is surfaced as a warning in `/plugins` errors.
+
+## #1650 — Soft permission deny (opt-in)
+
+The TUI and `koi start` integrate the updated `@koi/permissions` + `@koi/middleware-permissions` packages with the new soft-deny opt-in:
+
+- Rule authors may set `on_deny: "soft"` on any `effect: "deny"` rule to make that denial recoverable (agent sees a synthetic `ToolResponse` instead of a thrown `PERMISSION` error, then adapts).
+- The default `tuiAllowRules` set in `runtime-factory.ts` does NOT enable soft-deny for any rule, so default CLI / TUI behavior is unchanged from pre-#1650.
+- See `docs/L2/permissions.md` for the rule schema, `docs/L2/middleware-permissions.md` for execute-time semantics (per-turn cap, filter-time visibility, `SoftDenyLog` / `DenialRecord` additions), and `docs/L3/runtime.md` for the runtime-layer summary.
+
+The rule loader (`rule-loader.ts`) preserves `on_deny` across every source tier, so operators who add soft rules via config files will see them honored by the CLI.
