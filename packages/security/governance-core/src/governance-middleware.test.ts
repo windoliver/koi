@@ -321,3 +321,145 @@ describe("wrapToolCall", () => {
     expect(evaluate).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("fail-closed", () => {
+  test("evaluator throws → PERMISSION with cause preserved", async () => {
+    const boom = new Error("boom");
+    const cfg = baseCfg({
+      backend: {
+        evaluator: {
+          evaluate: () => {
+            throw boom;
+          },
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).cause).toBe(boom);
+  });
+
+  test("controller.checkAll throws → PERMISSION with cause", async () => {
+    const boom = new Error("sensor broken");
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        checkAll: () => {
+          throw boom;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).cause).toBe(boom);
+  });
+
+  test("compliance.recordCompliance rejects → gate still denies, no loop", async () => {
+    const cfg = baseCfg({
+      backend: {
+        evaluator: {
+          evaluate: () => ({
+            ok: false,
+            violations: [{ rule: "r", severity: "critical", message: "m" }],
+          }),
+        },
+        compliance: { recordCompliance: () => Promise.reject(new Error("audit down")) },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+  });
+});
+
+describe("issue checklist", () => {
+  test("spend limit enforced via cost_usd setpoint", async () => {
+    let cumulative = 0;
+    const baseCtrl = baseCfg().controller;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCtrl,
+        checkAll: () =>
+          cumulative > 1
+            ? { ok: false, variable: "cost_usd", reason: "over $1", retryable: false }
+            : { ok: true },
+        record: (ev) => {
+          if (ev.kind === "token_usage" && ev.costUsd !== undefined) cumulative += ev.costUsd;
+        },
+      },
+      cost: createFlatRateCostCalculator({ m: { inputUsdPer1M: 0.5, outputUsdPer1M: 0.5 } }),
+    });
+    const mw = createGovernanceMiddleware(cfg);
+
+    // Call 1: records 0.5 + 0.5 = 1.0 (cumulative 1.0, still at threshold)
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
+    // Call 2: pre-gate passes (cumulative=1.0 not > 1), records another 1.0 → cumulative 2.0
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
+    // Call 3: pre-gate sees cumulative=2.0 > 1 → RATE_LIMIT
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("RATE_LIMIT");
+  });
+
+  test("action budget decremented via turn_count setpoint", async () => {
+    let turns = 0;
+    const baseCtrl = baseCfg().controller;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCtrl,
+        checkAll: () =>
+          turns >= 3
+            ? { ok: false, variable: "turn_count", reason: "3 turns max", retryable: false }
+            : { ok: true },
+        record: (ev) => {
+          if (ev.kind === "token_usage") turns += 1;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    for (let i = 0; i < 3; i++) {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    }
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("RATE_LIMIT");
+    expect((threw as Error & { context?: { variable?: string } }).context?.variable).toBe(
+      "turn_count",
+    );
+  });
+
+  test("policy evaluation deterministic", async () => {
+    const evaluate = mock(() => ({ ok: true }) as GovernanceVerdict);
+    const cfg = baseCfg({ backend: { evaluator: { evaluate } } });
+    const mw = createGovernanceMiddleware(cfg);
+    for (let i = 0; i < 100; i++) {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    }
+    expect(evaluate).toHaveBeenCalledTimes(100);
+  });
+});
