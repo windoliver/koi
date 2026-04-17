@@ -386,4 +386,76 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("positional");
   });
+
+  test("if_statement routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("if true; then echo hi; fi");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("for_statement routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("for i in *; do echo $i; done");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("while_statement routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("while true; do break; done");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("case_statement routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("case x in a) echo a ;; esac");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("function_definition routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("f() { echo hi; }");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("subshell routes to control-flow", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("(echo hi)");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("control-flow");
+  });
+
+  test("top-level variable_assignment routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("FOO=bar && echo done");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("top-level variable_assignments (plural) routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("A=1 B=2 && true");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("declaration_command routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("export X=1; echo hi");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
 });

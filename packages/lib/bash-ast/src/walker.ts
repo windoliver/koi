@@ -93,6 +93,26 @@ function walkStatement(node: Node): WalkResult {
       return walkCommand(node, []);
     case "comment":
       return { kind: "ok", commands: [] };
+    case "for_statement":
+    case "while_statement":
+    case "if_statement":
+    case "case_statement":
+    case "function_definition":
+    case "subshell":
+      return tooComplex(
+        `control-flow statement (${node.type}) is not supported`,
+        node.type,
+        "control-flow",
+      );
+    case "variable_assignment":
+    case "variable_assignments":
+      return tooComplex(`top-level ${node.type} is not supported`, node.type, "unsupported-syntax");
+    case "declaration_command":
+      return tooComplex(
+        "declaration_command (export/declare/local/readonly/typeset) is not supported",
+        node.type,
+        "unsupported-syntax",
+      );
     default:
       return tooComplex(`unsupported statement: ${node.type}`, node.type, "unknown");
   }
