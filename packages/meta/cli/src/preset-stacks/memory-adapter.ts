@@ -11,7 +11,8 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
-import type { MemoryStore } from "@koi/memory-fs";
+import { sanitizeFrontmatterValue } from "@koi/core/memory";
+import type { MemoryStore, UpsertResult } from "@koi/memory-fs";
 import type { DeleteResult, MemoryToolBackend, StoreWithDedupResult } from "@koi/memory-tools";
 
 // ---------------------------------------------------------------------------
@@ -32,26 +33,26 @@ function fail<T>(e: unknown): Result<T, KoiError> {
 }
 
 // ---------------------------------------------------------------------------
-// In-process serializer for storeWithDedup
+// UpsertResult → StoreWithDedupResult mapping
 // ---------------------------------------------------------------------------
 
-/**
- * Serialize storeWithDedup calls so the name+type check and the
- * subsequent write/update happen without interleaving. Without this,
- * two concurrent calls with the same (name,type) could both observe
- * "no match" and both create a record.
- *
- * This is an in-process mutex only — cross-process atomicity relies on
- * MemoryStore's directory file lock. A proper fix would add an atomic
- * upsert API to MemoryStore itself.
- */
-// let justified: serialization chain for storeWithDedup
-let dedupChain: Promise<unknown> = Promise.resolve();
-
-function withDedupLock<T>(fn: () => Promise<T>): Promise<T> {
-  const next = dedupChain.then(fn, fn);
-  dedupChain = next.catch((): undefined => undefined);
-  return next;
+function mapUpsertResult(result: UpsertResult): StoreWithDedupResult {
+  switch (result.action) {
+    case "created":
+      return { action: "created", record: result.record };
+    case "updated":
+      return { action: "updated", record: result.record };
+    case "conflict":
+      return { action: "conflict", existing: result.existing };
+    case "skipped":
+      return { action: "conflict", existing: result.record };
+    case "corrupted":
+      return {
+        action: "corrupted",
+        canonicalName: result.canonicalName,
+        conflictingIds: result.conflictingIds,
+      };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -71,54 +72,72 @@ function withDedupLock<T>(fn: () => Promise<T>): Promise<T> {
 export function createMemoryToolBackendFromStore(store: MemoryStore): MemoryToolBackend {
   return {
     store: async (input) => {
+      // Route through the atomic upsert path so this entry point cannot
+      // silently create logical duplicates via filename-collision
+      // handling (e.g. user_role-2.md). Conflicts and corruption are
+      // surfaced as errors — callers that want overwrite semantics
+      // must go through storeWithDedup() with force: true.
       try {
-        const result = await store.write(input);
-        return ok(result.record);
+        const result = await store.upsert(input, { force: false });
+        switch (result.action) {
+          case "created":
+          case "updated":
+            return ok(result.record);
+          case "skipped":
+            // Content-similar record exists. Return the dedup winner —
+            // caller's write was semantically redundant, not a failure.
+            return ok(result.record);
+          case "conflict": {
+            // Replay-safe: if the existing record has the EXACT same
+            // description and content as the caller's input, treat it
+            // as a successful idempotent replay (e.g. the caller's
+            // previous write committed but the response was lost).
+            // Only surface a loud error when the payloads actually
+            // differ — in that case the caller picked a colliding
+            // name and must retry with a fresh one.
+            //
+            // The persisted description has already been canonicalized
+            // by the serializer (sanitizeFrontmatterValue strips
+            // newlines, control chars, and collapses whitespace). The
+            // caller's input may still be raw, so canonicalize it
+            // before comparing — otherwise a retry with
+            // `description: "foo\nbar"` after a first write persisted
+            // as `"foo bar"` would spuriously look like a conflict.
+            // Content is persisted verbatim, so compare it raw.
+            const replay =
+              result.existing.description === sanitizeFrontmatterValue(input.description) &&
+              result.existing.content === input.content;
+            if (replay) return ok(result.existing);
+            return fail(
+              new Error(
+                `Memory record already exists with name=${JSON.stringify(result.existing.name)}, ` +
+                  `type=${result.existing.type} (id=${result.existing.id}). ` +
+                  `Use storeWithDedup({ force: true }) to overwrite or pick a different name.`,
+              ),
+            );
+          }
+          case "corrupted":
+            return fail(
+              new Error(
+                `Memory store corruption: ${String(result.conflictingIds.length)} records share ` +
+                  `name=${JSON.stringify(result.canonicalName)}. ` +
+                  `Conflicting ids: ${result.conflictingIds.join(", ")}.`,
+              ),
+            );
+        }
       } catch (e: unknown) {
         return fail(e);
       }
     },
 
-    storeWithDedup: (input, opts) =>
-      withDedupLock(async () => {
-        try {
-          // Name+type dedup: find existing record with same name and type.
-          // Serialized via withDedupLock to prevent TOCTOU races.
-          const all = await store.list();
-          const match = all.find((r) => r.name === input.name && r.type === input.type);
-
-          if (match !== undefined) {
-            if (!opts.force) {
-              const result: StoreWithDedupResult = { action: "conflict", existing: match };
-              return ok(result);
-            }
-            // Force update: overwrite the existing record's content
-            const updated = await store.update(match.id, {
-              description: input.description,
-              content: input.content,
-            });
-            const result: StoreWithDedupResult = { action: "updated", record: updated.record };
-            return ok(result);
-          }
-
-          // No name+type match → write new (MemoryStore may still Jaccard-dedup
-          // on content similarity; that's transparent to the caller).
-          const writeResult = await store.write(input);
-          if (writeResult.action === "skipped") {
-            // Jaccard content dedup fired. Surface as conflict with the
-            // existing record so the tool can report it.
-            const result: StoreWithDedupResult = {
-              action: "conflict",
-              existing: writeResult.record,
-            };
-            return ok(result);
-          }
-          const result: StoreWithDedupResult = { action: "created", record: writeResult.record };
-          return ok(result);
-        } catch (e: unknown) {
-          return fail(e);
-        }
-      }),
+    storeWithDedup: async (input, opts) => {
+      try {
+        const result = await store.upsert(input, { force: opts.force });
+        return ok(mapUpsertResult(result));
+      } catch (e: unknown) {
+        return fail(e);
+      }
+    },
 
     recall: async (_query, _options) => {
       try {

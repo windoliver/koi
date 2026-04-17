@@ -25,7 +25,17 @@ import type {
 export type StoreWithDedupResult =
   | { readonly action: "created"; readonly record: MemoryRecord }
   | { readonly action: "updated"; readonly record: MemoryRecord }
-  | { readonly action: "conflict"; readonly existing: MemoryRecord };
+  | { readonly action: "conflict"; readonly existing: MemoryRecord }
+  /**
+   * Two or more stored records share the same canonical `(name, type)`.
+   * Surfaced verbatim from the backend so the tool layer can render
+   * actionable remediation (the stale record ids) to the caller.
+   */
+  | {
+      readonly action: "corrupted";
+      readonly canonicalName: string;
+      readonly conflictingIds: readonly string[];
+    };
 
 /** Options for storeWithDedup. */
 export interface StoreWithDedupOptions {

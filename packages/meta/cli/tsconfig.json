@@ -17,6 +17,7 @@
     { "path": "../../lib/query-engine" },
     { "path": "../../mm/middleware-extraction" },
     { "path": "../../lib/middleware-otel" },
+    { "path": "../../lib/middleware-task-anchor" },
     { "path": "../runtime" },
     { "path": "../../security/middleware-audit" },
     { "path": "../../security/audit-sink-ndjson" },

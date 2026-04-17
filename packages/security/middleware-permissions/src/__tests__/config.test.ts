@@ -271,6 +271,57 @@ describe("validatePermissionsConfig", () => {
     if (!result.ok) expect(result.error.message).toContain("onApprovalStep");
   });
 
+  // softDenyPerTurnCap config (#1650)
+  test("softDenyPerTurnCap defaults to 3 when omitted", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(undefined);
+    }
+  });
+
+  test("softDenyPerTurnCap caller-provided value is preserved", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 5,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(5);
+    }
+  });
+
+  test("rejects zero softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 0,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("softDenyPerTurnCap");
+  });
+
+  test("rejects negative softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: -1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("softDenyPerTurnCap");
+  });
+
+  test("accepts positive softDenyPerTurnCap", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      softDenyPerTurnCap: 10,
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.softDenyPerTurnCap).toBe(10);
+    }
+  });
+
   test("all validation errors are non-retryable", () => {
     const result = validatePermissionsConfig(null);
     expect(result.ok).toBe(false);

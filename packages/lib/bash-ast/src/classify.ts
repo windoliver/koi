@@ -38,7 +38,7 @@ import {
   validatePath,
 } from "@koi/bash-security";
 import { analyzeBashCommand } from "./analyze.js";
-import type { AstAnalysis } from "./types.js";
+import type { AstAnalysis, TooComplexCategory } from "./types.js";
 
 /** Options accepted by `classifyBashCommand`. Mirrors @koi/bash-security's
  * signature so existing call sites do not need to reshape opts. */
@@ -62,6 +62,14 @@ export type ElicitCallback = (params: {
   readonly command: string;
   readonly reason: string;
   readonly nodeType?: string;
+  /**
+   * Stable high-level category for the rejection. Approval UIs should
+   * switch on this enum rather than `nodeType` — the category is the
+   * versioned API, `nodeType` is raw parser output that can change
+   * across `tree-sitter-bash` upgrades. See `TooComplexCategory` in
+   * `./types.ts`.
+   */
+  readonly primaryCategory: TooComplexCategory;
   readonly signal?: AbortSignal;
 }) => Promise<boolean>;
 
@@ -71,20 +79,20 @@ export interface ClassifyOptionsWithElicit extends ClassifyOptions {
   readonly signal?: AbortSignal;
 }
 
-/**
- * NodeTypes that indicate shell-escape ambiguity — the raw source text
- * does not match bash's effective semantics, so neither the AST walker
- * nor the raw-text regex classifier can safely analyse the command.
- * These always hard-deny, regardless of whether an elicit callback is
- * provided. Asking the user about `cat \/etc\/passwd` is not safe because
- * the user probably can't tell the displayed form apart from the benign
- * `cat /etc/passwd`.
- */
-const HARD_DENY_NODE_TYPES: ReadonlySet<string> = new Set([
-  "word",
-  "string_content",
-  "prefilter:line-continuation",
-]);
+// Hard-deny for `too-complex` outcomes is keyed off
+// `analysis.primaryCategory === "shell-escape"`. The raw source text for
+// any shell-escape input (backslash in a `word` or `string_content`, or a
+// line-continuation prefilter hit) does not match bash's effective
+// semantics, so neither the regex classifier nor an interactive user
+// prompt can safely analyse it. Asking the user about `cat \/etc\/passwd`
+// is unsafe because the displayed form is indistinguishable from the
+// benign `cat /etc/passwd`.
+//
+// Using the stable `primaryCategory` enum instead of raw `nodeType`
+// strings keeps the security gate correct across future
+// tree-sitter-bash grammar upgrades — if a future grammar renames the
+// offending nodeType, the walker still maps it to `shell-escape` and
+// the hard-deny path continues to fire.
 
 /**
  * Shared prefilter pipeline — allowlist gate, byte-level injection reject,
@@ -136,7 +144,7 @@ function runPrefilter(command: string, opts?: ClassifyOptions): ClassificationRe
 /**
  * Shared post-analysis disposition — handles the `simple`, hard-deny
  * `too-complex`, and `parse-unavailable` branches. For `too-complex`
- * cases whose nodeType is NOT in `HARD_DENY_NODE_TYPES`, returns `null`
+ * cases whose `primaryCategory` is NOT `"shell-escape"`, returns `null`
  * so the caller (sync or async) can apply its own fallback: the sync
  * caller falls through to the regex TTP classifier; the async caller
  * invokes the elicit callback.
@@ -152,22 +160,42 @@ function dispose(command: string, analysis: AstAnalysis): ClassificationResult |
       return regexClassifyTtp(command);
     }
     case "too-complex": {
-      // SECURITY: certain `too-complex` reasons indicate bash source whose
-      // raw text does NOT match bash's effective semantics — backslash
-      // escapes in unquoted words, inside double-quoted strings, or as
-      // line continuations. For these, the raw-text regex classifier AND
-      // an interactive user prompt are both unsafe: the displayed command
-      // doesn't match the effective argv, so a user can't meaningfully
-      // approve `cat \/etc\/passwd` vs `cat /etc/passwd`. Hard-deny.
-      if (analysis.nodeType !== undefined && HARD_DENY_NODE_TYPES.has(analysis.nodeType)) {
+      // SECURITY: hard-deny the categories where the raw source
+      // provably cannot be reconciled with bash's effective argv
+      // regardless of grammar version:
+      //
+      //   - `shell-escape`: backslash escapes in unquoted words, in
+      //     `string_content`, or via line-continuation prefilter. The
+      //     displayed command diverges from the executed argv, so a
+      //     user cannot meaningfully approve `cat \/etc\/passwd` vs
+      //     `cat /etc/passwd`.
+      //   - `unknown`: the walker dispatch table does not recognise
+      //     the node type at all. No mental model = no safe approval.
+      //
+      // `parse-error` and `malformed` intentionally stay askable even
+      // though the walker doesn't trust the tree: docs/L2/bash-ast.md
+      // explicitly documents both as reachable from VALID bash under
+      // the vendored tree-sitter-bash grammar (`FOO=bar < in.txt`
+      // emits `root.hasError`; `malformed` sites can fire for grammar-
+      // quirk shapes). Hard-denying them would convert parser drift
+      // into blanket injection blocks on legitimate commands. The
+      // downstream regex TTP classifier and the elicit approval
+      // surface remain defense-in-depth for those categories.
+      if (analysis.primaryCategory === "shell-escape" || analysis.primaryCategory === "unknown") {
         return {
           ok: false,
-          reason: `Bash source uses shell escape sequences that cannot be safely analysed: ${analysis.reason}`,
-          pattern: analysis.nodeType,
+          reason: `Bash AST walker cannot safely analyse this command (${analysis.primaryCategory}): ${analysis.reason}`,
+          pattern: analysis.nodeType ?? analysis.primaryCategory,
           category: "injection",
         };
       }
-      // Caller decides: sync → regex fallback, async → elicit.
+      // Remaining categories (parse-error, malformed, and all the
+      // known-structured askable classes: scope-trackable,
+      // command-substitution, parameter-expansion, positional,
+      // control-flow, heredoc, process-substitution,
+      // unsupported-syntax) reach the regex TTP fallback or the
+      // elicit surface. Caller decides: sync → regex, async →
+      // elicit.
       return null;
     }
     case "parse-unavailable": {
@@ -266,6 +294,7 @@ export async function classifyBashCommandWithElicit(
     approved = await opts.elicit({
       command,
       reason: analysis.reason,
+      primaryCategory: analysis.primaryCategory,
       ...(analysis.nodeType !== undefined ? { nodeType: analysis.nodeType } : {}),
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });

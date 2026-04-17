@@ -51,8 +51,9 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import type { AgentId, ApprovalHandler, ManagedTaskBoard } from "@koi/core";
+import type { AgentId, ApprovalHandler, KoiMiddleware, ManagedTaskBoard } from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
+import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
@@ -398,8 +399,22 @@ export const executionStack: PresetStack = {
           )
         : [];
 
+    // --- @koi/middleware-task-anchor: re-anchor model on live task board ---
+    // Fires after K idle turns with no task-tool activity, re-prepending a
+    // `<system-reminder>` with the current board snapshot so the model
+    // re-sees its own plan after context drift. Wired alongside the task_*
+    // tools (same `taskBoardToolsEnabled` gate): without those tools the
+    // model can't act on the reminder anyway.
+    //
+    // The Proxy `taskBoard` re-binds to `boardRef.current` on every access,
+    // so `snapshot()` always reflects the latest post-reset board.
+    const taskAnchorMiddleware: readonly KoiMiddleware[] =
+      taskBoardToolsEnabled && agentId !== undefined
+        ? [createTaskAnchorMiddleware({ getBoard: () => taskBoard.snapshot() })]
+        : [];
+
     return {
-      middleware: [],
+      middleware: taskAnchorMiddleware,
       providers: [
         ...(bashBackgroundProvider !== undefined ? [bashBackgroundProvider] : []),
         ...taskToolProviders,

@@ -4933,6 +4933,20 @@ type PermissionDecision = {
 } | {
     readonly effect: "deny";
     readonly reason: string;
+    /**
+     * How the middleware should handle this deny.
+     * - \`"hard"\` (default when omitted): terminate the tool call with a
+     *   \`KoiRuntimeError({ code: "PERMISSION" })\`. This is the pre-#1650
+     *   behavior and remains the fail-safe default for any backend that
+     *   does not explicitly opt into soft-deny.
+     * - \`"soft"\`: the middleware returns a synthetic \`ToolResponse\` so the
+     *   agent loop can continue. The model reads the error message and
+     *   adapts. Subject to a per-turn retry cap to bound runaway loops.
+     *
+     * Backends that don't know about this feature omit the field — the
+     * middleware defaults to \`"hard"\`.
+     */
+    readonly disposition?: "hard" | "soft";
 } | {
     readonly effect: "ask";
     readonly reason: string;
@@ -5643,6 +5657,20 @@ interface MemoryIndex {
     readonly entries: readonly MemoryIndexEntry[];
 }
 /**
+ * Sanitizes a frontmatter field value for safe serialization.
+ *
+ * - Replaces newlines (LF, CR, CRLF) with spaces to prevent line injection
+ * - Strips control characters (except tab, which is harmless)
+ * - Collapses resulting whitespace runs
+ * - Trims leading/trailing whitespace
+ *
+ * Exported so that callers which perform their own identity comparisons
+ * (e.g. the atomic \`MemoryStore.upsert\` name+type lookup) can canonicalize
+ * input to its persisted form before comparing against scanned records.
+ * Keep this in sync with \`serializeMemoryFrontmatter\`.
+ */
+declare function sanitizeFrontmatterValue(value: string): string;
+/**
  * Returns true if the value contains characters unsafe for frontmatter fields:
  * newlines or control characters.
  */
@@ -5732,7 +5760,7 @@ declare function formatMemoryIndexEntry(entry: MemoryIndexEntry): string | undef
  */
 declare function parseMemoryIndexEntry(line: string): MemoryIndexEntry | undefined;
 
-export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type MemoryIndex, type MemoryIndexEntry, type MemoryRecord, type MemoryRecordId, type MemoryRecordInput, type MemoryRecordPatch, type MemoryType, type MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput };
+export { ALL_MEMORY_TYPES, MEMORY_INDEX_MAX_LINES, type MemoryFrontmatter, type MemoryIndex, type MemoryIndexEntry, type MemoryRecord, type MemoryRecordId, type MemoryRecordInput, type MemoryRecordPatch, type MemoryType, type MemoryValidationError, formatMemoryIndexEntry, hasFrontmatterUnsafeChars, isMemoryType, memoryRecordId, parseMemoryFrontmatter, parseMemoryIndexEntry, sanitizeFrontmatterValue, serializeMemoryFrontmatter, validateMemoryFilePath, validateMemoryRecordInput };
 "
 `;
 

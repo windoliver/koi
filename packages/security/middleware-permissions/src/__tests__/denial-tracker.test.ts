@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { DenialRecord } from "../denial-tracker.js";
+import type { DenialRecord, DenialSource } from "../denial-tracker.js";
 import { createDenialTracker } from "../denial-tracker.js";
 
 function makeDenial(
@@ -84,5 +84,56 @@ describe("createDenialTracker", () => {
 
     expect(snapshot).toHaveLength(1);
     expect(tracker.getAll()).toHaveLength(2);
+  });
+});
+
+describe("DenialRecord additive fields (#1650)", () => {
+  test("record stores softness and origin if provided", () => {
+    const t = createDenialTracker();
+    t.record({
+      toolId: "bash",
+      reason: "nope",
+      timestamp: 1,
+      principal: "agent:a",
+      turnIndex: 0,
+      source: "policy",
+      softness: "hard",
+      origin: "soft-conversion",
+    });
+    const entries = t.getAll();
+    expect(entries[0]?.softness).toBe("hard");
+    expect(entries[0]?.origin).toBe("soft-conversion");
+  });
+
+  test("record without new fields works (backward compat)", () => {
+    const t = createDenialTracker();
+    t.record({
+      toolId: "bash",
+      reason: "nope",
+      timestamp: 1,
+      principal: "agent:a",
+      turnIndex: 0,
+      source: "policy",
+    });
+    const entries = t.getAll();
+    expect(entries[0]?.softness).toBeUndefined();
+    expect(entries[0]?.origin).toBeUndefined();
+  });
+
+  test("DenialSource exported union still has exactly 4 values (closed)", () => {
+    // Exhaustive switch — will fail to compile if union expands.
+    const check = (s: DenialSource): number => {
+      switch (s) {
+        case "policy":
+          return 1;
+        case "backend-error":
+          return 2;
+        case "approval":
+          return 3;
+        case "escalation":
+          return 4;
+      }
+    };
+    expect(check("policy")).toBe(1);
   });
 });

@@ -16,6 +16,7 @@ const permissionRuleSchema = z.object({
   principal: z.string().min(1).optional(),
   context: z.record(z.string(), z.string().min(1)).optional(),
   reason: z.string().optional(),
+  on_deny: z.enum(["hard", "soft"]).optional(),
 });
 
 const ruleArraySchema = z.array(permissionRuleSchema);
