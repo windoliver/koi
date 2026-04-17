@@ -85,6 +85,7 @@ import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
+import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
@@ -1771,6 +1772,28 @@ const modelRouter = createModelRouter(
 const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
 
 const queries: readonly QueryConfig[] = [
+  // strict-agentic: exercises @koi/middleware-strict-agentic onBeforeStop gate.
+  // Tool call → classifier → action → continue. Proves the middleware is installed
+  // and does not block a normal tool-using turn.
+  {
+    name: "strict-agentic",
+    prompt:
+      "Use the add_numbers tool to compute 4 + 6. After getting the result, " +
+      "respond with just the number.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [createStrictAgenticMiddleware({}).middleware],
+  },
+
   // 1. simple-text: text response, no tools
   {
     name: "simple-text",

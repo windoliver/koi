@@ -10467,3 +10467,48 @@ describe("Golden: @koi/checkpoint + @koi/snapshot-store-sqlite", () => {
     }
   });
 });
+
+describe("Golden: @koi/middleware-strict-agentic", () => {
+  test("blocks filler turn", async () => {
+    const { createStrictAgenticMiddleware } = await import("@koi/middleware-strict-agentic");
+    const { middleware } = createStrictAgenticMiddleware({});
+
+    const turn = {
+      session: { agentId: "a", sessionId: "s1", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof middleware.wrapModelCall>>[0];
+
+    await middleware.wrapModelCall?.(turn, { messages: [] }, async () => ({
+      content: "I will proceed with the task.",
+      model: "test",
+    }));
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("block");
+    if (result?.kind !== "block") return;
+    expect(result.blockedBy).toBe("strict-agentic");
+  });
+
+  test("passes tool-call turn", async () => {
+    const { createStrictAgenticMiddleware } = await import("@koi/middleware-strict-agentic");
+    const { middleware } = createStrictAgenticMiddleware({});
+
+    const turn = {
+      session: { agentId: "a", sessionId: "s2", runId: "r1", metadata: {} },
+      turnIndex: 0,
+      turnId: "t1",
+      messages: [],
+      metadata: {},
+    } as unknown as Parameters<NonNullable<typeof middleware.wrapModelCall>>[0];
+
+    await middleware.wrapModelCall?.(turn, { messages: [] }, async () => ({
+      content: "",
+      model: "test",
+      richContent: [{ kind: "tool_call", id: "c1" as never, name: "x", arguments: {} }],
+    }));
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("continue");
+  });
+});

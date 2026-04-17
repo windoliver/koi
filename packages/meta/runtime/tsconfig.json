@@ -47,6 +47,7 @@
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-semantic-retry" },
+    { "path": "../../lib/middleware-strict-agentic" },
     { "path": "../../lib/outcome-evaluator" },
     { "path": "../../security/middleware-permissions" },
     { "path": "../../lib/bash-ast" },
