@@ -33,29 +33,32 @@ export interface TurnSoftDenyCounter {
   readonly clear: () => void;
 }
 
-const DEFAULT_MAX_ENTRIES = 1024;
+/**
+ * Defensive ceiling: if a single counter instance ever holds more than this
+ * many distinct keys (across all turns in a long-lived session), subsequent
+ * `countAndCap` calls return `"over_cap"` regardless of per-key count.
+ * This is fail-closed behavior: rather than LRU-evict (which would bypass the
+ * cap by dropping older entries), we refuse new retries once the structure is
+ * saturated. Session-end wipes the counter so the ceiling is naturally
+ * bounded by session lifetime.
+ */
+const DEFAULT_MAX_ENTRIES = 10_000;
 
 export function createTurnSoftDenyCounter(
   maxEntries: number = DEFAULT_MAX_ENTRIES,
 ): TurnSoftDenyCounter {
-  // Insertion-ordered Map → JavaScript Map iteration is insertion-ordered,
-  // so deleting-and-reinserting on write yields LRU-on-insertion behavior.
   const counts = new Map<string, number>();
-
-  function evictIfNeeded(): void {
-    if (counts.size <= maxEntries) return;
-    // Drop the oldest entry (insertion order).
-    const oldest = counts.keys().next().value;
-    if (oldest !== undefined) counts.delete(oldest);
-  }
 
   return {
     countAndCap(cacheKey, cap) {
+      // Fail-closed when at the global ceiling and the key is new. An attacker
+      // rotating through >maxEntries distinct keys to reset the cap will hit
+      // "over_cap" regardless of per-key count. Loop round-7 fix.
+      if (counts.size >= maxEntries && !counts.has(cacheKey)) {
+        return "over_cap";
+      }
       const current = (counts.get(cacheKey) ?? 0) + 1;
-      // Reinsert so recently-used keys stay near the head.
-      counts.delete(cacheKey);
       counts.set(cacheKey, current);
-      evictIfNeeded();
       return current > cap ? "over_cap" : "under_cap";
     },
     peek(cacheKey) {

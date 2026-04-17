@@ -1062,16 +1062,18 @@ export function createPermissionsMiddleware(
           // tool so the model doesn't burn iterations on guaranteed-hard
           // failures.
           //
-          // Round-6 key-mismatch fix: execute-time builds queries with
+          // Round-6/7 key-mismatch fix: execute-time builds queries with
           // `resolvedPath` (fs tools), but filter-time does not know the
-          // future path. Use a tool-identity PREFIX peek so any path/variant
-          // that has already exhausted cap causes the tool to be stripped.
-          // This intentionally over-strips for different intents on the same
-          // tool — accepting it as a safety bias; the model can re-emit the
-          // same tool next turn (fresh counter).
+          // future path. Use a prefix derived from the ACTUAL query's
+          // principal+action+resource so the prefix format matches the stored
+          // counter keys (which are `${turnIndex}\0${decisionCacheKey(q)}`
+          // and decisionCacheKey starts with `${q.principal}\0${q.action}\0${q.resource}\0`).
+          // This catches any path/context variant that has already exhausted
+          // cap. Intentionally over-strips for different intents on the same
+          // tool — accepting it as a safety bias.
           const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
           const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
-          const toolPrefix = `${ctx.turnIndex}\0${ctx.session.agentId}\0invoke\0${tool.name}\0`;
+          const toolPrefix = `${ctx.turnIndex}\0${query.principal}\0${query.action}\0${query.resource}\0`;
           const counter = getTurnSoftDenyCounter(sid);
           const currentCount = Math.max(
             counter.peek(turnScopedKey),

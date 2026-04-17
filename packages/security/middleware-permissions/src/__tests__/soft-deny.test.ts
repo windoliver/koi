@@ -910,6 +910,69 @@ describe("filterTools strips tools already at/over soft-deny cap (#1650 loop rou
   });
 });
 
+describe("filterTools prefix-peek matches execute-time keys (#1650 loop round-7)", () => {
+  test("execute-time cap exhaustion on a path-sensitive tool strips the tool at filter time", async () => {
+    // resolveToolPath attaches context.path so execute-time keys differ from
+    // filter-time ones. With a prefix-peek, filter-time still sees the
+    // exhaustion.
+    const backend: PermissionBackend = {
+      check: async (_q: PermissionQuery): Promise<PermissionDecision> => ({
+        effect: "deny",
+        reason: "fs-block",
+        disposition: "soft",
+      }),
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map(() => ({ effect: "deny", reason: "fs-block", disposition: "soft" }) as const),
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      softDenyPerTurnCap: 2,
+      resolveToolPath: (_toolId: string, input: { readonly [k: string]: unknown }) =>
+        typeof input.path === "string" ? (input.path as string) : undefined,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-path-prefix" });
+
+    // Burn cap on path /tmp/a at execute-time.
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "fs_write", input: { path: "/tmp/a" } },
+      noopToolHandler,
+    );
+    await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "fs_write", input: { path: "/tmp/a" } },
+      noopToolHandler,
+    );
+
+    // Filter-time peek should still strip fs_write from visibility because
+    // ANY path under fs_write has exhausted cap this turn.
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [] as never, tools: [{ name: "fs_write" }] as never },
+      async (req) => {
+        observedTools = req.tools as ReadonlyArray<{ readonly name: string }>;
+        return { content: "", model: "test" } as never;
+      },
+    );
+    expect((observedTools ?? []).map((t) => t.name)).not.toContain("fs_write");
+  });
+});
+
+describe("TurnSoftDenyCounter fail-closed ceiling (#1650 loop round-7)", () => {
+  test("attempting to add more than maxEntries distinct keys returns over_cap", async () => {
+    const { createTurnSoftDenyCounter } = await import("../turn-soft-deny-counter.js");
+    const counter = createTurnSoftDenyCounter(3); // tiny max for test speed
+    expect(counter.countAndCap("k1", 100)).toBe("under_cap");
+    expect(counter.countAndCap("k2", 100)).toBe("under_cap");
+    expect(counter.countAndCap("k3", 100)).toBe("under_cap");
+    // 4th distinct key → fail-closed despite per-key count being 1.
+    expect(counter.countAndCap("k4", 100)).toBe("over_cap");
+    // Existing keys still increment normally.
+    expect(counter.countAndCap("k1", 100)).toBe("under_cap");
+  });
+});
+
 describe("turn isolation under overlap (#1650 loop round-5 regression)", () => {
   test("onBeforeTurn for a new turn does NOT wipe an in-flight turn's accumulated counter", async () => {
     const mw = createPermissionsMiddleware({
