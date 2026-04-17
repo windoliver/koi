@@ -442,6 +442,17 @@ export interface KoiRuntimeConfig {
    */
   readonly reportEnabled?: boolean | undefined;
   /**
+   * Opt-in: activate `@koi/middleware-planning` and its `write_plan`
+   * tool. Default `false`: plan state is currently ephemeral
+   * (no durable persistence across resume/restart), so enabling by
+   * default in resume-capable hosts would silently lose plan state
+   * after `koi tui --resume`. Hosts that accept the ephemerality can
+   * set this to `true`; durable persistence is tracked as issue
+   * #1842 (file-backed plan persistence) and will make this flag a
+   * no-op default when it lands.
+   */
+  readonly planningEnabled?: boolean | undefined;
+  /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
@@ -1122,12 +1133,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       : undefined;
 
   // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
-  // Always installed in production runtime so the model can maintain a
-  // plan across turns (CC parity). The bundle ships two halves: the
-  // middleware intercepts write_plan calls; the provider registers the
-  // write_plan Tool so the query-engine's advertised-tool snapshot
-  // recognizes the call as declared. Both halves MUST be wired.
-  const planBundle = createPlanMiddleware();
+  // Opt-in via `config.planningEnabled` — default off until durable
+  // plan persistence lands (#1842). Without persistence, plan state
+  // is ephemeral: `koi tui --resume` silently drops the committed
+  // plan while the rest of the conversation survives, which would
+  // make a multi-step task continue against stale state. Hosts that
+  // explicitly accept the limitation can opt in.
+  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1325,7 +1337,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // the call falls through to the provider's throwing fallback.
       // The middleware is session-keyed, so sharing with children is
       // safe — parent and child have distinct sessionIds.
-      plan: planBundle.middleware,
+      ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1685,7 +1697,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // permissions filter. That's required for its prompt-visibility
       // gate — if permissions removes write_plan from request.tools,
       // planning must see the filtered list, not the pre-filter one.
-      plan: planBundle.middleware,
+      ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
       // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
       // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
@@ -1783,7 +1795,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           },
         };
       })(),
-      providers: [...coreProviders, ...stackContribution.providers, ...planBundle.providers],
+      providers: [
+        ...coreProviders,
+        ...stackContribution.providers,
+        ...(planBundle !== undefined ? planBundle.providers : []),
+      ],
       approvalHandler,
       userId: userInfo().username,
       // Loop detection defaults to ENABLED (createKoi's default).
