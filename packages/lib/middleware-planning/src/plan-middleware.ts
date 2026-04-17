@@ -127,7 +127,6 @@ function parsePlanInput(input: JsonObject): readonly PlanItem[] | string {
   }
 
   const items: PlanItem[] = [];
-  let aggregateContentChars = 0;
   for (let i = 0; i < rawPlan.length; i++) {
     const item = rawPlan[i] as Record<string, unknown> | undefined;
     if (item === undefined || typeof item !== "object" || item === null) {
@@ -142,12 +141,21 @@ function parsePlanInput(input: JsonObject): readonly PlanItem[] | string {
     if (typeof item.status !== "string" || !VALID_STATUSES.has(item.status)) {
       return `plan[${String(i)}].status must be one of: pending, in_progress, completed`;
     }
-    aggregateContentChars += item.content.length;
-    if (aggregateContentChars > MAX_SERIALIZED_PLAN_CHARS) {
-      return `plan aggregate content exceeds ${String(MAX_SERIALIZED_PLAN_CHARS)} characters`;
-    }
     items.push({ content: item.content, status: item.status as PlanStatus });
   }
+
+  // Budget the EXACT string that gets replayed into every later model
+  // request, not just raw content. Header, numbering, status tags,
+  // fence markers, and escaped linefeeds are all part of the prompt
+  // payload and count against the context budget. Measuring raw
+  // content alone would let a cap-adjacent plan balloon past the
+  // budget once rendered.
+  const renderedPlanStateText =
+    items.length > 0 ? (renderPlanState(items).content[0] as { text: string }).text : "";
+  if (renderedPlanStateText.length > MAX_SERIALIZED_PLAN_CHARS) {
+    return `plan rendered size (${String(renderedPlanStateText.length)}) exceeds ${String(MAX_SERIALIZED_PLAN_CHARS)} characters`;
+  }
+
   return items;
 }
 

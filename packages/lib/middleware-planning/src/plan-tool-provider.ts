@@ -12,6 +12,7 @@
 
 import type { ComponentProvider, JsonObject, Tool, ToolExecuteOptions } from "@koi/core";
 import { createSingleToolProvider, DEFAULT_UNSANDBOXED_POLICY } from "@koi/core";
+import { KoiRuntimeError } from "@koi/errors";
 import { WRITE_PLAN_DESCRIPTOR, WRITE_PLAN_TOOL_NAME } from "./plan-tool.js";
 
 export function createPlanToolProvider(): ComponentProvider {
@@ -22,10 +23,19 @@ export function createPlanToolProvider(): ComponentProvider {
       descriptor: WRITE_PLAN_DESCRIPTOR,
       origin: "primordial",
       policy: DEFAULT_UNSANDBOXED_POLICY,
-      execute: async (_args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> => ({
-        error:
-          "write_plan was invoked but @koi/middleware-planning is not registered; add createPlanMiddleware() to the middleware chain",
-      }),
+      // Hard fail when the middleware is missing. Returning a non-throw
+      // response would be recorded as a successful tool call in
+      // telemetry (event-trace, middleware-report classify
+      // non-`blockedByHook` responses as success), which would hide a
+      // broken rollout where the provider is wired but the middleware
+      // is not. Throwing surfaces the misconfiguration as a real tool
+      // failure.
+      execute: async (_args: JsonObject, _options?: ToolExecuteOptions): Promise<unknown> => {
+        throw KoiRuntimeError.from(
+          "INTERNAL",
+          "write_plan was invoked but @koi/middleware-planning is not registered; add createPlanMiddleware().middleware to the middleware chain",
+        );
+      },
     }),
   });
 }

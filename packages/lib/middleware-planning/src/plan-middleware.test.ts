@@ -711,7 +711,7 @@ describe("aggregate plan budget", () => {
       { toolId: WRITE_PLAN_TOOL_NAME, input: planInput(items) },
       async () => ({ output: "x" }),
     );
-    expect((response?.output as Record<string, unknown>).error).toContain("aggregate");
+    expect((response?.output as Record<string, unknown>).error).toContain("rendered size");
     expect(response?.metadata?.planError).toBe(true);
     expect(response?.metadata?.blockedByHook).toBe(true);
   });
@@ -871,11 +871,13 @@ describe("plan tool provider", () => {
 
     expect(tool?.descriptor.name).toBe(WRITE_PLAN_TOOL_NAME);
 
-    // Fallback execute returns an explicit error explaining the missing MW
-    // so that consumers who forget to wire the middleware get a clear
-    // diagnostic instead of a silent data loss.
-    const fallback = (await tool?.execute({ plan: [] })) as { readonly error?: string };
-    expect(fallback.error).toContain("middleware-planning is not registered");
+    // Fallback execute THROWS so downstream tracing classifies the
+    // call as a real failure. Returning a non-throw payload would let
+    // miswired rollouts (provider wired, middleware not wired) look
+    // like successful tool calls in telemetry.
+    await expect(tool?.execute({ plan: [] })).rejects.toThrow(
+      /middleware-planning is not registered/,
+    );
   });
 });
 
