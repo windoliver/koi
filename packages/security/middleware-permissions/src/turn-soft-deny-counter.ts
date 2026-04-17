@@ -17,6 +17,13 @@ export interface TurnSoftDenyCounter {
    * Returns `"over_cap"` when the new count is > cap, `"under_cap"` otherwise.
    */
   readonly countAndCap: (cacheKey: string, cap: number) => "under_cap" | "over_cap";
+  /**
+   * Read current count for `cacheKey` WITHOUT incrementing. Used by
+   * planning-time filters (`filterTools`) to check whether a tool has already
+   * exceeded cap in this turn, so already-hardened tools stop being advertised
+   * to the model for the rest of the turn.
+   */
+  readonly peek: (cacheKey: string) => number;
   /** Reset the counter for a new turn. */
   readonly clear: () => void;
 }
@@ -28,6 +35,9 @@ export function createTurnSoftDenyCounter(): TurnSoftDenyCounter {
       const current = (counts.get(cacheKey) ?? 0) + 1;
       counts.set(cacheKey, current);
       return current > cap ? "over_cap" : "under_cap";
+    },
+    peek(cacheKey) {
+      return counts.get(cacheKey) ?? 0;
     },
     clear() {
       counts.clear();

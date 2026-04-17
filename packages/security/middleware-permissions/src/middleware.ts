@@ -1014,7 +1014,35 @@ export function createPermissionsMiddleware(
       if (decision.effect === "deny") {
         const dispositionIsSoft = (decision.disposition ?? "hard") === "soft";
         if (dispositionIsSoft) {
-          // #1650: soft-deny → keep tool visible at model-call time. Record in
+          // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
+          const cacheKey = decisionCacheKey(queries[i]!);
+          // #1650: if the soft-deny counter is ALREADY at or over cap for this
+          // key in the current turn, the execute-time path would hard-convert
+          // every future call. Stop advertising the tool so the model doesn't
+          // burn iterations on guaranteed-hard failures. Loop round-2 fix.
+          if (cacheKey !== undefined) {
+            const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
+            const currentCount = getTurnSoftDenyCounter(ctx.session.sessionId as string).peek(
+              cacheKey,
+            );
+            if (currentCount >= cap) {
+              // Already exhausted soft budget this turn — behave like hard deny
+              // for the rest of the turn: record in tracker, strip from tools.
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: cacheKey,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+              return false;
+            }
+          }
+          // Soft-deny → keep tool visible at model-call time. Record in
           // isolated SoftDenyLog so high-volume soft denies don't evict native
           // hard-deny history from the shared DenialTracker budget.
           getSoftDenyLog(ctx.session.sessionId as string).record({
@@ -1023,8 +1051,7 @@ export function createPermissionsMiddleware(
             timestamp: clock(),
             principal: ctx.session.agentId,
             turnIndex: ctx.turnIndex,
-            // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
-            queryKey: decisionCacheKey(queries[i]!),
+            queryKey: cacheKey,
           });
           return true;
         }

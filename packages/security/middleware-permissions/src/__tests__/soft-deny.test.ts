@@ -845,6 +845,71 @@ describe("onBeforeTurn clears per-turn soft-deny counter (#1650 Task 13)", () =>
   });
 });
 
+describe("filterTools strips tools already at/over soft-deny cap (#1650 loop round-2 fix)", () => {
+  test("once a soft-deny key hits cap, filterTools removes the tool from request.tools", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: async (q: PermissionQuery): Promise<PermissionDecision> =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "soft-block", disposition: "soft" }
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "soft-block", disposition: "soft" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({
+      backend: perToolBackend,
+      softDenyPerTurnCap: 2,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-filter-strip" });
+
+    // Burn through the cap at execute-time.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+    // Now the next call would hard-throw (count=3 > cap=2). Model should no
+    // longer see this tool.
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [] as never, tools: [{ name: "bash" }, { name: "read" }] as never },
+      async (req) => {
+        observedTools = req.tools as ReadonlyArray<{ readonly name: string }>;
+        return { content: "", model: "test" } as never;
+      },
+    );
+
+    const names = (observedTools ?? []).map((t) => t.name);
+    expect(names).not.toContain("bash"); // stripped — cap exhausted
+    expect(names).toContain("read"); // unaffected
+  });
+
+  test("under-cap soft-deny tools stay visible to the model", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 5,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-filter-visible" });
+
+    // Only 1 deny — nowhere near cap=5.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [] as never, tools: [{ name: "bash" }] as never },
+      async (req) => {
+        observedTools = req.tools as ReadonlyArray<{ readonly name: string }>;
+        return { content: "", model: "test" } as never;
+      },
+    );
+
+    expect((observedTools ?? []).map((t) => t.name)).toContain("bash");
+  });
+});
+
 describe("session-state eviction (#1650 Task-16 regression)", () => {
   test("clearSessionApprovals evicts soft-deny log and turn counter for that session", async () => {
     const mw = createPermissionsMiddleware({
