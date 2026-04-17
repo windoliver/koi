@@ -3,7 +3,11 @@
  */
 
 export { validatePlanConfig } from "./config.js";
-export { createPlanMiddleware } from "./plan-middleware.js";
+export {
+  createPlanMiddleware,
+  MAX_CONTENT_LENGTH,
+  MAX_PLAN_ITEMS,
+} from "./plan-middleware.js";
 export {
   PLAN_SYSTEM_PROMPT,
   WRITE_PLAN_DESCRIPTOR,

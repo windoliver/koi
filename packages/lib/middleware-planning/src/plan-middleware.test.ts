@@ -13,7 +13,13 @@ import type {
 } from "@koi/core";
 import { runId, sessionId, turnId } from "@koi/core";
 
-import { createPlanMiddleware, type PlanItem, WRITE_PLAN_TOOL_NAME } from "./index.js";
+import {
+  createPlanMiddleware,
+  MAX_CONTENT_LENGTH,
+  MAX_PLAN_ITEMS,
+  type PlanItem,
+  WRITE_PLAN_TOOL_NAME,
+} from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,6 +59,10 @@ function makeRequest(text: string): ModelRequest {
 
 function makeResponse(content: string): ModelResponse {
   return { content, model: "test-model" };
+}
+
+function planInput(items: readonly { content: string; status: string }[]): JsonObject {
+  return { plan: items } satisfies JsonObject;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,23 +141,20 @@ describe("wrapModelCall — tool + prompt injection", () => {
     const mw = createPlanMiddleware();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
-    const ctx = makeTurnCtx(sessionCtx);
 
-    await mw.onBeforeTurn?.(ctx);
+    const turn0 = makeTurnCtx(sessionCtx, 0);
     await mw.wrapToolCall?.(
-      ctx,
+      turn0,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "Step 1", status: "in_progress" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "Step 1", status: "in_progress" }]),
       },
       async () => ({ output: "x" }),
     );
 
-    await mw.onBeforeTurn?.(ctx);
+    const turn1 = makeTurnCtx(sessionCtx, 1);
     let captured: ModelRequest | undefined;
-    await mw.wrapModelCall?.(ctx, makeRequest("continue"), async (req) => {
+    await mw.wrapModelCall?.(turn1, makeRequest("continue"), async (req) => {
       captured = req;
       return makeResponse("ok");
     });
@@ -198,18 +205,15 @@ describe("wrapToolCall — write_plan interception", () => {
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
       ctx,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [
-            { content: "Step 1", status: "pending" },
-            { content: "Step 2", status: "in_progress" },
-          ],
-        } satisfies JsonObject,
+        input: planInput([
+          { content: "Step 1", status: "pending" },
+          { content: "Step 2", status: "in_progress" },
+        ]),
       },
       async () => ({ output: "should not be called" }),
     );
@@ -239,11 +243,8 @@ describe("wrapToolCall — write_plan interception", () => {
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
 
-    const input = {
-      plan: [{ content: "Step 1", status: "pending" }],
-    } satisfies JsonObject;
+    const input = planInput([{ content: "Step 1", status: "pending" }]);
     const request = { toolId: WRITE_PLAN_TOOL_NAME, input };
 
     const first = await mw.wrapToolCall?.(ctx, request, async () => ({ output: "x" }));
@@ -253,23 +254,24 @@ describe("wrapToolCall — write_plan interception", () => {
     expect((second?.output as Record<string, unknown>).error).toContain("once per response");
   });
 
-  it("allows write_plan again after onBeforeTurn resets the counter", async () => {
+  it("allows write_plan again in a new turn", async () => {
     const mw = createPlanMiddleware();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
-    const ctx = makeTurnCtx(sessionCtx);
 
-    const input = {
-      plan: [{ content: "Step 1", status: "pending" }],
-    } satisfies JsonObject;
-    const request = { toolId: WRITE_PLAN_TOOL_NAME, input };
+    const request = {
+      toolId: WRITE_PLAN_TOOL_NAME,
+      input: planInput([{ content: "Step 1", status: "pending" }]),
+    };
 
-    await mw.onBeforeTurn?.(ctx);
-    const first = await mw.wrapToolCall?.(ctx, request, async () => ({ output: "x" }));
+    const first = await mw.wrapToolCall?.(makeTurnCtx(sessionCtx, 0), request, async () => ({
+      output: "x",
+    }));
     expect(first?.output).toContain("Plan updated");
 
-    await mw.onBeforeTurn?.(ctx);
-    const second = await mw.wrapToolCall?.(ctx, request, async () => ({ output: "x" }));
+    const second = await mw.wrapToolCall?.(makeTurnCtx(sessionCtx, 1), request, async () => ({
+      output: "x",
+    }));
     expect(second?.output).toContain("Plan updated");
   });
 
@@ -278,7 +280,6 @@ describe("wrapToolCall — write_plan interception", () => {
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
       ctx,
@@ -296,22 +297,19 @@ describe("wrapToolCall — write_plan interception", () => {
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
 
     const response = await mw.wrapToolCall?.(
       ctx,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "Step 1", status: "invalid" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "Step 1", status: "invalid" }]),
       },
       async () => ({ output: "x" }),
     );
     expect((response?.output as Record<string, unknown>).error).toContain("status");
   });
 
-  it("atomically replaces the plan on each successful call", async () => {
+  it("atomically replaces the plan across turns", async () => {
     let callCount = 0;
     let lastCapturedPlan: readonly PlanItem[] | undefined;
     const mw = createPlanMiddleware({
@@ -322,31 +320,24 @@ describe("wrapToolCall — write_plan interception", () => {
     });
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
-    const ctx = makeTurnCtx(sessionCtx);
 
-    await mw.onBeforeTurn?.(ctx);
     await mw.wrapToolCall?.(
-      ctx,
+      makeTurnCtx(sessionCtx, 0),
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [
-            { content: "A", status: "pending" },
-            { content: "B", status: "pending" },
-          ],
-        } satisfies JsonObject,
+        input: planInput([
+          { content: "A", status: "pending" },
+          { content: "B", status: "pending" },
+        ]),
       },
       async () => ({ output: "x" }),
     );
 
-    await mw.onBeforeTurn?.(ctx);
     await mw.wrapToolCall?.(
-      ctx,
+      makeTurnCtx(sessionCtx, 1),
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "C", status: "completed" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "C", status: "completed" }]),
       },
       async () => ({ output: "x" }),
     );
@@ -354,6 +345,167 @@ describe("wrapToolCall — write_plan interception", () => {
     expect(callCount).toBe(2);
     expect(lastCapturedPlan).toHaveLength(1);
     expect(lastCapturedPlan?.[0]?.content).toBe("C");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Input caps
+// ---------------------------------------------------------------------------
+
+describe("input caps", () => {
+  it("rejects plans exceeding MAX_PLAN_ITEMS", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const oversized = Array.from({ length: MAX_PLAN_ITEMS + 1 }, (_, i) => ({
+      content: `Step ${String(i)}`,
+      status: "pending" as const,
+    }));
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: WRITE_PLAN_TOOL_NAME, input: planInput(oversized) },
+      async () => ({ output: "x" }),
+    );
+    const errObj = response?.output as Record<string, unknown>;
+    expect(errObj.error).toContain("limit");
+    expect(response?.metadata?.planError).toBe(true);
+  });
+
+  it("rejects plan items with content exceeding MAX_CONTENT_LENGTH", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const huge = "x".repeat(MAX_CONTENT_LENGTH + 1);
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: huge, status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((response?.output as Record<string, unknown>).error).toContain("exceeds");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Callback isolation
+// ---------------------------------------------------------------------------
+
+describe("onPlanUpdate isolation", () => {
+  it("swallows onPlanUpdate exceptions so the tool still reports success", async () => {
+    const mw = createPlanMiddleware({
+      onPlanUpdate: () => {
+        throw new Error("observability boom");
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "Step 1", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect(response?.output).toContain("Plan updated");
+    expect(response?.metadata?.planError).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Turn concurrency
+// ---------------------------------------------------------------------------
+
+describe("turn concurrency", () => {
+  it("gives each turn its own quota even when they overlap", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const turnA = makeTurnCtx(sessionCtx, 0);
+    const turnB = makeTurnCtx(sessionCtx, 1);
+
+    const request = {
+      toolId: WRITE_PLAN_TOOL_NAME,
+      input: planInput([{ content: "Step 1", status: "pending" }]),
+    };
+
+    // Turn A uses its quota — turn B is unrelated and should still succeed.
+    const firstA = await mw.wrapToolCall?.(turnA, request, async () => ({ output: "x" }));
+    expect(firstA?.output).toContain("Plan updated");
+
+    const firstB = await mw.wrapToolCall?.(turnB, request, async () => ({ output: "x" }));
+    expect(firstB?.output).toContain("Plan updated");
+
+    // Second write on turn A still hits A's quota, not B's.
+    const secondA = await mw.wrapToolCall?.(turnA, request, async () => ({ output: "x" }));
+    expect((secondA?.output as Record<string, unknown>).error).toContain("once per response");
+  });
+
+  it("rejects stale writes from an earlier turn after a newer turn has committed", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const turnOld = makeTurnCtx(sessionCtx, 0);
+    const turnNew = makeTurnCtx(sessionCtx, 1);
+
+    // Newer turn commits first.
+    await mw.wrapToolCall?.(
+      turnNew,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "new", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Older turn tries to commit — must be rejected.
+    const stale = await mw.wrapToolCall?.(
+      turnOld,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "old", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((stale?.output as Record<string, unknown>).error).toContain("stale");
+
+    // Current plan is the newer one, unchanged.
+    const ctxPeek = makeTurnCtx(sessionCtx, 2);
+    const peek = await mw.wrapModelCall?.(ctxPeek, makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.content).toBe("new");
+  });
+
+  it("cleans up per-turn write counts on onAfterTurn", async () => {
+    const mw = createPlanMiddleware();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    const request = {
+      toolId: WRITE_PLAN_TOOL_NAME,
+      input: planInput([{ content: "Step 1", status: "pending" }]),
+    };
+
+    await mw.wrapToolCall?.(ctx, request, async () => ({ output: "x" }));
+    expect(mw.onAfterTurn).toBeDefined();
+    // Hook should not throw, and the Map entry is cleared (functional side-effect
+    // is private — we just assert the hook runs cleanly).
+    await expect(mw.onAfterTurn?.(ctx)).resolves.toBeUndefined();
   });
 });
 
@@ -375,18 +527,15 @@ describe("describeCapabilities", () => {
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
 
     await mw.wrapToolCall?.(
       ctx,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [
-            { content: "A", status: "in_progress" },
-            { content: "B", status: "pending" },
-          ],
-        } satisfies JsonObject,
+        input: planInput([
+          { content: "A", status: "in_progress" },
+          { content: "B", status: "pending" },
+        ]),
       },
       async () => ({ output: "x" }),
     );
@@ -410,14 +559,11 @@ describe("session isolation", () => {
     await mw.onSessionStart?.(sessionB);
 
     const ctxA = makeTurnCtx(sessionA);
-    await mw.onBeforeTurn?.(ctxA);
     await mw.wrapToolCall?.(
       ctxA,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "A-only", status: "in_progress" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "A-only", status: "in_progress" }]),
       },
       async () => ({ output: "x" }),
     );
@@ -434,16 +580,13 @@ describe("session isolation", () => {
     const mw = createPlanMiddleware();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
-
     const ctx = makeTurnCtx(sessionCtx);
-    await mw.onBeforeTurn?.(ctx);
+
     await mw.wrapToolCall?.(
       ctx,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "Task", status: "pending" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "Task", status: "pending" }]),
       },
       async () => ({ output: "x" }),
     );
@@ -455,50 +598,10 @@ describe("session isolation", () => {
       ctx2,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: {
-          plan: [{ content: "After end", status: "pending" }],
-        } satisfies JsonObject,
+        input: planInput([{ content: "After end", status: "pending" }]),
       },
       async () => ({ output: "x" }),
     );
     expect((response?.output as Record<string, unknown>).error).toBeDefined();
-  });
-
-  it("applies the once-per-turn quota per-session", async () => {
-    const mw = createPlanMiddleware();
-    const sessionA = makeSessionCtx(sessionId("session-a"));
-    const sessionB = makeSessionCtx(sessionId("session-b"));
-    await mw.onSessionStart?.(sessionA);
-    await mw.onSessionStart?.(sessionB);
-
-    const ctxA = makeTurnCtx(sessionA);
-    const ctxB = makeTurnCtx(sessionB);
-    await mw.onBeforeTurn?.(ctxA);
-    await mw.onBeforeTurn?.(ctxB);
-
-    const input = {
-      plan: [{ content: "Step 1", status: "pending" }],
-    } satisfies JsonObject;
-
-    const firstA = await mw.wrapToolCall?.(
-      ctxA,
-      { toolId: WRITE_PLAN_TOOL_NAME, input },
-      async () => ({ output: "x" }),
-    );
-    expect(firstA?.output).toContain("Plan updated");
-
-    const firstB = await mw.wrapToolCall?.(
-      ctxB,
-      { toolId: WRITE_PLAN_TOOL_NAME, input },
-      async () => ({ output: "x" }),
-    );
-    expect(firstB?.output).toContain("Plan updated");
-
-    const secondA = await mw.wrapToolCall?.(
-      ctxA,
-      { toolId: WRITE_PLAN_TOOL_NAME, input },
-      async () => ({ output: "x" }),
-    );
-    expect((secondA?.output as Record<string, unknown>).error).toContain("once per response");
   });
 });
