@@ -25,6 +25,26 @@ export interface Redirect {
 }
 
 /**
+ * High-level reason a command was rejected. Stable API surface that abstracts
+ * tree-sitter grammar details so callers (permission UIs, telemetry scripts,
+ * future scope-tracking work) can switch on reason without coupling to
+ * parser versions. See `docs/L2/bash-ast.md` for per-category semantics.
+ */
+export type TooComplexCategory =
+  | "scope-trackable"
+  | "command-substitution"
+  | "parameter-expansion"
+  | "positional"
+  | "control-flow"
+  | "shell-escape"
+  | "heredoc"
+  | "process-substitution"
+  | "parse-error"
+  | "unsupported-syntax"
+  | "malformed"
+  | "unknown";
+
+/**
  * A single parsed shell command with argv-level detail.
  *
  * Only produced for commands the walker can fully resolve to a static
@@ -52,9 +72,19 @@ export interface SimpleCommand {
  *     analyze (command substitution, variable expansion, control flow,
  *     function definitions, …). The caller must route to a fallback
  *     policy — currently, the `@koi/bash-security` regex classifier.
+ *     The `primaryCategory` field is REQUIRED and provides a stable,
+ *     version-independent classification (see `TooComplexCategory`).
  *   - `parse-unavailable` — the parser itself could not run. `cause`
  *     discriminates the reason. **Callers MUST fail closed on this
  *     outcome** — do not fall through to a permissive path.
+ *
+ * **Breaking-change posture:** adding a required field to the `too-complex`
+ * variant is a source-breaking change for any consumer constructing the
+ * literal directly. `@koi/bash-ast` is marked `"private": true` in
+ * `package.json` — a monorepo-internal workspace package — so this break
+ * is absorbed atomically across the repo. If this package is ever promoted
+ * to a published artifact, re-evaluate before any future required-field
+ * additions and consider additive/optional fields instead.
  */
 export type AstAnalysis =
   | { readonly kind: "simple"; readonly commands: readonly SimpleCommand[] }
@@ -62,6 +92,7 @@ export type AstAnalysis =
       readonly kind: "too-complex";
       readonly reason: string;
       readonly nodeType?: string;
+      readonly primaryCategory: TooComplexCategory;
     }
   | {
       readonly kind: "parse-unavailable";
