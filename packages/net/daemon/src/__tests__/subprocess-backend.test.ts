@@ -66,18 +66,25 @@ describe("subprocess terminate/kill", () => {
     // Wait for all to exit.
     await new Promise((r) => setTimeout(r, 300));
 
-    // Each worker must be gone from backend state — watch() returns
-    // immediately with no events for a pruned id.
+    // First watch() must deliver the buffered started+terminal events even
+    // though the subprocess already exited. THEN the worker state is pruned.
     for (let i = 0; i < 5; i++) {
       const id = workerId(`churn-${i}`);
       expect(await backend.isAlive(id)).toBe(false);
-      const events: string[] = [];
+      const firstWatch: string[] = [];
       for await (const ev of backend.watch(id)) {
-        events.push(ev.kind);
+        firstWatch.push(ev.kind);
       }
-      // Pruned: watch() for a missing id returns nothing. A retained (leaked)
-      // dead worker would yield its buffered started+exited events.
-      expect(events).toEqual([]);
+      // State retained for this consumer: got started + terminal event.
+      expect(firstWatch.length).toBeGreaterThanOrEqual(2);
+      expect(firstWatch).toContain("started");
+      // A SECOND watch() must return nothing — state has been pruned by
+      // the first watcher's terminal-event consumption.
+      const secondWatch: string[] = [];
+      for await (const ev of backend.watch(id)) {
+        secondWatch.push(ev.kind);
+      }
+      expect(secondWatch).toEqual([]);
     }
   });
 });

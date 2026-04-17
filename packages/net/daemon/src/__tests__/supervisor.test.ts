@@ -702,6 +702,170 @@ describe("supervisor correctness hardening", () => {
     if (started.ok) expect(started.value.backendKind).toBe("in-process");
   });
 
+  it("shutdown() does not block forever on a stuck backend.spawn()", async () => {
+    // A backend whose spawn never resolves must not hang shutdown. The
+    // supervisor marks the pending spawn cancelled and bounds the wait by
+    // its shutdown deadline so already-live workers can still be stopped.
+    let stuckReleased = false;
+    const stuckBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "stuck",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        // Never resolve until test releases (never, in practice).
+        await new Promise<void>(() => {
+          // Intentionally never resolves — simulates a wedged backend.
+        });
+        // Not reached.
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => {
+        stuckReleased = true;
+        return { ok: true, value: undefined };
+      },
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 80,
+      backends: { "in-process": stuckBackend },
+    });
+    if (!supervisorResult.ok) return;
+
+    // Fire a spawn we know will never resolve.
+    void supervisorResult.value.start(makeRequest("stuck-1"));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Shutdown must return within the bounded window (~2× deadline),
+    // not hang forever behind the stuck spawn.
+    const t0 = Date.now();
+    const sd = await supervisorResult.value.shutdown("test");
+    const elapsed = Date.now() - t0;
+
+    expect(elapsed).toBeLessThan(600);
+    // Either success (if stuck spawn's cancellation drained cleanly) or
+    // the bounded-deadline error — both are acceptable, as long as we
+    // didn't hang.
+    if (!sd.ok) expect(sd.error.code).toBe("INTERNAL");
+    // Avoid unused-variable lint on stuckReleased; the var exists to prove
+    // terminate is never called for a spawn that never resolved into a pool entry.
+    expect(stuckReleased).toBe(false);
+  });
+
+  it("stop() falls back to kill() when backend.terminate() hangs", async () => {
+    // If a backend's terminate() RPC stalls, stop() must still hit the
+    // kill() fallback once the deadline elapses — the prior impl awaited
+    // terminate() before arming the deadline.
+    let killCalled = false;
+    let killedAt = 0;
+    const hungTerminateBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hung-terminate",
+      isAvailable: async () => true,
+      spawn: async (req) => ({
+        ok: true,
+        value: {
+          workerId: req.workerId,
+          agentId: req.agentId,
+          backendKind: "in-process",
+          startedAt: Date.now(),
+          signal: new AbortController().signal,
+        },
+      }),
+      terminate: async () => {
+        // Never resolves.
+        await new Promise<void>(() => {});
+        return { ok: true, value: undefined };
+      },
+      kill: async () => {
+        killCalled = true;
+        killedAt = Date.now();
+        return { ok: true, value: undefined };
+      },
+      isAlive: async () => true,
+      watch: async function* (id): AsyncIterable<WorkerEvent> {
+        // Listen for a private signal — we'll resolve exit via the test
+        // calling a side-channel. Since this backend doesn't expose that,
+        // we just emit exited after kill() has been called.
+        yield { kind: "started", workerId: id, at: Date.now() };
+        // Park until kill triggers emission. We poll in a loop so the
+        // generator can yield when killCalled flips.
+        while (!killCalled) await new Promise((r) => setTimeout(r, 5));
+        yield { kind: "exited", workerId: id, at: Date.now(), code: 0, state: "terminated" };
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 60,
+      backends: { "in-process": hungTerminateBackend },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("hung-term-1"));
+
+    const t0 = Date.now();
+    const stopped = await supervisorResult.value.stop(workerId("hung-term-1"), "test");
+    const elapsed = Date.now() - t0;
+
+    expect(stopped.ok).toBe(true);
+    expect(killCalled).toBe(true);
+    // Kill must have fired around the deadline boundary (not before, which
+    // would mean we skipped terminate; not after ~3×, which would mean we
+    // waited on terminate).
+    expect(killedAt - t0).toBeGreaterThanOrEqual(50);
+    expect(elapsed).toBeLessThan(300);
+  });
+
+  it("short-lived subprocesses are observed as exited by the supervisor", async () => {
+    // Regression for the fast-exit race: a command that exits before
+    // the supervisor's watch IIFE attaches must still have its exited
+    // event delivered. Uses the real subprocess backend.
+    const { createSubprocessBackend } = await import("../subprocess-backend.js");
+    const subBackend = createSubprocessBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: subBackend },
+      // Temporary policy so we don't restart.
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    const started = await supervisorResult.value.start({
+      workerId: workerId("fast-1"),
+      agentId: agentId("agent-fast-1"),
+      command: ["bun", "-e", "process.exit(0)"],
+    });
+    expect(started.ok).toBe(true);
+
+    // Wait long enough for the subprocess to exit and the supervisor to
+    // observe it. The pool should become empty WITHOUT any explicit stop().
+    const deadline = Date.now() + 2000;
+    while (supervisorResult.value.list().length > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(supervisorResult.value.list()).toEqual([]);
+  });
+
   it("bounds the event buffer under sustained crash/restart churn", async () => {
     // Prior impl grew eventBuffer forever. With a bounded ring buffer, a
     // long-lived supervisor emitting thousands of events must not OOM.

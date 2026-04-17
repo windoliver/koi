@@ -454,39 +454,72 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // this flag when it observes exit/crash.
     entry.stopping = true;
 
-    // Request graceful terminate. Failures are surfaced in the final return,
-    // but we still wait for observed exit — terminate may have partially
-    // succeeded and the worker may still exit cleanly.
-    const terminateResult = await entry.backend.terminate(id, reason);
+    // Fire graceful terminate. We do NOT await it before starting the
+    // deadline timer: a wedged backend could stall here and never reach
+    // kill() fallback. Instead, race terminate() AND observed exit against
+    // a single deadline.
+    const terminateCall = entry.backend.terminate(id, reason).then(
+      (r) => ({ kind: "terminate" as const, result: r }),
+      (e) => ({
+        kind: "terminate" as const,
+        result: {
+          ok: false as const,
+          error: {
+            code: "INTERNAL" as const,
+            message: `terminate() threw: ${e instanceof Error ? e.message : String(e)}`,
+            retryable: true,
+          },
+        },
+      }),
+    );
 
-    // Race observed exit against deadline. The deadline is enforced on the
-    // actual process death, not on the terminate RPC, because many backends
-    // (including subprocess) return from terminate() merely after sending a
-    // signal — the process may outlive the RPC.
     let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
-    const deadlinePromise = new Promise<"deadline">((resolve) => {
-      deadlineHandle = setTimeout(() => resolve("deadline"), config.shutdownDeadlineMs);
+    const deadlinePromise = new Promise<{ kind: "deadline" }>((resolve) => {
+      deadlineHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
     });
-    const winner = await Promise.race([
-      entry.exitedPromise.then(() => "exited" as const),
-      deadlinePromise,
-    ]);
+    const exitedSignal = entry.exitedPromise.then(() => ({ kind: "exited" as const }));
+
+    const first = await Promise.race([exitedSignal, deadlinePromise]);
     clearTimeout(deadlineHandle);
 
-    if (winner === "deadline") {
-      // Force-kill and give a secondary deadline window to observe exit.
-      const killResult = await entry.backend.kill(id);
+    // terminateCall may still be pending — capture its eventual result for
+    // final reporting without blocking the deadline.
+    let terminateResult: Result<void, KoiError> | undefined;
+    void terminateCall.then((r) => {
+      terminateResult = r.result;
+    });
+
+    if (first.kind === "deadline") {
+      // Force-kill. Race kill() against a secondary deadline so a hung
+      // kill RPC can't block stop() either.
+      const killCall = entry.backend.kill(id).then(
+        (r) => ({ kind: "kill" as const, result: r }),
+        (e) => ({
+          kind: "kill" as const,
+          result: {
+            ok: false as const,
+            error: {
+              code: "INTERNAL" as const,
+              message: `kill() threw: ${e instanceof Error ? e.message : String(e)}`,
+              retryable: false,
+            },
+          },
+        }),
+      );
       let killHandle: ReturnType<typeof setTimeout> | undefined;
-      const killDeadline = new Promise<"deadline">((resolve) => {
-        killHandle = setTimeout(() => resolve("deadline"), config.shutdownDeadlineMs);
+      const killDeadline = new Promise<{ kind: "deadline" }>((resolve) => {
+        killHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
       });
-      const killWinner = await Promise.race([
-        entry.exitedPromise.then(() => "exited" as const),
-        killDeadline,
-      ]);
+      const killWinner = await Promise.race([exitedSignal, killDeadline]);
       clearTimeout(killHandle);
-      if (!killResult.ok) return killResult;
-      if (killWinner === "deadline") {
+
+      // If we deadlined, record kill's eventual result without blocking.
+      let killResult: Result<void, KoiError> | undefined;
+      void killCall.then((r) => {
+        killResult = r.result;
+      });
+
+      if (killWinner.kind === "deadline") {
         return {
           ok: false,
           error: {
@@ -496,42 +529,80 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           },
         };
       }
-    }
-
-    // If terminate reported failure AND we observed clean exit, the worker is
-    // gone regardless — ignore the terminate error. If terminate failed AND
-    // kill was needed AND succeeded, the killResult return above took over.
-    // The remaining case: terminate failed but we observed exit — the worker
-    // is dead, so return ok.
-    if (!terminateResult.ok && winner === "exited") {
-      // Worker exited cleanly despite terminate() error — accept success.
+      // Observed exit during kill window — try to surface killResult if it
+      // already resolved with an error; otherwise accept success.
+      if (killResult !== undefined && !killResult.ok) return killResult;
       return { ok: true, value: undefined };
     }
-    if (!terminateResult.ok) return terminateResult;
 
+    // Observed exit before the first deadline. Surface terminate's error
+    // if it already resolved with failure; otherwise accept success.
+    if (terminateResult !== undefined && !terminateResult.ok) {
+      // Worker exited despite terminate() reporting an error; accept success.
+      return { ok: true, value: undefined };
+    }
     return { ok: true, value: undefined };
   };
 
   const shutdown: Supervisor["shutdown"] = async (reason) => {
     shuttingDown = true;
 
-    // Drain pending spawns FIRST so any late admission (spawn-during-shutdown)
-    // can observe shuttingDown=true, self-terminate, and not leave a process
-    // running after we return.
-    while (pendingSpawnPromises.size > 0) {
-      await Promise.all([...pendingSpawnPromises]);
+    // Mark every in-flight spawn cancelled so their post-spawn re-check
+    // takes the shutdown-termination branch even if shuttingDown itself
+    // was set too late. This is belt-and-suspenders on top of the
+    // shuttingDown flag; it also ensures a stuck spawn that eventually
+    // resolves still self-cleans.
+    for (const cancel of pendingSpawnCancellations.values()) {
+      cancel.cancelled = true;
     }
 
+    // Drain pending spawns and live pool workers IN PARALLEL, bounded by
+    // shutdownDeadlineMs. If a backend.spawn() stalls, we do not want to
+    // prevent stop() from running against every already-live worker.
+    const drainSpawns = (async () => {
+      while (pendingSpawnPromises.size > 0) {
+        await Promise.all([...pendingSpawnPromises]);
+      }
+    })();
+
     const ids = [...pool.keys()];
-    const stopResults = await Promise.all(ids.map((id) => stop(id, reason)));
+    const stopsPromise = Promise.all(ids.map((id) => stop(id, reason)));
+
+    // Bound the whole-shutdown wait by 2× the deadline: one window for
+    // terminate and one for kill inside each stop(). Individual stops
+    // enforce their own deadlines, so this is just a final guard against
+    // pathologically-stuck backends.
+    let shutdownDeadlineHandle: ReturnType<typeof setTimeout> | undefined;
+    const shutdownDeadline = new Promise<"timeout">((resolve) => {
+      shutdownDeadlineHandle = setTimeout(() => resolve("timeout"), config.shutdownDeadlineMs * 2);
+    });
+
+    const winner = await Promise.race([
+      Promise.all([drainSpawns, stopsPromise]).then(() => "clean" as const),
+      shutdownDeadline,
+    ]);
+    clearTimeout(shutdownDeadlineHandle);
+
+    if (winner === "timeout") {
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: "Supervisor shutdown exceeded deadline; some workers may still be running",
+          retryable: false,
+        },
+      };
+    }
+
     // Drain any in-flight restart tasks started before shuttingDown was set.
-    // They will each check shuttingDown after their backoff and bail without
-    // respawning — so awaiting them guarantees no worker resurrects after
-    // shutdown returns.
+    // They each check shuttingDown after backoff and bail.
     while (pendingRestarts.size > 0) {
       await Promise.all([...pendingRestarts]);
     }
-    // Propagate the first stop failure so callers can observe partial shutdown.
+
+    // Collect stop results we can actually observe (stopsPromise already
+    // resolved because winner === "clean").
+    const stopResults = await stopsPromise;
     for (const r of stopResults) {
       if (!r.ok) return r;
     }

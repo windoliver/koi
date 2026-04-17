@@ -14,7 +14,21 @@ interface SubprocState {
   readonly events: WorkerEvent[];
   readonly listeners: Array<(ev: WorkerEvent) => void>;
   alive: boolean;
+  // Set when the terminal event has been delivered through a watch()
+  // generator OR when the fallback grace period expires — whichever wins.
+  terminalDelivered: boolean;
+  // Last-resort prune timer, armed on terminal exit. If no watcher attaches
+  // within the grace window, we delete the entry so a caller who never
+  // watches cannot leak state for the daemon's lifetime.
+  pruneTimer: ReturnType<typeof setTimeout> | undefined;
 }
+
+// How long we retain a dead worker's state after exit if no watcher has
+// consumed the terminal event yet. Short enough that stragglers don't
+// accumulate, long enough that the supervisor's fire-and-forget watch
+// IIFE (which runs on the microtask after spawn resolves) always attaches
+// in time.
+const PRUNE_GRACE_MS = 30_000;
 
 export function createSubprocessBackend(): WorkerBackend {
   const workers = new Map<WorkerId, SubprocState>();
@@ -81,6 +95,8 @@ export function createSubprocessBackend(): WorkerBackend {
         events: [],
         listeners: [],
         alive: true,
+        terminalDelivered: false,
+        pruneTimer: undefined,
       };
       workers.set(request.workerId, state);
       emit(state, { kind: "started", workerId: request.workerId, at: Date.now() });
@@ -108,11 +124,15 @@ export function createSubprocessBackend(): WorkerBackend {
                 },
               };
         emit(state, ev);
-        // Prune the dead worker from the backend's internal map. Callers that
-        // generate a fresh workerId per run would otherwise leak SubprocState
-        // entries (including AbortController, event buffer, listener arrays)
-        // for every worker that ever ran in this supervisor's lifetime.
-        workers.delete(request.workerId);
+        // DO NOT delete from `workers` yet. A fast-exiting subprocess can
+        // reach this callback before the supervisor's fire-and-forget watch
+        // loop has attached its listener — deleting here would lose the
+        // started+exited events. Instead:
+        //   - watch() will prune once it yields the terminal event
+        //   - a fallback timer prunes if no watcher ever attaches
+        state.pruneTimer = setTimeout(() => {
+          if (!state.terminalDelivered) workers.delete(request.workerId);
+        }, PRUNE_GRACE_MS);
       });
 
       const handle: WorkerHandle = {
@@ -156,15 +176,39 @@ export function createSubprocessBackend(): WorkerBackend {
   const watch = async function* (id: WorkerId): AsyncIterable<WorkerEvent> {
     const state = workers.get(id);
     if (state === undefined) return;
-    // Yield buffered events first.
-    for (const ev of state.events) yield ev;
-    if (!state.alive) return;
-    while (state.alive) {
-      const ev = await new Promise<WorkerEvent>((resolve) => {
-        state.listeners.push(resolve);
-      });
-      yield ev;
-      if (ev.kind === "exited" || ev.kind === "crashed") return;
+    try {
+      // Yield buffered events first (includes started, and possibly a
+      // terminal event if the subprocess exited before watch attached).
+      for (const ev of state.events) {
+        yield ev;
+        if (ev.kind === "exited" || ev.kind === "crashed") {
+          state.terminalDelivered = true;
+          return;
+        }
+      }
+      if (!state.alive) {
+        state.terminalDelivered = true;
+        return;
+      }
+      while (state.alive) {
+        const ev = await new Promise<WorkerEvent>((resolve) => {
+          state.listeners.push(resolve);
+        });
+        yield ev;
+        if (ev.kind === "exited" || ev.kind === "crashed") {
+          state.terminalDelivered = true;
+          return;
+        }
+      }
+    } finally {
+      // Prune the worker state once a watcher has drained it. The
+      // fallback prune timer set in proc.exited.then is cleared here so
+      // we don't double-delete or prune after a legitimate consumer.
+      if (state.pruneTimer !== undefined) {
+        clearTimeout(state.pruneTimer);
+        state.pruneTimer = undefined;
+      }
+      if (state.terminalDelivered) workers.delete(id);
     }
   };
 
