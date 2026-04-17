@@ -391,36 +391,22 @@ async function handleWritePlan(
       return errorResponse("plan update aborted by session teardown");
     }
 
-    // Re-fetch — the session may have ended while the hook was awaiting.
-    // Three cases:
-    //   1. Session gone and NOT recreated: hook already persisted, so
-    //      we report success with a diagnostic flag and skip the
-    //      in-memory commit (nothing would read it anyway).
-    //   2. Session recreated under the same SessionId (different
-    //      epoch): the old plan MUST NOT leak into the new session.
-    //      Report success (durable storage has the old plan; the
-    //      host owns the decision of whether to recover it) but
-    //      refuse to overwrite the new session's state.
-    //   3. Same session still present: commit normally.
+    // Re-fetch — the session may have ended or been recycled while
+    // the hook was awaiting. Previously we reported success in those
+    // cases because the hook had already persisted. That created a
+    // rollback/idempotency gap: the caller saw "Plan updated" but the
+    // next turn ran against an empty/stale plan. Now we fail-closed
+    // so the host can reconcile durable state with the new session.
     const post = sessions.get(sessionId);
     if (post === undefined) {
-      return {
-        output: formatPlanSummary(parsed),
-        metadata: {
-          currentPlan: parsed as unknown as JsonObject,
-          sessionEndedDuringCommit: true,
-        },
-      };
+      return errorResponse(
+        "session ended during plan commit; durable state may need reconciliation",
+      );
     }
     if (post.epoch !== acceptedEpoch) {
-      return {
-        output: formatPlanSummary(parsed),
-        metadata: {
-          currentPlan: parsed as unknown as JsonObject,
-          sessionEndedDuringCommit: true,
-          replacedSession: true,
-        },
-      };
+      return errorResponse(
+        "session was replaced during plan commit; durable state may need reconciliation",
+      );
     }
     sessions.set(sessionId, {
       ...post,
@@ -558,7 +544,17 @@ export function createPlanMiddleware(config?: PlanConfig): MiddlewareBundle {
     throw KoiRuntimeError.from(validated.error.code, validated.error.message);
   }
   const priority = validated.value.priority ?? DEFAULT_PRIORITY;
-  const injectPlanState = validated.value.injectPlanState ?? true;
+  // Default to FALSE: replaying model-authored plan content as a
+  // user-role message every turn creates a durable prompt-injection
+  // channel because non-`system:*` senderIds map to the user role in
+  // OpenAI-compat adapters (see packages/mm/model-openai-compat/
+  // src/request-mapper.ts). Plan content is ultimately authored by
+  // prior model output / tool output / user input, so promoting it
+  // back into the user instruction channel on every later turn is a
+  // trust-boundary regression. Hosts that want the CC-parity
+  // reminder behavior can opt in explicitly with
+  // `injectPlanState: true`.
+  const injectPlanState = validated.value.injectPlanState ?? false;
   const middleware = buildMiddleware(
     new Map(),
     validated.value.onPlanUpdate,
