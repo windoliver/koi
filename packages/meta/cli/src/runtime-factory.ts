@@ -811,7 +811,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     loaded: pluginComponents.discovered,
     errors: [...pluginComponents.errors, ...middlewareWarnings],
   };
-  if (pluginSummary.loaded.length > 0) {
+  // #1887: suppress the "N plugin(s) loaded" line for `koi tui`. The
+  // TUI's alt-screen immediately covers pre-launch stderr, so the line
+  // only flashes briefly and then sits as orphaned noise on the primary
+  // screen after quit — symmetric with the in-TUI banner, which is now
+  // also suppressed on clean loads. Other hosts (koi start, scripts,
+  // other bins) still get the line so their plain-terminal output shows
+  // which plugins loaded. Errors are logged unconditionally above.
+  if (pluginSummary.loaded.length > 0 && hostId !== "koi-tui") {
     // Sanitize plugin-derived strings before logging to prevent terminal
     // control sequence injection from malicious plugin manifests.
     // biome-ignore lint/complexity/useRegexLiterals: control chars require RegExp constructor
