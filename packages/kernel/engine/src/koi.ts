@@ -1681,8 +1681,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           runSignal,
         );
       } catch (err) {
+        // #1682: full rollback — clear EVERY piece of state run() published
+        // synchronously. A failed register leaves no trace so the runtime
+        // is immediately ready for another run() submission.
         activeController = undefined;
         activeRunSignal = undefined;
+        currentRunIdRef = undefined;
         runSignal.removeEventListener("abort", onAbort);
         throw err;
       }
@@ -1763,10 +1767,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           if (options.sessionRegistry !== undefined) {
             return options.sessionRegistry.interrupt(runSessionId, reason, runRid);
           }
-          // Fallback path (no registry): compare live currentRunIdRef to
-          // the captured runRid to detect cross-generation calls.
+          // Fallback (no registry). Verify we still own the active slot
+          // AND observe the composite signal for consistency with
+          // isInterrupted().
           if (currentRunIdRef !== runRid) return false;
-          if (abortController.signal.aborted) return false;
+          if (runSignal.aborted) return false;
           abortController.abort(reason);
           return true;
         },
@@ -2051,8 +2056,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         // registry will still return false if there is no registered entry.
         return options.sessionRegistry.interrupt(factorySessionId, reason, currentRunIdRef);
       }
-      if (activeController === undefined) return false;
-      if (activeController.signal.aborted) return false;
+      // Fallback path (no registry wired). Check the COMPOSITE signal so
+      // an external input.signal abort is reflected correctly — matches
+      // the contract exposed by isInterrupted() which also reads the
+      // composite signal.
+      if (activeController === undefined || activeRunSignal === undefined) return false;
+      if (activeRunSignal.aborted) return false;
       activeController.abort(reason);
       return true;
     },

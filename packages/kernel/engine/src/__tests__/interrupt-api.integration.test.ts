@@ -16,6 +16,7 @@ import type {
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { createKoi } from "../koi.js";
+import type { SessionRegistry } from "../session-registry.js";
 import { createSessionRegistry } from "../session-registry.js";
 
 // ---------------------------------------------------------------------------
@@ -692,6 +693,77 @@ describe("RunHandle.interrupt cross-generation safety", () => {
 
     abortCtrl.abort("live-cancel");
     while (!(await iter.next()).done) {}
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 11: Fallback interrupt reads composite signal (no registry)
+// ---------------------------------------------------------------------------
+
+describe("fallback interrupt reads composite signal", () => {
+  test("fallback (no registry) — interrupt returns false after external input.signal abort", async () => {
+    // No sessionRegistry wired — exercises the composite-signal fallback.
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: pausingAdapter(),
+      // deliberately NO sessionRegistry
+    });
+    const ctrl = new AbortController();
+    const iter = runtime
+      .run({
+        kind: "text",
+        text: "hi",
+        signal: ctrl.signal,
+      } as Parameters<typeof runtime.run>[0])
+      [Symbol.asyncIterator]();
+    await iter.next();
+    expect(runtime.isInterrupted()).toBe(false);
+
+    ctrl.abort("external");
+    await Promise.resolve();
+    // Runtime observes the composite signal aborted.
+    expect(runtime.isInterrupted()).toBe(true);
+    // Fallback interrupt must now report "already interrupted", not
+    // spuriously return true by checking only the internal controller.
+    expect(runtime.interrupt("late-internal")).toBe(false);
+
+    while (!(await iter.next()).done) {}
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 12: register failure rolls back currentRunId
+// ---------------------------------------------------------------------------
+
+describe("register failure rolls back currentRunId", () => {
+  test("registry.register failure rolls back currentRunId so runtime stays clean", async () => {
+    // A malicious/legitimate CONFLICT — register throws CONFLICT.
+    const sharedRegistry = createSessionRegistry();
+    // Wrap the registry to force a throw on register.
+    const throwingRegistry: SessionRegistry = {
+      register: () => {
+        throw new Error("simulated collision");
+      },
+      interrupt: sharedRegistry.interrupt,
+      isInterrupted: sharedRegistry.isInterrupted,
+      listActive: sharedRegistry.listActive,
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: throwingRegistry,
+    });
+
+    // run() must propagate the throw.
+    expect(() => runtime.run({ kind: "text", text: "x" })).toThrow();
+
+    // After the throw, runtime.currentRunId must be undefined.
+    expect(runtime.currentRunId).toBeUndefined();
+
+    // And the runtime must accept a subsequent run (no "already running" latch).
     await runtime.dispose();
   });
 });
