@@ -5867,3 +5867,19 @@ type MainToWorkerMessage = {
 export type { MainToWorkerMessage, WorkerEngineInput, WorkerToMainMessage };
 "
 `;
+
+exports[`@koi/core API surface ./governance has stable type surface 1`] = `
+"export { bj as ContextPressureTrend, cB as GOVERNANCE_VARIABLES, cD as GovernanceCheck, cE as GovernanceController, cF as GovernanceEvent, cG as GovernanceSnapshot, cH as GovernanceVariable, cI as GovernanceVariableContributor, ez as SensorReading, gw as governanceContributorToken } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './model-HASH.js';
+import './permission-HASH.js';
+import './hook.js';
+import './sandbox-HASH.js';
+import './webhook.js';
+import './zone.js';
+import './filesystem-HASH.js';
+"
+`;
