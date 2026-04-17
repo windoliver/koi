@@ -244,4 +244,28 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") return;
     expect(result.nodeType).toBe("concatenation");
   });
+
+  test("simple_expansion $VAR routes to scope-trackable", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $X");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  test("simple_expansion $1 routes to positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $1");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  test("simple_expansion $1suffix routes to positional (prefix rule)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $1suffix");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
 });

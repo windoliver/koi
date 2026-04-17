@@ -19,7 +19,7 @@
  */
 
 import type { Node } from "web-tree-sitter";
-import type { Redirect, SimpleCommand } from "./types.js";
+import type { Redirect, SimpleCommand, TooComplexCategory } from "./types.js";
 
 /** Walker result — flat discriminated union. `ok` carries an empty list for
  * programs with no commands (whitespace, comments, lone separators). */
@@ -29,6 +29,7 @@ type WalkResult =
       readonly kind: "too-complex";
       readonly reason: string;
       readonly nodeType?: string;
+      readonly primaryCategory: TooComplexCategory;
     };
 
 /** Operator tokens that separate commands at the container level. These are
@@ -61,7 +62,7 @@ const REDIRECT_OP_TYPES: ReadonlySet<string> = new Set([
 /** Entry point: walk a `program` root node and return all simple commands. */
 export function walkProgram(root: Node): WalkResult {
   if (root.hasError) {
-    return tooComplex("tree-sitter parse error in source", "ERROR");
+    return tooComplex("tree-sitter parse error in source", "ERROR", "unknown");
   }
   return walkContainer(root);
 }
@@ -93,7 +94,7 @@ function walkStatement(node: Node): WalkResult {
     case "comment":
       return { kind: "ok", commands: [] };
     default:
-      return tooComplex(`unsupported statement: ${node.type}`, node.type);
+      return tooComplex(`unsupported statement: ${node.type}`, node.type, "unknown");
   }
 }
 
@@ -106,7 +107,7 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "command") {
       if (command !== null) {
-        return tooComplex("multiple commands in redirected_statement", child.type);
+        return tooComplex("multiple commands in redirected_statement", child.type, "unknown");
       }
       command = child;
       continue;
@@ -118,13 +119,21 @@ function walkRedirectedStatement(node: Node): WalkResult {
       continue;
     }
     if (child.type === "heredoc_redirect") {
-      return tooComplex("heredoc redirects are not supported", "heredoc_redirect");
+      return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "unknown");
     }
-    return tooComplex(`unexpected child in redirected_statement: ${child.type}`, child.type);
+    return tooComplex(
+      `unexpected child in redirected_statement: ${child.type}`,
+      child.type,
+      "unknown",
+    );
   }
 
   if (command === null) {
-    return tooComplex("redirected_statement with no inner command", "redirected_statement");
+    return tooComplex(
+      "redirected_statement with no inner command",
+      "redirected_statement",
+      "unknown",
+    );
   }
   return walkCommand(command, redirects);
 }
@@ -140,7 +149,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "variable_assignment") {
       if (sawCommandName) {
-        return tooComplex("variable assignment after command name", child.type);
+        return tooComplex("variable assignment after command name", child.type, "unknown");
       }
       const ev = walkVariableAssignment(child);
       if (ev.kind === "too-complex") return ev;
@@ -150,7 +159,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
     if (child.type === "command_name") {
       const inner = child.children[0];
       if (inner === undefined) {
-        return tooComplex("empty command_name", "command_name");
+        return tooComplex("empty command_name", "command_name", "unknown");
       }
       const v = walkArgNode(inner);
       if (v.kind === "too-complex") return v;
@@ -169,7 +178,11 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
     // and no actual command to execute. Envs alone can set e.g. LD_PRELOAD
     // which is security-relevant, so bail out rather than silently drop.
     if (envVars.length > 0) {
-      return tooComplex("assignment-only command without an executable", "variable_assignment");
+      return tooComplex(
+        "assignment-only command without an executable",
+        "variable_assignment",
+        "unknown",
+      );
     }
     return { kind: "ok", commands: [] };
   }
@@ -187,6 +200,7 @@ function walkVariableAssignment(node: Node):
       kind: "too-complex";
       reason: string;
       nodeType?: string;
+      primaryCategory: TooComplexCategory;
     } {
   let name: string | null = null;
   let valueNode: Node | null = null;
@@ -203,14 +217,14 @@ function walkVariableAssignment(node: Node):
     }
     if (sawEquals) {
       if (valueNode !== null) {
-        return tooComplex("multiple values in variable_assignment", child.type);
+        return tooComplex("multiple values in variable_assignment", child.type, "unknown");
       }
       valueNode = child;
     }
   }
 
   if (name === null) {
-    return tooComplex("variable_assignment without a name", "variable_assignment");
+    return tooComplex("variable_assignment without a name", "variable_assignment", "unknown");
   }
   if (valueNode === null) {
     // `FOO=` — empty value is allowed, treat as empty string
@@ -222,9 +236,14 @@ function walkVariableAssignment(node: Node):
 }
 
 /** Walk an argument-position node. Resolves to a static string or too-complex. */
-function walkArgNode(
-  node: Node,
-): { kind: "ok"; value: string } | { kind: "too-complex"; reason: string; nodeType?: string } {
+function walkArgNode(node: Node):
+  | { kind: "ok"; value: string }
+  | {
+      kind: "too-complex";
+      reason: string;
+      nodeType?: string;
+      primaryCategory: TooComplexCategory;
+    } {
   switch (node.type) {
     case "word":
       // SECURITY: reject any word containing a backslash. Tree-sitter
@@ -235,7 +254,7 @@ function walkArgNode(
       // Force too-complex → transitional regex fallback rather than
       // emulate bash's escape semantics.
       if (node.text.includes("\\")) {
-        return tooComplex("word with backslash escape is not supported", "word");
+        return tooComplex("word with backslash escape is not supported", "word", "unknown");
       }
       return { kind: "ok", value: node.text };
     case "number":
@@ -248,7 +267,7 @@ function walkArgNode(
       if (text.length >= 2 && text[0] === "'" && text[text.length - 1] === "'") {
         return { kind: "ok", value: text.slice(1, -1) };
       }
-      return tooComplex("malformed raw_string", "raw_string");
+      return tooComplex("malformed raw_string", "raw_string", "unknown");
     }
     case "string": {
       // "double quoted" — allow only if children are [", string_content?, "]
@@ -264,47 +283,99 @@ function walkArgNode(
             return tooComplex(
               "backslash escape in double-quoted string is not supported",
               "string_content",
+              "unknown",
             );
           }
           parts.push(child.text);
           continue;
         }
         // simple_expansion, expansion, command_substitution, escape_sequence, …
-        return tooComplex(`dynamic content in double-quoted string: ${child.type}`, child.type);
+        return tooComplex(
+          `dynamic content in double-quoted string: ${child.type}`,
+          child.type,
+          "unknown",
+        );
       }
       return { kind: "ok", value: parts.join("") };
     }
     case "concatenation":
-      return tooComplex("adjacent-token concatenation is not supported", "concatenation");
-    case "simple_expansion":
-      return tooComplex("variable expansion ($VAR) is not supported", "simple_expansion");
+      return tooComplex(
+        "adjacent-token concatenation is not supported",
+        "concatenation",
+        "unknown",
+      );
+    case "simple_expansion": {
+      const POSITIONAL_PREFIXES = [
+        "$1",
+        "$2",
+        "$3",
+        "$4",
+        "$5",
+        "$6",
+        "$7",
+        "$8",
+        "$9",
+        "$@",
+        "$*",
+        "$#",
+        "$?",
+        "$!",
+      ];
+      const isPositional = POSITIONAL_PREFIXES.some((p) => node.text.startsWith(p));
+      return tooComplex(
+        "variable expansion ($VAR) is not supported",
+        "simple_expansion",
+        isPositional ? "positional" : "scope-trackable",
+      );
+    }
     case "expansion":
       // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
-      return tooComplex("parameter expansion (${VAR}) is not supported", "expansion");
+      return tooComplex("parameter expansion (${VAR}) is not supported", "expansion", "unknown");
     case "command_substitution":
-      return tooComplex("command substitution $( ) is not supported", "command_substitution");
+      return tooComplex(
+        "command substitution $( ) is not supported",
+        "command_substitution",
+        "unknown",
+      );
     case "process_substitution":
-      return tooComplex("process substitution <( ) is not supported", "process_substitution");
+      return tooComplex(
+        "process substitution <( ) is not supported",
+        "process_substitution",
+        "unknown",
+      );
     case "arithmetic_expansion":
-      return tooComplex("arithmetic expansion $(( )) is not supported", "arithmetic_expansion");
+      return tooComplex(
+        "arithmetic expansion $(( )) is not supported",
+        "arithmetic_expansion",
+        "unknown",
+      );
     case "brace_expression":
-      return tooComplex("brace expansion {a,b} is not supported", "brace_expression");
+      return tooComplex("brace expansion {a,b} is not supported", "brace_expression", "unknown");
     case "ansi_c_string":
       // $'\xNN' — ANSI-C escapes. Static but easy to use for obfuscation;
       // treat as too-complex so the regex prefilter catches the hex pattern.
-      return tooComplex("ANSI-C string $'...' is not supported", "ansi_c_string");
+      return tooComplex("ANSI-C string $'...' is not supported", "ansi_c_string", "unknown");
     case "translated_string":
       // $"..." — locale-translated strings. Not supported.
-      return tooComplex('translated string $"..." is not supported', "translated_string");
+      return tooComplex(
+        'translated string $"..." is not supported',
+        "translated_string",
+        "unknown",
+      );
     default:
-      return tooComplex(`unsupported argument node: ${node.type}`, node.type);
+      return tooComplex(`unsupported argument node: ${node.type}`, node.type, "unknown");
   }
 }
 
 /** Walk a `file_redirect` node. Children: optional file_descriptor, operator, target. */
-function walkFileRedirect(
-  node: Node,
-): { kind: "ok"; redirect: Redirect } | { kind: "too-complex"; reason: string; nodeType?: string } {
+function walkFileRedirect(node: Node):
+  | { kind: "ok"; redirect: Redirect }
+  | {
+      kind: "too-complex";
+      reason: string;
+      nodeType?: string;
+      primaryCategory: TooComplexCategory;
+    } {
   let fd: number | undefined;
   let op: string | undefined;
   let targetNode: Node | null = null;
@@ -323,14 +394,14 @@ function walkFileRedirect(
       targetNode = child;
       continue;
     }
-    return tooComplex(`unexpected child in file_redirect: ${child.type}`, child.type);
+    return tooComplex(`unexpected child in file_redirect: ${child.type}`, child.type, "unknown");
   }
 
   if (op === undefined) {
-    return tooComplex("file_redirect without operator", "file_redirect");
+    return tooComplex("file_redirect without operator", "file_redirect", "unknown");
   }
   if (targetNode === null) {
-    return tooComplex("file_redirect without target", "file_redirect");
+    return tooComplex("file_redirect without target", "file_redirect", "unknown");
   }
   const v = walkArgNode(targetNode);
   if (v.kind === "too-complex") return v;
@@ -344,9 +415,15 @@ function walkFileRedirect(
 
 function tooComplex(
   reason: string,
-  nodeType?: string,
-): { kind: "too-complex"; reason: string; nodeType?: string } {
+  nodeType: string | undefined,
+  primaryCategory: TooComplexCategory,
+): {
+  kind: "too-complex";
+  reason: string;
+  nodeType?: string;
+  primaryCategory: TooComplexCategory;
+} {
   return nodeType !== undefined
-    ? { kind: "too-complex", reason, nodeType }
-    : { kind: "too-complex", reason };
+    ? { kind: "too-complex", reason, nodeType, primaryCategory }
+    : { kind: "too-complex", reason, primaryCategory };
 }

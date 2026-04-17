@@ -25,6 +25,25 @@ export interface Redirect {
 }
 
 /**
+ * High-level reason a command was rejected. Stable API surface that abstracts
+ * tree-sitter grammar details so callers (permission UIs, telemetry scripts,
+ * future scope-tracking work) can switch on reason without coupling to
+ * parser versions. See `docs/L2/bash-ast.md` for per-category semantics.
+ */
+export type TooComplexCategory =
+  | "scope-trackable"
+  | "parameter-expansion"
+  | "positional"
+  | "control-flow"
+  | "shell-escape"
+  | "heredoc"
+  | "process-substitution"
+  | "parse-error"
+  | "unsupported-syntax"
+  | "malformed"
+  | "unknown";
+
+/**
  * A single parsed shell command with argv-level detail.
  *
  * Only produced for commands the walker can fully resolve to a static
@@ -62,6 +81,7 @@ export type AstAnalysis =
       readonly kind: "too-complex";
       readonly reason: string;
       readonly nodeType?: string;
+      readonly primaryCategory: TooComplexCategory;
     }
   | {
       readonly kind: "parse-unavailable";
