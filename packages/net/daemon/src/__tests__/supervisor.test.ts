@@ -652,7 +652,7 @@ describe("supervisor correctness hardening", () => {
 
     const supervisorResult = createSupervisor({
       maxWorkers: 4,
-      shutdownDeadlineMs: 100,
+      shutdownDeadlineMs: 500,
       backends: { "in-process": slowBackend },
     });
     if (!supervisorResult.ok) return;
@@ -675,11 +675,6 @@ describe("supervisor correctness hardening", () => {
     expect(spawned[0]?.terminated).toBe(true);
     // list() must be clean; activeIds must be released.
     expect(supervisorResult.value.list()).toEqual([]);
-    // Starting a fresh worker with the same id must now succeed.
-    if (releaseSpawn !== undefined) {
-      // Reset the release gate for the next spawn.
-      releaseSpawn = undefined;
-    }
   });
 
   it("falls back to an available backend when the preferred one declares itself unavailable", async () => {
@@ -828,6 +823,149 @@ describe("supervisor correctness hardening", () => {
     // waited on terminate).
     expect(killedAt - t0).toBeGreaterThanOrEqual(50);
     expect(elapsed).toBeLessThan(300);
+  });
+
+  it("late admission during shutdown is bounded by the deadline even if terminate hangs", async () => {
+    // A backend whose spawn() resolves only after shutdown starts AND whose
+    // terminate() hangs: the late-admission path must deadline, fall back
+    // to kill(), and shutdown must return instead of waiting forever.
+    let releaseSpawn: (() => void) | undefined;
+    let killCalled = false;
+    let aliveFlag = true;
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "hung-late",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        await new Promise<void>((resolve) => {
+          releaseSpawn = resolve;
+        });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => {
+        await new Promise<void>(() => {});
+        return { ok: true, value: undefined };
+      },
+      kill: async () => {
+        killCalled = true;
+        aliveFlag = false;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async () => aliveFlag,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 60,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+
+    void supervisorResult.value.start(makeRequest("hung-late-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const sdPromise = supervisorResult.value.shutdown("test");
+    await new Promise((r) => setTimeout(r, 10));
+    if (releaseSpawn !== undefined) releaseSpawn();
+
+    const t0 = Date.now();
+    await sdPromise;
+    const elapsed = Date.now() - t0;
+
+    // Must have hit kill() fallback despite hung terminate().
+    expect(killCalled).toBe(true);
+    // Bounded — not hung on terminate.
+    expect(elapsed).toBeLessThan(400);
+  });
+
+  it("watch-stream fault cleans up and drives the normal restart policy", async () => {
+    // If backend.watch() throws mid-stream, the supervisor must: (a) kill
+    // the underlying worker via teardownWorker (since watch loss doesn't
+    // imply the process is dead), (b) publish a synthetic crashed event,
+    // (c) schedule a restart if policy permits.
+    let killCalled = false;
+    let terminateCalled = false;
+    let spawnCount = 0;
+    // Track per-spawn liveness so the first (faulted) worker reports alive
+    // until kill() fires, proving teardownWorker actually had to kill.
+    const alive = new Map<string, boolean>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "fault-watch",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        spawnCount++;
+        alive.set(req.workerId as string, true);
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async (id) => {
+        terminateCalled = true;
+        // Terminate does NOT kill — the fault-recovery path should still
+        // need to call kill() to finish the job.
+        void id;
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        killCalled = true;
+        alive.set(id as string, false);
+        return { ok: true, value: undefined };
+      },
+      isAlive: async (id) => alive.get(id as string) ?? false,
+      watch: async function* (id): AsyncIterable<WorkerEvent> {
+        // First worker: emit started, then throw. Subsequent workers (respawn):
+        // emit started, then park so the test can observe the 2nd spawn count.
+        yield { kind: "started", workerId: id, at: Date.now() };
+        if (spawnCount === 1) {
+          throw new Error("simulated watch transport failure");
+        }
+        // Park the second worker indefinitely — test will shutdown.
+        await new Promise<void>(() => {});
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 1,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 5,
+        backoffCeilingMs: 5,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("fault-1"));
+
+    // Wait for the fault to be observed, teardown to run, and one restart attempt.
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(terminateCalled).toBe(true);
+    expect(killCalled).toBe(true);
+    // Exactly 2 spawns: the original + one respawn under the transient policy.
+    expect(spawnCount).toBe(2);
+    await supervisorResult.value.shutdown("test");
   });
 
   it("short-lived subprocesses are observed as exited by the supervisor", async () => {

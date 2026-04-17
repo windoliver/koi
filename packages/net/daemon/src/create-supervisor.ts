@@ -124,6 +124,74 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     return undefined;
   };
 
+  /**
+   * Deadline-bounded worker teardown. Races `backend.terminate()` against
+   * `shutdownDeadlineMs`; on deadline or terminate failure, races
+   * `backend.kill()` against another `shutdownDeadlineMs` window. Used by:
+   *   - `stop()` for live pool workers
+   *   - the late-admission path in `performSpawn()` when shutdown or
+   *     explicit cancellation fires during `backend.spawn()`
+   *   - the watch-stream fault path where we must ensure the OS-level
+   *     worker is actually dead before declaring the entry gone
+   *
+   * `observeExit` may be undefined when the supervisor has no observed-exit
+   * signal (late admission, watch-stream fault). In that case the helper
+   * relies purely on the deadline + `isAlive()` check.
+   */
+  const teardownWorker = async (
+    backend: WorkerBackend,
+    id: WorkerId,
+    reason: string,
+    observeExit: Promise<void> | undefined,
+  ): Promise<Result<void, KoiError>> => {
+    // The exit signal is whichever resolves first: a pre-wired observed-exit
+    // promise from the watch loop, OR a poll of backend.isAlive() every 20ms.
+    // Polling bounds the "no observer" case — otherwise the deadline would
+    // always fire even for a worker that already exited.
+    const poll = async (): Promise<"exited"> => {
+      while (true) {
+        if (!(await backend.isAlive(id))) return "exited";
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const exitedSignal = Promise.race([
+      (observeExit ?? new Promise<void>(() => {})).then(() => "exited" as const),
+      poll(),
+    ]).then(() => ({ kind: "exited" as const }));
+
+    // Fire terminate without awaiting; a hung RPC must not block the deadline.
+    void backend.terminate(id, reason).catch(() => undefined);
+
+    let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
+    const deadlinePromise = new Promise<{ kind: "deadline" }>((resolve) => {
+      deadlineHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
+    });
+    const first = await Promise.race([exitedSignal, deadlinePromise]);
+    clearTimeout(deadlineHandle);
+    if (first.kind === "exited") return { ok: true, value: undefined };
+
+    // Deadline fired — fall back to kill, also deadline-bounded. A hung
+    // kill() is surfaced as INTERNAL failure so callers see partial shutdown.
+    void backend.kill(id).catch(() => undefined);
+    let killHandle: ReturnType<typeof setTimeout> | undefined;
+    const killDeadline = new Promise<{ kind: "deadline" }>((resolve) => {
+      killHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
+    });
+    const killWinner = await Promise.race([exitedSignal, killDeadline]);
+    clearTimeout(killHandle);
+    if (killWinner.kind === "deadline") {
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: `Worker ${id} did not exit after kill within shutdownDeadlineMs`,
+          retryable: false,
+        },
+      };
+    }
+    return { ok: true, value: undefined };
+  };
+
   // Internal spawn implementation. `fromRestart` distinguishes the recursive
   // respawn path (which has already claimed activeIds earlier) from external
   // callers (which must go through the duplicate-id guard).
@@ -241,16 +309,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // guarantees shutdown()'s pool-drain step runs on a fully quiesced
     // backend, and that stop() callers see the worker truly gone on return.
     if (shuttingDown || cancellation.cancelled) {
-      try {
-        await backend.terminate(request.workerId, "cancelled-during-spawn");
-      } catch {
-        // Swallow: we are already on the cancellation path.
-      }
-      try {
-        await backend.kill(request.workerId);
-      } catch {
-        // Swallow.
-      }
+      // Deadline-bounded teardown of the late admission — see teardownWorker.
+      // We do NOT have an observed-exit signal here (the watch IIFE never
+      // attached), so the helper polls backend.isAlive() after kill().
+      await teardownWorker(backend, request.workerId, "cancelled-during-spawn", undefined);
       const reason = shuttingDown
         ? "Supervisor began shutting down during spawn; worker terminated"
         : "stop() cancelled the spawn before the worker could enter the pool";
@@ -383,8 +445,21 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           return;
         }
       } catch (e) {
-        // Surface unexpected backend watch-stream closure as a synthetic crashed event.
-        publishEvent({
+        // Watch stream faulted. The underlying worker may still be alive;
+        // losing observability does NOT imply the process died. Kill it
+        // through the backend to avoid orphaning, then surface a synthetic
+        // crashed event and drive the normal restart policy so the worker
+        // can recover if the policy permits.
+        const current = pool.get(request.workerId);
+        if (current !== undefined) {
+          // Best-effort deadline-bounded teardown; swallow the Result since
+          // we're on a degraded path and about to replace the worker anyway.
+          await teardownWorker(current.backend, request.workerId, "watch-stream-fault", undefined);
+          current.resolveExited();
+          pool.delete(request.workerId);
+        }
+
+        const syntheticCrash: WorkerEvent = {
           kind: "crashed",
           workerId: request.workerId,
           at: Date.now(),
@@ -393,15 +468,71 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             message: `Backend watch stream closed: ${e instanceof Error ? e.message : String(e)}`,
             retryable: false,
           },
-        });
-        // Resolve the exit promise and clean up so stop() doesn't hang and
-        // activeIds doesn't leak.
-        const current = pool.get(request.workerId);
-        if (current !== undefined) {
-          current.resolveExited();
-          pool.delete(request.workerId);
+        };
+        publishEvent(syntheticCrash);
+
+        // Apply restart policy just like a real crash. Temporary policy
+        // means we're done; transient/permanent schedule a respawn. If we
+        // never had a pool entry (fault before admission), skip restart.
+        if (current === undefined || shuttingDown) {
+          activeIds.delete(request.workerId);
+          return;
         }
-        activeIds.delete(request.workerId);
+
+        const policy = current.policy;
+        const shouldRestart = policy.restart !== "temporary";
+        const now = syntheticCrash.at;
+        const windowStart = now - policy.maxRestartWindowMs;
+        const recentTimestamps = current.restartTimestamps.filter((t) => t >= windowStart);
+        if (current.stopping || !shouldRestart || recentTimestamps.length >= policy.maxRestarts) {
+          activeIds.delete(request.workerId);
+          return;
+        }
+
+        // Schedule a respawn with the same mechanics as the normal crash
+        // path so callers can't distinguish a watch fault from a real crash.
+        let resolveRestartDone: () => void = () => {};
+        const restartDonePromise = new Promise<void>((resolve) => {
+          resolveRestartDone = resolve;
+        });
+        const restartingEntry: RestartingEntry = {
+          cancelled: false,
+          done: restartDonePromise,
+        };
+        restarting.set(request.workerId, restartingEntry);
+
+        const restartTask = (async () => {
+          try {
+            const backoff = Math.min(
+              policy.backoffBaseMs * 2 ** current.restartAttempts,
+              policy.backoffCeilingMs,
+            );
+            if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
+            if (shuttingDown || restartingEntry.cancelled) {
+              activeIds.delete(request.workerId);
+              return;
+            }
+            const respawned = await performSpawn(
+              request,
+              { restart: policy, backend: current.handle.backendKind },
+              true,
+            );
+            if (respawned.ok) {
+              const newEntry = pool.get(request.workerId);
+              if (newEntry !== undefined) {
+                newEntry.restartAttempts = current.restartAttempts + 1;
+                newEntry.restartTimestamps = [...recentTimestamps, now];
+              }
+            } else {
+              activeIds.delete(request.workerId);
+            }
+          } finally {
+            restarting.delete(request.workerId);
+            resolveRestartDone();
+          }
+        })();
+        pendingRestarts.add(restartTask);
+        void restartTask.finally(() => pendingRestarts.delete(restartTask));
       }
     })();
 
@@ -414,12 +545,30 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   const stop: Supervisor["stop"] = async (id, reason) => {
     // Case A: worker's spawn is in flight (activeIds set, not in pool yet).
     // Flip cancelled; the spawn code re-checks after backend.spawn()
-    // resolves and terminates the late admission. Await its spawnDone so
-    // stop() returns only once the worker is fully gone.
+    // resolves and terminates the late admission. Race spawnDone against
+    // the shutdown deadline so a wedged backend.spawn() cannot hang stop().
     const spawnCancel = pendingSpawnCancellations.get(id);
     if (spawnCancel !== undefined && pool.get(id) === undefined) {
       spawnCancel.cancelled = true;
-      await spawnCancel.done;
+      let cancelDeadlineHandle: ReturnType<typeof setTimeout> | undefined;
+      const cancelDeadline = new Promise<"deadline">((resolve) => {
+        cancelDeadlineHandle = setTimeout(() => resolve("deadline"), config.shutdownDeadlineMs);
+      });
+      const winner = await Promise.race([
+        spawnCancel.done.then(() => "settled" as const),
+        cancelDeadline,
+      ]);
+      clearTimeout(cancelDeadlineHandle);
+      if (winner === "deadline") {
+        return {
+          ok: false,
+          error: {
+            code: "INTERNAL",
+            message: `stop(${id}): backend.spawn() did not resolve within shutdownDeadlineMs`,
+            retryable: true,
+          },
+        };
+      }
       // Handle the corner case: the spawn resolved BEFORE we flipped
       // cancelled, so the worker entered the pool instead of self-terminating.
       // Fall through to the normal pool-stop path below so the caller still
@@ -454,94 +603,8 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // this flag when it observes exit/crash.
     entry.stopping = true;
 
-    // Fire graceful terminate. We do NOT await it before starting the
-    // deadline timer: a wedged backend could stall here and never reach
-    // kill() fallback. Instead, race terminate() AND observed exit against
-    // a single deadline.
-    const terminateCall = entry.backend.terminate(id, reason).then(
-      (r) => ({ kind: "terminate" as const, result: r }),
-      (e) => ({
-        kind: "terminate" as const,
-        result: {
-          ok: false as const,
-          error: {
-            code: "INTERNAL" as const,
-            message: `terminate() threw: ${e instanceof Error ? e.message : String(e)}`,
-            retryable: true,
-          },
-        },
-      }),
-    );
-
-    let deadlineHandle: ReturnType<typeof setTimeout> | undefined;
-    const deadlinePromise = new Promise<{ kind: "deadline" }>((resolve) => {
-      deadlineHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
-    });
-    const exitedSignal = entry.exitedPromise.then(() => ({ kind: "exited" as const }));
-
-    const first = await Promise.race([exitedSignal, deadlinePromise]);
-    clearTimeout(deadlineHandle);
-
-    // terminateCall may still be pending — capture its eventual result for
-    // final reporting without blocking the deadline.
-    let terminateResult: Result<void, KoiError> | undefined;
-    void terminateCall.then((r) => {
-      terminateResult = r.result;
-    });
-
-    if (first.kind === "deadline") {
-      // Force-kill. Race kill() against a secondary deadline so a hung
-      // kill RPC can't block stop() either.
-      const killCall = entry.backend.kill(id).then(
-        (r) => ({ kind: "kill" as const, result: r }),
-        (e) => ({
-          kind: "kill" as const,
-          result: {
-            ok: false as const,
-            error: {
-              code: "INTERNAL" as const,
-              message: `kill() threw: ${e instanceof Error ? e.message : String(e)}`,
-              retryable: false,
-            },
-          },
-        }),
-      );
-      let killHandle: ReturnType<typeof setTimeout> | undefined;
-      const killDeadline = new Promise<{ kind: "deadline" }>((resolve) => {
-        killHandle = setTimeout(() => resolve({ kind: "deadline" }), config.shutdownDeadlineMs);
-      });
-      const killWinner = await Promise.race([exitedSignal, killDeadline]);
-      clearTimeout(killHandle);
-
-      // If we deadlined, record kill's eventual result without blocking.
-      let killResult: Result<void, KoiError> | undefined;
-      void killCall.then((r) => {
-        killResult = r.result;
-      });
-
-      if (killWinner.kind === "deadline") {
-        return {
-          ok: false,
-          error: {
-            code: "INTERNAL",
-            message: `Worker ${id} did not exit after kill within shutdownDeadlineMs`,
-            retryable: false,
-          },
-        };
-      }
-      // Observed exit during kill window — try to surface killResult if it
-      // already resolved with an error; otherwise accept success.
-      if (killResult !== undefined && !killResult.ok) return killResult;
-      return { ok: true, value: undefined };
-    }
-
-    // Observed exit before the first deadline. Surface terminate's error
-    // if it already resolved with failure; otherwise accept success.
-    if (terminateResult !== undefined && !terminateResult.ok) {
-      // Worker exited despite terminate() reporting an error; accept success.
-      return { ok: true, value: undefined };
-    }
-    return { ok: true, value: undefined };
+    // Deadline-bounded terminate/kill. See teardownWorker for semantics.
+    return teardownWorker(entry.backend, id, reason, entry.exitedPromise);
   };
 
   const shutdown: Supervisor["shutdown"] = async (reason) => {
