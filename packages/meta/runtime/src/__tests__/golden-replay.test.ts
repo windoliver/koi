@@ -20,6 +20,7 @@ import type {
   EngineInput,
   InboundMessage,
   JsonObject,
+  KoiMiddleware,
   ModelChunk,
   ModelRequest,
   ModelResponse,
@@ -36,6 +37,7 @@ import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
@@ -545,6 +547,113 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
         expect(goalDecisions[0]?.goalBlock).toBeDefined();
       }
     }
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// Golden: @koi/middleware-planning (write_plan tool injection + MW span)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-planning", () => {
+  test("plan MW composes through createKoi, injects write_plan tool, produces MW span", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-mw-planning-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-planning";
+
+    const store = createAtifDocumentStore(
+      { agentName: "planning-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "planning-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    // @koi/middleware-planning
+    const planUpdates: number[] = [];
+    const planMw = createPlanMiddleware({
+      onPlanUpdate: (plan) => planUpdates.push(plan.length),
+    });
+
+    // Verify the middleware self-describes correctly.
+    expect(planMw.name).toBe("plan");
+    expect(planMw.priority).toBe(450);
+
+    // Inner spy captures the streamed ModelRequest so we can confirm the
+    // plan MW injected the write_plan tool descriptor upstream of the
+    // adapter. Priority 999 places it deepest (innermost) in the onion.
+    let capturedToolNames: readonly string[] | undefined;
+    const streamSpy: KoiMiddleware = {
+      name: "plan-stream-spy",
+      priority: 999,
+      describeCapabilities: () => undefined,
+      async *wrapModelStream(_ctx, req, next) {
+        capturedToolNames = req.tools?.map((t) => t.name);
+        yield* next(req);
+      },
+    };
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "planning-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, planMw, streamSpy, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // write_plan tool descriptor was injected into the model request.
+    expect(capturedToolNames).toBeDefined();
+    expect(capturedToolNames?.includes(WRITE_PLAN_TOOL_NAME)).toBe(true);
+
+    // MW span for the plan middleware fired end-to-end.
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("plan")).toBe(true);
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool flow still works alongside the plan MW.
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Cassette did not invoke write_plan, so no onPlanUpdate should have fired.
+    expect(planUpdates).toEqual([]);
   }, 15000);
 });
 
