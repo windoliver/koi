@@ -38,7 +38,7 @@ import {
   validatePath,
 } from "@koi/bash-security";
 import { analyzeBashCommand } from "./analyze.js";
-import type { AstAnalysis } from "./types.js";
+import type { AstAnalysis, TooComplexCategory } from "./types.js";
 
 /** Options accepted by `classifyBashCommand`. Mirrors @koi/bash-security's
  * signature so existing call sites do not need to reshape opts. */
@@ -62,6 +62,14 @@ export type ElicitCallback = (params: {
   readonly command: string;
   readonly reason: string;
   readonly nodeType?: string;
+  /**
+   * Stable high-level category for the rejection. Approval UIs should
+   * switch on this enum rather than `nodeType` — the category is the
+   * versioned API, `nodeType` is raw parser output that can change
+   * across `tree-sitter-bash` upgrades. See `TooComplexCategory` in
+   * `./types.ts`.
+   */
+  readonly primaryCategory: TooComplexCategory;
   readonly signal?: AbortSignal;
 }) => Promise<boolean>;
 
@@ -269,6 +277,7 @@ export async function classifyBashCommandWithElicit(
     approved = await opts.elicit({
       command,
       reason: analysis.reason,
+      primaryCategory: analysis.primaryCategory,
       ...(analysis.nodeType !== undefined ? { nodeType: analysis.nodeType } : {}),
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
