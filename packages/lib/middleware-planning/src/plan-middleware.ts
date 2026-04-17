@@ -51,6 +51,15 @@ interface PlanSessionState {
   readonly lastUpdateTurnIndex: number;
   /** Per-turn write counts — fresh turnId means fresh quota. */
   readonly perTurnWriteCounts: Map<TurnId, number>;
+  /**
+   * Per-session promise chain. Every commit-plus-onPlanUpdate block
+   * awaits the previous chain entry before taking its turn and then
+   * appends itself, so overlapping turns commit strictly in arrival
+   * order and never race the persistence hook. Stored on the state
+   * object via a single-slot mutable wrapper so it can be mutated
+   * while the rest of the session remains readonly.
+   */
+  readonly pending: { current: Promise<void> };
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -177,44 +186,66 @@ async function handleWritePlan(
     return errorResponse(parsed);
   }
 
-  // Stale-turn protection — reject writes from turns older than the one
-  // that already committed the current plan. A later turn's commit wins.
-  if (turnIndex < state.lastUpdateTurnIndex) {
-    return errorResponse("plan already updated by a newer turn; write rejected as stale");
-  }
-
-  // Commit-with-rollback: the hook may be doing durable persistence
-  // (the docs advertise `persistPlan(plan)` as a valid use), and may
-  // return a Promise for async I/O. We stage in memory, await the
-  // hook, and on any sync throw OR promise rejection we restore the
-  // prior state before returning an error. This keeps in-memory and
-  // durable state from diverging on I/O failure.
-  const prior = state.currentPlan;
-  const priorTurnIndex = state.lastUpdateTurnIndex;
-  sessions.set(sessionId, {
-    currentPlan: parsed,
-    lastUpdateTurnIndex: turnIndex,
-    perTurnWriteCounts: state.perTurnWriteCounts,
-  });
-
-  if (onPlanUpdate !== undefined) {
-    try {
-      await onPlanUpdate(parsed);
-    } catch (err) {
-      sessions.set(sessionId, {
-        currentPlan: prior,
-        lastUpdateTurnIndex: priorTurnIndex,
-        perTurnWriteCounts: state.perTurnWriteCounts,
-      });
-      const message = err instanceof Error ? err.message : String(err);
-      return errorResponse(`plan update hook failed: ${message}`);
+  // Critical section: stale-check + in-memory commit + persistence hook
+  // run serialized per session via `state.pending`. This guarantees:
+  //   - commits land in arrival order (no last-writer-wins races)
+  //   - rollback on hook failure only restores OUR own prior snapshot
+  //     (captured inside the section) and cannot clobber a plan that
+  //     a concurrent turn committed after us
+  //   - persistence hooks fire in the same order as in-memory commits,
+  //     so a durable store cannot end on an older plan than memory
+  const run = async (): Promise<ToolResponse> => {
+    const snapshot = sessions.get(sessionId);
+    if (snapshot === undefined) {
+      return errorResponse("No active session for plan middleware");
     }
-  }
 
-  return {
-    output: formatPlanSummary(parsed),
-    metadata: { currentPlan: parsed as unknown as JsonObject },
+    // Stale-turn protection must be re-checked inside the section because
+    // a newer turn may have committed while we were queued.
+    if (turnIndex < snapshot.lastUpdateTurnIndex) {
+      return errorResponse("plan already updated by a newer turn; write rejected as stale");
+    }
+
+    const prior = snapshot.currentPlan;
+    const priorTurnIndex = snapshot.lastUpdateTurnIndex;
+
+    sessions.set(sessionId, {
+      ...snapshot,
+      currentPlan: parsed,
+      lastUpdateTurnIndex: turnIndex,
+    });
+
+    if (onPlanUpdate !== undefined) {
+      try {
+        await onPlanUpdate(parsed);
+      } catch (err) {
+        const latest = sessions.get(sessionId);
+        if (latest !== undefined) {
+          sessions.set(sessionId, {
+            ...latest,
+            currentPlan: prior,
+            lastUpdateTurnIndex: priorTurnIndex,
+          });
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        return errorResponse(`plan update hook failed: ${message}`);
+      }
+    }
+
+    return {
+      output: formatPlanSummary(parsed),
+      metadata: { currentPlan: parsed as unknown as JsonObject },
+    };
   };
+
+  const next = state.pending.current.then(run, run);
+  // Keep the chain alive for the next queued call without letting our
+  // resolved ToolResponse leak into pending's void contract.
+  state.pending.current = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
 }
 
 function buildMiddleware(
@@ -230,6 +261,7 @@ function buildMiddleware(
         currentPlan: [],
         lastUpdateTurnIndex: -1,
         perTurnWriteCounts: new Map(),
+        pending: { current: Promise.resolve() },
       });
     },
     async onSessionEnd(ctx) {

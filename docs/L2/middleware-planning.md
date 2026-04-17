@@ -140,6 +140,18 @@ cannot reset each other's budget. Plan commits use `turnIndex`
 monotonicity: if a write from an older turn arrives after a newer turn
 has already committed a plan, the older write is rejected as stale.
 
+Each session also maintains a single-slot promise chain that
+serializes the commit-plus-`onPlanUpdate` critical section. Overlapping
+writes from the same session run in arrival order, so:
+
+- **Persistence order matches arrival order**: a durable store using
+  `onPlanUpdate` cannot end on an older plan than what's in memory,
+  even when earlier calls take longer than later ones.
+- **Rollback is safe**: when an earlier write's hook rejects, its
+  rollback restores the prior-to-us snapshot captured inside the
+  critical section. It cannot clobber a newer turn's successfully
+  committed plan because that newer turn runs after this one finishes.
+
 ## Prompt-injection containment
 
 Plan item `content` is authored by the model (and therefore ultimately

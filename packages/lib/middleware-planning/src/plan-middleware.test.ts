@@ -598,6 +598,103 @@ describe("plan tool provider", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Concurrent persistence ordering
+// ---------------------------------------------------------------------------
+
+describe("concurrent async persistence", () => {
+  it("serializes onPlanUpdate across overlapping turns so durable store ends on the newer plan", async () => {
+    // The reviewer called this out: without per-session serialization,
+    // turn 0 and turn 1 can both be inside `await onPlanUpdate` at the
+    // same time; if 1 finishes first and 0 finishes second the external
+    // store ends on the older plan even though in-memory is newer.
+    // This test asserts the arrival-order invariant.
+    const persisted: string[] = [];
+    const mw = make({
+      onPlanUpdate: async (plan) => {
+        // Turn 0's hook artificially takes longer than turn 1's so that
+        // without serialization their persistence order would invert.
+        const first = plan[0]?.content ?? "";
+        const delay = first === "old" ? 20 : 2;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        persisted.push(first);
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const p0 = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "old", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    const p1 = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "new", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    await Promise.all([p0, p1]);
+
+    // Persisted in arrival order, not completion order — "old" is first
+    // (it was queued first), "new" is second (queued second), so durable
+    // store ends on "new" which matches in-memory state.
+    expect(persisted).toEqual(["old", "new"]);
+  });
+
+  it("does not clobber a newer turn's plan when an earlier turn's async hook rejects", async () => {
+    // Scenario: turn 0 stages "v0" and is about to await its rejecting
+    // hook. Turn 1 arrives with "v1" and commits successfully while
+    // turn 0 is still queued. Turn 0's rejection must NOT roll memory
+    // back to pre-v0 — that would erase v1.
+    const mw = make({
+      onPlanUpdate: async (plan) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        if (plan[0]?.content === "v0") {
+          throw new Error("v0 persist failed");
+        }
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const p0 = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "v0", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    const p1 = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "v1", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    const [r0, r1] = await Promise.all([p0, p1]);
+    expect((r0?.output as Record<string, unknown>).error).toContain("v0 persist failed");
+    expect(r1?.output).toContain("Plan updated");
+
+    // In-memory plan is v1 (committed successfully after v0's rollback).
+    const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 2), makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.content).toBe("v1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Turn concurrency
 // ---------------------------------------------------------------------------
 
