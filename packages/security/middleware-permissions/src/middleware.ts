@@ -797,6 +797,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );
@@ -875,6 +877,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );

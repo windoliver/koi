@@ -652,3 +652,128 @@ describe("filterTools soft-deny visibility at model-call time (#1650 Task 11)", 
     expect(entries[0]?.origin).toBe("native");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. Mechanism A escalation prefilter excludes soft-conversion records (#1650 Task 12)
+// ---------------------------------------------------------------------------
+
+describe("Mechanism A escalation prefilter excludes soft-conversion records (#1650 Task 12)", () => {
+  test("hard-converted soft-denies (origin: 'soft-conversion') do NOT feed session-wide escalation", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 1, // second call triggers over-cap
+      denialEscalation: {
+        threshold: 2,
+        windowMs: 60_000,
+      },
+    });
+    const ctx = makeTurnContext();
+
+    // First call: soft-deny (under cap).
+    const r1 = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    expect((r1?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+
+    // Second call: over cap → hard-convert, records DenialTracker with origin: "soft-conversion".
+    await expect(mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler)).rejects.toThrow(
+      /soft-deny retry cap/,
+    );
+
+    // If soft-conversion records leaked into Mechanism A, threshold=2 would be hit.
+    // Verify by inspecting tracker — exactly 1 record (the over-cap hard-convert).
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sid: string): {
+          getAll(): readonly { toolId?: string; origin?: string; softness?: string }[];
+        };
+      }
+    ).__getDenialTrackerForTesting(ctx.session.sessionId as string);
+
+    const entries = tracker.getAll();
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.origin).toBe("soft-conversion");
+    expect(entries[0]?.softness).toBe("hard");
+  });
+
+  test("escalation predicate integration: over-cap record present but NOT counted by the prefilter", async () => {
+    const backend: PermissionBackend = {
+      check: async (): Promise<PermissionDecision> => ({ effect: "allow" }),
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map(() => ({ effect: "allow" }) as const),
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      denialEscalation: { threshold: 2, windowMs: 60_000 },
+    });
+    const ctx = makeTurnContext();
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sid: string): {
+          record(entry: Record<string, unknown>): void;
+          getAll(): readonly unknown[];
+        };
+      }
+    ).__getDenialTrackerForTesting(ctx.session.sessionId as string);
+
+    // Seed with 3 origin: "soft-conversion" records — exceeds threshold=2.
+    for (let i = 0; i < 3; i++) {
+      tracker.record({
+        toolId: "bash",
+        reason: "converted",
+        timestamp: Date.now(),
+        principal: ctx.session.agentId,
+        turnIndex: ctx.turnIndex,
+        source: "policy",
+        queryKey: undefined,
+        softness: "hard",
+        origin: "soft-conversion",
+      });
+    }
+
+    // A fresh call should hit the backend (ALLOW), not be auto-escalated.
+    const handler = mock(async (_: ToolRequest): Promise<ToolResponse> => ({ output: "ok" }));
+    const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), handler);
+    expect(result?.output).toBe("ok"); // backend.check was consulted
+    expect(handler).toHaveBeenCalled(); // allowed to reach next(request)
+  });
+
+  test("native hard-deny records (origin: 'native') STILL feed Mechanism A (regression)", async () => {
+    const backend: PermissionBackend = {
+      check: async (): Promise<PermissionDecision> => ({ effect: "allow" }),
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map(() => ({ effect: "allow" }) as const),
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      denialEscalation: { threshold: 2, windowMs: 60_000 },
+    });
+    const ctx = makeTurnContext();
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sid: string): {
+          record(entry: Record<string, unknown>): void;
+        };
+      }
+    ).__getDenialTrackerForTesting(ctx.session.sessionId as string);
+
+    // Seed with 3 origin: "native" records — exceeds threshold=2.
+    for (let i = 0; i < 3; i++) {
+      tracker.record({
+        toolId: "bash",
+        reason: "native hard",
+        timestamp: Date.now(),
+        principal: ctx.session.agentId,
+        turnIndex: ctx.turnIndex,
+        source: "policy",
+        queryKey: undefined,
+        softness: "hard",
+        origin: "native",
+      });
+    }
+
+    // This time Mechanism A should fire — next call short-circuits to deny
+    // BEFORE reaching the backend (which would have returned allow).
+    await expect(mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler)).rejects.toThrow(
+      /Auto-denied/,
+    );
+  });
+});
