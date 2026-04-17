@@ -758,8 +758,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
-        "@koi/errors": "workspace:*",
-        "@koi/shutdown": "workspace:*",
       },
     },
     "packages/net/mcp": {

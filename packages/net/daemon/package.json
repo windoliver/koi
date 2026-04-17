@@ -17,8 +17,6 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*",
-    "@koi/errors": "workspace:*",
-    "@koi/shutdown": "workspace:*"
+    "@koi/core": "workspace:*"
   }
 }
