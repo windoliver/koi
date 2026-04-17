@@ -344,11 +344,18 @@ function buildMiddleware(
       sessions.get(ctx.session.sessionId)?.perTurnWriteCounts.delete(ctx.turnId);
     },
     async wrapModelCall(ctx, request, next) {
-      const state = sessions.get(ctx.session.sessionId);
-      const response = await next(enrichRequest(request, state?.currentPlan ?? []));
+      // Read the committed plan TWICE: once before the await to inject
+      // the right state into the model request, and once AFTER to
+      // report the freshest committed plan in response metadata. A
+      // concurrent turn may commit a newer plan while we are inside
+      // `next()`; publishing the pre-await snapshot would regress any
+      // UI/trace that trusts `metadata.currentPlan` as the latest.
+      const before = sessions.get(ctx.session.sessionId);
+      const response = await next(enrichRequest(request, before?.currentPlan ?? []));
+      const after = sessions.get(ctx.session.sessionId);
       const metadata: JsonObject = {
         ...response.metadata,
-        currentPlan: (state?.currentPlan ?? []) as unknown as JsonObject,
+        currentPlan: (after?.currentPlan ?? []) as unknown as JsonObject,
       };
       return { ...response, metadata };
     },

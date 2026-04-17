@@ -885,6 +885,59 @@ describe("plan tool provider", () => {
 // Concurrent persistence ordering
 // ---------------------------------------------------------------------------
 
+describe("wrapModelCall metadata freshness", () => {
+  it("reports the freshest committed plan after a concurrent commit completes during the model call", async () => {
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Seed an initial plan so we can observe it getting replaced.
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "v0", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Enter wrapModelCall. The handler awaits until another turn commits
+    // a new plan, then resolves. After the await, response metadata
+    // should reflect v1, not the pre-await snapshot of v0.
+    let releaseModel: (() => void) | undefined;
+    const modelReleased = new Promise<void>((resolve) => {
+      releaseModel = resolve;
+    });
+
+    const modelCall = mw.wrapModelCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      makeRequest("go"),
+      async () => {
+        // Yield so the concurrent commit below can land.
+        await modelReleased;
+        return makeResponse("ok");
+      },
+    );
+
+    // Meanwhile, commit a newer plan on a different turn.
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 2),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "v1", status: "in_progress" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Release the model call and collect its response.
+    releaseModel?.();
+    const response = await modelCall;
+    const plan = response?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.content).toBe("v1");
+  });
+});
+
 describe("concurrent async persistence", () => {
   it("serializes onPlanUpdate across overlapping turns so durable store ends on the newer plan", async () => {
     // The reviewer called this out: without per-session serialization,
