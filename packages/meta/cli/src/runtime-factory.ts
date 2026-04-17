@@ -184,7 +184,8 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
  * third-party tool happens to share the name.
  */
 export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
-  pattern: "write_plan",
+  // Namespaced tool id. See WRITE_PLAN_TOOL_NAME in @koi/middleware-planning.
+  pattern: "koi_plan_write",
   action: "invoke",
   effect: "allow",
   source: "policy",

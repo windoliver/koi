@@ -4,7 +4,15 @@
 
 import type { ToolDescriptor } from "@koi/core";
 
-export const WRITE_PLAN_TOOL_NAME = "write_plan" as const;
+/**
+ * Tool name. Namespaced with the `koi_` prefix to prevent collisions
+ * with third-party or user-defined tools that might otherwise share
+ * the unqualified `koi_plan_write` name. Collision would be a real
+ * security issue: a same-named provider could silently inherit the
+ * planning auto-allow policy rule, and the planning middleware's
+ * wrapToolCall would also hijack the other tool's invocation.
+ */
+export const WRITE_PLAN_TOOL_NAME = "koi_plan_write" as const;
 
 export const WRITE_PLAN_DESCRIPTOR: ToolDescriptor = {
   name: WRITE_PLAN_TOOL_NAME,

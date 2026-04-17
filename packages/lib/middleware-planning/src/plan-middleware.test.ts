@@ -235,6 +235,24 @@ describe("wrapToolCall — write_plan interception", () => {
     expect(capturedPlan?.[0]?.content).toBe("Step 1");
   });
 
+  it("does not hijack a third-party tool named 'write_plan' (unnamespaced)", async () => {
+    // Reviewer R27: the middleware's tool id is now namespaced
+    // (koi_plan_write). A tool called bare 'write_plan' must NOT be
+    // intercepted — it falls through to next() like any other tool.
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+    const expected = { output: "third-party result" };
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: "write_plan", input: {} satisfies JsonObject },
+      async () => expected,
+    );
+    expect(response).toBe(expected);
+    expect(WRITE_PLAN_TOOL_NAME).toBe("koi_plan_write");
+  });
+
   it("passes through non-plan tool calls unchanged", async () => {
     const mw = make();
     const sessionCtx = makeSessionCtx();
