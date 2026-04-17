@@ -239,21 +239,37 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   async function recordModelUsage(ctx: TurnContext, response: ModelResponse): Promise<void> {
     if (response.usage === undefined) return;
     const usage = normalizeUsage(response.usage, response.metadata);
-    // Unknown-model pricing / calculator bugs should NOT drop the usage
-    // event — token_usage is what token_count enforcement reads. Degrade
-    // the cost path but preserve token accounting.
-    //
-    // On calculator failure, pass costUsd=undefined so the controller's
-    // per-token fallback pricing runs. Passing 0 would be treated as an
-    // authoritative zero, silently understating spend.
+    // Cost-calculator failure is a narrow degradation, not a global one.
+    // Omitting costUsd lets the controller's per-token fallback pricing
+    // run, so cost containment stays accurate — no need to brick the
+    // whole middleware because one model alias was unknown. Warn + fire
+    // onViolation for observability, but do NOT set the latch.
     let costUsd: number | undefined;
     try {
       costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
     } catch (cause) {
-      latchDegraded("Cost calculation failed", cause, {
+      console.warn("[koi:governance-core] cost.calculate failed, controller fallback will run", {
+        cause,
         model: response.model,
-        phase: "post-call",
       });
+      onViolation?.(
+        {
+          ok: false,
+          violations: [
+            {
+              rule: "accounting.cost-unavailable",
+              severity: "critical",
+              message: "Cost calculator failed; controller per-token fallback engaged",
+            },
+          ],
+        },
+        {
+          kind: "model_call",
+          agentId: toAgentId(ctx.session.agentId),
+          payload: { model: response.model, costUnavailable: true },
+          timestamp: Date.now(),
+        },
+      );
     }
     await recordTokenEvent(ctx, response.model, usage.inputTokens, usage.outputTokens, costUsd);
     onUsage?.({ model: response.model, usage, costUsd: costUsd ?? 0 });
@@ -291,6 +307,24 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     outputTokens: number,
     costUsd: number | undefined,
   ): Promise<void> {
+    // Trust boundary: adapter/parser bugs can emit NaN / Infinity / negative
+    // token counts (e.g., a provider returning -1 as "unknown"). Accumulating
+    // those into controller state silently disables token/cost caps (NaN
+    // comparisons fail; negatives offset legitimate usage). Latch degraded
+    // and skip the record to preserve controller integrity.
+    const bad =
+      !Number.isFinite(inputTokens) ||
+      !Number.isFinite(outputTokens) ||
+      inputTokens < 0 ||
+      outputTokens < 0;
+    if (bad) {
+      latchDegraded("Malformed token count from provider", undefined, {
+        model,
+        inputTokens,
+        outputTokens,
+      });
+      return;
+    }
     // Omit costUsd when undefined so the controller's per-token fallback
     // pricing runs. Passing 0 would be treated as authoritative zero spend.
     await controller.record({
@@ -436,14 +470,34 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       const model = request.model ?? "unknown";
       const recordDeltaSoft = async (inputTokens: number, outputTokens: number): Promise<void> => {
         if (inputTokens <= 0 && outputTokens <= 0) return;
-        // Unknown-model price lookups shouldn't skip usage accounting.
-        // Latch degraded and omit costUsd so the controller's per-token
-        // fallback pricing runs instead of recording $0.
+        // Cost-calc failure is narrow — controller per-token fallback runs.
+        // Do not latch globally; just warn + onViolation for observability.
         let costUsd: number | undefined;
         try {
           costUsd = cost.calculate(model, inputTokens, outputTokens);
         } catch (cause) {
-          latchDegraded("Cost calculation failed", cause, { model });
+          console.warn("[koi:governance-core] cost.calculate failed on stream delta", {
+            cause,
+            model,
+          });
+          onViolation?.(
+            {
+              ok: false,
+              violations: [
+                {
+                  rule: "accounting.cost-unavailable",
+                  severity: "critical",
+                  message: "Stream cost calculator failed; controller fallback engaged",
+                },
+              ],
+            },
+            {
+              kind: "model_call",
+              agentId: toAgentId(ctx.session.agentId),
+              payload: { model, costUnavailable: true, phase: "stream" },
+              timestamp: Date.now(),
+            },
+          );
         }
         try {
           await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);

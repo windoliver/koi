@@ -878,6 +878,92 @@ describe("issue checklist", () => {
     expect(tokenEvent?.costUsd).toBeUndefined();
   });
 
+  test("cost-calc failure does NOT permanently latch — only narrow degradation", async () => {
+    // Round 10 fix: cost calculator failures are narrow (controller
+    // per-token fallback handles spend). Latching globally would turn one
+    // unknown-model lookup into a runtime-wide DoS.
+    const cfg = baseCfg({
+      cost: {
+        calculate: () => {
+          throw new Error("unknown model");
+        },
+      },
+    });
+    const onViolation = mock(() => {});
+    cfg.onViolation = onViolation;
+    const mw = createGovernanceMiddleware(cfg);
+    // First call: cost calc throws, onViolation fires, but no latch.
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    expect(onViolation).toHaveBeenCalledTimes(1);
+    // Second call: should NOT be denied by a degraded latch.
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+  });
+
+  test("malformed token counts latch degraded instead of poisoning controller", async () => {
+    // NaN/negative/Infinity token counts from adapter bugs would silently
+    // disable enforcement via NaN comparisons and negative offsets. Latch
+    // degraded to preserve controller integrity on the trust boundary.
+    const recorded: unknown[] = [];
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    // Response with NaN input tokens.
+    await mw.wrapModelCall?.(ctx(), req(), async () => ({
+      content: "ok",
+      model: "m",
+      usage: { inputTokens: Number.NaN, outputTokens: 5 },
+    }));
+    // token_usage event must NOT be recorded (would poison controller).
+    const tokenEvents = recorded.filter((e) => (e as { kind: string }).kind === "token_usage");
+    expect(tokenEvents).toHaveLength(0);
+    // Next call denied by latch.
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).message).toMatch(/degraded/i);
+  });
+
+  test("malformed token counts in stream chunks latch degraded", async () => {
+    const recorded: unknown[] = [];
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      // Negative token count from an adapter bug.
+      yield { kind: "usage" as const, inputTokens: -100, outputTokens: 5 };
+      yield {
+        kind: "done" as const,
+        response: {
+          content: "hi",
+          model: "m",
+          usage: { inputTokens: -100, outputTokens: 5 },
+        },
+      };
+    }
+    for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+      /* drain */
+    }
+    // The malformed usage should be rejected; no token_usage event emitted.
+    const tokenEvents = recorded.filter((e) => (e as { kind: string }).kind === "token_usage");
+    expect(tokenEvents).toHaveLength(0);
+  });
+
   test("degraded latch persists across session boundaries (runtime-scoped containment)", async () => {
     // Session end does NOT clear the latch: cost/token/spawn counters
     // survive the session boundary, so if prior accounting failed those
