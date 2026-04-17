@@ -30,6 +30,17 @@ interface PoolEntry {
   stopping: boolean;
 }
 
+/**
+ * Bookkeeping for a worker that has crashed and is sleeping in restart backoff.
+ * `cancelled` is checked by the restart task after backoff; if true, the
+ * task aborts instead of respawning. `done` resolves when the task finishes
+ * (either aborted or respawned), so `stop()` can wait for clean teardown.
+ */
+interface RestartingEntry {
+  cancelled: boolean;
+  readonly done: Promise<void>;
+}
+
 const BACKEND_PREFERENCE: readonly WorkerBackendKind[] = [
   "subprocess",
   "in-process",
@@ -46,6 +57,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // Used to reject duplicate start() calls; persists through the respawn cycle
   // so external callers cannot race a mid-restart worker.
   const activeIds = new Set<WorkerId>();
+  // Workers currently sleeping between crash and respawn. stop() uses this
+  // so it can cancel a restart-looping worker; shutdown() uses this to await
+  // each restart task's clean teardown.
+  const restarting = new Map<WorkerId, RestartingEntry>();
   // In-flight restart tasks — shutdown() awaits these so pending respawns
   // cannot resurrect workers after shutdown returns.
   const pendingRestarts = new Set<Promise<void>>();
@@ -53,6 +68,9 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // Counted against maxWorkers so concurrent start() calls cannot both pass
   // the capacity check before either lands in the pool.
   let pendingSpawns = 0;
+  // In-flight spawn promises so shutdown() can await them and any late
+  // admissions observe shuttingDown=true after backend.spawn resolves.
+  const pendingSpawnPromises = new Set<Promise<void>>();
   let shuttingDown = false;
   const defaultPolicy = config.restart ?? DEFAULT_WORKER_RESTART_POLICY;
 
@@ -83,11 +101,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     for (const wake of pending) wake();
   };
 
-  const pickBackend = (kind?: WorkerBackendKind): WorkerBackend | undefined => {
+  // Async so we can consult backend.isAvailable() — e.g. a subprocess backend
+  // in a non-Bun environment, or a remote backend whose transport isn't up
+  // yet. Explicit `overrides.backend` is still honored verbatim (callers who
+  // name a backend want that backend, not a fallback).
+  const pickBackend = async (kind?: WorkerBackendKind): Promise<WorkerBackend | undefined> => {
     if (kind !== undefined) return config.backends[kind];
     for (const k of BACKEND_PREFERENCE) {
       const b = config.backends[k];
-      if (b !== undefined) return b;
+      if (b === undefined) continue;
+      if (await b.isAvailable()) return b;
     }
     return undefined;
   };
@@ -134,8 +157,34 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         },
       };
     }
-    const backend = pickBackend(overrides?.backend);
+
+    // Reserve the id and capacity slot SYNCHRONOUSLY — before any await —
+    // so concurrent start() calls observe these reservations in their
+    // checks above. pickBackend is async (may call isAvailable()), which
+    // would otherwise let multiple callers race past the capacity check.
+    activeIds.add(request.workerId);
+    pendingSpawns++;
+
+    // Register this spawn as in-flight so shutdown() can await it.
+    let resolveSpawnDone: () => void = () => {};
+    const spawnDone = new Promise<void>((resolve) => {
+      resolveSpawnDone = resolve;
+    });
+    pendingSpawnPromises.add(spawnDone);
+
+    // Helper: release every reservation made above (id, capacity slot,
+    // spawn-tracking promise). Used by every failure path in the remainder
+    // of this function.
+    const releaseReservations = (): void => {
+      pendingSpawns--;
+      if (!fromRestart) activeIds.delete(request.workerId);
+      pendingSpawnPromises.delete(spawnDone);
+      resolveSpawnDone();
+    };
+
+    const backend = await pickBackend(overrides?.backend);
     if (backend === undefined) {
+      releaseReservations();
       return {
         ok: false,
         error: {
@@ -146,22 +195,52 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       };
     }
 
-    // Reserve the id synchronously so a concurrent start() cannot race past
-    // the duplicate-check while backend.spawn() is awaiting.
-    activeIds.add(request.workerId);
-    // Reserve the capacity slot synchronously so a concurrent start() sees
-    // the reservation in its pool.size + pendingSpawns check.
-    pendingSpawns++;
-
     let spawned: Result<WorkerHandle, KoiError>;
     try {
       spawned = await backend.spawn(request);
-    } finally {
-      pendingSpawns--;
+    } catch (e) {
+      releaseReservations();
+      return {
+        ok: false,
+        error: {
+          code: "INTERNAL",
+          message: `backend.spawn threw: ${e instanceof Error ? e.message : String(e)}`,
+          retryable: true,
+        },
+      };
     }
     if (!spawned.ok) {
-      if (!fromRestart) activeIds.delete(request.workerId);
+      releaseReservations();
       return spawned;
+    }
+
+    // Re-check shuttingDown AFTER the backend spawn resolves. If shutdown
+    // started while we were awaiting the spawn, the new worker is a late
+    // admission that must be torn down immediately and never enter the pool.
+    if (shuttingDown) {
+      // Terminate the late admission before we release our spawn-tracking
+      // promise. shutdown() awaits pendingSpawnPromises and then drains the
+      // pool; awaiting terminate() here guarantees the worker is signalled
+      // before shutdown proceeds to the pool-drain step.
+      try {
+        await backend.terminate(request.workerId, "shutdown-during-spawn");
+      } catch {
+        // Swallow: we are already on the shutdown path.
+      }
+      try {
+        await backend.kill(request.workerId);
+      } catch {
+        // Swallow.
+      }
+      releaseReservations();
+      return {
+        ok: false,
+        error: {
+          code: "UNAVAILABLE",
+          message: "Supervisor began shutting down during spawn; worker terminated",
+          retryable: false,
+        },
+      };
     }
 
     let resolveExited: () => void = () => {};
@@ -180,6 +259,13 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       stopping: false,
     };
     pool.set(request.workerId, entry);
+    // Worker is admitted to the pool. Release the spawn-tracking promise
+    // and capacity reservation — shutdown's normal pool-draining logic now
+    // owns this worker's lifecycle. Do NOT release activeIds here; that
+    // remains reserved until the worker's crash/exit watch loop decides.
+    pendingSpawns--;
+    pendingSpawnPromises.delete(spawnDone);
+    resolveSpawnDone();
 
     // Watch backend events for this worker — drive restart policy + exit
     // promise resolution. Fire-and-forget: lives as long as the worker.
@@ -219,36 +305,54 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             return;
           }
 
-          // Register restart task so shutdown can await it.
+          // Register restart task so shutdown() and stop() can observe it.
+          // The shared `restartingEntry` is created BEFORE the async IIFE so
+          // stop() can find and cancel it immediately — there is no race
+          // between scheduling and a caller reaching for the entry.
+          let resolveRestartDone: () => void = () => {};
+          const restartDonePromise = new Promise<void>((resolve) => {
+            resolveRestartDone = resolve;
+          });
+          const restartingEntry: RestartingEntry = {
+            cancelled: false,
+            done: restartDonePromise,
+          };
+          restarting.set(request.workerId, restartingEntry);
+
           const restartTask = (async () => {
-            const backoff = Math.min(
-              policy.backoffBaseMs * 2 ** current.restartAttempts,
-              policy.backoffCeilingMs,
-            );
-            if (backoff > 0) {
-              await new Promise((r) => setTimeout(r, backoff));
-            }
-            // Re-check shutdown AFTER backoff — this is the critical race the
-            // original code missed: shutdown() could return between the backoff
-            // start and the respawn, then respawn would resurrect the worker.
-            if (shuttingDown) {
-              activeIds.delete(request.workerId);
-              return;
-            }
-            const respawned = await performSpawn(
-              request,
-              { restart: policy, backend: current.handle.backendKind },
-              true,
-            );
-            if (respawned.ok) {
-              const newEntry = pool.get(request.workerId);
-              if (newEntry !== undefined) {
-                newEntry.restartAttempts = current.restartAttempts + 1;
-                newEntry.restartTimestamps = [...recentTimestamps, now];
+            try {
+              const backoff = Math.min(
+                policy.backoffBaseMs * 2 ** current.restartAttempts,
+                policy.backoffCeilingMs,
+              );
+              if (backoff > 0) {
+                await new Promise((r) => setTimeout(r, backoff));
               }
-            } else {
-              // Respawn failed — release activeIds so external callers can retry.
-              activeIds.delete(request.workerId);
+              // Re-check shutdown AND cancellation AFTER backoff. stop()
+              // can flip `cancelled` during the sleep to abort the respawn,
+              // and shutdown() sets `shuttingDown` for the same effect.
+              if (shuttingDown || restartingEntry.cancelled) {
+                activeIds.delete(request.workerId);
+                return;
+              }
+              const respawned = await performSpawn(
+                request,
+                { restart: policy, backend: current.handle.backendKind },
+                true,
+              );
+              if (respawned.ok) {
+                const newEntry = pool.get(request.workerId);
+                if (newEntry !== undefined) {
+                  newEntry.restartAttempts = current.restartAttempts + 1;
+                  newEntry.restartTimestamps = [...recentTimestamps, now];
+                }
+              } else {
+                // Respawn failed — release activeIds so external callers can retry.
+                activeIds.delete(request.workerId);
+              }
+            } finally {
+              restarting.delete(request.workerId);
+              resolveRestartDone();
             }
           })();
           pendingRestarts.add(restartTask);
@@ -285,6 +389,17 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     performSpawn(request, overrides, false);
 
   const stop: Supervisor["stop"] = async (id, reason) => {
+    // Case A: worker is sleeping in restart backoff (crash observed, respawn
+    // pending). We cancel the restart task and wait for it to bail.
+    const restartEntry = restarting.get(id);
+    if (restartEntry !== undefined && pool.get(id) === undefined) {
+      restartEntry.cancelled = true;
+      await restartEntry.done;
+      // Cancelling a pending restart DOES clear activeIds via the restart
+      // task's cancellation path. External state is now clean.
+      return { ok: true, value: undefined };
+    }
+
     const entry = pool.get(id);
     if (entry === undefined) {
       return {
@@ -361,6 +476,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
 
   const shutdown: Supervisor["shutdown"] = async (reason) => {
     shuttingDown = true;
+
+    // Drain pending spawns FIRST so any late admission (spawn-during-shutdown)
+    // can observe shuttingDown=true, self-terminate, and not leave a process
+    // running after we return.
+    while (pendingSpawnPromises.size > 0) {
+      await Promise.all([...pendingSpawnPromises]);
+    }
+
     const ids = [...pool.keys()];
     const stopResults = await Promise.all(ids.map((id) => stop(id, reason)));
     // Drain any in-flight restart tasks started before shuttingDown was set.

@@ -498,6 +498,137 @@ describe("supervisor correctness hardening", () => {
     for await (const _ev of (async function* () {})()) void _ev;
   });
 
+  it("shutdown() tears down a worker whose spawn resolves after shuttingDown is set", async () => {
+    // A slow backend.spawn() that hasn't resolved yet when shutdown() fires
+    // must not admit a surviving worker. The supervisor must terminate the
+    // late admission synchronously as part of shutdown.
+    type SlowWorker = { terminated: boolean; killed: boolean };
+    const spawned: SlowWorker[] = [];
+    let releaseSpawn: (() => void) | undefined;
+    const slowBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "slow",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        const w: SlowWorker = { terminated: false, killed: false };
+        spawned.push(w);
+        // Block until the test releases us.
+        await new Promise<void>((resolve) => {
+          releaseSpawn = resolve;
+        });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => {
+        const w = spawned[spawned.length - 1];
+        if (w !== undefined) w.terminated = true;
+        return { ok: true, value: undefined };
+      },
+      kill: async () => {
+        const w = spawned[spawned.length - 1];
+        if (w !== undefined) w.killed = true;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        // Yield from an empty source — event side not exercised by this test.
+        yield* [] as WorkerEvent[];
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100,
+      backends: { "in-process": slowBackend },
+    });
+    if (!supervisorResult.ok) return;
+
+    // Fire a spawn that will block in backend.spawn()
+    const startPromise = supervisorResult.value.start(makeRequest("late-1"));
+    // Give the supervisor a tick to enter the await.
+    await new Promise((r) => setTimeout(r, 5));
+    // Kick off shutdown — it should see the pending spawn and await it.
+    const shutdownPromise = supervisorResult.value.shutdown("test");
+    // Another tick so shutdown runs up to its drain.
+    await new Promise((r) => setTimeout(r, 5));
+    // Now release the spawn — its post-await re-check of shuttingDown should
+    // trigger termination of the late admission.
+    if (releaseSpawn !== undefined) releaseSpawn();
+    const [startResult] = await Promise.all([startPromise, shutdownPromise]);
+
+    expect(startResult.ok).toBe(false);
+    if (!startResult.ok) expect(startResult.error.code).toBe("UNAVAILABLE");
+    // The late admission must have been terminated.
+    expect(spawned.length).toBe(1);
+    expect(spawned[0]?.terminated).toBe(true);
+    // list() must not contain the late admission.
+    expect(supervisorResult.value.list()).toEqual([]);
+  });
+
+  it("stop() cancels a worker that is sleeping in restart backoff", async () => {
+    const { backend, crash, liveWorkerCount } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 200,
+        backoffCeilingMs: 200,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("loop-1"));
+
+    // Crash the worker; it enters a 200ms backoff before respawn.
+    crash(workerId("loop-1"));
+    // Give the supervisor time to observe the crash and schedule the restart.
+    await new Promise((r) => setTimeout(r, 20));
+
+    // stop() during backoff must cancel the pending restart.
+    const stopResult = await supervisorResult.value.stop(workerId("loop-1"), "test");
+    expect(stopResult.ok).toBe(true);
+
+    // Wait past the backoff window — no respawn must have fired.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(liveWorkerCount()).toBe(0);
+    expect(supervisorResult.value.list()).toEqual([]);
+
+    // A fresh start with the same workerId must succeed — activeIds released.
+    const restarted = await supervisorResult.value.start(makeRequest("loop-1"));
+    expect(restarted.ok).toBe(true);
+  });
+
+  it("falls back to an available backend when the preferred one declares itself unavailable", async () => {
+    const { backend: subprocess } = createFakeBackend("subprocess");
+    const { backend: inProcess } = createFakeBackend("in-process");
+    // Override subprocess.isAvailable to return false.
+    const unavailableSubprocess: WorkerBackend = {
+      ...subprocess,
+      isAvailable: async () => false,
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: unavailableSubprocess, "in-process": inProcess },
+    });
+    if (!supervisorResult.ok) return;
+    const started = await supervisorResult.value.start(makeRequest("fb-1"));
+    expect(started.ok).toBe(true);
+    // Must have fallen back to in-process, not attempted subprocess.
+    if (started.ok) expect(started.value.backendKind).toBe("in-process");
+  });
+
   it("bounds the event buffer under sustained crash/restart churn", async () => {
     // Prior impl grew eventBuffer forever. With a bounded ring buffer, a
     // long-lived supervisor emitting thousands of events must not OOM.
