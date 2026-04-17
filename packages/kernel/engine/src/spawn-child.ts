@@ -35,6 +35,7 @@ import {
   DELEGATION,
   ENV,
   isAttachResult,
+  runId,
 } from "@koi/core";
 import { createStructuredOutputGuard } from "@koi/engine-compose";
 import { KoiRuntimeError } from "@koi/errors";
@@ -44,7 +45,7 @@ import { computeChildDelegationScope } from "./compute-delegation-scope.js";
 import { createInheritedChannel } from "./inherited-channel.js";
 import { createInheritedComponentProvider } from "./inherited-component-provider.js";
 import { createKoi } from "./koi.js";
-import type { KoiRuntime, SpawnChildOptions, SpawnChildResult } from "./types.js";
+import type { KoiRuntime, RunHandle, SpawnChildOptions, SpawnChildResult } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Noop child handle — used when no registry is provided
@@ -427,7 +428,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //    create-hook-spawn-fn) that still iterate via `for await` see the
   //    error at first iteration where they already have try/catch coverage,
   //    rather than at iterable-construction time.
-  function wrappedRun(input: EngineInput): AsyncIterable<EngineEvent> {
+  function wrappedRun(input: EngineInput): RunHandle {
     const composedSignal =
       input.signal !== undefined
         ? AbortSignal.any([input.signal, abortController.signal])
@@ -435,7 +436,11 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     try {
       return childRuntime.run({ ...input, signal: composedSignal });
     } catch (syncErr) {
-      const failingIterable: AsyncIterable<EngineEvent> = {
+      // Synchronous throw from childRuntime.run() — wrap in a RunHandle that
+      // rejects on first iteration. Callers have try/catch coverage there.
+      const failingHandle: RunHandle = {
+        runId: runId(crypto.randomUUID()),
+        interrupt: () => false,
         [Symbol.asyncIterator](): AsyncIterator<EngineEvent> {
           return {
             next(): Promise<IteratorResult<EngineEvent>> {
@@ -444,7 +449,7 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
           };
         },
       };
-      return failingIterable;
+      return failingHandle;
     }
   }
 

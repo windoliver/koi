@@ -58,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
@@ -173,6 +174,22 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "memory_recall", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "memory_search", action: "invoke", effect: "allow", source: "policy" },
 ] as const;
+
+/**
+ * Auto-allow rule for `write_plan`. Opt-in only: installed ONLY when
+ * `config.planningEnabled === true`. Matched by bare tool name, which
+ * is the same matching the rest of the allowlist uses — but since it
+ * is gated on planningEnabled, a host that does not opt into the
+ * planning middleware will never install this rule even if a
+ * third-party tool happens to share the name.
+ */
+export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
+  // Namespaced tool id. See WRITE_PLAN_TOOL_NAME in @koi/middleware-planning.
+  pattern: "koi_plan_write",
+  action: "invoke",
+  effect: "allow",
+  source: "policy",
+};
 
 // ---------------------------------------------------------------------------
 // Config & return types
@@ -436,6 +453,17 @@ export interface KoiRuntimeConfig {
    */
   readonly reportEnabled?: boolean | undefined;
   /**
+   * Opt-in: activate `@koi/middleware-planning` and its `write_plan`
+   * tool. Default `false`: plan state is currently ephemeral
+   * (no durable persistence across resume/restart), so enabling by
+   * default in resume-capable hosts would silently lose plan state
+   * after `koi tui --resume`. Hosts that accept the ephemerality can
+   * set this to `true`; durable persistence is tracked as issue
+   * #1842 (file-backed plan persistence) and will make this flag a
+   * no-op default when it lands.
+   */
+  readonly planningEnabled?: boolean | undefined;
+  /**
    * Subset of filesystem operations to expose (#1777). `undefined`
    * means "all three" (`fs_read`/`fs_write`/`fs_edit`). Hosts that
    * honor a `manifest.filesystem.operations` gate pass the resolved
@@ -587,6 +615,10 @@ export interface McpServerStatus {
   readonly toolCount: number;
   readonly failureCode: string | undefined;
   readonly failureMessage: string | undefined;
+  /** Transport kind — undefined for plugin-provided servers where config is unavailable. */
+  readonly transport: "http" | "stdio" | "sse" | undefined;
+  /** Whether this server has a usable OAuth config — `needs-auth` is only valid when true. */
+  readonly hasOAuth: boolean;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -807,10 +839,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     loaded: pluginComponents.discovered,
     errors: [...pluginComponents.errors, ...middlewareWarnings],
   };
-  if (pluginSummary.loaded.length > 0) {
+  // #1887: suppress the "N plugin(s) loaded" line for `koi tui`. The
+  // TUI's alt-screen immediately covers pre-launch stderr, so the line
+  // only flashes briefly and then sits as orphaned noise on the primary
+  // screen after quit — symmetric with the in-TUI banner, which is now
+  // also suppressed on clean loads. Other hosts (koi start, scripts,
+  // other bins) still get the line so their plain-terminal output shows
+  // which plugins loaded. Errors are logged unconditionally above.
+  if (pluginSummary.loaded.length > 0 && hostId !== "koi-tui") {
     // Sanitize plugin-derived strings before logging to prevent terminal
     // control sequence injection from malicious plugin manifests.
+    // biome-ignore lint/complexity/useRegexLiterals: control chars require RegExp constructor
     const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    // biome-ignore lint/complexity/useRegexLiterals: control chars require RegExp constructor
     const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
     const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
     const names = pluginSummary.loaded
@@ -1018,9 +1059,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
 
   // --- @koi/permissions + @koi/middleware-permissions ---
   // Static rules from TUI_ALLOW_RULES + dynamic fs_read rules scoped to cwd.
-  // See TUI_ALLOW_RULES (above) for allowlist reasoning.
+  // See TUI_ALLOW_RULES (above) for allowlist reasoning. The
+  // write_plan rule is appended only when planning is opted in so
+  // hosts that do not install @koi/middleware-planning cannot have
+  // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
+    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
     {
       pattern: "fs_read",
       action: "invoke",
@@ -1108,6 +1153,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     config.goals !== undefined && config.goals.length > 0
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
+
+  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
+  // Opt-in via `config.planningEnabled` — default off until durable
+  // plan persistence lands (#1842). Without persistence, plan state
+  // is ephemeral: `koi tui --resume` silently drops the committed
+  // plan while the rest of the conversation survives, which would
+  // make a multi-step task continue against stale state. Hosts that
+  // explicitly accept the limitation can opt in.
+  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1299,6 +1353,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       exfiltrationGuard: exfiltrationGuardMw,
       hook: hookMw,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+      // Planning MUST be inherited: the inherited-component-provider
+      // copies `write_plan` into the child tool set, so the child
+      // needs the middleware to intercept the tool call. Otherwise
+      // the call falls through to the provider's throwing fallback.
+      // The middleware is session-keyed, so sharing with children is
+      // safe — parent and child have distinct sessionIds.
+      ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1501,6 +1562,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
       | import("@koi/mcp").McpResolver
       | undefined;
+    const mcpTransportByName = stackContribution.exports.mcpTransportByName as
+      | ReadonlyMap<string, "http" | "stdio" | "sse">
+      | undefined;
+    const mcpPluginTransportByName = stackContribution.exports.mcpPluginTransportByName as
+      | ReadonlyMap<string, "http" | "stdio" | "sse">
+      | undefined;
+    const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -1645,10 +1715,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),
       ...(goalMw !== undefined ? { goal: goalMw } : {}),
-      // presetExtras includes both the code-owned stack middleware
-      // and main's env-var-gated audit preset extras (from
-      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), kept for backward
-      // compatibility with that host opt-in. Zone B manifest
+      // Plan is a dedicated zone-C-bottom slot so it runs INSIDE the
+      // permissions filter. That's required for its prompt-visibility
+      // gate — if permissions removes write_plan from request.tools,
+      // planning must see the filtered list, not the pre-filter one.
+      ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      // presetExtras includes the code-owned stack middleware and
+      // main's env-var-gated audit preset extras (from
+      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
       // middleware flows through the separate `manifestMiddleware`
       // slot and is composed strictly INSIDE the security core
       // layers, regardless of array position here.
@@ -1743,7 +1817,11 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           },
         };
       })(),
-      providers: [...coreProviders, ...stackContribution.providers],
+      providers: [
+        ...coreProviders,
+        ...stackContribution.providers,
+        ...(planBundle !== undefined ? planBundle.providers : []),
+      ],
       approvalHandler,
       userId: userInfo().username,
       // Loop detection defaults to ENABLED (createKoi's default).
@@ -1929,15 +2007,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         const sources: {
           readonly label: string;
           readonly resolver: import("@koi/mcp").McpResolver;
+          readonly transportMap: ReadonlyMap<string, "http" | "stdio" | "sse"> | undefined;
+          readonly oauthNames: ReadonlySet<string> | undefined;
         }[] = [];
-        if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+        if (mcpResolver !== undefined)
+          sources.push({
+            label: "user",
+            resolver: mcpResolver,
+            transportMap: mcpTransportByName,
+            oauthNames: mcpOAuthCapableNames,
+          });
         if (mcpPluginResolver !== undefined)
-          sources.push({ label: "plugin", resolver: mcpPluginResolver });
+          sources.push({
+            label: "plugin",
+            resolver: mcpPluginResolver,
+            transportMap: mcpPluginTransportByName,
+            // Plugin servers authenticate via their own auth pseudo-tools, not
+            // via nav:mcp-auth (which only handles .mcp.json entries). Force
+            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
+            // rather than needs-auth, preventing a misleading recovery prompt.
+            oauthNames: undefined,
+          });
         if (sources.length === 0) return [];
 
         const entries: McpServerStatus[] = [];
         const seenByKey = new Set<string>();
-        for (const { label, resolver } of sources) {
+        for (const { label, resolver, transportMap, oauthNames } of sources) {
           const toolCounts = new Map<string, number>();
           const descriptors = await resolver.discover();
           for (const d of descriptors) {
@@ -1945,7 +2040,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
           }
           for (const [name, count] of toolCounts) {
-            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            // Always prefix non-user sources so nav:mcp-auth can detect them
+            // reliably even in single-source (plugin-only) sessions.
+            const displayName = label === "user" ? name : `${label}:${name}`;
             const key = `${label}:${name}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
@@ -1954,11 +2051,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               toolCount: count,
               failureCode: undefined,
               failureMessage: undefined,
+              transport: transportMap?.get(name),
+              hasOAuth: oauthNames?.has(name) ?? false,
             });
           }
           for (const f of resolver.failures) {
             if (toolCounts.has(f.serverName)) continue;
-            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const displayName = label === "user" ? f.serverName : `${label}:${f.serverName}`;
             const key = `${label}:${f.serverName}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
@@ -1967,6 +2066,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               toolCount: 0,
               failureCode: f.error.code,
               failureMessage: f.error.message,
+              transport: transportMap?.get(f.serverName),
+              hasOAuth: oauthNames?.has(f.serverName) ?? false,
             });
           }
         }

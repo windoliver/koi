@@ -180,6 +180,10 @@ No behavioral changes in this package. Two mock `TaskBoard` fixtures in
 fixtures need to satisfy the new interface shape. No runtime logic or public
 surface touched.
 
+## E2E test helper (#1852)
+
+`src/__test-echo-server__.ts` is a minimal stdio MCP echo server used to reproduce and verify fix #1852 (stdio servers must show `connected`, not `needs-auth`). It is a dev/test artifact — not part of the public package exports — and should not be removed without updating the `.mcp.json` E2E configuration that references it.
+
 ## Completion output defaulting (#1785)
 
 `koi_update_task(action: "complete")` now defaults `output` to

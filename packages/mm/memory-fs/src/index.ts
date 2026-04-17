@@ -27,5 +27,6 @@ export type {
   MemoryStoreConfig,
   MemoryStoreOperation,
   UpdateResult,
+  UpsertResult,
 } from "./types.js";
 export { DEFAULT_DEDUP_THRESHOLD } from "./types.js";

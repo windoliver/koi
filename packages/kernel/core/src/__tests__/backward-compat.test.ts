@@ -73,8 +73,9 @@ describe("RETRYABLE_DEFAULTS backward compatibility", () => {
     }
   });
 
-  test("has exactly 10 codes (no unexpected additions)", () => {
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(10);
+  test("has exactly 12 codes (no unexpected additions)", () => {
+    // 12 after RESOURCE_EXHAUSTED and UNAVAILABLE were added for @koi/daemon (#1338)
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(12);
   });
 });
 

@@ -35,12 +35,13 @@ describe.skipIf(!distExists)("build output", () => {
     }
   });
 
-  test("index bundle is under 25KB", async () => {
-    // Threshold updated: isModelChunk() runtime type guard added to validation-utils.ts
-    // for cassette validation in @koi/replay. ~1KB of compiled guard logic.
-    // Previous threshold (23552) was set for fork mode + recursion guard (#1241).
+  test("index bundle is under 27KB", async () => {
+    // Threshold updated: @koi/daemon L0 contracts added (WorkerBackend,
+    // Supervisor, WorkerRestartPolicy, validateSupervisorConfig,
+    // DEFAULT_WORKER_RESTART_POLICY). Previous threshold (25600) was for
+    // isModelChunk() runtime type guard in validation-utils.ts.
     const file = Bun.file(resolve(DIST_DIR, "index.js"));
     const size = file.size;
-    expect(size).toBeLessThan(25600);
+    expect(size).toBeLessThan(27648);
   });
 });

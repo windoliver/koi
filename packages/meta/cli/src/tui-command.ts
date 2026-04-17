@@ -83,7 +83,7 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
-import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
@@ -275,6 +275,35 @@ function mapAuditEntry(entry: AuditEntry): LedgerAuditEntry {
 /** Map DecisionLedger SourceStatus to a simple string label. */
 function mapSourceState(status: { readonly state: string }): string {
   return status.state;
+}
+
+/**
+ * Compute the `/mcp` view status label for an MCP server from the resolver
+ * failure code, the server's configured transport kind, and whether it has a
+ * usable OAuth config.
+ *
+ * `needs-auth` is an actionable state — the TUI binds Enter to `nav:mcp-auth`
+ * which launches the OAuth PKCE flow. It is only valid when:
+ *   1. The failure is `AUTH_REQUIRED`
+ *   2. Transport is HTTP (stdio/SSE have no OAuth flow)
+ *   3. The server has an `oauth` config block (non-OAuth HTTP servers like
+ *      static-token / basic-auth / API-key cannot be fixed via the TUI)
+ *
+ * Everything else surfaces as `error` so users see a clear failure state
+ * rather than an Enter-to-auth prompt that will immediately fail.
+ *
+ * @internal — exported for unit tests only.
+ */
+export function computeLiveMcpStatus(
+  failureCode: string | undefined,
+  transport: "http" | "stdio" | "sse" | undefined,
+  hasOAuth: boolean,
+): "connected" | "needs-auth" | "error" {
+  if (failureCode === undefined) return "connected";
+  if (failureCode !== "AUTH_REQUIRED") return "error";
+  if (transport !== "http") return "error";
+  if (!hasOAuth) return "error";
+  return "needs-auth";
 }
 
 /**
@@ -1379,6 +1408,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
     ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
+    // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning.
+    // Default off because plan state is ephemeral across resume until
+    // durable persistence (#1842) lands. Hosts that accept the
+    // limitation can opt in today.
+    ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
@@ -1446,12 +1480,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           kind: "set_mcp_status",
           servers: live.map((l) => ({
             name: l.name,
-            status:
-              l.failureCode === undefined
-                ? ("connected" as const)
-                : l.failureCode === "AUTH_REQUIRED"
-                  ? ("needs-auth" as const)
-                  : ("error" as const),
+            // transport is now threaded through McpServerStatus from getMcpStatus(),
+            // so startup refresh uses the same authoritative source as nav:mcp enrichment.
+            status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
             toolCount: l.toolCount,
             detail: l.failureMessage,
           })),
@@ -1465,14 +1496,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       summary: handle.pluginSummary,
     });
 
-    // Surface plugin status as inline TUI notice (#1728).
+    // Surface plugin status as inline TUI notice (#1728, #1887).
     // UI-only — not injected into the model transcript to avoid a trust
     // boundary issue (plugin descriptions are untrusted metadata).
     // Agent awareness comes through the /plugins view and startup log.
     //
+    // #1887: suppress the banner on the happy path (plugins loaded cleanly,
+    // no errors) — users who configured those plugins already know they
+    // loaded, and `/plugins` is the canonical way to inspect them. Only
+    // render when there are errors to surface, so failures are never
+    // silent. Include the loaded list alongside errors for context.
+    //
     // Plugin-derived strings are sanitized to strip ANSI escape sequences
     // and control characters before display.
-    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+    if (handle.pluginSummary.errors.length > 0) {
       // Strip ANSI escapes and control characters from untrusted plugin text.
       // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
       // literal regex still trip the rule). The `useRegexLiterals` warning on
@@ -1490,16 +1527,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           .join("\n");
         parts.push(`[Loaded Plugins]\n${pluginLines}`);
       }
-      if (handle.pluginSummary.errors.length > 0) {
-        const errorLines = handle.pluginSummary.errors
-          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
-          .join("\n");
-        parts.push(`[Plugin Load Errors]\n${errorLines}`);
-      }
+      const errorLines = handle.pluginSummary.errors
+        .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+        .join("\n");
+      parts.push(`[Plugin Load Errors]\n${errorLines}`);
+
+      // Route through `add_info` so the notice renders as a system block
+      // rather than being attributed to "You:", and stays out of the
+      // JSONL transcript + next-submit model context.
       store.dispatch({
-        kind: "add_user_message",
-        id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+        kind: "add_info",
+        message: parts.join("\n\n"),
       });
     }
 
@@ -1823,6 +1861,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // skips the check entirely.
   // let: justified — incremented per turn, reset on each boundary shift.
   let postClearTurnCount = 0;
+
+  // #1884: separate from `postClearTurnCount` which is gated on
+  // `rewindBoundaryActive` (only armed on --resume, /clear, /new). A
+  // fresh launch never arms it, so `postClearTurnCount` stays 0 even
+  // after many successful turns — unsuitable for detecting "did any
+  // turn produce a transcript this process". Track that explicitly
+  // here so the post-quit resume hint only suppresses when truly
+  // nothing was written to disk.
+  // let: justified — set on the first settled (non-aborted) turn.
+  let anyTurnPersistedThisProcess = false;
+
+  // #1884: true once the in-app session picker (`onSessionSelect`) has
+  // successfully rebound `tuiSessionId` to an already-persisted session.
+  // That transcript exists on disk independent of startup `--resume` and
+  // of any new turns — its id must still print as a resume hint even
+  // when the user picks it and quits without submitting.
+  // let: justified — set on successful picker rebind.
+  let pickedExistingSession = false;
 
   // The session id the user is currently VIEWING. Starts as
   // `tuiSessionId` (the startup session), gets rotated to the
@@ -2273,27 +2329,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // that left the session empty. `rewindBoundaryActive`
           // also flips on `--resume`, which must still print a
           // hint for inspection-only opens.
-          const sessionIsEmpty = clearedThisProcess && postClearTurnCount === 0;
-          if (clearPersistFailed) {
-            writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
-          } else if (sessionIsEmpty) {
-            writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
-          } else if (tuiSessionId === viewedSessionId) {
-            // Non-picker (or picker-of-self) case: both ids agree.
-            // Print the single normal hint.
-            writeSync(1, formatResumeHint(tuiSessionId));
-          } else {
-            // Picker mode: `tuiSessionId` is the writable startup
-            // session where any work done this process landed on
-            // disk; `viewedSessionId` is the read-only archive the
-            // user was inspecting when they quit. Print BOTH so
-            // the user can choose — otherwise the hint would
-            // strand one handle. Without this, a user who did
-            // work in the startup session, opened the picker to
-            // inspect an older archive, and quit would only see
-            // the archive id and might conclude their recent
-            // work is lost.
-            writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+          const decision = decideResumeHint({
+            clearPersistFailed,
+            clearedThisProcess,
+            resumedFromFlag: flags.resume !== undefined,
+            pickedExistingSession,
+            postClearTurnCount,
+            anyTurnPersistedThisProcess,
+            tuiSessionId,
+            viewedSessionId,
+          });
+          switch (decision.kind) {
+            case "clear-persist-failed":
+              writeSync(
+                2,
+                "koi tui: session clear did not persist — NOT printing a resume hint.\n",
+              );
+              break;
+            case "cleared-empty":
+              writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
+              break;
+            case "never-persisted":
+              // #1884: silent — no JSONL on disk, nothing to advertise.
+              break;
+            case "normal":
+              writeSync(1, formatResumeHint(tuiSessionId));
+              break;
+            case "picker":
+              writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+              break;
           }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
@@ -2847,12 +2911,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     kind: "set_mcp_status",
                     servers: live.map((l) => ({
                       name: l.name,
-                      status:
-                        l.failureCode === undefined
-                          ? ("connected" as const)
-                          : l.failureCode === "AUTH_REQUIRED"
-                            ? ("needs-auth" as const)
-                            : ("error" as const),
+                      status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                       toolCount: l.toolCount,
                       detail: l.failureMessage ?? "plugin",
                     })),
@@ -2916,33 +2975,39 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                     liveOther.push(l);
                   }
                 }
-                // Enrich config-based entries with live data (match by bare name)
+                // Derive transport/OAuth from the freshly-loaded config file so
+                // that in-session edits (e.g. adding an oauth block) are reflected
+                // immediately. nav:mcp-auth reads the same config.value, so the
+                // status and the auth action stay consistent. Live data
+                // (failureCode, toolCount) still comes from the runtime.
+                const configTransportByName = new Map<string, "http" | "stdio" | "sse">(
+                  config.value.servers.map((s) => [s.name, s.kind]),
+                );
+                const configOAuthByName = new Set<string>(
+                  config.value.servers
+                    .filter((s) => s.kind === "http" && s.oauth !== undefined)
+                    .map((s) => s.name),
+                );
+                // Enrich config-based entries with live data (match by bare name).
                 const enriched: import("@koi/tui").McpServerInfo[] = servers.map((entry) => {
                   const l = liveUserMap.get(entry.name);
                   if (l === undefined) return entry;
-                  const liveStatus: "connected" | "needs-auth" | "error" =
-                    l.failureCode === undefined
-                      ? "connected"
-                      : l.failureCode === "AUTH_REQUIRED"
-                        ? "needs-auth"
-                        : "error";
                   return {
                     name: entry.name,
-                    status: liveStatus,
+                    status: computeLiveMcpStatus(
+                      l.failureCode,
+                      configTransportByName.get(entry.name),
+                      configOAuthByName.has(entry.name),
+                    ),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? entry.detail,
                   };
                 });
-                // Append plugin-provided servers (source-prefixed) not in .mcp.json
+                // Append plugin-provided servers (source-prefixed) not in .mcp.json.
                 for (const l of liveOther) {
                   enriched.push({
                     name: l.name,
-                    status:
-                      l.failureCode === undefined
-                        ? "connected"
-                        : l.failureCode === "AUTH_REQUIRED"
-                          ? "needs-auth"
-                          : "error",
+                    status: computeLiveMcpStatus(l.failureCode, l.transport, l.hasOAuth),
                     toolCount: l.toolCount,
                     detail: l.failureMessage ?? "plugin",
                   });
@@ -3571,6 +3636,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // rebind above.
           tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          // #1884: the picked session's JSONL exists on disk — keep its
+          // id resumable via the post-quit hint even if the user quits
+          // without submitting a new turn in this process.
+          pickedExistingSession = true;
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
@@ -3856,6 +3925,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // (#1753 review round 9).
         if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
+        }
+        // #1884: unconditional "this process wrote something" marker.
+        // Set on every settled, uninterrupted turn — not gated on the
+        // rewind boundary — so the post-quit hint suppression knows
+        // whether a JSONL transcript was actually produced.
+        if (drainOutcome === "settled" && !controller.signal.aborted) {
+          anyTurnPersistedThisProcess = true;
         }
 
         // Feed the cost bridge with this turn's token delta.

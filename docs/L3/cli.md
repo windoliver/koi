@@ -175,6 +175,7 @@ koi tui
 | `KOI_AUDIT_NDJSON` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-ndjson`. Every model/tool call, permission decision, and session boundary is recorded as a hash-chained NDJSON entry at this path. The sink is runtime-owned — `shutdownBackgroundTasks` flushes and closes it on quit (#1778) |
 | `KOI_AUDIT_SQLITE` | no | unset | Absolute file path to enable `@koi/middleware-audit` + `@koi/audit-sink-sqlite`. Same audit coverage as NDJSON but stored in a WAL-mode SQLite database. Both `KOI_AUDIT_NDJSON` and `KOI_AUDIT_SQLITE` can be set simultaneously (tee pattern) as long as they target different files — a collision guard rejects startup if paths overlap (#1849) |
 | `KOI_REPORT_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-report`. Emits a RunReport to stderr at session end with turn count, action count, duration, and token usage. If goals are configured, the report includes the objective. (#1858) |
+| `KOI_PLANNING_ENABLED` | no | unset | Set to `true` to activate `@koi/middleware-planning`. Installs the `koi_plan_write` tool + auto-allow policy rule so the model can maintain a structured multi-step plan across turns (CC-parity). Default off because plan state is ephemeral across `koi tui --resume`; durable persistence is tracked as #1842. (#1836) |
 
 **Provider URL selection:** If `OPENROUTER_API_KEY` is set, the adapter uses OpenRouter's default
 base URL. If only `OPENAI_API_KEY` is set, the adapter defaults to `https://api.openai.com/v1`
@@ -408,11 +409,13 @@ A Bun worker thread entry point that runs `EngineAdapter.stream(input)` off the 
 | `@koi/middleware-exfiltration-guard` | L2 | Secret exfiltration prevention — now enabled by default for TUI sessions |
 | `@koi/middleware-extraction` | L2 | Post-turn learning extraction — intercepts spawn-family tool outputs, extracts reusable knowledge via regex + LLM, persists to in-memory memory backend |
 | `@koi/middleware-goal` | L2 | Adaptive goal reminders — optional, activated via `--goal` flag |
+| `@koi/middleware-planning` | L2 | `koi_plan_write` tool + write_plan middleware — opt-in via `KOI_PLANNING_ENABLED=true`. Per-turn authorization, epoch-based session-recycle isolation, teardown abort signal, and a deterministic `commitToken` for CAS-safe durable persistence. Default off pending #1842. (#1836) |
 | `@koi/middleware-report` | L2 | Run report middleware — opt-in via `KOI_REPORT_ENABLED=true`. Accumulates model/tool call metrics and emits a RunReport at session end (#1858) |
+| `@koi/middleware-task-anchor` | L2 | CC-parity `<system-reminder>` injection that re-anchors the model on the live task board after K idle turns with no task-tool activity (#1837). Wired in the `execution` preset stack alongside the `task_*` tool surface (same `taskBoardToolsEnabled` gate). Priority-ordered render, hard task cap with per-status overflow counts, stop-gate retry rollback, hook-blocked / `{ ok: false }` task-tool failure detection. Empty-board `task_create` nudge gated on successful task-tool engagement so shell-only sessions never receive unsolicited nudges |
 | `@koi/middleware-semantic-retry` | L2 | Semantic retry middleware — retry signal coordination with event-trace for retry step annotations |
 | `@koi/model-router` | L2 | LLM provider fallback chain — `createModelRouterMiddleware()` + `createModelRouter()`. Opt-in via `KOI_FALLBACK_MODEL` env var (comma-separated fallback model list). Routes model calls through a circuit-breaker-guarded fallback sequence; decision metadata surfaced in ATIF trajectory via `ctx.reportDecision`. When omitted, calls go directly to the primary model adapter. See `tui-command.ts` for construction and `TuiRuntimeConfig.modelRouterMiddleware` for injection point. |
 | `@koi/memory` | L0u | Session-start memory recall — scan, score by salience, budget to 8K tokens, format with `<memory-data>` trust boundary |
-| `@koi/memory-fs` | L2 | File-based memory storage — `.koi/memory/` with per-dir mutex, worktree-local by default, atomic writes, MEMORY.md index |
+| `@koi/memory-fs` | L2 | File-based memory storage — `.koi/memory/` with per-dir mutex, worktree-local by default, atomic writes, MEMORY.md index. Atomic `upsert()` (name+type + Jaccard dedup under `withDirLock()`) returning `UpsertResult` (created/updated/conflict/skipped) |
 | `@koi/memory-tools` | L2 | Memory read/write/list tools with SkillComponent behavioral guidance — file-backed via `@koi/memory-fs` adapter. Tool output excludes internal `filePath` (#1725) |
 | `@koi/middleware-memory-recall` | L2 | Frozen snapshot + live delta memory recall — frozen snapshot injected at session start, per-turn live delta appended for mid-session memory writes (signature-gated scan, FNV-1a content hashes, inserted before the last user turn), optional per-turn relevance selector (uses opaque record IDs) |
 | `@koi/spawn-tools` | L2 | Agent spawn tool — stub spawn function in TUI (full spawning requires agent-runtime + harness wiring) |
@@ -624,3 +627,13 @@ for dependency presence but not required in `tui-runtime.ts` imports.
 - **Fix TUI orphan text crash (#1768)** — `StatusBar.tsx` and `CommandPalette.tsx` ternaries returning `null` inside `<box>` replaced with `<Show>` to prevent OpenTUI orphan text node errors under Solid's server runtime.
 - **Retain spawn history in /agents view (#1792)** — `/agents` now shows both active and recently-finished spawns. Session-scoped ring buffer (`finishedSpawns`, cap 20) populated from `set_spawn_terminal` and `agent_status_changed(terminated)`. Finished agents display name, description, duration, and ✓/✗ outcome badge.
 - **Plugin TUI observability (#1728)** — Plugin loading now observable from TUI. `KoiRuntimeHandle` exposes `pluginSummary` (`PluginDiscoverySummary` from `plugin-activation.ts`). After runtime ready, `tui-command.ts` dispatches `set_plugin_summary` to TUI store and surfaces plugin status as inline notice. `/plugins` nav command opens `PluginsView` showing loaded plugins and errors. Plugin activation refactored to atomic commit: per-plugin hooks/MCP/skills buffered locally and merged only if all steps succeed. Startup log sanitizes plugin-derived strings (ANSI/control character stripping). Middleware-declaring plugins load other components but middleware skip is surfaced as a warning in `/plugins` errors.
+
+## #1650 — Soft permission deny (opt-in)
+
+The TUI and `koi start` integrate the updated `@koi/permissions` + `@koi/middleware-permissions` packages with the new soft-deny opt-in:
+
+- Rule authors may set `on_deny: "soft"` on any `effect: "deny"` rule to make that denial recoverable (agent sees a synthetic `ToolResponse` instead of a thrown `PERMISSION` error, then adapts).
+- The default `tuiAllowRules` set in `runtime-factory.ts` does NOT enable soft-deny for any rule, so default CLI / TUI behavior is unchanged from pre-#1650.
+- See `docs/L2/permissions.md` for the rule schema, `docs/L2/middleware-permissions.md` for execute-time semantics (per-turn cap, filter-time visibility, `SoftDenyLog` / `DenialRecord` additions), and `docs/L3/runtime.md` for the runtime-layer summary.
+
+The rule loader (`rule-loader.ts`) preserves `on_deny` across every source tier, so operators who add soft rules via config files will see them honored by the CLI.
