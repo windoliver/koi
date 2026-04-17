@@ -93,9 +93,12 @@ the new plan to `currentPlan` on success.
 
 #### Session teardown
 
-`onSessionEnd` drains the per-session commit chain before deleting
-session state, so an in-flight `onPlanUpdate` always completes (or
-fails) before teardown releases the session entry.
+`onSessionEnd` marks the session as closing, rejects any new
+`write_plan` calls that arrive after teardown begins (with
+`{ error: "session is shutting down...", blockedByHook: true }`), and
+then drains the per-session commit chain. Writes that were already
+enqueued before teardown started drain to completion (hook success or
+failure); only genuinely new arrivals are rejected.
 
 ### PlanItem
 
@@ -127,13 +130,17 @@ before each model call.
 - Each item must be an object with `content` (non-empty string, max
   **2000 characters**, `MAX_CONTENT_LENGTH`) and `status` (one of
   `pending`, `in_progress`, `completed`)
+- The aggregate serialized content across all items must not exceed
+  **8000 characters** (`MAX_SERIALIZED_PLAN_CHARS`). This is the real
+  prompt budget; per-item caps alone are not enough because the full
+  plan replays into every subsequent model request.
 
-The rendered plan is replayed into every subsequent model request, so
-these caps protect the session from permanent prompt inflation caused
-by a single oversized write.
-
-Invalid input returns `{ error: "…" }` with `metadata.planError: true` so
-observer middleware can distinguish bad-input errors from genuine tool failures.
+Invalid input returns `{ error: "…" }` with both
+`metadata.planError: true` (plan-specific signal) and
+`metadata.blockedByHook: true` (shared observer convention used by
+`event-trace`, `middleware-report`, etc.) so any plan failure is
+classified as a failure in telemetry rather than counted as a
+successful tool call.
 
 ## Session isolation
 

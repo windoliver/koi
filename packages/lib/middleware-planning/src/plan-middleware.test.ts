@@ -646,16 +646,108 @@ describe("onSessionEnd draining", () => {
     await mw.onSessionEnd?.(sessionCtx);
 
     expect(hookFinished).toBe(true);
-    // The write returned AFTER onSessionEnd drained it, and since the
-    // session was deleted after the hook resolved, commit to memory
-    // saw an undefined session and reported a clear error rather than
-    // silently leaking state into a deleted session entry.
     const response = await writePromise;
-    expect(
-      (response?.output as Record<string, unknown>).error ??
-        (response?.output as string | undefined) ??
-        "",
-    ).toBeDefined();
+    expect(response?.output).toBeDefined();
+  });
+
+  it("rejects new write_plan calls arriving after teardown begins", async () => {
+    const mw = make({
+      onPlanUpdate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const first = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "first", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    const endPromise = mw.onSessionEnd?.(sessionCtx);
+
+    // Give onSessionEnd a tick to flip `closing` before the second write.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+
+    const second = await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "second", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((second?.output as Record<string, unknown>).error).toContain("shutting down");
+    expect(second?.metadata?.blockedByHook).toBe(true);
+
+    await Promise.all([first, endPromise]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Aggregate plan budget
+// ---------------------------------------------------------------------------
+
+describe("aggregate plan budget", () => {
+  it("rejects a plan whose total content exceeds the serialized cap", async () => {
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    // Each item stays under MAX_CONTENT_LENGTH (2000) but together they
+    // blow the aggregate cap.
+    const items = Array.from({ length: 6 }, (_, i) => ({
+      content: `step-${String(i)}: ${"x".repeat(1800)}`,
+      status: "pending" as const,
+    }));
+
+    const response = await mw.wrapToolCall?.(
+      ctx,
+      { toolId: WRITE_PLAN_TOOL_NAME, input: planInput(items) },
+      async () => ({ output: "x" }),
+    );
+    expect((response?.output as Record<string, unknown>).error).toContain("aggregate");
+    expect(response?.metadata?.planError).toBe(true);
+    expect(response?.metadata?.blockedByHook).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Failure telemetry flag
+// ---------------------------------------------------------------------------
+
+describe("failure telemetry flag", () => {
+  it("marks plan errors with blockedByHook so shared observers classify them as failures", async () => {
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const ctx = makeTurnCtx(sessionCtx, 0);
+    await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "a", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    const second = await mw.wrapToolCall?.(
+      ctx,
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "b", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    expect(second?.metadata?.blockedByHook).toBe(true);
+    expect(second?.metadata?.planError).toBe(true);
+    expect(second?.metadata?.reason).toContain("once per response");
   });
 });
 

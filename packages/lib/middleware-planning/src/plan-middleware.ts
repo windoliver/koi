@@ -35,9 +35,14 @@ const VALID_STATUSES = new Set<string>(["pending", "in_progress", "completed"]);
  * Input caps. `write_plan` replays the full rendered plan into every
  * subsequent model request; without these, a single oversized write
  * permanently inflates prompts for the rest of the session.
+ *
+ * The aggregate cap is what actually bounds prompt growth. Per-item
+ * caps alone would still allow 100 * 2000 = 200k characters of replay
+ * on every later turn, which can exceed typical context windows.
  */
 const MAX_PLAN_ITEMS = 100;
 const MAX_CONTENT_LENGTH = 2000;
+const MAX_SERIALIZED_PLAN_CHARS = 8000;
 
 const PLAN_SYSTEM_MESSAGE: InboundMessage = {
   senderId: "system:plan",
@@ -60,6 +65,11 @@ interface PlanSessionState {
    * while the rest of the session remains readonly.
    */
   readonly pending: { current: Promise<void> };
+  /**
+   * True once onSessionEnd has begun. New write_plan calls must reject
+   * immediately so no work is enqueued after the drain begins.
+   */
+  readonly closing: { value: boolean };
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -117,6 +127,7 @@ function parsePlanInput(input: JsonObject): readonly PlanItem[] | string {
   }
 
   const items: PlanItem[] = [];
+  let aggregateContentChars = 0;
   for (let i = 0; i < rawPlan.length; i++) {
     const item = rawPlan[i] as Record<string, unknown> | undefined;
     if (item === undefined || typeof item !== "object" || item === null) {
@@ -130,6 +141,10 @@ function parsePlanInput(input: JsonObject): readonly PlanItem[] | string {
     }
     if (typeof item.status !== "string" || !VALID_STATUSES.has(item.status)) {
       return `plan[${String(i)}].status must be one of: pending, in_progress, completed`;
+    }
+    aggregateContentChars += item.content.length;
+    if (aggregateContentChars > MAX_SERIALIZED_PLAN_CHARS) {
+      return `plan aggregate content exceeds ${String(MAX_SERIALIZED_PLAN_CHARS)} characters`;
     }
     items.push({ content: item.content, status: item.status as PlanStatus });
   }
@@ -160,8 +175,19 @@ function capabilityFor(state: PlanSessionState | undefined): CapabilityFragment 
   };
 }
 
+/**
+ * Build a ToolResponse for a plan failure. We set `blockedByHook: true`
+ * alongside `planError: true` so downstream observers (event-trace,
+ * middleware-report) that already classify `blockedByHook` responses
+ * as failures also count plan failures — otherwise stale writes,
+ * persistence rejections, and cap violations would silently show up
+ * as successful tool calls in telemetry.
+ */
 function errorResponse(message: string): ToolResponse {
-  return { output: { error: message }, metadata: { planError: true } };
+  return {
+    output: { error: message },
+    metadata: { planError: true, blockedByHook: true, reason: message },
+  };
 }
 
 async function handleWritePlan(
@@ -175,6 +201,9 @@ async function handleWritePlan(
   const state = sessions.get(sessionId);
   if (state === undefined) {
     return errorResponse("No active session for plan middleware");
+  }
+  if (state.closing.value) {
+    return errorResponse("session is shutting down; write_plan rejected");
   }
 
   // Per-turn quota — overlapping turns each get their own counter.
@@ -214,6 +243,11 @@ async function handleWritePlan(
     if (snapshot === undefined) {
       return errorResponse("No active session for plan middleware");
     }
+    // NOTE: do NOT check `closing` here. Writes that passed the
+    // synchronous entry check before teardown began are considered
+    // accepted and must drain to completion (success or hook failure).
+    // `closing` is the entry-time gate; the drain in onSessionEnd
+    // waits for these to finish.
 
     // Stale-turn protection must be re-checked inside the section because
     // a newer turn may have committed while we were queued.
@@ -274,15 +308,27 @@ function buildMiddleware(
         lastUpdateTurnIndex: -1,
         perTurnWriteCounts: new Map(),
         pending: { current: Promise.resolve() },
+        closing: { value: false },
       });
     },
     async onSessionEnd(ctx) {
       const state = sessions.get(ctx.sessionId);
       if (state === undefined) return;
-      // Drain any in-flight commit so persistence, rollback, and
-      // teardown complete in a defined order. The chain stores errors
-      // as no-ops (see `run` handler below) so awaiting never throws.
-      await state.pending.current;
+      // Flip the closing flag FIRST so wrapToolCall rejects any write
+      // arriving after teardown begins. Then drain the pending chain.
+      // We snapshot the chain BEFORE awaiting so a last-pulse write
+      // that sneaked in between the synchronous closing-flag check and
+      // chain append (there shouldn't be one, but defense-in-depth)
+      // is still covered by the drain.
+      state.closing.value = true;
+      while (true) {
+        const chain = state.pending.current;
+        await chain;
+        // If an enqueued call pushed new work during our await, the
+        // chain slot advanced — drain again. Once it stabilizes we're
+        // safe to delete.
+        if (state.pending.current === chain) break;
+      }
       sessions.delete(ctx.sessionId);
     },
     describeCapabilities: (ctx) => capabilityFor(sessions.get(ctx.session.sessionId)),
