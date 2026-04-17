@@ -69,9 +69,32 @@ const CLAUSE_SPLITTER = /[.!?;—]+/;
 const FILLER_PATTERN_RE =
   /\b(i will|i'll|i am going to|i'm going to|let me (?!know\b)(?:now\s+)?\w+|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will))\b/i;
 
+/**
+ * User-directed question starters. Conservative list of explicit
+ * second-person / confirmation-seeking patterns. Keeps self-directed
+ * rhetorical questions like "Need to inspect the logs?" or "Run the
+ * migration now?" OUT of the exemption so they still block as filler.
+ */
+const USER_DIRECTED_Q_STARTERS_RE =
+  /^(should|shall|may|could|can)\s+i\b|^(are|do|does|did|can|could|would|will|shall|is|was|have|has)\s+you\b/i;
+
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();
-  return trimmed.length > 0 && trimmed.endsWith("?");
+  if (!trimmed.endsWith("?")) return false;
+  // Inspect the final sentence — everything after the last sentence
+  // terminator (and before the closing `?`).
+  const withoutMark = trimmed.slice(0, -1).trim();
+  const lastSentence =
+    withoutMark
+      .split(/[.!?]+/)
+      .at(-1)
+      ?.trim() ?? "";
+  if (lastSentence.length === 0) return false;
+  // Accept if the question is explicitly addressed to the user (starts with
+  // "Should I", "Can you", "Do you", etc.) OR mentions "you" as a pronoun
+  // anywhere in the final sentence (covers "I will do X, should I check
+  // with you first?" etc.).
+  return USER_DIRECTED_Q_STARTERS_RE.test(lastSentence) || /\byou\b/i.test(lastSentence);
 }
 
 function defaultIsExplicitDone(output: string): boolean {

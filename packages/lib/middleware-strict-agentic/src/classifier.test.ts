@@ -145,10 +145,35 @@ describe("classifyTurn", () => {
     );
   });
 
-  test("user-question wins over done marker when both match", () => {
-    // question check runs before done check
-    const r = classifyTurn({ toolCallCount: 0, outputText: "Is this task done?" }, resolved);
-    expect(r.kind).toBe("user-question");
+  test("user-directed question exemption — strict: only 'Should I', 'Can you', 'Do you', etc.", () => {
+    // Positive: explicit user-addressed questions pass through.
+    expect(classifyTurn({ toolCallCount: 0, outputText: "Should I proceed?" }, resolved).kind).toBe(
+      "user-question",
+    );
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Do you want me to continue?" }, resolved).kind,
+    ).toBe("user-question");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Can you provide the API key?" }, resolved).kind,
+    ).toBe("user-question");
+  });
+
+  test("rhetorical / self-directed questions do NOT satisfy the user-question exemption", () => {
+    // Regression: "Need to inspect the logs?" and "Run the migration now?"
+    // previously passed because the default predicate accepted any trailing
+    // `?`. The model could stop the run by appending a question mark to
+    // rhetorical or suggestion text. The tightened default requires an
+    // explicit user-directed starter or a "you" pronoun, so these fall
+    // through to isExplicitDone / action instead of user-question.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Need to inspect the logs?" }, resolved).kind,
+    ).not.toBe("user-question");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Run the migration now?" }, resolved).kind,
+    ).not.toBe("user-question");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Why not check this first?" }, resolved).kind,
+    ).not.toBe("user-question");
   });
 
   test("custom predicate wins", () => {

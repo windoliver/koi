@@ -22,7 +22,7 @@ const { middleware } = createStrictAgenticMiddleware({
 | `enabled` | `boolean` | `true` | Master switch. When `false`, middleware is a no-op. |
 | `maxFillerRetries` | `number` (>= 1) | `3` | Consecutive filler blocks per run before circuit-breaker releases. `0` is rejected by validation — use `enabled: false` to disable the gate. |
 | `feedbackMessage` | `string?` | see below | Override text injected when blocking. |
-| `isUserQuestion` | `(output: string) => boolean` | trimmed output ends with `?` | Exempt turns that ask the user a direct question. |
+| `isUserQuestion` | `(output: string) => boolean` | final sentence ends with `?` AND either starts with a user-directed marker (`Should I`, `Can you`, `Do you`, …) or contains `you` as a pronoun | Exempt turns that ask the user a direct question. Rhetorical/self-directed questions (`Run the migration now?`) do NOT satisfy the default. |
 | `isExplicitDone` | `(output: string) => boolean` | terminal `done`/`completed`/`finished`/`no further action` in the last 80 chars AND no negation (`not`, `n't`, `yet`, etc.) in that window | Exempt turns that explicitly declare completion. |
 | `isFillerOutput` | `(output: string) => boolean` | matches first-person-future constructions (`i will`, `i'll`, `i'm going to`, `here is my plan`, `the plan is`, `let me <verb>` excluding `let me know …`, etc.) | Positive match for planning language — the ONLY text-based path that blocks. |
 
