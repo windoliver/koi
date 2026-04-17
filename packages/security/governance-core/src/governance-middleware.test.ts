@@ -1,7 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import { agentId, sessionId } from "@koi/core";
 import type { GovernanceController } from "@koi/core/governance";
-import type { ComplianceRecord, GovernanceBackend } from "@koi/core/governance-backend";
+import type {
+  ComplianceRecord,
+  GovernanceBackend,
+  GovernanceVerdict,
+} from "@koi/core/governance-backend";
 import type { ModelRequest, ModelResponse, TurnContext } from "@koi/core/middleware";
 import { createFlatRateCostCalculator } from "./cost-calculator.js";
 import {
@@ -256,5 +260,64 @@ describe("wrapModelStream", () => {
       /* drain */
     }
     expect(recorded).toHaveLength(0);
+  });
+});
+
+describe("wrapToolCall", () => {
+  test("allow verdict → next called", async () => {
+    const cfg = baseCfg();
+    const mw = createGovernanceMiddleware(cfg);
+    const next = mock(async () => ({ callId: "c1" as never, toolId: "t", result: "ok" }) as never);
+    await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c1" as never, toolId: "t", input: {} } as never,
+      next,
+    );
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("deny verdict → throws, next never called", async () => {
+    const cfg = baseCfg({
+      backend: {
+        evaluator: {
+          evaluate: () => ({
+            ok: false,
+            violations: [{ rule: "dangerous", severity: "critical", message: "no" }],
+          }),
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    const next = mock(async () => ({}) as never);
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c1" as never, toolId: "t", input: {} } as never,
+        next,
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect(next).toHaveBeenCalledTimes(0);
+  });
+
+  test("evaluator scope=['tool_call'] → model_call bypasses evaluator", async () => {
+    const evaluate = mock((): GovernanceVerdict => ({ ok: true }));
+    const cfg = baseCfg({
+      backend: {
+        evaluator: { evaluate, scope: ["tool_call"] },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    expect(evaluate).toHaveBeenCalledTimes(0);
+    await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c" as never, toolId: "t", input: {} } as never,
+      async () => ({}) as never,
+    );
+    expect(evaluate).toHaveBeenCalledTimes(1);
   });
 });

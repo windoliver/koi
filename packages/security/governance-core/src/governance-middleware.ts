@@ -86,6 +86,11 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       timestamp: Date.now(),
     };
 
+    const scope = backend.evaluator.scope;
+    if (scope !== undefined && !scope.includes(kind)) {
+      return; // evaluator declares no interest in this kind; allow
+    }
+
     let verdict: GovernanceVerdict;
     try {
       verdict = await backend.evaluator.evaluate(request);
@@ -192,7 +197,8 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       }
     },
 
-    async wrapToolCall(_ctx, request, next) {
+    async wrapToolCall(ctx: TurnContext, request, next) {
+      await gate(ctx, "tool_call", { toolId: request.toolId, input: request.input });
       return next(request);
     },
   };
