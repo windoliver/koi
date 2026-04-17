@@ -1386,6 +1386,118 @@ describe("supervisor correctness hardening", () => {
     liveWorkers.clear();
   });
 
+  it("shutdown() fails closed when a quarantined worker cannot be torn down", async () => {
+    // If a watch fault leaves a ghost that refuses to die, shutdown must
+    // report failure instead of returning ok while the process runs on.
+    const live = new Set<string>();
+    const ghost: WorkerBackend = {
+      kind: "in-process",
+      displayName: "ghost-shutdown",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        live.add(req.workerId as string);
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.has(id as string),
+      watch: async function* (id): AsyncIterable<WorkerEvent> {
+        yield { kind: "started", workerId: id, at: Date.now() };
+        throw new Error("simulated watch transport failure");
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": ghost },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 1,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("ghost-sd-1"));
+    await new Promise((r) => setTimeout(r, 300));
+
+    const sd = await supervisorResult.value.shutdown("test");
+    expect(sd.ok).toBe(false);
+    if (!sd.ok) expect(sd.error.code).toBe("INTERNAL");
+
+    live.clear();
+  });
+
+  it("spawn-timeout keeps the workerId quarantined until the late spawn settles", async () => {
+    // If spawn times out, the caller cannot retry the same workerId — the
+    // late-resolving worker might still be running.
+    let releaseSpawn: (() => void) | undefined;
+    const live = new Set<string>();
+    const slowBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "slow-late",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        await new Promise<void>((resolve) => {
+          releaseSpawn = resolve;
+        });
+        live.add(req.workerId as string);
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => live.has(id as string),
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      spawnTimeoutMs: 60,
+      backends: { "in-process": slowBackend },
+    });
+    if (!supervisorResult.ok) return;
+
+    const first = await supervisorResult.value.start(makeRequest("dup-1"));
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.error.code).toBe("TIMEOUT");
+
+    // While the late spawn is still in flight, retrying the same id must
+    // be rejected as CONFLICT to prevent a duplicate worker.
+    const retry = await supervisorResult.value.start(makeRequest("dup-1"));
+    expect(retry.ok).toBe(false);
+    if (!retry.ok) expect(retry.error.code).toBe("CONFLICT");
+
+    // Release the late spawn; teardown will kill it. Fake backend's kill()
+    // does not actually clear live, so the ghost stays alive and the id
+    // remains quarantined until stop() is called.
+    if (releaseSpawn !== undefined) releaseSpawn();
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Clean up via test teardown of liveness.
+    live.clear();
+  });
+
   it("short-lived subprocesses are observed as exited by the supervisor", async () => {
     // Regression for the fast-exit race: a command that exits before
     // the supervisor's watch IIFE attaches must still have its exited

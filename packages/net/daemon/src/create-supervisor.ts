@@ -31,6 +31,24 @@ interface PoolEntry {
 }
 
 /**
+ * Quarantine entry for a worker whose liveness cannot be confirmed. Created
+ * when:
+ *   - A watch-stream fault is followed by a failed teardown (worker may
+ *     still be running)
+ *   - A spawn timed out and the late backend.spawn() has not yet settled
+ *     or its resulting worker could not be torn down
+ *
+ * stop(id) re-runs teardownWorker against this entry and, on success,
+ * removes it. shutdown() drains the quarantine before returning; if any
+ * entry remains un-killable, shutdown fails closed so callers don't
+ * mistake partial failure for clean teardown.
+ */
+interface QuarantinedEntry {
+  readonly backend: WorkerBackend;
+  readonly reason: string;
+}
+
+/**
  * Bookkeeping for a worker that has crashed and is sleeping in restart backoff.
  * `cancelled` is checked by the restart task after backoff; if true, the
  * task aborts instead of respawning. `done` resolves when the task finishes
@@ -64,6 +82,11 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // so it can cancel a restart-looping worker; shutdown() uses this to await
   // each restart task's clean teardown.
   const restarting = new Map<WorkerId, RestartingEntry>();
+  // Workers whose liveness cannot be confirmed (see QuarantinedEntry).
+  // stop()/shutdown() retry teardown against these entries; while a worker
+  // is quarantined its workerId stays reserved in activeIds so callers
+  // cannot spawn a duplicate.
+  const quarantined = new Map<WorkerId, QuarantinedEntry>();
   // In-flight restart tasks — shutdown() awaits these so pending respawns
   // cannot resurrect workers after shutdown returns.
   const pendingRestarts = new Set<Promise<void>>();
@@ -402,13 +425,37 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         const raced = await Promise.race([spawnResolved, spawnTimeout]);
         clearTimeout(spawnTimeoutHandle);
         if (raced.kind === "timeout") {
-          // Spawn wedged. Release reservations so another worker can claim
-          // the slot. If spawn eventually resolves later, tear down the
-          // resulting worker asynchronously so it cannot run unsupervised.
-          releaseReservations();
-          void spawnResolved.then((late) => {
+          // Spawn wedged. Release capacity so another worker can claim
+          // the slot, but KEEP activeIds reserved — if the late spawn
+          // eventually resolves, the resulting worker shares this
+          // workerId and admitting a duplicate in the meantime would
+          // split-brain.
+          quarantined.set(request.workerId, {
+            backend,
+            reason: "spawn-timeout",
+          });
+          pendingSpawns--;
+          pendingSpawnPromises.delete(spawnDone);
+          pendingSpawnCancellations.delete(request.workerId);
+          resolveSpawnDone();
+          // Asynchronously tear down the late worker when (if) spawn resolves.
+          // On successful teardown, release activeIds so the id can be reused.
+          void spawnResolved.then(async (late) => {
             if (late.kind === "resolved" && late.value.ok) {
-              void teardownWorker(backend, request.workerId, "spawn-timeout", undefined);
+              const td = await teardownWorker(
+                backend,
+                request.workerId,
+                "spawn-timeout",
+                undefined,
+              );
+              if (td.ok) {
+                activeIds.delete(request.workerId);
+                quarantined.delete(request.workerId);
+              }
+            } else {
+              // Late spawn failed or threw — no worker to kill.
+              activeIds.delete(request.workerId);
+              quarantined.delete(request.workerId);
             }
           });
           return {
@@ -468,15 +515,19 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         undefined,
       );
       if (!teardownResult.ok) {
-        // Teardown could not confirm the worker is dead. Leave activeIds
-        // reserved so this workerId is not reused while the process may
-        // still be alive; release capacity so other workers can start.
-        // The caller must see the teardown error, not a clean cancellation.
+        // Teardown could not confirm the worker is dead. Record the
+        // quarantine so stop()/shutdown() can retry teardown; release
+        // capacity so other workers can start; but keep activeIds
+        // reserved so this workerId cannot be reused while the process
+        // may still be alive.
+        quarantined.set(request.workerId, {
+          backend,
+          reason: "cancelled-during-spawn-teardown-failed",
+        });
         pendingSpawns--;
         pendingSpawnPromises.delete(spawnDone);
         pendingSpawnCancellations.delete(request.workerId);
         resolveSpawnDone();
-        // DO NOT release activeIds — the worker is quarantined.
         return teardownResult;
       }
       const reason = shuttingDown
@@ -595,12 +646,13 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         pool.delete(request.workerId);
 
         if (!teardownResult.ok) {
-          // Teardown failed — the old worker may still be alive. Surface
-          // the failure via a synthetic crashed event whose error carries
-          // BOTH the watch fault and the teardown failure context.
-          // CRITICAL: keep activeIds reserved so a later start() for the
-          // same workerId is rejected as CONFLICT. Releasing activeIds
-          // here would let callers spawn a duplicate alongside the ghost.
+          // Teardown failed — the old worker may still be alive. Record
+          // the quarantine so stop()/shutdown() can retry teardown, and
+          // keep activeIds reserved so a duplicate start() is rejected.
+          quarantined.set(request.workerId, {
+            backend: current.backend,
+            reason: "watch-stream-fault-teardown-failed",
+          });
           publishEvent({
             kind: "crashed",
             workerId: request.workerId,
@@ -611,7 +663,6 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
               retryable: false,
             },
           });
-          // activeIds intentionally NOT deleted — the worker is quarantined.
           return;
         }
 
@@ -698,6 +749,20 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return { ok: true, value: undefined };
     }
 
+    // Case C: worker is quarantined (watch-fault/spawn-timeout couldn't
+    // confirm it died). Retry teardown; on success, release activeIds and
+    // clear the quarantine so the id can be reused.
+    const quarantineEntry = quarantined.get(id);
+    if (quarantineEntry !== undefined && pool.get(id) === undefined) {
+      const td = await teardownWorker(quarantineEntry.backend, id, reason, undefined);
+      if (td.ok) {
+        quarantined.delete(id);
+        activeIds.delete(id);
+        return { ok: true, value: undefined };
+      }
+      return td;
+    }
+
     const entry = pool.get(id);
     if (entry === undefined) {
       return {
@@ -782,10 +847,30 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       await Promise.all([...pendingRestarts]);
     }
 
+    // Drain quarantined workers — retry teardown for each. If any fail,
+    // shutdown fails closed so callers don't mistake partial teardown for
+    // clean shutdown.
+    const quarantineIds = [...quarantined.keys()];
+    const quarantineResults = await Promise.all(
+      quarantineIds.map(async (qid) => {
+        const q = quarantined.get(qid);
+        if (q === undefined) return { ok: true as const, value: undefined };
+        const td = await teardownWorker(q.backend, qid, reason, undefined);
+        if (td.ok) {
+          quarantined.delete(qid);
+          activeIds.delete(qid);
+        }
+        return td;
+      }),
+    );
+
     // Collect stop results we can actually observe (stopsPromise already
     // resolved because winner === "clean").
     const stopResults = await stopsPromise;
     for (const r of stopResults) {
+      if (!r.ok) return r;
+    }
+    for (const r of quarantineResults) {
       if (!r.ok) return r;
     }
     return { ok: true, value: undefined };
