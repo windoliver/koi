@@ -10468,6 +10468,112 @@ describe("Golden: @koi/checkpoint + @koi/snapshot-store-sqlite", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-core (2 queries)
+//
+// Standalone — no cassette replay. Exercises createGovernanceMiddleware with
+// stub controller/backend/cost to verify (1) allow path records token_usage
+// and (2) deny path surfaces a PERMISSION error. Both exercise the core gate
+// logic without requiring LLM I/O.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-core", () => {
+  test("allow verdict passes through with cost recorded", async () => {
+    const { createGovernanceMiddleware } = await import("@koi/governance-core");
+    const { agentId: toAgentId, sessionId: toSessionId } = await import("@koi/core");
+    type GovernanceController = import("@koi/core/governance").GovernanceController;
+    type GovernanceBackend = import("@koi/core/governance-backend").GovernanceBackend;
+    type TurnContext = import("@koi/core/middleware").TurnContext;
+    type ModelRequest = import("@koi/core/middleware").ModelRequest;
+    type ModelResponse = import("@koi/core/middleware").ModelResponse;
+    type GovernanceEvent = import("@koi/core/governance").GovernanceEvent;
+
+    const recorded: GovernanceEvent[] = [];
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: (ev) => {
+        recorded.push(ev);
+      },
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const backend: GovernanceBackend = {
+      evaluator: { evaluate: () => ({ ok: true }) },
+    };
+    const cost = { calculate: () => 0.0012 };
+
+    const mw = createGovernanceMiddleware({ backend, controller, cost });
+
+    const ctx: TurnContext = {
+      session: { sessionId: toSessionId("s-gov"), agentId: toAgentId("a-gov") },
+    } as unknown as TurnContext;
+    const modelReq: ModelRequest = { messages: [], model: "test-model" };
+    const modelRes: ModelResponse = {
+      content: "done",
+      model: "test-model",
+      usage: { inputTokens: 200, outputTokens: 100 },
+    };
+
+    const result = await mw.wrapModelCall?.(ctx, modelReq, async () => modelRes);
+    expect(result).toEqual(modelRes);
+    expect(recorded.length).toBe(1);
+    expect(recorded[0]).toMatchObject({
+      kind: "token_usage",
+      inputTokens: 200,
+      outputTokens: 100,
+    });
+  });
+
+  test("deny verdict throws PERMISSION error (fail-closed)", async () => {
+    const { createGovernanceMiddleware } = await import("@koi/governance-core");
+    const { agentId: toAgentId, sessionId: toSessionId } = await import("@koi/core");
+    type GovernanceController = import("@koi/core/governance").GovernanceController;
+    type GovernanceBackend = import("@koi/core/governance-backend").GovernanceBackend;
+    type TurnContext = import("@koi/core/middleware").TurnContext;
+    type ModelRequest = import("@koi/core/middleware").ModelRequest;
+    type ModelResponse = import("@koi/core/middleware").ModelResponse;
+
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: () => undefined,
+      snapshot: () => ({ timestamp: 0, readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const backend: GovernanceBackend = {
+      evaluator: {
+        evaluate: () => ({
+          ok: false,
+          violations: [{ rule: "policy-test", severity: "critical", message: "blocked by policy" }],
+        }),
+      },
+    };
+    const cost = { calculate: () => 0 };
+
+    const mw = createGovernanceMiddleware({ backend, controller, cost });
+
+    const ctx: TurnContext = {
+      session: { sessionId: toSessionId("s-deny"), agentId: toAgentId("a-deny") },
+    } as unknown as TurnContext;
+    const modelReq: ModelRequest = { messages: [], model: "test-model" };
+
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx, modelReq, async (): Promise<ModelResponse> => {
+        throw new Error("next should not be called");
+      });
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBeInstanceOf(Error);
+    const err = threw as Error;
+    expect(err.message).toContain("blocked by policy");
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");

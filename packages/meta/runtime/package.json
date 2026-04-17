@@ -26,6 +26,7 @@
     "@koi/fs-local": "workspace:*",
     "@koi/fs-nexus": "workspace:*",
     "@koi/fs-scoped": "workspace:*",
+    "@koi/governance-core": "workspace:*",
     "@koi/hook-prompt": "workspace:*",
     "@koi/hooks": "workspace:*",
     "@koi/loop": "workspace:*",

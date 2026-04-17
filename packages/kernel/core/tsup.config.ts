@@ -17,6 +17,7 @@ export default defineConfig({
     "src/engine.ts",
     "src/event-backend.ts",
     "src/errors.ts",
+    "src/governance.ts",
     "src/governance-backend.ts",
     "src/hook.ts",
     "src/eviction.ts",
