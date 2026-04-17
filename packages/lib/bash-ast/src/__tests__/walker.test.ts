@@ -319,15 +319,17 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.primaryCategory).toBe("unsupported-syntax");
   });
 
-  test("translated_string routes to unsupported-syntax", async () => {
+  test("translated_string routes to shell-escape (locale-translation ambiguity)", async () => {
     await initializeBashAst();
     // Note: tree-sitter-bash only emits `translated_string` when `$"..."`
     // is the command name (argv[0]) or a variable_assignment value; in a
     // plain argument position it splits into separate `$` + `string` nodes.
+    // Hard-deny via shell-escape: bash locale translation may expand the
+    // raw source to arbitrary text (round-6 adversarial finding).
     const result = analyzeBashCommand('$"msg"');
     expect(result.kind).toBe("too-complex");
     if (result.kind !== "too-complex") throw new Error("unreachable");
-    expect(result.primaryCategory).toBe("unsupported-syntax");
+    expect(result.primaryCategory).toBe("shell-escape");
   });
 
   test("concatenation routes to unsupported-syntax", async () => {
@@ -533,12 +535,17 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
   // (argument position) into `$` + `string` children — the `$` child lands
   // in walkArgNode's new `case "$":` arm. Prior to the fix this hit the
   // default and incorrectly produced `unknown`.
-  test('bare $ in argument position (echo $"msg") routes to unsupported-syntax', async () => {
+  test('bare $ in argument position (echo $"msg") routes to shell-escape', async () => {
     await initializeBashAst();
+    // Round-6 adversarial finding: locale-translated strings carry the same
+    // escape-ambiguity risk as backslash escapes in ordinary strings, and
+    // the walker short-circuits at the bare `$` before inspecting its
+    // sibling string for embedded backslashes. Hard-deny via shell-escape
+    // rather than passing through to elicit/regex fallback.
     const result = analyzeBashCommand('echo $"msg"');
     expect(result.kind).toBe("too-complex");
     if (result.kind !== "too-complex") throw new Error("unreachable");
-    expect(result.primaryCategory).toBe("unsupported-syntax");
+    expect(result.primaryCategory).toBe("shell-escape");
   });
 
   // `$_x` is the bash variable reference `_x` (underscore is a valid
@@ -569,5 +576,25 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.kind).toBe("too-complex");
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  // Round-6 regression: locale-translated strings whose payload carries a
+  // backslash escape MUST hard-deny via shell-escape, not leak through to
+  // elicit. Both the arg-position split (`$` + string) and the
+  // command-name form (`translated_string`) must fail closed.
+  test('escape-bearing $"a\\"b" in argument position hard-denies via shell-escape', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo $"a\\"b"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("shell-escape");
+  });
+
+  test('escape-bearing $"a\\"b" as command_name hard-denies via shell-escape', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('$"a\\"b" foo');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("shell-escape");
   });
 });

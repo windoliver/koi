@@ -347,6 +347,12 @@ function walkArgNode(node: Node):
         // expansion / command_substitution / etc.). The walker can't extract
         // a static argv, but it can route the rejection category by the
         // child's node type so callers see why the string failed.
+        //
+        // The `default` arm routes to `unknown` (not `unsupported-syntax`)
+        // so that a future tree-sitter-bash grammar emitting a new child
+        // node type for double-quoted strings surfaces as a drift signal
+        // instead of being silently absorbed. Known-but-unhandled child
+        // types MUST be added as explicit case arms above.
         let childCategory: TooComplexCategory;
         switch (child.type) {
           case "simple_expansion":
@@ -358,8 +364,15 @@ function walkArgNode(node: Node):
           case "expansion":
             childCategory = "parameter-expansion";
             break;
+          case "escape_sequence":
+            // `"foo\nbar"` can emit a discrete `escape_sequence` child.
+            // Raw source diverges from effective argv exactly like a
+            // backslash inside `string_content` — hard-deny via
+            // `shell-escape` to preserve the fail-closed invariant.
+            childCategory = "shell-escape";
+            break;
           default:
-            childCategory = "unsupported-syntax";
+            childCategory = "unknown";
             break;
         }
         return tooComplex(
@@ -424,22 +437,28 @@ function walkArgNode(node: Node):
         "unsupported-syntax",
       );
     case "translated_string":
-      // $"..." — locale-translated strings. Not supported.
+      // SECURITY: `$"..."` is bash locale translation. The displayed source
+      // can expand to arbitrary text when a translation catalog is loaded,
+      // and the enclosed payload can carry backslash escapes the walker
+      // does not normalize. Treat as `shell-escape` so the hard-deny path
+      // fires — approving this based on the raw text would be misleading.
       return tooComplex(
         'translated string $"..." is not supported',
         "translated_string",
-        "unsupported-syntax",
+        "shell-escape",
       );
     case "$":
-      // Bare `$` token in argument position. Tree-sitter-bash splits
-      // `echo $"msg"` into a `$` child plus a `string` child (only the
-      // command-name form emits a `translated_string` node), so the `$`
-      // lands here as a standalone node type. Treat as unsupported
-      // locale-translation syntax rather than a walker-bug signal.
+      // SECURITY: bare `$` in argument position is tree-sitter-bash's split
+      // form for `$"..."` (locale-translated string; the `$` and `string`
+      // arrive as sibling children instead of a single `translated_string`
+      // node). The walker short-circuits at this `$` before reaching the
+      // sibling `string`, so we cannot inspect the payload for backslash
+      // escapes. Same reasoning as `translated_string` above — fail closed
+      // via `shell-escape`.
       return tooComplex(
         "bare $ in argument position (likely locale-translated string) is not supported",
         "$",
-        "unsupported-syntax",
+        "shell-escape",
       );
     default:
       return tooComplex(`unsupported argument node: ${node.type}`, node.type, "unknown");

@@ -143,7 +143,7 @@ The eleven categories:
 | `parameter-expansion` | Any `${...}` form. | `echo ${X:-def}` |
 | `positional` | Bash special parameters: `$0`..`$9`, `$@`, `$*`, `$#`, `$?`, `$!`, `$$`, `$-`, `$_` — and mixed forms like `$1suffix` (prefix rule). These depend on shell/process state, not tracked environment scope, so they are not `scope-trackable`. | `echo $1`, `echo $$`, `echo "prefix$@"` |
 | `control-flow` | `for`/`while`/`if`/`case`/`function`/`subshell`. | `if true; then echo hi; fi` |
-| `shell-escape` | Backslash escapes in `word` or inside double-quoted strings; line-continuation prefilter. Raw source text does not match bash's effective semantics. | `cat \/etc\/passwd` |
+| `shell-escape` | Backslash escapes in `word`, inside double-quoted strings, or as `escape_sequence` children of a double-quoted string; line-continuation prefilter; locale-translated strings (`$"..."` — both `translated_string` node and the arg-position bare `$` split form). Raw source text may not match bash's effective semantics, so these hard-deny. | `cat \/etc\/passwd`, `$"msg"`, `echo $"a\"b"` |
 | `heredoc` | `heredoc_redirect`. | `cat <<EOF\nhi\nEOF` |
 | `process-substitution` | `<(cmd)` / `>(cmd)`. | `cat <(echo hi)` |
 | `parse-error` | Tree-sitter reported `root.hasError`. Under the vendored grammar, this can also fire on some valid bash inputs. | `echo "unterminated` |
