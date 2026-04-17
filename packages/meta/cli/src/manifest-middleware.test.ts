@@ -1350,4 +1350,19 @@ describe("buildInheritedMiddlewareForChildren", () => {
       "hooks",
     ]);
   });
+
+  test("includes planning when provided so inherited write_plan tool works in children", () => {
+    const withPlan = buildInheritedMiddlewareForChildren({
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      hook: stubMiddleware("hooks"),
+      plan: stubMiddleware("plan"),
+    });
+    expect(withPlan.map((mw) => mw.name)).toEqual([
+      "permissions",
+      "exfiltration-guard",
+      "hooks",
+      "plan",
+    ]);
+  });
 });

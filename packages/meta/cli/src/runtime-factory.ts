@@ -1314,6 +1314,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       exfiltrationGuard: exfiltrationGuardMw,
       hook: hookMw,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
+      // Planning MUST be inherited: the inherited-component-provider
+      // copies `write_plan` into the child tool set, so the child
+      // needs the middleware to intercept the tool call. Otherwise
+      // the call falls through to the provider's throwing fallback.
+      // The middleware is session-keyed, so sharing with children is
+      // safe — parent and child have distinct sessionIds.
+      plan: planBundle.middleware,
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so

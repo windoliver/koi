@@ -144,14 +144,18 @@ function enrichRequest(
   const messages: readonly InboundMessage[] = shouldReplay
     ? [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages]
     : [PLAN_SYSTEM_MESSAGE, ...request.messages];
-  // Dedupe: when the plan tool provider is wired (required by the
-  // bundle), the engine populates request.tools from attached providers
-  // before middleware runs — so write_plan is already present. Appending
-  // again would emit duplicate function names on the wire and cause
-  // strict providers to reject the request. Only add when missing.
-  const existing = request.tools ?? [];
-  const alreadyHas = existing.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
-  const tools = alreadyHas ? existing : [...existing, WRITE_PLAN_DESCRIPTOR];
+  // Tool visibility: when `request.tools` is defined (the production
+  // path via createKoi), it has already been populated by the engine
+  // from attached providers AND filtered by upstream middleware like
+  // permissions. Re-adding WRITE_PLAN_DESCRIPTOR here would undo a
+  // policy that intentionally removed `write_plan` from visibility,
+  // exposing a tool the session is not authorized to call.
+  //
+  // Only synthesize the descriptor when `request.tools` is genuinely
+  // absent — e.g., unit tests that bypass the provider path. In that
+  // case no policy has filtered anything and the middleware is the
+  // sole source of the tool.
+  const tools = request.tools !== undefined ? request.tools : [WRITE_PLAN_DESCRIPTOR];
   return { ...request, messages, tools };
 }
 

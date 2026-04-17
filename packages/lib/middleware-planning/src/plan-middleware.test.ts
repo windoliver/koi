@@ -970,6 +970,36 @@ describe("write_plan injection dedup", () => {
     expect(count).toBe(1);
   });
 
+  it("respects upstream permission-filtered tool lists and does not reintroduce write_plan", async () => {
+    // Simulate the production path: engine + permissions middleware
+    // materialize request.tools and intentionally drop write_plan
+    // (e.g. a restricted child session). The planning middleware must
+    // NOT add it back.
+    const mw = make();
+    const ctx = makeTurnCtx(makeSessionCtx());
+
+    let captured: readonly ToolDescriptor[] | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        // Explicit empty list: "tools were materialized and then all
+        // filtered out". Any write_plan appearance here would be a
+        // policy violation.
+        tools: [],
+        model: "test-model",
+      },
+      async (req) => {
+        captured = req.tools;
+        return makeResponse("ok");
+      },
+    );
+
+    expect(captured).toHaveLength(0);
+    const hasWritePlan = captured?.some((t) => t.name === WRITE_PLAN_TOOL_NAME) ?? false;
+    expect(hasWritePlan).toBe(false);
+  });
+
   it("injects write_plan exactly once when request.tools is empty", async () => {
     const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());

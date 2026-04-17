@@ -161,7 +161,15 @@ export function composeRuntimeMiddleware(
  * know their manifest policy does not apply to delegated work.
  *
  * Order mirrors the parent chain structure minus zone B:
- *   permissions → exfiltration-guard → hook → systemPrompt?
+ *   permissions → exfiltration-guard → hook → systemPrompt? → plan?
+ *
+ * Planning middleware IS inherited: the parent advertises the
+ * `write_plan` tool through its provider, and inherited-component-
+ * provider copies that tool descriptor into the child. Without the
+ * middleware in the child chain, `write_plan` would fall through to
+ * the provider's throwing fallback. Sharing the parent's middleware
+ * instance is safe because its state is keyed by sessionId — parent
+ * and child have distinct sessionIds, so they never alias.
  *
  * Exports / lifecycle / optional innermost (modelRouter, goal,
  * sessionTranscript) are NOT inherited — they are per-runtime state
@@ -176,11 +184,13 @@ export function buildInheritedMiddlewareForChildren(input: {
   readonly exfiltrationGuard: KoiMiddleware;
   readonly hook: KoiMiddleware;
   readonly systemPrompt?: KoiMiddleware | undefined;
+  readonly plan?: KoiMiddleware | undefined;
 }): readonly KoiMiddleware[] {
   return [
     input.permissions,
     input.exfiltrationGuard,
     input.hook,
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
+    ...(input.plan !== undefined ? [input.plan] : []),
   ];
 }
