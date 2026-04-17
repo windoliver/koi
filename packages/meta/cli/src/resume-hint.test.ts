@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { sessionId } from "@koi/core";
-import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 
 describe("formatResumeHint", () => {
   test("includes the session id verbatim", () => {
@@ -73,5 +73,91 @@ describe("formatPickerModeResumeHint", () => {
     const hint = formatPickerModeResumeHint(writable, viewed);
     expect(hint).toContain("koi tui --resume 'a safe-one'");
     expect(hint).toContain("koi tui --resume 'b;rm -rf /'");
+  });
+});
+
+describe("decideResumeHint", () => {
+  const sid = sessionId("s-1");
+  const other = sessionId("s-2");
+  const base = {
+    clearPersistFailed: false,
+    clearedThisProcess: false,
+    resumedFromFlag: false,
+    postClearTurnCount: 0,
+    anyTurnPersistedThisProcess: false,
+    tuiSessionId: sid,
+    viewedSessionId: sid,
+  } as const;
+
+  test("#1884: fresh launch + zero turns + no --resume → never-persisted (silent)", () => {
+    expect(decideResumeHint(base).kind).toBe("never-persisted");
+  });
+
+  test("#1884: fresh launch + ≥1 settled turn → normal hint", () => {
+    // postClearTurnCount stays 0 on fresh launch because rewindBoundaryActive
+    // is false; the real signal is anyTurnPersistedThisProcess.
+    expect(decideResumeHint({ ...base, anyTurnPersistedThisProcess: true }).kind).toBe("normal");
+  });
+
+  test("--resume + zero new turns → normal hint (the resumed file already exists)", () => {
+    expect(decideResumeHint({ ...base, resumedFromFlag: true }).kind).toBe("normal");
+  });
+
+  test("--resume + ≥1 new turn → normal hint", () => {
+    expect(
+      decideResumeHint({
+        ...base,
+        resumedFromFlag: true,
+        postClearTurnCount: 2,
+        anyTurnPersistedThisProcess: true,
+      }).kind,
+    ).toBe("normal");
+  });
+
+  test("/clear + zero turns → cleared-empty (explicit stderr notice)", () => {
+    expect(
+      decideResumeHint({ ...base, clearedThisProcess: true, postClearTurnCount: 0 }).kind,
+    ).toBe("cleared-empty");
+  });
+
+  test("/clear + ≥1 turn afterwards → normal hint (there's new work to resume)", () => {
+    expect(
+      decideResumeHint({
+        ...base,
+        clearedThisProcess: true,
+        postClearTurnCount: 1,
+        anyTurnPersistedThisProcess: true,
+      }).kind,
+    ).toBe("normal");
+  });
+
+  test("clear persist failed → clear-persist-failed (stderr warning)", () => {
+    expect(decideResumeHint({ ...base, clearPersistFailed: true }).kind).toBe(
+      "clear-persist-failed",
+    );
+  });
+
+  test("picker mode: viewed archive differs from writable session → picker hint", () => {
+    expect(
+      decideResumeHint({
+        ...base,
+        anyTurnPersistedThisProcess: true, // past never-persisted guard
+        viewedSessionId: other,
+      }).kind,
+    ).toBe("picker");
+  });
+
+  test("clear-persist-failed takes precedence over every other flag", () => {
+    expect(
+      decideResumeHint({
+        ...base,
+        clearPersistFailed: true,
+        clearedThisProcess: true,
+        resumedFromFlag: true,
+        postClearTurnCount: 3,
+        anyTurnPersistedThisProcess: true,
+        viewedSessionId: other,
+      }).kind,
+    ).toBe("clear-persist-failed");
   });
 });
