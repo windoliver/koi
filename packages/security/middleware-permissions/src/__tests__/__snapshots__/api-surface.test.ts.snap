@@ -120,6 +120,7 @@ declare const DEFAULT_APPROVAL_CACHE_MAX_ENTRIES: number;
 declare const DEFAULT_APPROVAL_TIMEOUT_MS: number;
 declare const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number;
 declare const DEFAULT_DENIAL_ESCALATION_WINDOW_MS: number;
+declare const DEFAULT_SOFT_DENY_PER_TURN_CAP: number;
 interface PermissionsMiddlewareConfig {
     /** Pluggable authorization backend. Required. */
     readonly backend: PermissionBackend;
@@ -173,6 +174,12 @@ interface PermissionsMiddlewareConfig {
      * tools that don't (non-fs tools, missing path arg, etc.).
      */
     readonly resolveToolPath?: ((toolId: string, input: JsonObject) => string | undefined) | undefined;
+    /**
+     * Max cumulative soft denies per \`decisionCacheKey\` per turn before hard-throw.
+     * Counter is cumulative per turn — allow decisions do not reset it. Cleared at
+     * turn boundary via \`onBeforeTurn\`. Default: 3. #1650.
+     */
+    readonly softDenyPerTurnCap?: number;
 }
 declare function validatePermissionsConfig(input: unknown): Result<PermissionsMiddlewareConfig>;
 
@@ -265,6 +272,6 @@ interface PermissionsMiddlewareHandle extends KoiMiddleware {
 }
 declare function createPermissionsMiddleware(config: PermissionsMiddlewareConfig): PermissionsMiddlewareHandle;
 
-export { type ApprovalCacheConfig, type ApprovalGrant, type ApprovalStore, type ApprovalStoreConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createApprovalStore, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
+export { type ApprovalCacheConfig, type ApprovalGrant, type ApprovalStore, type ApprovalStoreConfig, DEFAULT_APPROVAL_CACHE_MAX_ENTRIES, DEFAULT_APPROVAL_CACHE_TTL_MS, DEFAULT_APPROVAL_TIMEOUT_MS, DEFAULT_CACHE_CONFIG, DEFAULT_DENIAL_ESCALATION_THRESHOLD, DEFAULT_DENIAL_ESCALATION_WINDOW_MS, DEFAULT_DENY_MARKER, DEFAULT_GROUPS, DEFAULT_SOFT_DENY_PER_TURN_CAP, type DenialEscalationConfig, type DenialRecord, type DenialSource, type DenialTracker, type PatternBackendConfig, type PermissionCacheConfig, type PermissionRules, type PermissionsMiddlewareConfig, type PermissionsMiddlewareHandle, createApprovalStore, createAutoApprovalHandler, createDenialTracker, createPatternPermissionBackend, createPermissionsMiddleware, isDefaultDeny, validatePermissionsConfig };
 "
 `;

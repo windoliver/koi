@@ -1821,11 +1821,11 @@ describe("createPermissionsMiddleware", () => {
       return { ctx, dispatchCalls };
     }
 
-    test("Test A — deny: dispatch is NOT called from line 1129 (0 dispatches after Task 9)", async () => {
-      // After Task 9 (this commit): line 1129 narrowed to skip deny.
-      // Task 10 will re-add dispatch inside the deny branch with the final (possibly
-      // hard-converted) decision. Until then, the deny path does NOT dispatch at all.
-      // This test will be UPDATED in Task 10 to assert exactly-one dispatch.
+    test("Test A — deny: dispatch is called exactly once from inside the deny branch (not from line 1129)", async () => {
+      // After Task 10: line 1129 skips deny; the deny branch's emitDenyAudit
+      // fires exactly one dispatch with the final (possibly hard-converted)
+      // decision. For a native hard deny (disposition absent / "hard") the
+      // dispatched decision is the original.
       const mw = createPermissionsMiddleware({ backend: denyAll("blocked for test") });
       const { ctx, dispatchCalls } = makeCtxWithDispatchSpy();
 
@@ -1833,7 +1833,8 @@ describe("createPermissionsMiddleware", () => {
         mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler),
       ).rejects.toThrow("blocked for test");
 
-      expect(dispatchCalls).toHaveLength(0);
+      expect(dispatchCalls).toHaveLength(1);
+      expect(dispatchCalls[0]?.[1].effect).toBe("deny");
     });
 
     test("Test B — allow: dispatch is called exactly once from line 1129", async () => {
