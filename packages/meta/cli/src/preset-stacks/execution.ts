@@ -290,6 +290,16 @@ export const executionStack: PresetStack = {
     // validated source so the trust boundary is consistent.
     const toolEnv = detectToolEnv();
 
+    // Explicit operator-supplied PATH extensions, colon-separated. Used by
+    // test harnesses that override HOME (disabling home-derived PATH
+    // detection) but still need specific tools (e.g. ~/.bun/bin) reachable
+    // from the Bash tool. Only absolute paths survive buildSafeEnv's filter.
+    const extraPathsRaw = process.env.KOI_BASH_EXTRA_PATH ?? "";
+    const extraPaths = extraPathsRaw
+      .split(":")
+      .map((p) => p.trim())
+      .filter((p) => p.length > 0);
+
     // When sandboxed, keep HOME=/tmp (the SAFE_ENV default) because
     // the sandbox write-allowlist does not include $HOME — propagating
     // the real home would cause tool cache/config writes to fail.
@@ -298,8 +308,8 @@ export const executionStack: PresetStack = {
     const sandboxed = sandboxAdapter !== undefined && sandboxProfile !== undefined;
     const effectiveHome = sandboxed ? undefined : toolEnv.home;
     const effectivePaths = sandboxed
-      ? toolEnv.pathExtensions
-      : [...toolEnv.pathExtensions, ...toolEnv.shimPathExtensions];
+      ? [...toolEnv.pathExtensions, ...extraPaths]
+      : [...toolEnv.pathExtensions, ...toolEnv.shimPathExtensions, ...extraPaths];
 
     const bashHandle = createBashToolWithHooks({
       workspaceRoot: ctx.cwd,

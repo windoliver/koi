@@ -758,6 +758,16 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  * If you add a new caller, pass both fields explicitly and document
  * the chosen posture.
  */
+const DEFAULT_MAX_DURATION_MS = 1_800_000;
+
+function resolveMaxDurationMs(): number {
+  const raw = process.env.KOI_MAX_DURATION_MS;
+  if (raw === undefined) return DEFAULT_MAX_DURATION_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_DURATION_MS;
+  return n === 0 ? Number.MAX_SAFE_INTEGER : n;
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
@@ -1792,11 +1802,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       resetIterationBudgetPerRun: true,
       governance: {
         iteration: {
-          // Per-iteration UX budgets (reset on every run via
-          // resetIterationBudgetPerRun above):
-          maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
-          maxDurationMs: 300_000, // 5 min per submit
-          // Cumulative spend ceiling (NOT reset by iteration_reset):
+          maxTurns: 25,
+          // Per-submit wall-clock cap. Default 30 min matches CC's "let it
+          // run, user Ctrl-C" model. Override with KOI_MAX_DURATION_MS env
+          // var (e.g. `KOI_MAX_DURATION_MS=3600000` for 1h, or `0` to
+          // disable the cap entirely).
+          maxDurationMs: resolveMaxDurationMs(),
           maxTokens: 1_000_000,
         },
       },

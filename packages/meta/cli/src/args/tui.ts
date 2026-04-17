@@ -43,6 +43,12 @@ export interface TuiFlags extends BaseFlags {
    * minus Koi provider keys. Default false (minimal allowlist only).
    */
   readonly verifierInheritEnv: boolean;
+  /**
+   * Bypass all tool permission prompts (auto-allow every tool call).
+   * Aliased as `--dangerously-skip-permissions` for CC parity. Use only
+   * in trusted environments — equivalent to rules `{ allow: ["*"] }`.
+   */
+  readonly yolo: boolean;
 }
 
 export function parseTuiFlags(rest: readonly string[]): TuiFlags {
@@ -57,6 +63,8 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     readonly "verifier-timeout": string | undefined;
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
+    readonly yolo: boolean | undefined;
+    readonly "dangerously-skip-permissions": boolean | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -74,6 +82,8 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
         "verifier-timeout": { type: "string" },
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
+        yolo: { type: "boolean", default: false },
+        "dangerously-skip-permissions": { type: "boolean", default: false },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -134,6 +144,7 @@ export function parseTuiFlags(rest: readonly string[]): TuiFlags {
     verifierTimeoutMs: resolveVerifierTimeoutMsSafe(values["verifier-timeout"], skipValidators),
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
+    yolo: (values.yolo ?? false) || (values["dangerously-skip-permissions"] ?? false),
   };
 }
 

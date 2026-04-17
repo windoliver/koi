@@ -48,7 +48,7 @@ import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
 import { createAuthNotificationHandler } from "@koi/fs-nexus";
 import { createArgvGate, type LoopRuntime, runUntilPass } from "@koi/loop";
-import { createApprovalStore } from "@koi/middleware-permissions";
+import { createApprovalStore, createPatternPermissionBackend } from "@koi/middleware-permissions";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import {
   createModelRouter,
@@ -1338,6 +1338,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   let mcpViewGeneration = 0;
   // Per-server in-flight auth guard — prevents overlapping OAuth flows
   const mcpAuthInFlight = new Set<string>();
+  const yoloPermissionBackend = flags.yolo
+    ? createPatternPermissionBackend({ rules: { allow: ["*"], deny: [], ask: [] } })
+    : undefined;
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1345,6 +1348,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     approvalTimeoutMs: TUI_APPROVAL_TIMEOUT_MS,
     cwd: process.cwd(),
     systemPrompt,
+    ...(yoloPermissionBackend !== undefined
+      ? {
+          permissionBackend: yoloPermissionBackend,
+          permissionsDescription: "koi tui --yolo (auto-allow all tools)",
+        }
+      : {}),
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -3991,17 +4000,25 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // prevent false triggers in test/pipe contexts. Uses exit code 129
   // (same as SIGHUP) because PTY close IS a hangup — using a generic
   // error code would mask the real termination cause for supervisors.
+  //
+  // Corroborate with stdout: tmux can transiently close stdin under load
+  // (send-keys + capture-pane while a child like `bun test` spawns) while
+  // the pane's stdout is still writable. A real terminal hangup tears down
+  // both. Only shutdown if stdout is also broken — otherwise rely on
+  // SIGHUP (which tmux sends on real session kill) as the primary signal.
+  //
   // let: justified — set to false when done() resolves, preventing the
   // stdin close handler from force-exiting during external/host teardown.
   let tuiRunning = false;
   const onStdinClose = (): void => {
-    // Only treat stdin close as a hangup when the TUI is actively
-    // running AND no orderly shutdown is in progress. In embedded/test
-    // callers the host may close stdin during normal teardown — that
-    // should not force process.exit(129).
-    if (tuiRunning && !shutdownStarted) {
-      void shutdown(129, "stdin closed (parent terminal gone)");
+    if (!tuiRunning || shutdownStarted) return;
+    // Probe stdout: if still writable, this is a transient tmux flicker —
+    // SIGHUP will fire on real terminal loss. If stdout is already dead,
+    // the terminal is truly gone and we should shut down immediately.
+    if (process.stdout.writable && !process.stdout.destroyed) {
+      return;
     }
+    void shutdown(129, "stdin closed (parent terminal gone)");
   };
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
