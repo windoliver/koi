@@ -1126,7 +1126,12 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
       }
-      void ctx.dispatchPermissionDecision?.(query, decision);
+      if (decision.effect !== "deny") {
+        // Allow/ask keep their fire-and-forget dispatch here. Each deny branch
+        // (soft and hard) will dispatch its own final decision exactly once,
+        // added in Task 10 of #1650.
+        void ctx.dispatchPermissionDecision?.(query, decision);
+      }
 
       // Report the permission decision for trace recording
       ctx.reportDecision?.({

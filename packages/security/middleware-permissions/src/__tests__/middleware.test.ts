@@ -1790,4 +1790,75 @@ describe("createPermissionsMiddleware", () => {
       expect(approvalReq?.metadata).toBeUndefined();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // dispatchPermissionDecision dispatch counts (Task 9 — #1650)
+  //
+  // Line ~1129 of middleware.ts fires dispatchPermissionDecision for every
+  // effect. Task 9 narrows it to skip "deny", so each deny branch can dispatch
+  // its own final (possibly hard-converted) decision exactly once in Task 10.
+  //
+  // Test A  — deny:  dispatch must NOT be called from line 1129 (0 times).
+  //           NOTE: Between Task 9 and Task 10 the deny path emits NO dispatch
+  //           at all. Task 10 will update Test A to assert exactly-one dispatch
+  //           (from inside the deny branch with the final decision).
+  // Test B  — allow: dispatch is called exactly once from line 1129 (1 time).
+  // Test C  — ask (no approval handler): dispatch is called exactly once from
+  //           line 1129 before the "no approval handler" throw (1 time).
+  // ---------------------------------------------------------------------------
+  describe("dispatchPermissionDecision dispatch counts per effect (#1650 Task 9)", () => {
+    function makeCtxWithDispatchSpy(): {
+      ctx: TurnContext;
+      dispatchCalls: Array<readonly [PermissionQuery, PermissionDecision]>;
+    } {
+      const dispatchCalls: Array<readonly [PermissionQuery, PermissionDecision]> = [];
+      const ctx: TurnContext = {
+        ...makeTurnContext(),
+        dispatchPermissionDecision: (q: PermissionQuery, d: PermissionDecision) => {
+          dispatchCalls.push([q, d] as const);
+        },
+      };
+      return { ctx, dispatchCalls };
+    }
+
+    test("Test A — deny: dispatch is NOT called from line 1129 (0 dispatches after Task 9)", async () => {
+      // After Task 9 (this commit): line 1129 narrowed to skip deny.
+      // Task 10 will re-add dispatch inside the deny branch with the final (possibly
+      // hard-converted) decision. Until then, the deny path does NOT dispatch at all.
+      // This test will be UPDATED in Task 10 to assert exactly-one dispatch.
+      const mw = createPermissionsMiddleware({ backend: denyAll("blocked for test") });
+      const { ctx, dispatchCalls } = makeCtxWithDispatchSpy();
+
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler),
+      ).rejects.toThrow("blocked for test");
+
+      expect(dispatchCalls).toHaveLength(0);
+    });
+
+    test("Test B — allow: dispatch is called exactly once from line 1129", async () => {
+      const mw = createPermissionsMiddleware({ backend: allowAll() });
+      const { ctx, dispatchCalls } = makeCtxWithDispatchSpy();
+
+      await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+      expect(dispatchCalls).toHaveLength(1);
+      expect(dispatchCalls[0]?.[1].effect).toBe("allow");
+    });
+
+    test("Test C — ask (no approval handler): dispatch is called exactly once from line 1129", async () => {
+      // When there is no requestApproval handler, handleAskDecision throws
+      // "no approval handler". Line 1129 fires once BEFORE entering handleAskDecision,
+      // and the ask-handler callback at line 1164 is never reached (so no second dispatch).
+      const mw = createPermissionsMiddleware({ backend: askAll("needs approval") });
+      const { ctx, dispatchCalls } = makeCtxWithDispatchSpy();
+
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("deploy"), noopToolHandler),
+      ).rejects.toThrow("no approval handler");
+
+      expect(dispatchCalls).toHaveLength(1);
+      expect(dispatchCalls[0]?.[1].effect).toBe("ask");
+    });
+  });
 });
