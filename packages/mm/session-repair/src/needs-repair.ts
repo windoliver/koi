@@ -45,6 +45,19 @@ export function needsRepair(messages: readonly InboundMessage[]): boolean {
       const currHash = computeContentHash(curr.content);
       if (prevHash === currHash) return true;
     }
+
+    // Two consecutive non-pinned user messages with different content →
+    // interrupt repair needed (identical ones already caught by dedup above).
+    if (
+      prev.senderId === "user" &&
+      curr.senderId === "user" &&
+      prev.pinned !== true &&
+      curr.pinned !== true
+    ) {
+      const prevHash = computeContentHash(prev.content);
+      const currHash = computeContentHash(curr.content);
+      if (prevHash !== currHash) return true;
+    }
   }
 
   return false;

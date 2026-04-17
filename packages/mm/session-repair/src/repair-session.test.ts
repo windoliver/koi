@@ -195,15 +195,40 @@ describe("repairSession — dedup", () => {
 // ---------------------------------------------------------------------------
 
 describe("repairSession — merge", () => {
-  test("merges consecutive same-sender messages without callId", () => {
-    const messages = [msg("user", "hello"), msg("user", "world"), msg("assistant", "hi")];
+  test("merges consecutive same-sender assistant messages without callId", () => {
+    // Use assistant, not user — user messages are never merged (they come
+    // from distinct submits; merging silently joins two turns).
+    const messages = [
+      msg("user", "q"),
+      msg("assistant", "hello"),
+      msg("assistant", "world"),
+      msg("user", "next"),
+    ];
     const result = repairSession(messages);
 
     const mergeIssues = result.issues.filter((i) => i.phase === "merge");
     expect(mergeIssues.length).toBe(1);
 
-    // First message should have concatenated content
-    expect(result.messages[0]?.content.length).toBe(2);
+    // The two assistants merged: their content concatenated
+    const merged = result.messages.find((m) => m.senderId === "assistant");
+    expect(merged?.content.length).toBe(2);
+  });
+
+  test("never merges consecutive user messages (interrupt repair inserts synthetic assistant)", () => {
+    const messages = [msg("user", "hello"), msg("user", "continue"), msg("assistant", "hi")];
+    const result = repairSession(messages);
+
+    // No merge for user pair — interrupt repair inserts synthetic assistant instead
+    const mergeIssues = result.issues.filter((i) => i.phase === "merge");
+    expect(mergeIssues.length).toBe(0);
+
+    // Original user messages intact, not concatenated
+    expect(result.messages[0]?.senderId).toBe("user");
+    expect(result.messages[0]?.content.length).toBe(1);
+    // Synthetic assistant injected between them
+    expect(result.messages[1]?.senderId).toBe("assistant");
+    expect(result.messages[1]?.metadata?.synthetic).toBe(true);
+    expect(result.messages[2]?.senderId).toBe("user");
   });
 
   test("does not merge messages with callId", () => {
@@ -253,6 +278,50 @@ describe("repairSession — merge", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Interrupt repair tests
+// ---------------------------------------------------------------------------
+
+describe("repairSession — interrupt repair", () => {
+  test("inserts synthetic assistant between consecutive user messages (aborted turn)", () => {
+    // User submitted "hello", ESC interrupted the stream, then typed "continue".
+    // Without repair, Anthropic rejects (alternation) and OpenAI merges to "hellocontinue".
+    const messages = [msg("user", "hello"), msg("user", "continue"), msg("assistant", "ok")];
+    const result = repairSession(messages);
+    expect(result.messages.length).toBe(4);
+    expect(result.messages[0]?.content).toEqual([{ kind: "text", text: "hello" }]);
+    expect(result.messages[1]?.senderId).toBe("assistant");
+    expect(result.messages[1]?.metadata?.synthetic).toBe(true);
+    expect(result.messages[1]?.metadata?.repairPhase).toBe("interrupt");
+    expect(result.messages[2]?.content).toEqual([{ kind: "text", text: "continue" }]);
+    expect(result.messages[3]?.senderId).toBe("assistant");
+  });
+
+  test("handles 3+ consecutive user messages with one synthetic per gap", () => {
+    const messages = [msg("user", "a"), msg("user", "b"), msg("user", "c")];
+    const result = repairSession(messages);
+    expect(result.messages.length).toBe(5);
+    expect(result.messages.map((m) => m.senderId)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+    ]);
+  });
+
+  test("leaves pinned user messages alone (system-injected context stacking is by design)", () => {
+    const messages = [
+      msg("user", "goal: ship it", { pinned: true }),
+      msg("user", "context snippet", { pinned: true }),
+      msg("assistant", "ok"),
+    ];
+    const result = repairSession(messages);
+    expect(result.messages).toBe(messages);
+    expect(result.issues.length).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Phase interaction tests
 // ---------------------------------------------------------------------------
 
@@ -290,21 +359,26 @@ describe("repairSession — phase interactions", () => {
     expect(result.issues).toEqual([]);
   });
 
-  test("dedup before merge: duplicates removed before merge check", () => {
+  test("dedup before interrupt-repair: duplicates removed before sender-pair check", () => {
     const messages = [
       msg("user", "hello"),
       msg("user", "hello"), // duplicate — removed in dedup
-      msg("user", "world"), // different — would merge with first
+      msg("user", "world"), // different — interrupt-repair inserts synthetic assistant before it
       msg("assistant", "hi"),
     ];
     const result = repairSession(messages);
 
-    // After dedup: [user:hello, user:world, assistant:hi]
-    // After merge: [user:hello+world, assistant:hi]
     const dedupIssues = result.issues.filter((i) => i.phase === "dedup");
-    const mergeIssues = result.issues.filter((i) => i.phase === "merge");
+    const orphanIssues = result.issues.filter((i) => i.phase === "orphan-tool");
     expect(dedupIssues.length).toBe(1);
-    expect(mergeIssues.length).toBe(1);
+    // Interrupt-repair is tagged with phase="orphan-tool" and adds 1 synthetic
+    // assistant between the remaining user→user pair.
+    expect(orphanIssues.length).toBe(1);
+    // User messages stay distinct (no merge); synthetic assistant between
+    expect(result.messages[0]?.senderId).toBe("user");
+    expect(result.messages[1]?.senderId).toBe("assistant");
+    expect(result.messages[1]?.metadata?.synthetic).toBe(true);
+    expect(result.messages[2]?.senderId).toBe("user");
   });
 });
 

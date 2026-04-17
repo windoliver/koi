@@ -80,6 +80,63 @@ function repairOrphans(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1b: Interrupt repair
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a synthetic assistant "[Turn interrupted]" marker between
+ * consecutive user messages. This happens when a stream was aborted
+ * (ESC / Ctrl-C / duration cap) before the engine recorded an assistant
+ * reply, so the next user submit lands immediately after the prior one.
+ *
+ * Without this, providers that require strict user/assistant alternation
+ * (Anthropic) reject the request, and providers that don't (OpenAI) silently
+ * merge the two user turns into one prompt so the model hallucinates a
+ * combined intent like "hellocontinue".
+ */
+function repairInterrupts(
+  messages: readonly InboundMessage[],
+  issues: RepairIssue[],
+): readonly InboundMessage[] {
+  if (messages.length < 2) return messages;
+  const result: InboundMessage[] = [];
+  // let justified: mutable per-iteration to scan adjacent pairs
+  let insertedCount = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const curr = messages[i];
+    if (curr === undefined) continue;
+    const prev = result[result.length - 1];
+    // Only non-pinned pairs — pinned user messages are system-injected
+    // context (manifest goals, etc.) and stacking them is by design.
+    if (
+      prev !== undefined &&
+      prev.senderId === "user" &&
+      curr.senderId === "user" &&
+      prev.pinned !== true &&
+      curr.pinned !== true
+    ) {
+      const synthetic: InboundMessage = {
+        senderId: "assistant",
+        content: [{ kind: "text", text: "[Turn interrupted before the model produced a reply.]" }],
+        metadata: { synthetic: true, repairPhase: "interrupt" },
+        timestamp: curr.timestamp,
+        ...(curr.threadId !== undefined ? { threadId: curr.threadId } : {}),
+      };
+      result.push(synthetic);
+      insertedCount++;
+      issues.push({
+        phase: "orphan-tool",
+        description: `Inserted synthetic assistant between consecutive user messages at index ${String(i)} (likely interrupted turn)`,
+        index: i,
+        action: "inserted",
+      });
+    }
+    result.push(curr);
+  }
+  return insertedCount === 0 ? messages : result;
+}
+
+// ---------------------------------------------------------------------------
 // Phase 2: Dedup
 // ---------------------------------------------------------------------------
 
@@ -194,10 +251,16 @@ export function repairSession(messages: readonly InboundMessage[]): RepairResult
   // Phase 3: merge
   const afterMerge = merge(afterDedup, issues);
 
+  // Phase 4: interrupt repair — insert synthetic assistant between
+  // remaining consecutive user messages. Runs LAST so dedup/merge have
+  // already collapsed identical or mergeable pairs; anything left is a
+  // genuine user→user gap from an aborted turn.
+  const afterInterrupt = repairInterrupts(afterMerge, issues);
+
   // Zero-allocation fast path: if no issues, return original reference
   if (issues.length === 0) {
     return { messages, issues: [] };
   }
 
-  return { messages: afterMerge, issues };
+  return { messages: afterInterrupt, issues };
 }
