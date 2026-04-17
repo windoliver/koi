@@ -1057,13 +1057,26 @@ export function createPermissionsMiddleware(
             emit(hardened);
             return false;
           }
-          // #1650 loop round-2: if the soft-deny counter is ALREADY at or over
-          // cap for this key in the current turn, the execute-time path would
-          // hard-convert every future call. Stop advertising the tool so the
-          // model doesn't burn iterations on guaranteed-hard failures.
+          // #1650 loop round-2/6: if the soft-deny counter is ALREADY at or
+          // over cap for this tool in the current turn, stop advertising the
+          // tool so the model doesn't burn iterations on guaranteed-hard
+          // failures.
+          //
+          // Round-6 key-mismatch fix: execute-time builds queries with
+          // `resolvedPath` (fs tools), but filter-time does not know the
+          // future path. Use a tool-identity PREFIX peek so any path/variant
+          // that has already exhausted cap causes the tool to be stripped.
+          // This intentionally over-strips for different intents on the same
+          // tool — accepting it as a safety bias; the model can re-emit the
+          // same tool next turn (fresh counter).
           const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
           const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
-          const currentCount = getTurnSoftDenyCounter(sid).peek(turnScopedKey);
+          const toolPrefix = `${ctx.turnIndex}\0${ctx.session.agentId}\0invoke\0${tool.name}\0`;
+          const counter = getTurnSoftDenyCounter(sid);
+          const currentCount = Math.max(
+            counter.peek(turnScopedKey),
+            counter.peekMaxByPrefix(toolPrefix),
+          );
           if (currentCount >= cap) {
             // #1650 loop round-3: record DenialTracker ONCE per (session, turn,
             // cacheKey). Repeated planning passes in the same turn would

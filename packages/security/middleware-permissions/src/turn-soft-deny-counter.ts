@@ -18,26 +18,55 @@ export interface TurnSoftDenyCounter {
    */
   readonly countAndCap: (cacheKey: string, cap: number) => "under_cap" | "over_cap";
   /**
-   * Read current count for `cacheKey` WITHOUT incrementing. Used by
-   * planning-time filters (`filterTools`) to check whether a tool has already
-   * exceeded cap in this turn, so already-hardened tools stop being advertised
-   * to the model for the rest of the turn.
+   * Read current count for `cacheKey` WITHOUT incrementing.
    */
   readonly peek: (cacheKey: string) => number;
-  /** Reset the counter for a new turn. */
+  /**
+   * Peek the HIGHEST count across all entries whose key starts with `prefix`.
+   * Used by planning-time filters to check if any path/variant under a given
+   * tool prefix has already exhausted cap — even when the exact future
+   * cacheKey is not yet known (e.g., fs tools where resolvedPath is not
+   * available at planning time).
+   */
+  readonly peekMaxByPrefix: (prefix: string) => number;
+  /** Reset all counters (called on full teardown — rarely needed per-turn). */
   readonly clear: () => void;
 }
 
-export function createTurnSoftDenyCounter(): TurnSoftDenyCounter {
+const DEFAULT_MAX_ENTRIES = 1024;
+
+export function createTurnSoftDenyCounter(
+  maxEntries: number = DEFAULT_MAX_ENTRIES,
+): TurnSoftDenyCounter {
+  // Insertion-ordered Map → JavaScript Map iteration is insertion-ordered,
+  // so deleting-and-reinserting on write yields LRU-on-insertion behavior.
   const counts = new Map<string, number>();
+
+  function evictIfNeeded(): void {
+    if (counts.size <= maxEntries) return;
+    // Drop the oldest entry (insertion order).
+    const oldest = counts.keys().next().value;
+    if (oldest !== undefined) counts.delete(oldest);
+  }
+
   return {
     countAndCap(cacheKey, cap) {
       const current = (counts.get(cacheKey) ?? 0) + 1;
+      // Reinsert so recently-used keys stay near the head.
+      counts.delete(cacheKey);
       counts.set(cacheKey, current);
+      evictIfNeeded();
       return current > cap ? "over_cap" : "under_cap";
     },
     peek(cacheKey) {
       return counts.get(cacheKey) ?? 0;
+    },
+    peekMaxByPrefix(prefix) {
+      let max = 0;
+      for (const [k, v] of counts) {
+        if (k.startsWith(prefix) && v > max) max = v;
+      }
+      return max;
     },
     clear() {
       counts.clear();
