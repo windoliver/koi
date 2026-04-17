@@ -256,3 +256,13 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 ## Changelog
 
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
+
+## #1650 — Soft permission deny (opt-in)
+
+`@koi/permissions` and `@koi/middleware-permissions` now support soft permission deny:
+
+- New L0 field `PermissionDecision.disposition?: "hard" | "soft"` (fail-safe `"hard"` default; see `docs/L2/permissions.md`).
+- New rule field `PermissionRule.on_deny?: "hard" | "soft"` (opt-in per rule).
+- When the middleware sees `disposition: "soft"` on a deny, it returns a synthetic `ToolResponse` (with `metadata.blockedByHook: true`, `metadata.permissionDenied: true`, `metadata.hookName: "permissions"`) instead of throwing — letting the agent loop continue and adapt. See `docs/L2/middleware-permissions.md` for per-turn retry cap, filter-time visibility rules, `SoftDenyLog`/`DenialRecord` additions, and the golden trajectory (`fixtures/permission-soft-deny.trajectory.json`).
+
+Runtime behavior is unchanged for any rule that does not set `on_deny: "soft"`. No downstream wiring changes are required in this package; observability middleware (`event-trace`, `middleware-report`, `session-transcript`) already treats `blockedByHook` responses as non-executions.

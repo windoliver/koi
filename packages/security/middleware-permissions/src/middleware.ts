@@ -47,8 +47,11 @@ import {
   DEFAULT_CACHE_CONFIG,
   DEFAULT_DENIAL_ESCALATION_THRESHOLD,
   DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
+  DEFAULT_SOFT_DENY_PER_TURN_CAP,
 } from "./config.js";
 import { createDenialTracker, type DenialTracker } from "./denial-tracker.js";
+import { createSoftDenyLog, type SoftDenyLog } from "./soft-deny-log.js";
+import { createTurnSoftDenyCounter, type TurnSoftDenyCounter } from "./turn-soft-deny-counter.js";
 
 // ---------------------------------------------------------------------------
 // Internal cache types
@@ -533,6 +536,38 @@ export function createPermissionsMiddleware(
     return t;
   }
 
+  // Soft-deny logs scoped per session (#1650)
+  const softDenyLogsBySession = new Map<string, SoftDenyLog>();
+
+  function getSoftDenyLog(sessionId: string): SoftDenyLog {
+    let log = softDenyLogsBySession.get(sessionId);
+    if (log === undefined) {
+      log = createSoftDenyLog();
+      softDenyLogsBySession.set(sessionId, log);
+    }
+    return log;
+  }
+
+  // Per-turn soft-deny counters scoped per session (#1650)
+  const turnSoftDenyCountersBySession = new Map<string, TurnSoftDenyCounter>();
+
+  function getTurnSoftDenyCounter(sessionId: string): TurnSoftDenyCounter {
+    let counter = turnSoftDenyCountersBySession.get(sessionId);
+    if (counter === undefined) {
+      counter = createTurnSoftDenyCounter();
+      turnSoftDenyCountersBySession.set(sessionId, counter);
+    }
+    return counter;
+  }
+
+  // Planning-time cap-exhaustion recording dedup (#1650 loop round-3).
+  // Key: `${sessionId}\0${turnIndex}\0${cacheKey}`. Ensures DenialTracker is
+  // written to at most ONCE per (session, turn, cacheKey) when filterTools
+  // strips a tool because its per-turn soft-deny budget is exhausted.
+  // Without this, repeated planning passes in the same turn would evict
+  // native hard-deny history from the bounded-FIFO tracker.
+  const filterCapRecordedKeys = new Set<string>();
+
   // Denial escalation config
   const escalationEnabled =
     config.denialEscalation !== undefined && config.denialEscalation !== false;
@@ -770,6 +805,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );
@@ -848,6 +885,8 @@ export function createPermissionsMiddleware(
           .filter(
             (r) =>
               r.source === "policy" &&
+              r.softness !== "soft" &&
+              r.origin !== "soft-conversion" &&
               r.timestamp >= cutoff &&
               (r.queryKey === undefined || r.queryKey === cacheKey),
           );
@@ -972,15 +1011,131 @@ export function createPermissionsMiddleware(
 
     const sessionTracker = getTracker(ctx.session.sessionId as string);
 
+    // #1650 loop round-9: capture the FINAL enforced decision per tool so
+    // reportDecision's filteredTools summary reflects what was actually
+    // emitted (hardened reason for soft→hard conversions), not the
+    // pre-conversion soft decision.
+    const enforcedDecisionByIndex = new Map<number, PermissionDecision>();
+
     const filtered = tools.filter((tool, i) => {
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
-      if (auditSink !== undefined) {
-        auditFilterDecision(ctx, tool.name, decision, auditSink);
-      }
       // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
-      void ctx.dispatchPermissionDecision?.(queries[i]!, decision);
+      const query = queries[i]!;
+      const sid = ctx.session.sessionId as string;
+
+      // #1650 loop round-4: audit/dispatch fire AFTER the hard-conversion
+      // checks so observers see the FINAL decision shape, not the original
+      // soft decision that was about to be hard-converted. Keeps audit sinks
+      // consistent with what was actually enforced.
+      const emit = (finalDecision: PermissionDecision): void => {
+        enforcedDecisionByIndex.set(i, finalDecision);
+        if (auditSink !== undefined) {
+          auditFilterDecision(ctx, tool.name, finalDecision, auditSink);
+        }
+        void ctx.dispatchPermissionDecision?.(query, finalDecision);
+      };
+
       if (decision.effect === "deny") {
+        const dispositionIsSoft = (decision.disposition ?? "hard") === "soft";
+        if (dispositionIsSoft) {
+          const cacheKey = decisionCacheKey(query);
+          // #1650 loop round-3/4: unkeyable context → hard-convert (mirror
+          // execute-time fail-closed). Record in DenialTracker with
+          // origin: "soft-conversion" (same vocabulary as execute-time) so
+          // observers see a consistent hard denial trail.
+          if (cacheKey === undefined) {
+            const hardened: PermissionDecision = {
+              ...decision,
+              disposition: "hard",
+              reason: `${decision.reason} (unkeyable context — failing closed)`,
+            };
+            // #1650 loop round-9: dedup unkeyable filter-time records per
+            // (session, turn, toolId). Repeated planning passes in the same
+            // turn with unkeyable context would otherwise churn the 1024-entry
+            // DenialTracker FIFO and evict native hard-deny history.
+            const unkeyableRecordKey = `${sid}\0${ctx.turnIndex}\0unkeyable\0${tool.name}`;
+            if (!filterCapRecordedKeys.has(unkeyableRecordKey)) {
+              filterCapRecordedKeys.add(unkeyableRecordKey);
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: undefined,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+            }
+            emit(hardened);
+            return false;
+          }
+          // #1650 loop round-2/6: if the soft-deny counter is ALREADY at or
+          // over cap for this tool in the current turn, stop advertising the
+          // tool so the model doesn't burn iterations on guaranteed-hard
+          // failures.
+          //
+          // Trade-off (loop rounds 6→9): previously used a tool-identity
+          // prefix peek to catch path-sensitive cap exhaustion, but that
+          // over-stripped tools for unrelated intents (different paths) whose
+          // future call would have been allowed. Reverting to exact-key peek
+          // — path-sensitive cap exhaustion is invisible at planning time;
+          // execute-time still enforces (hard-throws on the Nth+1 exact-key
+          // deny) and the outer engine max-iterations bounds the worst case.
+          // For tools WITHOUT a resolveToolPath callback, filter-time keys
+          // match execute-time exactly and this check strips correctly.
+          const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          const currentCount = getTurnSoftDenyCounter(sid).peek(turnScopedKey);
+          if (currentCount >= cap) {
+            // #1650 loop round-3: record DenialTracker ONCE per (session, turn,
+            // cacheKey). Repeated planning passes in the same turn would
+            // otherwise evict native hard-deny history from the bounded FIFO.
+            const capRecordKey = `${sid}\0${ctx.turnIndex}\0${cacheKey}`;
+            if (!filterCapRecordedKeys.has(capRecordKey)) {
+              filterCapRecordedKeys.add(capRecordKey);
+              sessionTracker.record({
+                toolId: tool.name,
+                reason: decision.reason,
+                timestamp: clock(),
+                principal: ctx.session.agentId,
+                turnIndex: ctx.turnIndex,
+                source: denialSource(decision),
+                queryKey: cacheKey,
+                softness: "hard",
+                origin: "soft-conversion",
+              });
+            }
+            // Always emit the hardened decision so audit/observers see the
+            // final enforced shape (even if tracker dedup suppressed the
+            // record-write above).
+            const hardened: PermissionDecision = {
+              ...decision,
+              disposition: "hard",
+              reason: `${decision.reason} (soft-deny retry cap ${cap} exceeded this turn)`,
+            };
+            emit(hardened);
+            return false;
+          }
+          // Soft-deny → keep tool visible. Record in isolated SoftDenyLog so
+          // high-volume soft denies don't evict native hard-deny history from
+          // the shared DenialTracker budget. Emit the ORIGINAL soft decision
+          // (this is what actually happens at planning time — the tool stays
+          // visible).
+          getSoftDenyLog(sid).record({
+            toolId: tool.name,
+            reason: decision.reason,
+            timestamp: clock(),
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            queryKey: cacheKey,
+          });
+          emit(decision);
+          return true;
+        }
+        // Hard-deny: existing behavior — record with softness+origin, emit, strip.
         sessionTracker.record({
           toolId: tool.name,
           reason: decision.reason,
@@ -988,18 +1143,30 @@ export function createPermissionsMiddleware(
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
           source: denialSource(decision),
-          // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
-          queryKey: decisionCacheKey(queries[i]!),
+          queryKey: decisionCacheKey(query),
+          softness: "hard",
+          origin: "native",
         });
+        emit(decision);
         return false;
       }
+      // allow/ask — emit the original decision so audit/observer chain sees it.
+      emit(decision);
       return true;
     });
 
     const filteredCount = tools.length - filtered.length;
     if (filteredCount > 0) {
+      // #1650 loop round-9: prefer the enforced (possibly hardened) decision
+      // captured during emit over the raw backend decision, so filteredTools
+      // reflects the final reason ("unkeyable context — failing closed" /
+      // "soft-deny retry cap N exceeded this turn") rather than the original
+      // soft-policy reason.
       const filteredDetails = tools
-        .map((t, i) => ({ name: t.name, decision: decisions[i] }))
+        .map((t, i) => {
+          const decision = enforcedDecisionByIndex.get(i) ?? decisions[i];
+          return { name: t.name, decision };
+        })
         .filter(
           (
             d,
@@ -1048,6 +1215,15 @@ export function createPermissionsMiddleware(
     approvalCachesBySession.get(sid)?.clear();
     approvalCachesBySession.delete(sid);
     alwaysAllowedBySession.delete(sid);
+    // #1650: evict soft-deny session state so a reused session id does not
+    // inherit the previous turn's counter or soft-deny log.
+    softDenyLogsBySession.get(sid)?.clear();
+    softDenyLogsBySession.delete(sid);
+    turnSoftDenyCountersBySession.get(sid)?.clear();
+    turnSoftDenyCountersBySession.delete(sid);
+    for (const key of filterCapRecordedKeys) {
+      if (key.startsWith(`${sid}\0`)) filterCapRecordedKeys.delete(key);
+    }
     // Evict all in-flight approval coalesce entries for this session so that
     // a stale dialog approval resolved after reset cannot re-populate the cache
     // or cause new callers to coalesce onto an old pending promise.
@@ -1087,6 +1263,15 @@ export function createPermissionsMiddleware(
       approvalCachesBySession.get(sid)?.clear();
       approvalCachesBySession.delete(sid);
       alwaysAllowedBySession.delete(sid);
+      // #1650: evict soft-deny session state so long-lived runtimes do not
+      // retain per-session log/counter objects after session teardown.
+      softDenyLogsBySession.get(sid)?.clear();
+      softDenyLogsBySession.delete(sid);
+      turnSoftDenyCountersBySession.get(sid)?.clear();
+      turnSoftDenyCountersBySession.delete(sid);
+      for (const key of filterCapRecordedKeys) {
+        if (key.startsWith(`${sid}\0`)) filterCapRecordedKeys.delete(key);
+      }
     },
 
     async wrapModelCall(
@@ -1123,33 +1308,155 @@ export function createPermissionsMiddleware(
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;
 
-      if (auditSink !== undefined) {
-        auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
+      // Non-deny paths: audit + dispatch here. Deny paths handle their own
+      // audit, dispatch, and report inside the deny branch (Task 10 of #1650)
+      // so that soft vs hard-converted decisions use the correct final decision object.
+      if (decision.effect !== "deny") {
+        if (auditSink !== undefined) {
+          auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
+        }
+        // Allow/ask: fire-and-forget dispatch here.
+        void ctx.dispatchPermissionDecision?.(query, decision);
+        ctx.reportDecision?.({
+          phase: "execute",
+          toolId: request.toolId,
+          toolInput: safePreviewJson(request.input, 300),
+          action: decision.effect,
+          durationMs,
+          ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
+          source: denialSource(decision),
+        });
       }
-      void ctx.dispatchPermissionDecision?.(query, decision);
-
-      // Report the permission decision for trace recording
-      ctx.reportDecision?.({
-        phase: "execute",
-        toolId: request.toolId,
-        toolInput: safePreviewJson(request.input, 300),
-        action: decision.effect,
-        durationMs,
-        ...(decision.effect !== "allow" ? { reason: decision.reason } : {}),
-        source: denialSource(decision),
-      });
 
       if (decision.effect === "deny") {
-        getTracker(ctx.session.sessionId as string).record({
+        const source = denialSource(decision);
+        const disposition = decision.disposition ?? "hard";
+
+        const isSoftCandidate =
+          disposition === "soft" &&
+          source !== "approval" &&
+          !isFailClosed(decision) &&
+          !isEscalated(decision); // IS_CACHED does NOT set IS_ESCALATED — cached replays stay soft-eligible
+
+        const sessionId = ctx.session.sessionId as string;
+
+        type DenyDecision = Extract<PermissionDecision, { readonly effect: "deny" }>;
+
+        const hardConvertedDecision = (suffix: string): DenyDecision => ({
+          ...decision,
+          disposition: "hard" as const,
+          reason: `${decision.reason} (${suffix})`,
+        });
+
+        const emitDenyAudit = (finalDecision: DenyDecision): void => {
+          if (auditSink !== undefined) {
+            auditDecision(ctx, request.toolId, finalDecision, durationMs, auditSink);
+          }
+          void ctx.dispatchPermissionDecision?.(query, finalDecision);
+          ctx.reportDecision?.({
+            phase: "execute",
+            toolId: request.toolId,
+            toolInput: safePreviewJson(request.input, 300),
+            action: "deny",
+            durationMs,
+            reason: finalDecision.reason,
+            source: denialSource(finalDecision),
+          });
+        };
+
+        if (isSoftCandidate) {
+          const cacheKey = decisionCacheKey(query);
+
+          if (cacheKey === undefined) {
+            // Unkeyable context — cannot scope the soft-deny counter safely → fail closed.
+            const hardened = hardConvertedDecision("unkeyable context — failing closed");
+            getTracker(sessionId).record({
+              toolId: request.toolId,
+              reason: decision.reason,
+              timestamp: clock(),
+              principal: ctx.session.agentId,
+              turnIndex: ctx.turnIndex,
+              source,
+              queryKey: undefined,
+              softness: "hard",
+              origin: "soft-conversion",
+            });
+            emitDenyAudit(hardened);
+            throw new KoiRuntimeError({
+              code: "PERMISSION",
+              message: hardened.reason,
+              retryable: false,
+            });
+          }
+
+          // Per-turn cap check. Prefix the counter key with turnIndex so
+          // overlapping turns in the same session cannot reset or share each
+          // other's budget. Loop round-5 fix.
+          const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
+          const counter = getTurnSoftDenyCounter(sessionId);
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          if (counter.countAndCap(turnScopedKey, cap) === "over_cap") {
+            const hardened = hardConvertedDecision(`soft-deny retry cap ${cap} exceeded this turn`);
+            getTracker(sessionId).record({
+              toolId: request.toolId,
+              reason: decision.reason,
+              timestamp: clock(),
+              principal: ctx.session.agentId,
+              turnIndex: ctx.turnIndex,
+              source,
+              queryKey: cacheKey,
+              softness: "hard",
+              origin: "soft-conversion",
+            });
+            emitDenyAudit(hardened);
+            throw new KoiRuntimeError({
+              code: "PERMISSION",
+              message: hardened.reason,
+              retryable: false,
+            });
+          }
+
+          // Soft path: record in isolated SoftDenyLog (NOT DenialTracker).
+          getSoftDenyLog(sessionId).record({
+            toolId: request.toolId,
+            reason: decision.reason,
+            timestamp: clock(),
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            queryKey: cacheKey,
+          });
+          emitDenyAudit(decision);
+          // Trust-boundary: output contains only toolId, never decision.reason.
+          // `blockedByHook: true` is the canonical downstream marker honored
+          // by event-trace, middleware-report, and session-transcript to
+          // classify this response as a non-execution rather than a successful
+          // tool call. Loop round-10 fix.
+          // `permissionDenied: true` is the specific signal for #1650 soft-deny.
+          return {
+            output: `Permission denied for tool "${request.toolId}". This tool is not available in the current scope.`,
+            metadata: {
+              isError: true,
+              blockedByHook: true,
+              permissionDenied: true,
+              hookName: "permissions",
+              toolId: request.toolId,
+            },
+          };
+        }
+
+        // Native hard path: record with origin: "native", dispatch original decision, throw.
+        getTracker(sessionId).record({
           toolId: request.toolId,
           reason: decision.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
           turnIndex: ctx.turnIndex,
-          source: denialSource(decision),
+          source,
           queryKey: decisionCacheKey(query),
+          softness: "hard",
+          origin: "native",
         });
-
+        emitDenyAudit(decision);
         throw new KoiRuntimeError({
           code: "PERMISSION",
           message: decision.reason,
@@ -1167,6 +1474,19 @@ export function createPermissionsMiddleware(
 
       // allow
       return next(request);
+    },
+
+    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
+      // #1650 loop round-5/loop-2 round-1: counter keys are already
+      // turn-scoped via `${turnIndex}\0${cacheKey}` prefix, so they don't
+      // collide across turns. Intentionally NO reaping here — reaping
+      // older turns by relative distance would wipe the budget of a
+      // long-running/stalled turn that has since been overtaken by newer
+      // turns, letting a late tool call from the older turn accrue a fresh
+      // cap. Memory bound comes from:
+      //   - The counter's fail-closed ceiling (see turn-soft-deny-counter.ts)
+      //   - clearSessionApprovals / onSessionEnd, which evict the whole map
+      // filterCapRecordedKeys is similarly retained until session end.
     },
   };
 
@@ -1195,6 +1515,15 @@ export function createPermissionsMiddleware(
     listPersistentApprovals(): readonly import("./approval-store.js").ApprovalGrant[] {
       if (persistentStore === undefined) return [];
       return persistentStore.list();
+    },
+    // Internal test hooks — NOT part of the public API surface.
+    // Used only in unit tests to inspect per-session state that cannot be
+    // observed through the public interface without adding new public API.
+    __getSoftDenyLogForTesting(sessionId: string): SoftDenyLog {
+      return getSoftDenyLog(sessionId);
+    },
+    __getDenialTrackerForTesting(sessionId: string): DenialTracker {
+      return getTracker(sessionId);
     },
   }) as PermissionsMiddlewareHandle;
 

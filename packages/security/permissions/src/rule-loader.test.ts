@@ -118,3 +118,62 @@ describe("loadRules", () => {
     expect(result.value[0]?.pattern).toBe("C:/secret/**");
   });
 });
+
+describe("loadRules on_deny round-trip (#1650)", () => {
+  test("preserves on_deny: 'hard' for policy-tier", () => {
+    const input = new Map([
+      [
+        "policy" as const,
+        [
+          {
+            pattern: "/etc/**",
+            action: "write",
+            effect: "deny" as const,
+            on_deny: "hard" as const,
+          },
+        ],
+      ],
+    ]);
+    const result = loadRules(input);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value[0]?.on_deny).toBe("hard");
+  });
+
+  test("preserves on_deny: 'soft' for project-tier", () => {
+    const input = new Map([
+      [
+        "project" as const,
+        [
+          {
+            pattern: "/tmp/scratch/**",
+            action: "write",
+            effect: "deny" as const,
+            on_deny: "soft" as const,
+          },
+        ],
+      ],
+    ]);
+    const result = loadRules(input);
+    if (result.ok) expect(result.value[0]?.on_deny).toBe("soft");
+  });
+
+  test("preserves on_deny across all four source tiers", () => {
+    const tiers = ["policy", "project", "local", "user"] as const;
+    for (const tier of tiers) {
+      const input = new Map([
+        [tier, [{ pattern: "x", action: "y", effect: "deny" as const, on_deny: "soft" as const }]],
+      ]);
+      const result = loadRules(input);
+      if (!result.ok) throw new Error(`failed for tier ${tier}`);
+      expect(result.value[0]?.on_deny).toBe("soft");
+    }
+  });
+
+  test("rule without on_deny loads cleanly (backward compat)", () => {
+    const input = new Map([
+      ["project" as const, [{ pattern: "/x", action: "read", effect: "allow" as const }]],
+    ]);
+    const result = loadRules(input);
+    if (result.ok) expect(result.value[0]?.on_deny).toBeUndefined();
+  });
+});

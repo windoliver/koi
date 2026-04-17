@@ -37,6 +37,7 @@ export {
   DEFAULT_CACHE_CONFIG,
   DEFAULT_DENIAL_ESCALATION_THRESHOLD,
   DEFAULT_DENIAL_ESCALATION_WINDOW_MS,
+  DEFAULT_SOFT_DENY_PER_TURN_CAP,
   validatePermissionsConfig,
 } from "./config.js";
 // Denial tracking
