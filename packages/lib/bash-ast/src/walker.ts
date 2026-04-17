@@ -163,6 +163,16 @@ function walkStatement(node: Node): WalkResult {
         node.type,
         "unsupported-syntax",
       );
+    case "test_command":
+      // `((expr))` arithmetic tests and `[[ cond ]]` / `[ cond ]`
+      // conditional expressions. Known bash grammar — route to
+      // `unsupported-syntax` (askable) rather than leak to the
+      // `unknown` hard-deny bucket.
+      return tooComplex(
+        "test_command (((...)), [[...]], [...]) is not supported",
+        node.type,
+        "unsupported-syntax",
+      );
     default:
       return tooComplex(`unsupported statement: ${node.type}`, node.type, "unknown");
   }
@@ -600,7 +610,20 @@ function walkFileRedirect(node: Node):
       targetNode = child;
       continue;
     }
-    return tooComplex(`unexpected child in file_redirect: ${child.type}`, child.type, "malformed");
+    // Under the current tree-sitter-bash grammar, a `file_redirect`
+    // node can include trailing sibling `word` children that bash
+    // actually treats as arguments to the surrounding command
+    // (e.g. `echo >out foo` parses with `file_redirect ">out foo"`
+    // where `word "foo"` is the trailing argv element). The walker
+    // cannot safely split these out from this function alone, so
+    // route to `unsupported-syntax` (askable) rather than hard-deny
+    // as `malformed`. The surrounding command's defense-in-depth
+    // regex/elicit path still evaluates the full raw source.
+    return tooComplex(
+      `unexpected child in file_redirect: ${child.type}`,
+      child.type,
+      "unsupported-syntax",
+    );
   }
 
   if (op === undefined) {

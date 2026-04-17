@@ -708,6 +708,47 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.primaryCategory).toBe("unsupported-syntax");
   });
 
+  // Fresh-loop round-9 regression: valid bash forms must not hard-deny
+  // via the parser-untrusted branch. Cover:
+  //   - file_redirect with trailing word (`echo >out foo`) — grammar
+  //     puts the trailing argv element inside file_redirect, not as a
+  //     sibling of the command. Walker cannot cleanly split; route to
+  //     unsupported-syntax so the regex/elicit path can still evaluate.
+  //   - test_command (((..)), [[..]], [..]) — known bash grammar the
+  //     walker doesn't implement. Must not leak into 'unknown' (hard-
+  //     deny bucket).
+  test("redirect with trailing word routes to unsupported-syntax (echo >out foo)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo >out foo");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("arithmetic test ((i++)) routes to unsupported-syntax (not unknown)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("((i++))");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("conditional [[ ]] routes to unsupported-syntax (not unknown)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("[[ a =~ b ]]");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("POSIX test [ ] routes to unsupported-syntax (not unknown)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("[ -f /etc/passwd ]");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
   test("redirect-only 2>&1 routes to unsupported-syntax", async () => {
     await initializeBashAst();
     const result = analyzeBashCommand("2>&1");

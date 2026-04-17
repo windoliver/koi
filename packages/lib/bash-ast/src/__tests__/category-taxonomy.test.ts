@@ -145,6 +145,12 @@ const UNKNOWN_CORPUS: ReadonlyArray<readonly [string]> = [
   // Quoted arithmetic expansion (round-2 fresh-loop regression) — must
   // route to unsupported-syntax, not unknown.
   ['echo "$((1+2))"'],
+  // Fresh-loop round-9: valid bash test_command shapes and redirect-
+  // with-trailing-word must NOT land in unknown (hard-deny).
+  ["((i++))"],
+  ["[[ a =~ b ]]"],
+  ["[ -f /etc/passwd ]"],
+  ["echo >out foo"],
   // From bypass-corpus.test.ts — injection + bypass patterns:
   ["eval $(cat /etc/passwd)"],
   ["eval `cat /etc/passwd`"],
