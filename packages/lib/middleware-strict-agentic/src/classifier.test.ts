@@ -51,6 +51,25 @@ describe("classifyTurn", () => {
     expect(classifyTurn({ toolCallCount: 1, outputText: "" }, resolved).kind).toBe("action");
   });
 
+  test("filler pattern wins over explicit-done — a plan-only reply cannot bypass the gate by appending a completion keyword", () => {
+    // Regression: "Here is my plan. Plan completed." previously classified as
+    // explicit-done because the last clause contains "completed" with no
+    // negation and no forward-work. That let the model bypass the guardrail
+    // by tacking on a done-phrase at the end of plan-only text. Now the
+    // filler match runs FIRST, so any output with planning language blocks
+    // even if it also contains a completion keyword.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Here is my plan. Plan completed." }, resolved)
+        .kind,
+    ).toBe("filler");
+    expect(
+      classifyTurn(
+        { toolCallCount: 0, outputText: "I will make the change. Analysis finished." },
+        resolved,
+      ).kind,
+    ).toBe("filler");
+  });
+
   test("plain substantive answer is action, not filler", () => {
     // Regression: a concise final answer like "10" after prior tool use
     // has toolCallCount=0 and no completion keyword, but it is NOT plan

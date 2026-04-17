@@ -192,6 +192,41 @@ describe("createStrictAgenticMiddleware", () => {
     expect(r).toEqual({ kind: "continue" });
   });
 
+  test("onAfterTurn resets counter on non-blocked turn — tool turn clears prior filler blocks", async () => {
+    // Regression: tool-use turns do NOT go through onBeforeStop (engine ends
+    // them via turn_end). Without resetting in onAfterTurn on the non-blocked
+    // path, a filler block earlier in the run leaks its counter across later
+    // tool turns, so an unrelated filler much later trips the breaker after
+    // only one strike instead of the full budget.
+    const { middleware, getBlockCount } = createStrictAgenticMiddleware({
+      maxFillerRetries: 3,
+    });
+
+    // Turn 1: filler block → counter=1. Turn ends with stopBlocked=true.
+    const filler = makeTurn("s-leak", "t-leak-1");
+    await middleware.wrapModelCall?.(filler, REQUEST, async () => response("I will plan this", 0));
+    await middleware.onBeforeStop?.(filler);
+    expect(getBlockCount("run-1")).toBe(1);
+    await middleware.onAfterTurn?.({ ...filler, stopBlocked: true });
+    // Counter preserved because the turn was blocked.
+    expect(getBlockCount("run-1")).toBe(1);
+
+    // Turn 2: tool use — successful non-blocked turn. onAfterTurn without
+    // stopBlocked should reset.
+    const toolTurn = makeTurn("s-leak", "t-leak-2");
+    await middleware.wrapModelCall?.(toolTurn, REQUEST, async () => response("", 1));
+    await middleware.onAfterTurn?.(toolTurn);
+    expect(getBlockCount("run-1")).toBe(0);
+
+    // Turn 3: another filler. Counter was reset, so the full budget applies —
+    // not a near-immediate fail-open from stale state.
+    const filler2 = makeTurn("s-leak", "t-leak-3");
+    await middleware.wrapModelCall?.(filler2, REQUEST, async () => response("I will plan more", 0));
+    const r = await middleware.onBeforeStop?.(filler2);
+    expect(r?.kind).toBe("block");
+    expect(getBlockCount("run-1")).toBe(1);
+  });
+
   test("onSessionEnd clears block counter", async () => {
     const { middleware, getBlockCount } = createStrictAgenticMiddleware({ maxFillerRetries: 5 });
     const turn = makeTurn();

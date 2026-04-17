@@ -186,6 +186,14 @@ export function createStrictAgenticMiddleware(
 
     async onAfterTurn(ctx: TurnContext): Promise<void> {
       store.clearTurn(ctx.turnId);
+      // A turn that ends WITHOUT a stop-gate veto is a success signal for the
+      // run. Reset the counter so it does not accumulate across ordinary
+      // tool-use turns — otherwise a filler earlier in the run would leak its
+      // block count into a much later unrelated filler and trip the breaker
+      // after only one or two real filler strikes.
+      if (ctx.stopBlocked !== true) {
+        store.resetBlocks(ctx.session.runId);
+      }
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {

@@ -4,9 +4,14 @@
  * Evaluates in this order:
  *   1. toolCallCount > 0        → action
  *   2. isUserQuestion(output)   → user-question
- *   3. isExplicitDone(output)   → explicit-done
- *   4. blank output (no tools)  → filler  (degraded / silent-failure guard)
- *   5. isFillerOutput(output)   → filler
+ *   3. blank output (no tools)  → filler  (degraded / silent-failure guard)
+ *   4. isFillerOutput(output)   → filler  (evaluated BEFORE explicit-done so
+ *                                          a model cannot bypass the gate by
+ *                                          appending a completion keyword to
+ *                                          an otherwise plan-only reply —
+ *                                          e.g. "Here is my plan. Plan
+ *                                          completed." must still block)
+ *   5. isExplicitDone(output)   → explicit-done
  *   6. otherwise                → action
  *
  * Only `filler` is blocking. A plain substantive final answer like "10" or
@@ -35,8 +40,8 @@ export function classifyTurn(
 ): ClassificationResult {
   if (facts.toolCallCount > 0) return { kind: "action" };
   if (config.isUserQuestion(facts.outputText)) return { kind: "user-question" };
-  if (config.isExplicitDone(facts.outputText)) return { kind: "explicit-done" };
   if (facts.outputText.trim().length === 0) return { kind: "filler" };
   if (config.isFillerOutput(facts.outputText)) return { kind: "filler" };
+  if (config.isExplicitDone(facts.outputText)) return { kind: "explicit-done" };
   return { kind: "action" };
 }
