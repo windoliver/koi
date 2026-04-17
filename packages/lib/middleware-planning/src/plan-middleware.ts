@@ -237,33 +237,19 @@ function formatPlanSummary(plan: readonly PlanItem[]): string {
 }
 
 /**
- * Capability reporting for planning is gated on per-session
- * visibility. `describeCapabilities` runs without access to the
- * current request.tools, so we track the latest observation of
- * write_plan visibility on the session state itself — wrapModelCall/
- * wrapModelStream update the flag on every request. When the session
- * has never seen write_plan advertised (or the most recent call had
- * it filtered out), we suppress the capability banner entirely so
- * restricted sessions can't learn that planning exists or infer
- * active-plan item counts from the banner.
+ * The engine computes the capability banner BEFORE the model-call
+ * middleware chain runs, so there is no point in the request flow
+ * at which describeCapabilities can observe the current request's
+ * filtered tool list. Any flag we maintain based on wrapModelCall
+ * reflects the previous request and leaks planning for at least
+ * one turn after a session becomes restricted. Rather than risk
+ * that leak, the capability banner is suppressed entirely —
+ * PLAN_SYSTEM_MESSAGE (emitted inside wrapModelCall, after filtering)
+ * already informs the model about write_plan when it's actually
+ * visible, and no extra capability text is needed.
  */
-function capabilityFor(state: PlanSessionState | undefined): CapabilityFragment | undefined {
-  if (state === undefined || !state.visibility.lastSeenAdvertised) {
-    return undefined;
-  }
-  if (state.currentPlan.length === 0) {
-    return {
-      label: "planning",
-      description: "Planning: write_plan tool injected, no active plan",
-    };
-  }
-  const pending = state.currentPlan.filter((i) => i.status === "pending").length;
-  const inProgress = state.currentPlan.filter((i) => i.status === "in_progress").length;
-  const completed = state.currentPlan.filter((i) => i.status === "completed").length;
-  return {
-    label: "planning",
-    description: `Plan active: ${String(state.currentPlan.length)} items (${String(pending)} pending, ${String(inProgress)} in progress, ${String(completed)} completed)`,
-  };
+function capabilityFor(_state: PlanSessionState | undefined): CapabilityFragment | undefined {
+  return undefined;
 }
 
 /**
@@ -353,11 +339,27 @@ async function handleWritePlan(
   //   3. Persistence hooks fire in the same order as commits, so a
   //      durable store cannot end on an older plan than in-memory.
   const run = async (): Promise<ToolResponse> => {
+    // If teardown has already fired (either we were woken by the
+    // teardown barrier instead of the previous chain entry, or the
+    // session was deleted while we waited), fail fast so queued
+    // writes behind a hung head hook don't stall indefinitely.
+    if (state.teardown.signal.aborted) {
+      return errorResponse("session shut down before write_plan could commit");
+    }
     const snapshot = sessions.get(sessionId);
     if (snapshot === undefined) {
       return errorResponse("No active session for plan middleware");
     }
-    // NOTE: do NOT check `closing` here. Writes that passed the
+    // NOTE: closing check happens here intentionally — writes that
+    // passed the synchronous entry gate normally drain to completion,
+    // BUT if the queue ahead of us got stuck on a hung hook and
+    // teardown fired, we must unblock instead of chaining behind it.
+    // The teardownBarrier above woke us up early in that case; check
+    // closing now to translate that wake into a clear error.
+    if (snapshot.closing.value && snapshot.teardown.signal.aborted) {
+      return errorResponse("session shut down before write_plan could commit");
+    }
+    // NOTE: do NOT fail on `closing` alone. Writes that passed the
     // synchronous entry check before teardown began are considered
     // accepted and must drain to completion (success or hook failure).
     // `closing` is the entry-time gate; the drain in onSessionEnd
@@ -443,7 +445,21 @@ async function handleWritePlan(
     };
   };
 
-  const next = state.pending.current.then(run, run);
+  // Race the previous chain entry against the teardown signal so a
+  // hung head hook cannot indefinitely block subsequent queued
+  // writes. If teardown fires while we're waiting, the race
+  // settles, run() executes, and the inside-run closing/session
+  // checks return a clear shutdown error instead of the caller
+  // hanging forever.
+  const teardownBarrier = new Promise<void>((resolve) => {
+    if (state.teardown.signal.aborted) {
+      resolve();
+      return;
+    }
+    state.teardown.signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+  const gated = Promise.race([state.pending.current, teardownBarrier]);
+  const next = gated.then(run, run);
   // Keep the chain alive for the next queued call without letting our
   // resolved ToolResponse leak into pending's void contract.
   state.pending.current = next.then(

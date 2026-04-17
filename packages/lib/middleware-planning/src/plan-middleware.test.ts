@@ -1,6 +1,5 @@
 import { describe, expect, it } from "bun:test";
 import type {
-  CapabilityFragment,
   InboundMessage,
   JsonObject,
   ModelChunk,
@@ -776,6 +775,62 @@ describe("onSessionEnd draining", () => {
     expect(response?.output).toContain("Plan updated");
   });
 
+  it("unblocks queued writes when the head hook is hung forever and teardown fires", async () => {
+    // Reviewer R22: without a teardown barrier on the pending chain,
+    // a queued second write would chain behind a hung head and never
+    // receive an error response. The teardown signal must unblock
+    // queued writes so they fail fast instead of hanging the caller.
+    let headReleased = false;
+    const mw = make({
+      onPlanUpdate: async () => {
+        if (!headReleased) {
+          // Head hook hangs forever until we explicitly release it.
+          await new Promise<never>(() => {});
+        }
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const head = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "first", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Queue a second write while the head is mid-hook (before closing).
+    const second = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "second", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Fire teardown. Drain will time out on the head, abort the
+    // signal, and delete the session. The queued second write must
+    // NOT hang — the teardown barrier on the chain forces run() to
+    // execute and return a clear shutdown error.
+    await mw.onSessionEnd?.(sessionCtx);
+
+    const secondResp = await Promise.race([
+      second,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("queued write hung")), 2000),
+      ),
+    ]);
+    expect((secondResp?.output as Record<string, unknown>).error).toBeDefined();
+    expect(secondResp?.metadata?.blockedByHook).toBe(true);
+
+    // Head is still pending — never released. Don't await it.
+    void head;
+    headReleased = true; // silence linter; we still don't wait.
+  }, 15000);
+
   it("aborts the hook signal and refuses to report success when onSessionEnd times out while the hook is mid-flight", async () => {
     // Reviewer R17: if teardown drain expires while onPlanUpdate is
     // still running, the hook must be signaled AND the middleware
@@ -1539,62 +1594,38 @@ describe("turn concurrency", () => {
 // ---------------------------------------------------------------------------
 
 describe("describeCapabilities", () => {
-  it("suppresses capability until write_plan visibility has been observed", () => {
-    // Reviewer R21: the capability banner previously leaked
-    // "Planning: write_plan tool injected" even in sessions where
-    // permissions had filtered the tool out. Default state is now
-    // "no observation yet" → return undefined so restricted children
-    // cannot learn planning exists via the capability banner.
-    const mw = make();
-    const ctx = makeTurnCtx(makeSessionCtx());
-    const fragment = mw.describeCapabilities(ctx);
-    expect(fragment).toBeUndefined();
-  });
-
-  it("emits capability only after observing write_plan advertised in request.tools", async () => {
+  it("always returns undefined so no planning text leaks via the capability banner", async () => {
+    // Reviewer R22: the engine computes the capability banner BEFORE
+    // the model-call middleware chain runs, so describeCapabilities
+    // cannot observe the current request's filtered tool list in
+    // time. Any flag derived from wrapModelCall observations reflects
+    // the PREVIOUS request and leaks for one turn after a session
+    // becomes restricted. We suppress the banner entirely — the
+    // write_plan system prompt (emitted inside wrapModelCall, after
+    // filtering) already tells the model about the tool when it is
+    // actually visible.
     const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
 
-    // Drive a model call with tools undefined (test-harness path)
-    // so the middleware sees write_plan as advertised and records
-    // the visibility observation.
-    await mw.wrapModelCall?.(ctx, makeRequest("hi"), async () => makeResponse("ok"));
+    // Pre-write, pre-observation: undefined.
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
 
-    // After committing a plan, the banner reflects the counts.
+    // After committing a plan, still undefined — we do not leak
+    // active-item counts either.
     await mw.wrapToolCall?.(
       ctx,
       {
         toolId: WRITE_PLAN_TOOL_NAME,
-        input: planInput([
-          { content: "A", status: "in_progress" },
-          { content: "B", status: "pending" },
-        ]),
+        input: planInput([{ content: "A", status: "in_progress" }]),
       },
       async () => ({ output: "x" }),
     );
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
 
-    const fragment = mw.describeCapabilities(ctx) as CapabilityFragment;
-    expect(fragment.description).toContain("Plan active");
-    expect(fragment.description).toContain("2 items");
-  });
-
-  it("suppresses capability again after a filtered session observation", async () => {
-    const mw = make();
-    const sessionCtx = makeSessionCtx();
-    await mw.onSessionStart?.(sessionCtx);
-    const ctx = makeTurnCtx(sessionCtx);
-
-    // First a visible call (flag → true), then a filtered call
-    // (flag → false). The banner must follow the latest observation.
+    // Even after observing an advertised write_plan, still undefined.
     await mw.wrapModelCall?.(ctx, makeRequest("hi"), async () => makeResponse("ok"));
-    await mw.wrapModelCall?.(
-      ctx,
-      { messages: [makeRequest("hi").messages[0] as InboundMessage], tools: [], model: "t" },
-      async () => makeResponse("ok"),
-    );
-
     expect(mw.describeCapabilities(ctx)).toBeUndefined();
   });
 });
