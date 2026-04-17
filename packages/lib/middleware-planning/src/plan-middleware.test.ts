@@ -970,6 +970,50 @@ describe("write_plan injection dedup", () => {
     expect(count).toBe(1);
   });
 
+  it("suppresses the planning system prompt + state replay when write_plan is filtered out", async () => {
+    // Reviewer R15: if upstream filtering removed write_plan from
+    // request.tools, the model must NOT be instructed to call it.
+    // Otherwise the query-engine's undeclared-tool check turns every
+    // plan attempt into a hard error.
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // Write a plan first so state-replay would otherwise trigger.
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "hidden", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    let captured: ModelRequest | undefined;
+    await mw.wrapModelCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        // Empty tool list simulates permissions stripping write_plan.
+        tools: [],
+        model: "test-model",
+      },
+      async (req) => {
+        captured = req;
+        return makeResponse("ok");
+      },
+    );
+
+    // No system:plan instruction message should be injected.
+    const hasSystemPrompt = captured?.messages.some((m) => m.senderId === "system:plan") ?? false;
+    expect(hasSystemPrompt).toBe(false);
+    // No user:plan-state replay either.
+    const hasReplay = captured?.messages.some((m) => m.senderId === "user:plan-state") ?? false;
+    expect(hasReplay).toBe(false);
+    // Tools stay empty — we did not reintroduce write_plan.
+    expect(captured?.tools ?? []).toHaveLength(0);
+  });
+
   it("respects upstream permission-filtered tool lists and does not reintroduce write_plan", async () => {
     // Simulate the production path: engine + permissions middleware
     // materialize request.tools and intentionally drop write_plan

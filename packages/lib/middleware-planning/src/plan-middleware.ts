@@ -136,14 +136,6 @@ function enrichRequest(
   currentPlan: readonly PlanItem[],
   injectPlanState: boolean,
 ): ModelRequest {
-  // When injectPlanState is off the host is responsible for surfacing
-  // plan state through its own channel; the middleware still injects
-  // the trusted write_plan system prompt (authored in-package, not
-  // by the model) so the model knows the tool exists.
-  const shouldReplay = injectPlanState && currentPlan.length > 0;
-  const messages: readonly InboundMessage[] = shouldReplay
-    ? [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages]
-    : [PLAN_SYSTEM_MESSAGE, ...request.messages];
   // Tool visibility: when `request.tools` is defined (the production
   // path via createKoi), it has already been populated by the engine
   // from attached providers AND filtered by upstream middleware like
@@ -156,6 +148,26 @@ function enrichRequest(
   // case no policy has filtered anything and the middleware is the
   // sole source of the tool.
   const tools = request.tools !== undefined ? request.tools : [WRITE_PLAN_DESCRIPTOR];
+
+  // Prompt visibility must track tool visibility. If upstream
+  // filtering (permissions, allowlist, denylist, inherited child
+  // policy) has excluded write_plan from `request.tools`, instructing
+  // the model to call write_plan would lead it into an undeclared-
+  // tool error. Suppress BOTH the system prompt AND the plan-state
+  // replay when the tool is not advertised for this request.
+  const writePlanVisible = tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+  if (!writePlanVisible) {
+    return { ...request, tools };
+  }
+
+  // When injectPlanState is off the host is responsible for surfacing
+  // plan state through its own channel; the middleware still injects
+  // the trusted write_plan system prompt (authored in-package, not
+  // by the model) so the model knows the tool exists.
+  const shouldReplay = injectPlanState && currentPlan.length > 0;
+  const messages: readonly InboundMessage[] = shouldReplay
+    ? [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages]
+    : [PLAN_SYSTEM_MESSAGE, ...request.messages];
   return { ...request, messages, tools };
 }
 
