@@ -69,6 +69,7 @@
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-report": "workspace:*",
     "@koi/middleware-semantic-retry": "workspace:*",
+    "@koi/middleware-task-anchor": "workspace:*",
     "@koi/model-openai-compat": "workspace:*",
     "@koi/model-router": "workspace:*",
     "@koi/permissions": "workspace:*",
