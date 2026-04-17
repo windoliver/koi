@@ -597,4 +597,35 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("shell-escape");
   });
+
+  // Round-8 regression: a bare `$` without a sibling `string` is a literal
+  // dollar sign in bash (`echo $` prints `$`), NOT locale-translation
+  // syntax. `walkCommand`'s pre-scan catches the `$ + string` split form;
+  // any remaining bare `$` is a literal argv token. Similarly, a `$` child
+  // directly inside a double-quoted string (`"$"`, `"foo$ "`) is literal.
+  // Prior to the fix these routed to shell-escape / unknown and falsely
+  // hard-denied or bounced through elicit.
+  test("literal $ at end of argv stays simple (echo $)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$"]);
+  });
+
+  test('literal $ inside double-quoted string stays simple (echo "$")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "$"');
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$"]);
+  });
+
+  test("literal $ followed by whitespace-separated word stays simple (echo $ foo)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $ foo");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$", "foo"]);
+  });
 });

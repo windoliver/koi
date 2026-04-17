@@ -130,6 +130,13 @@ const UNKNOWN_CORPUS: ReadonlyArray<readonly [string]> = [
   ["echo $_x"],
   ["echo $_abc"],
   ['echo "$_x"'],
+  // Literal `$` tokens (round-8 adversarial finding) — these must reach
+  // the simple path; the corpus assertion tolerates non-too-complex
+  // outcomes, so adding them here just guards against a future regression
+  // that would route them to `unknown` instead of `simple`.
+  ["echo $"],
+  ['echo "$"'],
+  ["echo $ foo"],
   // From bypass-corpus.test.ts — injection + bypass patterns:
   ["eval $(cat /etc/passwd)"],
   ["eval `cat /etc/passwd`"],

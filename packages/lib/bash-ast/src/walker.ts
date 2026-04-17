@@ -199,6 +199,34 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
   const envVars: { name: string; value: string }[] = [];
   let sawCommandName = false;
 
+  // SECURITY pre-scan: detect the locale-translated-string split form.
+  // Tree-sitter-bash parses `$"..."` in argument position as two sibling
+  // children — a bare `$` followed by a `string`. The effective argv for
+  // that pair depends on the shell's locale/translation catalog and may
+  // diverge from the raw source (`$"msg"` expands to a translation of
+  // `msg` when a catalog is loaded; to `msg` otherwise, with the `$`
+  // consumed as a marker). A naive per-child walk would either produce a
+  // wrong argv or hard-deny a harmless literal `$`. Catch the split pair
+  // here and fail closed via shell-escape; a bare `$` with no string
+  // sibling is left for walkArgNode to emit as a literal argv token.
+  for (let i = 0; i < node.children.length; i += 1) {
+    const current = node.children[i];
+    if (current === undefined || current.type !== "$") continue;
+    for (let j = i + 1; j < node.children.length; j += 1) {
+      const next = node.children[j];
+      if (next === undefined) break;
+      if (SEPARATOR_NODE_TYPES.has(next.type)) continue;
+      if (next.type === "string") {
+        return tooComplex(
+          'locale-translated string ($"...") is not supported',
+          "$",
+          "shell-escape",
+        );
+      }
+      break;
+    }
+  }
+
   for (const child of node.children) {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "variable_assignment") {
@@ -332,6 +360,15 @@ function walkArgNode(node: Node):
       const parts: string[] = [];
       for (const child of node.children) {
         if (child.type === '"') continue;
+        if (child.type === "$") {
+          // Literal `$` inside a double-quoted string — e.g. `"$"` or
+          // `"foo$bar"` where `$bar` is not a valid expansion. Append
+          // as literal text. (A `$` child directly inside `string` is
+          // the bare-dollar case; interpolations like `"$VAR"` arrive
+          // as a nested `simple_expansion` child instead.)
+          parts.push("$");
+          continue;
+        }
         if (child.type === "string_content") {
           if (child.text.includes("\\")) {
             return tooComplex(
@@ -448,18 +485,12 @@ function walkArgNode(node: Node):
         "shell-escape",
       );
     case "$":
-      // SECURITY: bare `$` in argument position is tree-sitter-bash's split
-      // form for `$"..."` (locale-translated string; the `$` and `string`
-      // arrive as sibling children instead of a single `translated_string`
-      // node). The walker short-circuits at this `$` before reaching the
-      // sibling `string`, so we cannot inspect the payload for backslash
-      // escapes. Same reasoning as `translated_string` above — fail closed
-      // via `shell-escape`.
-      return tooComplex(
-        "bare $ in argument position (likely locale-translated string) is not supported",
-        "$",
-        "shell-escape",
-      );
+      // Bare `$` is a literal dollar sign when it is NOT followed by a
+      // `string` sibling. `walkCommand` pre-scans children to catch the
+      // `$ + string` locale-translation split form and fails closed at
+      // that level before we reach walkArgNode; by the time we get here
+      // the `$` is safe to emit as the literal argv token `$`.
+      return { kind: "ok", value: "$" };
     default:
       return tooComplex(`unsupported argument node: ${node.type}`, node.type, "unknown");
   }
