@@ -94,6 +94,17 @@ export interface SupervisorConfig {
   readonly shutdownDeadlineMs: number;
   readonly backends: Readonly<Partial<Record<WorkerBackendKind, WorkerBackend>>>;
   readonly restart?: WorkerRestartPolicy | undefined;
+  /**
+   * Maximum time to wait for `backend.spawn()` to resolve. A spawn that
+   * exceeds this timeout is considered hung: the capacity reservation is
+   * released, start() returns TIMEOUT, and if the spawn ever resolves
+   * afterward the resulting worker is terminated/killed so it cannot
+   * consume supervisor capacity.
+   *
+   * Defaults to 30_000ms. Set to 0 to disable (not recommended — a wedged
+   * backend can otherwise consume worker slots indefinitely).
+   */
+  readonly spawnTimeoutMs?: number | undefined;
 }
 
 export interface WorkerRestartPolicy {

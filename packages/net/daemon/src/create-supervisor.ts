@@ -387,9 +387,54 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       };
     }
 
+    const spawnTimeoutMs = config.spawnTimeoutMs ?? 30_000;
     let spawned: Result<WorkerHandle, KoiError>;
     try {
-      spawned = await backend.spawn(request);
+      if (spawnTimeoutMs > 0) {
+        let spawnTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const spawnTimeout = new Promise<{ kind: "timeout" }>((resolve) => {
+          spawnTimeoutHandle = setTimeout(() => resolve({ kind: "timeout" }), spawnTimeoutMs);
+        });
+        const spawnResolved = backend.spawn(request).then(
+          (v) => ({ kind: "resolved" as const, value: v }),
+          (e) => ({ kind: "threw" as const, error: e as unknown }),
+        );
+        const raced = await Promise.race([spawnResolved, spawnTimeout]);
+        clearTimeout(spawnTimeoutHandle);
+        if (raced.kind === "timeout") {
+          // Spawn wedged. Release reservations so another worker can claim
+          // the slot. If spawn eventually resolves later, tear down the
+          // resulting worker asynchronously so it cannot run unsupervised.
+          releaseReservations();
+          void spawnResolved.then((late) => {
+            if (late.kind === "resolved" && late.value.ok) {
+              void teardownWorker(backend, request.workerId, "spawn-timeout", undefined);
+            }
+          });
+          return {
+            ok: false,
+            error: {
+              code: "TIMEOUT",
+              message: `backend.spawn did not resolve within spawnTimeoutMs=${spawnTimeoutMs}`,
+              retryable: true,
+            },
+          };
+        }
+        if (raced.kind === "threw") {
+          releaseReservations();
+          return {
+            ok: false,
+            error: {
+              code: "INTERNAL",
+              message: `backend.spawn threw: ${raced.error instanceof Error ? raced.error.message : String(raced.error)}`,
+              retryable: true,
+            },
+          };
+        }
+        spawned = raced.value;
+      } else {
+        spawned = await backend.spawn(request);
+      }
     } catch (e) {
       releaseReservations();
       return {
@@ -552,9 +597,10 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         if (!teardownResult.ok) {
           // Teardown failed — the old worker may still be alive. Surface
           // the failure via a synthetic crashed event whose error carries
-          // BOTH the watch fault and the teardown failure context, then
-          // release activeIds so the caller can investigate, but do NOT
-          // respawn (that would risk duplicate live workers).
+          // BOTH the watch fault and the teardown failure context.
+          // CRITICAL: keep activeIds reserved so a later start() for the
+          // same workerId is rejected as CONFLICT. Releasing activeIds
+          // here would let callers spawn a duplicate alongside the ghost.
           publishEvent({
             kind: "crashed",
             workerId: request.workerId,
@@ -565,7 +611,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
               retryable: false,
             },
           });
-          activeIds.delete(request.workerId);
+          // activeIds intentionally NOT deleted — the worker is quarantined.
           return;
         }
 

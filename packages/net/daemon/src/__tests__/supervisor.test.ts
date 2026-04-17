@@ -1277,6 +1277,115 @@ describe("supervisor correctness hardening", () => {
     if (iter.return !== undefined) await iter.return(undefined);
   });
 
+  it("a hung backend.spawn() does not consume a worker slot forever", async () => {
+    // Before the timeout fix, a wedged spawn would hold the only worker
+    // slot indefinitely. After the fix, start() times out, the slot is
+    // freed, and a subsequent start() against a healthy id succeeds.
+    const slowWorkers = new Set<string>();
+    const slowBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "slow-spawn",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        slowWorkers.add(req.workerId as string);
+        // Never resolves — only the first ever completes, if released.
+        await new Promise<void>(() => {});
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 50,
+      spawnTimeoutMs: 100,
+      backends: { "in-process": slowBackend },
+    });
+    if (!supervisorResult.ok) return;
+    const first = await supervisorResult.value.start(makeRequest("wedged-1"));
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.error.code).toBe("TIMEOUT");
+    // Slot must be freed — a second start() with maxWorkers=1 should get
+    // past the capacity check.
+    const second = await supervisorResult.value.start(makeRequest("wedged-2"));
+    expect(second.ok).toBe(false);
+    // second can legitimately also TIMEOUT (same wedged backend) but NOT
+    // RESOURCE_EXHAUSTED, which would mean the first spawn's slot leaked.
+    if (!second.ok) expect(second.error.code).toBe("TIMEOUT");
+    slowWorkers.clear();
+  });
+
+  it("watch fault with failing teardown quarantines the workerId against duplicate start()", async () => {
+    // If teardown cannot confirm the worker is dead, the supervisor must
+    // reject a subsequent start() for the same workerId so the caller
+    // cannot accidentally create a split-brain duplicate.
+    const liveWorkers = new Set<string>();
+    const ghostBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "fault-ghost",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        liveWorkers.add(req.workerId as string);
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      // Worker remains alive — terminate/kill are no-ops.
+      isAlive: async (id) => liveWorkers.has(id as string),
+      watch: async function* (id): AsyncIterable<WorkerEvent> {
+        yield { kind: "started", workerId: id, at: Date.now() };
+        throw new Error("simulated watch transport failure");
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": ghostBackend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 1,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("quarantine-1"));
+    // Wait for the fault and failed-teardown to complete.
+    await new Promise((r) => setTimeout(r, 400));
+
+    // A subsequent start() with the same id must be rejected as CONFLICT
+    // since the ghost is quarantined.
+    const reuse = await supervisorResult.value.start(makeRequest("quarantine-1"));
+    expect(reuse.ok).toBe(false);
+    if (!reuse.ok) expect(reuse.error.code).toBe("CONFLICT");
+
+    liveWorkers.clear();
+  });
+
   it("short-lived subprocesses are observed as exited by the supervisor", async () => {
     // Regression for the fast-exit race: a command that exits before
     // the supervisor's watch IIFE attaches must still have its exited

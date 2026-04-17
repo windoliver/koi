@@ -79,10 +79,17 @@ export function registerSignalHandlers(
       }
       onResult(sig, result);
       if (onComplete === "noop") return;
-      // Remove our handlers and re-raise so the default signal handler takes
-      // over and exits with the canonical signal-termination exit code.
       for (const s of signals) process.off(s, handler);
-      process.kill(process.pid, sig);
+      if (result.ok) {
+        // Clean shutdown — re-raise so default signal handler takes over
+        // and exits with the canonical signal-termination exit code.
+        process.kill(process.pid, sig);
+        return;
+      }
+      // Shutdown FAILED — some workers may still be running. DO NOT
+      // re-raise the signal (which would force-exit and orphan children).
+      // Stay alive so an operator can inspect and recover. A second
+      // signal will force-exit via the shuttingDown guard below.
     })();
   };
   for (const s of signals) process.on(s, handler);
