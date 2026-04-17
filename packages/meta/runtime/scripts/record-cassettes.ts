@@ -50,7 +50,13 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
+import {
+  createSingleToolProvider,
+  memoryRecordId,
+  sessionId,
+  taskItemId,
+  transcriptEntryId,
+} from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -78,6 +84,7 @@ import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
+import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -345,6 +352,24 @@ const taskBoardToolProviders = taskBoardTools.map((tool) =>
     createTool: () => tool,
   }),
 );
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-task-anchor — pre-seeded board for reminder injection query
+// ---------------------------------------------------------------------------
+
+const taskAnchorBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+{
+  const addResult = await taskAnchorBoard.addAll([
+    { id: taskItemId("ta-1"), description: "Audit authentication code" },
+    { id: taskItemId("ta-2"), description: "Migrate session model" },
+  ]);
+  if (!addResult.ok) {
+    console.error(`task-anchor pre-seed: ${addResult.error.message}`);
+    process.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -1986,6 +2011,34 @@ const queries: readonly QueryConfig[] = [
     ],
     providers: taskBoardToolProviders,
     maxTurns: 3,
+  },
+
+  // 9b. task-anchor-reminder: @koi/middleware-task-anchor injects system-reminder after K
+  // idle turns with no task-tool activity. K=1 + non-task tool (add_numbers) forces the
+  // reminder to appear on the second model call, where the model should acknowledge the
+  // pre-seeded tasks ("Audit authentication code", "Migrate session model").
+  {
+    name: "task-anchor-reminder",
+    prompt:
+      "Use the add_numbers tool to compute 6 + 4. After you see the result, list the tasks currently on the board.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [
+      createTaskAnchorMiddleware({
+        getBoard: () => taskAnchorBoard.snapshot(),
+        idleTurnThreshold: 1,
+      }),
+    ],
+    maxTurns: 2,
   },
 
   // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server

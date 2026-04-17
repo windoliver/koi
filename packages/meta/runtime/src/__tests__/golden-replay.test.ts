@@ -37,6 +37,12 @@ import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import { createReportMiddleware } from "@koi/middleware-report";
+import {
+  buildEmptyBoardNudge,
+  buildTaskReminder,
+  createTaskAnchorMiddleware,
+  formatTaskList,
+} from "@koi/middleware-task-anchor";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
@@ -546,6 +552,160 @@ describe("Golden: @koi/middleware-goal + @koi/middleware-report", () => {
       }
     }
   }, 15000);
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-task-anchor (2 standalone queries)
+// No-LLM tests that exercise the exported middleware surface directly from
+// @koi/runtime's consumer boundary. Catches re-export regressions and proves
+// the package wiring matches what the runtime host will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-task-anchor", () => {
+  test("injects reminder after K idle turns via wrapModelCall", async () => {
+    const { taskItemId } = await import("@koi/core");
+    const { createManagedTaskBoard, createMemoryTaskBoardStore } = await import("@koi/tasks");
+
+    const board = await createManagedTaskBoard({ store: createMemoryTaskBoardStore() });
+    const addResult = await board.addAll([
+      { id: taskItemId("ta-1"), description: "Audit authentication code" },
+      { id: taskItemId("ta-2"), description: "Migrate session model" },
+    ]);
+    expect(addResult.ok).toBe(true);
+
+    const mw = createTaskAnchorMiddleware({
+      getBoard: () => board.snapshot(),
+      idleTurnThreshold: 1,
+    });
+    expect(mw.name).toBe("task-anchor");
+
+    const ctxSession = {
+      agentId: "task-anchor-golden",
+      sessionId: sessionId("ta-golden"),
+      runId: runId("r1"),
+      metadata: {} as JsonObject,
+    };
+    const makeCtx = (turnIndex: number): TurnContext => ({
+      session: ctxSession,
+      turnIndex,
+      turnId: `${runId("r1")}-${String(turnIndex)}` as TurnContext["turnId"],
+      messages: [],
+      metadata: {},
+    });
+
+    await mw.onSessionStart?.(ctxSession);
+
+    // Turn 0: idle=0, no injection.
+    await mw.onBeforeTurn?.(makeCtx(0));
+    let lastReq: ModelRequest | undefined;
+    const handler = async (req: ModelRequest): Promise<ModelResponse> => {
+      lastReq = req;
+      return { content: "ok", model: "test" };
+    };
+    await mw.wrapModelCall?.(makeCtx(0), { messages: [] }, handler);
+    expect(lastReq?.messages).toHaveLength(0);
+    await mw.onAfterTurn?.(makeCtx(0));
+
+    // Turn 1: idle=1 >= K=1, injection fires.
+    await mw.onBeforeTurn?.(makeCtx(1));
+    await mw.wrapModelCall?.(makeCtx(1), { messages: [] }, handler);
+    const injected = lastReq?.messages[0];
+    expect(injected?.senderId).toBe("system:task-anchor");
+    const block = (injected?.content[0] as { text: string } | undefined)?.text ?? "";
+    expect(block).toContain("<system-reminder>");
+    expect(block).toContain("Audit authentication code");
+    expect(block).toContain("Migrate session model");
+    expect(block).toContain("Don't mention this reminder");
+
+    await mw.onSessionEnd?.(ctxSession);
+  });
+
+  test("trajectory fixture contains task-anchor middleware spans + seeded tasks in model response", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/task-anchor-reminder.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("task-anchor-reminder");
+
+    // Middleware wired: task-anchor spans fire at least twice (turn 0 + turn 1)
+    const taSpans = doc.steps.filter(
+      (s) => s.extra?.type === "middleware_span" && s.extra?.middlewareName === "task-anchor",
+    );
+    expect(taSpans.length).toBeGreaterThanOrEqual(2);
+    for (const s of taSpans) {
+      expect(s.extra?.nextCalled).toBe(true);
+    }
+    expect(taSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+
+    // Reminder-driven behavior: the final model turn's response lists the pre-seeded
+    // tasks ("Audit authentication code", "Migrate session model") — proof that the
+    // injected <system-reminder> actually reached the model, not just that the hook fired.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse =
+      agentSteps.at(-1)?.observation?.results?.[0]?.content?.toLowerCase() ?? "";
+    expect(finalResponse).toContain("audit authentication code");
+    expect(finalResponse).toContain("migrate session model");
+  });
+
+  test("formatters expose public API shape consumable by runtime host", () => {
+    // Standalone check: these three exports must be stable for any runtime
+    // integrator that wants to render a reminder without going through the MW.
+    const body = formatTaskList({
+      all: () => [
+        {
+          id: "t1" as never,
+          subject: "Write unit tests",
+          description: "Write unit tests",
+          dependencies: [],
+          status: "pending" as const,
+          retries: 0,
+          version: 1,
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ],
+      // ops below are never called by formatTaskList; stub just for type shape
+      add: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      addAll: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      assign: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      unassign: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      complete: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      fail: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      kill: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      update: () => ({ ok: false, error: { code: "INTERNAL", message: "", retryable: false } }),
+      result: () => undefined,
+      get: () => undefined,
+      ready: () => [],
+      pending: () => [],
+      blocked: () => [],
+      inProgress: () => [],
+      completed: () => [],
+      failed: () => [],
+      killed: () => [],
+      unreachable: () => [],
+      dependentsOf: () => [],
+      blockedBy: () => undefined,
+      size: () => 1,
+    });
+    expect(body).toBe("- [ ] Write unit tests");
+
+    const reminder = buildTaskReminder("Current tasks", body);
+    expect(reminder.startsWith("<system-reminder>")).toBe(true);
+    expect(reminder).toContain("Current tasks:");
+    expect(reminder).toContain("- [ ] Write unit tests");
+
+    const nudge = buildEmptyBoardNudge();
+    expect(nudge).toContain("task_create");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@
     { "path": "../../net/mcp-server" },
     { "path": "../../lib/middleware-goal" },
     { "path": "../../lib/middleware-report" },
+    { "path": "../../lib/middleware-task-anchor" },
     { "path": "../../security/middleware-exfiltration-guard" },
     { "path": "../../lib/middleware-otel" },
     { "path": "../../lib/middleware-semantic-retry" },

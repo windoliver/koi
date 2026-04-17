@@ -306,6 +306,14 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/middleware-task-anchor": {
+      "name": "@koi/middleware-task-anchor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/model-registry": {
       "name": "@koi/model-registry",
       "version": "0.0.0",
@@ -638,6 +646,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-task-anchor": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
@@ -1209,6 +1218,8 @@
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
+
+    "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
