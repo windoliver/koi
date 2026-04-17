@@ -67,7 +67,7 @@ import { createBrickRequiresExtension } from "./brick-requires-extension.js";
 import { createTerminalHandlers } from "./compose-bridge.js";
 import { createDedupedToolsAccessor } from "./deduped-tools-accessor.js";
 import { createTurnContext, generatePid, unrefTimer } from "./koi-helpers.js";
-import type { CreateKoiOptions, KoiRuntime } from "./types.js";
+import type { CreateKoiOptions, KoiRuntime, RunHandle } from "./types.js";
 
 export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> {
   // --- 0. Input validation at the factory boundary ---
@@ -1568,7 +1568,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
     conflicts,
 
-    run(input: EngineInput): AsyncIterable<EngineEvent> {
+    run(input: EngineInput): RunHandle {
       if (poisoned) {
         // #1742: a previous cycleSession()/dispose() hit the lifecycle
         // settle timeout — an in-flight tool ignored abort and the
@@ -1731,7 +1731,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // promise behind, so the next cycleSession() / dispose() spent the
       // full settle timeout waiting for a run that never started — and
       // falsely poisoned the runtime.
+      // Snapshot the session id and run id at run-start for the per-run
+      // interrupt closure. These are immutable for the lifetime of this
+      // particular run invocation, so the closure captures them by value.
+      const runSessionId = factorySessionId;
+      const runRid = currentRid;
+
       return {
+        runId: currentRid,
         [Symbol.asyncIterator]: () => {
           // #1742 loop-3 round 1: capture the generator so cycleSession()
           // / dispose() can call .return() to fast-path abandoned-after-
@@ -1747,6 +1754,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           );
           currentGenerator = gen;
           return gen;
+        },
+        interrupt(reason?: string): boolean {
+          // Run-scoped interrupt: only aborts THIS run, identified by the
+          // runRid captured at run-start. If the run has already completed
+          // (currentRunIdRef !== runRid) or a later run B is active, this
+          // is a safe no-op — it will NOT hit run B.
+          if (options.sessionRegistry !== undefined) {
+            return options.sessionRegistry.interrupt(runSessionId, reason, runRid);
+          }
+          // Fallback path (no registry): compare live currentRunIdRef to
+          // the captured runRid to detect cross-generation calls.
+          if (currentRunIdRef !== runRid) return false;
+          if (abortController.signal.aborted) return false;
+          abortController.abort(reason);
+          return true;
         },
       };
     },
@@ -2022,7 +2044,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
 
     interrupt(reason?: string): boolean {
       if (options.sessionRegistry !== undefined) {
-        return options.sessionRegistry.interrupt(factorySessionId, reason);
+        // Session-scoped: targets whichever run is currently active (if any).
+        // Passing currentRunIdRef ensures a call during a quiet window (between
+        // runs, where currentRunIdRef is undefined) is a no-op per registry
+        // contract: undefined expectedRunId skips the runId check — but the
+        // registry will still return false if there is no registered entry.
+        return options.sessionRegistry.interrupt(factorySessionId, reason, currentRunIdRef);
       }
       if (activeController === undefined) return false;
       if (activeController.signal.aborted) return false;

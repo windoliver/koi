@@ -214,6 +214,22 @@ export interface CreateKoiOptions {
   readonly sessionRegistry?: SessionRegistry;
 }
 
+/**
+ * Return type of `runtime.run(input)`. In addition to being iterable, the
+ * handle carries the `runId` assigned to this invocation and a run-scoped
+ * `.interrupt(reason?)` that can only abort THIS run — not a later run on
+ * the same runtime. Use this instead of `runtime.interrupt()` when a host
+ * stores the cancel callback and may fire it across run generations (e.g.
+ * watchdogs, pending HTTP cancels, parent-agent timeouts).
+ */
+export interface RunHandle extends AsyncIterable<EngineEvent> {
+  readonly runId: RunId;
+  /** Abort this specific run. Returns `true` on the first abort, `false`
+   *  when the run has already completed or been aborted. Safe to call after
+   *  the run completes — becomes a no-op rather than hitting a later run. */
+  readonly interrupt: (reason?: string) => boolean;
+}
+
 export interface KoiRuntime {
   /** The assembled agent entity. */
   readonly agent: Agent;
@@ -227,8 +243,12 @@ export interface KoiRuntime {
   readonly currentRunId: RunId | undefined;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
-  /** Run the agent with the given input. Returns an async iterable of engine events. */
-  readonly run: (input: EngineInput) => AsyncIterable<EngineEvent>;
+  /** Run the agent with the given input. Returns a {@link RunHandle} — an async
+   *  iterable of engine events that also carries a run-scoped `.interrupt()` and
+   *  the `runId` assigned to this invocation. Use the handle's `.interrupt()`
+   *  instead of `runtime.interrupt()` when storing the cancel callback across
+   *  run generations (watchdogs, pending HTTP cancels, parent-agent timeouts). */
+  readonly run: (input: EngineInput) => RunHandle;
   /**
    * Cycle session-scoped middleware state without disposing the runtime.
    *
@@ -264,16 +284,23 @@ export interface KoiRuntime {
    */
   readonly rebindSessionId?: (id: string) => void;
   /**
-   * Abort the active run, if any. Equivalent to calling
-   * `sessionRegistry.interrupt(runtime.sessionId, reason)` when a registry
-   * was supplied to createKoi, or aborting the internal AbortController
-   * directly otherwise.
+   * Cancel whatever run is currently active on this runtime (session-scoped).
+   *
+   * Equivalent to calling `sessionRegistry.interrupt(runtime.sessionId, reason,
+   * currentRunId)` when a registry was supplied to createKoi, or aborting the
+   * internal AbortController directly otherwise.
    *
    * Returns `true` if the abort was the first one for the active run
    * (signal.aborted was false before the call). Returns `false` when no
    * run is active or the run is already aborted.
    *
    * Idempotent — safe to call multiple times.
+   *
+   * NOTE: this does NOT guarantee cross-generation safety — if a caller
+   * captures this method during run A, stores it in a callback, and the
+   * callback fires after A completes and B has started, it will cancel B.
+   * For watchdogs / stored cancel callbacks, prefer the per-run
+   * `RunHandle.interrupt` returned from `run()`.
    */
   readonly interrupt: (reason?: string) => boolean;
   /**

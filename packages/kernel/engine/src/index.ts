@@ -202,6 +202,7 @@ export type {
   CreateKoiOptions,
   ForgeRuntime,
   KoiRuntime,
+  RunHandle,
   SpawnChildOptions,
   SpawnChildResult,
 } from "./types.js";

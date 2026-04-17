@@ -9,10 +9,10 @@ import type {
   ReportStore,
   RunReport,
 } from "@koi/core";
-import { agentId, isDeliveryPolicy } from "@koi/core";
+import { agentId, isDeliveryPolicy, runId } from "@koi/core";
 import type { DeliveryHandle } from "./delivery-policy.js";
 import { applyDeliveryPolicy, resolveDeliveryPolicy } from "./delivery-policy.js";
-import type { SpawnChildResult } from "./types.js";
+import type { RunHandle, SpawnChildResult } from "./types.js";
 
 /**
  * Extract runChild from a DeliveryHandle, failing fast if undefined.
@@ -28,8 +28,10 @@ function requireRunChild(handle: DeliveryHandle): (input: EngineInput) => Promis
  * Create an async iterable that throws on first iteration.
  * Uses Symbol.asyncIterator instead of `async function*` to avoid biome useYield lint.
  */
-function createFailingStream(error: Error): AsyncIterable<EngineEvent> {
+function createFailingStream(error: Error): RunHandle {
   return {
+    runId: runId(crypto.randomUUID()),
+    interrupt: () => false,
     [Symbol.asyncIterator]: () => ({
       next: () => Promise.reject(error),
     }),
@@ -69,10 +71,19 @@ function createDoneEvent(text: string): EngineEvent {
   return { kind: "done", output: createMockEngineOutput(text) };
 }
 
-async function* streamEvents(...events: readonly EngineEvent[]): AsyncIterable<EngineEvent> {
+async function* streamEventsGen(...events: readonly EngineEvent[]): AsyncGenerator<EngineEvent> {
   for (const event of events) {
     yield event;
   }
+}
+
+/** Wrap an async iterable as a RunHandle for use in mock runtimes. */
+function mockRunHandle(iterable: AsyncIterable<EngineEvent>): RunHandle {
+  return {
+    runId: runId(crypto.randomUUID()),
+    interrupt: () => false,
+    [Symbol.asyncIterator]: () => iterable[Symbol.asyncIterator](),
+  };
 }
 
 function createMockSpawnResult(events: readonly EngineEvent[]): SpawnChildResult {
@@ -86,7 +97,7 @@ function createMockSpawnResult(events: readonly EngineEvent[]): SpawnChildResult
       sessionId: "test-session",
       currentRunId: undefined,
       conflicts: [],
-      run: (_input: EngineInput) => streamEvents(...events),
+      run: (_input: EngineInput) => mockRunHandle(streamEventsGen(...events)),
       interrupt: () => false,
       isInterrupted: () => false,
       dispose: async () => {},

@@ -638,3 +638,60 @@ describe("cross-generation safety via currentRunId", () => {
     await runtime.dispose();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 10: RunHandle.interrupt is run-scoped (cross-generation safety)
+// ---------------------------------------------------------------------------
+
+describe("RunHandle.interrupt cross-generation safety", () => {
+  test("RunHandle.interrupt is run-scoped — late cancel from run A does NOT abort run B", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+
+    // Start run A, capture its handle, let it finish.
+    const handleA = runtime.run({ kind: "text", text: "A" });
+    const iterA = handleA[Symbol.asyncIterator]();
+    while (!(await iterA.next()).done) {}
+
+    // Start run B on the same runtime.
+    const handleB = runtime.run({ kind: "text", text: "B" });
+    const iterB = handleB[Symbol.asyncIterator]();
+    await iterB.next(); // drive one step
+
+    expect(handleA.runId).not.toBe(handleB.runId);
+
+    // Late cancel via handleA.interrupt — run-scoped, must NOT hit B.
+    expect(handleA.interrupt("late-from-A")).toBe(false);
+    expect(runtime.isInterrupted()).toBe(false);
+
+    // Drain B cleanly.
+    while (!(await iterB.next()).done) {}
+    await runtime.dispose();
+  });
+
+  test("RunHandle.interrupt aborts only its own run while the run is active", async () => {
+    const registry = createSessionRegistry();
+    const abortCtrl = new AbortController();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: pausingAdapter(abortCtrl.signal),
+      sessionRegistry: registry,
+    });
+
+    const handle = runtime.run({ kind: "text", text: "hi" });
+    const iter = handle[Symbol.asyncIterator]();
+    await iter.next();
+
+    expect(handle.interrupt("live-cancel")).toBe(true);
+    expect(runtime.isInterrupted()).toBe(true);
+    expect(handle.interrupt("double-cancel")).toBe(false);
+
+    abortCtrl.abort("live-cancel");
+    while (!(await iter.next()).done) {}
+    await runtime.dispose();
+  });
+});
