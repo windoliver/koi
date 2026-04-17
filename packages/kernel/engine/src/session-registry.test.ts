@@ -176,6 +176,33 @@ describe("createSessionRegistry", () => {
     expect(snapshot3[0]?.sessionId).toBe(sid);
   });
 
+  test("forceUnregister removes a stale entry and allows fresh registration", () => {
+    const registry = createSessionRegistry();
+    const sid = sessionId("stuck");
+    const r1 = runId("r-stuck");
+    const ctrl = new AbortController();
+    registry.register(sid, r1, ctrl, ctrl.signal);
+    expect(registry.listActive()).toHaveLength(1);
+
+    // Before forceUnregister, a second register throws CONFLICT.
+    const r2 = runId("r-fresh");
+    expect(() => registry.register(sid, r2, new AbortController(), AbortSignal.any([]))).toThrow(
+      /already registered/,
+    );
+
+    // forceUnregister returns true (entry existed) and clears the slot.
+    expect(registry.forceUnregister(sid)).toBe(true);
+    expect(registry.listActive()).toHaveLength(0);
+
+    // Fresh register now succeeds.
+    expect(() =>
+      registry.register(sid, r2, new AbortController(), AbortSignal.any([])),
+    ).not.toThrow();
+
+    // Calling forceUnregister on an unknown sid returns false.
+    expect(registry.forceUnregister(sessionId("nonexistent"))).toBe(false);
+  });
+
   test("interrupt with expectedRunId mismatch is a no-op (cross-generation safety)", () => {
     const registry = createSessionRegistry();
     const sid = sessionId("s-x");

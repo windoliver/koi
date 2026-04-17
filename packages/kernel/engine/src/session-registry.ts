@@ -52,6 +52,18 @@ export interface SessionRegistry {
   readonly interrupt: (sessionId: SessionId, reason?: string, expectedRunId?: RunId) => boolean;
   readonly isInterrupted: (sessionId: SessionId) => boolean;
   readonly listActive: () => readonly ActiveSession[];
+  /** Force-remove any entry for `sessionId` regardless of its runId or
+   *  abort state. Intended as an administrative recovery escape hatch for
+   *  hosts that leak or wedge runtimes, freeing the sessionId for a fresh
+   *  registration on the next `run()`. Returns `true` if an entry was
+   *  removed, `false` if none existed.
+   *
+   *  WARNING: this does NOT abort the controller or notify the owning
+   *  runtime; it only evicts the registry entry. A wedged runtime may
+   *  still be consuming resources and should be disposed separately. Use
+   *  sparingly — the normal unregister path runs automatically in the
+   *  generator's finally when the run completes. */
+  readonly forceUnregister: (sessionId: SessionId) => boolean;
 }
 
 type RegistryEntry = {
@@ -121,5 +133,9 @@ export function createSessionRegistry(): SessionRegistry {
     }));
   }
 
-  return { register, interrupt, isInterrupted, listActive };
+  function forceUnregister(sessionId: SessionId): boolean {
+    return entries.delete(sessionId);
+  }
+
+  return { register, interrupt, isInterrupted, listActive, forceUnregister };
 }

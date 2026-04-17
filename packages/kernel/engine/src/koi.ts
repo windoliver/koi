@@ -1526,22 +1526,29 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         agent.transition({ kind: "complete", stopReason: "interrupted" });
       }
 
-      // #1682: release the registry slot AFTER adapter teardown so a wedged
-      // adapter.return() keeps the session visible and interruptible; hosts
-      // can still observe the stuck run via listActive() and retry/escalate
-      // via interrupt() until cleanup truly finishes.
+      // #1682: release the registry slot — per-run, safe to call unconditionally.
+      // The unregister closure is idempotent and per-run; calling it twice or
+      // after the registry has already shed the entry is a no-op.
       unregisterFromRegistry?.();
-      activeController = undefined;
-      activeRunSignal = undefined;
-      currentRunIdRef = undefined;
 
-      // #1742: signal that this run has fully unwound so a queued
-      // cycleSession() / dispose() can safely proceed.
-      currentRunResolveSettled?.();
-      currentRunResolveSettled = undefined;
-      currentGenerator = undefined;
-      running = false;
-      runningEpoch = undefined;
+      // #1682 (this fix): factory-scoped refs may now belong to a NEWER run
+      // if this finally is firing late for a stale iterable that was aborted
+      // pre-iteration and is now being consumed after run B took ownership.
+      // Only clear them if THIS run still owns the slot — checked via
+      // `runningEpoch === expectedEpoch`. Otherwise run B's live state stays intact.
+      if (runningEpoch === expectedEpoch) {
+        activeController = undefined;
+        activeRunSignal = undefined;
+        currentRunIdRef = undefined;
+
+        // #1742: signal that this run has fully unwound so a queued
+        // cycleSession() / dispose() can safely proceed.
+        currentRunResolveSettled?.();
+        currentRunResolveSettled = undefined;
+        currentGenerator = undefined;
+        running = false;
+        runningEpoch = undefined;
+      }
 
       // #1742: onSessionEnd fires once from runtime.dispose, NOT at the end
       // of every run(). See factorySessionId block above.

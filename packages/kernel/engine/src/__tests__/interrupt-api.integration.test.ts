@@ -749,6 +749,7 @@ describe("register failure rolls back currentRunId", () => {
       interrupt: sharedRegistry.interrupt,
       isInterrupted: sharedRegistry.isInterrupted,
       listActive: sharedRegistry.listActive,
+      forceUnregister: sharedRegistry.forceUnregister,
     };
 
     const runtime = await createKoi({
@@ -764,6 +765,55 @@ describe("register failure rolls back currentRunId", () => {
     expect(runtime.currentRunId).toBeUndefined();
 
     // And the runtime must accept a subsequent run (no "already running" latch).
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 13: Stale iterable finally does NOT clobber newer run's global state
+// ---------------------------------------------------------------------------
+
+describe("stale iterable terminal delivery", () => {
+  test("stale iterable A's finally does NOT clobber run B's global state", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+
+    // Run A — start, grab its handle + runId, abort pre-iteration.
+    const handleA = runtime.run({ kind: "text", text: "A" });
+    const iterA = handleA[Symbol.asyncIterator]();
+    expect(handleA.interrupt()).toBe(true);
+    // onAbort released state; registry empty.
+    expect(registry.listActive()).toHaveLength(0);
+
+    // Run B starts cleanly with its own runId.
+    const handleB = runtime.run({ kind: "text", text: "B" });
+    const iterB = handleB[Symbol.asyncIterator]();
+    await iterB.next(); // drive one step — B's globals are now live
+    const bRunId = runtime.currentRunId;
+    expect(bRunId).toBe(handleB.runId);
+    expect(runtime.isInterrupted()).toBe(false);
+
+    // NOW consume A (late). A's finally must NOT clobber B's globals.
+    try {
+      for (;;) {
+        const next = await iterA.next();
+        if (next.done === true) break;
+      }
+    } catch {
+      // stale-epoch throw is acceptable
+    }
+
+    // B's currentRunId must still be bRunId.
+    expect(runtime.currentRunId).toBe(bRunId);
+    // B must still be considered running — a third run() rejects.
+    expect(() => runtime.run({ kind: "text", text: "C" })).toThrow(/Agent is already running/);
+
+    // Drain B cleanly and dispose.
+    while (!(await iterB.next()).done) {}
     await runtime.dispose();
   });
 });
