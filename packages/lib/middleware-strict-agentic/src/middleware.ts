@@ -66,6 +66,16 @@ export function createStrictAgenticMiddleware(
     priority: MIDDLEWARE_PRIORITY,
     phase: "intercept",
 
+    // Filler-block accounting is scoped to a single outer turn (one run()).
+    // Resetting here prevents one stubborn request from poisoning later
+    // requests in the same long-lived session — otherwise a stale count from
+    // an exhausted prior turn would skip the very first block of the next
+    // request and silently disable the guardrail for the rest of the session.
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      if (!resolved.enabled) return;
+      store.resetBlocks(ctx.session.sessionId);
+    },
+
     async wrapModelCall(
       ctx: TurnContext,
       request: ModelRequest,
@@ -143,7 +153,11 @@ export function createStrictAgenticMiddleware(
       }
 
       const blocks = store.incrementBlocks(ctx.session.sessionId);
-      if (blocks > resolved.maxFillerRetries) {
+      // Trip on `>= maxFillerRetries` so the breaker fires BEFORE the engine
+      // exhausts its own stop-retry budget (DEFAULT_MAX_STOP_RETRIES = 3). If
+      // the middleware waited for `blocks > maxFillerRetries` the runner would
+      // stop consulting stop-gates before the breaker path could emit its signal.
+      if (blocks >= resolved.maxFillerRetries) {
         // Circuit breaker tripped — fail open so the agent can stop, but emit a
         // structured signal so operators can distinguish breaker release from a
         // legitimate non-filler completion. reportDecision is the standard

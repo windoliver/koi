@@ -107,8 +107,11 @@ describe("createStrictAgenticMiddleware", () => {
     expect(result.reason).toBe("CUSTOM FEEDBACK");
   });
 
-  test("circuit breaker releases after maxFillerRetries consecutive blocks", async () => {
-    const { middleware, getBlockCount } = createStrictAgenticMiddleware({ maxFillerRetries: 2 });
+  test("circuit breaker releases when blocks reach maxFillerRetries", async () => {
+    // With maxFillerRetries=3, the 3rd consecutive stop-gate block trips the
+    // breaker. This aligns with the engine's DEFAULT_MAX_STOP_RETRIES so the
+    // release path is reachable before the runner stops consulting middleware.
+    const { middleware, getBlockCount } = createStrictAgenticMiddleware({ maxFillerRetries: 3 });
 
     const seq = ["t1", "t2", "t3", "t4"];
     const kinds: string[] = [];
@@ -119,10 +122,11 @@ describe("createStrictAgenticMiddleware", () => {
       kinds.push(r?.kind ?? "unknown");
     }
 
-    // maxFillerRetries=2 means the 3rd filler turn exceeds the cap and continues.
-    // Implementation: increment happens before the `> max` check, so block count after 3 calls is 3.
+    // Calls 1 & 2 block (count=1, 2 < 3); call 3 releases (count=3 >= 3);
+    // call 4 continues because count still >= 3.
     expect(kinds.slice(0, 2)).toEqual(["block", "block"]);
     expect(kinds[2]).toBe("continue");
+    expect(kinds[3]).toBe("continue");
     expect(getBlockCount("s1")).toBeGreaterThanOrEqual(3);
   });
 
@@ -187,7 +191,8 @@ describe("createStrictAgenticMiddleware", () => {
   });
 
   test("emits reportDecision when circuit breaker releases", async () => {
-    const { middleware } = createStrictAgenticMiddleware({ maxFillerRetries: 1 });
+    // maxFillerRetries=2 → 2nd filler trips the breaker (blocks >= max).
+    const { middleware } = createStrictAgenticMiddleware({ maxFillerRetries: 2 });
     const decisions: unknown[] = [];
     const mkCtx = (turnId: string): TurnContext => ({
       ...makeTurn("s-cb", turnId),
@@ -196,14 +201,14 @@ describe("createStrictAgenticMiddleware", () => {
       },
     });
 
-    // First filler turn → block, no emission
+    // First filler turn → block, no emission (count=1, 1 < 2).
     const t1 = mkCtx("cb-1");
     await middleware.wrapModelCall?.(t1, REQUEST, async () => response("plan", 0));
     const r1 = await middleware.onBeforeStop?.(t1);
     expect(r1?.kind).toBe("block");
     expect(decisions.length).toBe(0);
 
-    // Second filler turn → still within cap (blocks=2 > maxFillerRetries=1 → releases + emits)
+    // Second filler turn → count=2 >= 2 → release + emit.
     const t2 = mkCtx("cb-2");
     await middleware.wrapModelCall?.(t2, REQUEST, async () => response("plan", 0));
     const r2 = await middleware.onBeforeStop?.(t2);
@@ -213,7 +218,35 @@ describe("createStrictAgenticMiddleware", () => {
     expect(decision["event"]).toBe("strict-agentic:circuit-broken");
     expect(decision["sessionId"]).toBe("s-cb");
     expect(decision["consecutiveBlocks"]).toBe(2);
-    expect(decision["maxFillerRetries"]).toBe(1);
+    expect(decision["maxFillerRetries"]).toBe(2);
+  });
+
+  test("onBeforeTurn resets block counter — stale state cannot poison next outer turn", async () => {
+    // Regression: without this reset, an exhausted prior request leaves the
+    // session counter at maxFillerRetries; the next unrelated request's first
+    // filler reply would skip blocking immediately (fail-open), silently
+    // disabling the guardrail for the rest of the session.
+    const { middleware, getBlockCount } = createStrictAgenticMiddleware({
+      maxFillerRetries: 2,
+    });
+
+    // Run 1: two filler turns — second trips the breaker.
+    for (const tid of ["r1-t1", "r1-t2"]) {
+      const t = makeTurn("s-outer", tid);
+      await middleware.wrapModelCall?.(t, REQUEST, async () => response("plan", 0));
+      await middleware.onBeforeStop?.(t);
+    }
+    expect(getBlockCount("s-outer")).toBeGreaterThanOrEqual(2);
+
+    // Run 2 starts — onBeforeTurn fires at outer-turn boundary; counter resets.
+    const nextTurn = makeTurn("s-outer", "r2-t1");
+    await middleware.onBeforeTurn?.(nextTurn);
+    expect(getBlockCount("s-outer")).toBe(0);
+
+    // First filler of the new run must block, not fail-open.
+    await middleware.wrapModelCall?.(nextTurn, REQUEST, async () => response("plan", 0));
+    const r = await middleware.onBeforeStop?.(nextTurn);
+    expect(r?.kind).toBe("block");
   });
 });
 

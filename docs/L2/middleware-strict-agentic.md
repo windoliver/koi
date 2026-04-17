@@ -42,7 +42,10 @@ On each turn, the middleware evaluates in order:
 
 - Increments on every filler block.
 - Resets on any non-filler turn.
-- Releases (returns `continue`) once `consecutiveBlocks > maxFillerRetries`.
+- **Resets at the start of every outer turn** (`onBeforeTurn`) so one exhausted request does not poison the next one in a long-lived session.
+- Releases (returns `continue`) once `consecutiveBlocks >= maxFillerRetries`.
+
+The default `maxFillerRetries: 3` is chosen to match the engine's `DEFAULT_MAX_STOP_RETRIES` so the breaker path fires before the runner stops consulting stop-gates.
 
 When it releases, calls `ctx.reportDecision({ event: "strict-agentic:circuit-broken", sessionId, consecutiveBlocks, maxFillerRetries })` so operators can distinguish breaker-release from a legitimate non-filler completion in traces.
 
