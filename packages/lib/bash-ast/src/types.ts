@@ -32,6 +32,7 @@ export interface Redirect {
  */
 export type TooComplexCategory =
   | "scope-trackable"
+  | "command-substitution"
   | "parameter-expansion"
   | "positional"
   | "control-flow"

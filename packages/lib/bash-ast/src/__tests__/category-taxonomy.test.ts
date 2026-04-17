@@ -28,6 +28,7 @@ import type { TooComplexCategory } from "../types.js";
 // at runtime — its purpose is to trip the compiler on drift.
 const _EXHAUSTIVE_CATEGORIES: Record<TooComplexCategory, 0> = {
   "scope-trackable": 0,
+  "command-substitution": 0,
   "parameter-expansion": 0,
   positional: 0,
   "control-flow": 0,
@@ -49,6 +50,7 @@ void _EXHAUSTIVE_CATEGORIES;
 
 const RUNTIME_CATEGORY_FIXTURES: ReadonlyArray<readonly [string, TooComplexCategory]> = [
   ["echo $X", "scope-trackable"],
+  ["echo $(date)", "command-substitution"],
   // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
   ["echo ${X:-def}", "parameter-expansion"],
   ["echo $1", "positional"],

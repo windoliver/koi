@@ -390,7 +390,7 @@ function walkArgNode(node: Node):
             childCategory = isSpecialParameter(child.text) ? "positional" : "scope-trackable";
             break;
           case "command_substitution":
-            childCategory = "scope-trackable";
+            childCategory = "command-substitution";
             break;
           case "expansion":
             childCategory = "parameter-expansion";
@@ -436,10 +436,15 @@ function walkArgNode(node: Node):
         "parameter-expansion",
       );
     case "command_substitution":
+      // `$(cmd)` / backticks execute arbitrary nested shell commands.
+      // Scope tracking cannot safely rescue this shape (vs `$VAR` which
+      // is a pure variable read), so route to a distinct category so
+      // downstream approval logic can preserve the trust-boundary
+      // distinction between variable reads and nested execution.
       return tooComplex(
         "command substitution $( ) is not supported",
         "command_substitution",
-        "scope-trackable",
+        "command-substitution",
       );
     case "process_substitution":
       return tooComplex(

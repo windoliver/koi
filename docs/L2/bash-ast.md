@@ -139,7 +139,8 @@ The eleven categories:
 
 | Category | Meaning | Example input |
 |---|---|---|
-| `scope-trackable` | `$VAR` or `$(cmd)`. Future scope-tracking (see [#1661](https://github.com/windoliver/koi/issues/1661)) would rescue some of these. Excludes `${VAR}`. | `echo $X`, `echo $(date)` |
+| `scope-trackable` | `$VAR` (variable reference only). Future scope-tracking (see [#1661](https://github.com/windoliver/koi/issues/1661)) would rescue some of these. Excludes `${VAR}` (see `parameter-expansion`) and `$(cmd)` (see `command-substitution` — nested execution is a different trust class). | `echo $X` |
+| `command-substitution` | `$(cmd)` or `` `cmd` ``. Executes arbitrary nested shell commands — distinct trust class from plain variable reads. Approval UIs and policy logic should treat this as higher-risk than `scope-trackable`. | `echo $(date)`, `` echo `date` `` |
 | `parameter-expansion` | Any `${...}` form. | `echo ${X:-def}` |
 | `positional` | Bash special parameters: `$0`..`$9`, `$@`, `$*`, `$#`, `$?`, `$!`, `$$`, `$-`, `$_` — and mixed forms like `$1suffix` (prefix rule). These depend on shell/process state, not tracked environment scope, so they are not `scope-trackable`. | `echo $1`, `echo $$`, `echo "prefix$@"` |
 | `control-flow` | `for`/`while`/`if`/`case`/`function`/`subshell`. | `if true; then echo hi; fi` |

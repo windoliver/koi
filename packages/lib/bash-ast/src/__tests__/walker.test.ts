@@ -269,12 +269,16 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.primaryCategory).toBe("positional");
   });
 
-  test("command_substitution routes to scope-trackable", async () => {
+  test("command_substitution routes to command-substitution (distinct from $VAR reads)", async () => {
     await initializeBashAst();
+    // Round-10 adversarial finding: $(cmd) executes arbitrary nested
+    // shell code while $VAR is just a variable read. Keep them in
+    // separate categories so approval UIs/logic can preserve the
+    // trust-boundary distinction.
     const result = analyzeBashCommand("echo $(date)");
     expect(result.kind).toBe("too-complex");
     if (result.kind !== "too-complex") throw new Error("unreachable");
-    expect(result.primaryCategory).toBe("scope-trackable");
+    expect(result.primaryCategory).toBe("command-substitution");
   });
 
   // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
@@ -364,12 +368,14 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     expect(result.primaryCategory).toBe("scope-trackable");
   });
 
-  test("double-quoted command_substitution child routes via child.type", async () => {
+  test("double-quoted command_substitution child routes to command-substitution", async () => {
     await initializeBashAst();
+    // Matches the standalone $(cmd) case: nested execution is distinct
+    // from a pure variable read even when it appears inside a string.
     const result = analyzeBashCommand('echo "prefix$(date)"');
     expect(result.kind).toBe("too-complex");
     if (result.kind !== "too-complex") throw new Error("unreachable");
-    expect(result.primaryCategory).toBe("scope-trackable");
+    expect(result.primaryCategory).toBe("command-substitution");
   });
 
   test("double-quoted expansion child routes via child.type", async () => {
