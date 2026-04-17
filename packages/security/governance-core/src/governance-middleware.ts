@@ -307,34 +307,67 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // - `usage` chunks are additive (providers emit deltas per segment)
       // - `error` chunks may carry authoritative totals (override delta sum)
       // - `done` carries the authoritative ModelResponse.usage (wins over both)
-      // Fallback path (finally) flushes accumulated deltas only when no
-      // terminal chunk arrived — aborted iterations, thrown errors, etc.
+      //
+      // Terminal accounting runs BEFORE yielding the terminal chunk. This
+      // guarantees recording happens on the normal control flow path, where
+      // thrown errors propagate to the caller. Deferring to `finally` would
+      // route errors through AsyncGenerator cleanup, where some consumers
+      // (e.g., iterator.return() during abort) can swallow exceptions.
+      //
+      // The `finally` fallback only fires when no terminal chunk arrived —
+      // aborted iterations, provider-side throws, etc. — so partial usage
+      // is still charged for runtime containment.
       let accumulatedInputTokens = 0;
       let accumulatedOutputTokens = 0;
       let errorUsageInputTokens: number | undefined;
       let errorUsageOutputTokens: number | undefined;
-      let doneResponse: ModelResponse | undefined;
+      let terminalRecorded = false;
       const model = request.model ?? "unknown";
       try {
         for await (const chunk of next(request)) {
-          yield chunk;
           if (chunk.kind === "usage") {
             accumulatedInputTokens += chunk.inputTokens;
             accumulatedOutputTokens += chunk.outputTokens;
+            yield chunk;
           } else if (chunk.kind === "error") {
             if (chunk.usage !== undefined) {
               errorUsageInputTokens = chunk.usage.inputTokens;
               errorUsageOutputTokens = chunk.usage.outputTokens;
             }
+            // Record pre-yield: accounting failures surface to the caller
+            // instead of being lost during AsyncGenerator cleanup.
+            const inputTokens = errorUsageInputTokens ?? accumulatedInputTokens;
+            const outputTokens = errorUsageOutputTokens ?? accumulatedOutputTokens;
+            if (inputTokens > 0 || outputTokens > 0) {
+              const costUsd = cost.calculate(model, inputTokens, outputTokens);
+              await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);
+              onUsage?.({
+                model,
+                usage: {
+                  inputTokens,
+                  outputTokens,
+                  cacheReadTokens: 0,
+                  cacheWriteTokens: 0,
+                  reasoningTokens: 0,
+                },
+                costUsd,
+              });
+            }
+            terminalRecorded = true;
+            yield chunk;
           } else if (chunk.kind === "done") {
-            doneResponse = chunk.response;
+            await recordModelUsage(ctx, chunk.response);
+            terminalRecorded = true;
+            yield chunk;
+          } else {
+            yield chunk;
           }
         }
       } finally {
-        // Precedence: done > error.usage > accumulated deltas.
-        if (doneResponse !== undefined) {
-          await recordModelUsage(ctx, doneResponse);
-        } else {
+        // Fallback: only fires when no terminal chunk was seen (aborted
+        // iteration, mid-stream throw). Charges accumulated deltas so
+        // containment still works.
+        if (!terminalRecorded) {
           const inputTokens = errorUsageInputTokens ?? accumulatedInputTokens;
           const outputTokens = errorUsageOutputTokens ?? accumulatedOutputTokens;
           if (inputTokens > 0 || outputTokens > 0) {

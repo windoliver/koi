@@ -675,6 +675,39 @@ describe("issue checklist", () => {
     expect((threw as Error).cause).toBe(boom);
   });
 
+  test("wrapModelStream surfaces record errors on done chunk (not swallowed by finally)", async () => {
+    const boom = new Error("recorder down");
+    let recordCalls = 0;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recordCalls += 1;
+          if (ev.kind === "token_usage") throw boom;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      yield {
+        kind: "done" as const,
+        response: { content: "hi", model: "m", usage: { inputTokens: 10, outputTokens: 5 } },
+      };
+    }
+    let threw: unknown;
+    try {
+      for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+        /* drain */
+      }
+    } catch (e) {
+      threw = e;
+    }
+    // Recording must fail-fast on the terminal chunk, surfacing the error
+    // to the caller rather than disappearing inside AsyncGenerator cleanup.
+    expect(threw).toBe(boom);
+    expect(recordCalls).toBeGreaterThan(0);
+  });
+
   test("wrapToolCall fails closed when tool_error record throws", async () => {
     const recordBoom = new Error("recorder down");
     const cfg = baseCfg({
