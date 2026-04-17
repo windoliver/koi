@@ -201,29 +201,23 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
 
   // SECURITY pre-scan: detect the locale-translated-string split form.
   // Tree-sitter-bash parses `$"..."` in argument position as two sibling
-  // children — a bare `$` followed by a `string`. The effective argv for
-  // that pair depends on the shell's locale/translation catalog and may
-  // diverge from the raw source (`$"msg"` expands to a translation of
-  // `msg` when a catalog is loaded; to `msg` otherwise, with the `$`
-  // consumed as a marker). A naive per-child walk would either produce a
-  // wrong argv or hard-deny a harmless literal `$`. Catch the split pair
-  // here and fail closed via shell-escape; a bare `$` with no string
-  // sibling is left for walkArgNode to emit as a literal argv token.
+  // children — a bare `$` followed by a `string` — with NO whitespace
+  // between them (the `$` and the opening `"` are byte-adjacent in the
+  // source). The effective argv for that pair depends on the shell's
+  // locale/translation catalog and may diverge from the raw source, so
+  // fail closed via shell-escape when the adjacency holds.
+  //
+  // Lexical adjacency MUST be checked via byte offsets. Sibling order
+  // alone is not sufficient: `echo $ "msg"` has whitespace between `$`
+  // and `"msg"`, which is two separate argv elements (literal `$` then
+  // quoted string `msg`), not locale translation. Using node.endIndex
+  // vs node.startIndex correctly distinguishes the two shapes.
   for (let i = 0; i < node.children.length; i += 1) {
     const current = node.children[i];
     if (current === undefined || current.type !== "$") continue;
-    for (let j = i + 1; j < node.children.length; j += 1) {
-      const next = node.children[j];
-      if (next === undefined) break;
-      if (SEPARATOR_NODE_TYPES.has(next.type)) continue;
-      if (next.type === "string") {
-        return tooComplex(
-          'locale-translated string ($"...") is not supported',
-          "$",
-          "shell-escape",
-        );
-      }
-      break;
+    const next = node.children[i + 1];
+    if (next !== undefined && next.type === "string" && current.endIndex === next.startIndex) {
+      return tooComplex('locale-translated string ($"...") is not supported', "$", "shell-escape");
     }
   }
 

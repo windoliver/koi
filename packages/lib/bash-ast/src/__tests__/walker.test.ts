@@ -628,4 +628,24 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "simple") throw new Error("unreachable");
     expect(result.commands[0]?.argv).toEqual(["echo", "$", "foo"]);
   });
+
+  // Round-9 regression: the `$+string` locale-translation detector must
+  // require BYTE adjacency. `echo $ "msg"` has whitespace between the
+  // `$` and the string — two separate argv elements, NOT `$"..."`.
+  // Relying on sibling order alone falsely hard-denied this case.
+  test('literal $ followed by separate quoted arg stays simple (echo $ "msg")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo $ "msg"');
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$", "msg"]);
+  });
+
+  test('literal $ followed by multi-space quoted arg stays simple (echo $  "msg")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo $  "msg"');
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$", "msg"]);
+  });
 });
