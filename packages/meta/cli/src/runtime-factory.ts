@@ -201,6 +201,14 @@ export interface KoiRuntimeConfig {
    */
   readonly permissionsDescription?: string | undefined;
   /**
+   * When `true`, the Bash AST-walker's `elicit` fallback auto-allows
+   * every prompt instead of going through the approval handler. The
+   * TUI passes this when `--yolo` is active so the TTP-classifier
+   * path does not re-prompt for commands the walker cannot parse
+   * (e.g. `cmd && cmd 2>&1` lists with redirects). Defaults to `false`.
+   */
+  readonly bashElicitAutoApprove?: boolean | undefined;
+  /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
    * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
@@ -946,6 +954,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // the task surface is vestigial and would only create
     // detector false-positive exposure.
     taskBoardTools: spawnStackActive,
+    ...(config.bashElicitAutoApprove === true ? { bashElicitAutoApprove: true } : {}),
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   };
   const earlyContext: import("./preset-stacks.js").StackActivationContext = {

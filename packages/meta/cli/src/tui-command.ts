@@ -1352,6 +1352,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       ? {
           permissionBackend: yoloPermissionBackend,
           permissionsDescription: "koi tui --yolo (auto-allow all tools)",
+          bashElicitAutoApprove: true,
         }
       : {}),
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),

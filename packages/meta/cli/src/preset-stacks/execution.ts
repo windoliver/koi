@@ -103,6 +103,21 @@ export const TASK_BOARD_TOOLS_HOST_KEY = "taskBoardTools";
  * surface (no bash_background, but task_* + Spawn are intact).
  */
 export const BACKGROUND_SUBPROCESSES_HOST_KEY = "backgroundSubprocesses";
+/**
+ * Key under `ctx.host` for bash elicit auto-approve (yolo bypass).
+ *
+ * When `true`, the bash AST-walker's `elicit` fallback auto-allows
+ * every prompt instead of delegating to the approval handler. Set by
+ * the TUI command when `--yolo` / `--dangerously-skip-permissions` is
+ * active so the TTP classifier path does not re-prompt for commands
+ * the walker cannot statically parse (e.g. `cmd && cmd 2>&1` trees
+ * with redirect + list mixes).
+ *
+ * Yolo already allows all tools at the permission-middleware layer;
+ * without this flag the elicit path silently escalates back to a
+ * user prompt, defeating the whole point of `--yolo`.
+ */
+export const BASH_ELICIT_AUTO_APPROVE_HOST_KEY = "bashElicitAutoApprove";
 
 /**
  * Check whether a directory exists and is owned by the current uid.
@@ -247,6 +262,8 @@ export const executionStack: PresetStack = {
     // config get the coordinator surface they expect.
     const taskBoardToolsEnabled =
       (ctx.host?.[TASK_BOARD_TOOLS_HOST_KEY] as boolean | undefined) ?? true;
+    const bashElicitAutoApprove =
+      (ctx.host?.[BASH_ELICIT_AUTO_APPROVE_HOST_KEY] as boolean | undefined) ?? false;
 
     // --- OS sandbox (optional — falls back to unsandboxed with denylist) ---
     const osSandboxResult = createOsAdapter();
@@ -270,6 +287,10 @@ export const executionStack: PresetStack = {
       readonly reason: string;
       readonly nodeType?: string;
     }): Promise<boolean> => {
+      // Yolo bypass: when the host set `--yolo`, short-circuit before
+      // the approval handler so the TTP-classifier fallback path does
+      // not re-prompt for commands the walker cannot statically parse.
+      if (bashElicitAutoApprove) return true;
       if (approvalHandler === undefined) {
         // No approval handler available: fail closed on the uncertain
         // branch. Matches the pre-stack behavior when the TUI had one
