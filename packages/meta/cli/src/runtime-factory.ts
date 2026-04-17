@@ -168,6 +168,11 @@ export const TUI_ALLOW_RULES: readonly SourcedRule[] = [
   { pattern: "task_update", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "task_stop", action: "invoke", effect: "allow", source: "policy" },
   { pattern: "Skill", action: "invoke", effect: "allow", source: "policy" },
+  // write_plan — internal planning bookkeeping; the middleware
+  // intercepts before the tool executor runs, so this rule only
+  // exists so the default "ask" policy doesn't prompt the user for
+  // every plan write. There's no external side-effect to authorize.
+  { pattern: "write_plan", action: "invoke", effect: "allow", source: "policy" },
   // Memory tools — non-destructive ops sandboxed to .koi/memory/
   // memory_delete intentionally NOT auto-allowed — deletes durable on-disk state
   { pattern: "memory_store", action: "invoke", effect: "allow", source: "policy" },

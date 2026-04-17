@@ -544,17 +544,16 @@ export function createPlanMiddleware(config?: PlanConfig): MiddlewareBundle {
     throw KoiRuntimeError.from(validated.error.code, validated.error.message);
   }
   const priority = validated.value.priority ?? DEFAULT_PRIORITY;
-  // Default to FALSE: replaying model-authored plan content as a
-  // user-role message every turn creates a durable prompt-injection
-  // channel because non-`system:*` senderIds map to the user role in
-  // OpenAI-compat adapters (see packages/mm/model-openai-compat/
-  // src/request-mapper.ts). Plan content is ultimately authored by
-  // prior model output / tool output / user input, so promoting it
-  // back into the user instruction channel on every later turn is a
-  // trust-boundary regression. Hosts that want the CC-parity
-  // reminder behavior can opt in explicitly with
-  // `injectPlanState: true`.
-  const injectPlanState = validated.value.injectPlanState ?? false;
+  // Default to TRUE for CC-parity: without replay, the model has no
+  // access to the plan it previously wrote and across-turn planning
+  // degrades to one-turn-only. The trade-off is a prompt-injection
+  // channel for model-authored content — we mitigate by sending at
+  // `user:plan-state` (not `system:*`), fencing with backticks, and
+  // escaping fence markers + linefeeds so items cannot break out of
+  // the fence. Hosts that need strict isolation (e.g. untrusted
+  // third-party plan content) can set `injectPlanState: false` and
+  // surface plan state through their own channel.
+  const injectPlanState = validated.value.injectPlanState ?? true;
   const middleware = buildMiddleware(
     new Map(),
     validated.value.onPlanUpdate,
