@@ -98,6 +98,17 @@ describe("resolveStrictAgenticConfig", () => {
     expect(isExplicitDone("We haven't completed step 2 yet, please wait")).toBe(false);
   });
 
+  test("default isExplicitDone rejects mid-progress status with trailing future work", () => {
+    const { isExplicitDone } = resolveStrictAgenticConfig({});
+    // Completion keyword in an earlier clause, last clause is future work.
+    expect(isExplicitDone("Analysis completed. Next I will edit the file.")).toBe(false);
+    expect(isExplicitDone("The migration is finished; now I will apply the patch.")).toBe(false);
+    expect(isExplicitDone("Step 1 done. Moving on to step 2.")).toBe(false);
+    // Same-clause future-work word disqualifies even when keyword is present.
+    expect(isExplicitDone("I completed step 1 and will proceed to step 2")).toBe(false);
+    expect(isExplicitDone("Finished the plan, will now continue")).toBe(false);
+  });
+
   test("default isUserQuestion rejects whitespace-only input", () => {
     const { isUserQuestion } = resolveStrictAgenticConfig({});
     expect(isUserQuestion("   ")).toBe(false);

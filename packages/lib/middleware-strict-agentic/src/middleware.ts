@@ -73,7 +73,7 @@ export function createStrictAgenticMiddleware(
     ): Promise<ModelResponse> {
       const resp = await next(request);
       if (!resolved.enabled) return resp;
-      store.recordTurn(ctx.turnId, {
+      store.recordTurn(ctx.session.sessionId, ctx.turnId, {
         toolCallCount: countToolCalls(resp.richContent),
         outputText: resp.content,
       });
@@ -113,7 +113,7 @@ export function createStrictAgenticMiddleware(
             countToolCalls(chunk.response.richContent),
           );
           const mergedText = text.length > 0 ? text : chunk.response.content;
-          store.recordTurn(ctx.turnId, {
+          store.recordTurn(ctx.session.sessionId, ctx.turnId, {
             toolCallCount: mergedToolCallCount,
             outputText: mergedText,
           });
@@ -123,7 +123,10 @@ export function createStrictAgenticMiddleware(
       }
       // Fallback for adapters that close the stream without emitting `done`.
       if (!recorded) {
-        store.recordTurn(ctx.turnId, { toolCallCount, outputText: text });
+        store.recordTurn(ctx.session.sessionId, ctx.turnId, {
+          toolCallCount,
+          outputText: text,
+        });
       }
     },
 

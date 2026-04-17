@@ -33,19 +33,26 @@ export const DEFAULT_STRICT_AGENTIC_CONFIG: {
   maxFillerRetries: 3,
 } as const satisfies Pick<StrictAgenticConfig, "enabled" | "maxFillerRetries">;
 
-/** Window of trailing characters searched for the explicit-done signal. */
-const EXPLICIT_DONE_WINDOW = 80;
-
-/** Completion keywords: must appear in the trailing window to be recognised. */
+/** Completion keywords recognised by the default `isExplicitDone` predicate. */
 const EXPLICIT_DONE_WORD_RE = /\b(done|completed|finished|no further action)\b/i;
 
 /**
- * Negations that disqualify the match even when a completion keyword appears
- * in the trailing window. "I am not done yet" must NOT classify as done.
- * Covers explicit "not", "n't" contractions, "never", and "yet".
+ * Negations that disqualify a completion keyword in the same clause.
+ * Covers "not", "n't" contractions, "never", and "yet".
  */
 const NEGATION_RE =
   /\b(not|never|yet|n't|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|won't|can't|couldn't|shouldn't|wouldn't)\b/i;
+
+/**
+ * Forward-work indicators after the completion keyword in the same clause.
+ * If present, the turn is still describing upcoming work and must not be
+ * exempted: "I completed step 1, will now continue" is NOT done.
+ */
+const FORWARD_WORK_RE =
+  /\b(will|shall|next|then|continue|continuing|proceed|proceeding|apply|applying|start|starting|now)\b/i;
+
+/** Clause terminators: sentence punctuation plus `;` and em-dash variants. */
+const CLAUSE_SPLITTER = /[.!?;—]+/;
 
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();
@@ -53,11 +60,20 @@ function defaultIsUserQuestion(output: string): boolean {
 }
 
 function defaultIsExplicitDone(output: string): boolean {
-  const tail = output.slice(-EXPLICIT_DONE_WINDOW);
-  if (!EXPLICIT_DONE_WORD_RE.test(tail)) return false;
-  // Reject if any negation is present in the same window — covers "not done yet",
-  // "not yet completed", "have not finished", etc.
-  if (NEGATION_RE.test(tail)) return false;
+  // Only the final clause counts. Status text like "Analysis completed.
+  // Next I will edit the file." is split into ["Analysis completed",
+  // "Next I will edit the file"] — the last clause has no completion word
+  // and the turn is correctly NOT exempted.
+  const clauses = output
+    .split(CLAUSE_SPLITTER)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const last = clauses.at(-1);
+  if (last === undefined) return false;
+  if (!EXPLICIT_DONE_WORD_RE.test(last)) return false;
+  if (NEGATION_RE.test(last)) return false;
+  // Reject same-clause forward-work: "I finished writing, will proceed".
+  if (FORWARD_WORK_RE.test(last)) return false;
   return true;
 }
 
