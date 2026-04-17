@@ -76,6 +76,26 @@ function isSpecialParameter(text: string): boolean {
   return SPECIAL_PARAMETER_RE.test(text);
 }
 
+/**
+ * Match a `simple_expansion` text shape that bash would actually treat as
+ * an expansion. The pattern is `$` followed by either a valid bash
+ * identifier start (`[A-Za-z_]`) or a one-character special parameter
+ * (`[0-9@*#?!$-]`).
+ *
+ * Tree-sitter-bash occasionally emits `simple_expansion` for shapes bash
+ * resolves literally — e.g. inside `"foo$ bar"` the grammar produces a
+ * `simple_expansion "$ bar"` whose child `variable_name` text is `" bar"`.
+ * bash treats the `$` as a literal dollar sign (because a space cannot
+ * start an identifier) so the argv stays static. Use this check to
+ * distinguish real expansions (which the walker rejects) from parse-
+ * quirk literals (which it should pass through as literal text).
+ */
+const REAL_EXPANSION_RE = /^\$(?:[A-Za-z_]|[0-9@*#?!$-])/;
+
+function isRealExpansion(text: string): boolean {
+  return REAL_EXPANSION_RE.test(text);
+}
+
 /** Valid file-redirect operator tokens. */
 const REDIRECT_OP_TYPES: ReadonlySet<string> = new Set([
   ">",
@@ -384,6 +404,17 @@ function walkArgNode(node: Node):
         // node type for double-quoted strings surfaces as a drift signal
         // instead of being silently absorbed. Known-but-unhandled child
         // types MUST be added as explicit case arms above.
+        // Tree-sitter-bash parse quirk: `"foo$ bar"` emits a
+        // `simple_expansion` with text `$ bar`, but bash resolves the
+        // `$` as a literal dollar sign (a space can't start an
+        // identifier). Route these parse-quirk cases through as literal
+        // text instead of treating them as scope-trackable expansions;
+        // this keeps the argv correct and avoids false too-complex
+        // rejections for fully static quoted strings.
+        if (child.type === "simple_expansion" && !isRealExpansion(child.text)) {
+          parts.push(child.text);
+          continue;
+        }
         let childCategory: TooComplexCategory;
         switch (child.type) {
           case "simple_expansion":

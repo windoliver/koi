@@ -654,4 +654,37 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "simple") throw new Error("unreachable");
     expect(result.commands[0]?.argv).toEqual(["echo", "$", "msg"]);
   });
+
+  // Fresh-loop regression: tree-sitter-bash emits `simple_expansion`
+  // inside double-quoted strings for shapes bash resolves literally —
+  // e.g. `"foo$ bar"` produces `simple_expansion "$ bar"` with a
+  // variable_name of `" bar"`. bash treats the `$` as a literal dollar
+  // because a space can't start an identifier, so the argv is static.
+  // The walker now passes these parse-quirk cases through as literal
+  // text instead of falsely routing them to scope-trackable.
+  test('literal $ before whitespace inside quotes stays simple (echo "foo$ bar")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "foo$ bar"');
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "foo$ bar"]);
+  });
+
+  test('literal $ at start of quoted content stays simple (echo "$ foo")', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "$ foo"');
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    expect(result.commands[0]?.argv).toEqual(["echo", "$ foo"]);
+  });
+
+  test('real expansion inside quotes still routes to scope-trackable (echo "$foo")', async () => {
+    await initializeBashAst();
+    // Belt-and-suspenders: a real variable reference must still be
+    // rejected; only parse-quirk literals get passed through.
+    const result = analyzeBashCommand('echo "$foo"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
 });

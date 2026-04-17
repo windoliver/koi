@@ -139,6 +139,9 @@ const UNKNOWN_CORPUS: ReadonlyArray<readonly [string]> = [
   ["echo $"],
   ['echo "$"'],
   ["echo $ foo"],
+  // Fresh-loop regression: parse-quirk literal `$` inside double quotes.
+  ['echo "foo$ bar"'],
+  ['echo "$ foo"'],
   // From bypass-corpus.test.ts — injection + bypass patterns:
   ["eval $(cat /etc/passwd)"],
   ["eval `cat /etc/passwd`"],
