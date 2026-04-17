@@ -160,24 +160,28 @@ function dispose(command: string, analysis: AstAnalysis): ClassificationResult |
       return regexClassifyTtp(command);
     }
     case "too-complex": {
-      // SECURITY: categories in this switch group indicate the walker
-      // CANNOT trust its own analysis of the command. Either the parser
-      // could not produce a clean tree (`parse-error`), the tree shape
-      // violated walker assertions (`malformed`), the walker hit a node
-      // type not in its dispatch table (`unknown`), or the raw source
-      // does not match bash's effective semantics (`shell-escape`). In
-      // any of these cases, both the raw-text regex classifier and an
-      // interactive user prompt are unsafe — the displayed command may
-      // not match the effective argv, so a user can't meaningfully
-      // approve it. Fail closed. Keyed off the stable `primaryCategory`
-      // enum, not raw tree-sitter node names, so grammar upgrades can't
-      // silently drop the fail-closed behaviour.
-      if (
-        analysis.primaryCategory === "shell-escape" ||
-        analysis.primaryCategory === "parse-error" ||
-        analysis.primaryCategory === "malformed" ||
-        analysis.primaryCategory === "unknown"
-      ) {
+      // SECURITY: hard-deny the categories where the raw source
+      // provably cannot be reconciled with bash's effective argv
+      // regardless of grammar version:
+      //
+      //   - `shell-escape`: backslash escapes in unquoted words, in
+      //     `string_content`, or via line-continuation prefilter. The
+      //     displayed command diverges from the executed argv, so a
+      //     user cannot meaningfully approve `cat \/etc\/passwd` vs
+      //     `cat /etc/passwd`.
+      //   - `unknown`: the walker dispatch table does not recognise
+      //     the node type at all. No mental model = no safe approval.
+      //
+      // `parse-error` and `malformed` intentionally stay askable even
+      // though the walker doesn't trust the tree: docs/L2/bash-ast.md
+      // explicitly documents both as reachable from VALID bash under
+      // the vendored tree-sitter-bash grammar (`FOO=bar < in.txt`
+      // emits `root.hasError`; `malformed` sites can fire for grammar-
+      // quirk shapes). Hard-denying them would convert parser drift
+      // into blanket injection blocks on legitimate commands. The
+      // downstream regex TTP classifier and the elicit approval
+      // surface remain defense-in-depth for those categories.
+      if (analysis.primaryCategory === "shell-escape" || analysis.primaryCategory === "unknown") {
         return {
           ok: false,
           reason: `Bash AST walker cannot safely analyse this command (${analysis.primaryCategory}): ${analysis.reason}`,
@@ -185,11 +189,13 @@ function dispose(command: string, analysis: AstAnalysis): ClassificationResult |
           category: "injection",
         };
       }
-      // Remaining categories represent known-structured syntax the
-      // walker intentionally does not support (scope-trackable,
+      // Remaining categories (parse-error, malformed, and all the
+      // known-structured askable classes: scope-trackable,
       // command-substitution, parameter-expansion, positional,
-      // control-flow, heredoc, process-substitution, unsupported-syntax).
-      // Caller decides: sync → regex fallback, async → elicit.
+      // control-flow, heredoc, process-substitution,
+      // unsupported-syntax) reach the regex TTP fallback or the
+      // elicit surface. Caller decides: sync → regex, async →
+      // elicit.
       return null;
     }
     case "parse-unavailable": {
