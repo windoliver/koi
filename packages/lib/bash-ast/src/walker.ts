@@ -254,7 +254,7 @@ function walkArgNode(node: Node):
       // Force too-complex → transitional regex fallback rather than
       // emulate bash's escape semantics.
       if (node.text.includes("\\")) {
-        return tooComplex("word with backslash escape is not supported", "word", "unknown");
+        return tooComplex("word with backslash escape is not supported", "word", "shell-escape");
       }
       return { kind: "ok", value: node.text };
     case "number":
@@ -267,7 +267,7 @@ function walkArgNode(node: Node):
       if (text.length >= 2 && text[0] === "'" && text[text.length - 1] === "'") {
         return { kind: "ok", value: text.slice(1, -1) };
       }
-      return tooComplex("malformed raw_string", "raw_string", "unknown");
+      return tooComplex("malformed raw_string", "raw_string", "malformed");
     }
     case "string": {
       // "double quoted" — allow only if children are [", string_content?, "]
@@ -283,17 +283,53 @@ function walkArgNode(node: Node):
             return tooComplex(
               "backslash escape in double-quoted string is not supported",
               "string_content",
-              "unknown",
+              "shell-escape",
             );
           }
           parts.push(child.text);
           continue;
         }
-        // simple_expansion, expansion, command_substitution, escape_sequence, …
+        // Dynamic content inside a double-quoted string (simple_expansion /
+        // expansion / command_substitution / etc.). The walker can't extract
+        // a static argv, but it can route the rejection category by the
+        // child's node type so callers see why the string failed.
+        const POSITIONAL_PREFIXES = [
+          "$1",
+          "$2",
+          "$3",
+          "$4",
+          "$5",
+          "$6",
+          "$7",
+          "$8",
+          "$9",
+          "$@",
+          "$*",
+          "$#",
+          "$?",
+          "$!",
+        ];
+        let childCategory: TooComplexCategory;
+        switch (child.type) {
+          case "simple_expansion":
+            childCategory = POSITIONAL_PREFIXES.some((p) => child.text.startsWith(p))
+              ? "positional"
+              : "scope-trackable";
+            break;
+          case "command_substitution":
+            childCategory = "scope-trackable";
+            break;
+          case "expansion":
+            childCategory = "parameter-expansion";
+            break;
+          default:
+            childCategory = "unsupported-syntax";
+            break;
+        }
         return tooComplex(
           `dynamic content in double-quoted string: ${child.type}`,
           child.type,
-          "unknown",
+          childCategory,
         );
       }
       return { kind: "ok", value: parts.join("") };

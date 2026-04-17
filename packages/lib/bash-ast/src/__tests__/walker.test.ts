@@ -337,4 +337,53 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("unsupported-syntax");
   });
+
+  test("word with backslash routes to shell-escape", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("cat \\/etc\\/passwd");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("shell-escape");
+  });
+
+  test("string_content with backslash routes to shell-escape", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "foo\\nbar"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("shell-escape");
+  });
+
+  test("double-quoted scope-trackable child routes via child.type", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "prefix$VAR"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  test("double-quoted command_substitution child routes via child.type", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "prefix$(date)"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  test("double-quoted expansion child routes via child.type", async () => {
+    await initializeBashAst();
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: documenting bash syntax literally
+    const result = analyzeBashCommand('echo "prefix${X:-def}"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("parameter-expansion");
+  });
+
+  test("double-quoted positional child routes as positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "prefix$1suffix"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
 });
