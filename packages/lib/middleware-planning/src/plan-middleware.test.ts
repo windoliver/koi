@@ -782,6 +782,51 @@ describe("onSessionEnd draining", () => {
     expect((response?.output as Record<string, unknown>).error).toBeUndefined();
   });
 
+  it("aborts the hook signal and refuses to report success when onSessionEnd times out while the hook is mid-flight", async () => {
+    // Reviewer R17: if teardown drain expires while onPlanUpdate is
+    // still running, the hook must be signaled AND the middleware
+    // must refuse to report success — otherwise a slow persistence
+    // call can corrupt the recycled session's store after teardown.
+    let sawSignal: AbortSignal | undefined;
+    // Hook never resolves — forces the drain timeout to fire.
+    const mw = make({
+      onPlanUpdate: async (_plan, { signal }) => {
+        sawSignal = signal;
+        await new Promise<void>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted by signal")));
+        });
+      },
+    });
+    // Shorten test time by running against the shorter SESSION_DRAIN_TIMEOUT_MS
+    // implicitly; we race against a 7s test deadline below.
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const writePromise = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "hangs-forever", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    const endPromise = mw.onSessionEnd?.(sessionCtx);
+
+    const response = await writePromise;
+    await endPromise;
+
+    expect(sawSignal?.aborted).toBe(true);
+    // Even though the hook "completed" (via rejection from signal),
+    // the middleware refuses to report success since teardown
+    // aborted the write.
+    const errPayload = response?.output as Record<string, unknown>;
+    const msg = (errPayload.error as string | undefined) ?? "";
+    expect(msg.includes("aborted by session teardown") || msg.includes("aborted by signal")).toBe(
+      true,
+    );
+  }, 10000);
+
   it("does not leak an old session's write into a new session that reuses the same SessionId", async () => {
     // Reviewer R12: stable SessionIds are reused across cycleSession()
     // and /clear. Without an epoch token, an in-flight old write

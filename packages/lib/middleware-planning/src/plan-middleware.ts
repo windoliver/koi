@@ -98,6 +98,14 @@ interface PlanSessionState {
    * immediately so no work is enqueued after the drain begins.
    */
   readonly closing: { value: boolean };
+  /**
+   * Teardown abort controller. Fires when `onSessionEnd` gives up
+   * waiting for in-flight persistence. Hooks receive the controller's
+   * signal via PlanUpdateContext and SHOULD honor it; the middleware
+   * also refuses to report success for any write whose signal aborted
+   * after the hook returned.
+   */
+  readonly teardown: AbortController;
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -346,6 +354,17 @@ async function handleWritePlan(
       return errorResponse("session was replaced before write_plan could commit");
     }
 
+    // Capture the teardown controller so we can both hand its signal
+    // to the hook AND inspect its aborted state after the hook returns.
+    // Re-fetch (not reused from the outer `state`) so we observe a
+    // possible recreate — a new controller belongs to a new epoch
+    // which we already reject separately.
+    const preHookState = stillCurrent(sessions, sessionId, acceptedEpoch);
+    if (preHookState === undefined) {
+      return errorResponse("session was replaced before write_plan could commit");
+    }
+    const teardownSignal = preHookState.teardown.signal;
+
     // Run the persistence hook BEFORE exposing `parsed` through session
     // state. If it throws/rejects, no other turn has seen the uncommitted
     // plan, so there is nothing to roll back.
@@ -355,11 +374,21 @@ async function handleWritePlan(
           sessionId: sessionId as unknown as string,
           epoch: acceptedEpoch,
           turnIndex,
+          signal: teardownSignal,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResponse(`plan update hook failed: ${message}`);
       }
+    }
+
+    // If teardown aborted during or after the hook, we cannot trust
+    // that the durable write landed correctly — a hook that ignored
+    // the signal may have completed a stale write that corrupts the
+    // recycled session's store, and a hook that honored the signal
+    // may have half-written. Either way, DO NOT report success.
+    if (teardownSignal.aborted) {
+      return errorResponse("plan update aborted by session teardown");
     }
 
     // Re-fetch — the session may have ended while the hook was awaiting.
@@ -436,6 +465,7 @@ function buildMiddleware(
         perTurnWriteCounts: new Map(),
         pending: { current: Promise.resolve() },
         closing: { value: false },
+        teardown: new AbortController(),
       });
     },
     async onSessionEnd(ctx) {
@@ -454,6 +484,12 @@ function buildMiddleware(
         await Promise.race([chain, new Promise<void>((resolve) => setTimeout(resolve, remaining))]);
         if (state.pending.current === chain) break;
       }
+      // If we exited the drain loop without the chain settling, some
+      // writes are still in-flight. Abort the teardown signal so any
+      // hook that honors it can stop its external work, and the
+      // middleware's post-hook check will refuse to report those
+      // writes as success.
+      state.teardown.abort();
       sessions.delete(ctx.sessionId);
     },
     describeCapabilities: (ctx) => capabilityFor(sessions.get(ctx.session.sessionId)),

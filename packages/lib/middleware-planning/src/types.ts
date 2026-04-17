@@ -25,6 +25,16 @@ export interface PlanUpdateContext {
   readonly sessionId: string;
   readonly epoch: number;
   readonly turnIndex: number;
+  /**
+   * Teardown abort signal. Fires when `onSessionEnd` gives up waiting
+   * for in-flight persistence (the bounded drain deadline expired).
+   * Hooks that perform external writes SHOULD honor this signal and
+   * abort their work — otherwise a post-teardown write can corrupt
+   * durable storage that a new session has already claimed under the
+   * same SessionId. The middleware treats any write whose signal has
+   * aborted as failed, even if the backend completed the write.
+   */
+  readonly signal: AbortSignal;
 }
 
 /**
