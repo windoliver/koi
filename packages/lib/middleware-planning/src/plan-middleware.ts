@@ -106,6 +106,15 @@ interface PlanSessionState {
    * after the hook returned.
    */
   readonly teardown: AbortController;
+  /**
+   * Per-session visibility observation. Updated on every wrapModelCall/
+   * wrapModelStream based on whether write_plan appears in the
+   * filtered request.tools. describeCapabilities reads this flag so
+   * the capability banner tracks the actual visibility boundary.
+   * Default false — until we observe write_plan being advertised at
+   * least once we must not leak planning to the model.
+   */
+  readonly visibility: { lastSeenAdvertised: boolean };
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -227,8 +236,22 @@ function formatPlanSummary(plan: readonly PlanItem[]): string {
   return `Plan updated: ${String(plan.length)} items (${String(pending)} pending, ${String(inProgress)} in progress, ${String(completed)} completed)`;
 }
 
-function capabilityFor(state: PlanSessionState | undefined): CapabilityFragment {
-  if (state === undefined || state.currentPlan.length === 0) {
+/**
+ * Capability reporting for planning is gated on per-session
+ * visibility. `describeCapabilities` runs without access to the
+ * current request.tools, so we track the latest observation of
+ * write_plan visibility on the session state itself — wrapModelCall/
+ * wrapModelStream update the flag on every request. When the session
+ * has never seen write_plan advertised (or the most recent call had
+ * it filtered out), we suppress the capability banner entirely so
+ * restricted sessions can't learn that planning exists or infer
+ * active-plan item counts from the banner.
+ */
+function capabilityFor(state: PlanSessionState | undefined): CapabilityFragment | undefined {
+  if (state === undefined || !state.visibility.lastSeenAdvertised) {
+    return undefined;
+  }
+  if (state.currentPlan.length === 0) {
     return {
       label: "planning",
       description: "Planning: write_plan tool injected, no active plan",
@@ -452,6 +475,7 @@ function buildMiddleware(
         pending: { current: Promise.resolve() },
         closing: { value: false },
         teardown: new AbortController(),
+        visibility: { lastSeenAdvertised: false },
       });
     },
     async onSessionEnd(ctx) {
@@ -490,6 +514,11 @@ function buildMiddleware(
       // `next()`; publishing the pre-await snapshot would regress any
       // UI/trace that trusts `metadata.currentPlan` as the latest.
       const before = sessions.get(ctx.session.sessionId);
+      // Track the latest visibility observation for describeCapabilities.
+      if (before !== undefined) {
+        before.visibility.lastSeenAdvertised =
+          request.tools === undefined || request.tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+      }
       const response = await next(
         enrichRequest(request, before?.currentPlan ?? [], injectPlanState),
       );
@@ -513,6 +542,10 @@ function buildMiddleware(
     },
     async *wrapModelStream(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
+      if (state !== undefined) {
+        state.visibility.lastSeenAdvertised =
+          request.tools === undefined || request.tools.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+      }
       yield* next(enrichRequest(request, state?.currentPlan ?? [], injectPlanState));
     },
     async wrapToolCall(ctx, request, next) {

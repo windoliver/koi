@@ -1539,20 +1539,30 @@ describe("turn concurrency", () => {
 // ---------------------------------------------------------------------------
 
 describe("describeCapabilities", () => {
-  it("reports no active plan before any write_plan call", () => {
+  it("suppresses capability until write_plan visibility has been observed", () => {
+    // Reviewer R21: the capability banner previously leaked
+    // "Planning: write_plan tool injected" even in sessions where
+    // permissions had filtered the tool out. Default state is now
+    // "no observation yet" → return undefined so restricted children
+    // cannot learn planning exists via the capability banner.
     const mw = make();
     const ctx = makeTurnCtx(makeSessionCtx());
-    const fragment = mw.describeCapabilities(ctx) as CapabilityFragment;
-    expect(fragment.label).toBe("planning");
-    expect(fragment.description).toContain("no active plan");
+    const fragment = mw.describeCapabilities(ctx);
+    expect(fragment).toBeUndefined();
   });
 
-  it("reports active plan counts after write_plan", async () => {
+  it("emits capability only after observing write_plan advertised in request.tools", async () => {
     const mw = make();
     const sessionCtx = makeSessionCtx();
     await mw.onSessionStart?.(sessionCtx);
     const ctx = makeTurnCtx(sessionCtx);
 
+    // Drive a model call with tools undefined (test-harness path)
+    // so the middleware sees write_plan as advertised and records
+    // the visibility observation.
+    await mw.wrapModelCall?.(ctx, makeRequest("hi"), async () => makeResponse("ok"));
+
+    // After committing a plan, the banner reflects the counts.
     await mw.wrapToolCall?.(
       ctx,
       {
@@ -1568,6 +1578,24 @@ describe("describeCapabilities", () => {
     const fragment = mw.describeCapabilities(ctx) as CapabilityFragment;
     expect(fragment.description).toContain("Plan active");
     expect(fragment.description).toContain("2 items");
+  });
+
+  it("suppresses capability again after a filtered session observation", async () => {
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+    const ctx = makeTurnCtx(sessionCtx);
+
+    // First a visible call (flag → true), then a filtered call
+    // (flag → false). The banner must follow the latest observation.
+    await mw.wrapModelCall?.(ctx, makeRequest("hi"), async () => makeResponse("ok"));
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [makeRequest("hi").messages[0] as InboundMessage], tools: [], model: "t" },
+      async () => makeResponse("ok"),
+    );
+
+    expect(mw.describeCapabilities(ctx)).toBeUndefined();
   });
 });
 
