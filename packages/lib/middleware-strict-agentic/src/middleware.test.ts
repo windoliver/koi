@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  ModelChunk,
   ModelRequest,
   ModelResponse,
   SessionContext,
@@ -168,5 +169,122 @@ describe("createStrictAgenticMiddleware", () => {
     if (!cap) return;
     expect(cap.label).toBe("strict-agentic");
     expect(cap.description.length).toBeGreaterThan(0);
+  });
+
+  test("throws on malformed config (non-function predicate)", () => {
+    expect(() =>
+      createStrictAgenticMiddleware({
+        // biome-ignore lint/suspicious/noExplicitAny: deliberate invalid value for guardrail test
+        isExplicitDone: 42 as any,
+      }),
+    ).toThrow(/Invalid @koi\/middleware-strict-agentic config/);
+  });
+
+  test("throws on malformed config (negative maxFillerRetries)", () => {
+    expect(() => createStrictAgenticMiddleware({ maxFillerRetries: -1 })).toThrow(
+      /Invalid @koi\/middleware-strict-agentic config/,
+    );
+  });
+});
+
+// -------------------------------------------------------------------------
+// wrapModelStream — runtime's streaming path must exercise the same gate
+// -------------------------------------------------------------------------
+
+async function collect(stream: AsyncIterable<ModelChunk>): Promise<ModelChunk[]> {
+  const out: ModelChunk[] = [];
+  for await (const chunk of stream) out.push(chunk);
+  return out;
+}
+
+function streamOf(chunks: readonly ModelChunk[]): () => AsyncIterable<ModelChunk> {
+  return () => ({
+    async *[Symbol.asyncIterator]() {
+      for (const c of chunks) yield c;
+    },
+  });
+}
+
+describe("wrapModelStream", () => {
+  test("blocks filler turn when streamed response has no tool calls", async () => {
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-stream-1");
+
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "I will now " },
+      { kind: "text_delta", delta: "proceed to work." },
+      {
+        kind: "done",
+        response: { content: "I will now proceed to work.", model: "test" },
+      },
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    const drained = await collect(stream);
+    expect(drained.length).toBe(chunks.length);
+
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("block");
+  });
+
+  test("passes tool-call turn on streamed response", async () => {
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-stream-2");
+
+    const chunks: ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "x", callId: "c1" as unknown as ToolCallId },
+      { kind: "tool_call_end", callId: "c1" as unknown as ToolCallId },
+      {
+        kind: "done",
+        response: {
+          content: "",
+          model: "test",
+          richContent: [
+            {
+              kind: "tool_call",
+              id: "c1" as unknown as ToolCallId,
+              name: "x",
+              arguments: {},
+            },
+          ],
+        },
+      },
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    await collect(stream);
+
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("continue");
+  });
+
+  test("falls back to chunk accumulation when adapter omits done chunk", async () => {
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-stream-3");
+
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "I will plan this out." },
+      // intentionally no "done" chunk — some adapters only emit usage + close
+      { kind: "usage", inputTokens: 10, outputTokens: 5 },
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    await collect(stream);
+
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("block");
+  });
+
+  test("noop mode passes stream through without recording", async () => {
+    const { middleware } = createStrictAgenticMiddleware({ enabled: false });
+    const turn = makeTurn("s-stream", "t-stream-4");
+    const chunks: ModelChunk[] = [{ kind: "text_delta", delta: "plan only" }];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    await collect(stream);
+
+    const result = await middleware.onBeforeStop?.(turn);
+    // enabled=false → onBeforeStop always continues regardless of stream content
+    expect(result).toEqual({ kind: "continue" });
   });
 });

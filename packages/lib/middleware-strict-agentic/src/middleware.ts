@@ -2,24 +2,30 @@
  * Factory for @koi/middleware-strict-agentic.
  *
  * Wires together the config, classifier, state store, and feedback modules
- * into a KoiMiddleware with four active hooks:
- *   wrapModelCall, onBeforeStop, onAfterTurn, onSessionEnd.
+ * into a KoiMiddleware with five active hooks:
+ *   wrapModelCall, wrapModelStream, onBeforeStop, onAfterTurn, onSessionEnd.
+ *
+ * Both wrapModelCall and wrapModelStream populate the same per-turn state so
+ * the stop gate works on streaming adapters (the runtime's preferred path
+ * when the adapter exposes `modelStream`) as well as non-streaming calls.
  */
 
 import type {
   CapabilityFragment,
   KoiMiddleware,
+  ModelChunk,
   ModelContentBlock,
   ModelHandler,
   ModelRequest,
   ModelResponse,
+  ModelStreamHandler,
   SessionContext,
   StopGateResult,
   TurnContext,
 } from "@koi/core";
 import { classifyTurn } from "./classifier.js";
 import type { StrictAgenticConfig } from "./config.js";
-import { resolveStrictAgenticConfig } from "./config.js";
+import { resolveStrictAgenticConfig, validateStrictAgenticConfig } from "./config.js";
 import { DEFAULT_FEEDBACK } from "./feedback.js";
 import { createStateStore } from "./state.js";
 
@@ -44,7 +50,15 @@ function countToolCalls(rich: readonly ModelContentBlock[] | undefined): number 
 export function createStrictAgenticMiddleware(
   config: Partial<StrictAgenticConfig> = {},
 ): StrictAgenticHandle {
-  const resolved = resolveStrictAgenticConfig(config);
+  // Fail fast on malformed config. Guardrail middleware must not accept
+  // callable-typed fields that would TypeError later when classifyTurn invokes them.
+  const validation = validateStrictAgenticConfig(config);
+  if (!validation.ok) {
+    throw new Error(`Invalid @koi/middleware-strict-agentic config: ${validation.error.message}`, {
+      cause: validation.error,
+    });
+  }
+  const resolved = resolveStrictAgenticConfig(validation.value);
   const store = createStateStore();
 
   const middleware: KoiMiddleware = {
@@ -64,6 +78,39 @@ export function createStrictAgenticMiddleware(
         outputText: resp.content,
       });
       return resp;
+    },
+
+    // Streaming path — runtime prefers this when the adapter implements `stream`.
+    // Passes every chunk through unmodified and accumulates facts for classification.
+    // Prefers the final `done.response` when the adapter emits one; otherwise
+    // falls back to chunk-level counting so providers without a terminal `done`
+    // chunk still get gated.
+    async *wrapModelStream(
+      ctx: TurnContext,
+      request: ModelRequest,
+      next: ModelStreamHandler,
+    ): AsyncIterable<ModelChunk> {
+      if (!resolved.enabled) {
+        yield* next(request);
+        return;
+      }
+      let toolCallCount = 0;
+      let text = "";
+      let finalResponse: ModelResponse | undefined;
+      for await (const chunk of next(request)) {
+        if (chunk.kind === "text_delta") text += chunk.delta;
+        else if (chunk.kind === "tool_call_start") toolCallCount += 1;
+        else if (chunk.kind === "done") finalResponse = chunk.response;
+        yield chunk;
+      }
+      if (finalResponse !== undefined) {
+        store.recordTurn(ctx.turnId, {
+          toolCallCount: countToolCalls(finalResponse.richContent),
+          outputText: finalResponse.content,
+        });
+      } else {
+        store.recordTurn(ctx.turnId, { toolCallCount, outputText: text });
+      }
     },
 
     async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
