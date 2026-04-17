@@ -1432,11 +1432,18 @@ export function createPermissionsMiddleware(
           });
           emitDenyAudit(decision);
           // Trust-boundary: output contains only toolId, never decision.reason.
+          // `blockedByHook: true` is the canonical downstream marker honored
+          // by event-trace, middleware-report, and session-transcript to
+          // classify this response as a non-execution rather than a successful
+          // tool call. Loop round-10 fix.
+          // `permissionDenied: true` is the specific signal for #1650 soft-deny.
           return {
             output: `Permission denied for tool "${request.toolId}". This tool is not available in the current scope.`,
             metadata: {
               isError: true,
+              blockedByHook: true,
               permissionDenied: true,
+              hookName: "permissions",
               toolId: request.toolId,
             },
           };

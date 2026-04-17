@@ -1223,6 +1223,20 @@ describe("filterTools round-3 edge cases (#1650)", () => {
   });
 });
 
+describe("downstream observability integration (#1650 loop round-10)", () => {
+  test("soft-deny response carries blockedByHook: true so event-trace/report/transcript classify it as non-execution", async () => {
+    const mw = createPermissionsMiddleware({ backend: softDenyBackend() });
+    const ctx = makeTurnContext({ sessionId: "s-downstream" });
+    const result = await mw.wrapToolCall?.(ctx, makeToolRequest("some_tool"), noopToolHandler);
+    const meta = result?.metadata as Record<string, unknown>;
+    expect(meta?.blockedByHook).toBe(true);
+    expect(meta?.hookName).toBe("permissions");
+    // Pre-existing markers still present.
+    expect(meta?.permissionDenied).toBe(true);
+    expect(meta?.isError).toBe(true);
+  });
+});
+
 describe("session-state eviction (#1650 Task-16 regression)", () => {
   test("clearSessionApprovals evicts soft-deny log and turn counter for that session", async () => {
     const mw = createPermissionsMiddleware({
