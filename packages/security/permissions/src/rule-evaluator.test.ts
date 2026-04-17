@@ -13,6 +13,7 @@ function makeRule(
   reason?: string,
   principal?: string,
   context?: Record<string, string>,
+  on_deny?: "hard" | "soft",
 ): CompiledRule {
   const compiledPrincipal =
     principal !== undefined && principal !== "*" ? compileGlob(principal) : undefined;
@@ -28,6 +29,7 @@ function makeRule(
     reason,
     principal,
     context,
+    ...(on_deny !== undefined ? { on_deny } : {}),
     compiled: compileGlob(pattern),
     compiledPrincipal,
     compiledContext,
@@ -229,7 +231,11 @@ describe("evaluateRules", () => {
 
   test("returns deny with reason for matching deny rule", () => {
     const rules = [makeRule("src/**", "write", "deny", "policy", "read-only")];
-    expect(evaluateRules(query, rules)).toEqual({ effect: "deny", reason: "read-only" });
+    expect(evaluateRules(query, rules)).toEqual({
+      effect: "deny",
+      reason: "read-only",
+      disposition: "hard",
+    });
   });
 
   test("returns ask with default reason when rule has no reason", () => {
@@ -244,7 +250,11 @@ describe("evaluateRules", () => {
       makeRule("src/**", "write", "deny", "policy", "first"),
       makeRule("src/**", "write", "allow", "user"),
     ];
-    expect(evaluateRules(query, rules)).toEqual({ effect: "deny", reason: "first" });
+    expect(evaluateRules(query, rules)).toEqual({
+      effect: "deny",
+      reason: "first",
+      disposition: "hard",
+    });
   });
 
   test("wildcard action matches any action", () => {
@@ -304,6 +314,7 @@ describe("evaluateRules", () => {
     expect(evaluateRules(traversalQuery, rules)).toEqual({
       effect: "deny",
       reason: "system files",
+      disposition: "hard",
     });
   });
 
@@ -333,7 +344,11 @@ describe("evaluateRules", () => {
       makeRule("src/**", "write", "deny", "policy", "restricted", "agent-1"),
       makeRule("src/**", "write", "allow", "user"),
     ];
-    expect(evaluateRules(query, rules)).toEqual({ effect: "deny", reason: "restricted" });
+    expect(evaluateRules(query, rules)).toEqual({
+      effect: "deny",
+      reason: "restricted",
+      disposition: "hard",
+    });
   });
 
   test("matches rule when context predicate matches", () => {
@@ -411,6 +426,92 @@ describe("evaluateRules", () => {
     expect(evaluateRules(crossZoneQuery, rules)).toEqual({
       effect: "deny",
       reason: "cross-zone",
+      disposition: "hard",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateRules disposition (#1650)
+// ---------------------------------------------------------------------------
+
+describe("evaluateRules disposition (#1650)", () => {
+  test("deny rule without on_deny → decision.disposition === 'hard'", () => {
+    const rules = [makeRule("/etc/**", "write", "deny")];
+    const d = evaluateRules(
+      { principal: "agent:main", action: "write", resource: "/etc/hosts" },
+      rules,
+    );
+    expect(d.effect).toBe("deny");
+    if (d.effect === "deny") expect(d.disposition).toBe("hard");
+  });
+
+  test("deny rule with on_deny: 'soft' → decision.disposition === 'soft'", () => {
+    const rules = [
+      makeRule(
+        "/tmp/scratch/**",
+        "write",
+        "deny",
+        "project",
+        undefined,
+        undefined,
+        undefined,
+        "soft",
+      ),
+    ];
+    const d = evaluateRules(
+      { principal: "agent:main", action: "write", resource: "/tmp/scratch/x" },
+      rules,
+    );
+    if (d.effect === "deny") expect(d.disposition).toBe("soft");
+  });
+
+  test("deny rule with on_deny: 'hard' → decision.disposition === 'hard' (explicit)", () => {
+    const rules = [
+      makeRule(
+        "/etc/**",
+        "write",
+        "deny",
+        "project",
+        undefined,
+        undefined,
+        undefined,
+        "hard",
+      ),
+    ];
+    const d = evaluateRules(
+      { principal: "agent:main", action: "write", resource: "/etc/hosts" },
+      rules,
+    );
+    if (d.effect === "deny") expect(d.disposition).toBe("hard");
+  });
+
+  test("rule at every source tier defaults disposition to 'hard' when on_deny omitted", () => {
+    for (const tier of ["policy", "project", "local", "user"] as const) {
+      const rules = [makeRule("*", "*", "deny", tier)];
+      const d = evaluateRules(
+        { principal: "agent:x", action: "write", resource: "x" },
+        rules,
+      );
+      if (d.effect === "deny") expect(d.disposition).toBe("hard");
+    }
+  });
+
+  test("traversal guard deny returns disposition: hard", () => {
+    const rules: CompiledRule[] = [];
+    const d = evaluateRules(
+      { principal: "agent:x", action: "write", resource: "../escape" },
+      rules,
+    );
+    if (d.effect === "deny") expect(d.disposition).toBe("hard");
+  });
+
+  test("namespace traversal guard deny returns disposition: hard", () => {
+    const rules: CompiledRule[] = [];
+    const d = evaluateRules(
+      { principal: "agent:x", action: "write", resource: "agent:foo/../bar" },
+      rules,
+    );
+    if (d.effect === "deny") expect(d.disposition).toBe("hard");
   });
 });
