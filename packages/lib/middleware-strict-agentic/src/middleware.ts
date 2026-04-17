@@ -153,11 +153,13 @@ export function createStrictAgenticMiddleware(
       // same outer request and is naturally fresh for the next request — a
       // stale count from an exhausted prior run cannot poison later work.
       const blocks = store.incrementBlocks(ctx.session.sessionId, ctx.session.runId);
-      // Trip on `>= maxFillerRetries` so the breaker fires BEFORE the engine
-      // exhausts its own stop-retry budget (DEFAULT_MAX_STOP_RETRIES = 3). If
-      // the middleware waited for `blocks > maxFillerRetries` the runner would
-      // stop consulting stop-gates before the breaker path could emit its signal.
-      if (blocks >= resolved.maxFillerRetries) {
+      // Trip on `blocks > maxFillerRetries`: a value of N means "block N
+      // times, release on attempt N+1." So maxFillerRetries=1 blocks once
+      // before releasing, maxFillerRetries=2 (default) blocks twice, etc.
+      // The default of 2 aligns with engine DEFAULT_MAX_STOP_RETRIES=3 so
+      // the release path (and its telemetry signal) fire within the engine's
+      // stop-gate budget.
+      if (blocks > resolved.maxFillerRetries) {
         // Circuit breaker tripped — fail open so the agent can stop, but emit a
         // structured signal so operators can distinguish breaker release from a
         // legitimate non-filler completion. reportDecision is the standard

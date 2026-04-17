@@ -11,7 +11,7 @@ describe("validateStrictAgenticConfig", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.enabled).toBe(true);
-    expect(result.value.maxFillerRetries).toBe(3);
+    expect(result.value.maxFillerRetries).toBe(2);
   });
 
   test("accepts full config", () => {

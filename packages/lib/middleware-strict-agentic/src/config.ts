@@ -29,10 +29,14 @@ export interface ResolvedStrictAgenticConfig {
 
 export const DEFAULT_STRICT_AGENTIC_CONFIG: {
   readonly enabled: true;
-  readonly maxFillerRetries: 3;
+  readonly maxFillerRetries: 2;
 } = {
   enabled: true,
-  maxFillerRetries: 3,
+  // Default 2 aligns with engine DEFAULT_MAX_STOP_RETRIES=3: two filler
+  // blocks happen within budget, the third stop-gate call releases with
+  // the breaker signal. A value of N means "block N times, release on
+  // attempt N+1."
+  maxFillerRetries: 2,
 } as const satisfies Pick<StrictAgenticConfig, "enabled" | "maxFillerRetries">;
 
 /** Completion keywords recognised by the default `isExplicitDone` predicate. */

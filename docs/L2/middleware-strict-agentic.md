@@ -20,7 +20,7 @@ const { middleware } = createStrictAgenticMiddleware({
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `enabled` | `boolean` | `true` | Master switch. When `false`, middleware is a no-op. |
-| `maxFillerRetries` | `number` (>= 1) | `3` | Consecutive filler blocks per run before circuit-breaker releases. `0` is rejected by validation — use `enabled: false` to disable the gate. |
+| `maxFillerRetries` | `number` (>= 1) | `2` | Consecutive filler blocks per run before circuit-breaker releases. A value of N means "block N times, release on attempt N+1." The default of 2 aligns with the engine's `DEFAULT_MAX_STOP_RETRIES=3` so the release signal fires within budget. `0` is rejected by validation — use `enabled: false` to disable. |
 | `feedbackMessage` | `string?` | see below | Override text injected when blocking. |
 | `isUserQuestion` | `(output: string) => boolean` | final sentence ends with `?` AND either starts with a user-directed marker (`Should I`, `Can you`, `Do you`, …) or contains `you` as a pronoun | Exempt turns that ask the user a direct question. Rhetorical/self-directed questions (`Run the migration now?`) do NOT satisfy the default. |
 | `isExplicitDone` | `(output: string) => boolean` | terminal `done`/`completed`/`finished`/`no further action` in the last 80 chars AND no negation (`not`, `n't`, `yet`, etc.) in that window | Exempt turns that explicitly declare completion. |
@@ -47,9 +47,9 @@ Blocking requires a positive filler match. Plain substantive answers like `"10"`
 - Increments on every filler block.
 - Resets on any non-filler turn.
 - **Resets at the start of every outer turn** (`onBeforeTurn`) so one exhausted request does not poison the next one in a long-lived session.
-- Releases (returns `continue`) once `consecutiveBlocks >= maxFillerRetries`.
+- Releases (returns `continue`) once `consecutiveBlocks > maxFillerRetries` — i.e., on the (N+1)th attempt when `maxFillerRetries = N`.
 
-The default `maxFillerRetries: 3` is chosen to match the engine's `DEFAULT_MAX_STOP_RETRIES` so the breaker path fires before the runner stops consulting stop-gates.
+The default `maxFillerRetries: 2` is chosen to match the engine's `DEFAULT_MAX_STOP_RETRIES=3`: two blocks happen within budget, the third stop-gate call releases with the breaker signal.
 
 When it releases, calls `ctx.reportDecision({ event: "strict-agentic:circuit-broken", sessionId, consecutiveBlocks, maxFillerRetries })` so operators can distinguish breaker-release from a legitimate non-filler completion in traces.
 
