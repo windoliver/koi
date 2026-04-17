@@ -777,3 +777,70 @@ describe("Mechanism A escalation prefilter excludes soft-conversion records (#16
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. onBeforeTurn clears per-turn soft-deny counter (#1650 Task 13)
+// ---------------------------------------------------------------------------
+
+describe("onBeforeTurn clears per-turn soft-deny counter (#1650 Task 13)", () => {
+  test("counter reaches cap in turn 0; same cacheKey in turn 1 soft-returns after onBeforeTurn", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 2,
+    });
+    const ctx0 = makeTurnContext({ turnIndex: 0, sessionId: "s-turn-clear" });
+
+    // Turn 0: 3 calls → 2 soft, 3rd over cap hard-throws.
+    await mw.wrapToolCall?.(ctx0, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctx0, makeToolRequest("bash"), noopToolHandler);
+    await expect(mw.wrapToolCall?.(ctx0, makeToolRequest("bash"), noopToolHandler)).rejects.toThrow(
+      /soft-deny retry cap/,
+    );
+
+    // New turn: fire onBeforeTurn with a turnIndex=1 context. Counter clears.
+    const ctx1 = makeTurnContext({ turnIndex: 1, sessionId: "s-turn-clear" });
+    await mw.onBeforeTurn?.(ctx1);
+
+    // Turn 1: same cacheKey soft-returns again (counter reset).
+    const result = await mw.wrapToolCall?.(ctx1, makeToolRequest("bash"), noopToolHandler);
+    expect((result?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+  });
+
+  test("onBeforeTurn is idempotent: calling twice doesn't break anything", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 1,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-idempotent" });
+    await mw.onBeforeTurn?.(ctx);
+    await mw.onBeforeTurn?.(ctx);
+    // Should still work normally.
+    const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    expect((result?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+  });
+
+  test("clearing counter does NOT clear SoftDenyLog entries (observability retained)", async () => {
+    const mw = createPermissionsMiddleware({ backend: softDenyBackend() });
+    const ctx = makeTurnContext({ sessionId: "s-observability" });
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    const before = (
+      mw as unknown as {
+        __getSoftDenyLogForTesting(sid: string): { getAll(): readonly unknown[] };
+      }
+    )
+      .__getSoftDenyLogForTesting(ctx.session.sessionId as string)
+      .getAll().length;
+    expect(before).toBe(1);
+
+    await mw.onBeforeTurn?.(makeTurnContext({ turnIndex: 1, sessionId: "s-observability" }));
+
+    const after = (
+      mw as unknown as {
+        __getSoftDenyLogForTesting(sid: string): { getAll(): readonly unknown[] };
+      }
+    )
+      .__getSoftDenyLogForTesting(ctx.session.sessionId as string)
+      .getAll().length;
+    expect(after).toBe(1); // onBeforeTurn clears ONLY the turn counter, not the log
+  });
+});

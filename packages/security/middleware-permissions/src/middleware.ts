@@ -1330,6 +1330,11 @@ export function createPermissionsMiddleware(
       // allow
       return next(request);
     },
+
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      // #1650: clear per-turn soft-deny counter at turn boundary.
+      getTurnSoftDenyCounter(ctx.session.sessionId as string).clear();
+    },
   };
 
   return Object.assign(middleware, {
