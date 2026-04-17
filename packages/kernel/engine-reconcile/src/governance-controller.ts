@@ -266,7 +266,12 @@ export function createGovernanceController(
         tokenUsage += event.count;
         // Prefer caller-computed cost (e.g., per-model CostCalculator).
         // Fall back to internal per-token pricing when costUsd is absent.
-        if (event.costUsd !== undefined) {
+        // Trust boundary: `costUsd` comes from an arbitrary L2 CostCalculator.
+        // Reject non-finite or negative values so a buggy calculator cannot
+        // poison `accumulatedCostUsd` and silently disable the spend cap
+        // (NaN comparisons always return false; negative values would offset
+        // later spend). Invalid inputs fall through to per-token fallback.
+        if (event.costUsd !== undefined && Number.isFinite(event.costUsd) && event.costUsd >= 0) {
           accumulatedCostUsd += event.costUsd;
         } else if (event.inputTokens !== undefined && event.outputTokens !== undefined) {
           accumulatedCostUsd +=

@@ -649,4 +649,58 @@ describe("issue checklist", () => {
     expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
     expect((threw as Error).cause).toBe(boom);
   });
+
+  test("wrapToolCall fails closed when tool_success record throws", async () => {
+    const boom = new Error("recorder down");
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (ev.kind === "tool_success") throw boom;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c1" as never, toolId: "t", input: {} } as never,
+        async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).cause).toBe(boom);
+  });
+
+  test("wrapToolCall fails closed when tool_error record throws", async () => {
+    const recordBoom = new Error("recorder down");
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (ev.kind === "tool_error") throw recordBoom;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c1" as never, toolId: "t", input: {} } as never,
+        async () => {
+          throw new Error("tool failed");
+        },
+      );
+    } catch (e) {
+      threw = e;
+    }
+    // Record failure takes precedence over tool error — governance signal
+    // loss is the higher-severity safety concern.
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).cause).toBe(recordBoom);
+  });
 });

@@ -204,10 +204,27 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     const snap = await controller.snapshot();
     alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
 
-    // Advisory overshoot signal: enforcement is at the NEXT call's pre-gate
-    // (fail-closed there). Throwing here would discard a valid model response,
-    // which is worse than a one-call overshoot. Callers wanting hard
-    // containment can terminate the session from onViolation.
+    // DESIGN NOTE — advisory post-call overshoot (intentional, not a bug):
+    //
+    // Enforcement semantics: setpoint limits are enforced at the NEXT pre-gate
+    // (fail-closed). The current call's response is returned even if it
+    // pushed the accumulator past the threshold — up to one call's worth of
+    // overshoot is admitted. We do NOT throw here.
+    //
+    // Why advisory here instead of hard-blocking:
+    // 1. The provider already consumed the tokens and billed the account,
+    //    so throwing away the response wastes real spend without recovering
+    //    the budget.
+    // 2. True hard containment requires either worst-case reservation before
+    //    dispatch (needs a `max_output_tokens` on ModelRequest we don't have)
+    //    or session poisoning (out of scope for a single-call middleware —
+    //    lives in the host wiring onViolation).
+    // 3. Callers needing strict caps: (a) size limits so one-call max cost
+    //    << remaining budget, or (b) terminate the session from onViolation.
+    //
+    // Consequence: trust `cost_usd` as a rolling-cap guardrail, not a
+    // penny-accurate hard ceiling. Covered by the "spend limit enforced via
+    // cost_usd setpoint" test.
     const postCheck = await controller.checkAll();
     if (!postCheck.ok) {
       onViolation?.(
@@ -342,26 +359,46 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     async wrapToolCall(ctx: TurnContext, request, next) {
       await gate(ctx, "tool_call", { toolId: request.toolId, input: request.input });
       // Record tool outcome so the controller's `error_rate` variable has
-      // samples to count against its threshold. Without this, a runtime
-      // wiring `error_rate` as a stop condition would never see any data
-      // and repeated failures would go unchecked.
+      // samples to count against its threshold.
+      //
+      // Fail closed on record failures: `error_rate` is a safety signal,
+      // and a degraded controller/recorder means subsequent checkAll() reads
+      // stale state. If we cannot trust the outcome log, we must stop
+      // admitting new tool calls. The outcome is still rethrown below so
+      // callers see the original tool result/error as well.
       const toolName = request.toolId;
+      let outcomeError: unknown;
+      let toolError: unknown;
+      let hasToolError = false;
+      let result: Awaited<ReturnType<typeof next>> | undefined;
       try {
-        const result = await next(request);
+        result = await next(request);
         try {
           await controller.record({ kind: "tool_success", toolName });
         } catch (e) {
-          console.warn("[koi:governance-core] tool_success record failed", { cause: e });
+          outcomeError = e;
         }
-        return result;
       } catch (err) {
+        hasToolError = true;
+        toolError = err;
         try {
           await controller.record({ kind: "tool_error", toolName });
         } catch (e) {
-          console.warn("[koi:governance-core] tool_error record failed", { cause: e });
+          outcomeError = e;
         }
-        throw err;
       }
+      if (outcomeError !== undefined) {
+        throw KoiRuntimeError.from("PERMISSION", "Governance tool outcome record failed", {
+          cause: outcomeError,
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId,
+            toolName,
+          },
+        });
+      }
+      if (hasToolError) throw toolError;
+      return result as Awaited<ReturnType<typeof next>>;
     },
   };
 }
