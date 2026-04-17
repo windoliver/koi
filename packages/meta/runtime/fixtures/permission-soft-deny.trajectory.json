@@ -27,7 +27,7 @@
     {
       "step_id": 0,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:14.707Z",
+      "timestamp": "2026-04-17T06:17:56.558Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connecting",
       "duration_ms": 0,
@@ -45,7 +45,7 @@
     {
       "step_id": 1,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:14.708Z",
+      "timestamp": "2026-04-17T06:17:56.559Z",
       "model_name": "mcp:test-mcp-server",
       "message": "MCP transport: connected",
       "duration_ms": 0,
@@ -62,21 +62,21 @@
     {
       "step_id": 2,
       "source": "agent",
-      "timestamp": "2026-04-17T04:49:14.716Z",
+      "timestamp": "2026-04-17T06:17:56.567Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Please write \"hello\" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me what happened.",
       "observation": {
         "results": [
           {
-            "content": "I will write \"hello\" to the file /tmp/koi-golden-soft/test.txt.\n"
+            "content": ""
           }
         ]
       },
       "metrics": {
         "prompt_tokens": 538,
-        "completion_tokens": 41
+        "completion_tokens": 18
       },
-      "duration_ms": 842,
+      "duration_ms": 969,
       "outcome": "success",
       "extra": {
         "totalMessages": 2,
@@ -108,9 +108,9 @@
     {
       "step_id": 3,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.565Z",
+      "timestamp": "2026-04-17T06:17:57.542Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 846.7952080000001,
+      "duration_ms": 973.1409160000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -127,7 +127,7 @@
     {
       "step_id": 4,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.567Z",
+      "timestamp": "2026-04-17T06:17:57.544Z",
       "model_name": "middleware:exfiltration-guard",
       "message": "fs_write({\"path\":\"/tmp/koi-golden-soft/test.txt\",\"content\":\"hello\"})",
       "observation": {
@@ -137,7 +137,7 @@
           }
         ]
       },
-      "duration_ms": 0.6882499999999254,
+      "duration_ms": 0.6653329999999187,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -162,9 +162,9 @@
     {
       "step_id": 5,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.568Z",
+      "timestamp": "2026-04-17T06:17:57.545Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 845.510959,
+      "duration_ms": 971.898458,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -181,7 +181,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776401355564,
+        "_original_timestamp": 1776406677541,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -190,7 +190,7 @@
     {
       "step_id": 6,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.569Z",
+      "timestamp": "2026-04-17T06:17:57.546Z",
       "model_name": "middleware:permissions",
       "message": "fs_write({\"path\":\"/tmp/koi-golden-soft/test.txt\",\"content\":\"hello\"})",
       "observation": {
@@ -200,7 +200,7 @@
           }
         ]
       },
-      "duration_ms": 0.3787920000002032,
+      "duration_ms": 0.3732079999999769,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -220,7 +220,7 @@
             "source": "policy"
           }
         ],
-        "_original_timestamp": 1776401355566,
+        "_original_timestamp": 1776406677543,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -229,9 +229,9 @@
     {
       "step_id": 7,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.570Z",
+      "timestamp": "2026-04-17T06:17:57.547Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 844.223375,
+      "duration_ms": 970.5606249999998,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -240,7 +240,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776401355563,
+        "_original_timestamp": 1776406677540,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -249,9 +249,9 @@
     {
       "step_id": 8,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.571Z",
+      "timestamp": "2026-04-17T06:17:57.548Z",
       "model_name": "middleware:goal",
-      "duration_ms": 844.119167,
+      "duration_ms": 970.4537499999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -275,7 +275,7 @@
             "goalBlock": "## Active Goals\n\n- [ ] Please write \"hello\" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me wha"
           }
         ],
-        "_original_timestamp": 1776401355562,
+        "_original_timestamp": 1776406677539,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -284,9 +284,9 @@
     {
       "step_id": 9,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.572Z",
+      "timestamp": "2026-04-17T06:17:57.549Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 843.8800410000001,
+      "duration_ms": 970.223083,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -302,7 +302,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776401355561,
+        "_original_timestamp": 1776406677538,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -311,9 +311,9 @@
     {
       "step_id": 10,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:15.573Z",
+      "timestamp": "2026-04-17T06:17:57.550Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 843.589042,
+      "duration_ms": 969.9534160000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -322,7 +322,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776401355560,
+        "_original_timestamp": 1776406677537,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -331,21 +331,21 @@
     {
       "step_id": 11,
       "source": "agent",
-      "timestamp": "2026-04-17T04:49:15.574Z",
+      "timestamp": "2026-04-17T06:17:57.551Z",
       "model_name": "google/gemini-2.0-flash-001",
       "message": "Permission denied for tool \"fs_write\". This tool is not available in the current scope.",
       "observation": {
         "results": [
           {
-            "content": "I attempted to write \"hello\" to the file /tmp/koi-golden-soft/test.txt, but the operation failed because I do not have permission to use the `fs_write` tool.\n"
+            "content": "The fs_write tool was called to write \"hello\" to the file /tmp/koi-golden-soft/test.txt. However, the tool returned \"Permission denied\". This indicates that I do not have the necessary permissions to execute this tool."
           }
         ]
       },
       "metrics": {
-        "prompt_tokens": 552,
-        "completion_tokens": 44
+        "prompt_tokens": 551,
+        "completion_tokens": 52
       },
-      "duration_ms": 792,
+      "duration_ms": 1018,
       "outcome": "success",
       "extra": {
         "totalMessages": 3,
@@ -372,15 +372,15 @@
         "responseModel": "google/gemini-2.0-flash-001",
         "promptPrefixFingerprint": "cb046198872ad89ff7515233252b9212eb93f4c285d54af052e6b894c9543d73",
         "turnIndex": 1,
-        "_original_timestamp": 1776401355569
+        "_original_timestamp": 1776406677546
       }
     },
     {
       "step_id": 12,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.367Z",
+      "timestamp": "2026-04-17T06:17:58.570Z",
       "model_name": "middleware:exfiltration-guard",
-      "duration_ms": 799.6612499999999,
+      "duration_ms": 1025.0993330000001,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -397,9 +397,9 @@
     {
       "step_id": 13,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.368Z",
+      "timestamp": "2026-04-17T06:17:58.571Z",
       "model_name": "middleware:permissions",
-      "duration_ms": 799.6411250000001,
+      "duration_ms": 1025.089083,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -416,7 +416,7 @@
             "filteredCount": 0
           }
         ],
-        "_original_timestamp": 1776401356366,
+        "_original_timestamp": 1776406678569,
         "__koi": {
           "identifier": "middleware:permissions"
         }
@@ -425,9 +425,9 @@
     {
       "step_id": 14,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.369Z",
+      "timestamp": "2026-04-17T06:17:58.572Z",
       "model_name": "middleware:skill-injector",
-      "duration_ms": 799.5331660000002,
+      "duration_ms": 1025.0004589999999,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -436,7 +436,7 @@
         "phase": "resolve",
         "priority": 300,
         "nextCalled": true,
-        "_original_timestamp": 1776401356365,
+        "_original_timestamp": 1776406678568,
         "__koi": {
           "identifier": "middleware:skill-injector"
         }
@@ -445,9 +445,9 @@
     {
       "step_id": 15,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.370Z",
+      "timestamp": "2026-04-17T06:17:58.573Z",
       "model_name": "middleware:goal",
-      "duration_ms": 799.50875,
+      "duration_ms": 1024.9907499999997,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -456,7 +456,7 @@
         "phase": "resolve",
         "priority": 340,
         "nextCalled": true,
-        "_original_timestamp": 1776401356364,
+        "_original_timestamp": 1776406678567,
         "__koi": {
           "identifier": "middleware:goal"
         }
@@ -465,9 +465,9 @@
     {
       "step_id": 16,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.371Z",
+      "timestamp": "2026-04-17T06:17:58.574Z",
       "model_name": "middleware:hooks",
-      "duration_ms": 799.4869169999997,
+      "duration_ms": 1024.9787090000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -483,7 +483,7 @@
             "aggregated": "pass"
           }
         ],
-        "_original_timestamp": 1776401356363,
+        "_original_timestamp": 1776406678566,
         "__koi": {
           "identifier": "middleware:hooks"
         }
@@ -492,9 +492,9 @@
     {
       "step_id": 17,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.372Z",
+      "timestamp": "2026-04-17T06:17:58.575Z",
       "model_name": "middleware:semantic-retry",
-      "duration_ms": 799.3537090000002,
+      "duration_ms": 1024.9134580000002,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -503,7 +503,7 @@
         "phase": "resolve",
         "priority": 420,
         "nextCalled": true,
-        "_original_timestamp": 1776401356362,
+        "_original_timestamp": 1776406678565,
         "__koi": {
           "identifier": "middleware:semantic-retry"
         }
@@ -512,7 +512,7 @@
     {
       "step_id": 18,
       "source": "system",
-      "timestamp": "2026-04-17T04:49:16.373Z",
+      "timestamp": "2026-04-17T06:17:58.576Z",
       "model_name": "middleware:hooks",
       "observation": {
         "results": [
@@ -521,7 +521,7 @@
           }
         ]
       },
-      "duration_ms": 0.05045800000016243,
+      "duration_ms": 0.049250000000029104,
       "outcome": "success",
       "extra": {
         "type": "middleware_span",
@@ -530,7 +530,7 @@
         "phase": "resolve",
         "priority": 400,
         "stopGateResult": "continue",
-        "_original_timestamp": 1776401356369,
+        "_original_timestamp": 1776406678572,
         "__koi": {
           "identifier": "middleware:hooks"
         }
