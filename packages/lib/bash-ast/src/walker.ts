@@ -177,11 +177,12 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "command") {
       if (command !== null) {
-        return tooComplex(
-          "multiple commands in redirected_statement",
-          child.type,
-          "unsupported-syntax",
-        );
+        // Walker assertion: `redirected_statement` wraps exactly one
+        // `command` child. Multiple command children has no known
+        // reachability under the vendored grammar for valid bash input.
+        // Route to `malformed` so the fail-closed branch in `dispose()`
+        // hard-denies rather than letting it fall through to askable.
+        return tooComplex("multiple commands in redirected_statement", child.type, "malformed");
       }
       command = child;
       continue;
