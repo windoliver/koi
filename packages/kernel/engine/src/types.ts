@@ -26,6 +26,7 @@ import type {
   KoiMiddleware,
   ProcessAccounter,
   ProcessId,
+  RunId,
   SessionId,
   SpawnInheritanceConfig,
   SpawnLedger,
@@ -218,6 +219,12 @@ export interface KoiRuntime {
   readonly agent: Agent;
   /** The session ID assigned to this runtime instance. */
   readonly sessionId: string;
+  /** RunId of the active run, or `undefined` between runs. Callers can
+   *  cache this at run-start and pass it to `sessionRegistry.interrupt(
+   *  sid, reason, runId)` to ensure cross-generation safety — a late
+   *  cancel for a finished run will be a no-op rather than hitting a
+   *  subsequent run on the same sessionId. */
+  readonly currentRunId: RunId | undefined;
   /** Component key conflicts detected during assembly. Empty when no keys collide. */
   readonly conflicts: readonly AssemblyConflict[];
   /** Run the agent with the given input. Returns an async iterable of engine events. */

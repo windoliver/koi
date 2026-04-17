@@ -9,8 +9,13 @@
  * Single-process, in-memory. Cross-process coordination is out of scope.
  */
 
-import type { SessionId } from "@koi/core";
+import type { RunId, SessionId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
+
+export interface ActiveSession {
+  readonly sessionId: SessionId;
+  readonly runId: RunId;
+}
 
 export interface SessionRegistry {
   /**
@@ -25,6 +30,11 @@ export interface SessionRegistry {
    * the collision — e.g. by unregistering the prior entry or routing the
    * interrupt differently.
    *
+   * `runId` identifies this specific run invocation so `interrupt()` can
+   * target it precisely and avoid cross-generation cancel hits (a late
+   * cancel for a finished run A will not abort a subsequent run B on the
+   * same sessionId when `expectedRunId` is supplied to `interrupt()`).
+   *
    * `runSignal` should be the composite signal the run actually observes
    * (typically `AbortSignal.any([input.signal, controller.signal])`).
    * `interrupt()` and `isInterrupted()` read abort state from this signal,
@@ -32,15 +42,20 @@ export interface SessionRegistry {
    */
   readonly register: (
     sessionId: SessionId,
+    runId: RunId,
     controller: AbortController,
     runSignal: AbortSignal,
   ) => () => void;
-  readonly interrupt: (sessionId: SessionId, reason?: string) => boolean;
+  /** When `expectedRunId` is supplied, the registry requires the active
+   *  entry's runId to match before aborting. Returns `false` on mismatch
+   *  (cross-generation cancel) OR unknown session OR already-aborted. */
+  readonly interrupt: (sessionId: SessionId, reason?: string, expectedRunId?: RunId) => boolean;
   readonly isInterrupted: (sessionId: SessionId) => boolean;
-  readonly listActive: () => readonly SessionId[];
+  readonly listActive: () => readonly ActiveSession[];
 }
 
 type RegistryEntry = {
+  readonly runId: RunId;
   readonly controller: AbortController;
   readonly runSignal: AbortSignal;
 };
@@ -50,6 +65,7 @@ export function createSessionRegistry(): SessionRegistry {
 
   function register(
     sessionId: SessionId,
+    runId: RunId,
     controller: AbortController,
     runSignal: AbortSignal,
   ): () => void {
@@ -66,7 +82,7 @@ export function createSessionRegistry(): SessionRegistry {
         { context: { sessionId } },
       );
     }
-    const entry: RegistryEntry = { controller, runSignal };
+    const entry: RegistryEntry = { runId, controller, runSignal };
     entries.set(sessionId, entry);
     // let justified: mutable flag to make the returned unregister idempotent.
     let cleared = false;
@@ -83,9 +99,10 @@ export function createSessionRegistry(): SessionRegistry {
     };
   }
 
-  function interrupt(sessionId: SessionId, reason?: string): boolean {
+  function interrupt(sessionId: SessionId, reason?: string, expectedRunId?: RunId): boolean {
     const entry = entries.get(sessionId);
     if (entry === undefined) return false;
+    if (expectedRunId !== undefined && entry.runId !== expectedRunId) return false;
     if (entry.runSignal.aborted) return false;
     entry.controller.abort(reason);
     return true;
@@ -97,8 +114,11 @@ export function createSessionRegistry(): SessionRegistry {
     return entry.runSignal.aborted;
   }
 
-  function listActive(): readonly SessionId[] {
-    return [...entries.keys()];
+  function listActive(): readonly ActiveSession[] {
+    return Array.from(entries.entries()).map(([sid, entry]) => ({
+      sessionId: sid,
+      runId: entry.runId,
+    }));
   }
 
   return { register, interrupt, isInterrupted, listActive };

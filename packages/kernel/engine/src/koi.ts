@@ -342,6 +342,11 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   // so runtime.isInterrupted() reflects external aborts too. Set inside try
   // alongside activeController, cleared in finally.
   let activeRunSignal: AbortSignal | undefined;
+  // #1682 + #1742 round 10: tracks the RunId of the currently active run so
+  // runtime.currentRunId exposes it for callers caching the id before passing
+  // it to sessionRegistry.interrupt(..., expectedRunId) for cross-generation
+  // safety. Undefined when no run is active.
+  let currentRunIdRef: RunId | undefined;
   // #1682: sweeper for the state published synchronously in run() so
   // cycleSession/dispose/stale-epoch paths can clean up pre-iteration
   // state without waiting on a generator finally that may never fire
@@ -427,6 +432,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     runSignal: AbortSignal,
     onAbort: () => void,
     unregisterFromRegistry: (() => void) | undefined,
+    outerRunId: RunId,
   ): AsyncGenerator<EngineEvent> {
     // #1742 round 10: refuse to attach to a rotated session. If
     // cycleSession() bumped sessionEpoch between run() and the first
@@ -553,7 +559,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // let justified: pending engine events emitted by terminal wrappers (e.g., discovery:miss)
     const pendingEngineEvents: EngineEvent[] = [];
 
-    const rid: RunId = runId(crypto.randomUUID());
+    const rid: RunId = outerRunId;
     const sessionCtx: SessionContext = {
       agentId: pid.id,
       sessionId: factorySessionId,
@@ -1527,6 +1533,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       unregisterFromRegistry?.();
       activeController = undefined;
       activeRunSignal = undefined;
+      currentRunIdRef = undefined;
 
       // #1742: signal that this run has fully unwound so a queued
       // cycleSession() / dispose() can safely proceed.
@@ -1550,6 +1557,14 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     // ID was immutable; now it must be live.
     get sessionId(): string {
       return factorySessionId as string;
+    },
+    /** #1682 + #1742 round 10: RunId of the active run, or undefined between
+     *  runs. Callers can cache this at run-start and pass it to
+     *  sessionRegistry.interrupt(sid, reason, runId) to ensure
+     *  cross-generation safety — a late cancel for a finished run will be a
+     *  no-op rather than hitting a subsequent run on the same sessionId. */
+    get currentRunId(): RunId | undefined {
+      return currentRunIdRef;
     },
     conflicts,
 
@@ -1604,6 +1619,13 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // consumer issues its first .next(). A host that starts a run in
       // the background and immediately issues a cancel must reach the
       // registry/runtime, not fall through to false.
+      //
+      // Generate a per-run identity BEFORE creating the AbortController so
+      // currentRunIdRef is set as early as possible. Callers can cache this
+      // at run-start and pass it to sessionRegistry.interrupt(..., runId)
+      // to guard against cross-generation cancel hits.
+      const currentRid: RunId = runId(crypto.randomUUID());
+      currentRunIdRef = currentRid;
       const abortController = new AbortController();
       const runSignal =
         input.signal !== undefined
@@ -1654,6 +1676,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       try {
         unregisterFromRegistry = options.sessionRegistry?.register(
           registeredSessionId,
+          currentRid,
           abortController,
           runSignal,
         );
@@ -1677,9 +1700,19 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         unregisterFromRegistry?.();
         activeController = undefined;
         activeRunSignal = undefined;
+        currentRunIdRef = undefined;
       };
       running = true;
       runningEpoch = sessionEpoch;
+
+      // #1682 + #1742 round 10: snapshot the epoch for this iterable BEFORE
+      // anything (most importantly the already-aborted onAbort fire) can
+      // mutate sessionEpoch. A later consumer of the iterable compares
+      // its captured runEpoch against the live sessionEpoch; capturing
+      // AFTER onAbort's bump would silently let the stale iterable pass
+      // the epoch check.
+      const runEpoch = sessionEpoch;
+
       // #1682: AbortSignal.addEventListener does NOT fire for an
       // already-aborted signal. A caller who passes an already-aborted
       // input.signal would otherwise never get self-cleanup. Fire
@@ -1698,13 +1731,6 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       // promise behind, so the next cycleSession() / dispose() spent the
       // full settle timeout waiting for a run that never started — and
       // falsely poisoned the runtime.
-      //
-      // #1742 round 10: snapshot the current session epoch. The generator
-      // validates this on its first iteration so an iterable that crosses
-      // a `cycleSession()` boundary is rejected instead of attaching to
-      // the new session and running pre-clear input against freshly
-      // cleared state.
-      const runEpoch = sessionEpoch;
       return {
         [Symbol.asyncIterator]: () => {
           // #1742 loop-3 round 1: capture the generator so cycleSession()
@@ -1717,6 +1743,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             runSignal,
             onAbort,
             unregisterFromRegistry,
+            currentRid,
           );
           currentGenerator = gen;
           return gen;
