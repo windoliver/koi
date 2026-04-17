@@ -123,6 +123,10 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         timestamp: Date.now(),
       };
       onViolation?.(synth, synthReq);
+      // Emit compliance for setpoint denies so operators can audit
+      // quota/runaway incidents. Policy denies below already do this —
+      // asymmetry here would leave budget trips invisible in audit logs.
+      emitCompliance(synthReq, kind, synth);
       throw KoiRuntimeError.from("RATE_LIMIT", `Governance setpoint exceeded: ${check.variable}`, {
         retryable: check.retryable,
         context: {
@@ -185,6 +189,37 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     const costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
     await recordTokenEvent(ctx, response.model, usage.inputTokens, usage.outputTokens, costUsd);
     onUsage?.({ model: response.model, usage, costUsd });
+  }
+
+  /**
+   * Non-authoritative wrapper: accounting failures after a successful model
+   * call must not discard the response. The provider already consumed tokens
+   * and billed the account; surfacing the record error would lose real work
+   * and potentially trigger double-billing on retry. Fire onViolation so the
+   * host can poison future admission, warn-log, and return.
+   */
+  function recordModelUsageSoft(ctx: TurnContext, response: ModelResponse, model: string): void {
+    recordModelUsage(ctx, response).catch((cause) => {
+      console.warn("[koi:governance-core] model accounting failed post-call", { cause, model });
+      onViolation?.(
+        {
+          ok: false,
+          violations: [
+            {
+              rule: "accounting.degraded",
+              severity: "critical",
+              message: "Model accounting failed — future enforcement state is stale",
+            },
+          ],
+        },
+        {
+          kind: "model_call",
+          agentId: toAgentId(ctx.session.agentId),
+          payload: { model, accountingDegraded: true },
+          timestamp: Date.now(),
+        },
+      );
+    });
   }
 
   async function recordTokenEvent(
@@ -260,16 +295,27 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
-      // Record a turn event so controllers tracking `turn_count` advance.
-      // The middleware is the stable boundary where "a turn begins" is
-      // observable; engine-side emission exists on the roadmap but is not
-      // wired yet, so recording here keeps turn-count enforcement functional
-      // under the runtime's default wiring.
+      // Observability-only: snapshot and alert at turn start. Turn recording
+      // moved to `onAfterTurn` to avoid an off-by-one — the controller trips
+      // when `turnCount >= maxTurns`, so recording before any gated call
+      // would block the Nth turn at its first model/tool call instead of
+      // after N completed turns (e.g., `maxTurns:1` would deny turn 1).
+      try {
+        const snap = await controller.snapshot();
+        alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
+      } catch (e) {
+        console.warn("[koi:governance-core] snapshot failed in onBeforeTurn", { cause: e });
+      }
+    },
+
+    async onAfterTurn(ctx: TurnContext): Promise<void> {
+      // Record the turn after it completes so `turnCount` represents
+      // consumed turns. Next turn's pre-gate checks `turnCount >= maxTurns`
+      // and denies once the budget is spent.
       //
-      // Fail closed: if the controller cannot accept the turn event, we
-      // cannot trust subsequent `checkAll()` reads of `turn_count`, so the
-      // turn must not proceed. Silently swallowing would let a degraded
-      // controller bypass turn-count containment.
+      // Fail closed: if we cannot record, subsequent pre-gate reads of
+      // `turn_count` are stale and admission control is bypassed. Throw so
+      // the host sees the degradation.
       try {
         await controller.record({ kind: "turn" });
       } catch (e) {
@@ -281,13 +327,6 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
           },
         });
       }
-      try {
-        const snap = await controller.snapshot();
-        alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
-      } catch (e) {
-        // Snapshot/alert is observability-only — safe to warn and continue.
-        console.warn("[koi:governance-core] snapshot failed in onBeforeTurn", { cause: e });
-      }
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
@@ -297,7 +336,10 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     async wrapModelCall(ctx: TurnContext, request: ModelRequest, next) {
       await gate(ctx, "model_call", { model: request.model ?? "unknown" });
       const response = await next(request);
-      await recordModelUsage(ctx, response);
+      // Non-authoritative: the provider already returned a valid response
+      // and consumed tokens. Accounting failures surface via onViolation,
+      // not by discarding the caller's completed work.
+      recordModelUsageSoft(ctx, response, request.model ?? "unknown");
       return response;
     },
 
@@ -308,21 +350,52 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // - `error` chunks may carry authoritative totals (override delta sum)
       // - `done` carries the authoritative ModelResponse.usage (wins over both)
       //
-      // Terminal accounting runs BEFORE yielding the terminal chunk. This
-      // guarantees recording happens on the normal control flow path, where
-      // thrown errors propagate to the caller. Deferring to `finally` would
-      // route errors through AsyncGenerator cleanup, where some consumers
-      // (e.g., iterator.return() during abort) can swallow exceptions.
-      //
-      // The `finally` fallback only fires when no terminal chunk arrived —
-      // aborted iterations, provider-side throws, etc. — so partial usage
-      // is still charged for runtime containment.
+      // Terminal recording is non-authoritative: the provider already
+      // consumed tokens and emitted the terminal chunk. Accounting failures
+      // must not discard that chunk — we fire onViolation for the host to
+      // poison the session and warn-log, but always deliver the chunk.
       let accumulatedInputTokens = 0;
       let accumulatedOutputTokens = 0;
       let errorUsageInputTokens: number | undefined;
       let errorUsageOutputTokens: number | undefined;
       let terminalRecorded = false;
       const model = request.model ?? "unknown";
+      const recordDeltaSoft = (inputTokens: number, outputTokens: number): void => {
+        if (inputTokens <= 0 && outputTokens <= 0) return;
+        const costUsd = cost.calculate(model, inputTokens, outputTokens);
+        recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd).catch((cause) => {
+          console.warn("[koi:governance-core] stream accounting failed", { cause, model });
+          onViolation?.(
+            {
+              ok: false,
+              violations: [
+                {
+                  rule: "accounting.degraded",
+                  severity: "critical",
+                  message: "Stream accounting failed — future enforcement state is stale",
+                },
+              ],
+            },
+            {
+              kind: "model_call",
+              agentId: toAgentId(ctx.session.agentId),
+              payload: { model, accountingDegraded: true },
+              timestamp: Date.now(),
+            },
+          );
+        });
+        onUsage?.({
+          model,
+          usage: {
+            inputTokens,
+            outputTokens,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+          },
+          costUsd,
+        });
+      };
       try {
         for await (const chunk of next(request)) {
           if (chunk.kind === "usage") {
@@ -334,29 +407,14 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
               errorUsageInputTokens = chunk.usage.inputTokens;
               errorUsageOutputTokens = chunk.usage.outputTokens;
             }
-            // Record pre-yield: accounting failures surface to the caller
-            // instead of being lost during AsyncGenerator cleanup.
-            const inputTokens = errorUsageInputTokens ?? accumulatedInputTokens;
-            const outputTokens = errorUsageOutputTokens ?? accumulatedOutputTokens;
-            if (inputTokens > 0 || outputTokens > 0) {
-              const costUsd = cost.calculate(model, inputTokens, outputTokens);
-              await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);
-              onUsage?.({
-                model,
-                usage: {
-                  inputTokens,
-                  outputTokens,
-                  cacheReadTokens: 0,
-                  cacheWriteTokens: 0,
-                  reasoningTokens: 0,
-                },
-                costUsd,
-              });
-            }
+            recordDeltaSoft(
+              errorUsageInputTokens ?? accumulatedInputTokens,
+              errorUsageOutputTokens ?? accumulatedOutputTokens,
+            );
             terminalRecorded = true;
             yield chunk;
           } else if (chunk.kind === "done") {
-            await recordModelUsage(ctx, chunk.response);
+            recordModelUsageSoft(ctx, chunk.response, model);
             terminalRecorded = true;
             yield chunk;
           } else {
@@ -368,23 +426,10 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         // iteration, mid-stream throw). Charges accumulated deltas so
         // containment still works.
         if (!terminalRecorded) {
-          const inputTokens = errorUsageInputTokens ?? accumulatedInputTokens;
-          const outputTokens = errorUsageOutputTokens ?? accumulatedOutputTokens;
-          if (inputTokens > 0 || outputTokens > 0) {
-            const costUsd = cost.calculate(model, inputTokens, outputTokens);
-            await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);
-            onUsage?.({
-              model,
-              usage: {
-                inputTokens,
-                outputTokens,
-                cacheReadTokens: 0,
-                cacheWriteTokens: 0,
-                reasoningTokens: 0,
-              },
-              costUsd,
-            });
-          }
+          recordDeltaSoft(
+            errorUsageInputTokens ?? accumulatedInputTokens,
+            errorUsageOutputTokens ?? accumulatedOutputTokens,
+          );
         }
       }
     },
@@ -394,44 +439,51 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // Record tool outcome so the controller's `error_rate` variable has
       // samples to count against its threshold.
       //
-      // Fail closed on record failures: `error_rate` is a safety signal,
-      // and a degraded controller/recorder means subsequent checkAll() reads
-      // stale state. If we cannot trust the outcome log, we must stop
-      // admitting new tool calls. The outcome is still rethrown below so
-      // callers see the original tool result/error as well.
+      // Outcome-record failures do NOT reclassify the tool call. The side
+      // effect has already happened — surfacing PERMISSION here would lie
+      // to the caller about whether the action executed and invite duplicate
+      // deletes/writes on retry. Instead, fire onViolation so the host can
+      // poison the session (block future calls until accounting recovers)
+      // and warn-log for observability. The real tool result/error is always
+      // returned.
       const toolName = request.toolId;
-      let outcomeError: unknown;
-      let toolError: unknown;
-      let hasToolError = false;
-      let result: Awaited<ReturnType<typeof next>> | undefined;
+      const fireRecordFailure = (cause: unknown): void => {
+        console.warn("[koi:governance-core] tool outcome record failed", { cause, toolName });
+        onViolation?.(
+          {
+            ok: false,
+            violations: [
+              {
+                rule: "accounting.degraded",
+                severity: "critical",
+                message: "Tool outcome recording failed — future enforcement state is stale",
+              },
+            ],
+          },
+          {
+            kind: "tool_call",
+            agentId: toAgentId(ctx.session.agentId),
+            payload: { toolId: toolName, accountingDegraded: true },
+            timestamp: Date.now(),
+          },
+        );
+      };
       try {
-        result = await next(request);
+        const result = await next(request);
         try {
           await controller.record({ kind: "tool_success", toolName });
         } catch (e) {
-          outcomeError = e;
+          fireRecordFailure(e);
         }
+        return result;
       } catch (err) {
-        hasToolError = true;
-        toolError = err;
         try {
           await controller.record({ kind: "tool_error", toolName });
         } catch (e) {
-          outcomeError = e;
+          fireRecordFailure(e);
         }
+        throw err;
       }
-      if (outcomeError !== undefined) {
-        throw KoiRuntimeError.from("PERMISSION", "Governance tool outcome record failed", {
-          cause: outcomeError,
-          context: {
-            agentId: ctx.session.agentId,
-            sessionId: ctx.session.sessionId,
-            toolName,
-          },
-        });
-      }
-      if (hasToolError) throw toolError;
-      return result as Awaited<ReturnType<typeof next>>;
     },
   };
 }

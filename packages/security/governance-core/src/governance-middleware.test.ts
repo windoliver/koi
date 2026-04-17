@@ -152,6 +152,8 @@ describe("wrapModelCall — gate + record", () => {
     cfg.onUsage = onUsage;
     const mw = createGovernanceMiddleware(cfg);
     await mw.wrapModelCall?.(ctx(), req(), async () => response(100, 50));
+    // Accounting is fire-and-forget post-call — let the microtask drain.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     expect(onUsage).toHaveBeenCalledTimes(1);
   });
 
@@ -413,6 +415,7 @@ describe("issue checklist", () => {
     // Call 1: records 0.5 + 0.5 = 1.0 (cumulative = threshold). Post-call
     // advisory check passes (1.0 NOT > 1), no onViolation, call returns.
     await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
+    await new Promise((resolve) => setTimeout(resolve, 5)); // drain fire-and-forget
     expect(onViolation).toHaveBeenCalledTimes(0);
 
     // Call 2: pre-gate passes (1.0 NOT > 1). Records another 1.0 → cumulative
@@ -420,6 +423,7 @@ describe("issue checklist", () => {
     // returned — throwing here would discard valid work). Next call's
     // pre-gate is where enforcement lives.
     await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
+    await new Promise((resolve) => setTimeout(resolve, 5));
     expect(onViolation).toHaveBeenCalledTimes(1);
 
     // Call 3: pre-gate sees cumulative 2.0 > 1 → RATE_LIMIT (fail-closed at
@@ -629,7 +633,10 @@ describe("issue checklist", () => {
     expect(tokenEvent?.outputTokens).toBe(50);
   });
 
-  test("onBeforeTurn fails closed when controller.record throws", async () => {
+  test("onAfterTurn fails closed when controller.record throws", async () => {
+    // Turn recording moved from onBeforeTurn to onAfterTurn to fix an
+    // off-by-one (`turnCount >= maxTurns` would trip on turn 1 for
+    // maxTurns:1 if recorded pre-gate). Record-failure must still fail-closed.
     const boom = new Error("controller degraded");
     const cfg = baseCfg({
       controller: {
@@ -642,7 +649,7 @@ describe("issue checklist", () => {
     const mw = createGovernanceMiddleware(cfg);
     let threw: unknown;
     try {
-      await mw.onBeforeTurn?.(ctx());
+      await mw.onAfterTurn?.(ctx());
     } catch (e) {
       threw = e;
     }
@@ -650,43 +657,65 @@ describe("issue checklist", () => {
     expect((threw as Error).cause).toBe(boom);
   });
 
-  test("wrapToolCall fails closed when tool_success record throws", async () => {
-    const boom = new Error("recorder down");
+  test("onBeforeTurn does NOT record turn event (prevents off-by-one)", async () => {
+    // Recording a turn before gating would flip `turnCount >= maxTurns`
+    // early. maxTurns:1 should allow exactly one completed turn, not zero.
+    const recorded: unknown[] = [];
     const cfg = baseCfg({
       controller: {
         ...baseCfg().controller,
         record: (ev) => {
-          if (ev.kind === "tool_success") throw boom;
+          recorded.push(ev);
         },
       },
     });
     const mw = createGovernanceMiddleware(cfg);
-    let threw: unknown;
-    try {
-      await mw.wrapToolCall?.(
-        ctx(),
-        { callId: "c1" as never, toolId: "t", input: {} } as never,
-        async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
-      );
-    } catch (e) {
-      threw = e;
-    }
-    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
-    expect((threw as Error).cause).toBe(boom);
+    await mw.onBeforeTurn?.(ctx());
+    expect(recorded.filter((e) => (e as { kind: string }).kind === "turn")).toHaveLength(0);
+    await mw.onAfterTurn?.(ctx());
+    expect(recorded.filter((e) => (e as { kind: string }).kind === "turn")).toHaveLength(1);
   });
 
-  test("wrapModelStream surfaces record errors on done chunk (not swallowed by finally)", async () => {
-    const boom = new Error("recorder down");
-    let recordCalls = 0;
+  test("wrapToolCall returns real result when tool_success record throws (fires onViolation)", async () => {
+    // Side effect already happened — returning PERMISSION would lie about
+    // what executed and invite duplicate writes on retry. Degradation is
+    // surfaced via onViolation so the host can poison future calls.
     const cfg = baseCfg({
       controller: {
         ...baseCfg().controller,
         record: (ev) => {
-          recordCalls += 1;
-          if (ev.kind === "token_usage") throw boom;
+          if (ev.kind === "tool_success") throw new Error("recorder down");
         },
       },
     });
+    const onViolation = mock(() => {});
+    cfg.onViolation = onViolation;
+    const mw = createGovernanceMiddleware(cfg);
+    const expected = { callId: "c1", toolId: "t", result: "ok" };
+    const got = await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c1" as never, toolId: "t", input: {} } as never,
+      async () => expected as never,
+    );
+    expect(got).toBe(expected as never);
+    expect(onViolation).toHaveBeenCalledTimes(1);
+  });
+
+  test("wrapModelStream does NOT discard done chunk when accounting fails", async () => {
+    // Completed provider responses are authoritative: accounting failures
+    // fire onViolation + warn but must not lose the terminal chunk. The
+    // provider has already consumed tokens; dropping the chunk wastes real
+    // spend and can cause double-billing on retry.
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (ev.kind === "token_usage") throw new Error("recorder down");
+        },
+      },
+    });
+    const onViolation = mock(() => {});
+    cfg.onViolation = onViolation;
     const mw = createGovernanceMiddleware(cfg);
     async function* source() {
       yield {
@@ -694,30 +723,25 @@ describe("issue checklist", () => {
         response: { content: "hi", model: "m", usage: { inputTokens: 10, outputTokens: 5 } },
       };
     }
-    let threw: unknown;
-    try {
-      for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
-        /* drain */
-      }
-    } catch (e) {
-      threw = e;
-    }
-    // Recording must fail-fast on the terminal chunk, surfacing the error
-    // to the caller rather than disappearing inside AsyncGenerator cleanup.
-    expect(threw).toBe(boom);
-    expect(recordCalls).toBeGreaterThan(0);
+    const out: unknown[] = [];
+    for await (const c of mw.wrapModelStream?.(ctx(), req(), source) ?? []) out.push(c);
+    expect(out).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
-  test("wrapToolCall fails closed when tool_error record throws", async () => {
-    const recordBoom = new Error("recorder down");
+  test("wrapToolCall rethrows real tool error when tool_error record throws", async () => {
+    const toolErr = new Error("tool failed");
     const cfg = baseCfg({
       controller: {
         ...baseCfg().controller,
         record: (ev) => {
-          if (ev.kind === "tool_error") throw recordBoom;
+          if (ev.kind === "tool_error") throw new Error("recorder down");
         },
       },
     });
+    const onViolation = mock(() => {});
+    cfg.onViolation = onViolation;
     const mw = createGovernanceMiddleware(cfg);
     let threw: unknown;
     try {
@@ -725,15 +749,46 @@ describe("issue checklist", () => {
         ctx(),
         { callId: "c1" as never, toolId: "t", input: {} } as never,
         async () => {
-          throw new Error("tool failed");
+          throw toolErr;
         },
       );
     } catch (e) {
       threw = e;
     }
-    // Record failure takes precedence over tool error — governance signal
-    // loss is the higher-severity safety concern.
-    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
-    expect((threw as Error).cause).toBe(recordBoom);
+    // Caller sees the ORIGINAL tool failure — governance degradation is
+    // signalled via onViolation, not by masking the real error.
+    expect(threw).toBe(toolErr);
+    expect(onViolation).toHaveBeenCalledTimes(1);
+  });
+
+  test("setpoint denies emit compliance records", async () => {
+    const recordCompliance = mock((r: ComplianceRecord) => r);
+    const cfg = baseCfg({
+      backend: {
+        evaluator: { evaluate: () => ({ ok: true }) },
+        compliance: { recordCompliance },
+      },
+      controller: {
+        ...baseCfg().controller,
+        checkAll: () => ({
+          ok: false,
+          variable: "cost_usd",
+          reason: "over $1",
+          retryable: false,
+        }),
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch {
+      /* expected */
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(recordCompliance).toHaveBeenCalledTimes(1);
+    // Redaction: model_call payload contains model; compliance should
+    // receive the synthesized denial with variable identifier.
+    const arg = recordCompliance.mock.calls[0]?.[0];
+    expect(arg?.verdict.ok).toBe(false);
   });
 });
