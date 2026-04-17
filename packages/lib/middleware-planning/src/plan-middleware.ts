@@ -131,11 +131,19 @@ function renderPlanState(plan: readonly PlanItem[]): InboundMessage {
   };
 }
 
-function enrichRequest(request: ModelRequest, currentPlan: readonly PlanItem[]): ModelRequest {
-  const messages: readonly InboundMessage[] =
-    currentPlan.length === 0
-      ? [PLAN_SYSTEM_MESSAGE, ...request.messages]
-      : [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages];
+function enrichRequest(
+  request: ModelRequest,
+  currentPlan: readonly PlanItem[],
+  injectPlanState: boolean,
+): ModelRequest {
+  // When injectPlanState is off the host is responsible for surfacing
+  // plan state through its own channel; the middleware still injects
+  // the trusted write_plan system prompt (authored in-package, not
+  // by the model) so the model knows the tool exists.
+  const shouldReplay = injectPlanState && currentPlan.length > 0;
+  const messages: readonly InboundMessage[] = shouldReplay
+    ? [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages]
+    : [PLAN_SYSTEM_MESSAGE, ...request.messages];
   // Dedupe: when the plan tool provider is wired (required by the
   // bundle), the engine populates request.tools from attached providers
   // before middleware runs — so write_plan is already present. Appending
@@ -226,6 +234,16 @@ function errorResponse(message: string): ToolResponse {
   };
 }
 
+function stillCurrent(
+  sessions: Map<SessionId, PlanSessionState>,
+  sessionId: SessionId,
+  acceptedEpoch: number,
+): PlanSessionState | undefined {
+  const state = sessions.get(sessionId);
+  if (state === undefined || state.epoch !== acceptedEpoch) return undefined;
+  return state;
+}
+
 async function handleWritePlan(
   sessions: Map<SessionId, PlanSessionState>,
   sessionId: SessionId,
@@ -304,12 +322,24 @@ async function handleWritePlan(
       return errorResponse("plan already updated by a newer turn; write rejected as stale");
     }
 
+    // Pre-hook epoch check: if the session was torn down and recreated
+    // while we were queued, do not even run the persistence hook. The
+    // old epoch's backing store is stale; running the hook now would
+    // let a post-timeout write corrupt the new session's durable state.
+    if (stillCurrent(sessions, sessionId, acceptedEpoch) === undefined) {
+      return errorResponse("session was replaced before write_plan could commit");
+    }
+
     // Run the persistence hook BEFORE exposing `parsed` through session
     // state. If it throws/rejects, no other turn has seen the uncommitted
     // plan, so there is nothing to roll back.
     if (onPlanUpdate !== undefined) {
       try {
-        await onPlanUpdate(parsed);
+        await onPlanUpdate(parsed, {
+          sessionId: sessionId as unknown as string,
+          epoch: acceptedEpoch,
+          turnIndex,
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResponse(`plan update hook failed: ${message}`);
@@ -373,6 +403,7 @@ function buildMiddleware(
   sessions: Map<SessionId, PlanSessionState>,
   onPlanUpdate: PlanConfig["onPlanUpdate"],
   priority: number,
+  injectPlanState: boolean,
 ): KoiMiddleware {
   // Per-middleware monotonic epoch counter. Each onSessionStart gets
   // a fresh epoch so SessionId reuse (cycleSession/clear) can be
@@ -421,7 +452,9 @@ function buildMiddleware(
       // `next()`; publishing the pre-await snapshot would regress any
       // UI/trace that trusts `metadata.currentPlan` as the latest.
       const before = sessions.get(ctx.session.sessionId);
-      const response = await next(enrichRequest(request, before?.currentPlan ?? []));
+      const response = await next(
+        enrichRequest(request, before?.currentPlan ?? [], injectPlanState),
+      );
       const after = sessions.get(ctx.session.sessionId);
       const metadata: JsonObject = {
         ...response.metadata,
@@ -431,7 +464,7 @@ function buildMiddleware(
     },
     async *wrapModelStream(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
-      yield* next(enrichRequest(request, state?.currentPlan ?? []));
+      yield* next(enrichRequest(request, state?.currentPlan ?? [], injectPlanState));
     },
     async wrapToolCall(ctx, request, next) {
       if (request.toolId !== WRITE_PLAN_TOOL_NAME) return next(request);
@@ -473,6 +506,12 @@ export function createPlanMiddleware(config?: PlanConfig): MiddlewareBundle {
     throw KoiRuntimeError.from(validated.error.code, validated.error.message);
   }
   const priority = validated.value.priority ?? DEFAULT_PRIORITY;
-  const middleware = buildMiddleware(new Map(), validated.value.onPlanUpdate, priority);
+  const injectPlanState = validated.value.injectPlanState ?? true;
+  const middleware = buildMiddleware(
+    new Map(),
+    validated.value.onPlanUpdate,
+    priority,
+    injectPlanState,
+  );
   return { middleware, providers: [createPlanToolProvider()] };
 }

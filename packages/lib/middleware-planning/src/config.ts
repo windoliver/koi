@@ -34,5 +34,9 @@ export function validatePlanConfig(config: unknown): Result<PlanConfig, KoiError
     }
   }
 
+  if (c.injectPlanState !== undefined && typeof c.injectPlanState !== "boolean") {
+    return validationError("injectPlanState must be a boolean");
+  }
+
   return { ok: true, value: config as PlanConfig };
 }

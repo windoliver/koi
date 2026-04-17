@@ -72,7 +72,8 @@ an undeclared tool and fail the turn.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `priority` | `number` | `450` | Middleware priority. Lower runs earlier. |
-| `onPlanUpdate` | `(plan) => void \| Promise<void>` | — | Commit hook. See "commit-with-rollback" below. |
+| `onPlanUpdate` | `(plan, ctx) => void \| Promise<void>` | — | Commit hook. `ctx` carries `{ sessionId, epoch, turnIndex }` — key durable storage on `(sessionId, epoch)` so recycled SessionIds don't cross-write. See "hook-then-commit" below. |
+| `injectPlanState` | `boolean` | `true` | When `false`, the middleware injects only the trusted `write_plan` system instruction and skips replaying model-authored plan content into later requests. Use when the host surfaces plan state through its own channel. |
 
 #### `onPlanUpdate` semantics (hook-then-commit)
 

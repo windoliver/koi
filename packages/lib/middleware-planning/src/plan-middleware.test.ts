@@ -477,6 +477,100 @@ describe("prompt-injection containment", () => {
 // Callback commit-with-rollback
 // ---------------------------------------------------------------------------
 
+describe("onPlanUpdate context + state-replay opt-out", () => {
+  it("passes sessionId + epoch + turnIndex to onPlanUpdate for persistence keying", async () => {
+    const seen: { sessionId: string; epoch: number; turnIndex: number }[] = [];
+    const mw = make({
+      onPlanUpdate: (_plan, ctx) => {
+        seen.push({ sessionId: ctx.sessionId, epoch: ctx.epoch, turnIndex: ctx.turnIndex });
+      },
+    });
+    const sessionCtx = makeSessionCtx(sessionId("persistable-session"));
+    await mw.onSessionStart?.(sessionCtx);
+
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 7),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "only", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.sessionId).toBe("persistable-session");
+    expect(seen[0]?.turnIndex).toBe(7);
+    expect(typeof seen[0]?.epoch).toBe("number");
+    expect(seen[0]?.epoch).toBeGreaterThan(0);
+  });
+
+  it("bumps the epoch across onSessionEnd + onSessionStart for the same SessionId", async () => {
+    const seen: number[] = [];
+    const mw = make({
+      onPlanUpdate: (_plan, ctx) => {
+        seen.push(ctx.epoch);
+      },
+    });
+    const sid = sessionId("recycle-test");
+    const s1 = makeSessionCtx(sid);
+    await mw.onSessionStart?.(s1);
+    await mw.wrapToolCall?.(
+      makeTurnCtx(s1, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "a", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    await mw.onSessionEnd?.(s1);
+
+    const s2 = makeSessionCtx(sid);
+    await mw.onSessionStart?.(s2);
+    await mw.wrapToolCall?.(
+      makeTurnCtx(s2, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "b", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBeGreaterThan(seen[0] as number);
+  });
+
+  it("does not inject plan state into model messages when injectPlanState is false", async () => {
+    const mw = make({ injectPlanState: false });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "only", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    let captured: ModelRequest | undefined;
+    await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async (req) => {
+      captured = req;
+      return makeResponse("ok");
+    });
+
+    // Still has the trusted system:plan instruction (authored in-package).
+    expect(captured?.messages[0]?.senderId).toBe("system:plan");
+    // But NO user:plan-state replay of the model-authored plan content.
+    const hasReplay = captured?.messages.some((m) => m.senderId === "user:plan-state") ?? false;
+    expect(hasReplay).toBe(false);
+  });
+
+  it("rejects non-boolean injectPlanState at construction time", () => {
+    expect(() => createPlanMiddleware({ injectPlanState: "yes" as unknown as never })).toThrow();
+  });
+});
+
 describe("onPlanUpdate commit-with-rollback", () => {
   it("surfaces sync callback failure as a tool error and rolls back the plan", async () => {
     const mw = make({
