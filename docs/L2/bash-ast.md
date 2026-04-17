@@ -91,11 +91,29 @@ switch (result.kind) {
 ```typescript
 type AstAnalysis =
   | { kind: "simple"; commands: readonly SimpleCommand[] }
-  | { kind: "too-complex"; reason: string; nodeType?: string }
+  | {
+      kind: "too-complex";
+      reason: string;
+      nodeType?: string;
+      primaryCategory: TooComplexCategory;   // required — see "Too-Complex Category Taxonomy" below
+    }
   | {
       kind: "parse-unavailable";
       cause: "not-initialized" | "timeout" | "over-length" | "panic";
     };
+
+type TooComplexCategory =
+  | "scope-trackable"
+  | "parameter-expansion"
+  | "positional"
+  | "control-flow"
+  | "shell-escape"
+  | "heredoc"
+  | "process-substitution"
+  | "parse-error"
+  | "unsupported-syntax"
+  | "malformed"
+  | "unknown";
 
 interface SimpleCommand {
   /** argv[0] is the command name, argv[1..] are resolved arguments. */
@@ -108,6 +126,38 @@ interface SimpleCommand {
   readonly text: string;
 }
 ```
+
+## Too-Complex Category Taxonomy
+
+`AstAnalysis.too-complex.primaryCategory` is a stable closed enum that
+abstracts tree-sitter grammar details. Consumers should switch on
+`primaryCategory` rather than on `nodeType` — the former is versioned API,
+the latter is raw parser output that can change across
+`tree-sitter-bash` upgrades.
+
+The eleven categories:
+
+| Category | Meaning | Example input |
+|---|---|---|
+| `scope-trackable` | `$VAR` or `$(cmd)`. Future scope-tracking (see [#1661](https://github.com/windoliver/koi/issues/1661)) would rescue some of these. Excludes `${VAR}`. | `echo $X`, `echo $(date)` |
+| `parameter-expansion` | Any `${...}` form. | `echo ${X:-def}` |
+| `positional` | `$1..$9`, `$@`, `$*`, `$#`, `$?`, `$!` — and mixed forms like `$1suffix` (prefix rule). | `echo $1`, `echo "prefix$@"` |
+| `control-flow` | `for`/`while`/`if`/`case`/`function`/`subshell`. | `if true; then echo hi; fi` |
+| `shell-escape` | Backslash escapes in `word` or inside double-quoted strings; line-continuation prefilter. Raw source text does not match bash's effective semantics. | `cat \/etc\/passwd` |
+| `heredoc` | `heredoc_redirect`. | `cat <<EOF\nhi\nEOF` |
+| `process-substitution` | `<(cmd)` / `>(cmd)`. | `cat <(echo hi)` |
+| `parse-error` | Tree-sitter reported `root.hasError`. Under the vendored grammar, this can also fire on some valid bash inputs. | `echo "unterminated` |
+| `unsupported-syntax` | Walker encountered a recognized grammar construct it chose not to implement (arithmetic expansion, brace expansion, top-level `variable_assignment(s)`, `declaration_command`, concatenation, etc.). | `echo $(( 1 + 2 ))`, `export X=1` |
+| `malformed` | Walker encountered an unexpected AST shape (missing/extra children, failed structural assertion). **Does NOT imply the source was invalid bash** — reachability is grammar-version-dependent. Treat as a diagnostic of what the walker saw. | (parser-dependent; no stable fixture) |
+| `unknown` | Walker hit a statement or argument node type not in its dispatch table. Grammar-drift or walker-bug signal — if you see this in production, file an issue. | (should not fire in steady state) |
+
+### Short-circuit caveat
+
+The walker returns on the first blocker it encounters. A command like
+`if [ -z "$X" ]; then Y=$(date); fi` gets
+`primaryCategory: "control-flow"` even though it also contains a
+scope-trackable subtree. Full-subtree category capture would require a
+walker refactor that this PR does not undertake.
 
 ## Architecture
 
