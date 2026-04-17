@@ -1,24 +1,22 @@
 /**
  * Closure-scoped state store for the strict-agentic middleware.
  *
- * Four maps:
- *   - turnStates:       `turnId -> TurnState` (populated in wrapModelCall /
- *                       wrapModelStream, read in onBeforeStop, cleared in
- *                       onAfterTurn).
- *   - turnToSession:    `turnId -> sessionId` reverse index so clearSession
- *                       can purge all outstanding turn entries for a session
- *                       that ends without onAfterTurn firing.
+ * Two maps, both keyed by runId:
+ *   - runTurnStates:    `runId -> latest TurnState` from the most recent
+ *                       wrapModelCall / wrapModelStream observation. The
+ *                       engine mints different turnIds for the model-call
+ *                       and the stop-gate contexts, so the middleware
+ *                       cannot key by turnId — the key is the outer runId
+ *                       (stable across all model calls + stop-gate checks
+ *                       inside one runtime.run()).
  *   - runBlockCounts:   `runId -> consecutive filler blocks` within that
- *                       outer run. Keyed by runId (stable per runtime.run()
- *                       call, new per call) so the counter naturally scopes
- *                       to one outer request and accumulates across engine
- *                       re-prompts within that request.
- *   - runToSession:     `runId -> sessionId` reverse index so clearSession
- *                       can purge any outstanding run counters for the
- *                       session.
+ *                       outer run.
  *
- * A new store is created per `createStrictAgenticMiddleware` call, so test
- * instances are isolated.
+ * Both maps are purged on clearSession (via a sessionId→runIds reverse
+ * index) so an abnormal session end does not leak state.
+ *
+ * A new store is created per createStrictAgenticMiddleware call; tests are
+ * isolated.
  */
 
 export interface TurnState {
@@ -27,9 +25,9 @@ export interface TurnState {
 }
 
 export interface StateStore {
-  readonly recordTurn: (sessionId: string, turnId: string, state: TurnState) => void;
-  readonly readTurn: (turnId: string) => TurnState | undefined;
-  readonly clearTurn: (turnId: string) => void;
+  readonly recordTurn: (sessionId: string, runId: string, state: TurnState) => void;
+  readonly readTurn: (runId: string) => TurnState | undefined;
+  readonly clearTurn: (runId: string) => void;
   readonly incrementBlocks: (sessionId: string, runId: string) => number;
   readonly resetBlocks: (runId: string) => void;
   readonly getBlockCount: (runId: string) => number;
@@ -37,22 +35,21 @@ export interface StateStore {
 }
 
 export function createStateStore(): StateStore {
-  const turnStates = new Map<string, TurnState>();
-  const turnToSession = new Map<string, string>();
+  const runTurnStates = new Map<string, TurnState>();
   const runBlockCounts = new Map<string, number>();
   const runToSession = new Map<string, string>();
 
   return {
-    recordTurn(sessionId: string, turnId: string, state: TurnState): void {
-      turnStates.set(turnId, state);
-      turnToSession.set(turnId, sessionId);
+    recordTurn(sessionId: string, runId: string, state: TurnState): void {
+      runTurnStates.set(runId, state);
+      runToSession.set(runId, sessionId);
     },
-    readTurn(turnId: string): TurnState | undefined {
-      return turnStates.get(turnId);
+    readTurn(runId: string): TurnState | undefined {
+      return runTurnStates.get(runId);
     },
-    clearTurn(turnId: string): void {
-      turnStates.delete(turnId);
-      turnToSession.delete(turnId);
+    clearTurn(runId: string): void {
+      runTurnStates.delete(runId);
+      // Don't clear runToSession here — the run counter may still be live.
     },
     incrementBlocks(sessionId: string, runId: string): number {
       const next = (runBlockCounts.get(runId) ?? 0) + 1;
@@ -62,23 +59,15 @@ export function createStateStore(): StateStore {
     },
     resetBlocks(runId: string): void {
       runBlockCounts.delete(runId);
-      runToSession.delete(runId);
     },
     getBlockCount(runId: string): number {
       return runBlockCounts.get(runId) ?? 0;
     },
     clearSession(sessionId: string): void {
-      // Purge all turn entries for this session (onAfterTurn may never fire
-      // on abnormal session end).
-      for (const [turnId, sid] of turnToSession) {
-        if (sid === sessionId) {
-          turnStates.delete(turnId);
-          turnToSession.delete(turnId);
-        }
-      }
-      // Purge all run counters for this session.
+      // Purge every run entry that pointed at this session.
       for (const [rid, sid] of runToSession) {
         if (sid === sessionId) {
+          runTurnStates.delete(rid);
           runBlockCounts.delete(rid);
           runToSession.delete(rid);
         }

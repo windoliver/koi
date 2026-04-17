@@ -74,7 +74,7 @@ export function createStrictAgenticMiddleware(
     ): Promise<ModelResponse> {
       const resp = await next(request);
       if (!resolved.enabled) return resp;
-      store.recordTurn(ctx.session.sessionId, ctx.turnId, {
+      store.recordTurn(ctx.session.sessionId, ctx.session.runId, {
         toolCallCount: countToolCalls(resp.richContent),
         outputText: resp.content,
       });
@@ -114,7 +114,7 @@ export function createStrictAgenticMiddleware(
             countToolCalls(chunk.response.richContent),
           );
           const mergedText = text.length > 0 ? text : chunk.response.content;
-          store.recordTurn(ctx.session.sessionId, ctx.turnId, {
+          store.recordTurn(ctx.session.sessionId, ctx.session.runId, {
             toolCallCount: mergedToolCallCount,
             outputText: mergedText,
           });
@@ -124,7 +124,7 @@ export function createStrictAgenticMiddleware(
       }
       // Fallback for adapters that close the stream without emitting `done`.
       if (!recorded) {
-        store.recordTurn(ctx.session.sessionId, ctx.turnId, {
+        store.recordTurn(ctx.session.sessionId, ctx.session.runId, {
           toolCallCount,
           outputText: text,
         });
@@ -133,7 +133,7 @@ export function createStrictAgenticMiddleware(
 
     async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
       if (!resolved.enabled) return { kind: "continue" };
-      const turn = store.readTurn(ctx.turnId);
+      const turn = store.readTurn(ctx.session.runId);
       if (!turn) return { kind: "continue" };
 
       const result = classifyTurn(turn, resolved);
@@ -143,7 +143,7 @@ export function createStrictAgenticMiddleware(
         // counter so state does not leak into the next run. onAfterTurn does
         // not fire on a successful terminal `done` in the engine contract —
         // relying on it alone would leak one turn entry per successful run().
-        store.clearTurn(ctx.turnId);
+        store.clearTurn(ctx.session.runId);
         store.resetBlocks(ctx.session.runId);
         return { kind: "continue" };
       }
@@ -174,7 +174,7 @@ export function createStrictAgenticMiddleware(
         });
         // Clear terminal state so the released run does not retain its counter
         // or turn entry indefinitely in long-lived runtimes.
-        store.clearTurn(ctx.turnId);
+        store.clearTurn(ctx.session.runId);
         store.resetBlocks(ctx.session.runId);
         return { kind: "continue" };
       }
@@ -187,12 +187,15 @@ export function createStrictAgenticMiddleware(
     },
 
     async onAfterTurn(ctx: TurnContext): Promise<void> {
-      store.clearTurn(ctx.turnId);
-      // A turn that ends WITHOUT a stop-gate veto is a success signal for the
-      // run. Reset the counter so it does not accumulate across ordinary
-      // tool-use turns — otherwise a filler earlier in the run would leak its
-      // block count into a much later unrelated filler and trip the breaker
-      // after only one or two real filler strikes.
+      // Do NOT clear turn state here — the engine fires onAfterTurn between
+      // the model call and the stop-gate check, so clearing would race with
+      // onBeforeStop reading the same state (bug seen in TUI manual testing).
+      // Turn state is overwritten on the next wrapModelCall / wrapModelStream
+      // and purged on session end; this is sufficient.
+      //
+      // A turn that ends WITHOUT a stop-gate veto is a success signal for
+      // the run — reset the counter so filler blocks earlier in the run
+      // do not leak into later unrelated filler turns.
       if (ctx.stopBlocked !== true) {
         store.resetBlocks(ctx.session.runId);
       }
