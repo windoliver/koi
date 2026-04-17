@@ -242,7 +242,11 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     // Unknown-model pricing / calculator bugs should NOT drop the usage
     // event — token_usage is what token_count enforcement reads. Degrade
     // the cost path but preserve token accounting.
-    let costUsd = 0;
+    //
+    // On calculator failure, pass costUsd=undefined so the controller's
+    // per-token fallback pricing runs. Passing 0 would be treated as an
+    // authoritative zero, silently understating spend.
+    let costUsd: number | undefined;
     try {
       costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
     } catch (cause) {
@@ -252,7 +256,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       });
     }
     await recordTokenEvent(ctx, response.model, usage.inputTokens, usage.outputTokens, costUsd);
-    onUsage?.({ model: response.model, usage, costUsd });
+    onUsage?.({ model: response.model, usage, costUsd: costUsd ?? 0 });
   }
 
   /**
@@ -285,14 +289,16 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     model: string,
     inputTokens: number,
     outputTokens: number,
-    costUsd: number,
+    costUsd: number | undefined,
   ): Promise<void> {
+    // Omit costUsd when undefined so the controller's per-token fallback
+    // pricing runs. Passing 0 would be treated as authoritative zero spend.
     await controller.record({
       kind: "token_usage",
       count: inputTokens + outputTokens,
       inputTokens,
       outputTokens,
-      costUsd,
+      ...(costUsd !== undefined ? { costUsd } : {}),
     });
     const snap = await controller.snapshot();
     alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
@@ -391,19 +397,13 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       alertTracker.cleanup(ctx.sessionId);
-      // Recovery: session boundary clears the degraded latch. A transient
-      // recorder outage shouldn't brick the middleware permanently — the
-      // next session starts from a clean slate against whatever controller
-      // state survives. Runtime-scoped counters (cost, token, spawn) persist
-      // in the controller; the latch is a separate "enforcement confidence"
-      // signal that decays on this boundary.
-      if (degraded) {
-        console.warn("[koi:governance-core] clearing degraded latch on session end", {
-          prior: degradedReason,
-        });
-        degraded = false;
-        degradedReason = undefined;
-      }
+      // Do NOT auto-clear the degraded latch here: session_reset preserves
+      // cumulative cost/token/spawn counters across the boundary, so if
+      // prior accounting failed those runtime-wide counters stay stale.
+      // Clearing the latch would re-admit calls on the next session against
+      // understated state, exactly when process-level ceilings matter most.
+      // Recovery requires rebuilding the middleware with a reconciled
+      // controller. The latch stays set across sessions by design.
     },
 
     async wrapModelCall(ctx: TurnContext, request: ModelRequest, next) {
@@ -436,12 +436,13 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       const model = request.model ?? "unknown";
       const recordDeltaSoft = async (inputTokens: number, outputTokens: number): Promise<void> => {
         if (inputTokens <= 0 && outputTokens <= 0) return;
-        let costUsd = 0;
+        // Unknown-model price lookups shouldn't skip usage accounting.
+        // Latch degraded and omit costUsd so the controller's per-token
+        // fallback pricing runs instead of recording $0.
+        let costUsd: number | undefined;
         try {
           costUsd = cost.calculate(model, inputTokens, outputTokens);
         } catch (cause) {
-          // Unknown-model price lookups shouldn't skip usage accounting.
-          // Latch degraded but still record tokens below (costUsd=0 fallback).
           latchDegraded("Cost calculation failed", cause, { model });
         }
         try {
@@ -458,7 +459,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
             cacheWriteTokens: 0,
             reasoningTokens: 0,
           },
-          costUsd,
+          costUsd: costUsd ?? 0,
         });
       };
       try {

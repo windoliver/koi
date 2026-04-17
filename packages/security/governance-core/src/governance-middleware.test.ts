@@ -850,7 +850,7 @@ describe("issue checklist", () => {
     // Recording completed BEFORE the call returned.
   });
 
-  test("recordModelUsage preserves token accounting when cost.calculate throws", async () => {
+  test("recordModelUsage omits costUsd when cost.calculate throws (controller fallback pricing runs)", async () => {
     const recorded: unknown[] = [];
     const cfg = baseCfg({
       controller: {
@@ -868,34 +868,38 @@ describe("issue checklist", () => {
     const mw = createGovernanceMiddleware(cfg);
     await mw.wrapModelCall?.(ctx(), req(), async () => response(10, 5));
     const tokenEvent = recorded.find((e) => (e as { kind: string }).kind === "token_usage") as
-      | { inputTokens: number; outputTokens: number; costUsd: number }
+      | { inputTokens: number; outputTokens: number; costUsd?: number }
       | undefined;
-    // Token accounting preserved even with broken calculator; cost falls
-    // back to 0 so the cap doesn't inflate on bogus math.
     expect(tokenEvent).toBeDefined();
     expect(tokenEvent?.inputTokens).toBe(10);
     expect(tokenEvent?.outputTokens).toBe(5);
-    expect(tokenEvent?.costUsd).toBe(0);
+    // costUsd omitted, not 0 — controller's per-token fallback pricing runs
+    // instead of recording an authoritative zero that understates spend.
+    expect(tokenEvent?.costUsd).toBeUndefined();
   });
 
-  test("degraded latch clears on session end (bounded recovery)", async () => {
-    let recordFail = true;
+  test("degraded latch persists across session boundaries (runtime-scoped containment)", async () => {
+    // Session end does NOT clear the latch: cost/token/spawn counters
+    // survive the session boundary, so if prior accounting failed those
+    // counters remain stale. Clearing here would re-admit calls on the
+    // next session against understated state.
     const cfg = baseCfg({
       controller: {
         ...baseCfg().controller,
         record: (ev) => {
-          if (recordFail && ev.kind === "tool_success") throw new Error("down");
+          if (ev.kind === "tool_success") throw new Error("down");
         },
       },
     });
     const mw = createGovernanceMiddleware(cfg);
-    // Trigger the latch.
     await mw.wrapToolCall?.(
       ctx(),
       { callId: "c1" as never, toolId: "t", input: {} } as never,
       async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
     );
-    // Next call is denied.
+    // Session boundary fires.
+    await mw.onSessionEnd?.({ sessionId: sessionId("s1") } as never);
+    // Latch still blocks the next call.
     let threw: unknown;
     try {
       await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
@@ -903,12 +907,7 @@ describe("issue checklist", () => {
       threw = e;
     }
     expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
-
-    // Session boundary clears the latch; next session admits calls.
-    await mw.onSessionEnd?.({ sessionId: sessionId("s1") } as never);
-    recordFail = false;
-    // Should NOT throw now — latch cleared.
-    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    expect((threw as Error).message).toMatch(/degraded/i);
   });
 
   test("setpoint denies emit compliance records", async () => {
