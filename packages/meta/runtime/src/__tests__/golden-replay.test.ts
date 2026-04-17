@@ -10093,3 +10093,57 @@ describe("Golden: @koi/checkpoint + @koi/snapshot-store-sqlite", () => {
     }
   });
 });
+
+describe("Golden: @koi/daemon", () => {
+  test("supervisor starts and shuts down a subprocess worker", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 2,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    expect(supervisorResult.ok).toBe(true);
+    if (!supervisorResult.ok) return;
+
+    const started = await supervisorResult.value.start({
+      workerId: workerId("golden-1"),
+      agentId: agentId("agent-golden-1"),
+      command: ["bun", "--version"],
+    });
+    expect(started.ok).toBe(true);
+
+    await supervisorResult.value.shutdown("test");
+    expect(supervisorResult.value.list()).toEqual([]);
+  });
+
+  test("rejects spawn beyond maxWorkers", async () => {
+    const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
+    const { agentId, workerId } = await import("@koi/core");
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: createSubprocessBackend() },
+    });
+    if (!supervisorResult.ok) return;
+
+    const first = await supervisorResult.value.start({
+      workerId: workerId("golden-2"),
+      agentId: agentId("agent-golden-2"),
+      command: ["bun", "-e", "setTimeout(()=>{},2000)"],
+    });
+    expect(first.ok).toBe(true);
+
+    const second = await supervisorResult.value.start({
+      workerId: workerId("golden-3"),
+      agentId: agentId("agent-golden-3"),
+      command: ["bun", "-e", "setTimeout(()=>{},2000)"],
+    });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("RESOURCE_EXHAUSTED");
+
+    await supervisorResult.value.shutdown("test");
+  });
+});

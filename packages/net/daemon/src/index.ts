@@ -1,2 +1,2 @@
-// @koi/daemon — scaffolding. Real exports added in subsequent tasks.
-export {};
+export { createSupervisor } from "./create-supervisor.js";
+export { createSubprocessBackend } from "./subprocess-backend.js";
