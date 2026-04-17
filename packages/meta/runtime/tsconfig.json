@@ -47,6 +47,7 @@
     { "path": "../../lib/middleware-semantic-retry" },
     { "path": "../../lib/outcome-evaluator" },
     { "path": "../../security/middleware-permissions" },
+    { "path": "../../security/governance-core" },
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
