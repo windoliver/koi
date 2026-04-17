@@ -10,6 +10,7 @@
  *   tool-use         — add_numbers tool call, permissions bypass, hooks fire
  *   glob-use         — Glob builtin tool call, permissions bypass
  *   permission-deny       — permissions default mode denies add_numbers
+ *   permission-soft-deny — soft-deny fs_write; model gets synthetic tool_result and adapts (#1650)
  *   denial-escalation    — repeated execution-time denials trigger auto-deny escalation
  *   hook-blocked         — pre-call hook blocks model call, stopReason: hook_blocked, Glob allowed
  *   hook-redaction       — agent hook on tool.succeeded, forwardRawPayload + default redaction
@@ -50,7 +51,13 @@ import type {
   Result,
   SpawnFn,
 } from "@koi/core";
-import { createSingleToolProvider, memoryRecordId, sessionId, transcriptEntryId } from "@koi/core";
+import {
+  createSingleToolProvider,
+  memoryRecordId,
+  sessionId,
+  taskItemId,
+  transcriptEntryId,
+} from "@koi/core";
 import { createInMemorySpawnLedger, createKoi, createSpawnToolProvider } from "@koi/engine";
 import { createEventTraceMiddleware, createMonotonicClock } from "@koi/event-trace";
 import { createLocalFileSystem } from "@koi/fs-local";
@@ -79,6 +86,7 @@ import {
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
 import { createStrictAgenticMiddleware } from "@koi/middleware-strict-agentic";
+import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
 import { createOpenAICompatAdapter } from "@koi/model-openai-compat";
 import type { ProviderAdapter } from "@koi/model-router";
 import {
@@ -346,6 +354,24 @@ const taskBoardToolProviders = taskBoardTools.map((tool) =>
     createTool: () => tool,
   }),
 );
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-task-anchor — pre-seeded board for reminder injection query
+// ---------------------------------------------------------------------------
+
+const taskAnchorBoard = await createManagedTaskBoard({
+  store: createMemoryTaskBoardStore(),
+});
+{
+  const addResult = await taskAnchorBoard.addAll([
+    { id: taskItemId("ta-1"), description: "Audit authentication code" },
+    { id: taskItemId("ta-2"), description: "Migrate session model" },
+  ]);
+  if (!addResult.ok) {
+    console.error(`task-anchor pre-seed: ${addResult.error.message}`);
+    process.exit(1);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -1862,7 +1888,73 @@ const queries: readonly QueryConfig[] = [
     ],
   },
 
-  // 5. denial-escalation: repeated execution-time denials trigger auto-deny escalation
+  // 5. permission-soft-deny: soft-deny — agent receives synthetic tool_result and adapts (#1650)
+  //
+  // The rule carries `on_deny: "soft"` so the middleware returns a synthetic
+  // `tool_result` instead of throwing. The model sees the error text and
+  // continues the agent loop (no exception, no loop termination). The second
+  // model call proves the model adapted after reading the synthetic response.
+  {
+    name: "permission-soft-deny",
+    prompt:
+      'Please write "hello" to the file /tmp/koi-golden-soft/test.txt using the fs_write tool. After the tool call, tell me what happened.',
+    permissionMode: "default",
+    permissionRules: [
+      // Soft-deny all invocations of fs_write — model sees the tool, calls it,
+      // gets a synthetic error response, then adapts in a follow-up turn.
+      // Pattern is the bare tool name (resource = toolId, no namespace prefix).
+      {
+        pattern: "fs_write",
+        action: "*",
+        effect: "deny",
+        on_deny: "soft",
+        reason: "writes are sandboxed in this environment",
+        source: "policy" as const,
+      },
+      // Allow everything else
+      { pattern: "*", action: "*", effect: "allow", source: "user" as const },
+    ],
+    permissionDescription: "soft-deny fs_write — synthetic tool_result, loop continues",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-tool-exec",
+        cmd: ["echo", "tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [
+      createSingleToolProvider({
+        name: "fs-write",
+        toolName: "fs_write",
+        createTool: () => {
+          const r = buildTool({
+            name: "fs_write",
+            description: "Write content to a file at the given path",
+            inputSchema: {
+              type: "object",
+              properties: {
+                path: { type: "string", description: "Absolute file path to write" },
+                content: { type: "string", description: "Text content to write" },
+              },
+              required: ["path", "content"],
+            },
+            origin: "primordial",
+            execute: async (args: JsonObject): Promise<unknown> => {
+              await Bun.write(args.path as string, args.content as string);
+              return { ok: true, path: args.path };
+            },
+          });
+          if (!r.ok) throw new Error(`buildTool(fs_write) failed: ${r.error.message}`);
+          return r.value;
+        },
+      }),
+      createBuiltinSearchProvider({ cwd: process.cwd() }),
+    ],
+    maxTurns: 3,
+  },
+
+  // 6. denial-escalation: repeated execution-time denials trigger auto-deny escalation
   //
   // Backend models a two-stage enterprise authorization: `checkBatch` is the
   // cheap catalog-advertising stage used at tool-filter time (answers "is this
@@ -1921,7 +2013,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 3,
   },
 
-  // 6. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
+  // 7. hook-blocked: pre-call hook blocks model call with hook_blocked stopReason
   {
     name: "hook-blocked",
     prompt: "What is 2+2?",
@@ -1940,7 +2032,7 @@ const queries: readonly QueryConfig[] = [
     maxTurns: 0,
   },
 
-  // 7. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
+  // 8. hook-once: once-hook fires on first tool call, absent on second (@koi/hooks once flag)
   {
     name: "hook-once",
     prompt:
@@ -2009,6 +2101,34 @@ const queries: readonly QueryConfig[] = [
     ],
     providers: taskBoardToolProviders,
     maxTurns: 3,
+  },
+
+  // 9b. task-anchor-reminder: @koi/middleware-task-anchor injects system-reminder after K
+  // idle turns with no task-tool activity. K=1 + non-task tool (add_numbers) forces the
+  // reminder to appear on the second model call, where the model should acknowledge the
+  // pre-seeded tasks ("Audit authentication code", "Migrate session model").
+  {
+    name: "task-anchor-reminder",
+    prompt:
+      "Use the add_numbers tool to compute 6 + 4. After you see the result, list the tasks currently on the board.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [
+      createSingleToolProvider({
+        name: "add-numbers",
+        toolName: "add_numbers",
+        createTool: () => addTool,
+      }),
+    ],
+    extraMiddleware: [
+      createTaskAnchorMiddleware({
+        getBoard: () => taskAnchorBoard.snapshot(),
+        idleTurnThreshold: 1,
+      }),
+    ],
+    maxTurns: 2,
   },
 
   // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server

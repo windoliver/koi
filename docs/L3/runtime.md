@@ -60,8 +60,10 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/middleware-exfiltration-guard` | Secret exfiltration prevention — default-on for adapters with terminals. Scans tool I/O (input + output), model output (streaming + non-streaming including `richContent`), buffers all content-bearing stream chunks. `RuntimeConfig.exfiltrationGuard` to configure/disable | `exfiltration-guard-block` |
 | `@koi/middleware-extraction` | Post-turn learning extraction — intercepts spawn-family tool outputs, runs regex + LLM extraction, persists via `MemoryComponent.store()` with `CollectiveMemoryCategory` metadata. Secret-scanned, session-scoped, namespace-isolated | standalone |
 | `@koi/middleware-goal` | Goal drift + completion (keyword heuristic by default; custom `isDrifting`/`detectCompletions` callbacks per #1512). Stream path uses eager-flush on terminal `done` to survive `consumeModelStream` iterator cleanup (#1530) | `tool-use` |
+| `@koi/middleware-planning` | Structured multi-step plan tracking via the `koi_plan_write` tool (#1836). Opt-in via `KOI_PLANNING_ENABLED=true` until durable persistence (#1842) lands. Per-turn auth, epoch-based session-recycle isolation, teardown abort signal, `PlanUpdateContext.commitToken` for CAS | standalone |
 | `@koi/middleware-permissions` | Tool/model permission gating middleware — approval trajectory capture via `approvalStepHandle` dispatch relay (#1498). `onPermissionDecision` hook dispatched via `dispatchApprovalOutcome` callback BEFORE tool execution (decoupled from tool success/failure, #1627) | `permission-deny`, `denial-escalation` |
 | `@koi/middleware-report` | RunReport generation middleware | `tool-use` |
+| `@koi/middleware-task-anchor` | CC-parity `<system-reminder>` injection that re-anchors the model on the live task board after `K` idle turns with no task-tool activity (#1837). Priority-ordered render (in_progress → pending → failed → killed → completed), hard cap with per-status overflow counts, stop-gate retry rollback, hook-blocked/`{ ok: false }` task-tool failure detection. Gated on successful task-tool engagement so shell-only sessions never receive unsolicited nudges | `task-anchor-reminder` |
 | `@koi/middleware-semantic-retry` | Semantic retry on model failures | standalone |
 | `@koi/dream` | Offline memory consolidation — merges similar memories by Jaccard similarity (complete-linkage, type-partitioned), prunes cold records, write-ahead LLM merge with supersedes provenance. Called by scheduler/daemon | standalone |
 | `@koi/session` | Session persistence (SQLite/WAL) + JSONL transcript middleware + `resumeFromTranscript()` for crash recovery. Phase 2e-2: `SessionStatus`, `ContentReplacement`, `CompactResult` boundary extension, instance-local queue isolation. Engine-injected `system:*` senders preserved across persist/resume cycle | `session-persist`, `session-resume`, `system-sender-resume` |
@@ -256,3 +258,13 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 ## Changelog
 
 - **Path-aware filesystem permissions** — fs_read for out-of-workspace paths triggers permission prompt instead of silent NOT_FOUND.
+
+## #1650 — Soft permission deny (opt-in)
+
+`@koi/permissions` and `@koi/middleware-permissions` now support soft permission deny:
+
+- New L0 field `PermissionDecision.disposition?: "hard" | "soft"` (fail-safe `"hard"` default; see `docs/L2/permissions.md`).
+- New rule field `PermissionRule.on_deny?: "hard" | "soft"` (opt-in per rule).
+- When the middleware sees `disposition: "soft"` on a deny, it returns a synthetic `ToolResponse` (with `metadata.blockedByHook: true`, `metadata.permissionDenied: true`, `metadata.hookName: "permissions"`) instead of throwing — letting the agent loop continue and adapt. See `docs/L2/middleware-permissions.md` for per-turn retry cap, filter-time visibility rules, `SoftDenyLog`/`DenialRecord` additions, and the golden trajectory (`fixtures/permission-soft-deny.trajectory.json`).
+
+Runtime behavior is unchanged for any rule that does not set `on_deny: "soft"`. No downstream wiring changes are required in this package; observability middleware (`event-trace`, `middleware-report`, `session-transcript`) already treats `blockedByHook` responses as non-executions.
