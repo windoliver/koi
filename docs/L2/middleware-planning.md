@@ -59,7 +59,19 @@ const mw = createPlanMiddleware({
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `priority` | `number` | `450` | Middleware priority. Lower runs earlier. |
-| `onPlanUpdate` | `(plan) => void` | — | Fires after every successful plan replacement. |
+| `onPlanUpdate` | `(plan) => void` | — | Commit hook. See "commit-with-rollback" below. |
+
+#### `onPlanUpdate` semantics (commit-with-rollback)
+
+The hook is fired after the new plan is staged but before the tool
+response is returned. It is safe to use for durable persistence.
+
+- If the hook **returns** normally, the plan commit is finalized and
+  `write_plan` returns success with the plan summary.
+- If the hook **throws**, the middleware rolls the in-memory plan back
+  to its prior state and returns a tool error (`{ error, planError: true }`)
+  so the caller can retry. The in-memory plan never advances past what
+  any configured persistence layer has durably accepted.
 
 ### PlanItem
 
@@ -87,17 +99,45 @@ before each model call.
 
 `write_plan` tool input is validated before storage:
 
-- `plan` must be an array
-- Each item must be an object with `content` (non-empty string) and `status`
-  (one of `pending`, `in_progress`, `completed`)
+- `plan` must be an array with at most **100 items** (`MAX_PLAN_ITEMS`)
+- Each item must be an object with `content` (non-empty string, max
+  **2000 characters**, `MAX_CONTENT_LENGTH`) and `status` (one of
+  `pending`, `in_progress`, `completed`)
+
+The rendered plan is replayed into every subsequent model request, so
+these caps protect the session from permanent prompt inflation caused
+by a single oversized write.
 
 Invalid input returns `{ error: "…" }` with `metadata.planError: true` so
 observer middleware can distinguish bad-input errors from genuine tool failures.
 
 ## Session isolation
 
-Each session has its own plan and counter. A write in session A has no effect
-on session B's plan or once-per-turn budget.
+Each session has its own plan. Writes in session A have no effect on
+session B's plan.
+
+## Turn concurrency
+
+The once-per-response quota is keyed by `TurnId`, not session — so
+overlapping turns on the same session each get their own counter and
+cannot reset each other's budget. Plan commits use `turnIndex`
+monotonicity: if a write from an older turn arrives after a newer turn
+has already committed a plan, the older write is rejected as stale.
+
+## Prompt-injection containment
+
+Plan item `content` is authored by the model (and therefore ultimately
+influenced by whatever user/tool output the model has read). To prevent
+escalation into the system-role trust channel:
+
+- The middleware's own instruction message is sent at `senderId:
+  "system:plan"` — this is trusted prompt authored in-package.
+- The **replayed plan state** (which contains model-authored content)
+  is sent at `senderId: "user:plan-state"` so adapters that map
+  `system:*` to the system role cannot promote it.
+- Plan content is wrapped in a fenced block and has fence markers and
+  line breaks neutralized so a single item cannot escape the fence or
+  create sub-structure in the rendered list.
 
 ## Observability
 
