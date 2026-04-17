@@ -929,7 +929,7 @@ The v2 L2 `createMemoryStore` uses a two-layer lock keyed per directory:
 | In-process mutex | Same process | `Map<canonicalDir, Promise>` chain. Mutex key is `realpath(dir)` so aliased paths (trailing `/./`, symlinked parents) share one bucket. |
 | File lock | Cross-process | `.memory.lock` in the directory, created with `O_EXCL` (`wx`). Body is `{pid, host, nonce}` JSON. |
 
-Every `write` / `update` / `delete` / `rebuildIndex` call acquires both locks, performs the record-level file operation, and releases. The dedup scan and the file create are inside the same critical section, so two writers cannot both observe "no duplicate" and both succeed.
+Every `write` / `update` / `delete` / `upsert` / `rebuildIndex` call acquires both locks, performs the record-level file operation, and releases. The dedup scan and the file create are inside the same critical section, so two writers cannot both observe "no duplicate" and both succeed.
 
 **The post-mutation `MEMORY.md` rebuild runs OUTSIDE the mutation lock** so a slow rebuild or degraded filesystem cannot stall other writers. Rebuilds are instead serialized per canonical directory via a module-level chain, so a later rebuild cannot overtake an earlier one and publish a stale snapshot. `MEMORY.md` is written via `writeFile(tmp, wx)` + `rename(tmp, MEMORY.md)`, so partially-written indexes cannot appear on disk.
 
@@ -955,6 +955,32 @@ Hardening around shared mode:
 - The resolved `commondir` target is `realpath`'d and verified to contain a `.git` directory.
 - **Structural check**: the worktree's `gitdir` must be a direct child of `<commondir>/worktrees/` — git creates linked-worktree gitdirs nowhere else. This rejects a manipulated `.git` file whose `commondir` content redirects at an unrelated repository's worktree slot. Without this check, an attacker who can write to the worktree's `.git` file could silently re-point shared memory at a different on-disk repo.
 - If `shared: true` is requested but `commondir` is missing or the `gitdir:` line is malformed, `MemoryResolutionError` is thrown — there is no silent fallback to the worktree-local path.
+
+### v2 flat-file store — atomic `upsert()`
+
+`MemoryStore.upsert(input, { force })` performs a name+type lookup, a Jaccard
+content dedup scan, and the write or update **all inside a single
+`withDirLock()` critical section**. This closes the TOCTOU window that arose
+when callers composed `read` / `list` / `write` themselves — two concurrent
+in-process stores or two cross-process writers can no longer both observe
+"no existing record" and both create it.
+
+Returns a discriminated `UpsertResult`:
+
+| `action` | When | Shape |
+|----------|------|-------|
+| `created` | No name+type match, no Jaccard-similar record | `{ action, record, indexError? }` |
+| `updated` | Name+type match and `force: true` | `{ action, record, indexError? }` |
+| `conflict` | Name+type match and `force: false` | `{ action, existing, indexError? }` |
+| `skipped` | Different name but Jaccard ≥ threshold against another record | `{ action, record, duplicateOf, similarity, indexError? }` |
+
+Callers that want force-overwrite semantics pass `force: true`; tools that
+want "fail-loud on collision" pass `force: false` and handle `conflict`
+themselves.
+
+`@koi/memory-tools` `storeWithDedup` now delegates straight to `upsert()`;
+it no longer runs its own in-process `dedupChain` mutex or a read-list-write
+sequence.
 
 ### v2 flat-file store — index-error surfacing
 

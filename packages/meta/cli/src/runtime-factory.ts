@@ -587,6 +587,10 @@ export interface McpServerStatus {
   readonly toolCount: number;
   readonly failureCode: string | undefined;
   readonly failureMessage: string | undefined;
+  /** Transport kind — undefined for plugin-provided servers where config is unavailable. */
+  readonly transport: "http" | "stdio" | "sse" | undefined;
+  /** Whether this server has a usable OAuth config — `needs-auth` is only valid when true. */
+  readonly hasOAuth: boolean;
 }
 
 // MCP loading has moved to `./shared-wiring.ts` — both `koi start` and
@@ -807,10 +811,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     loaded: pluginComponents.discovered,
     errors: [...pluginComponents.errors, ...middlewareWarnings],
   };
-  if (pluginSummary.loaded.length > 0) {
+  // #1887: suppress the "N plugin(s) loaded" line for `koi tui`. The
+  // TUI's alt-screen immediately covers pre-launch stderr, so the line
+  // only flashes briefly and then sits as orphaned noise on the primary
+  // screen after quit — symmetric with the in-TUI banner, which is now
+  // also suppressed on clean loads. Other hosts (koi start, scripts,
+  // other bins) still get the line so their plain-terminal output shows
+  // which plugins loaded. Errors are logged unconditionally above.
+  if (pluginSummary.loaded.length > 0 && hostId !== "koi-tui") {
     // Sanitize plugin-derived strings before logging to prevent terminal
     // control sequence injection from malicious plugin manifests.
+    // biome-ignore lint/complexity/useRegexLiterals: control chars require RegExp constructor
     const ANSI_LOG_RE = new RegExp("\\x1b\\[[0-9;]*[a-zA-Z]", "g");
+    // biome-ignore lint/complexity/useRegexLiterals: control chars require RegExp constructor
     const CTRL_LOG_RE = new RegExp("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f]", "g");
     const sanitizeLog = (s: string): string => s.replace(ANSI_LOG_RE, "").replace(CTRL_LOG_RE, "");
     const names = pluginSummary.loaded
@@ -1501,6 +1514,15 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     const mcpPluginResolver = stackContribution.exports.mcpPluginResolver as
       | import("@koi/mcp").McpResolver
       | undefined;
+    const mcpTransportByName = stackContribution.exports.mcpTransportByName as
+      | ReadonlyMap<string, "http" | "stdio" | "sse">
+      | undefined;
+    const mcpPluginTransportByName = stackContribution.exports.mcpPluginTransportByName as
+      | ReadonlyMap<string, "http" | "stdio" | "sse">
+      | undefined;
+    const mcpOAuthCapableNames = stackContribution.exports.mcpOAuthCapableNames as
+      | ReadonlySet<string>
+      | undefined;
 
     // --- Audit middleware (opt-in via config.auditNdjsonPath) ---
     // Build the NDJSON sink + hash-chained audit middleware when the host
@@ -1929,15 +1951,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         const sources: {
           readonly label: string;
           readonly resolver: import("@koi/mcp").McpResolver;
+          readonly transportMap: ReadonlyMap<string, "http" | "stdio" | "sse"> | undefined;
+          readonly oauthNames: ReadonlySet<string> | undefined;
         }[] = [];
-        if (mcpResolver !== undefined) sources.push({ label: "user", resolver: mcpResolver });
+        if (mcpResolver !== undefined)
+          sources.push({
+            label: "user",
+            resolver: mcpResolver,
+            transportMap: mcpTransportByName,
+            oauthNames: mcpOAuthCapableNames,
+          });
         if (mcpPluginResolver !== undefined)
-          sources.push({ label: "plugin", resolver: mcpPluginResolver });
+          sources.push({
+            label: "plugin",
+            resolver: mcpPluginResolver,
+            transportMap: mcpPluginTransportByName,
+            // Plugin servers authenticate via their own auth pseudo-tools, not
+            // via nav:mcp-auth (which only handles .mcp.json entries). Force
+            // hasOAuth false so AUTH_REQUIRED plugin servers render as error
+            // rather than needs-auth, preventing a misleading recovery prompt.
+            oauthNames: undefined,
+          });
         if (sources.length === 0) return [];
 
         const entries: McpServerStatus[] = [];
         const seenByKey = new Set<string>();
-        for (const { label, resolver } of sources) {
+        for (const { label, resolver, transportMap, oauthNames } of sources) {
           const toolCounts = new Map<string, number>();
           const descriptors = await resolver.discover();
           for (const d of descriptors) {
@@ -1945,7 +1984,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             toolCounts.set(server, (toolCounts.get(server) ?? 0) + 1);
           }
           for (const [name, count] of toolCounts) {
-            const displayName = sources.length > 1 ? `${label}:${name}` : name;
+            // Always prefix non-user sources so nav:mcp-auth can detect them
+            // reliably even in single-source (plugin-only) sessions.
+            const displayName = label === "user" ? name : `${label}:${name}`;
             const key = `${label}:${name}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
@@ -1954,11 +1995,13 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               toolCount: count,
               failureCode: undefined,
               failureMessage: undefined,
+              transport: transportMap?.get(name),
+              hasOAuth: oauthNames?.has(name) ?? false,
             });
           }
           for (const f of resolver.failures) {
             if (toolCounts.has(f.serverName)) continue;
-            const displayName = sources.length > 1 ? `${label}:${f.serverName}` : f.serverName;
+            const displayName = label === "user" ? f.serverName : `${label}:${f.serverName}`;
             const key = `${label}:${f.serverName}`;
             if (seenByKey.has(key)) continue;
             seenByKey.add(key);
@@ -1967,6 +2010,8 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               toolCount: 0,
               failureCode: f.error.code,
               failureMessage: f.error.message,
+              transport: transportMap?.get(f.serverName),
+              hasOAuth: oauthNames?.has(f.serverName) ?? false,
             });
           }
         }

@@ -6,6 +6,8 @@ The canonical L3 integration layer. Wires every production-ready L2 package into
 
 `@koi/mcp` now exposes an `AuthToolFactory` callback so auth-needed servers surface as `<server>__authenticate` pseudo-tools (CC pattern). The component provider reads `failure.error.code === "AUTH_REQUIRED"` and either invokes the factory (when supplied by the host) or falls back to skipped components. No new providers are added — existing wiring continues to work.
 
+`@koi/mcp-server` gained a `__test-echo-server__.ts` dev helper (not exported) for E2E validation of #1852. No behavioral change to the package's public API or runtime integration.
+
 ---
 
 ## What This Enables
@@ -48,7 +50,7 @@ This ensures no L2 package is wired without proven end-to-end coverage.
 | `@koi/mcp` | MCP transport + tool/resource resolver. OAuth 2.0 authorization code + PKCE for HTTP servers, RFC 9728/8414 discovery, `OAuthRuntime` injection, `AUTH_REQUIRED` mid-session re-auth, `@koi/secure-storage` keychain token persistence (#1633) | `mcp-tool-use` |
 | `@koi/mcp-server` | MCP server — exposes agent tools + platform capabilities (mailbox, tasks, registry) to external MCP clients. 7 platform tools built as real Koi Tools via `buildTool()`. Security: callerId enforcement, event-only mailbox, owned task mutations, visibility-filtered registry, prototype pollution protection, error sanitization | `mcp-server-send` |
 | `@koi/memory` | Memory recall, scoring, and formatting — static headings, JSON metadata inside `<memory-data>` trust boundary, scan resilience (`starved`, `candidateLimitHit`), opt-in `maxCandidates` I/O bound | `memory-recall` |
-| `@koi/memory-fs` | File-based memory storage backend — per-dir mutex + `.memory.lock` for write serialization, worktree-local by default (`shared: true` opt-in with policy pinning), atomic temp-rename updates, `indexError` on mutation returns, serialized MEMORY.md rebuilds | standalone |
+| `@koi/memory-fs` | File-based memory storage backend — per-dir mutex + `.memory.lock` for write serialization, worktree-local by default (`shared: true` opt-in with policy pinning), atomic temp-rename updates, `indexError` on mutation returns, serialized MEMORY.md rebuilds. **Atomic `upsert(input, {force})`** runs name+type lookup + Jaccard dedup + write/update inside a single `withDirLock()` critical section (closes the read-list-write TOCTOU window). Returns discriminated `UpsertResult`: `created` / `updated` / `conflict` / `skipped` | standalone |
 | `@koi/memory-tools` | Memory read/write/list tools — sandboxed with `memoryDir` filesystem caps, atomic `storeWithDedup`, idempotent delete, SkillComponent behavioral guidance. Tool output excludes internal `filePath` (#1725) | `memory-store` |
 | `@koi/middleware-memory-recall` | Frozen snapshot + live delta memory recall — scans `.koi/memory/` once per session (salience-scored, 8K budget), then per-turn appends a live delta for new/modified memories (4K default budget) via cheap `list()` fingerprint + FNV-1a content signatures. Delta inserted before the last user turn to preserve transcript semantics. Optional per-turn relevance selector uses opaque record IDs. Per-session state isolation | `memory-recall` |
 | `@koi/memory-team-sync` | Team memory sync safety boundary — type filtering (`user` always denied), secret scanning via `@koi/redaction`, fail-closed stub with deferred transport | standalone |
