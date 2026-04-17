@@ -19,3 +19,33 @@ describe("subprocess backend", () => {
     expect(await backend.isAlive(workerId("sub1"))).toBe(false);
   });
 });
+
+describe("subprocess terminate/kill", () => {
+  it("terminates a long-running subprocess via SIGTERM", async () => {
+    const backend = createSubprocessBackend();
+    const spawned = await backend.spawn({
+      workerId: workerId("sub2"),
+      agentId: agentId("agent-sub2"),
+      command: ["bun", "-e", "setTimeout(()=>{},10000)"],
+    });
+    expect(spawned.ok).toBe(true);
+    await backend.terminate(workerId("sub2"), "test");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(await backend.isAlive(workerId("sub2"))).toBe(false);
+  });
+
+  it("emits crashed on non-zero exit", async () => {
+    const backend = createSubprocessBackend();
+    await backend.spawn({
+      workerId: workerId("sub3"),
+      agentId: agentId("agent-sub3"),
+      command: ["bun", "-e", "process.exit(42)"],
+    });
+    const events: string[] = [];
+    for await (const ev of backend.watch(workerId("sub3"))) {
+      events.push(ev.kind);
+      if (ev.kind === "crashed" || ev.kind === "exited") break;
+    }
+    expect(events).toContain("crashed");
+  });
+});
