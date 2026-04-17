@@ -3,8 +3,8 @@ import type { KoiErrorCode } from "../index.js";
 import { RETRYABLE_DEFAULTS } from "../index.js";
 
 describe("RETRYABLE_DEFAULTS", () => {
-  test("contains exactly 10 entries (one per KoiErrorCode)", () => {
-    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(10);
+  test("contains exactly 12 entries (one per KoiErrorCode)", () => {
+    expect(Object.keys(RETRYABLE_DEFAULTS)).toHaveLength(12);
   });
 
   test("VALIDATION is not retryable", () => {
@@ -53,6 +53,14 @@ describe("RETRYABLE_DEFAULTS", () => {
     expect(RETRYABLE_DEFAULTS.AUTH_REQUIRED).toBe(true);
   });
 
+  test("RESOURCE_EXHAUSTED is retryable (capacity will free up)", () => {
+    expect(RETRYABLE_DEFAULTS.RESOURCE_EXHAUSTED).toBe(true);
+  });
+
+  test("UNAVAILABLE is not retryable by default (capability missing)", () => {
+    expect(RETRYABLE_DEFAULTS.UNAVAILABLE).toBe(false);
+  });
+
   test("keys match every KoiErrorCode", () => {
     // Runtime: verify keys match the expected set
     const expectedCodes: readonly KoiErrorCode[] = [
@@ -66,6 +74,8 @@ describe("RETRYABLE_DEFAULTS", () => {
       "INTERNAL",
       "STALE_REF",
       "AUTH_REQUIRED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
     ];
     const actualKeys = Object.keys(RETRYABLE_DEFAULTS).sort();
     const expectedKeys = [...expectedCodes].sort();

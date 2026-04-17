@@ -95,6 +95,10 @@ export const L0_RUNTIME_ALLOWLIST: ReadonlySet<string> = new Set([
   // functions shared by TUI and cost-aggregator (L2 packages can't import
   // from each other, so shared code lives in L0).
   "cost-tracker.ts",
+  // daemon.ts: validateSupervisorConfig() is a pure validation helper (no side
+  // effects, operates only on L0 types) — same category as validateSpawnRequest()
+  // in spawn.ts.
+  "daemon.ts",
 ]);
 
 // --- Predicates (exported for testing) ---

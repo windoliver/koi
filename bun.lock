@@ -635,6 +635,7 @@
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
+        "@koi/daemon": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -775,6 +776,13 @@
     },
     "packages/mm/token-estimator": {
       "name": "@koi/token-estimator",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/net/daemon": {
+      "name": "@koi/daemon",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -1165,6 +1173,8 @@
     "@koi/core": ["@koi/core@workspace:packages/kernel/core"],
 
     "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
+
+    "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
 
     "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 
