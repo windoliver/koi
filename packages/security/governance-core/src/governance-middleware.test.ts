@@ -822,6 +822,95 @@ describe("issue checklist", () => {
     expect((threw as Error).message).toMatch(/degraded/i);
   });
 
+  test("accounting awaits before returning — no race with slow async controller", async () => {
+    // Slow controller: record() resolves after a microtask. Before the fix,
+    // recordModelUsageSoft was fire-and-forget → next call could gate on
+    // stale state. After the fix, wrapModelCall awaits accounting.
+    const recorded: unknown[] = [];
+    let recordResolve: (() => void) | undefined;
+    const recordInFlight = new Promise<void>((r) => {
+      recordResolve = r;
+    });
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+          return recordInFlight;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    const callP = mw.wrapModelCall?.(ctx(), req(), async () => response(10, 5));
+    // Give the inner await a chance to suspend on the record promise.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(recorded).toHaveLength(1); // record was invoked
+    recordResolve?.();
+    await callP;
+    // Recording completed BEFORE the call returned.
+  });
+
+  test("recordModelUsage preserves token accounting when cost.calculate throws", async () => {
+    const recorded: unknown[] = [];
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+        },
+      },
+      cost: {
+        calculate: () => {
+          throw new Error("unknown model price");
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(10, 5));
+    const tokenEvent = recorded.find((e) => (e as { kind: string }).kind === "token_usage") as
+      | { inputTokens: number; outputTokens: number; costUsd: number }
+      | undefined;
+    // Token accounting preserved even with broken calculator; cost falls
+    // back to 0 so the cap doesn't inflate on bogus math.
+    expect(tokenEvent).toBeDefined();
+    expect(tokenEvent?.inputTokens).toBe(10);
+    expect(tokenEvent?.outputTokens).toBe(5);
+    expect(tokenEvent?.costUsd).toBe(0);
+  });
+
+  test("degraded latch clears on session end (bounded recovery)", async () => {
+    let recordFail = true;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (recordFail && ev.kind === "tool_success") throw new Error("down");
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    // Trigger the latch.
+    await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c1" as never, toolId: "t", input: {} } as never,
+      async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
+    );
+    // Next call is denied.
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+
+    // Session boundary clears the latch; next session admits calls.
+    await mw.onSessionEnd?.({ sessionId: sessionId("s1") } as never);
+    recordFail = false;
+    // Should NOT throw now — latch cleared.
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+  });
+
   test("setpoint denies emit compliance records", async () => {
     const recordCompliance = mock((r: ComplianceRecord) => r);
     const cfg = baseCfg({

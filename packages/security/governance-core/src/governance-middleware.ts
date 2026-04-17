@@ -239,25 +239,45 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   async function recordModelUsage(ctx: TurnContext, response: ModelResponse): Promise<void> {
     if (response.usage === undefined) return;
     const usage = normalizeUsage(response.usage, response.metadata);
-    const costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
+    // Unknown-model pricing / calculator bugs should NOT drop the usage
+    // event — token_usage is what token_count enforcement reads. Degrade
+    // the cost path but preserve token accounting.
+    let costUsd = 0;
+    try {
+      costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
+    } catch (cause) {
+      latchDegraded("Cost calculation failed", cause, {
+        model: response.model,
+        phase: "post-call",
+      });
+    }
     await recordTokenEvent(ctx, response.model, usage.inputTokens, usage.outputTokens, costUsd);
     onUsage?.({ model: response.model, usage, costUsd });
   }
 
   /**
    * Non-authoritative wrapper: accounting failures after a successful model
-   * call must not discard the response. The provider already consumed tokens
-   * and billed the account; surfacing the record error would lose real work
-   * and potentially trigger double-billing on retry. Sets the degraded latch
-   * so the next `gate()` fails closed.
+   * call must not discard the response, but accounting MUST complete before
+   * returning so the next `gate()` sees up-to-date controller state. A slow
+   * async controller with fire-and-forget accounting would let one or more
+   * extra calls past the supposed next-call fail-closed boundary.
+   *
+   * Therefore: await accounting; on failure, latch degraded and return
+   * normally (caller gets the valid response, next gate() denies).
    */
-  function recordModelUsageSoft(_ctx: TurnContext, response: ModelResponse, model: string): void {
-    recordModelUsage(_ctx, response).catch((cause) => {
+  async function recordModelUsageSoft(
+    ctx: TurnContext,
+    response: ModelResponse,
+    model: string,
+  ): Promise<void> {
+    try {
+      await recordModelUsage(ctx, response);
+    } catch (cause) {
       latchDegraded("Model accounting failed post-call", cause, {
         model,
         phase: "post-call",
       });
-    });
+    }
   }
 
   async function recordTokenEvent(
@@ -371,15 +391,29 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
       alertTracker.cleanup(ctx.sessionId);
+      // Recovery: session boundary clears the degraded latch. A transient
+      // recorder outage shouldn't brick the middleware permanently — the
+      // next session starts from a clean slate against whatever controller
+      // state survives. Runtime-scoped counters (cost, token, spawn) persist
+      // in the controller; the latch is a separate "enforcement confidence"
+      // signal that decays on this boundary.
+      if (degraded) {
+        console.warn("[koi:governance-core] clearing degraded latch on session end", {
+          prior: degradedReason,
+        });
+        degraded = false;
+        degradedReason = undefined;
+      }
     },
 
     async wrapModelCall(ctx: TurnContext, request: ModelRequest, next) {
       await gate(ctx, "model_call", { model: request.model ?? "unknown" });
       const response = await next(request);
-      // Non-authoritative: the provider already returned a valid response
-      // and consumed tokens. Accounting failures surface via onViolation,
-      // not by discarding the caller's completed work.
-      recordModelUsageSoft(ctx, response, request.model ?? "unknown");
+      // Await accounting before returning — otherwise a slow async
+      // controller lets the next call race in on stale state. Accounting
+      // failures latch degraded (next gate denies) rather than discarding
+      // the completed response.
+      await recordModelUsageSoft(ctx, response, request.model ?? "unknown");
       return response;
     },
 
@@ -400,7 +434,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       let errorUsageOutputTokens: number | undefined;
       let terminalRecorded = false;
       const model = request.model ?? "unknown";
-      const recordDeltaSoft = (inputTokens: number, outputTokens: number): void => {
+      const recordDeltaSoft = async (inputTokens: number, outputTokens: number): Promise<void> => {
         if (inputTokens <= 0 && outputTokens <= 0) return;
         let costUsd = 0;
         try {
@@ -410,9 +444,11 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
           // Latch degraded but still record tokens below (costUsd=0 fallback).
           latchDegraded("Cost calculation failed", cause, { model });
         }
-        recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd).catch((cause) => {
+        try {
+          await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);
+        } catch (cause) {
           latchDegraded("Stream accounting failed", cause, { model, phase: "stream" });
-        });
+        }
         onUsage?.({
           model,
           usage: {
@@ -436,14 +472,14 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
               errorUsageInputTokens = chunk.usage.inputTokens;
               errorUsageOutputTokens = chunk.usage.outputTokens;
             }
-            recordDeltaSoft(
+            await recordDeltaSoft(
               errorUsageInputTokens ?? accumulatedInputTokens,
               errorUsageOutputTokens ?? accumulatedOutputTokens,
             );
             terminalRecorded = true;
             yield chunk;
           } else if (chunk.kind === "done") {
-            recordModelUsageSoft(ctx, chunk.response, model);
+            await recordModelUsageSoft(ctx, chunk.response, model);
             terminalRecorded = true;
             yield chunk;
           } else {
@@ -455,7 +491,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         // iteration, mid-stream throw). Charges accumulated deltas so
         // containment still works.
         if (!terminalRecorded) {
-          recordDeltaSoft(
+          await recordDeltaSoft(
             errorUsageInputTokens ?? accumulatedInputTokens,
             errorUsageOutputTokens ?? accumulatedOutputTokens,
           );
