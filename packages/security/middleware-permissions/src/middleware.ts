@@ -1098,6 +1098,12 @@ export function createPermissionsMiddleware(
     approvalCachesBySession.get(sid)?.clear();
     approvalCachesBySession.delete(sid);
     alwaysAllowedBySession.delete(sid);
+    // #1650: evict soft-deny session state so a reused session id does not
+    // inherit the previous turn's counter or soft-deny log.
+    softDenyLogsBySession.get(sid)?.clear();
+    softDenyLogsBySession.delete(sid);
+    turnSoftDenyCountersBySession.get(sid)?.clear();
+    turnSoftDenyCountersBySession.delete(sid);
     // Evict all in-flight approval coalesce entries for this session so that
     // a stale dialog approval resolved after reset cannot re-populate the cache
     // or cause new callers to coalesce onto an old pending promise.
@@ -1137,6 +1143,12 @@ export function createPermissionsMiddleware(
       approvalCachesBySession.get(sid)?.clear();
       approvalCachesBySession.delete(sid);
       alwaysAllowedBySession.delete(sid);
+      // #1650: evict soft-deny session state so long-lived runtimes do not
+      // retain per-session log/counter objects after session teardown.
+      softDenyLogsBySession.get(sid)?.clear();
+      softDenyLogsBySession.delete(sid);
+      turnSoftDenyCountersBySession.get(sid)?.clear();
+      turnSoftDenyCountersBySession.delete(sid);
     },
 
     async wrapModelCall(

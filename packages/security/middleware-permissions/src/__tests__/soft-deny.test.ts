@@ -844,3 +844,62 @@ describe("onBeforeTurn clears per-turn soft-deny counter (#1650 Task 13)", () =>
     expect(after).toBe(1); // onBeforeTurn clears ONLY the turn counter, not the log
   });
 });
+
+describe("session-state eviction (#1650 Task-16 regression)", () => {
+  test("clearSessionApprovals evicts soft-deny log and turn counter for that session", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 2,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-clear-approvals" });
+
+    // Fill the soft-deny log and counter.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+    const hooks = mw as unknown as {
+      clearSessionApprovals(sid: string): void;
+      __getSoftDenyLogForTesting(sid: string): { getAll(): readonly unknown[] };
+    };
+    expect(hooks.__getSoftDenyLogForTesting("s-clear-approvals").getAll().length).toBe(2);
+
+    hooks.clearSessionApprovals("s-clear-approvals");
+
+    // Fresh log after clear — session id reuse starts at zero.
+    expect(hooks.__getSoftDenyLogForTesting("s-clear-approvals").getAll().length).toBe(0);
+
+    // Counter also reset: two more soft denies should be under cap (cap=2) again,
+    // whereas without the reset they would trip the cap on the next call.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    // The third call would trip the (cleared) counter at cap+1 = 3, confirming reset.
+    await expect(mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler)).rejects.toThrow(
+      /soft-deny retry cap/,
+    );
+  });
+
+  test("onSessionEnd evicts soft-deny log and turn counter so a reused session id starts fresh", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 1,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-reused" });
+
+    // Turn 0: one soft-deny pushes counter to 1 (at cap).
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+    // Without reset, the next call (in a new turn but reused session id) would
+    // trip the cap immediately. onSessionEnd must clear the counter so a reused
+    // session id starts fresh.
+    await mw.onSessionEnd?.({ sessionId: "s-reused" } as never);
+
+    const hooks = mw as unknown as {
+      __getSoftDenyLogForTesting(sid: string): { getAll(): readonly unknown[] };
+    };
+    expect(hooks.__getSoftDenyLogForTesting("s-reused").getAll().length).toBe(0);
+
+    // Reused session id: fresh counter — single soft-deny under cap (does not throw).
+    const result = await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    expect((result?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+  });
+});
