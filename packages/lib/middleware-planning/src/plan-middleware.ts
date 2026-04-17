@@ -70,6 +70,15 @@ const PLAN_SYSTEM_MESSAGE: InboundMessage = {
 };
 
 interface PlanSessionState {
+  /**
+   * Monotonically-increasing epoch assigned at onSessionStart. A stable
+   * SessionId can be reused across cycleSession()/clear flows, so the
+   * epoch is the real isolation token — it lets an in-flight write
+   * detect that the session was torn down and recreated while the
+   * hook was awaiting, and skip its commit instead of leaking an old
+   * plan into the new session.
+   */
+  readonly epoch: number;
   readonly currentPlan: readonly PlanItem[];
   /** turnIndex of the turn that last committed the plan. -1 = never committed. */
   readonly lastUpdateTurnIndex: number;
@@ -232,6 +241,11 @@ async function handleWritePlan(
   if (state.closing.value) {
     return errorResponse("session is shutting down; write_plan rejected");
   }
+  // Bind this call to the current session epoch. If the session is
+  // torn down and recreated under the same SessionId while the hook
+  // is awaiting, the recreated session will have a different epoch
+  // and we'll refuse to commit our stale plan into it.
+  const acceptedEpoch = state.epoch;
 
   // Per-turn quota — overlapping turns each get their own counter.
   const priorCount = state.perTurnWriteCounts.get(turnIdForQuota) ?? 0;
@@ -303,13 +317,16 @@ async function handleWritePlan(
     }
 
     // Re-fetch — the session may have ended while the hook was awaiting.
-    // If it did, the hook ALREADY succeeded (onPlanUpdate returned
-    // without throwing), so the durable store is ahead of in-memory.
-    // Reporting failure here would make the caller believe its plan
-    // was rejected when it was in fact persisted — the exact partial-
-    // failure scenario we're trying to avoid. We report success and
-    // skip the in-memory commit (the session is gone; nothing can
-    // read from it anyway).
+    // Three cases:
+    //   1. Session gone and NOT recreated: hook already persisted, so
+    //      we report success with a diagnostic flag and skip the
+    //      in-memory commit (nothing would read it anyway).
+    //   2. Session recreated under the same SessionId (different
+    //      epoch): the old plan MUST NOT leak into the new session.
+    //      Report success (durable storage has the old plan; the
+    //      host owns the decision of whether to recover it) but
+    //      refuse to overwrite the new session's state.
+    //   3. Same session still present: commit normally.
     const post = sessions.get(sessionId);
     if (post === undefined) {
       return {
@@ -317,6 +334,16 @@ async function handleWritePlan(
         metadata: {
           currentPlan: parsed as unknown as JsonObject,
           sessionEndedDuringCommit: true,
+        },
+      };
+    }
+    if (post.epoch !== acceptedEpoch) {
+      return {
+        output: formatPlanSummary(parsed),
+        metadata: {
+          currentPlan: parsed as unknown as JsonObject,
+          sessionEndedDuringCommit: true,
+          replacedSession: true,
         },
       };
     }
@@ -347,11 +374,16 @@ function buildMiddleware(
   onPlanUpdate: PlanConfig["onPlanUpdate"],
   priority: number,
 ): KoiMiddleware {
+  // Per-middleware monotonic epoch counter. Each onSessionStart gets
+  // a fresh epoch so SessionId reuse (cycleSession/clear) can be
+  // detected by in-flight writes.
+  let nextEpoch = 1;
   return {
     name: "plan",
     priority,
     async onSessionStart(ctx) {
       sessions.set(ctx.sessionId, {
+        epoch: nextEpoch++,
         currentPlan: [],
         lastUpdateTurnIndex: -1,
         perTurnWriteCounts: new Map(),

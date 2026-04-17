@@ -688,6 +688,58 @@ describe("onSessionEnd draining", () => {
     expect((response?.output as Record<string, unknown>).error).toBeUndefined();
   });
 
+  it("does not leak an old session's write into a new session that reuses the same SessionId", async () => {
+    // Reviewer R12: stable SessionIds are reused across cycleSession()
+    // and /clear. Without an epoch token, an in-flight old write
+    // could finish after teardown + re-create and commit its stale
+    // plan into the brand-new session.
+    let releaseHook: (() => void) | undefined;
+    const hookGated = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const mw = make({
+      onPlanUpdate: async () => {
+        await hookGated;
+      },
+    });
+    const sid = sessionId("recycle-me");
+    const sessionA = makeSessionCtx(sid);
+
+    await mw.onSessionStart?.(sessionA);
+    const oldWrite = mw.wrapToolCall?.(
+      makeTurnCtx(sessionA, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "from-old-session", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Tear down A (timeout will fire before the hook resolves since
+    // it's gated on releaseHook).
+    const endA = mw.onSessionEnd?.(sessionA);
+
+    // Give the drain time to start, then restart a session with the
+    // SAME SessionId.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const sessionB = makeSessionCtx(sid);
+    await mw.onSessionStart?.(sessionB);
+
+    // Now let the old hook finish. Its post-hook commit MUST detect
+    // the epoch mismatch and refuse to write its plan into the new
+    // session.
+    releaseHook?.();
+    await Promise.all([oldWrite, endA]);
+
+    // New session's current plan should be empty — it was never
+    // written by session B.
+    const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionB, 0), makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(0);
+  }, 15000);
+
   it("rejects new write_plan calls arriving after teardown begins", async () => {
     const mw = make({
       onPlanUpdate: async () => {
