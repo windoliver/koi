@@ -1491,14 +1491,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       summary: handle.pluginSummary,
     });
 
-    // Surface plugin status as inline TUI notice (#1728).
+    // Surface plugin status as inline TUI notice (#1728, #1887).
     // UI-only — not injected into the model transcript to avoid a trust
     // boundary issue (plugin descriptions are untrusted metadata).
     // Agent awareness comes through the /plugins view and startup log.
     //
+    // #1887: suppress the banner on the happy path (plugins loaded cleanly,
+    // no errors) — users who configured those plugins already know they
+    // loaded, and `/plugins` is the canonical way to inspect them. Only
+    // render when there are errors to surface, so failures are never
+    // silent. Include the loaded list alongside errors for context.
+    //
     // Plugin-derived strings are sanitized to strip ANSI escape sequences
     // and control characters before display.
-    if (handle.pluginSummary.loaded.length > 0 || handle.pluginSummary.errors.length > 0) {
+    if (handle.pluginSummary.errors.length > 0) {
       // Strip ANSI escapes and control characters from untrusted plugin text.
       // Constructor form avoids `noControlCharactersInRegex` (hex escapes in
       // literal regex still trip the rule). The `useRegexLiterals` warning on
@@ -1516,16 +1522,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           .join("\n");
         parts.push(`[Loaded Plugins]\n${pluginLines}`);
       }
-      if (handle.pluginSummary.errors.length > 0) {
-        const errorLines = handle.pluginSummary.errors
-          .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
-          .join("\n");
-        parts.push(`[Plugin Load Errors]\n${errorLines}`);
-      }
+      const errorLines = handle.pluginSummary.errors
+        .map((e) => `- ${sanitize(e.plugin)}: ${sanitize(e.error)}`)
+        .join("\n");
+      parts.push(`[Plugin Load Errors]\n${errorLines}`);
+
+      // Route through `add_info` so the notice renders as a system block
+      // rather than being attributed to "You:", and stays out of the
+      // JSONL transcript + next-submit model context.
       store.dispatch({
-        kind: "add_user_message",
-        id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+        kind: "add_info",
+        message: parts.join("\n\n"),
       });
     }
 
