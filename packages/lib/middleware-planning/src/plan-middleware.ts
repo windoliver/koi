@@ -98,10 +98,14 @@ function enrichRequest(request: ModelRequest, currentPlan: readonly PlanItem[]):
     currentPlan.length === 0
       ? [PLAN_SYSTEM_MESSAGE, ...request.messages]
       : [PLAN_SYSTEM_MESSAGE, renderPlanState(currentPlan), ...request.messages];
-  const tools =
-    request.tools !== undefined
-      ? [...request.tools, WRITE_PLAN_DESCRIPTOR]
-      : [WRITE_PLAN_DESCRIPTOR];
+  // Dedupe: when the plan tool provider is wired (required by the
+  // bundle), the engine populates request.tools from attached providers
+  // before middleware runs — so write_plan is already present. Appending
+  // again would emit duplicate function names on the wire and cause
+  // strict providers to reject the request. Only add when missing.
+  const existing = request.tools ?? [];
+  const alreadyHas = existing.some((t) => t.name === WRITE_PLAN_TOOL_NAME);
+  const tools = alreadyHas ? existing : [...existing, WRITE_PLAN_DESCRIPTOR];
   return { ...request, messages, tools };
 }
 
@@ -181,10 +185,19 @@ async function handleWritePlan(
     return errorResponse("write_plan can only be called once per response");
   }
 
-  const parsed = parsePlanInput(request.input);
-  if (typeof parsed === "string") {
-    return errorResponse(parsed);
+  const parsedRaw = parsePlanInput(request.input);
+  if (typeof parsedRaw === "string") {
+    return errorResponse(parsedRaw);
   }
+
+  // Freeze the validated plan so neither onPlanUpdate nor any other
+  // external code can mutate stored state by retained reference.
+  // `readonly` is only a TS annotation; at runtime we need Object.freeze
+  // to actually prevent item rewrites, reorders, or retained-handle
+  // mutation after the caps have been enforced.
+  const parsed: readonly PlanItem[] = Object.freeze(
+    parsedRaw.map((item) => Object.freeze({ ...item })),
+  );
 
   // Critical section: stale-check + persistence hook + in-memory commit
   // run serialized per session via `state.pending`. Order matters:

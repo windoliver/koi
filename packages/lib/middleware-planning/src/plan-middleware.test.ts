@@ -660,6 +660,103 @@ describe("onSessionEnd draining", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tool dedup + plan immutability
+// ---------------------------------------------------------------------------
+
+describe("write_plan injection dedup", () => {
+  it("does not duplicate write_plan when the request already carries it", async () => {
+    const mw = make();
+    const ctx = makeTurnCtx(makeSessionCtx());
+
+    let captured: readonly ToolDescriptor[] | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      {
+        // Simulate the engine pre-populating request.tools from the
+        // attached plan-tool provider (the real runtime path).
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        tools: [
+          {
+            name: WRITE_PLAN_TOOL_NAME,
+            description: "pre-populated",
+            inputSchema: { type: "object", properties: {} } as JsonObject,
+          },
+        ],
+        model: "test-model",
+      },
+      async (req) => {
+        captured = req.tools;
+        return makeResponse("ok");
+      },
+    );
+
+    const count = captured?.filter((t) => t.name === WRITE_PLAN_TOOL_NAME).length ?? 0;
+    expect(count).toBe(1);
+  });
+
+  it("injects write_plan exactly once when request.tools is empty", async () => {
+    const mw = make();
+    const ctx = makeTurnCtx(makeSessionCtx());
+
+    let captured: readonly ToolDescriptor[] | undefined;
+    await mw.wrapModelCall?.(ctx, makeRequest("hi"), async (req) => {
+      captured = req.tools;
+      return makeResponse("ok");
+    });
+
+    const count = captured?.filter((t) => t.name === WRITE_PLAN_TOOL_NAME).length ?? 0;
+    expect(count).toBe(1);
+  });
+});
+
+describe("plan immutability across the onPlanUpdate boundary", () => {
+  it("freezes the plan so hooks cannot mutate stored session state", async () => {
+    let mutationAttemptError: unknown;
+    const mw = make({
+      onPlanUpdate: (plan) => {
+        try {
+          (plan as PlanItem[]).push({ content: "injected", status: "pending" });
+        } catch (err) {
+          mutationAttemptError = err;
+        }
+        try {
+          (plan[0] as { content: string }).content = "rewritten";
+        } catch (err) {
+          mutationAttemptError = err;
+        }
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const response = await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "canonical", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect(response?.output).toContain("Plan updated");
+
+    // The frozen arrays/items throw in strict mode; even if they were
+    // silently ignored in non-strict mode, the stored state must not
+    // reflect the attempted mutations.
+    const peek = await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async () =>
+      makeResponse("ok"),
+    );
+    const plan = peek?.metadata?.currentPlan as unknown as readonly PlanItem[];
+    expect(plan).toHaveLength(1);
+    expect(plan[0]?.content).toBe("canonical");
+    // Either the push/reassign threw, or they silently no-op'd — both
+    // are acceptable, we only care that stored state is unchanged.
+    expect(mutationAttemptError === undefined || mutationAttemptError instanceof TypeError).toBe(
+      true,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tool provider — fallback when middleware is missing
 // ---------------------------------------------------------------------------
 
