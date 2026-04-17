@@ -122,7 +122,7 @@ describe("wrapModelCall — tool + prompt injection", () => {
     expect(captured).toBeDefined();
     const firstMsg = captured?.messages[0];
     expect(firstMsg?.senderId).toBe("system:plan");
-    expect((firstMsg?.content[0] as { text: string }).text).toContain("write_plan");
+    expect((firstMsg?.content[0] as { text: string }).text).toContain(WRITE_PLAN_TOOL_NAME);
   });
 
   it("injects the write_plan tool descriptor", async () => {
@@ -233,6 +233,24 @@ describe("wrapToolCall — write_plan interception", () => {
     expect(response?.output).toContain("Plan updated");
     expect(capturedPlan).toHaveLength(2);
     expect(capturedPlan?.[0]?.content).toBe("Step 1");
+  });
+
+  it("the injected system prompt references the exact advertised tool id", async () => {
+    // Reviewer R28: prompt text must not drift from the tool name.
+    // If the system prompt says "write_plan" while the descriptor
+    // says "koi_plan_write", the model will emit undeclared tool
+    // calls that the runtime rejects.
+    const mw = make();
+    const ctx = makeTurnCtx(makeSessionCtx());
+    let captured: ModelRequest | undefined;
+    await mw.wrapModelCall?.(ctx, makeRequest("hi"), async (req) => {
+      captured = req;
+      return makeResponse("ok");
+    });
+    const systemMsg = captured?.messages.find((m) => m.senderId === "system:plan");
+    const text = (systemMsg?.content[0] as { text: string } | undefined)?.text ?? "";
+    expect(text).toContain(WRITE_PLAN_TOOL_NAME);
+    expect(text.includes("`write_plan`")).toBe(false);
   });
 
   it("does not hijack a third-party tool named 'write_plan' (unnamespaced)", async () => {
