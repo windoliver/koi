@@ -910,6 +910,91 @@ describe("filterTools strips tools already at/over soft-deny cap (#1650 loop rou
   });
 });
 
+describe("filterTools round-3 edge cases (#1650)", () => {
+  test("repeated planning passes after cap exhaustion record DenialTracker ONLY ONCE per (turn, cacheKey)", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: async (q: PermissionQuery): Promise<PermissionDecision> =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "soft-block", disposition: "soft" }
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "soft-block", disposition: "soft" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({
+      backend: perToolBackend,
+      softDenyPerTurnCap: 1,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-dedup" });
+
+    // Push counter to cap.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+
+    // Run filterTools MANY times in the same turn — only the FIRST should
+    // record a soft-conversion entry in DenialTracker.
+    const runFilter = async () =>
+      mw.wrapModelCall?.(
+        ctx,
+        { messages: [] as never, tools: [{ name: "bash" }] as never },
+        async () => ({ content: "", model: "test" }) as never,
+      );
+    await runFilter();
+    await runFilter();
+    await runFilter();
+    await runFilter();
+
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sid: string): {
+          getAll(): ReadonlyArray<{ toolId: string; origin?: string }>;
+        };
+      }
+    ).__getDenialTrackerForTesting("s-dedup");
+    const softConversions = tracker
+      .getAll()
+      .filter((r) => r.origin === "soft-conversion" && r.toolId === "bash");
+    expect(softConversions.length).toBe(1); // exactly one, not N
+  });
+
+  test("unkeyable soft-deny: tool stripped from filterTools (mirrors execute-time fail-closed)", async () => {
+    // Build a backend whose deny decision has serializable reason but whose
+    // context (injected via TurnContext) is non-serializable — forcing
+    // decisionCacheKey(query) === undefined.
+    const backend: PermissionBackend = {
+      check: async (_q: PermissionQuery): Promise<PermissionDecision> => ({
+        effect: "deny",
+        reason: "unkeyable",
+        disposition: "soft",
+      }),
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map(() => ({ effect: "deny", reason: "unkeyable", disposition: "soft" }) as const),
+    };
+    const mw = createPermissionsMiddleware({ backend });
+
+    // Build a turn context whose metadata contains a circular reference so
+    // safeStringify fails. decisionCacheKey will return undefined.
+    const cyclic: Record<string, unknown> = { self: null };
+    cyclic.self = cyclic;
+    const baseCtx = makeTurnContext({ sessionId: "s-unkeyable" });
+    const ctx = { ...baseCtx, metadata: cyclic } as typeof baseCtx;
+
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [] as never, tools: [{ name: "fs_write" }] as never },
+      async (req) => {
+        observedTools = req.tools as ReadonlyArray<{ readonly name: string }>;
+        return { content: "", model: "test" } as never;
+      },
+    );
+
+    expect((observedTools ?? []).map((t) => t.name)).not.toContain("fs_write");
+  });
+});
+
 describe("session-state eviction (#1650 Task-16 regression)", () => {
   test("clearSessionApprovals evicts soft-deny log and turn counter for that session", async () => {
     const mw = createPermissionsMiddleware({
