@@ -89,6 +89,15 @@ describe("resolveStrictAgenticConfig", () => {
     expect(isExplicitDone("I will proceed.")).toBe(false);
   });
 
+  test("default isExplicitDone rejects negated completion phrases", () => {
+    const { isExplicitDone } = resolveStrictAgenticConfig({});
+    expect(isExplicitDone("I am not done yet")).toBe(false);
+    expect(isExplicitDone("Not yet completed")).toBe(false);
+    expect(isExplicitDone("I have not finished")).toBe(false);
+    expect(isExplicitDone("The task isn't done")).toBe(false);
+    expect(isExplicitDone("We haven't completed step 2 yet, please wait")).toBe(false);
+  });
+
   test("default isUserQuestion rejects whitespace-only input", () => {
     const { isUserQuestion } = resolveStrictAgenticConfig({});
     expect(isUserQuestion("   ")).toBe(false);

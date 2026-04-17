@@ -33,16 +33,19 @@ export const DEFAULT_STRICT_AGENTIC_CONFIG: {
   maxFillerRetries: 3,
 } as const satisfies Pick<StrictAgenticConfig, "enabled" | "maxFillerRetries">;
 
+/** Window of trailing characters searched for the explicit-done signal. */
+const EXPLICIT_DONE_WINDOW = 80;
+
+/** Completion keywords: must appear in the trailing window to be recognised. */
+const EXPLICIT_DONE_WORD_RE = /\b(done|completed|finished|no further action)\b/i;
+
 /**
- * Word-boundary regex for default `isExplicitDone` predicate.
- *
- * Intentionally conservative: matches any of the listed words anywhere in the
- * output, producing false positives on negated sentences like "I am not done
- * yet". This is by design — per the spec (D2), text inspection is used only
- * to EXEMPT turns from blocking, never to condemn them. Integrators requiring
- * stricter semantics should pass a custom `isExplicitDone` via config.
+ * Negations that disqualify the match even when a completion keyword appears
+ * in the trailing window. "I am not done yet" must NOT classify as done.
+ * Covers explicit "not", "n't" contractions, "never", and "yet".
  */
-const EXPLICIT_DONE_RE = /\b(done|completed|finished|no further action)\b/i;
+const NEGATION_RE =
+  /\b(not|never|yet|n't|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|won't|can't|couldn't|shouldn't|wouldn't)\b/i;
 
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();
@@ -50,7 +53,12 @@ function defaultIsUserQuestion(output: string): boolean {
 }
 
 function defaultIsExplicitDone(output: string): boolean {
-  return EXPLICIT_DONE_RE.test(output);
+  const tail = output.slice(-EXPLICIT_DONE_WINDOW);
+  if (!EXPLICIT_DONE_WORD_RE.test(tail)) return false;
+  // Reject if any negation is present in the same window — covers "not done yet",
+  // "not yet completed", "have not finished", etc.
+  if (NEGATION_RE.test(tail)) return false;
+  return true;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

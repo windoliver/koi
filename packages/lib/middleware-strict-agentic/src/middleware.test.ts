@@ -185,6 +185,36 @@ describe("createStrictAgenticMiddleware", () => {
       /Invalid @koi\/middleware-strict-agentic config/,
     );
   });
+
+  test("emits reportDecision when circuit breaker releases", async () => {
+    const { middleware } = createStrictAgenticMiddleware({ maxFillerRetries: 1 });
+    const decisions: unknown[] = [];
+    const mkCtx = (turnId: string): TurnContext => ({
+      ...makeTurn("s-cb", turnId),
+      reportDecision: (decision) => {
+        decisions.push(decision);
+      },
+    });
+
+    // First filler turn → block, no emission
+    const t1 = mkCtx("cb-1");
+    await middleware.wrapModelCall?.(t1, REQUEST, async () => response("plan", 0));
+    const r1 = await middleware.onBeforeStop?.(t1);
+    expect(r1?.kind).toBe("block");
+    expect(decisions.length).toBe(0);
+
+    // Second filler turn → still within cap (blocks=2 > maxFillerRetries=1 → releases + emits)
+    const t2 = mkCtx("cb-2");
+    await middleware.wrapModelCall?.(t2, REQUEST, async () => response("plan", 0));
+    const r2 = await middleware.onBeforeStop?.(t2);
+    expect(r2?.kind).toBe("continue");
+    expect(decisions.length).toBe(1);
+    const [decision] = decisions as [Record<string, unknown>];
+    expect(decision["event"]).toBe("strict-agentic:circuit-broken");
+    expect(decision["sessionId"]).toBe("s-cb");
+    expect(decision["consecutiveBlocks"]).toBe(2);
+    expect(decision["maxFillerRetries"]).toBe(1);
+  });
 });
 
 // -------------------------------------------------------------------------
@@ -254,6 +284,43 @@ describe("wrapModelStream", () => {
     if (stream === undefined) throw new Error("wrapModelStream missing");
     await collect(stream);
 
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("continue");
+  });
+
+  test("prefers streamed text when done chunk has empty response content", async () => {
+    // Some adapters emit non-empty text_delta chunks then a done chunk where
+    // response.content is "" (the done chunk is a lifecycle marker). The gate
+    // must not reclassify a valid direct question as filler just because the
+    // terminal response content is blank.
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-stream-empty-done");
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "Should I proceed with the refactor?" },
+      { kind: "done", response: { content: "", model: "test" } },
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    await collect(stream);
+
+    // Streamed text ends with "?" → user-question → continue (not block)
+    const result = await middleware.onBeforeStop?.(turn);
+    expect(result?.kind).toBe("continue");
+  });
+
+  test("preserves streamed tool-call count when done omits richContent", async () => {
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-stream-tool-done-bare");
+    const chunks: ModelChunk[] = [
+      { kind: "tool_call_start", toolName: "x", callId: "c1" as unknown as ToolCallId },
+      { kind: "tool_call_end", callId: "c1" as unknown as ToolCallId },
+      { kind: "done", response: { content: "", model: "test" } }, // no richContent
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+    await collect(stream);
+
+    // Tool call was observed via streamed chunks → action → continue
     const result = await middleware.onBeforeStop?.(turn);
     expect(result?.kind).toBe("continue");
   });

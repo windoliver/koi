@@ -103,14 +103,20 @@ export function createStrictAgenticMiddleware(
         else if (chunk.kind === "done") finalResponse = chunk.response;
         yield chunk;
       }
-      if (finalResponse !== undefined) {
-        store.recordTurn(ctx.turnId, {
-          toolCallCount: countToolCalls(finalResponse.richContent),
-          outputText: finalResponse.content,
-        });
-      } else {
-        store.recordTurn(ctx.turnId, { toolCallCount, outputText: text });
-      }
+      // Merge terminal and streamed evidence. Some adapters send non-empty
+      // text_delta chunks and then a done chunk with empty content / no
+      // richContent (the terminal chunk is a lifecycle marker, not the payload).
+      // Taking max(...) on tool calls and preferring the non-empty signal for
+      // text prevents the gate from reclassifying a successful stream as filler.
+      const mergedToolCallCount =
+        finalResponse !== undefined
+          ? Math.max(toolCallCount, countToolCalls(finalResponse.richContent))
+          : toolCallCount;
+      const mergedText = text.length > 0 ? text : (finalResponse?.content ?? "");
+      store.recordTurn(ctx.turnId, {
+        toolCallCount: mergedToolCallCount,
+        outputText: mergedText,
+      });
     },
 
     async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
@@ -127,6 +133,17 @@ export function createStrictAgenticMiddleware(
 
       const blocks = store.incrementBlocks(ctx.session.sessionId);
       if (blocks > resolved.maxFillerRetries) {
+        // Circuit breaker tripped — fail open so the agent can stop, but emit a
+        // structured signal so operators can distinguish breaker release from a
+        // legitimate non-filler completion. reportDecision is the standard
+        // trace-recording path; absent in prod hot paths without tracing, so
+        // use optional-call.
+        ctx.reportDecision?.({
+          event: "strict-agentic:circuit-broken",
+          sessionId: ctx.session.sessionId as unknown as string,
+          consecutiveBlocks: blocks,
+          maxFillerRetries: resolved.maxFillerRetries,
+        });
         return { kind: "continue" };
       }
 

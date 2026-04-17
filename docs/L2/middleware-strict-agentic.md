@@ -23,7 +23,7 @@ const { middleware } = createStrictAgenticMiddleware({
 | `maxFillerRetries` | `number` | `3` | Consecutive filler blocks per session before circuit-breaker releases. |
 | `feedbackMessage` | `string?` | see below | Override text injected when blocking. |
 | `isUserQuestion` | `(output: string) => boolean` | trimmed output ends with `?` | Exempt turns that ask the user a direct question. |
-| `isExplicitDone` | `(output: string) => boolean` | matches `/\b(done\|completed\|finished\|no further action)\b/i` | Exempt turns that explicitly declare completion. |
+| `isExplicitDone` | `(output: string) => boolean` | terminal `done`/`completed`/`finished`/`no further action` in the last 80 chars AND no negation (`not`, `n't`, `yet`, etc.) in that window | Exempt turns that explicitly declare completion. |
 
 Default feedback:
 
@@ -44,7 +44,7 @@ On each turn, the middleware evaluates in order:
 - Resets on any non-filler turn.
 - Releases (returns `continue`) once `consecutiveBlocks > maxFillerRetries`.
 
-Emits a `strict-agentic:circuit-broken` custom telemetry event when it releases.
+When it releases, calls `ctx.reportDecision({ event: "strict-agentic:circuit-broken", sessionId, consecutiveBlocks, maxFillerRetries })` so operators can distinguish breaker-release from a legitimate non-filler completion in traces.
 
 ## Troubleshooting
 
