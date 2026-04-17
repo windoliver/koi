@@ -1522,10 +1522,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           .join("\n");
         parts.push(`[Plugin Load Errors]\n${errorLines}`);
       }
+      // #1887: route the plugin banner through `add_info` so it renders as
+      // a system notice rather than being attributed to "You:". Using
+      // `add_user_message` previously (a) polluted the transcript with a
+      // fake user turn persisted to the JSONL, and (b) fed the plugin list
+      // back into the model's input context on the next submit.
       store.dispatch({
-        kind: "add_user_message",
-        id: `plugin-status-${String(Date.now())}`,
-        blocks: [{ kind: "text" as const, text: parts.join("\n\n") }],
+        kind: "add_info",
+        message: parts.join("\n\n"),
       });
     }
 
