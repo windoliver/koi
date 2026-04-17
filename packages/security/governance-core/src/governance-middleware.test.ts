@@ -408,14 +408,15 @@ describe("issue checklist", () => {
     });
     const mw = createGovernanceMiddleware(cfg);
 
-    // Call 1: records 0.5 + 0.5 = 1.0 (cumulative 1.0, still at threshold)
+    // Call 1: records 0.5 + 0.5 = 1.0 (cumulative 1.0, still at threshold);
+    // post-call check sees 1.0 NOT > 1 so call succeeds.
     await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
-    // Call 2: pre-gate passes (cumulative=1.0 not > 1), records another 1.0 → cumulative 2.0
-    await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
-    // Call 3: pre-gate sees cumulative=2.0 > 1 → RATE_LIMIT
+    // Call 2: pre-gate passes (cumulative=1.0 not > 1). Records another 1.0 →
+    // cumulative 2.0. Post-call check sees 2.0 > 1 → RATE_LIMIT (fail-fast
+    // containment: the same call that overshoots is denied, not the next one).
     let threw: unknown;
     try {
-      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1_000_000, 1_000_000));
     } catch (e) {
       threw = e;
     }
@@ -438,9 +439,11 @@ describe("issue checklist", () => {
       },
     });
     const mw = createGovernanceMiddleware(cfg);
-    for (let i = 0; i < 3; i++) {
-      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
-    }
+    // Calls 1-2: pre-gate + post-check both pass (turns=1, then 2; both < 3)
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    // Call 3: pre-gate passes (turns=2 not >= 3). Recording bumps turns to 3.
+    // Post-call check sees 3 >= 3 → RATE_LIMIT.
     let threw: unknown;
     try {
       await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));

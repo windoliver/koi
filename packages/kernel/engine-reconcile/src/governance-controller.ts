@@ -264,8 +264,11 @@ export function createGovernanceController(
         break;
       case "token_usage":
         tokenUsage += event.count;
-        // Accumulate cost when input/output breakdown is provided
-        if (event.inputTokens !== undefined && event.outputTokens !== undefined) {
+        // Prefer caller-computed cost (e.g., per-model CostCalculator).
+        // Fall back to internal per-token pricing when costUsd is absent.
+        if (event.costUsd !== undefined) {
+          accumulatedCostUsd += event.costUsd;
+        } else if (event.inputTokens !== undefined && event.outputTokens !== undefined) {
           accumulatedCostUsd +=
             event.inputTokens * costConfig.costPerInputToken +
             event.outputTokens * costConfig.costPerOutputToken;

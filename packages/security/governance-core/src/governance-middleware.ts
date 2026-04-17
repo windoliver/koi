@@ -33,6 +33,28 @@ function warnCompliance(e: unknown): void {
   console.warn("[koi:governance-core] compliance record failed", { cause: e });
 }
 
+/**
+ * Redact sensitive tool_call payloads before handing them to compliance sinks.
+ * Evaluators see the full PolicyRequest (required for rule-matching); audit
+ * records receive only toolId + the shape of the input (keys only, no values)
+ * to avoid durable leaks of bash commands, file contents, credentials, etc.
+ */
+function redactForAudit(req: PolicyRequest): PolicyRequest {
+  if (req.kind !== "tool_call") return req;
+  const payload = req.payload as { toolId?: unknown; input?: unknown };
+  const inputKeys =
+    typeof payload.input === "object" && payload.input !== null
+      ? Object.keys(payload.input as Record<string, unknown>)
+      : [];
+  return {
+    ...req,
+    payload: {
+      toolId: typeof payload.toolId === "string" ? payload.toolId : "unknown",
+      inputKeys,
+    },
+  };
+}
+
 export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): KoiMiddleware {
   const { backend, controller, cost, onAlert, onViolation, onUsage } = config;
   const alertTracker = createAlertTracker({
@@ -76,6 +98,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       };
       onViolation?.(synth, synthReq);
       throw KoiRuntimeError.from("RATE_LIMIT", `Governance setpoint exceeded: ${check.variable}`, {
+        retryable: check.retryable,
         context: {
           agentId: ctx.session.agentId,
           sessionId: ctx.session.sessionId,
@@ -117,7 +140,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
         void Promise.resolve(
           backend.compliance.recordCompliance({
             requestId: nextRequestId(request, kind),
-            request,
+            request: redactForAudit(request),
             verdict,
             evaluatedAt: Date.now(),
             policyFingerprint: GOVERNANCE_MIDDLEWARE_NAME,
@@ -140,8 +163,8 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     if (backend.compliance !== undefined) {
       void Promise.resolve(
         backend.compliance.recordCompliance({
-          requestId: `${request.agentId}:${kind}:${request.timestamp}`,
-          request,
+          requestId: nextRequestId(request, kind),
+          request: redactForAudit(request),
           verdict: GOVERNANCE_ALLOW,
           evaluatedAt: Date.now(),
           policyFingerprint: GOVERNANCE_MIDDLEWARE_NAME,
@@ -164,6 +187,25 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     const snap = await controller.snapshot();
     alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
     onUsage?.({ model: response.model, usage, costUsd });
+
+    // Fail-fast: if this call pushed us past a setpoint, deny the in-flight
+    // response instead of waiting for the next request. Containment > advisory.
+    const postCheck = await controller.checkAll();
+    if (!postCheck.ok) {
+      throw KoiRuntimeError.from(
+        "RATE_LIMIT",
+        `Governance setpoint exceeded after call: ${postCheck.variable}`,
+        {
+          retryable: postCheck.retryable,
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId,
+            kind: "model_call",
+            variable: postCheck.variable,
+          },
+        },
+      );
+    }
   }
 
   return {
