@@ -35,10 +35,13 @@ interface PoolEntry {
  * `cancelled` is checked by the restart task after backoff; if true, the
  * task aborts instead of respawning. `done` resolves when the task finishes
  * (either aborted or respawned), so `stop()` can wait for clean teardown.
+ * `wake` is set by the task while it is sleeping; stop()/shutdown() invoke
+ * it to short-circuit the backoff sleep and advance the task immediately.
  */
 interface RestartingEntry {
   cancelled: boolean;
   readonly done: Promise<void>;
+  wake: (() => void) | undefined;
 }
 
 const BACKEND_PREFERENCE: readonly WorkerBackendKind[] = [
@@ -190,6 +193,81 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       };
     }
     return { ok: true, value: undefined };
+  };
+
+  /**
+   * Schedule a respawn with cancellable backoff. stop() and shutdown() can
+   * flip `cancelled` AND invoke `wake()` to short-circuit the sleep, so they
+   * never wait the full policy.backoffBaseMs * 2^attempt window.
+   */
+  const scheduleRestart = (
+    previous: PoolEntry,
+    request: WorkerSpawnRequest,
+    policy: WorkerRestartPolicy,
+    recentTimestamps: readonly number[],
+    now: number,
+  ): void => {
+    let resolveRestartDone: () => void = () => {};
+    const restartDonePromise = new Promise<void>((resolve) => {
+      resolveRestartDone = resolve;
+    });
+    const entry: RestartingEntry = {
+      cancelled: false,
+      done: restartDonePromise,
+      wake: undefined,
+    };
+    restarting.set(request.workerId, entry);
+
+    const restartTask = (async () => {
+      try {
+        const backoff = Math.min(
+          policy.backoffBaseMs * 2 ** previous.restartAttempts,
+          policy.backoffCeilingMs,
+        );
+        if (backoff > 0) {
+          // Cancellable sleep. stop()/shutdown() invoke entry.wake to
+          // resolve early; otherwise the timer fires normally. Either way
+          // we land in the same shutdown/cancel check below.
+          await new Promise<void>((resolve) => {
+            entry.wake = resolve;
+            const handle = setTimeout(() => {
+              entry.wake = undefined;
+              resolve();
+            }, backoff);
+            // If a waker is called before timer fires, clear the timer so we
+            // don't hold a handle after resolving.
+            entry.wake = (): void => {
+              clearTimeout(handle);
+              entry.wake = undefined;
+              resolve();
+            };
+          });
+        }
+        if (shuttingDown || entry.cancelled) {
+          activeIds.delete(request.workerId);
+          return;
+        }
+        const respawned = await performSpawn(
+          request,
+          { restart: policy, backend: previous.handle.backendKind },
+          true,
+        );
+        if (respawned.ok) {
+          const newEntry = pool.get(request.workerId);
+          if (newEntry !== undefined) {
+            newEntry.restartAttempts = previous.restartAttempts + 1;
+            newEntry.restartTimestamps = [...recentTimestamps, now];
+          }
+        } else {
+          activeIds.delete(request.workerId);
+        }
+      } finally {
+        restarting.delete(request.workerId);
+        resolveRestartDone();
+      }
+    })();
+    pendingRestarts.add(restartTask);
+    void restartTask.finally(() => pendingRestarts.delete(restartTask));
   };
 
   // Internal spawn implementation. `fromRestart` distinguishes the recursive
@@ -390,91 +468,76 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
             return;
           }
 
-          // Register restart task so shutdown() and stop() can observe it.
-          // The shared `restartingEntry` is created BEFORE the async IIFE so
-          // stop() can find and cancel it immediately — there is no race
-          // between scheduling and a caller reaching for the entry.
-          let resolveRestartDone: () => void = () => {};
-          const restartDonePromise = new Promise<void>((resolve) => {
-            resolveRestartDone = resolve;
-          });
-          const restartingEntry: RestartingEntry = {
-            cancelled: false,
-            done: restartDonePromise,
-          };
-          restarting.set(request.workerId, restartingEntry);
-
-          const restartTask = (async () => {
-            try {
-              const backoff = Math.min(
-                policy.backoffBaseMs * 2 ** current.restartAttempts,
-                policy.backoffCeilingMs,
-              );
-              if (backoff > 0) {
-                await new Promise((r) => setTimeout(r, backoff));
-              }
-              // Re-check shutdown AND cancellation AFTER backoff. stop()
-              // can flip `cancelled` during the sleep to abort the respawn,
-              // and shutdown() sets `shuttingDown` for the same effect.
-              if (shuttingDown || restartingEntry.cancelled) {
-                activeIds.delete(request.workerId);
-                return;
-              }
-              const respawned = await performSpawn(
-                request,
-                { restart: policy, backend: current.handle.backendKind },
-                true,
-              );
-              if (respawned.ok) {
-                const newEntry = pool.get(request.workerId);
-                if (newEntry !== undefined) {
-                  newEntry.restartAttempts = current.restartAttempts + 1;
-                  newEntry.restartTimestamps = [...recentTimestamps, now];
-                }
-              } else {
-                // Respawn failed — release activeIds so external callers can retry.
-                activeIds.delete(request.workerId);
-              }
-            } finally {
-              restarting.delete(request.workerId);
-              resolveRestartDone();
-            }
-          })();
-          pendingRestarts.add(restartTask);
-          void restartTask.finally(() => pendingRestarts.delete(restartTask));
+          scheduleRestart(current, request, policy, recentTimestamps, now);
           return;
         }
       } catch (e) {
         // Watch stream faulted. The underlying worker may still be alive;
-        // losing observability does NOT imply the process died. Kill it
-        // through the backend to avoid orphaning, then surface a synthetic
-        // crashed event and drive the normal restart policy so the worker
-        // can recover if the policy permits.
+        // losing observability does NOT imply the process died. Run a
+        // deadline-bounded teardown. If teardown succeeds, apply normal
+        // restart policy. If teardown FAILS, we cannot confirm the old
+        // worker is dead — quarantine it (drop pool+activeIds but DO NOT
+        // respawn, since that would create a duplicate live worker).
         const current = pool.get(request.workerId);
-        if (current !== undefined) {
-          // Best-effort deadline-bounded teardown; swallow the Result since
-          // we're on a degraded path and about to replace the worker anyway.
-          await teardownWorker(current.backend, request.workerId, "watch-stream-fault", undefined);
-          current.resolveExited();
-          pool.delete(request.workerId);
+        const syntheticError: KoiError = {
+          code: "INTERNAL",
+          message: `Backend watch stream closed: ${e instanceof Error ? e.message : String(e)}`,
+          retryable: false,
+        };
+
+        if (current === undefined) {
+          // Fault before pool admission (shouldn't happen today, but handle).
+          publishEvent({
+            kind: "crashed",
+            workerId: request.workerId,
+            at: Date.now(),
+            error: syntheticError,
+          });
+          activeIds.delete(request.workerId);
+          return;
         }
 
+        const teardownResult = await teardownWorker(
+          current.backend,
+          request.workerId,
+          "watch-stream-fault",
+          undefined,
+        );
+        current.resolveExited();
+        pool.delete(request.workerId);
+
+        if (!teardownResult.ok) {
+          // Teardown failed — the old worker may still be alive. Surface
+          // the failure via a synthetic crashed event whose error carries
+          // BOTH the watch fault and the teardown failure context, then
+          // release activeIds so the caller can investigate, but do NOT
+          // respawn (that would risk duplicate live workers).
+          publishEvent({
+            kind: "crashed",
+            workerId: request.workerId,
+            at: Date.now(),
+            error: {
+              code: "INTERNAL",
+              message: `${syntheticError.message}; teardown failed: ${teardownResult.error.message}`,
+              retryable: false,
+            },
+          });
+          activeIds.delete(request.workerId);
+          return;
+        }
+
+        // Teardown succeeded — the old worker is confirmed dead. Now it's
+        // safe to emit the synthetic crashed event and schedule a restart
+        // per policy.
         const syntheticCrash: WorkerEvent = {
           kind: "crashed",
           workerId: request.workerId,
           at: Date.now(),
-          error: {
-            code: "INTERNAL",
-            message: `Backend watch stream closed: ${e instanceof Error ? e.message : String(e)}`,
-            retryable: false,
-          },
+          error: syntheticError,
         };
         publishEvent(syntheticCrash);
 
-        // Apply restart policy just like a real crash. Temporary policy
-        // means we're done; transient/permanent schedule a respawn. If we
-        // never had a pool entry (fault before admission), skip restart.
-        if (current === undefined || shuttingDown) {
+        if (shuttingDown) {
           activeIds.delete(request.workerId);
           return;
         }
@@ -489,50 +552,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
           return;
         }
 
-        // Schedule a respawn with the same mechanics as the normal crash
-        // path so callers can't distinguish a watch fault from a real crash.
-        let resolveRestartDone: () => void = () => {};
-        const restartDonePromise = new Promise<void>((resolve) => {
-          resolveRestartDone = resolve;
-        });
-        const restartingEntry: RestartingEntry = {
-          cancelled: false,
-          done: restartDonePromise,
-        };
-        restarting.set(request.workerId, restartingEntry);
-
-        const restartTask = (async () => {
-          try {
-            const backoff = Math.min(
-              policy.backoffBaseMs * 2 ** current.restartAttempts,
-              policy.backoffCeilingMs,
-            );
-            if (backoff > 0) await new Promise((r) => setTimeout(r, backoff));
-            if (shuttingDown || restartingEntry.cancelled) {
-              activeIds.delete(request.workerId);
-              return;
-            }
-            const respawned = await performSpawn(
-              request,
-              { restart: policy, backend: current.handle.backendKind },
-              true,
-            );
-            if (respawned.ok) {
-              const newEntry = pool.get(request.workerId);
-              if (newEntry !== undefined) {
-                newEntry.restartAttempts = current.restartAttempts + 1;
-                newEntry.restartTimestamps = [...recentTimestamps, now];
-              }
-            } else {
-              activeIds.delete(request.workerId);
-            }
-          } finally {
-            restarting.delete(request.workerId);
-            resolveRestartDone();
-          }
-        })();
-        pendingRestarts.add(restartTask);
-        void restartTask.finally(() => pendingRestarts.delete(restartTask));
+        scheduleRestart(current, request, policy, recentTimestamps, now);
       }
     })();
 
@@ -579,10 +599,12 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     }
 
     // Case B: worker is sleeping in restart backoff (crash observed, respawn
-    // pending). We cancel the restart task and wait for it to bail.
+    // pending). We cancel the restart task, wake it out of its sleep, and
+    // wait for it to bail — bounded because wake short-circuits the timer.
     const restartEntry = restarting.get(id);
     if (restartEntry !== undefined && pool.get(id) === undefined) {
       restartEntry.cancelled = true;
+      if (restartEntry.wake !== undefined) restartEntry.wake();
       await restartEntry.done;
       return { ok: true, value: undefined };
     }
@@ -617,6 +639,14 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // resolves still self-cleans.
     for (const cancel of pendingSpawnCancellations.values()) {
       cancel.cancelled = true;
+    }
+
+    // Wake every restart task out of its backoff sleep so pendingRestarts
+    // drains promptly instead of waiting the full backoff window. Each
+    // woken task then sees shuttingDown=true and bails without respawning.
+    for (const entry of restarting.values()) {
+      entry.cancelled = true;
+      if (entry.wake !== undefined) entry.wake();
     }
 
     // Drain pending spawns and live pool workers IN PARALLEL, bounded by

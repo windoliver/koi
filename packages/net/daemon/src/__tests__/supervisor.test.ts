@@ -968,6 +968,129 @@ describe("supervisor correctness hardening", () => {
     await supervisorResult.value.shutdown("test");
   });
 
+  it("stop() during restart backoff returns within shutdownDeadlineMs, not backoff duration", async () => {
+    // If stop() waited for the full backoff to elapse, a 2s backoff with
+    // a 100ms deadline would make stop() return in ~2s. The cancellable
+    // wake mechanism must short-circuit so stop() completes promptly.
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 2000,
+        backoffCeilingMs: 2000,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("backoff-1"));
+    crash(workerId("backoff-1"));
+    // Let the supervisor observe the crash and enter backoff.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const t0 = Date.now();
+    const stopped = await supervisorResult.value.stop(workerId("backoff-1"), "test");
+    const elapsed = Date.now() - t0;
+
+    expect(stopped.ok).toBe(true);
+    // Must be well under the 2s backoff window.
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("shutdown() during restart backoff returns within shutdownDeadlineMs, not backoff duration", async () => {
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 2000,
+        backoffCeilingMs: 2000,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("sd-backoff-1"));
+    crash(workerId("sd-backoff-1"));
+    await new Promise((r) => setTimeout(r, 30));
+
+    const t0 = Date.now();
+    const sd = await supervisorResult.value.shutdown("test");
+    const elapsed = Date.now() - t0;
+
+    expect(sd.ok).toBe(true);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("watch fault with failing teardown does NOT respawn (no duplicate workers)", async () => {
+    // Backend whose watch() throws and whose terminate/kill are no-ops
+    // (don't actually stop the process). The supervisor must quarantine
+    // the worker instead of respawning a duplicate.
+    let spawnCount = 0;
+    const liveWorkers = new Set<string>();
+    const backend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "fault-teardown-fails",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        spawnCount++;
+        liveWorkers.add(req.workerId as string);
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate and kill are no-ops — they return ok but don't actually
+      // stop the process. isAlive keeps returning true.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => liveWorkers.has(id as string),
+      watch: async function* (id): AsyncIterable<WorkerEvent> {
+        yield { kind: "started", workerId: id, at: Date.now() };
+        throw new Error("simulated watch transport failure");
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 50,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 1,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("fault-nokill-1"));
+
+    // Wait long enough for the fault, teardown (which will time out), and
+    // any respawn attempt to complete.
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Only ONE spawn — the failed teardown must have prevented a restart.
+    expect(spawnCount).toBe(1);
+    // The original live worker is still "alive" per the fake backend
+    // (since terminate/kill were no-ops) — this is the quarantine state
+    // the review demands.
+    expect(liveWorkers.size).toBe(1);
+    // Clean up so the test doesn't leak the tracked worker.
+    liveWorkers.clear();
+  });
+
   it("short-lived subprocesses are observed as exited by the supervisor", async () => {
     // Regression for the fast-exit race: a command that exits before
     // the supervisor's watch IIFE attaches must still have its exited

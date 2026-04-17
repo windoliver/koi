@@ -18,7 +18,7 @@ describe("registerSignalHandlers", () => {
       },
     } as unknown as Supervisor;
 
-    const cleanup = registerSignalHandlers(fakeSupervisor);
+    const cleanup = registerSignalHandlers(fakeSupervisor, { onShutdownComplete: "noop" });
     removed.push(cleanup);
 
     process.emit("SIGTERM", "SIGTERM");
@@ -35,7 +35,7 @@ describe("registerSignalHandlers", () => {
       },
     } as unknown as Supervisor;
 
-    const cleanup = registerSignalHandlers(fakeSupervisor);
+    const cleanup = registerSignalHandlers(fakeSupervisor, { onShutdownComplete: "noop" });
     removed.push(cleanup);
 
     process.emit("SIGINT", "SIGINT");
