@@ -1,0 +1,60 @@
+import { describe, expect, test } from "bun:test";
+import { classifyTurn } from "./classifier.js";
+import { resolveStrictAgenticConfig } from "./config.js";
+
+const resolved = resolveStrictAgenticConfig({});
+
+describe("classifyTurn", () => {
+  test("action when toolCallCount > 0", () => {
+    const r = classifyTurn({ toolCallCount: 1, outputText: "" }, resolved);
+    expect(r.kind).toBe("action");
+  });
+
+  test("action short-circuits — even planning text ignored", () => {
+    const r = classifyTurn(
+      { toolCallCount: 2, outputText: "I will now proceed to do a thing" },
+      resolved,
+    );
+    expect(r.kind).toBe("action");
+  });
+
+  test("user-question when no tool calls and trailing ?", () => {
+    const r = classifyTurn(
+      { toolCallCount: 0, outputText: "Do you want me to proceed?" },
+      resolved,
+    );
+    expect(r.kind).toBe("user-question");
+  });
+
+  test("explicit-done when output mentions done", () => {
+    const r = classifyTurn({ toolCallCount: 0, outputText: "All green — done." }, resolved);
+    expect(r.kind).toBe("explicit-done");
+  });
+
+  test("filler when no tool calls, no question, no done marker", () => {
+    const r = classifyTurn(
+      { toolCallCount: 0, outputText: "I will now proceed to edit the file." },
+      resolved,
+    );
+    expect(r.kind).toBe("filler");
+  });
+
+  test("filler on empty output", () => {
+    const r = classifyTurn({ toolCallCount: 0, outputText: "" }, resolved);
+    expect(r.kind).toBe("filler");
+  });
+
+  test("user-question wins over done marker when both match", () => {
+    // question check runs before done check
+    const r = classifyTurn({ toolCallCount: 0, outputText: "Is this task done?" }, resolved);
+    expect(r.kind).toBe("user-question");
+  });
+
+  test("custom predicate wins", () => {
+    const custom = resolveStrictAgenticConfig({
+      isExplicitDone: (s) => s.includes("FINI"),
+    });
+    const r = classifyTurn({ toolCallCount: 0, outputText: "FINI." }, custom);
+    expect(r.kind).toBe("explicit-done");
+  });
+});
