@@ -749,7 +749,7 @@ describe("register failure rolls back currentRunId", () => {
       interrupt: sharedRegistry.interrupt,
       isInterrupted: sharedRegistry.isInterrupted,
       listActive: sharedRegistry.listActive,
-      forceUnregister: (sid, expectedRunId?) => sharedRegistry.forceUnregister(sid, expectedRunId),
+      forceUnregister: sharedRegistry.forceUnregister, // now takes (sid, runId) — same passthrough is fine
     };
 
     const runtime = await createKoi({
@@ -765,6 +765,45 @@ describe("register failure rolls back currentRunId", () => {
     expect(runtime.currentRunId).toBeUndefined();
 
     // And the runtime must accept a subsequent run (no "already running" latch).
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 12b: register-fail with partial mutation is cleaned up via forceUnregister
+// ---------------------------------------------------------------------------
+
+describe("register-fail ghost entry cleanup", () => {
+  test("register-fail with partial mutation is cleaned up via forceUnregister", async () => {
+    // Custom registry that inserts the entry, then throws before returning unregister.
+    // After run() fails, the entry must NOT be stuck.
+    const inner = createSessionRegistry();
+    let sawRegisterCall = false;
+    const leakyRegistry: SessionRegistry = {
+      register: (sid, rid, ctrl, signal) => {
+        sawRegisterCall = true;
+        inner.register(sid, rid, ctrl, signal);
+        throw new Error("partial mutation then throw");
+      },
+      interrupt: inner.interrupt,
+      isInterrupted: inner.isInterrupted,
+      listActive: inner.listActive,
+      forceUnregister: inner.forceUnregister,
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: leakyRegistry,
+    });
+
+    // run() must propagate the register error...
+    expect(() => runtime.run({ kind: "text", text: "x" })).toThrow(/partial mutation/);
+
+    // ...AND the leaked entry must be evicted by the rollback path.
+    expect(sawRegisterCall).toBe(true);
+    expect(inner.listActive()).toHaveLength(0);
+
     await runtime.dispose();
   });
 });
@@ -834,5 +873,44 @@ describe("RunHandle single-consumer guard", () => {
     // Drain the first iterator cleanly to avoid leaks.
     while (!(await _iterA.next()).done) {}
     await runtime.dispose();
+  });
+});
+
+describe("cross-runtime ownership: idle runtime cannot read or mutate sibling state", () => {
+  test("runtime.interrupt() on idle runtime A does NOT abort active runtime B sharing the same registry+sessionId", async () => {
+    const sharedRegistry = createSessionRegistry();
+    const sid = "shared-sid-xruntime";
+    const runtimeA = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: sharedRegistry,
+      sessionId: sessionId(sid),
+    });
+    const runtimeB = await createKoi({
+      manifest: testManifest(),
+      adapter: pausingAdapter(),
+      sessionRegistry: sharedRegistry,
+      sessionId: sessionId(sid),
+    });
+
+    // B starts a run; A stays idle.
+    const iterB = runtimeB.run({ kind: "text", text: "b" })[Symbol.asyncIterator]();
+    await iterB.next();
+    expect(runtimeB.isInterrupted()).toBe(false);
+
+    // A is idle — interrupt() and isInterrupted() must be no-ops, NOT
+    // leak across runtimes and abort B.
+    expect(runtimeA.interrupt("from-A")).toBe(false);
+    expect(runtimeA.isInterrupted()).toBe(false);
+
+    // B must still be running.
+    expect(runtimeB.isInterrupted()).toBe(false);
+
+    // B can still interrupt itself normally.
+    expect(runtimeB.interrupt("b-self")).toBe(true);
+
+    while (!(await iterB.next()).done) {}
+    await runtimeA.dispose();
+    await runtimeB.dispose();
   });
 });

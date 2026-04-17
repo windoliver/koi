@@ -1688,9 +1688,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
           runSignal,
         );
       } catch (err) {
-        // #1682: full rollback — clear EVERY piece of state run() published
-        // synchronously. A failed register leaves no trace so the runtime
-        // is immediately ready for another run() submission.
+        // #1682: a register() that threw may have partially mutated the
+        // registry (inserted the entry, then failed before returning the
+        // unregister closure). Best-effort evict any ghost entry so the
+        // sessionId isn't pinned for the process lifetime.
+        try {
+          options.sessionRegistry?.forceUnregister(registeredSessionId, currentRid);
+        } catch (_cleanupError: unknown) {
+          // forceUnregister failure is non-fatal; the original register error
+          // is what we surface to the caller.
+        }
         activeController = undefined;
         activeRunSignal = undefined;
         currentRunIdRef = undefined;
@@ -2068,12 +2075,16 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
     },
 
     interrupt(reason?: string): boolean {
+      // #1682: fail closed when THIS runtime has no locally active run. A
+      // shared SessionRegistry can be keyed by a sessionId that another
+      // runtime owns (resume/rebind flows). Without this guard, an idle
+      // runtime could abort a sibling runtime's active run via the
+      // registry. The guard ensures interrupt() is strictly about the
+      // run this runtime owns.
+      if (currentRunIdRef === undefined) return false;
       if (options.sessionRegistry !== undefined) {
-        // Session-scoped: targets whichever run is currently active (if any).
-        // Passing currentRunIdRef ensures a call during a quiet window (between
-        // runs, where currentRunIdRef is undefined) is a no-op per registry
-        // contract: undefined expectedRunId skips the runId check — but the
-        // registry will still return false if there is no registered entry.
+        // Pass currentRunIdRef so the registry enforces runId match — the
+        // call is rejected if another runtime has replaced the entry.
         return options.sessionRegistry.interrupt(factorySessionId, reason, currentRunIdRef);
       }
       // Fallback path (no registry wired). Check the COMPOSITE signal so
@@ -2086,17 +2097,12 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       return true;
     },
     isInterrupted(): boolean {
-      // The registry only observes the internal abortController (what the registry
-      // holds). If a caller passed input.signal and aborted it externally,
-      // activeRunSignal reflects it via AbortSignal.any composition. Prefer the
-      // composite signal so both cancel paths are observable.
-      if (activeRunSignal !== undefined) {
-        return activeRunSignal.aborted;
-      }
-      if (options.sessionRegistry !== undefined) {
-        return options.sessionRegistry.isInterrupted(factorySessionId);
-      }
-      return false;
+      // #1682: isInterrupted() reports state for THIS runtime's active run
+      // only. If this runtime is idle, return false even when a shared
+      // registry has an entry for this sessionId owned by a sibling
+      // runtime — reading sibling state would leak cross-runtime ownership.
+      if (activeRunSignal === undefined) return false;
+      return activeRunSignal.aborted;
     },
 
     dispose: async (): Promise<void> => {
