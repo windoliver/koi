@@ -1091,6 +1091,192 @@ describe("supervisor correctness hardening", () => {
     liveWorkers.clear();
   });
 
+  it("a hanging isAvailable on the preferred backend falls through to a healthy fallback", async () => {
+    // pickBackend() must bound availability probes — a slow preferred
+    // backend cannot prevent fallback to a healthy one.
+    const { backend: fallback } = createFakeBackend("in-process");
+    const stuckSubprocess: WorkerBackend = {
+      kind: "subprocess",
+      displayName: "stuck-probe",
+      // Never resolves — test depends on the probe timing out.
+      isAvailable: async () =>
+        await new Promise<boolean>(() => {
+          /* never */
+        }),
+      spawn: async () => ({
+        ok: false,
+        error: { code: "INTERNAL", message: "unreachable", retryable: false },
+      }),
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: stuckSubprocess, "in-process": fallback },
+    });
+    if (!supervisorResult.ok) return;
+
+    const t0 = Date.now();
+    const started = await supervisorResult.value.start(makeRequest("probe-1"));
+    const elapsed = Date.now() - t0;
+
+    expect(started.ok).toBe(true);
+    // Must have fallen back to in-process, not hung forever on the probe.
+    if (started.ok) expect(started.value.backendKind).toBe("in-process");
+    // Probe timeout is ~1s; start should complete within ~1.5s.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it("a throwing isAvailable on the preferred backend falls through instead of failing start()", async () => {
+    const { backend: fallback } = createFakeBackend("in-process");
+    const throwingSubprocess: WorkerBackend = {
+      kind: "subprocess",
+      displayName: "throwing-probe",
+      isAvailable: async () => {
+        throw new Error("probe exploded");
+      },
+      spawn: async () => ({
+        ok: false,
+        error: { code: "INTERNAL", message: "unreachable", retryable: false },
+      }),
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: throwingSubprocess, "in-process": fallback },
+    });
+    if (!supervisorResult.ok) return;
+    const started = await supervisorResult.value.start(makeRequest("probe-throw-1"));
+    expect(started.ok).toBe(true);
+    if (started.ok) expect(started.value.backendKind).toBe("in-process");
+  });
+
+  it("late-admission with failing teardown keeps the worker quarantined (no silent drop)", async () => {
+    // If a late-admitted worker refuses to die, start() must surface the
+    // teardown failure AND the supervisor must leave activeIds reserved
+    // so the caller cannot respawn the same id while a ghost process runs.
+    let releaseSpawn: (() => void) | undefined;
+    const liveByReq = new Map<string, boolean>();
+    const ghostBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "ghost",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        liveByReq.set(req.workerId as string, true);
+        await new Promise<void>((resolve) => {
+          releaseSpawn = resolve;
+        });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      // terminate/kill are no-ops — the process remains alive.
+      terminate: async () => ({ ok: true, value: undefined }),
+      kill: async () => ({ ok: true, value: undefined }),
+      isAlive: async (id) => liveByReq.get(id as string) ?? false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 60,
+      backends: { "in-process": ghostBackend },
+    });
+    if (!supervisorResult.ok) return;
+
+    const startPromise = supervisorResult.value.start(makeRequest("ghost-1"));
+    await new Promise((r) => setTimeout(r, 10));
+    const stopPromise = supervisorResult.value.stop(workerId("ghost-1"), "test");
+    await new Promise((r) => setTimeout(r, 10));
+    if (releaseSpawn !== undefined) releaseSpawn();
+
+    const [startResult] = await Promise.all([startPromise, stopPromise]);
+    expect(startResult.ok).toBe(false);
+    if (!startResult.ok) {
+      // Teardown-failure surfaces as INTERNAL, not silent UNAVAILABLE.
+      expect(startResult.error.code).toBe("INTERNAL");
+    }
+    // Starting a fresh worker with the SAME id must be rejected because
+    // the ghost is still quarantined in activeIds.
+    const reuse = await supervisorResult.value.start(makeRequest("ghost-1"));
+    expect(reuse.ok).toBe(false);
+    if (!reuse.ok) expect(reuse.error.code).toBe("CONFLICT");
+
+    liveByReq.clear();
+  });
+
+  it("SIGTERM via stop() reports exited, not crashed", async () => {
+    // Regression: the subprocess backend was reporting exit code 143
+    // (SIGTERM) as a crash. stop() is an intentional termination and
+    // must surface as an `exited` event.
+    const { createSubprocessBackend } = await import("../subprocess-backend.js");
+    const subBackend = createSubprocessBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { subprocess: subBackend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+
+    const iter = supervisorResult.value
+      .watchAll()
+      [Symbol.asyncIterator]() as AsyncIterator<WorkerEvent>;
+
+    await supervisorResult.value.start({
+      workerId: workerId("sigterm-1"),
+      agentId: agentId("agent-sigterm-1"),
+      // Long-running command so SIGTERM is required.
+      command: ["bun", "-e", "setTimeout(()=>{},10000)"],
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    await supervisorResult.value.stop(workerId("sigterm-1"), "test");
+
+    // Drain events until we see the terminal event for this worker.
+    let terminalKind: "exited" | "crashed" | undefined;
+    for (let i = 0; i < 10; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<WorkerEvent>>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined as never }), 200),
+        ),
+      ]);
+      if (r.done) break;
+      const ev = r.value;
+      if (ev.workerId === "sigterm-1" && (ev.kind === "exited" || ev.kind === "crashed")) {
+        terminalKind = ev.kind;
+        break;
+      }
+    }
+    expect(terminalKind).toBe("exited");
+    if (iter.return !== undefined) await iter.return(undefined);
+  });
+
   it("short-lived subprocesses are observed as exited by the supervisor", async () => {
     // Regression for the fast-exit race: a command that exits before
     // the supervisor's watch IIFE attaches must still have its exited

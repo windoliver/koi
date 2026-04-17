@@ -113,6 +113,32 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     for (const wake of pending) wake();
   };
 
+  // Availability probes are bounded — a single slow backend must not block
+  // the entire start() call. We treat timeout or thrown errors as "not
+  // available" and try the next backend in preference order.
+  const PROBE_TIMEOUT_MS = 1_000;
+
+  const probeBackend = async (b: WorkerBackend): Promise<boolean> => {
+    let handle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      handle = setTimeout(() => resolve("timeout"), PROBE_TIMEOUT_MS);
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve(b.isAvailable()).then(
+          (v) => ({ ok: true as const, value: v }),
+          () => ({ ok: false as const }),
+        ),
+        timeout.then(() => "timeout" as const),
+      ]);
+      if (result === "timeout") return false;
+      if (!result.ok) return false;
+      return result.value;
+    } finally {
+      clearTimeout(handle);
+    }
+  };
+
   // Async so we can consult backend.isAvailable() — e.g. a subprocess backend
   // in a non-Bun environment, or a remote backend whose transport isn't up
   // yet. Explicit `overrides.backend` is still honored verbatim (callers who
@@ -122,7 +148,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     for (const k of BACKEND_PREFERENCE) {
       const b = config.backends[k];
       if (b === undefined) continue;
-      if (await b.isAvailable()) return b;
+      if (await probeBackend(b)) return b;
     }
     return undefined;
   };
@@ -390,7 +416,24 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       // Deadline-bounded teardown of the late admission — see teardownWorker.
       // We do NOT have an observed-exit signal here (the watch IIFE never
       // attached), so the helper polls backend.isAlive() after kill().
-      await teardownWorker(backend, request.workerId, "cancelled-during-spawn", undefined);
+      const teardownResult = await teardownWorker(
+        backend,
+        request.workerId,
+        "cancelled-during-spawn",
+        undefined,
+      );
+      if (!teardownResult.ok) {
+        // Teardown could not confirm the worker is dead. Leave activeIds
+        // reserved so this workerId is not reused while the process may
+        // still be alive; release capacity so other workers can start.
+        // The caller must see the teardown error, not a clean cancellation.
+        pendingSpawns--;
+        pendingSpawnPromises.delete(spawnDone);
+        pendingSpawnCancellations.delete(request.workerId);
+        resolveSpawnDone();
+        // DO NOT release activeIds — the worker is quarantined.
+        return teardownResult;
+      }
       const reason = shuttingDown
         ? "Supervisor began shutting down during spawn; worker terminated"
         : "stop() cancelled the spawn before the worker could enter the pool";

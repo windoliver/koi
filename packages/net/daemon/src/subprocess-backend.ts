@@ -17,6 +17,11 @@ interface SubprocState {
   // Set when the terminal event has been delivered through a watch()
   // generator OR when the fallback grace period expires — whichever wins.
   terminalDelivered: boolean;
+  // Set to true when terminate()/kill() is called on this worker. Exit
+  // events for intentionally-terminated processes are classified as
+  // `exited` (not `crashed`) even for non-zero exit codes like 143
+  // (SIGTERM) or 137 (SIGKILL), since the caller asked for termination.
+  terminatedIntentionally: boolean;
   // Last-resort prune timer, armed on terminal exit. If no watcher attaches
   // within the grace window, we delete the entry so a caller who never
   // watches cannot leak state for the daemon's lifetime.
@@ -96,6 +101,7 @@ export function createSubprocessBackend(): WorkerBackend {
         listeners: [],
         alive: true,
         terminalDelivered: false,
+        terminatedIntentionally: false,
         pruneTimer: undefined,
       };
       workers.set(request.workerId, state);
@@ -104,8 +110,12 @@ export function createSubprocessBackend(): WorkerBackend {
       void proc.exited.then((code) => {
         state.alive = false;
         controller.abort();
+        // Intentional termination (via terminate/kill) is always an `exited`
+        // event even for non-zero exit codes (143 SIGTERM, 137 SIGKILL),
+        // because the caller explicitly asked for the process to stop.
+        // Only unsolicited non-zero exits are classified as crashes.
         const ev: WorkerEvent =
-          code === 0
+          code === 0 || state.terminatedIntentionally
             ? {
                 kind: "exited",
                 workerId: request.workerId,
@@ -158,6 +168,7 @@ export function createSubprocessBackend(): WorkerBackend {
   const terminate = async (id: WorkerId, _reason: string): Promise<Result<void, KoiError>> => {
     const state = workers.get(id);
     if (state === undefined) return { ok: true, value: undefined };
+    state.terminatedIntentionally = true;
     state.proc.kill("SIGTERM");
     return { ok: true, value: undefined };
   };
@@ -165,6 +176,7 @@ export function createSubprocessBackend(): WorkerBackend {
   const kill = async (id: WorkerId): Promise<Result<void, KoiError>> => {
     const state = workers.get(id);
     if (state === undefined) return { ok: true, value: undefined };
+    state.terminatedIntentionally = true;
     state.proc.kill("SIGKILL");
     return { ok: true, value: undefined };
   };
