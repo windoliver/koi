@@ -62,7 +62,7 @@ const REDIRECT_OP_TYPES: ReadonlySet<string> = new Set([
 /** Entry point: walk a `program` root node and return all simple commands. */
 export function walkProgram(root: Node): WalkResult {
   if (root.hasError) {
-    return tooComplex("tree-sitter parse error in source", "ERROR", "unknown");
+    return tooComplex("tree-sitter parse error in source", "ERROR", "parse-error");
   }
   return walkContainer(root);
 }
@@ -127,7 +127,11 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "command") {
       if (command !== null) {
-        return tooComplex("multiple commands in redirected_statement", child.type, "unknown");
+        return tooComplex(
+          "multiple commands in redirected_statement",
+          child.type,
+          "unsupported-syntax",
+        );
       }
       command = child;
       continue;
@@ -139,12 +143,12 @@ function walkRedirectedStatement(node: Node): WalkResult {
       continue;
     }
     if (child.type === "heredoc_redirect") {
-      return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "unknown");
+      return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "heredoc");
     }
     return tooComplex(
       `unexpected child in redirected_statement: ${child.type}`,
       child.type,
-      "unknown",
+      "unsupported-syntax",
     );
   }
 
@@ -152,7 +156,7 @@ function walkRedirectedStatement(node: Node): WalkResult {
     return tooComplex(
       "redirected_statement with no inner command",
       "redirected_statement",
-      "unknown",
+      "unsupported-syntax",
     );
   }
   return walkCommand(command, redirects);
@@ -169,7 +173,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
     if (SEPARATOR_NODE_TYPES.has(child.type)) continue;
     if (child.type === "variable_assignment") {
       if (sawCommandName) {
-        return tooComplex("variable assignment after command name", child.type, "unknown");
+        return tooComplex("variable assignment after command name", child.type, "malformed");
       }
       const ev = walkVariableAssignment(child);
       if (ev.kind === "too-complex") return ev;
@@ -179,7 +183,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
     if (child.type === "command_name") {
       const inner = child.children[0];
       if (inner === undefined) {
-        return tooComplex("empty command_name", "command_name", "unknown");
+        return tooComplex("empty command_name", "command_name", "malformed");
       }
       const v = walkArgNode(inner);
       if (v.kind === "too-complex") return v;
@@ -201,7 +205,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
       return tooComplex(
         "assignment-only command without an executable",
         "variable_assignment",
-        "unknown",
+        "malformed",
       );
     }
     return { kind: "ok", commands: [] };
@@ -237,14 +241,14 @@ function walkVariableAssignment(node: Node):
     }
     if (sawEquals) {
       if (valueNode !== null) {
-        return tooComplex("multiple values in variable_assignment", child.type, "unknown");
+        return tooComplex("multiple values in variable_assignment", child.type, "malformed");
       }
       valueNode = child;
     }
   }
 
   if (name === null) {
-    return tooComplex("variable_assignment without a name", "variable_assignment", "unknown");
+    return tooComplex("variable_assignment without a name", "variable_assignment", "malformed");
   }
   if (valueNode === null) {
     // `FOO=` — empty value is allowed, treat as empty string
@@ -462,14 +466,14 @@ function walkFileRedirect(node: Node):
       targetNode = child;
       continue;
     }
-    return tooComplex(`unexpected child in file_redirect: ${child.type}`, child.type, "unknown");
+    return tooComplex(`unexpected child in file_redirect: ${child.type}`, child.type, "malformed");
   }
 
   if (op === undefined) {
-    return tooComplex("file_redirect without operator", "file_redirect", "unknown");
+    return tooComplex("file_redirect without operator", "file_redirect", "malformed");
   }
   if (targetNode === null) {
-    return tooComplex("file_redirect without target", "file_redirect", "unknown");
+    return tooComplex("file_redirect without target", "file_redirect", "malformed");
   }
   const v = walkArgNode(targetNode);
   if (v.kind === "too-complex") return v;

@@ -458,4 +458,20 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("unsupported-syntax");
   });
+
+  test("heredoc_redirect routes to heredoc", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("cat <<EOF\nhi\nEOF");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("heredoc");
+  });
+
+  test("unterminated string routes to parse-error", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "unterminated');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("parse-error");
+  });
 });
