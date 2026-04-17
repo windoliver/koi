@@ -34,6 +34,7 @@ import type {
 import {
   memoryRecordId,
   parseMemoryFrontmatter,
+  sanitizeFrontmatterValue,
   serializeMemoryFrontmatter,
   validateMemoryRecordInput,
 } from "@koi/core/memory";
@@ -50,6 +51,7 @@ import type {
   MemoryStoreConfig,
   MemoryStoreOperation,
   UpdateResult,
+  UpsertResult,
 } from "./types.js";
 import { DEFAULT_DEDUP_THRESHOLD } from "./types.js";
 
@@ -138,6 +140,31 @@ export function createMemoryStore(config: MemoryStoreConfig): MemoryStore {
         await rebuildIndex(ctx.dir, records);
       });
     },
+    upsert: async (input, opts) => {
+      const errors = validateMemoryRecordInput({ ...input });
+      if (errors.length > 0) {
+        const messages = errors.map((e) => `${e.field}: ${e.message}`).join("; ");
+        throw new Error(`Invalid memory record input: ${messages}`);
+      }
+      // Untyped JS callers may pass `{ force: "false" }`, `{ force: 1 }`, or
+      // omit `opts` entirely. Reject anything that is not a strict boolean
+      // so the destructive force-update path cannot be entered by accident.
+      if (
+        opts === null ||
+        typeof opts !== "object" ||
+        typeof (opts as { force: unknown }).force !== "boolean"
+      ) {
+        throw new Error("Invalid upsert options: opts.force must be a boolean");
+      }
+      const ctx = await getContext();
+      const res = await withDirLock(ctx.canonicalDir, () => upsertRecord(ctx, input, opts.force));
+      // Index rebuild for any action that mutated disk (created or updated).
+      if (res.action === "created" || res.action === "updated") {
+        const indexError = await chainedRebuild(ctx, "upsert");
+        return indexError === undefined ? res : { ...res, indexError };
+      }
+      return res;
+    },
   };
 }
 
@@ -158,8 +185,43 @@ async function writeRecord(ctx: StoreContext, input: MemoryRecordInput): Promise
   const { dir, threshold } = ctx;
   const existing = await scanRecords(dir);
 
-  // Dedup scan + file creation are now both inside the dir lock, so two
-  // writers cannot both observe "no duplicate" and both succeed.
+  // Step 1 — check (canonical name, type) collision BEFORE the broad
+  // Jaccard dedup. Otherwise a near-duplicate edit to an existing
+  // same-key record (tiny content tweak, description change) would
+  // return `skipped` and silently keep the old record on disk, hiding
+  // what is actually a same-key write that should conflict.
+  //
+  // When a same-key record already exists, treat the call as a replay
+  // ONLY when both the canonical description AND the content are
+  // exactly equal. Jaccard-threshold similarity is too loose here —
+  // a single token edit (e.g. port 8080 → 9090) must NOT be silently
+  // dropped as "close enough".
+  const canonicalName = sanitizeFrontmatterValue(input.name);
+  const canonicalDescription = sanitizeFrontmatterValue(input.description);
+  const nameTypeCollision = existing.find((r) => r.name === canonicalName && r.type === input.type);
+  if (nameTypeCollision !== undefined) {
+    const exactReplay =
+      nameTypeCollision.description === canonicalDescription &&
+      nameTypeCollision.content === input.content;
+    if (exactReplay) {
+      return {
+        action: "skipped",
+        record: nameTypeCollision,
+        duplicateOf: nameTypeCollision.id,
+        similarity: 1,
+      };
+    }
+    throw new Error(
+      `Memory record already exists with name=${JSON.stringify(canonicalName)}, ` +
+        `type=${input.type} (id=${nameTypeCollision.id}). Use upsert({ force: true }) ` +
+        `to overwrite or pick a different name.`,
+    );
+  }
+
+  // Step 2 — broad Jaccard dedup across all other records. Same-key
+  // matches cannot fall through here because step 1 already handled
+  // them. Dedup scan + file creation are both inside the dir lock, so
+  // two writers cannot both observe "no duplicate" and both succeed.
   const dup = findDuplicate(input.content, existing, threshold);
   if (dup !== undefined) {
     return {
@@ -218,6 +280,27 @@ async function updateRecord(
     type: patch.type ?? existing.type,
     content: patch.content ?? existing.content,
   };
+
+  // Guard renames/type changes against collisions. If either name or
+  // type changed, make sure no OTHER record already owns the new
+  // canonical (name, type) pair — otherwise update() could silently
+  // land the store in the `corrupted` state that upsert() now
+  // surfaces. A patch that is a no-op on name+type (e.g. content-only
+  // update, or renaming to the same canonical form) is allowed.
+  const canonicalNewName = sanitizeFrontmatterValue(updated.name);
+  const canonicalOldName = existing.name; // already canonical on disk
+  const keyChanged = canonicalNewName !== canonicalOldName || updated.type !== existing.type;
+  if (keyChanged) {
+    const collision = records.find(
+      (r) => r.id !== id && r.name === canonicalNewName && r.type === updated.type,
+    );
+    if (collision !== undefined) {
+      throw new Error(
+        `Cannot rename memory record ${id}: target (name=${JSON.stringify(canonicalNewName)}, ` +
+          `type=${updated.type}) is already owned by ${collision.id}.`,
+      );
+    }
+  }
 
   const serialized = serializeMemoryFrontmatter(
     { name: updated.name, description: updated.description, type: updated.type },
@@ -298,6 +381,103 @@ async function deleteRecord(ctx: StoreContext, id: MemoryRecordId): Promise<Dele
   }
 
   return { deleted: true };
+}
+
+async function upsertRecord(
+  ctx: StoreContext,
+  input: MemoryRecordInput,
+  force: boolean,
+): Promise<UpsertResult> {
+  // Note: validation already ran in the public `upsert()` method before
+  // getContext()/mkdir. This function is called inside the dir lock and
+  // must not re-validate (the lock was acquired after validation passed).
+  const { dir, threshold } = ctx;
+  const existing = await scanRecords(dir);
+
+  // Canonicalize the inputs to match the persisted frontmatter form before
+  // comparing against scanned records. Otherwise inputs that only differ by
+  // newlines or control chars (e.g. "foo\nbar" vs "foo bar") would miss an
+  // existing record and create a logical duplicate on disk.
+  const canonicalName = sanitizeFrontmatterValue(input.name);
+  const canonicalDescription = sanitizeFrontmatterValue(input.description);
+  const canonicalInput: MemoryRecordInput = {
+    ...input,
+    name: canonicalName,
+    description: canonicalDescription,
+  };
+
+  // Step 1: Name+type exact match (against canonicalized name).
+  //
+  // We intentionally collect ALL matches rather than taking the first one.
+  // Legacy records written before this atomic path existed may have been
+  // created by a non-atomic list→find→write race that produced multiple
+  // files sharing the same logical (name,type). In that state, silently
+  // picking `existing.find(...)` would non-deterministically update one
+  // duplicate and leave the rest as invisible stale recalls. Fail loudly
+  // and surface the corruption so an operator can reconcile manually via
+  // `delete` + `rebuildIndex`.
+  const nameTypeMatches = existing.filter(
+    (r) => r.name === canonicalName && r.type === canonicalInput.type,
+  );
+
+  if (nameTypeMatches.length > 1) {
+    return {
+      action: "corrupted",
+      canonicalName,
+      type: canonicalInput.type,
+      conflictingIds: nameTypeMatches.map((r) => r.id),
+    };
+  }
+
+  const nameTypeMatch = nameTypeMatches[0];
+  if (nameTypeMatch !== undefined) {
+    if (!force) {
+      return { action: "conflict", existing: nameTypeMatch };
+    }
+    // Force update — overwrite the matched record's description + content.
+    const updated = await updateRecord(ctx, nameTypeMatch.id, {
+      description: canonicalDescription,
+      content: canonicalInput.content,
+    });
+    return { action: "updated", record: updated.record };
+  }
+
+  // Step 2: Jaccard content dedup (no name+type match found)
+  const dup = findDuplicate(canonicalInput.content, existing, threshold);
+  if (dup !== undefined) {
+    return {
+      action: "skipped",
+      record: dup.record,
+      duplicateOf: dup.id,
+      similarity: dup.similarity,
+    };
+  }
+
+  // Step 3: Create new record
+  const serialized = serializeMemoryFrontmatter(
+    { name: canonicalName, description: canonicalDescription, type: canonicalInput.type },
+    canonicalInput.content,
+  );
+  if (serialized === undefined) {
+    throw new Error("Failed to serialize memory record — invalid frontmatter or empty content");
+  }
+
+  const filename = await writeExclusive(dir, canonicalName, serialized);
+  const fileStat = await stat(join(dir, filename));
+
+  const persisted = parseMemoryFrontmatter(serialized);
+  const record: MemoryRecord = {
+    id: memoryRecordId(filenameToId(filename)),
+    name: persisted?.frontmatter.name ?? canonicalName,
+    description: persisted?.frontmatter.description ?? canonicalDescription,
+    type: persisted?.frontmatter.type ?? canonicalInput.type,
+    content: persisted?.content ?? canonicalInput.content,
+    filePath: filename,
+    createdAt: Math.min(fileStat.birthtimeMs, fileStat.mtimeMs),
+    updatedAt: fileStat.ctimeMs,
+  };
+
+  return { action: "created", record };
 }
 
 async function listRecords(

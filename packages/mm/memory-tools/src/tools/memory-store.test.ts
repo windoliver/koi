@@ -146,6 +146,33 @@ describe("memory_store execute", () => {
     expect(result.code).toBe("VALIDATION");
   });
 
+  test("returns structured remediation when backend reports 'corrupted'", async () => {
+    const backend = mockBackend({
+      storeWithDedup: async () => ({
+        ok: true,
+        value: {
+          action: "corrupted",
+          canonicalName: "Dup Key",
+          conflictingIds: ["dup-key", "dup-key-2"],
+        } as StoreWithDedupResult,
+      }),
+    });
+    const tool = unwrapTool(createMemoryStoreTool(backend, TEST_MEMORY_DIR));
+
+    const result = (await tool.execute(validArgs)) as Record<string, unknown>;
+    expect(result.stored).toBe(false);
+    expect(result.corrupted).toEqual({
+      canonicalName: "Dup Key",
+      conflictingIds: ["dup-key", "dup-key-2"],
+    });
+    expect(result.message).toContain("2 records share");
+    expect(result.message).toContain("memory_delete");
+    // The remediation must spell out the full end-to-end recovery: the
+    // "delete all but one + retry" path only succeeds when the caller
+    // passes force: true, so the message must mention that path.
+    expect(result.message).toContain("force: true");
+  });
+
   test("returns sanitized internal error when backend.storeWithDedup fails", async () => {
     const backend = mockBackend({
       storeWithDedup: async () => ({

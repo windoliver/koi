@@ -123,6 +123,95 @@ describe("memory-adapter E2E", () => {
     expect(recall.formatted).toContain("test content");
   });
 
+  test("adapter.store replay-safe across frontmatter normalization (newline/whitespace in description)", async () => {
+    // First write with a description that requires frontmatter
+    // canonicalization (newlines get replaced with spaces, runs are
+    // collapsed). The persisted record's description will be the
+    // canonical form "foo bar baz".
+    const first = await backend.store({
+      name: "replay-canon",
+      description: "foo\n  bar   baz",
+      type: "project",
+      content: "Identical payload across the retry.",
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Second write with the SAME caller input. The raw description
+    // differs from the persisted form, so a naive `===` replay check
+    // would false-conflict. The adapter must canonicalize before
+    // comparing — a successful retry returns ok with the same id.
+    const second = await backend.store({
+      name: "replay-canon",
+      description: "foo\n  bar   baz",
+      type: "project",
+      content: "Identical payload across the retry.",
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.id).toBe(first.value.id);
+  });
+
+  test("adapter.store is replay-safe: identical retry returns ok without error", async () => {
+    const input = {
+      name: "replay-safe",
+      description: "same description",
+      type: "feedback" as const,
+      content: "Exact payload that could be replayed if the response was lost.",
+    };
+    const first = await backend.store(input);
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    // Retry the exact same write (description + content identical).
+    // This simulates a client replaying after a lost response. The
+    // adapter must treat it as a successful replay, not a loud conflict.
+    const second = await backend.store(input);
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.value.id).toBe(first.value.id);
+
+    // Only one record exists on disk.
+    const all = await backend.recall("", undefined);
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value.length).toBe(1);
+  });
+
+  test("adapter.store surfaces (name,type) conflict as a loud error (no silent data loss)", async () => {
+    // First write succeeds normally.
+    const first = await backend.store({
+      name: "dup-name",
+      description: "first",
+      type: "feedback",
+      content: "first payload content body, non-similar to the follow-up",
+    });
+    expect(first.ok).toBe(true);
+
+    // Second write with the same (name, type) but different content must
+    // NOT silently map to ok(existing). That mapping would cause concurrent
+    // extraction-style writes (`extracted-${Date.now()}`) to drop payloads
+    // if they happened to land on the same millisecond. Surface a loud
+    // error so callers can retry with a fresh name instead.
+    const second = await backend.store({
+      name: "dup-name",
+      description: "second",
+      type: "feedback",
+      content: "completely different follow-up payload with no Jaccard overlap",
+    });
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.error.message).toContain("Memory record already exists");
+
+    // The on-disk state must still contain the first payload — only one
+    // file, and its content is the first write's body.
+    const all = await backend.recall("", undefined);
+    expect(all.ok).toBe(true);
+    if (!all.ok) return;
+    expect(all.value.length).toBe(1);
+    expect(all.value[0]?.content).toContain("first payload content body");
+  });
+
   test("adapter storeWithDedup detects name+type conflict", async () => {
     const first = await backend.storeWithDedup(
       { name: "pref", description: "preference desc", type: "user", content: "preference value" },

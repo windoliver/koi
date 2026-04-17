@@ -95,8 +95,15 @@ export const memoryStack: PresetStack = {
           }));
         },
         async store(content: string, options?: { readonly category?: string | undefined }) {
+          // Make the generated name collision-resistant. `Date.now()`
+          // alone is millisecond-granular, so two concurrent extractions
+          // landing in the same tick would collide on (name, type) and
+          // the atomic upsert path would reject the second one. Append
+          // a short random suffix so concurrent extractions always get
+          // unique names.
+          const suffix = crypto.randomUUID().slice(0, 8);
           const result = await memoryBackend.store({
-            name: `extracted-${Date.now()}`,
+            name: `extracted-${Date.now()}-${suffix}`,
             description: options?.category ?? "extracted learning",
             type: "feedback",
             content,
