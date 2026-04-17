@@ -44,6 +44,25 @@ const MAX_PLAN_ITEMS = 100;
 const MAX_CONTENT_LENGTH = 2000;
 const MAX_SERIALIZED_PLAN_CHARS = 8000;
 
+/**
+ * Cap on per-session quota-counter entries. onAfterTurn prunes entries
+ * on `turn_end`, but that event is not emitted on every single-turn
+ * done path. Without an upper bound, long-lived sessions that repeat
+ * write_plan across many turns would accumulate dead TurnId entries
+ * indefinitely. When we exceed this cap we evict the oldest entries
+ * (Map iteration is insertion-ordered) — the quota on old turns is
+ * no longer enforceable, but those turns have long since closed.
+ */
+const MAX_TURN_QUOTA_ENTRIES = 256;
+
+/**
+ * Maximum time onSessionEnd will wait for in-flight persistence to
+ * drain before tearing down session state anyway. A stuck external
+ * hook must not wedge `/clear` or session cycling for the whole
+ * runtime; we bound the wait and proceed with cleanup on timeout.
+ */
+const SESSION_DRAIN_TIMEOUT_MS = 5000;
+
 const PLAN_SYSTEM_MESSAGE: InboundMessage = {
   senderId: "system:plan",
   timestamp: 0,
@@ -218,6 +237,14 @@ async function handleWritePlan(
   const priorCount = state.perTurnWriteCounts.get(turnIdForQuota) ?? 0;
   const callCount = priorCount + 1;
   state.perTurnWriteCounts.set(turnIdForQuota, callCount);
+  // Evict oldest entries when the map grows past the cap. onAfterTurn
+  // prunes on turn_end, but that signal is not always delivered; the
+  // cap prevents unbounded growth across long sessions.
+  while (state.perTurnWriteCounts.size > MAX_TURN_QUOTA_ENTRIES) {
+    const oldest = state.perTurnWriteCounts.keys().next().value;
+    if (oldest === undefined || oldest === turnIdForQuota) break;
+    state.perTurnWriteCounts.delete(oldest);
+  }
   if (callCount > 1) {
     return errorResponse("write_plan can only be called once per response");
   }
@@ -323,18 +350,16 @@ function buildMiddleware(
       const state = sessions.get(ctx.sessionId);
       if (state === undefined) return;
       // Flip the closing flag FIRST so wrapToolCall rejects any write
-      // arriving after teardown begins. Then drain the pending chain.
-      // We snapshot the chain BEFORE awaiting so a last-pulse write
-      // that sneaked in between the synchronous closing-flag check and
-      // chain append (there shouldn't be one, but defense-in-depth)
-      // is still covered by the drain.
+      // arriving after teardown begins. Then drain the pending chain
+      // under a bounded timeout so a stuck external onPlanUpdate
+      // cannot wedge session cycling for the rest of the runtime.
       state.closing.value = true;
+      const deadline = Date.now() + SESSION_DRAIN_TIMEOUT_MS;
       while (true) {
         const chain = state.pending.current;
-        await chain;
-        // If an enqueued call pushed new work during our await, the
-        // chain slot advanced — drain again. Once it stabilizes we're
-        // safe to delete.
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await Promise.race([chain, new Promise<void>((resolve) => setTimeout(resolve, remaining))]);
         if (state.pending.current === chain) break;
       }
       sessions.delete(ctx.sessionId);
