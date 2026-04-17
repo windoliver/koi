@@ -49,20 +49,32 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // In-flight restart tasks — shutdown() awaits these so pending respawns
   // cannot resurrect workers after shutdown returns.
   const pendingRestarts = new Set<Promise<void>>();
+  // In-flight spawn attempts (past capacity check, awaiting backend.spawn).
+  // Counted against maxWorkers so concurrent start() calls cannot both pass
+  // the capacity check before either lands in the pool.
+  let pendingSpawns = 0;
   let shuttingDown = false;
   const defaultPolicy = config.restart ?? DEFAULT_WORKER_RESTART_POLICY;
 
-  // Fan-in event bus — collects events from all worker watch loops.
-  // TODO: eventBuffer is unbounded — it grows for the lifetime of the supervisor.
-  // For long-running daemons with restart-heavy workers this is a memory leak.
-  // Follow-up work: bounded ring-buffer with configurable retention window and
-  // a subscriber-abandonment cleanup path that removes stale wakers on iterator
-  // return/throw. Acceptable for initial implementation.
+  // Fan-in event bus with bounded ring-buffer semantics.
+  //   - eventBuffer holds at most EVENT_BUFFER_MAX events; oldest are evicted.
+  //   - droppedCount tracks the logical index of eventBuffer[0], so subscriber
+  //     cursors (also logical indices) advance correctly even after eviction.
+  //   - Subscribers that fall more than EVENT_BUFFER_MAX events behind silently
+  //     skip to the current front. Gap reporting is deferred to follow-up work.
+  //   - eventWakers stores one resolver per waiting subscriber. Abandoned
+  //     iterators remove their waker in watchAll's finally block.
+  const EVENT_BUFFER_MAX = 1000;
   const eventBuffer: WorkerEvent[] = [];
+  let droppedCount = 0;
   const eventWakers: Array<() => void> = [];
 
   const publishEvent = (ev: WorkerEvent): void => {
     eventBuffer.push(ev);
+    if (eventBuffer.length > EVENT_BUFFER_MAX) {
+      eventBuffer.shift();
+      droppedCount++;
+    }
     // Wake every pending subscriber once. They will re-read the buffer from
     // their cursor position on the next iteration — no value is passed through
     // the promise, to avoid losing events pushed between drain and wakeup.
@@ -110,7 +122,9 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
         },
       };
     }
-    if (pool.size >= config.maxWorkers) {
+    // Include pendingSpawns so concurrent start() calls share the budget and
+    // cannot both pass this check for the same slot.
+    if (pool.size + pendingSpawns >= config.maxWorkers) {
       return {
         ok: false,
         error: {
@@ -135,8 +149,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // Reserve the id synchronously so a concurrent start() cannot race past
     // the duplicate-check while backend.spawn() is awaiting.
     activeIds.add(request.workerId);
+    // Reserve the capacity slot synchronously so a concurrent start() sees
+    // the reservation in its pool.size + pendingSpawns check.
+    pendingSpawns++;
 
-    const spawned = await backend.spawn(request);
+    let spawned: Result<WorkerHandle, KoiError>;
+    try {
+      spawned = await backend.spawn(request);
+    } finally {
+      pendingSpawns--;
+    }
     if (!spawned.ok) {
       if (!fromRestart) activeIds.delete(request.workerId);
       return spawned;
@@ -370,22 +392,45 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   };
 
   const watchAll: Supervisor["watchAll"] = async function* (): AsyncIterable<WorkerEvent> {
-    // Use a cursor into eventBuffer so late-arriving events (added between yields)
-    // are never missed: check for buffered items before each waker await.
+    // cursor is a LOGICAL index — not a buffer offset. droppedCount tracks how
+    // many events were evicted from the front of eventBuffer, so the physical
+    // index for cursor is (cursor - droppedCount). A subscriber that falls
+    // more than EVENT_BUFFER_MAX events behind has its cursor silently
+    // fast-forwarded to the oldest retained event.
     let cursor = 0;
-    while (true) {
-      // Drain all events available since last yield.
-      while (cursor < eventBuffer.length) {
-        const ev = eventBuffer[cursor];
-        cursor++;
-        if (ev !== undefined) yield ev;
+    // Keep the current waker resolver so the finally block (triggered on
+    // iterator.return() or break/throw) can resolve the parked promise AND
+    // evict the waker from the registry. Without unblocking the promise,
+    // iterator.return() would hang forever because async-generator cancel
+    // waits for the current await to settle.
+    let currentWaker: (() => void) | undefined;
+    try {
+      while (true) {
+        // Fast-forward past evicted events if we fell behind.
+        if (cursor < droppedCount) cursor = droppedCount;
+        // Drain all currently-buffered events for this subscriber's cursor.
+        while (cursor - droppedCount < eventBuffer.length) {
+          const idx = cursor - droppedCount;
+          const ev = eventBuffer[idx];
+          cursor++;
+          if (ev !== undefined) yield ev;
+        }
+        // Wait for next publish.
+        await new Promise<void>((resolve) => {
+          currentWaker = resolve;
+          eventWakers.push(resolve);
+        });
+        currentWaker = undefined;
       }
-      // Wait for next event. The wakeup is just a signal — we'll re-check the
-      // buffer above on the next iteration, which handles any burst of events
-      // pushed before we woke up.
-      await new Promise<void>((resolve) => {
-        eventWakers.push(resolve);
-      });
+    } finally {
+      // Iterator was returned early (break, throw, abandoned). Evict our
+      // waker from the registry AND resolve it so the supervisor doesn't
+      // leak a reference for the rest of its lifetime.
+      if (currentWaker !== undefined) {
+        const idx = eventWakers.indexOf(currentWaker);
+        if (idx !== -1) eventWakers.splice(idx, 1);
+        currentWaker();
+      }
     }
   };
 

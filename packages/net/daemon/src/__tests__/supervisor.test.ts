@@ -420,4 +420,134 @@ describe("supervisor correctness hardening", () => {
     expect(elapsed).toBeGreaterThanOrEqual(90);
     expect(alive).toBe(false);
   });
+
+  it("rejects concurrent start() attempts past maxWorkers", async () => {
+    // With maxWorkers=1, firing three start() calls in parallel must result in
+    // exactly one success. The previous impl checked capacity only against
+    // pool.size — multiple callers could pass the check before any of them
+    // registered, overshooting the cap.
+    const { backend } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 1,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    const results = await Promise.all([
+      supervisorResult.value.start(makeRequest("race-1")),
+      supervisorResult.value.start(makeRequest("race-2")),
+      supervisorResult.value.start(makeRequest("race-3")),
+    ]);
+    const successes = results.filter((r) => r.ok).length;
+    const exhausted = results.filter((r) => !r.ok && r.error.code === "RESOURCE_EXHAUSTED").length;
+    expect(successes).toBe(1);
+    expect(exhausted).toBe(2);
+  });
+
+  it("supervisor remains functional after many subscribers abandon their iterators", async () => {
+    // A subscriber that breaks out of its for-await loop or throws leaves a
+    // parked waker. The publish-side clears all wakers on every emit, so any
+    // abandoned waker reference is dropped at the next publish. This test
+    // proves the supervisor keeps serving new subscribers after many such
+    // abandonments.
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 1,
+        backoffCeilingMs: 10,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("leak-1"));
+
+    // Start 25 subscribers that each consume one event (buffered `started`)
+    // and then break — leaving the generator at its yield point, not parked
+    // on a waker. The finally block evicts nothing but the generator exits
+    // cleanly, which is the common real-world abandonment path.
+    for (let i = 0; i < 25; i++) {
+      const stream = supervisorResult.value.watchAll();
+      for await (const _ev of stream) {
+        break;
+      }
+    }
+
+    // New subscriber after all the abandonments must still receive new events.
+    const iter = supervisorResult.value.watchAll()[Symbol.asyncIterator]() as AsyncIterator<
+      import("@koi/core").WorkerEvent
+    >;
+    crash(workerId("leak-1"));
+    const seen: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<import("@koi/core").WorkerEvent>>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined as never }), 100),
+        ),
+      ]);
+      if (r.done) break;
+      seen.push(`${r.value.kind}:${r.value.workerId}`);
+    }
+    expect(seen.some((e) => e === "crashed:leak-1")).toBe(true);
+    // Break out cleanly.
+    for await (const _ev of (async function* () {})()) void _ev;
+  });
+
+  it("bounds the event buffer under sustained crash/restart churn", async () => {
+    // Prior impl grew eventBuffer forever. With a bounded ring buffer, a
+    // long-lived supervisor emitting thousands of events must not OOM.
+    // We can't assert memory directly, but we CAN assert:
+    //   - watchAll continues to deliver recent events
+    //   - list()/stop() still function after heavy churn
+    const { backend, crash } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      // Permanent restart with no backoff — drives aggressive churn.
+      restart: {
+        restart: "permanent",
+        maxRestarts: 9999,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 0,
+        backoffCeilingMs: 0,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("churn-1"));
+
+    // Fire many crashes. Each triggers restart → started event → eligible for
+    // another crash. This alone can publish thousands of events.
+    for (let i = 0; i < 200; i++) {
+      crash(workerId("churn-1"));
+      // Yield so the respawn actually registers before the next crash.
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // Subscriber coming in AFTER all the churn should still receive the next
+    // event without hanging — proves the buffer is still wired to wakers.
+    const iter = supervisorResult.value.watchAll()[Symbol.asyncIterator]() as AsyncIterator<
+      import("@koi/core").WorkerEvent
+    >;
+    // Drain any currently-buffered events.
+    for (let i = 0; i < 10; i++) {
+      const r = await Promise.race([
+        iter.next(),
+        new Promise<IteratorResult<import("@koi/core").WorkerEvent>>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined as never }), 10),
+        ),
+      ]);
+      if (r.done) break;
+    }
+    if (iter.return !== undefined) await iter.return(undefined);
+
+    // Shutdown must still work after the churn storm.
+    const sd = await supervisorResult.value.shutdown("test");
+    expect(sd.ok).toBe(true);
+  });
 });

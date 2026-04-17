@@ -54,11 +54,20 @@ export function createSubprocessBackend(): WorkerBackend {
     }
 
     try {
+      // Stdio defaults are security- and correctness-conservative:
+      //   stdin: "ignore"  — workers do NOT inherit the supervisor's TTY.
+      //     A shared TTY would let any worker consume operator keystrokes
+      //     intended for the CLI/TUI and let a malicious child interfere
+      //     with interactive control. Opt-in stdio modes are a follow-up.
+      //   stdout/stderr: "ignore" — pipes would fill OS buffers for chatty
+      //     workers and deadlock them (writes block once buffer is full
+      //     and nothing drains it). "ignore" routes output to /dev/null.
+      //     A future config option will allow draining to logs/telemetry.
       const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
         env,
-        stdin: "inherit",
-        stdout: "pipe",
-        stderr: "pipe",
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
       };
       if (request.cwd !== undefined) {
         spawnOptions.cwd = request.cwd;
