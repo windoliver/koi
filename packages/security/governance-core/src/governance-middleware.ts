@@ -39,6 +39,12 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     thresholds: config.alertThresholds ?? DEFAULT_ALERT_THRESHOLDS,
   });
 
+  let requestCounter = 0;
+  function nextRequestId(request: PolicyRequest, kind: PolicyRequestKind): string {
+    requestCounter += 1;
+    return `${request.agentId}:${kind}:${request.timestamp}:${requestCounter}`;
+  }
+
   async function gate(
     ctx: TurnContext,
     kind: PolicyRequestKind,
@@ -110,7 +116,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       if (backend.compliance !== undefined) {
         void Promise.resolve(
           backend.compliance.recordCompliance({
-            requestId: `${request.agentId}:${kind}:${request.timestamp}`,
+            requestId: nextRequestId(request, kind),
             request,
             verdict,
             evaluatedAt: Date.now(),
@@ -172,8 +178,12 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
-      const snap = await controller.snapshot();
-      alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
+      try {
+        const snap = await controller.snapshot();
+        alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
+      } catch (e) {
+        console.warn("[koi:governance-core] snapshot failed in onBeforeTurn", { cause: e });
+      }
     },
 
     async onSessionEnd(ctx: SessionContext): Promise<void> {
