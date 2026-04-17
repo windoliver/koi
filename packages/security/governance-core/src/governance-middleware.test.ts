@@ -477,4 +477,176 @@ describe("issue checklist", () => {
     }
     expect(evaluate).toHaveBeenCalledTimes(100);
   });
+
+  test("wrapToolCall records tool_success on success", async () => {
+    const recorded: unknown[] = [];
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c1" as never, toolId: "t", input: {} } as never,
+      async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
+    );
+    expect(recorded).toContainEqual({ kind: "tool_success", toolName: "t" });
+  });
+
+  test("wrapToolCall records tool_error when next throws and rethrows", async () => {
+    const recorded: unknown[] = [];
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          recorded.push(ev);
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    const boom = new Error("tool crashed");
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c1" as never, toolId: "t", input: {} } as never,
+        async () => {
+          throw boom;
+        },
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).toBe(boom);
+    expect(recorded).toContainEqual({ kind: "tool_error", toolName: "t" });
+  });
+
+  test("error_rate setpoint eventually blocks after repeated tool failures", async () => {
+    // Simulate the controller tracking tool_error events; after 3 errors
+    // the setpoint flips the pre-gate to fail. Verifies tool outcomes drive
+    // error_rate enforcement end-to-end.
+    let errors = 0;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        checkAll: () =>
+          errors >= 3
+            ? { ok: false, variable: "error_rate", reason: "too many errors", retryable: true }
+            : { ok: true },
+        record: (ev) => {
+          if (ev.kind === "tool_error") errors += 1;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    const failing = async () => {
+      throw new Error("boom");
+    };
+    for (let i = 0; i < 3; i++) {
+      try {
+        await mw.wrapToolCall?.(
+          ctx(),
+          { callId: `c${i}` as never, toolId: "t", input: {} } as never,
+          failing as never,
+        );
+      } catch {
+        /* expected */
+      }
+    }
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c4" as never, toolId: "t", input: {} } as never,
+        failing as never,
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("RATE_LIMIT");
+    expect((threw as Error & { context?: { variable?: string } }).context?.variable).toBe(
+      "error_rate",
+    );
+  });
+
+  test("wrapModelStream accumulates incremental usage chunks", async () => {
+    const cfg = baseCfg();
+    const recorded: unknown[] = [];
+    cfg.controller = {
+      ...cfg.controller,
+      record: (ev) => {
+        recorded.push(ev);
+      },
+    };
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      yield { kind: "usage" as const, inputTokens: 10, outputTokens: 5 };
+      yield { kind: "usage" as const, inputTokens: 20, outputTokens: 15 };
+      // No done/error chunk — finally path must sum the deltas.
+    }
+    for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+      /* drain */
+    }
+    const tokenEvent = recorded.find((e) => (e as { kind: string }).kind === "token_usage") as
+      | { inputTokens: number; outputTokens: number }
+      | undefined;
+    expect(tokenEvent).toBeDefined();
+    expect(tokenEvent?.inputTokens).toBe(30);
+    expect(tokenEvent?.outputTokens).toBe(20);
+  });
+
+  test("wrapModelStream honors authoritative usage from error chunk", async () => {
+    const cfg = baseCfg();
+    const recorded: unknown[] = [];
+    cfg.controller = {
+      ...cfg.controller,
+      record: (ev) => {
+        recorded.push(ev);
+      },
+    };
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      yield { kind: "usage" as const, inputTokens: 5, outputTokens: 3 };
+      yield {
+        kind: "error" as const,
+        message: "rate limited",
+        usage: { inputTokens: 100, outputTokens: 50 },
+      };
+    }
+    for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+      /* drain */
+    }
+    const tokenEvent = recorded.find((e) => (e as { kind: string }).kind === "token_usage") as
+      | { inputTokens: number; outputTokens: number }
+      | undefined;
+    // error.usage is authoritative: it represents the provider's final count,
+    // which may differ from the sum of streamed deltas.
+    expect(tokenEvent?.inputTokens).toBe(100);
+    expect(tokenEvent?.outputTokens).toBe(50);
+  });
+
+  test("onBeforeTurn fails closed when controller.record throws", async () => {
+    const boom = new Error("controller degraded");
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: () => {
+          throw boom;
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    let threw: unknown;
+    try {
+      await mw.onBeforeTurn?.(ctx());
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).cause).toBe(boom);
+  });
 });

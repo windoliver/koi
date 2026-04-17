@@ -248,15 +248,27 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // observable; engine-side emission exists on the roadmap but is not
       // wired yet, so recording here keeps turn-count enforcement functional
       // under the runtime's default wiring.
+      //
+      // Fail closed: if the controller cannot accept the turn event, we
+      // cannot trust subsequent `checkAll()` reads of `turn_count`, so the
+      // turn must not proceed. Silently swallowing would let a degraded
+      // controller bypass turn-count containment.
       try {
         await controller.record({ kind: "turn" });
       } catch (e) {
-        console.warn("[koi:governance-core] turn event failed in onBeforeTurn", { cause: e });
+        throw KoiRuntimeError.from("PERMISSION", "Governance turn record failed", {
+          cause: e,
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId,
+          },
+        });
       }
       try {
         const snap = await controller.snapshot();
         alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
       } catch (e) {
+        // Snapshot/alert is observability-only — safe to warn and continue.
         console.warn("[koi:governance-core] snapshot failed in onBeforeTurn", { cause: e });
       }
     },
@@ -274,49 +286,82 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async *wrapModelStream(ctx: TurnContext, request: ModelRequest, next) {
       await gate(ctx, "model_call", { model: request.model ?? "unknown" });
-      // Track latest usage chunk so partial/errored streams still charge
-      // the tokens the provider consumed, not just clean `done` completions.
-      let lastInputTokens = 0;
-      let lastOutputTokens = 0;
+      // Stream usage accounting:
+      // - `usage` chunks are additive (providers emit deltas per segment)
+      // - `error` chunks may carry authoritative totals (override delta sum)
+      // - `done` carries the authoritative ModelResponse.usage (wins over both)
+      // Fallback path (finally) flushes accumulated deltas only when no
+      // terminal chunk arrived — aborted iterations, thrown errors, etc.
+      let accumulatedInputTokens = 0;
+      let accumulatedOutputTokens = 0;
+      let errorUsageInputTokens: number | undefined;
+      let errorUsageOutputTokens: number | undefined;
       let doneResponse: ModelResponse | undefined;
       const model = request.model ?? "unknown";
       try {
         for await (const chunk of next(request)) {
           yield chunk;
           if (chunk.kind === "usage") {
-            lastInputTokens = chunk.inputTokens;
-            lastOutputTokens = chunk.outputTokens;
+            accumulatedInputTokens += chunk.inputTokens;
+            accumulatedOutputTokens += chunk.outputTokens;
+          } else if (chunk.kind === "error") {
+            if (chunk.usage !== undefined) {
+              errorUsageInputTokens = chunk.usage.inputTokens;
+              errorUsageOutputTokens = chunk.usage.outputTokens;
+            }
           } else if (chunk.kind === "done") {
             doneResponse = chunk.response;
           }
         }
       } finally {
-        // Finally-block flush: partial streams, aborted iterations, and
-        // thrown errors still charge their consumed tokens. No double-count:
-        // `done` takes precedence (carries authoritative ModelResponse.usage).
+        // Precedence: done > error.usage > accumulated deltas.
         if (doneResponse !== undefined) {
           await recordModelUsage(ctx, doneResponse);
-        } else if (lastInputTokens > 0 || lastOutputTokens > 0) {
-          const costUsd = cost.calculate(model, lastInputTokens, lastOutputTokens);
-          await recordTokenEvent(ctx, model, lastInputTokens, lastOutputTokens, costUsd);
-          onUsage?.({
-            model,
-            usage: {
-              inputTokens: lastInputTokens,
-              outputTokens: lastOutputTokens,
-              cacheReadTokens: 0,
-              cacheWriteTokens: 0,
-              reasoningTokens: 0,
-            },
-            costUsd,
-          });
+        } else {
+          const inputTokens = errorUsageInputTokens ?? accumulatedInputTokens;
+          const outputTokens = errorUsageOutputTokens ?? accumulatedOutputTokens;
+          if (inputTokens > 0 || outputTokens > 0) {
+            const costUsd = cost.calculate(model, inputTokens, outputTokens);
+            await recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd);
+            onUsage?.({
+              model,
+              usage: {
+                inputTokens,
+                outputTokens,
+                cacheReadTokens: 0,
+                cacheWriteTokens: 0,
+                reasoningTokens: 0,
+              },
+              costUsd,
+            });
+          }
         }
       }
     },
 
     async wrapToolCall(ctx: TurnContext, request, next) {
       await gate(ctx, "tool_call", { toolId: request.toolId, input: request.input });
-      return next(request);
+      // Record tool outcome so the controller's `error_rate` variable has
+      // samples to count against its threshold. Without this, a runtime
+      // wiring `error_rate` as a stop condition would never see any data
+      // and repeated failures would go unchecked.
+      const toolName = request.toolId;
+      try {
+        const result = await next(request);
+        try {
+          await controller.record({ kind: "tool_success", toolName });
+        } catch (e) {
+          console.warn("[koi:governance-core] tool_success record failed", { cause: e });
+        }
+        return result;
+      } catch (err) {
+        try {
+          await controller.record({ kind: "tool_error", toolName });
+        } catch (e) {
+          console.warn("[koi:governance-core] tool_error record failed", { cause: e });
+        }
+        throw err;
+      }
     },
   };
 }
