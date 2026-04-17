@@ -48,4 +48,36 @@ describe("subprocess terminate/kill", () => {
     }
     expect(events).toContain("crashed");
   });
+
+  it("prunes dead workers from internal state after exit", async () => {
+    // A long-lived daemon that spins up many short-lived workers must not
+    // retain their state indefinitely. After a worker exits, isAlive must
+    // return false AND the worker must no longer be tracked — subsequent
+    // calls to terminate/kill/watch for that id see a clean slate.
+    const backend = createSubprocessBackend();
+    for (let i = 0; i < 5; i++) {
+      const id = workerId(`churn-${i}`);
+      await backend.spawn({
+        workerId: id,
+        agentId: agentId(`agent-churn-${i}`),
+        command: ["bun", "-e", "process.exit(0)"],
+      });
+    }
+    // Wait for all to exit.
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Each worker must be gone from backend state — watch() returns
+    // immediately with no events for a pruned id.
+    for (let i = 0; i < 5; i++) {
+      const id = workerId(`churn-${i}`);
+      expect(await backend.isAlive(id)).toBe(false);
+      const events: string[] = [];
+      for await (const ev of backend.watch(id)) {
+        events.push(ev.kind);
+      }
+      // Pruned: watch() for a missing id returns nothing. A retained (leaked)
+      // dead worker would yield its buffered started+exited events.
+      expect(events).toEqual([]);
+    }
+  });
 });

@@ -108,6 +108,11 @@ export function createSubprocessBackend(): WorkerBackend {
                 },
               };
         emit(state, ev);
+        // Prune the dead worker from the backend's internal map. Callers that
+        // generate a fresh workerId per run would otherwise leak SubprocState
+        // entries (including AbortController, event buffer, listener arrays)
+        // for every worker that ever ran in this supervisor's lifetime.
+        workers.delete(request.workerId);
       });
 
       const handle: WorkerHandle = {

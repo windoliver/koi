@@ -71,6 +71,15 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
   // In-flight spawn promises so shutdown() can await them and any late
   // admissions observe shuttingDown=true after backend.spawn resolves.
   const pendingSpawnPromises = new Set<Promise<void>>();
+  // Per-workerId cancellation state for spawns currently awaiting
+  // backend.spawn(). stop(id) during a slow spawn flips `cancelled`; the
+  // spawn code re-checks after backend.spawn resolves and terminates the
+  // late admission instead of entering it into the pool. `done` resolves
+  // when the spawn has fully settled so stop() returns on a quiesced state.
+  const pendingSpawnCancellations = new Map<
+    WorkerId,
+    { cancelled: boolean; readonly done: Promise<void> }
+  >();
   let shuttingDown = false;
   const defaultPolicy = config.restart ?? DEFAULT_WORKER_RESTART_POLICY;
 
@@ -172,6 +181,16 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     });
     pendingSpawnPromises.add(spawnDone);
 
+    // Install a cancellation record so stop(id) can abort this spawn before
+    // the worker enters the pool. `done` resolves whenever releaseReservations()
+    // runs OR when the pool admission path completes — whichever wins.
+    // Multiple concurrent spawns for the same id are prevented by activeIds.
+    const cancellation = {
+      cancelled: false,
+      done: spawnDone,
+    };
+    pendingSpawnCancellations.set(request.workerId, cancellation);
+
     // Helper: release every reservation made above (id, capacity slot,
     // spawn-tracking promise). Used by every failure path in the remainder
     // of this function.
@@ -179,6 +198,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       pendingSpawns--;
       if (!fromRestart) activeIds.delete(request.workerId);
       pendingSpawnPromises.delete(spawnDone);
+      pendingSpawnCancellations.delete(request.workerId);
       resolveSpawnDone();
     };
 
@@ -214,30 +234,32 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
       return spawned;
     }
 
-    // Re-check shuttingDown AFTER the backend spawn resolves. If shutdown
-    // started while we were awaiting the spawn, the new worker is a late
-    // admission that must be torn down immediately and never enter the pool.
-    if (shuttingDown) {
-      // Terminate the late admission before we release our spawn-tracking
-      // promise. shutdown() awaits pendingSpawnPromises and then drains the
-      // pool; awaiting terminate() here guarantees the worker is signalled
-      // before shutdown proceeds to the pool-drain step.
+    // Re-check shuttingDown AND explicit stop() cancellation AFTER the
+    // backend spawn resolves. If either flag is set, the new worker is a
+    // late admission that must be torn down immediately and never enter
+    // the pool. Awaiting terminate/kill here (instead of fire-and-forget)
+    // guarantees shutdown()'s pool-drain step runs on a fully quiesced
+    // backend, and that stop() callers see the worker truly gone on return.
+    if (shuttingDown || cancellation.cancelled) {
       try {
-        await backend.terminate(request.workerId, "shutdown-during-spawn");
+        await backend.terminate(request.workerId, "cancelled-during-spawn");
       } catch {
-        // Swallow: we are already on the shutdown path.
+        // Swallow: we are already on the cancellation path.
       }
       try {
         await backend.kill(request.workerId);
       } catch {
         // Swallow.
       }
+      const reason = shuttingDown
+        ? "Supervisor began shutting down during spawn; worker terminated"
+        : "stop() cancelled the spawn before the worker could enter the pool";
       releaseReservations();
       return {
         ok: false,
         error: {
           code: "UNAVAILABLE",
-          message: "Supervisor began shutting down during spawn; worker terminated",
+          message: reason,
           retryable: false,
         },
       };
@@ -265,6 +287,7 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     // remains reserved until the worker's crash/exit watch loop decides.
     pendingSpawns--;
     pendingSpawnPromises.delete(spawnDone);
+    pendingSpawnCancellations.delete(request.workerId);
     resolveSpawnDone();
 
     // Watch backend events for this worker — drive restart policy + exit
@@ -389,14 +412,29 @@ export function createSupervisor(config: SupervisorConfig): Result<Supervisor, K
     performSpawn(request, overrides, false);
 
   const stop: Supervisor["stop"] = async (id, reason) => {
-    // Case A: worker is sleeping in restart backoff (crash observed, respawn
+    // Case A: worker's spawn is in flight (activeIds set, not in pool yet).
+    // Flip cancelled; the spawn code re-checks after backend.spawn()
+    // resolves and terminates the late admission. Await its spawnDone so
+    // stop() returns only once the worker is fully gone.
+    const spawnCancel = pendingSpawnCancellations.get(id);
+    if (spawnCancel !== undefined && pool.get(id) === undefined) {
+      spawnCancel.cancelled = true;
+      await spawnCancel.done;
+      // Handle the corner case: the spawn resolved BEFORE we flipped
+      // cancelled, so the worker entered the pool instead of self-terminating.
+      // Fall through to the normal pool-stop path below so the caller still
+      // observes a cleanly-stopped worker.
+      if (pool.get(id) === undefined) {
+        return { ok: true, value: undefined };
+      }
+    }
+
+    // Case B: worker is sleeping in restart backoff (crash observed, respawn
     // pending). We cancel the restart task and wait for it to bail.
     const restartEntry = restarting.get(id);
     if (restartEntry !== undefined && pool.get(id) === undefined) {
       restartEntry.cancelled = true;
       await restartEntry.done;
-      // Cancelling a pending restart DOES clear activeIds via the restart
-      // task's cancellation path. External state is now clean.
       return { ok: true, value: undefined };
     }
 

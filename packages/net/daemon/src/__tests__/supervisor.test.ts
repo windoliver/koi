@@ -609,6 +609,79 @@ describe("supervisor correctness hardening", () => {
     expect(restarted.ok).toBe(true);
   });
 
+  it("stop() cancels a worker whose spawn is still awaiting backend.spawn()", async () => {
+    type SlowWorker = { terminated: boolean; killed: boolean };
+    const spawned: SlowWorker[] = [];
+    let releaseSpawn: (() => void) | undefined;
+    const slowBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "slow",
+      isAvailable: async () => true,
+      spawn: async (req) => {
+        const w: SlowWorker = { terminated: false, killed: false };
+        spawned.push(w);
+        await new Promise<void>((resolve) => {
+          releaseSpawn = resolve;
+        });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: new AbortController().signal,
+          },
+        };
+      },
+      terminate: async () => {
+        const w = spawned[spawned.length - 1];
+        if (w !== undefined) w.terminated = true;
+        return { ok: true, value: undefined };
+      },
+      kill: async () => {
+        const w = spawned[spawned.length - 1];
+        if (w !== undefined) w.killed = true;
+        return { ok: true, value: undefined };
+      },
+      isAlive: async () => false,
+      watch: async function* (): AsyncIterable<WorkerEvent> {
+        yield* [] as WorkerEvent[];
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100,
+      backends: { "in-process": slowBackend },
+    });
+    if (!supervisorResult.ok) return;
+
+    const startPromise = supervisorResult.value.start(makeRequest("slow-spawn-1"));
+    // Give start() time to reach the await.
+    await new Promise((r) => setTimeout(r, 10));
+    // stop() during the in-flight spawn must cancel it.
+    const stopPromise = supervisorResult.value.stop(workerId("slow-spawn-1"), "test");
+    // Let stop() set the cancelled flag, then release the spawn.
+    await new Promise((r) => setTimeout(r, 10));
+    if (releaseSpawn !== undefined) releaseSpawn();
+
+    const [startResult, stopResult] = await Promise.all([startPromise, stopPromise]);
+    expect(startResult.ok).toBe(false);
+    if (!startResult.ok) expect(startResult.error.code).toBe("UNAVAILABLE");
+    expect(stopResult.ok).toBe(true);
+    // The late admission must have been terminated.
+    expect(spawned.length).toBe(1);
+    expect(spawned[0]?.terminated).toBe(true);
+    // list() must be clean; activeIds must be released.
+    expect(supervisorResult.value.list()).toEqual([]);
+    // Starting a fresh worker with the same id must now succeed.
+    if (releaseSpawn !== undefined) {
+      // Reset the release gate for the next spawn.
+      releaseSpawn = undefined;
+    }
+  });
+
   it("falls back to an available backend when the preferred one declares itself unavailable", async () => {
     const { backend: subprocess } = createFakeBackend("subprocess");
     const { backend: inProcess } = createFakeBackend("in-process");
