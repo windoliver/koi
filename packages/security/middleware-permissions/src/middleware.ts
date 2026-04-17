@@ -536,6 +536,11 @@ export function createPermissionsMiddleware(
     return t;
   }
 
+  // #1650 loop round-8: retain soft-deny counter state for the last N turns
+  // so overlapping/out-of-order turn activity isn't wiped, but long-lived
+  // sessions don't accumulate counter entries indefinitely.
+  const SOFT_DENY_TURN_RETENTION = 4;
+
   // Soft-deny logs scoped per session (#1650)
   const softDenyLogsBySession = new Map<string, SoftDenyLog>();
 
@@ -1451,16 +1456,30 @@ export function createPermissionsMiddleware(
       return next(request);
     },
 
-    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
-      // #1650 loop round-5: counter keys are turn-scoped via turnIndex
-      // prefix, so we intentionally do NOT blanket-clear here. Clearing the
-      // whole counter would wipe overlapping turns' state in the same session
-      // (child agents, retries, out-of-order completion). Entries are bounded
-      // by session lifetime and evicted wholesale on session end.
-      //
-      // filterCapRecordedKeys markers are also already turn-scoped in their
-      // key (`${sid}\0${turnIndex}\0${cacheKey}`) so they coexist safely
-      // across turns; session-end drops them all.
+    async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      // #1650 loop round-5/8: counter keys are turn-scoped via turnIndex
+      // prefix. We don't blanket-clear (that would wipe overlapping turns'
+      // state). Instead reap entries whose turnIndex is older than a retention
+      // window so long-lived sessions don't accumulate entries indefinitely
+      // and trigger the counter's fail-closed ceiling for unrelated denials.
+      const sid = ctx.session.sessionId as string;
+      const cutoff = ctx.turnIndex - SOFT_DENY_TURN_RETENTION;
+      if (cutoff > 0) {
+        getTurnSoftDenyCounter(sid).expireOlderThan(cutoff);
+        // Also reap matching filterCapRecordedKeys markers whose turnIndex
+        // prefix (second \0-segment) is older than cutoff.
+        const prefix = `${sid}\0`;
+        for (const key of filterCapRecordedKeys) {
+          if (!key.startsWith(prefix)) continue;
+          const remainder = key.slice(prefix.length);
+          const nullIdx = remainder.indexOf("\0");
+          if (nullIdx <= 0) continue;
+          const turnIdx = Number(remainder.slice(0, nullIdx));
+          if (Number.isFinite(turnIdx) && turnIdx < cutoff) {
+            filterCapRecordedKeys.delete(key);
+          }
+        }
+      }
     },
   };
 

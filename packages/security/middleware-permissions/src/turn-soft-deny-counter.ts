@@ -23,12 +23,16 @@ export interface TurnSoftDenyCounter {
   readonly peek: (cacheKey: string) => number;
   /**
    * Peek the HIGHEST count across all entries whose key starts with `prefix`.
-   * Used by planning-time filters to check if any path/variant under a given
-   * tool prefix has already exhausted cap — even when the exact future
-   * cacheKey is not yet known (e.g., fs tools where resolvedPath is not
-   * available at planning time).
    */
   readonly peekMaxByPrefix: (prefix: string) => number;
+  /**
+   * Reclaim entries for turns older than `beforeTurnIndex`. Callers parse a
+   * numeric turnIndex prefix `${turnIndex}\0...` from each key. Entries
+   * without a parseable numeric prefix are left alone. Used by the middleware's
+   * `onBeforeTurn` to reap state from completed/old turns without wiping
+   * overlapping in-flight turns. Loop round-8 fix.
+   */
+  readonly expireOlderThan: (beforeTurnIndex: number) => void;
   /** Reset all counters (called on full teardown — rarely needed per-turn). */
   readonly clear: () => void;
 }
@@ -70,6 +74,18 @@ export function createTurnSoftDenyCounter(
         if (k.startsWith(prefix) && v > max) max = v;
       }
       return max;
+    },
+    expireOlderThan(beforeTurnIndex) {
+      // Keys are `${turnIndex}\0${cacheKey}`; parse the turnIndex prefix.
+      for (const key of counts.keys()) {
+        const nullIdx = key.indexOf("\0");
+        if (nullIdx <= 0) continue;
+        const prefix = key.slice(0, nullIdx);
+        const turnIdx = Number(prefix);
+        if (Number.isFinite(turnIdx) && turnIdx < beforeTurnIndex) {
+          counts.delete(key);
+        }
+      }
     },
     clear() {
       counts.clear();

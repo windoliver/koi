@@ -959,6 +959,35 @@ describe("filterTools prefix-peek matches execute-time keys (#1650 loop round-7)
   });
 });
 
+describe("onBeforeTurn reaps old-turn counter entries (#1650 loop round-8)", () => {
+  test("after many turns, first soft-deny on a new key in a later turn does NOT immediately hit the fail-closed ceiling", async () => {
+    const { createTurnSoftDenyCounter } = await import("../turn-soft-deny-counter.js");
+    // Small ceiling so we exercise the reap logic deterministically.
+    const c = createTurnSoftDenyCounter(5);
+    // Fill with 5 distinct keys in turn 0.
+    for (let i = 0; i < 5; i++) c.countAndCap(`0\0k${i}`, 100);
+    // A new key in turn 0 hits the ceiling.
+    expect(c.countAndCap("0\0new", 100)).toBe("over_cap");
+    // Reap entries older than turn 4.
+    c.expireOlderThan(4);
+    // Now a brand-new key in turn 4 is under cap.
+    expect(c.countAndCap("4\0fresh", 100)).toBe("under_cap");
+  });
+
+  test("expireOlderThan only drops entries whose turnIndex prefix is < cutoff", async () => {
+    const { createTurnSoftDenyCounter } = await import("../turn-soft-deny-counter.js");
+    const c = createTurnSoftDenyCounter(100);
+    c.countAndCap("0\0a", 100);
+    c.countAndCap("1\0a", 100);
+    c.countAndCap("5\0a", 100);
+    c.expireOlderThan(3);
+    // turn 0 and 1 reaped; turn 5 retained.
+    expect(c.peek("0\0a")).toBe(0);
+    expect(c.peek("1\0a")).toBe(0);
+    expect(c.peek("5\0a")).toBe(1);
+  });
+});
+
 describe("TurnSoftDenyCounter fail-closed ceiling (#1650 loop round-7)", () => {
   test("attempting to add more than maxEntries distinct keys returns over_cap", async () => {
     const { createTurnSoftDenyCounter } = await import("../turn-soft-deny-counter.js");
