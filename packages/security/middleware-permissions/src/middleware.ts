@@ -536,11 +536,6 @@ export function createPermissionsMiddleware(
     return t;
   }
 
-  // #1650 loop round-8: retain soft-deny counter state for the last N turns
-  // so overlapping/out-of-order turn activity isn't wiped, but long-lived
-  // sessions don't accumulate counter entries indefinitely.
-  const SOFT_DENY_TURN_RETENTION = 4;
-
   // Soft-deny logs scoped per session (#1650)
   const softDenyLogsBySession = new Map<string, SoftDenyLog>();
 
@@ -1481,30 +1476,17 @@ export function createPermissionsMiddleware(
       return next(request);
     },
 
-    async onBeforeTurn(ctx: TurnContext): Promise<void> {
-      // #1650 loop round-5/8: counter keys are turn-scoped via turnIndex
-      // prefix. We don't blanket-clear (that would wipe overlapping turns'
-      // state). Instead reap entries whose turnIndex is older than a retention
-      // window so long-lived sessions don't accumulate entries indefinitely
-      // and trigger the counter's fail-closed ceiling for unrelated denials.
-      const sid = ctx.session.sessionId as string;
-      const cutoff = ctx.turnIndex - SOFT_DENY_TURN_RETENTION;
-      if (cutoff > 0) {
-        getTurnSoftDenyCounter(sid).expireOlderThan(cutoff);
-        // Also reap matching filterCapRecordedKeys markers whose turnIndex
-        // prefix (second \0-segment) is older than cutoff.
-        const prefix = `${sid}\0`;
-        for (const key of filterCapRecordedKeys) {
-          if (!key.startsWith(prefix)) continue;
-          const remainder = key.slice(prefix.length);
-          const nullIdx = remainder.indexOf("\0");
-          if (nullIdx <= 0) continue;
-          const turnIdx = Number(remainder.slice(0, nullIdx));
-          if (Number.isFinite(turnIdx) && turnIdx < cutoff) {
-            filterCapRecordedKeys.delete(key);
-          }
-        }
-      }
+    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
+      // #1650 loop round-5/loop-2 round-1: counter keys are already
+      // turn-scoped via `${turnIndex}\0${cacheKey}` prefix, so they don't
+      // collide across turns. Intentionally NO reaping here — reaping
+      // older turns by relative distance would wipe the budget of a
+      // long-running/stalled turn that has since been overtaken by newer
+      // turns, letting a late tool call from the older turn accrue a fresh
+      // cap. Memory bound comes from:
+      //   - The counter's fail-closed ceiling (see turn-soft-deny-counter.ts)
+      //   - clearSessionApprovals / onSessionEnd, which evict the whole map
+      // filterCapRecordedKeys is similarly retained until session end.
     },
   };
 

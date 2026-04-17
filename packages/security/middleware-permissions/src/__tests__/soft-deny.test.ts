@@ -964,6 +964,32 @@ describe("filterTools prefix-peek matches execute-time keys (#1650 loop round-7)
   });
 });
 
+describe("stalled old turn retains its soft-deny budget across newer turns (#1650 loop-2 round-1)", () => {
+  test("counter entries from an older turn survive 5 newer onBeforeTurn calls — late tool call on old turn still hits cap", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 2,
+    });
+    const sid = "s-stalled-turn";
+
+    // Turn 0: fill the soft-deny counter to cap.
+    const ctxT0 = makeTurnContext({ turnIndex: 0, sessionId: sid });
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+
+    // Simulate 5 newer turns each firing onBeforeTurn on the same session.
+    for (let t = 1; t <= 5; t++) {
+      await mw.onBeforeTurn?.(makeTurnContext({ turnIndex: t, sessionId: sid }));
+    }
+
+    // A late tool call from turn 0 should still hit cap (its state was NOT
+    // reaped by newer turns' onBeforeTurn).
+    await expect(
+      mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler),
+    ).rejects.toThrow(/soft-deny retry cap/);
+  });
+});
+
 describe("onBeforeTurn reaps old-turn counter entries (#1650 loop round-8)", () => {
   test("after many turns, first soft-deny on a new key in a later turn does NOT immediately hit the fail-closed ceiling", async () => {
     const { createTurnSoftDenyCounter } = await import("../turn-soft-deny-counter.js");
