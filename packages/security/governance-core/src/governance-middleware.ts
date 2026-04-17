@@ -67,6 +67,32 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     return `${request.agentId}:${kind}:${request.timestamp}:${requestCounter}`;
   }
 
+  /**
+   * Fire-and-forget compliance record with sync-safe error handling.
+   * `Promise.resolve(fn())` evaluates fn() eagerly — a synchronous throw
+   * escapes before `.catch` attaches. Using `.then(() => fn())` moves the
+   * call into the promise chain so both sync and async failures are caught.
+   */
+  function emitCompliance(
+    request: PolicyRequest,
+    kind: PolicyRequestKind,
+    verdict: GovernanceVerdict,
+  ): void {
+    const compliance = backend.compliance;
+    if (compliance === undefined) return;
+    void Promise.resolve()
+      .then(() =>
+        compliance.recordCompliance({
+          requestId: nextRequestId(request, kind),
+          request: redactForAudit(request),
+          verdict,
+          evaluatedAt: Date.now(),
+          policyFingerprint: GOVERNANCE_MIDDLEWARE_NAME,
+        }),
+      )
+      .catch(warnCompliance);
+  }
+
   async function gate(
     ctx: TurnContext,
     kind: PolicyRequestKind,
@@ -136,17 +162,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     if (!verdict.ok) {
       onViolation?.(verdict, request);
-      if (backend.compliance !== undefined) {
-        void Promise.resolve(
-          backend.compliance.recordCompliance({
-            requestId: nextRequestId(request, kind),
-            request: redactForAudit(request),
-            verdict,
-            evaluatedAt: Date.now(),
-            policyFingerprint: GOVERNANCE_MIDDLEWARE_NAME,
-          }),
-        ).catch(warnCompliance);
-      }
+      emitCompliance(request, kind, verdict);
       throw KoiRuntimeError.from("PERMISSION", joinMsgs(verdict), {
         context: {
           agentId: ctx.session.agentId,
@@ -160,49 +176,56 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       });
     }
 
-    if (backend.compliance !== undefined) {
-      void Promise.resolve(
-        backend.compliance.recordCompliance({
-          requestId: nextRequestId(request, kind),
-          request: redactForAudit(request),
-          verdict: GOVERNANCE_ALLOW,
-          evaluatedAt: Date.now(),
-          policyFingerprint: GOVERNANCE_MIDDLEWARE_NAME,
-        }),
-      ).catch(warnCompliance);
-    }
+    emitCompliance(request, kind, GOVERNANCE_ALLOW);
   }
 
   async function recordModelUsage(ctx: TurnContext, response: ModelResponse): Promise<void> {
     if (response.usage === undefined) return;
     const usage = normalizeUsage(response.usage, response.metadata);
     const costUsd = cost.calculate(response.model, usage.inputTokens, usage.outputTokens);
+    await recordTokenEvent(ctx, response.model, usage.inputTokens, usage.outputTokens, costUsd);
+    onUsage?.({ model: response.model, usage, costUsd });
+  }
+
+  async function recordTokenEvent(
+    ctx: TurnContext,
+    model: string,
+    inputTokens: number,
+    outputTokens: number,
+    costUsd: number,
+  ): Promise<void> {
     await controller.record({
       kind: "token_usage",
-      count: usage.inputTokens + usage.outputTokens,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
+      count: inputTokens + outputTokens,
+      inputTokens,
+      outputTokens,
       costUsd,
     });
     const snap = await controller.snapshot();
     alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
-    onUsage?.({ model: response.model, usage, costUsd });
 
-    // Fail-fast: if this call pushed us past a setpoint, deny the in-flight
-    // response instead of waiting for the next request. Containment > advisory.
+    // Advisory overshoot signal: enforcement is at the NEXT call's pre-gate
+    // (fail-closed there). Throwing here would discard a valid model response,
+    // which is worse than a one-call overshoot. Callers wanting hard
+    // containment can terminate the session from onViolation.
     const postCheck = await controller.checkAll();
     if (!postCheck.ok) {
-      throw KoiRuntimeError.from(
-        "RATE_LIMIT",
-        `Governance setpoint exceeded after call: ${postCheck.variable}`,
+      onViolation?.(
         {
-          retryable: postCheck.retryable,
-          context: {
-            agentId: ctx.session.agentId,
-            sessionId: ctx.session.sessionId,
-            kind: "model_call",
-            variable: postCheck.variable,
-          },
+          ok: false,
+          violations: [
+            {
+              rule: postCheck.variable,
+              severity: "critical",
+              message: `Overshoot: ${postCheck.reason}`,
+            },
+          ],
+        },
+        {
+          kind: "model_call",
+          agentId: toAgentId(ctx.session.agentId),
+          payload: { model, overshoot: true },
+          timestamp: Date.now(),
         },
       );
     }
@@ -220,6 +243,16 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     },
 
     async onBeforeTurn(ctx: TurnContext): Promise<void> {
+      // Record a turn event so controllers tracking `turn_count` advance.
+      // The middleware is the stable boundary where "a turn begins" is
+      // observable; engine-side emission exists on the roadmap but is not
+      // wired yet, so recording here keeps turn-count enforcement functional
+      // under the runtime's default wiring.
+      try {
+        await controller.record({ kind: "turn" });
+      } catch (e) {
+        console.warn("[koi:governance-core] turn event failed in onBeforeTurn", { cause: e });
+      }
       try {
         const snap = await controller.snapshot();
         alertTracker.checkAndFire(ctx.session.sessionId, snap, onAlert);
@@ -241,10 +274,42 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
 
     async *wrapModelStream(ctx: TurnContext, request: ModelRequest, next) {
       await gate(ctx, "model_call", { model: request.model ?? "unknown" });
-      for await (const chunk of next(request)) {
-        yield chunk;
-        if (chunk.kind === "done") {
-          await recordModelUsage(ctx, chunk.response);
+      // Track latest usage chunk so partial/errored streams still charge
+      // the tokens the provider consumed, not just clean `done` completions.
+      let lastInputTokens = 0;
+      let lastOutputTokens = 0;
+      let doneResponse: ModelResponse | undefined;
+      const model = request.model ?? "unknown";
+      try {
+        for await (const chunk of next(request)) {
+          yield chunk;
+          if (chunk.kind === "usage") {
+            lastInputTokens = chunk.inputTokens;
+            lastOutputTokens = chunk.outputTokens;
+          } else if (chunk.kind === "done") {
+            doneResponse = chunk.response;
+          }
+        }
+      } finally {
+        // Finally-block flush: partial streams, aborted iterations, and
+        // thrown errors still charge their consumed tokens. No double-count:
+        // `done` takes precedence (carries authoritative ModelResponse.usage).
+        if (doneResponse !== undefined) {
+          await recordModelUsage(ctx, doneResponse);
+        } else if (lastInputTokens > 0 || lastOutputTokens > 0) {
+          const costUsd = cost.calculate(model, lastInputTokens, lastOutputTokens);
+          await recordTokenEvent(ctx, model, lastInputTokens, lastOutputTokens, costUsd);
+          onUsage?.({
+            model,
+            usage: {
+              inputTokens: lastInputTokens,
+              outputTokens: lastOutputTokens,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+              reasoningTokens: 0,
+            },
+            costUsd,
+          });
         }
       }
     },
