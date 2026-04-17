@@ -196,18 +196,31 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (child.type === "heredoc_redirect") {
       return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "heredoc");
     }
+    // Structural assertion: redirected_statement should contain
+    // exactly one command child plus redirect nodes. Any other child
+    // type (e.g. `variable_assignments` in the rare multi-env
+    // redirect case) means the walker's mental model doesn't match
+    // the AST. Fail closed via `malformed` rather than hand a tree
+    // shape the walker didn't understand to regex/elicit fallback.
     return tooComplex(
       `unexpected child in redirected_statement: ${child.type}`,
       child.type,
-      "unsupported-syntax",
+      "malformed",
     );
   }
 
   if (command === null) {
+    // Redirect-only shapes like `> out.txt`, `2>&1`, or `>>out.txt`
+    // reach here. The walker cannot produce a static argv for a
+    // statement with no command, and permission rules keyed off argv
+    // cannot meaningfully evaluate it. Fail closed via `malformed`
+    // rather than let it fall through to regex/elicit where a user
+    // could approve execution of a structure the walker didn't
+    // actually model.
     return tooComplex(
       "redirected_statement with no inner command",
       "redirected_statement",
-      "unsupported-syntax",
+      "malformed",
     );
   }
   return walkCommand(command, redirects);
@@ -317,7 +330,18 @@ function walkVariableAssignment(node: Node):
         return tooComplex("multiple values in variable_assignment", child.type, "malformed");
       }
       valueNode = child;
+      continue;
     }
+    // Any child before `=` that is not `variable_name` or `=` is an
+    // unexpected AST shape under the current grammar. Fail closed via
+    // `malformed` — silently ignoring these could let a drifted tree
+    // produce a trusted env assignment the walker did not actually
+    // validate.
+    return tooComplex(
+      `unexpected child in variable_assignment before =: ${child.type}`,
+      child.type,
+      "malformed",
+    );
   }
 
   if (name === null) {
