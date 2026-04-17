@@ -124,6 +124,12 @@ const UNKNOWN_CORPUS: ReadonlyArray<readonly [string]> = [
   ['echo "$0"'],
   ['echo "$$"'],
   ['echo $"msg"'],
+  // Variable references starting with `_` must route to scope-trackable,
+  // not positional (round-3 adversarial finding). Included in the
+  // never-fires-unknown corpus to pin both invariants.
+  ["echo $_x"],
+  ["echo $_abc"],
+  ['echo "$_x"'],
   // From bypass-corpus.test.ts — injection + bypass patterns:
   ["eval $(cat /etc/passwd)"],
   ["eval `cat /etc/passwd`"],

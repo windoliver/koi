@@ -71,20 +71,20 @@ export interface ClassifyOptionsWithElicit extends ClassifyOptions {
   readonly signal?: AbortSignal;
 }
 
-/**
- * NodeTypes that indicate shell-escape ambiguity — the raw source text
- * does not match bash's effective semantics, so neither the AST walker
- * nor the raw-text regex classifier can safely analyse the command.
- * These always hard-deny, regardless of whether an elicit callback is
- * provided. Asking the user about `cat \/etc\/passwd` is not safe because
- * the user probably can't tell the displayed form apart from the benign
- * `cat /etc/passwd`.
- */
-const HARD_DENY_NODE_TYPES: ReadonlySet<string> = new Set([
-  "word",
-  "string_content",
-  "prefilter:line-continuation",
-]);
+// Hard-deny for `too-complex` outcomes is keyed off
+// `analysis.primaryCategory === "shell-escape"`. The raw source text for
+// any shell-escape input (backslash in a `word` or `string_content`, or a
+// line-continuation prefilter hit) does not match bash's effective
+// semantics, so neither the regex classifier nor an interactive user
+// prompt can safely analyse it. Asking the user about `cat \/etc\/passwd`
+// is unsafe because the displayed form is indistinguishable from the
+// benign `cat /etc/passwd`.
+//
+// Using the stable `primaryCategory` enum instead of raw `nodeType`
+// strings keeps the security gate correct across future
+// tree-sitter-bash grammar upgrades — if a future grammar renames the
+// offending nodeType, the walker still maps it to `shell-escape` and
+// the hard-deny path continues to fire.
 
 /**
  * Shared prefilter pipeline — allowlist gate, byte-level injection reject,
@@ -136,7 +136,7 @@ function runPrefilter(command: string, opts?: ClassifyOptions): ClassificationRe
 /**
  * Shared post-analysis disposition — handles the `simple`, hard-deny
  * `too-complex`, and `parse-unavailable` branches. For `too-complex`
- * cases whose nodeType is NOT in `HARD_DENY_NODE_TYPES`, returns `null`
+ * cases whose `primaryCategory` is NOT `"shell-escape"`, returns `null`
  * so the caller (sync or async) can apply its own fallback: the sync
  * caller falls through to the regex TTP classifier; the async caller
  * invokes the elicit callback.
@@ -152,18 +152,21 @@ function dispose(command: string, analysis: AstAnalysis): ClassificationResult |
       return regexClassifyTtp(command);
     }
     case "too-complex": {
-      // SECURITY: certain `too-complex` reasons indicate bash source whose
-      // raw text does NOT match bash's effective semantics — backslash
-      // escapes in unquoted words, inside double-quoted strings, or as
-      // line continuations. For these, the raw-text regex classifier AND
-      // an interactive user prompt are both unsafe: the displayed command
-      // doesn't match the effective argv, so a user can't meaningfully
-      // approve `cat \/etc\/passwd` vs `cat /etc/passwd`. Hard-deny.
-      if (analysis.nodeType !== undefined && HARD_DENY_NODE_TYPES.has(analysis.nodeType)) {
+      // SECURITY: `shell-escape` `too-complex` reasons indicate bash
+      // source whose raw text does NOT match bash's effective semantics —
+      // backslash escapes in unquoted words, inside double-quoted strings,
+      // or as line continuations. For these, the raw-text regex classifier
+      // AND an interactive user prompt are both unsafe: the displayed
+      // command doesn't match the effective argv, so a user can't
+      // meaningfully approve `cat \/etc\/passwd` vs `cat /etc/passwd`.
+      // Hard-deny. Keyed off the stable `primaryCategory` enum, not raw
+      // tree-sitter node names, so grammar upgrades can't silently drop
+      // the fail-closed behaviour.
+      if (analysis.primaryCategory === "shell-escape") {
         return {
           ok: false,
           reason: `Bash source uses shell escape sequences that cannot be safely analysed: ${analysis.reason}`,
-          pattern: analysis.nodeType,
+          pattern: analysis.nodeType ?? "shell-escape",
           category: "injection",
         };
       }

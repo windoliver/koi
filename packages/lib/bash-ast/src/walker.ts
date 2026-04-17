@@ -47,35 +47,34 @@ const SEPARATOR_NODE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Text prefixes that identify a bash special parameter (`$0`..`$9`, `$@`, `$*`,
- * `$#`, `$?`, `$!`, `$$`, `$-`, `$_`). A `simple_expansion` whose text starts
- * with one of these is a special-parameter reference — not something scope
- * tracking could rescue — and routes to category `positional`.
+ * Match a bash special-parameter reference at the start of a
+ * `simple_expansion` text. The regex recognizes:
  *
- * Mixed-literal concatenation (`$1suffix`, `"prefix$0done"`) is still matched
- * by the startsWith check because tree-sitter-bash emits the whole merged
- * token as one `simple_expansion` text under this grammar.
+ *   - `$0`..`$9`                   — positional parameters (single digit;
+ *                                     `$10` expands as `$1` + literal `0`).
+ *   - `$@`, `$*`, `$#`, `$?`, `$!`  — well-known special parameters.
+ *   - `$$`, `$-`                   — shell-state special parameters.
+ *   - `$_`                         — only when NOT followed by an identifier
+ *                                     continuation character. Bash treats
+ *                                     `$_x` as variable reference `_x`
+ *                                     (underscore is a valid identifier
+ *                                     start), so `$_x` must stay
+ *                                     scope-trackable. Bare `$_` or `$_`
+ *                                     followed by punctuation is the
+ *                                     special parameter.
+ *
+ * Mixed-literal concatenation (`$1suffix`, `$0done`) still matches — tree-
+ * sitter-bash emits the whole merged token as one `simple_expansion` text.
+ *
+ * SECURITY: do not relax this rule without re-reviewing the Round 3
+ * adversarial finding. Treating `$_x` as a special parameter would mask a
+ * real scope-trackable variable reference.
  */
-const SPECIAL_PARAMETER_PREFIXES: readonly string[] = [
-  "$0",
-  "$1",
-  "$2",
-  "$3",
-  "$4",
-  "$5",
-  "$6",
-  "$7",
-  "$8",
-  "$9",
-  "$@",
-  "$*",
-  "$#",
-  "$?",
-  "$!",
-  "$$",
-  "$-",
-  "$_",
-];
+const SPECIAL_PARAMETER_RE = /^\$(?:[0-9]|[@*#?!$-]|_(?![A-Za-z0-9_]))/;
+
+function isSpecialParameter(text: string): boolean {
+  return SPECIAL_PARAMETER_RE.test(text);
+}
 
 /** Valid file-redirect operator tokens. */
 const REDIRECT_OP_TYPES: ReadonlySet<string> = new Set([
@@ -351,9 +350,7 @@ function walkArgNode(node: Node):
         let childCategory: TooComplexCategory;
         switch (child.type) {
           case "simple_expansion":
-            childCategory = SPECIAL_PARAMETER_PREFIXES.some((p) => child.text.startsWith(p))
-              ? "positional"
-              : "scope-trackable";
+            childCategory = isSpecialParameter(child.text) ? "positional" : "scope-trackable";
             break;
           case "command_substitution":
             childCategory = "scope-trackable";
@@ -380,7 +377,7 @@ function walkArgNode(node: Node):
         "unsupported-syntax",
       );
     case "simple_expansion": {
-      const isPositional = SPECIAL_PARAMETER_PREFIXES.some((p) => node.text.startsWith(p));
+      const isPositional = isSpecialParameter(node.text);
       return tooComplex(
         "variable expansion ($VAR) is not supported",
         "simple_expansion",

@@ -540,4 +540,34 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("unsupported-syntax");
   });
+
+  // `$_x` is the bash variable reference `_x` (underscore is a valid
+  // identifier start), NOT the special parameter `$_` followed by literal
+  // `x`. The round-3 adversarial finding showed that a naive
+  // `startsWith("$_")` check folded these into positional. The regex
+  // helper must distinguish `$_` (alone or punctuation-terminated) from
+  // `$_[A-Za-z0-9_]…` which is a regular variable expansion.
+  test("simple_expansion $_x routes to scope-trackable (variable, not special param)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $_x");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  test("simple_expansion $_abc routes to scope-trackable", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $_abc");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
+
+  test("double-quoted $_x routes to scope-trackable (not positional)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "$_x"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("scope-trackable");
+  });
 });
