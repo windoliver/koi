@@ -306,6 +306,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/lib/middleware-strict-agentic": {
+      "name": "@koi/middleware-strict-agentic",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/model-registry": {
       "name": "@koi/model-registry",
       "version": "0.0.0",
@@ -638,6 +645,7 @@
         "@koi/middleware-permissions": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
@@ -1209,6 +1217,8 @@
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
+
+    "@koi/middleware-strict-agentic": ["@koi/middleware-strict-agentic@workspace:packages/lib/middleware-strict-agentic"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
