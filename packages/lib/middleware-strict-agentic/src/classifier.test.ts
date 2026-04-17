@@ -39,12 +39,16 @@ describe("classifyTurn", () => {
     expect(r.kind).toBe("filler");
   });
 
-  test("plain empty output is NOT filler — only positive filler patterns block", () => {
-    // Empty text without any planning-language signal is a legitimate (if
-    // terse) completion, not a filler turn. The classifier treats it as
-    // action so the engine can stop instead of re-prompting forever.
-    const r = classifyTurn({ toolCallCount: 0, outputText: "" }, resolved);
-    expect(r.kind).toBe("action");
+  test("blank / whitespace-only output with no tool calls is filler (degraded response)", () => {
+    // Silent-failure guard: a model stopping with no text AND no tool calls
+    // has done nothing. Even though it is not planning language, the gate
+    // must NOT bless it as success — otherwise degraded-adapter paths can
+    // ship an empty completion and pass through.
+    expect(classifyTurn({ toolCallCount: 0, outputText: "" }, resolved).kind).toBe("filler");
+    expect(classifyTurn({ toolCallCount: 0, outputText: "   " }, resolved).kind).toBe("filler");
+    expect(classifyTurn({ toolCallCount: 0, outputText: "\n\t  " }, resolved).kind).toBe("filler");
+    // But a blank-text turn with tool calls is action (the work happened).
+    expect(classifyTurn({ toolCallCount: 1, outputText: "" }, resolved).kind).toBe("action");
   });
 
   test("plain substantive answer is action, not filler", () => {

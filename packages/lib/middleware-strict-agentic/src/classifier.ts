@@ -5,13 +5,15 @@
  *   1. toolCallCount > 0        → action
  *   2. isUserQuestion(output)   → user-question
  *   3. isExplicitDone(output)   → explicit-done
- *   4. isFillerOutput(output)   → filler
- *   5. otherwise                → action
+ *   4. blank output (no tools)  → filler  (degraded / silent-failure guard)
+ *   5. isFillerOutput(output)   → filler
+ *   6. otherwise                → action
  *
- * Only `filler` is blocking. A plain final answer like "10" or "Updated
- * 3 files" falls through to `action` and is allowed to complete — the
- * classifier blocks only on affirmative planning/filler signals, never by
- * default, so concise real completions are not spuriously re-prompted.
+ * Only `filler` is blocking. A plain substantive final answer like "10" or
+ * "Updated 3 files" falls through to `action` and is allowed to complete.
+ * Empty / whitespace-only completions with no tool calls are treated as a
+ * degraded response and blocked, because they represent the model stopping
+ * without having done anything (silent failure).
  */
 
 import type { ResolvedStrictAgenticConfig } from "./config.js";
@@ -34,6 +36,7 @@ export function classifyTurn(
   if (facts.toolCallCount > 0) return { kind: "action" };
   if (config.isUserQuestion(facts.outputText)) return { kind: "user-question" };
   if (config.isExplicitDone(facts.outputText)) return { kind: "explicit-done" };
+  if (facts.outputText.trim().length === 0) return { kind: "filler" };
   if (config.isFillerOutput(facts.outputText)) return { kind: "filler" };
   return { kind: "action" };
 }

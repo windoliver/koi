@@ -139,6 +139,11 @@ export function createStrictAgenticMiddleware(
       const result = classifyTurn(turn, resolved);
 
       if (result.kind !== "filler") {
+        // Non-filler completion: clear this turn's cache + reset the run
+        // counter so state does not leak into the next run. onAfterTurn does
+        // not fire on a successful terminal `done` in the engine contract —
+        // relying on it alone would leak one turn entry per successful run().
+        store.clearTurn(ctx.turnId);
         store.resetBlocks(ctx.session.runId);
         return { kind: "continue" };
       }
@@ -165,6 +170,10 @@ export function createStrictAgenticMiddleware(
           consecutiveBlocks: blocks,
           maxFillerRetries: resolved.maxFillerRetries,
         });
+        // Clear terminal state so the released run does not retain its counter
+        // or turn entry indefinitely in long-lived runtimes.
+        store.clearTurn(ctx.turnId);
+        store.resetBlocks(ctx.session.runId);
         return { kind: "continue" };
       }
 

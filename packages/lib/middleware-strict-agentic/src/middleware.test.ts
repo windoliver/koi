@@ -113,23 +113,22 @@ describe("createStrictAgenticMiddleware", () => {
     // With maxFillerRetries=3, the 3rd consecutive stop-gate block trips the
     // breaker. This aligns with the engine's DEFAULT_MAX_STOP_RETRIES so the
     // release path is reachable before the runner stops consulting middleware.
+    // On release the per-run counter + turn cache are cleared (the run is
+    // ending).
     const { middleware, getBlockCount } = createStrictAgenticMiddleware({ maxFillerRetries: 3 });
 
-    const seq = ["t1", "t2", "t3", "t4"];
     const kinds: string[] = [];
-    for (const turnId of seq) {
+    for (const turnId of ["t1", "t2", "t3"]) {
       const turn = makeTurn("s1", turnId);
       await middleware.wrapModelCall?.(turn, REQUEST, async () => response("I will plan this", 0));
       const r = await middleware.onBeforeStop?.(turn);
       kinds.push(r?.kind ?? "unknown");
     }
 
-    // Calls 1 & 2 block (count=1, 2 < 3); call 3 releases (count=3 >= 3);
-    // call 4 continues because count still >= 3.
-    expect(kinds.slice(0, 2)).toEqual(["block", "block"]);
-    expect(kinds[2]).toBe("continue");
-    expect(kinds[3]).toBe("continue");
-    expect(getBlockCount("run-1")).toBeGreaterThanOrEqual(3);
+    // Calls 1 & 2 block (count=1, 2 < 3); call 3 releases (count=3 >= 3).
+    expect(kinds).toEqual(["block", "block", "continue"]);
+    // Counter cleared on release — the run has ended.
+    expect(getBlockCount("run-1")).toBe(0);
   });
 
   test("counter resets after non-filler turn", async () => {
@@ -147,6 +146,40 @@ describe("createStrictAgenticMiddleware", () => {
     const actionTurn = makeTurn("s1", "t3");
     await middleware.wrapModelCall?.(actionTurn, REQUEST, async () => response("", 1));
     await middleware.onBeforeStop?.(actionTurn);
+    expect(getBlockCount("run-1")).toBe(0);
+  });
+
+  test("successful continue on onBeforeStop clears turn cache + resets run counter", async () => {
+    // Regression: onAfterTurn does NOT fire on a successful terminal `done`
+    // in the engine contract — relying on it alone leaks one turn entry per
+    // completed run() and any breaker counter for runs that tripped. The
+    // guard now clears state eagerly on the continue path.
+    const { middleware, getBlockCount } = createStrictAgenticMiddleware({
+      maxFillerRetries: 3,
+    });
+    const turn = makeTurn("s-cleanup", "t-cleanup");
+
+    // Tool-call turn → classifier=action → continue path.
+    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("", 1));
+    // Prior run had blocks → confirm they get reset on the continue path.
+    expect(getBlockCount("run-1")).toBe(0); // fresh
+    const r = await middleware.onBeforeStop?.(turn);
+    expect(r?.kind).toBe("continue");
+    // Subsequent onBeforeStop sees no cached turn → proves clearTurn ran.
+    const r2 = await middleware.onBeforeStop?.(turn);
+    expect(r2).toEqual({ kind: "continue" });
+  });
+
+  test("circuit-breaker release also clears turn cache + resets counter", async () => {
+    const { middleware, getBlockCount } = createStrictAgenticMiddleware({
+      maxFillerRetries: 1,
+    });
+    const turn = makeTurn("s-breaker-cleanup", "t-br");
+    await middleware.wrapModelCall?.(turn, REQUEST, async () => response("I will now plan", 0));
+    const r = await middleware.onBeforeStop?.(turn);
+    // With maxFillerRetries=1, first block trips the breaker immediately.
+    expect(r?.kind).toBe("continue");
+    // Counter cleared for this run → next run sees a fresh budget.
     expect(getBlockCount("run-1")).toBe(0);
   });
 
@@ -236,23 +269,34 @@ describe("createStrictAgenticMiddleware", () => {
       maxFillerRetries: 2,
     });
 
-    // Run 1: two filler turns — second trips the breaker.
+    // Run 1: two filler turns — second trips the breaker. Verify block count
+    // before breaker release (on the first filler, which just blocks).
     const run1Session: SessionContext = {
       ...makeSession("s-outer"),
       runId: "run-A" as unknown as SessionContext["runId"],
     };
-    for (const tid of ["r1-t1", "r1-t2"]) {
-      const t: TurnContext = {
-        session: run1Session,
-        turnIndex: 0,
-        turnId: tid as unknown as TurnId,
-        messages: [],
-        metadata: {},
-      };
-      await middleware.wrapModelCall?.(t, REQUEST, async () => response("I will plan", 0));
-      await middleware.onBeforeStop?.(t);
-    }
-    expect(getBlockCount("run-A")).toBeGreaterThanOrEqual(2);
+    const t1: TurnContext = {
+      session: run1Session,
+      turnIndex: 0,
+      turnId: "r1-t1" as unknown as TurnId,
+      messages: [],
+      metadata: {},
+    };
+    await middleware.wrapModelCall?.(t1, REQUEST, async () => response("I will plan", 0));
+    await middleware.onBeforeStop?.(t1);
+    expect(getBlockCount("run-A")).toBe(1);
+
+    // Second filler → breaker trips → counter cleared for run-A.
+    const t2: TurnContext = {
+      session: run1Session,
+      turnIndex: 0,
+      turnId: "r1-t2" as unknown as TurnId,
+      messages: [],
+      metadata: {},
+    };
+    await middleware.wrapModelCall?.(t2, REQUEST, async () => response("I will plan", 0));
+    await middleware.onBeforeStop?.(t2);
+    expect(getBlockCount("run-A")).toBe(0);
 
     // Run 2: brand new runId — counter starts from zero naturally.
     const run2Session: SessionContext = {
