@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { SupervisorConfig, WorkerEvent, WorkerSpawnRequest } from "@koi/core";
+import type { SupervisorConfig, WorkerBackend, WorkerEvent, WorkerSpawnRequest } from "@koi/core";
 import { agentId, workerId } from "@koi/core";
 import { createSupervisor } from "../create-supervisor.js";
 import { createFakeBackend } from "./fake-backend.js";
@@ -271,5 +271,153 @@ describe("supervisor watchAll", () => {
     const [a, b] = await Promise.all([drain(iterA, 4), drain(iterB, 4)]);
     expect(a).toEqual(["m1", "m2"]);
     expect(b).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("supervisor correctness hardening", () => {
+  it("rejects duplicate workerId while worker is live", async () => {
+    const { backend } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    const first = await supervisorResult.value.start(makeRequest("dup-1"));
+    expect(first.ok).toBe(true);
+    const second = await supervisorResult.value.start(makeRequest("dup-1"));
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error.code).toBe("CONFLICT");
+  });
+
+  it("rejects new start() while supervisor is shutting down", async () => {
+    const { backend } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("sd-1"));
+    const shutdownPromise = supervisorResult.value.shutdown("test");
+    const rejected = await supervisorResult.value.start(makeRequest("sd-2"));
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.error.code).toBe("UNAVAILABLE");
+    await shutdownPromise;
+  });
+
+  it("does not respawn a worker whose crash fires during shutdown backoff", async () => {
+    const { backend, crash, liveWorkerCount } = createFakeBackend();
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 500,
+      backends: { "in-process": backend },
+      // Fast-restart-transient policy would normally resurrect the worker.
+      restart: {
+        restart: "transient",
+        maxRestarts: 5,
+        maxRestartWindowMs: 60_000,
+        backoffBaseMs: 50,
+        backoffCeilingMs: 50,
+      },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("bd-1"));
+
+    // Crash — schedules a restart task that will sleep ~50ms before respawn.
+    crash(workerId("bd-1"));
+
+    // Shut down immediately, before the backoff elapses.
+    await supervisorResult.value.shutdown("test");
+
+    // Wait enough time for any would-be respawn to have fired, then assert
+    // no worker came back.
+    await new Promise((r) => setTimeout(r, 150));
+    expect(liveWorkerCount()).toBe(0);
+    expect(supervisorResult.value.list()).toEqual([]);
+  });
+
+  it("stop() waits for observed worker exit, not just terminate RPC return", async () => {
+    // Build a backend that resolves terminate() synchronously but never emits
+    // an exit event until we tell it to. The shipped subprocess backend has
+    // this shape: proc.kill() returns immediately while proc.exited resolves
+    // later.
+    const events: Array<(ev: WorkerEvent) => void> = [];
+    let alive = true;
+    const lyingBackend: WorkerBackend = {
+      kind: "in-process",
+      displayName: "lying",
+      isAvailable: () => true,
+      spawn: async (req) => {
+        const controller = new AbortController();
+        // Emit started event through any pending listeners.
+        const ev: WorkerEvent = {
+          kind: "started",
+          workerId: req.workerId,
+          at: Date.now(),
+        };
+        // Deferred so the caller sees the handle first.
+        queueMicrotask(() => {
+          for (const l of events.splice(0)) l(ev);
+        });
+        return {
+          ok: true,
+          value: {
+            workerId: req.workerId,
+            agentId: req.agentId,
+            backendKind: "in-process",
+            startedAt: Date.now(),
+            signal: controller.signal,
+          },
+        };
+      },
+      terminate: async () => {
+        // Return ok without actually killing — the bug the reviewer found.
+        return { ok: true, value: undefined };
+      },
+      kill: async (id) => {
+        // Force-kill DOES stop the worker and emit exited.
+        alive = false;
+        queueMicrotask(() => {
+          const ev: WorkerEvent = {
+            kind: "exited",
+            workerId: id,
+            at: Date.now(),
+            code: 137,
+            state: "terminated",
+          };
+          for (const l of events.splice(0)) l(ev);
+        });
+        return { ok: true, value: undefined };
+      },
+      isAlive: async () => alive,
+      watch: async function* () {
+        while (alive) {
+          const ev = await new Promise<WorkerEvent>((resolve) => {
+            events.push(resolve);
+          });
+          yield ev;
+          if (ev.kind === "exited" || ev.kind === "crashed") return;
+        }
+      },
+    };
+
+    const supervisorResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 100, // short so the deadline path fires quickly
+      backends: { "in-process": lyingBackend },
+    });
+    if (!supervisorResult.ok) return;
+    await supervisorResult.value.start(makeRequest("lying-1"));
+
+    // stop() must not return ok while worker is alive — it should hit the
+    // deadline, call kill (which actually exits), and only then return.
+    const start = Date.now();
+    const result = await supervisorResult.value.stop(workerId("lying-1"), "test");
+    const elapsed = Date.now() - start;
+    expect(result.ok).toBe(true);
+    // Elapsed must be at least the shutdown deadline since terminate didn't work.
+    expect(elapsed).toBeGreaterThanOrEqual(90);
+    expect(alive).toBe(false);
   });
 });
