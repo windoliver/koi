@@ -1062,7 +1062,8 @@ export function createPermissionsMiddleware(
           // hard-convert every future call. Stop advertising the tool so the
           // model doesn't burn iterations on guaranteed-hard failures.
           const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
-          const currentCount = getTurnSoftDenyCounter(sid).peek(cacheKey);
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          const currentCount = getTurnSoftDenyCounter(sid).peek(turnScopedKey);
           if (currentCount >= cap) {
             // #1650 loop round-3: record DenialTracker ONCE per (session, turn,
             // cacheKey). Repeated planning passes in the same turn would
@@ -1355,10 +1356,13 @@ export function createPermissionsMiddleware(
             });
           }
 
-          // Per-turn cap check.
+          // Per-turn cap check. Prefix the counter key with turnIndex so
+          // overlapping turns in the same session cannot reset or share each
+          // other's budget. Loop round-5 fix.
           const cap = config.softDenyPerTurnCap ?? DEFAULT_SOFT_DENY_PER_TURN_CAP;
           const counter = getTurnSoftDenyCounter(sessionId);
-          if (counter.countAndCap(cacheKey, cap) === "over_cap") {
+          const turnScopedKey = `${ctx.turnIndex}\0${cacheKey}`;
+          if (counter.countAndCap(turnScopedKey, cap) === "over_cap") {
             const hardened = hardConvertedDecision(`soft-deny retry cap ${cap} exceeded this turn`);
             getTracker(sessionId).record({
               toolId: request.toolId,
@@ -1432,16 +1436,16 @@ export function createPermissionsMiddleware(
       return next(request);
     },
 
-    async onBeforeTurn(ctx: TurnContext): Promise<void> {
-      // #1650: clear per-turn soft-deny counter at turn boundary.
-      const sid = ctx.session.sessionId as string;
-      getTurnSoftDenyCounter(sid).clear();
-      // Also drop prior-turn filter-cap-recorded markers so a new turn can
-      // record a fresh hard-conversion if it re-exhausts the cap.
-      const prefix = `${sid}\0`;
-      for (const key of filterCapRecordedKeys) {
-        if (key.startsWith(prefix)) filterCapRecordedKeys.delete(key);
-      }
+    async onBeforeTurn(_ctx: TurnContext): Promise<void> {
+      // #1650 loop round-5: counter keys are turn-scoped via turnIndex
+      // prefix, so we intentionally do NOT blanket-clear here. Clearing the
+      // whole counter would wipe overlapping turns' state in the same session
+      // (child agents, retries, out-of-order completion). Entries are bounded
+      // by session lifetime and evicted wholesale on session end.
+      //
+      // filterCapRecordedKeys markers are also already turn-scoped in their
+      // key (`${sid}\0${turnIndex}\0${cacheKey}`) so they coexist safely
+      // across turns; session-end drops them all.
     },
   };
 

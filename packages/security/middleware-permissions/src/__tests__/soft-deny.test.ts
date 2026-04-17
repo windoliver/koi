@@ -910,6 +910,62 @@ describe("filterTools strips tools already at/over soft-deny cap (#1650 loop rou
   });
 });
 
+describe("turn isolation under overlap (#1650 loop round-5 regression)", () => {
+  test("onBeforeTurn for a new turn does NOT wipe an in-flight turn's accumulated counter", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 2,
+    });
+    const ctxT0 = makeTurnContext({ turnIndex: 0, sessionId: "s-overlap" });
+
+    // Turn 0 burns the cap.
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+
+    // Another turn (T1) begins and calls onBeforeTurn. In the old design this
+    // blanket-clears the session counter; the new design makes it a no-op
+    // because keys are turn-scoped via `${turnIndex}\0${cacheKey}`.
+    const ctxT1 = makeTurnContext({ turnIndex: 1, sessionId: "s-overlap" });
+    await mw.onBeforeTurn?.(ctxT1);
+
+    // A late tool call on T0 (after T1's onBeforeTurn) must still hit the cap
+    // — its T0 counter entry was NOT wiped by T1's onBeforeTurn.
+    await expect(
+      mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler),
+    ).rejects.toThrow(/soft-deny retry cap/);
+
+    // T1 also sees a fresh counter for the same cacheKey.
+    const result = await mw.wrapToolCall?.(ctxT1, makeToolRequest("bash"), noopToolHandler);
+    expect((result?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+  });
+
+  test("turn N+1 starts at count=0 for the same cacheKey (turn boundary still works)", async () => {
+    const mw = createPermissionsMiddleware({
+      backend: softDenyBackend(),
+      softDenyPerTurnCap: 2,
+    });
+    const ctxT0 = makeTurnContext({ turnIndex: 0, sessionId: "s-boundary" });
+
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+    await mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler);
+    await expect(
+      mw.wrapToolCall?.(ctxT0, makeToolRequest("bash"), noopToolHandler),
+    ).rejects.toThrow(/soft-deny retry cap/);
+
+    // Turn 1: fresh counter for the same cacheKey.
+    const ctxT1 = makeTurnContext({ turnIndex: 1, sessionId: "s-boundary" });
+    await mw.onBeforeTurn?.(ctxT1);
+    const r1 = await mw.wrapToolCall?.(ctxT1, makeToolRequest("bash"), noopToolHandler);
+    const r2 = await mw.wrapToolCall?.(ctxT1, makeToolRequest("bash"), noopToolHandler);
+    expect((r1?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+    expect((r2?.metadata as Record<string, unknown>)?.permissionDenied).toBe(true);
+    // Third hits turn-1 cap.
+    await expect(
+      mw.wrapToolCall?.(ctxT1, makeToolRequest("bash"), noopToolHandler),
+    ).rejects.toThrow(/soft-deny retry cap/);
+  });
+});
+
 describe("filterTools round-3 edge cases (#1650)", () => {
   test("repeated planning passes after cap exhaustion record DenialTracker ONLY ONCE per (turn, cacheKey)", async () => {
     const perToolBackend: PermissionBackend = {
