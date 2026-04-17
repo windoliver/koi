@@ -1408,6 +1408,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // KOI_REPORT_ENABLED=true opts into run-report middleware.
     // Wires @koi/middleware-report so a RunReport is printed at session end.
     ...(process.env.KOI_REPORT_ENABLED === "true" ? { reportEnabled: true } : {}),
+    // KOI_PLANNING_ENABLED=true opts into @koi/middleware-planning.
+    // Default off because plan state is ephemeral across resume until
+    // durable persistence (#1842) lands. Hosts that accept the
+    // limitation can opt in today.
+    ...(process.env.KOI_PLANNING_ENABLED === "true" ? { planningEnabled: true } : {}),
     // Bridge spawn lifecycle events into the TUI store so /agents view and
     // inline spawn_call blocks reflect real spawn state. Each spawn call
     // produces one spawn_requested + one agent_status_changed event.
