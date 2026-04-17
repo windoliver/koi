@@ -468,16 +468,7 @@ describe("evaluateRules disposition (#1650)", () => {
 
   test("deny rule with on_deny: 'hard' → decision.disposition === 'hard' (explicit)", () => {
     const rules = [
-      makeRule(
-        "/etc/**",
-        "write",
-        "deny",
-        "project",
-        undefined,
-        undefined,
-        undefined,
-        "hard",
-      ),
+      makeRule("/etc/**", "write", "deny", "project", undefined, undefined, undefined, "hard"),
     ];
     const d = evaluateRules(
       { principal: "agent:main", action: "write", resource: "/etc/hosts" },
@@ -489,10 +480,7 @@ describe("evaluateRules disposition (#1650)", () => {
   test("rule at every source tier defaults disposition to 'hard' when on_deny omitted", () => {
     for (const tier of ["policy", "project", "local", "user"] as const) {
       const rules = [makeRule("*", "*", "deny", tier)];
-      const d = evaluateRules(
-        { principal: "agent:x", action: "write", resource: "x" },
-        rules,
-      );
+      const d = evaluateRules({ principal: "agent:x", action: "write", resource: "x" }, rules);
       if (d.effect === "deny") expect(d.disposition).toBe("hard");
     }
   });
