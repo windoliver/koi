@@ -52,18 +52,23 @@ export interface SessionRegistry {
   readonly interrupt: (sessionId: SessionId, reason?: string, expectedRunId?: RunId) => boolean;
   readonly isInterrupted: (sessionId: SessionId) => boolean;
   readonly listActive: () => readonly ActiveSession[];
-  /** Force-remove any entry for `sessionId` regardless of its runId or
-   *  abort state. Intended as an administrative recovery escape hatch for
-   *  hosts that leak or wedge runtimes, freeing the sessionId for a fresh
-   *  registration on the next `run()`. Returns `true` if an entry was
-   *  removed, `false` if none existed.
+  /** Force-remove a stale entry for `sessionId`. Intended as a recovery
+   *  escape hatch for hosts that leak or wedge runtimes, freeing the
+   *  sessionId for a fresh registration.
+   *
+   *  Ownership guard — an entry is ONLY removed if at least one of:
+   *    - `expectedRunId` is supplied AND matches the entry's runId
+   *    - the entry's `runSignal` is already aborted (stale; the owner
+   *      merely has not completed its cleanup yet)
+   *  Live, unaborted runs cannot be evicted without proof of ownership.
+   *  Returns `true` iff an entry was actually removed.
    *
    *  WARNING: this does NOT abort the controller or notify the owning
    *  runtime; it only evicts the registry entry. A wedged runtime may
    *  still be consuming resources and should be disposed separately. Use
    *  sparingly — the normal unregister path runs automatically in the
    *  generator's finally when the run completes. */
-  readonly forceUnregister: (sessionId: SessionId) => boolean;
+  readonly forceUnregister: (sessionId: SessionId, expectedRunId?: RunId) => boolean;
 }
 
 type RegistryEntry = {
@@ -133,8 +138,17 @@ export function createSessionRegistry(): SessionRegistry {
     }));
   }
 
-  function forceUnregister(sessionId: SessionId): boolean {
-    return entries.delete(sessionId);
+  function forceUnregister(sessionId: SessionId, expectedRunId?: RunId): boolean {
+    const entry = entries.get(sessionId);
+    if (entry === undefined) return false;
+    // Allow removal only when the caller proves ownership via matching
+    // runId, OR when the entry is already aborted (stale owner that
+    // hasn't reached its cleanup path yet).
+    const hasOwnershipToken = expectedRunId !== undefined && entry.runId === expectedRunId;
+    const isStale = entry.runSignal.aborted;
+    if (!hasOwnershipToken && !isStale) return false;
+    entries.delete(sessionId);
+    return true;
   }
 
   return { register, interrupt, isInterrupted, listActive, forceUnregister };

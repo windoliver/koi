@@ -1748,9 +1748,21 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
       const runSessionId = factorySessionId;
       const runRid = currentRid;
 
+      // #1682: RunHandle is single-consumer. The first [Symbol.asyncIterator]
+      // call allocates the generator and caches it; subsequent calls throw.
+      // Without this, two iterators from the same handle could both enter the
+      // engine pipeline, duplicating side effects and racing cleanup.
+      // let justified: mutable gen cache — populated on first iterator request
+      let cachedGenerator: ReturnType<typeof streamEvents> | undefined;
       return {
         runId: currentRid,
-        [Symbol.asyncIterator]: () => {
+        [Symbol.asyncIterator](): ReturnType<typeof streamEvents> {
+          if (cachedGenerator !== undefined) {
+            throw KoiRuntimeError.from(
+              "VALIDATION",
+              "RunHandle is single-consumer: [Symbol.asyncIterator]() can only be called once per run() invocation. Use the cached iterator or start a new run().",
+            );
+          }
           // #1742 loop-3 round 1: capture the generator so cycleSession()
           // / dispose() can call .return() to fast-path abandoned-after-
           // iteration cleanup.
@@ -1763,6 +1775,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
             unregisterFromRegistry,
             currentRid,
           );
+          cachedGenerator = gen;
           currentGenerator = gen;
           return gen;
         },

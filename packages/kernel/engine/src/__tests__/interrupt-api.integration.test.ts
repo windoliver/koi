@@ -749,7 +749,7 @@ describe("register failure rolls back currentRunId", () => {
       interrupt: sharedRegistry.interrupt,
       isInterrupted: sharedRegistry.isInterrupted,
       listActive: sharedRegistry.listActive,
-      forceUnregister: sharedRegistry.forceUnregister,
+      forceUnregister: (sid, expectedRunId?) => sharedRegistry.forceUnregister(sid, expectedRunId),
     };
 
     const runtime = await createKoi({
@@ -814,6 +814,25 @@ describe("stale iterable terminal delivery", () => {
 
     // Drain B cleanly and dispose.
     while (!(await iterB.next()).done) {}
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test 14: RunHandle is single-consumer
+// ---------------------------------------------------------------------------
+
+describe("RunHandle single-consumer guard", () => {
+  test("RunHandle is single-consumer — second [Symbol.asyncIterator]() throws", async () => {
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+    });
+    const handle = runtime.run({ kind: "text", text: "x" });
+    const _iterA = handle[Symbol.asyncIterator]();
+    expect(() => handle[Symbol.asyncIterator]()).toThrow(/single-consumer|only be called once/);
+    // Drain the first iterator cleanly to avoid leaks.
+    while (!(await _iterA.next()).done) {}
     await runtime.dispose();
   });
 });

@@ -176,31 +176,50 @@ describe("createSessionRegistry", () => {
     expect(snapshot3[0]?.sessionId).toBe(sid);
   });
 
-  test("forceUnregister removes a stale entry and allows fresh registration", () => {
+  test("forceUnregister requires runId match OR aborted entry (ownership guard)", () => {
     const registry = createSessionRegistry();
     const sid = sessionId("stuck");
     const r1 = runId("r-stuck");
     const ctrl = new AbortController();
     registry.register(sid, r1, ctrl, ctrl.signal);
+
+    // Without runId or abort state, eviction is refused.
+    expect(registry.forceUnregister(sid)).toBe(false);
     expect(registry.listActive()).toHaveLength(1);
 
-    // Before forceUnregister, a second register throws CONFLICT.
-    const r2 = runId("r-fresh");
-    expect(() => registry.register(sid, r2, new AbortController(), AbortSignal.any([]))).toThrow(
-      /already registered/,
-    );
+    // Wrong runId — still refused.
+    expect(registry.forceUnregister(sid, runId("other"))).toBe(false);
+    expect(registry.listActive()).toHaveLength(1);
 
-    // forceUnregister returns true (entry existed) and clears the slot.
-    expect(registry.forceUnregister(sid)).toBe(true);
+    // Correct runId — removed.
+    expect(registry.forceUnregister(sid, r1)).toBe(true);
     expect(registry.listActive()).toHaveLength(0);
 
     // Fresh register now succeeds.
+    const r2 = runId("r-fresh");
     expect(() =>
       registry.register(sid, r2, new AbortController(), AbortSignal.any([])),
     ).not.toThrow();
 
-    // Calling forceUnregister on an unknown sid returns false.
-    expect(registry.forceUnregister(sessionId("nonexistent"))).toBe(false);
+    // forceUnregister on an unknown sid returns false.
+    expect(registry.forceUnregister(sessionId("nonexistent"), r2)).toBe(false);
+  });
+
+  test("forceUnregister removes an aborted entry without runId proof (stale recovery)", () => {
+    const registry = createSessionRegistry();
+    const sid = sessionId("aborted");
+    const r1 = runId("r-aborted");
+    const ctrl = new AbortController();
+    registry.register(sid, r1, ctrl, ctrl.signal);
+
+    // Not aborted yet — refuse without runId.
+    expect(registry.forceUnregister(sid)).toBe(false);
+
+    // Abort the entry's signal.
+    ctrl.abort();
+    // Now the entry is stale; forceUnregister without runId removes it.
+    expect(registry.forceUnregister(sid)).toBe(true);
+    expect(registry.listActive()).toHaveLength(0);
   });
 
   test("interrupt with expectedRunId mismatch is a no-op (cross-generation safety)", () => {
