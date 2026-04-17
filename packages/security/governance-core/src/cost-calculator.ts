@@ -32,7 +32,11 @@ export function createFlatRateCostCalculator(
         });
       }
 
+      // Object.hasOwn guard above guarantees entry exists
       const entry = pricing[modelId];
+      if (entry === undefined) {
+        throw KoiRuntimeError.from("INTERNAL", `Pricing entry missing for ${modelId}`);
+      }
       const inputCost = (inputTokens / 1_000_000) * entry.inputUsdPer1M;
       const outputCost = (outputTokens / 1_000_000) * entry.outputUsdPer1M;
       return inputCost + outputCost;
