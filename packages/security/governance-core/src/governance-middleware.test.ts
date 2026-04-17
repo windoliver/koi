@@ -761,6 +761,67 @@ describe("issue checklist", () => {
     expect(onViolation).toHaveBeenCalledTimes(1);
   });
 
+  test("degraded latch denies next call after tool outcome record failure", async () => {
+    // Latch-based fail-closed: even though the first tool call returns its
+    // real result (record failed), the NEXT gate() must deny because the
+    // controller reads are stale.
+    let recordFail = true;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (recordFail && ev.kind === "tool_success") throw new Error("down");
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    await mw.wrapToolCall?.(
+      ctx(),
+      { callId: "c1" as never, toolId: "t", input: {} } as never,
+      async () => ({ callId: "c1", toolId: "t", result: "ok" }) as never,
+    );
+    // Recorder recovers but latch does not — enforcement must still deny.
+    recordFail = false;
+    let threw: unknown;
+    try {
+      await mw.wrapToolCall?.(
+        ctx(),
+        { callId: "c2" as never, toolId: "t", input: {} } as never,
+        async () => ({ callId: "c2", toolId: "t", result: "ok" }) as never,
+      );
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).message).toMatch(/degraded/i);
+  });
+
+  test("degraded latch denies next call after onAfterTurn record failure", async () => {
+    // onAfterTurn throws, but host runtimes often swallow it via .catch(noop).
+    // The internal latch must make the next gate() deny regardless.
+    let recordFail = true;
+    const cfg = baseCfg({
+      controller: {
+        ...baseCfg().controller,
+        record: (ev) => {
+          if (recordFail && ev.kind === "turn") throw new Error("down");
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    // Host swallows the throw.
+    await (mw.onAfterTurn?.(ctx()).catch(() => {}) ?? Promise.resolve());
+    recordFail = false;
+    let threw: unknown;
+    try {
+      await mw.wrapModelCall?.(ctx(), req(), async () => response(1, 1));
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+    expect((threw as Error).message).toMatch(/degraded/i);
+  });
+
   test("setpoint denies emit compliance records", async () => {
     const recordCompliance = mock((r: ComplianceRecord) => r);
     const cfg = baseCfg({

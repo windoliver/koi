@@ -68,6 +68,45 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   }
 
   /**
+   * Degraded-state latch. Once any accounting/recording path fails, this
+   * middleware cannot trust subsequent controller reads — token usage, cost,
+   * turn count, and error rate all become stale. The next `gate()` call
+   * denies unconditionally so containment survives recorder outages even
+   * when the host swallows hook errors (e.g., `onAfterTurn` .catch(noop)
+   * wrappers in the runtime). The host clears the latch out-of-band by
+   * re-wiring a healthy controller or recreating the middleware.
+   */
+  // let justified: mutable latch — set on accounting failure, read by gate()
+  let degraded = false;
+  let degradedReason: string | undefined;
+  function latchDegraded(reason: string, cause: unknown, payload: JsonObject): void {
+    degraded = true;
+    degradedReason = reason;
+    console.warn("[koi:governance-core] accounting degraded — next call fails closed", {
+      cause,
+      reason,
+    });
+    onViolation?.(
+      {
+        ok: false,
+        violations: [
+          {
+            rule: "accounting.degraded",
+            severity: "critical",
+            message: `${reason} — future calls denied until recovery`,
+          },
+        ],
+      },
+      {
+        kind: "model_call",
+        agentId: toAgentId("__governance__"),
+        payload,
+        timestamp: Date.now(),
+      },
+    );
+  }
+
+  /**
    * Fire-and-forget compliance record with sync-safe error handling.
    * `Promise.resolve(fn())` evaluates fn() eagerly — a synchronous throw
    * escapes before `.catch` attaches. Using `.then(() => fn())` moves the
@@ -98,6 +137,20 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
     kind: PolicyRequestKind,
     payload: JsonObject,
   ): Promise<void> {
+    if (degraded) {
+      throw KoiRuntimeError.from(
+        "PERMISSION",
+        `Governance degraded: ${degradedReason ?? "unknown"}`,
+        {
+          context: {
+            agentId: ctx.session.agentId,
+            sessionId: ctx.session.sessionId,
+            kind,
+            degradedReason,
+          },
+        },
+      );
+    }
     let check: GovernanceCheck;
     try {
       check = await controller.checkAll();
@@ -195,30 +248,15 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
    * Non-authoritative wrapper: accounting failures after a successful model
    * call must not discard the response. The provider already consumed tokens
    * and billed the account; surfacing the record error would lose real work
-   * and potentially trigger double-billing on retry. Fire onViolation so the
-   * host can poison future admission, warn-log, and return.
+   * and potentially trigger double-billing on retry. Sets the degraded latch
+   * so the next `gate()` fails closed.
    */
-  function recordModelUsageSoft(ctx: TurnContext, response: ModelResponse, model: string): void {
-    recordModelUsage(ctx, response).catch((cause) => {
-      console.warn("[koi:governance-core] model accounting failed post-call", { cause, model });
-      onViolation?.(
-        {
-          ok: false,
-          violations: [
-            {
-              rule: "accounting.degraded",
-              severity: "critical",
-              message: "Model accounting failed — future enforcement state is stale",
-            },
-          ],
-        },
-        {
-          kind: "model_call",
-          agentId: toAgentId(ctx.session.agentId),
-          payload: { model, accountingDegraded: true },
-          timestamp: Date.now(),
-        },
-      );
+  function recordModelUsageSoft(_ctx: TurnContext, response: ModelResponse, model: string): void {
+    recordModelUsage(_ctx, response).catch((cause) => {
+      latchDegraded("Model accounting failed post-call", cause, {
+        model,
+        phase: "post-call",
+      });
     });
   }
 
@@ -313,12 +351,14 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // consumed turns. Next turn's pre-gate checks `turnCount >= maxTurns`
       // and denies once the budget is spent.
       //
-      // Fail closed: if we cannot record, subsequent pre-gate reads of
-      // `turn_count` are stale and admission control is bypassed. Throw so
-      // the host sees the degradation.
+      // Defense in depth: throw AND set the degraded latch. Some hosts
+      // wrap onAfterTurn in `.catch(noop)` (runtime finalizer does this),
+      // which would swallow the throw. The latch ensures the next `gate()`
+      // call still denies even when the thrown error is lost.
       try {
         await controller.record({ kind: "turn" });
       } catch (e) {
+        latchDegraded("Turn record failed", e, {});
         throw KoiRuntimeError.from("PERMISSION", "Governance turn record failed", {
           cause: e,
           context: {
@@ -362,27 +402,16 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       const model = request.model ?? "unknown";
       const recordDeltaSoft = (inputTokens: number, outputTokens: number): void => {
         if (inputTokens <= 0 && outputTokens <= 0) return;
-        const costUsd = cost.calculate(model, inputTokens, outputTokens);
+        let costUsd = 0;
+        try {
+          costUsd = cost.calculate(model, inputTokens, outputTokens);
+        } catch (cause) {
+          // Unknown-model price lookups shouldn't skip usage accounting.
+          // Latch degraded but still record tokens below (costUsd=0 fallback).
+          latchDegraded("Cost calculation failed", cause, { model });
+        }
         recordTokenEvent(ctx, model, inputTokens, outputTokens, costUsd).catch((cause) => {
-          console.warn("[koi:governance-core] stream accounting failed", { cause, model });
-          onViolation?.(
-            {
-              ok: false,
-              violations: [
-                {
-                  rule: "accounting.degraded",
-                  severity: "critical",
-                  message: "Stream accounting failed — future enforcement state is stale",
-                },
-              ],
-            },
-            {
-              kind: "model_call",
-              agentId: toAgentId(ctx.session.agentId),
-              payload: { model, accountingDegraded: true },
-              timestamp: Date.now(),
-            },
-          );
+          latchDegraded("Stream accounting failed", cause, { model, phase: "stream" });
         });
         onUsage?.({
           model,
@@ -448,25 +477,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       // returned.
       const toolName = request.toolId;
       const fireRecordFailure = (cause: unknown): void => {
-        console.warn("[koi:governance-core] tool outcome record failed", { cause, toolName });
-        onViolation?.(
-          {
-            ok: false,
-            violations: [
-              {
-                rule: "accounting.degraded",
-                severity: "critical",
-                message: "Tool outcome recording failed — future enforcement state is stale",
-              },
-            ],
-          },
-          {
-            kind: "tool_call",
-            agentId: toAgentId(ctx.session.agentId),
-            payload: { toolId: toolName, accountingDegraded: true },
-            timestamp: Date.now(),
-          },
-        );
+        latchDegraded("Tool outcome recording failed", cause, { toolId: toolName });
       };
       try {
         const result = await next(request);
