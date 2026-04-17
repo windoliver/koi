@@ -182,8 +182,14 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
       return response;
     },
 
-    async *wrapModelStream(_ctx, request, next) {
-      yield* next(request);
+    async *wrapModelStream(ctx: TurnContext, request: ModelRequest, next) {
+      await gate(ctx, "model_call", { model: request.model ?? "unknown" });
+      for await (const chunk of next(request)) {
+        yield chunk;
+        if (chunk.kind === "done") {
+          await recordModelUsage(ctx, chunk.response);
+        }
+      }
     },
 
     async wrapToolCall(_ctx, request, next) {

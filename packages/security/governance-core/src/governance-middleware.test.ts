@@ -187,3 +187,74 @@ describe("wrapModelCall — gate + record", () => {
     expect(recordCompliance).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("wrapModelStream", () => {
+  test("gate runs before first yield; cost recorded on done chunk", async () => {
+    const cfg = baseCfg();
+    const recorded: unknown[] = [];
+    cfg.controller = {
+      ...cfg.controller,
+      record: (ev) => {
+        recorded.push(ev);
+      },
+    };
+    const mw = createGovernanceMiddleware(cfg);
+
+    async function* source() {
+      yield { kind: "text_delta" as const, delta: "hi" };
+      yield {
+        kind: "done" as const,
+        response: { content: "hi", model: "m", usage: { inputTokens: 10, outputTokens: 5 } },
+      };
+    }
+    const out = [];
+    for await (const c of mw.wrapModelStream?.(ctx(), req(), source) ?? []) out.push(c);
+    expect(out.length).toBe(2);
+    expect(recorded[0]).toMatchObject({ kind: "token_usage", inputTokens: 10, outputTokens: 5 });
+  });
+
+  test("deny verdict → throws before first yield", async () => {
+    const cfg = baseCfg({
+      backend: {
+        evaluator: {
+          evaluate: () => ({
+            ok: false,
+            violations: [{ rule: "r", severity: "critical", message: "m" }],
+          }),
+        },
+      },
+    });
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      yield { kind: "text_delta" as const, delta: "x" };
+    }
+    let threw: unknown;
+    try {
+      for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+        /* drain */
+      }
+    } catch (e) {
+      threw = e;
+    }
+    expect((threw as Error & { code?: string }).code).toBe("PERMISSION");
+  });
+
+  test("no done chunk → no cost recorded", async () => {
+    const cfg = baseCfg();
+    const recorded: unknown[] = [];
+    cfg.controller = {
+      ...cfg.controller,
+      record: (ev) => {
+        recorded.push(ev);
+      },
+    };
+    const mw = createGovernanceMiddleware(cfg);
+    async function* source() {
+      yield { kind: "text_delta" as const, delta: "x" };
+    }
+    for await (const _ of mw.wrapModelStream?.(ctx(), req(), source) ?? []) {
+      /* drain */
+    }
+    expect(recorded).toHaveLength(0);
+  });
+});
