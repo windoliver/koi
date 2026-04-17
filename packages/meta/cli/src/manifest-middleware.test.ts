@@ -1296,6 +1296,25 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
     });
     expect(chain.map((mw) => mw.name)).toEqual(["hooks", "permissions", "exfiltration-guard"]);
   });
+
+  test("plan slot sits INSIDE permissions so its tool-visibility gate sees filtered tools", () => {
+    // Reviewer R16: if planning ran OUTSIDE permissions, its
+    // wrapModelCall would see the pre-filter request.tools and
+    // instruct the model to call write_plan even on sessions where
+    // permissions had removed it.
+    const chain = composeRuntimeMiddleware({
+      hook: stubMiddleware("hooks"),
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      plan: stubMiddleware("plan"),
+    });
+    const names = chain.map((mw) => mw.name);
+    const permIdx = names.indexOf("permissions");
+    const guardIdx = names.indexOf("exfiltration-guard");
+    const planIdx = names.indexOf("plan");
+    expect(planIdx).toBeGreaterThan(permIdx);
+    expect(planIdx).toBeGreaterThan(guardIdx);
+  });
 });
 
 // ---------------------------------------------------------------------------

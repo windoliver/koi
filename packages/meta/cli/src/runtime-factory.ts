@@ -1676,14 +1676,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),
       ...(goalMw !== undefined ? { goal: goalMw } : {}),
-      // presetExtras includes both the code-owned stack middleware,
+      // Plan is a dedicated zone-C-bottom slot so it runs INSIDE the
+      // permissions filter. That's required for its prompt-visibility
+      // gate — if permissions removes write_plan from request.tools,
+      // planning must see the filtered list, not the pre-filter one.
+      plan: planBundle.middleware,
+      // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
-      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), and the always-on
-      // planning middleware (its provider half is registered below).
-      // Zone B manifest middleware flows through the separate
-      // `manifestMiddleware` slot and is composed strictly INSIDE the
-      // security core layers, regardless of array position here.
-      presetExtras: [...stackContribution.middleware, ...auditPresetExtras, planBundle.middleware],
+      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
+      // middleware flows through the separate `manifestMiddleware`
+      // slot and is composed strictly INSIDE the security core
+      // layers, regardless of array position here.
+      presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),

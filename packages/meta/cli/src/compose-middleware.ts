@@ -49,6 +49,14 @@ export interface MiddlewareCompositionInput {
   /** Goal reminder middleware — injected when the host supplies objectives. */
   readonly goal?: KoiMiddleware | undefined;
   /**
+   * Planning middleware — injects `write_plan` tool semantics. Composed
+   * INSIDE permissions so its prompt-visibility gate sees the final
+   * filtered tool list; if permissions removed write_plan, planning's
+   * wrapModelCall sees the empty/filtered tools and skips the system
+   * prompt instead of steering the model toward a denied tool.
+   */
+  readonly plan?: KoiMiddleware | undefined;
+  /**
    * Preset / plugin middleware contributed by stack activation. Appended
    * after the checkpoint layer so presets can observe the core stack
    * without interleaving with it. Order within the preset list is
@@ -135,6 +143,7 @@ export function composeRuntimeMiddleware(
     // Zone C-bottom — optional innermost layers.
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.goal !== undefined ? [input.goal] : []),
+    ...(input.plan !== undefined ? [input.plan] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];
