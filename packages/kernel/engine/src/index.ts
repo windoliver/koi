@@ -190,6 +190,9 @@ export { createResultPruner } from "./result-pruner.js";
 // shared spawn lifecycle
 export type { RunSpawnedAgentOptions } from "./run-spawned-agent.js";
 export { createSystemPromptMiddleware, runSpawnedAgent } from "./run-spawned-agent.js";
+// session registry (programmatic interrupt)
+export type { SessionRegistry } from "./session-registry.js";
+export { createSessionRegistry } from "./session-registry.js";
 // spawn child
 export { spawnChildAgent } from "./spawn-child.js";
 // spawn ledger
@@ -199,6 +202,7 @@ export type {
   CreateKoiOptions,
   ForgeRuntime,
   KoiRuntime,
+  RunHandle,
   SpawnChildOptions,
   SpawnChildResult,
 } from "./types.js";

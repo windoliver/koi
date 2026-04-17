@@ -84,6 +84,201 @@ idle ──SIGINT──▶ graceful
 
 The state machine is installed in `packages/meta/cli/src/commands/start.ts` and `packages/meta/cli/src/tui-command.ts`. It is **not** installed in `packages/meta/cli/src/bin.ts` — the TUI re-execs into a child process, and the state machine must live with the process that owns the `AbortController`.
 
+### Programmatic API
+
+**Purpose:** External callers (HTTP handlers, test harnesses, parent agents) can interrupt a running agent without owning the `AbortController` themselves. This decouples the interrupt authority from the object lifecycle — the registry acts as a shared interrupt table.
+
+**`SessionRegistry` interface and factory:**
+
+```ts
+export interface SessionRegistry {
+  /**
+   * Register a live run. The caller passes the run's branded `runId`, the
+   * per-run `AbortController`, and the composite `runSignal` the engine
+   * observes (`AbortSignal.any([input.signal, controller.signal])`).
+   * Returns an unregister function that is safe to call multiple times.
+   * Throws `CONFLICT` if the sessionId is already registered (shared-
+   * registry cross-runtime collision — see Caveats).
+   */
+  readonly register: (
+    sessionId: SessionId,
+    runId: RunId,
+    controller: AbortController,
+    runSignal: AbortSignal,
+  ) => () => void;
+
+  /**
+   * Abort the run registered for sessionId. When `expectedRunId` is
+   * supplied, the registry requires the active entry's runId to match
+   * before aborting — this is the safe cross-generation cancellation path.
+   * Returns true only on the first abort for the matching active entry.
+   * Returns false for unknown session, aborted-already, or runId mismatch.
+   */
+  readonly interrupt: (
+    sessionId: SessionId,
+    reason?: string,
+    expectedRunId?: RunId,
+  ) => boolean;
+
+  /** True iff the active entry's composite run signal is aborted. */
+  readonly isInterrupted: (sessionId: SessionId) => boolean;
+
+  /** Snapshot of currently registered sessionIds. Does NOT expose runIds —
+   *  exposing them would let any caller holding the registry cancel or
+   *  evict another runtime's run. Callers cancel only their own runs,
+   *  whose runIds they already have via `runtime.currentRunId` or
+   *  `RunHandle.runId`. */
+  readonly listActive: () => readonly SessionId[];
+
+  /**
+   * Administrative recovery: evict a registry entry by sessionId, proving
+   * ownership via the matching `expectedRunId`. Does NOT abort the owning
+   * runtime — only removes the registry entry. Use when a runtime has
+   * wedged or crashed and you need to free the sessionId for a replacement.
+   */
+  readonly forceUnregister: (sessionId: SessionId, expectedRunId: RunId) => boolean;
+}
+
+export function createSessionRegistry(): SessionRegistry;
+```
+
+The registry holds `AbortController` and composite-signal references only — no transcript, no engine state. It is an in-memory table of active runs.
+
+**Integration with `createKoi()` and `run()`:**
+
+Pass the registry at factory time:
+
+```ts
+const registry = createSessionRegistry();
+const runtime = await createKoi({
+  manifest,
+  adapter,
+  sessionRegistry: registry,
+});
+```
+
+The engine wires the registry into the existing `run()` lifecycle:
+
+- **On `run()` entry:** After the per-run `AbortController` is created and before any await, the engine calls `registry.register(runtime.sessionId, controller)`. It captures the sessionId at registration time (not later), so `cycleSession()` rotating the sessionId during a run does not orphan the registration.
+- **On `run()` exit:** In the `finally` block (normal completion, error, or abort), the engine calls the unregister function returned by `register()`. Unregister is idempotent and safe to call from any path.
+
+**`runtime.run()` returns a `RunHandle`:**
+
+Each `runtime.run(input)` call returns a `RunHandle` — an `AsyncIterable<EngineEvent>` carrying `runId` and a run-scoped `.interrupt()`. Use the handle's `.interrupt()` (not `runtime.interrupt()`) whenever you store the cancel callback for later delivery, since it is bound to the specific run and cannot accidentally hit a later run on the same runtime.
+
+```ts
+export interface RunHandle extends AsyncIterable<EngineEvent> {
+  readonly runId: RunId;
+  /** Abort this specific run. Safe across run generations — becomes a
+   *  no-op after this run completes, never hits a later run. */
+  readonly interrupt: (reason?: string) => boolean;
+}
+```
+
+**`KoiRuntime.interrupt` / `.isInterrupted` / `.currentRunId`:**
+
+For callers that already hold the runtime reference and want to act on "whatever run is currently active on this specific runtime":
+
+```ts
+export interface KoiRuntime {
+  /** Session-scoped cancel targeting THIS runtime's active run. Returns
+   *  false if this runtime is idle (fails closed — will not reach across
+   *  to a sibling runtime that shares a SessionRegistry + sessionId). */
+  readonly interrupt: (reason?: string) => boolean;
+
+  /** True iff THIS runtime's active composite signal is aborted. */
+  readonly isInterrupted: () => boolean;
+
+  /** RunId of the active run on THIS runtime, or `undefined` between runs. */
+  readonly currentRunId: RunId | undefined;
+}
+```
+
+**Return-value contract for `interrupt()`:**
+
+`registry.interrupt(sessionId, reason?, expectedRunId?)` returns `true` **only on the first abort** for a matching active entry. It returns `false` if:
+- The session is unknown (never registered or already unregistered)
+- The session is known but its composite signal is already aborted (idempotent — no change occurred)
+- `expectedRunId` is supplied and does not match the active entry's `runId` (cross-generation stale cancel)
+
+This contract makes multiple calls to `interrupt()` safe and distinguishable, and run-scoped when the caller supplies `expectedRunId`.
+
+**Cross-generation safety (delayed cancels, retries, watchdogs):**
+
+`registry.interrupt(sessionId, reason)` without `expectedRunId` is **session-scoped** — it will hit *whichever* run is active on that sessionId right now. That is dangerous for any caller that stores a cancel callback and may fire it across run generations (HTTP retries, watchdogs, parent-agent timeouts). If run A finishes and run B starts on the same runtime, a late cancel intended for A would kill B.
+
+The safe pattern for delayed cancellation:
+
+- **Preferred — use `RunHandle.interrupt()`**: the handle captures its own `runId` and its `.interrupt()` is a no-op for any run other than the one it came from.
+- **Equivalent — capture `runtime.currentRunId` at run start, pass as `expectedRunId`** to `registry.interrupt()`:
+
+  ```ts
+  const handle = runtime.run(input);
+  const myRunId = handle.runId; // or runtime.currentRunId
+  // ...later, possibly after A has finished...
+  registry.interrupt(sessionId(runtime.sessionId), "watchdog", myRunId);
+  // → no-op if a different run is now active
+  ```
+
+**Registry entry lifecycle:**
+
+```
+not-registered
+       │
+       ├─ run() starts ──▶ register(sessionId, controller)
+       │
+       ▼
+active-and-running
+       │
+       ├─ registry.interrupt() ──▶ controller.abort()
+       │                   │
+       │                   ▼
+       │              run() detects abort ──▶ emits done with stopReason:"interrupted"
+       │
+       ├─ run() ends (normal, error, or abort) ──▶ finally calls unregister()
+       │
+       ▼
+not-registered (entry drained)
+```
+
+**Example — safe cross-generation flow:**
+
+```ts
+import { createKoi, createSessionRegistry, sessionId } from "@koi/engine";
+
+const registry = createSessionRegistry();
+const runtime = await createKoi({ manifest, adapter, sessionRegistry: registry });
+
+// Start a run and capture its handle (carries runId and run-scoped interrupt).
+const handle = runtime.run({ messages: [...] });
+
+// Store a watchdog cancel callback. Using handle.interrupt binds the cancel
+// to THIS run — a later run on the same runtime cannot be hit by mistake.
+const watchdog = setTimeout(() => handle.interrupt("watchdog"), 30_000);
+
+// Iterate as usual.
+for await (const ev of handle) {
+  if (ev.kind === "done") clearTimeout(watchdog);
+}
+
+// OR: external cancel via the registry with run-scoped safety.
+const activeRunId = runtime.currentRunId; // captured while the run is active
+registry.interrupt(
+  sessionId(runtime.sessionId),
+  "external-cancel",
+  activeRunId, // expectedRunId guards against hitting a later run
+);
+```
+
+**Caveats:**
+
+- **`RunHandle` is single-consumer.** Calling `[Symbol.asyncIterator]()` twice on one handle throws — start a new `run()` to get a fresh iterable. `for await` is fine; it calls the method once.
+- **Cross-runtime shared registry.** A `SessionRegistry` shared by multiple `KoiRuntime` instances tracks per-`(sessionId, runId)` entries. Duplicate `register()` on the same sessionId from a *different* runtime throws `CONFLICT` (retryable). Hosts running resume/rebind flows that may collide on sessionIds should use per-runtime registries, or coordinate sessionId uniqueness upstream.
+- **Idle runtime safety.** `runtime.interrupt()` and `runtime.isInterrupted()` fail closed when the specific runtime instance is idle — they never reach across a shared registry into a sibling runtime's entry, even when sessionIds match.
+- **Stuck-runtime recovery.** A wedged runtime whose `finally` cleanup never fires can be evicted from the registry with `registry.forceUnregister(sessionId, runId)`. This does NOT abort the owning runtime — dispose it separately. Only the owning runtime can force-unregister (it holds its own `runId`); outside callers who don't own a run cannot enumerate runIds to bypass the ownership check.
+- **Registry is in-process.** No cross-process coordination. If your architecture spawns separate processes or threads, each process needs its own registry instance.
+- **`cycleSession()` rotates the sessionId.** Captured sessionIds/runIds from before a rotation become stale; subsequent `registry.interrupt()` calls on them are no-ops. Read `runtime.sessionId` / `runtime.currentRunId` live, or prefer `RunHandle.interrupt()` which captures both transparently.
+
 ### TUI key bindings
 
 - **Ctrl+C** → calls `onInterrupt()` → calls `controller.abort()`. First tap = graceful, second tap within 2s = force.
@@ -117,7 +312,6 @@ Per-tool `interruptBehavior` metadata in the manifest is explicitly **not** intr
 - **PID-directed `kill -INT <wrapperPid>` does not reach the TUI child.** The `koi tui` launcher re-execs into a browser-build child process. Forwarding SIGINT would double-deliver every terminal Ctrl+C (since the terminal delivers to the whole foreground process group) and depend on a time-based coalesce heuristic. Spawning the child in a separate process group (`detached: true`) would solve the delivery ambiguity but is unsafe for interactive children: a background-pgroup process reading from the controlling tty gets SIGTTIN under job control and freezes, and Bun/Node do not expose `tcsetpgrp` to transfer terminal foreground ownership. Supervisors should use **SIGTERM** for PID-directed termination — the wrapper forwards SIGTERM and escalates to SIGKILL after 10s if the child wedges. Terminal Ctrl+C works normally via process-group delivery.
 - **MCP tools cannot be cancelled mid-flight.** The MCP protocol has no cancel verb. `packages/net/mcp/src/tool-adapter.ts` checks `signal.aborted` before dispatch but cannot interrupt an in-flight remote call. The terminal `done` fires once the MCP call settles.
 - **Durable resume is not supported yet.** Cancelling a session halts it cleanly but does not persist `EngineState`. See #1683 for the resume-from-checkpoint story. Transcript-based resume via `koi resume <sessionId>` (existing `SessionPersistence`) still works for stateless adapters.
-- **No programmatic `interrupt(sessionId)` API yet.** Today you need to own the `AbortController` to cancel a run. See #1682 for the runtime session registry.
 - **Team runtime fan-out cancel is a separate issue.** Spawned sub-agents that detach from the parent signal (deferred / on-demand delivery modes) will continue running after the parent is cancelled.
 
 ## Testing
