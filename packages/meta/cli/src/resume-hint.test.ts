@@ -83,6 +83,7 @@ describe("decideResumeHint", () => {
     clearPersistFailed: false,
     clearedThisProcess: false,
     resumedFromFlag: false,
+    pickedExistingSession: false,
     postClearTurnCount: 0,
     anyTurnPersistedThisProcess: false,
     tuiSessionId: sid,
@@ -101,6 +102,13 @@ describe("decideResumeHint", () => {
 
   test("--resume + zero new turns → normal hint (the resumed file already exists)", () => {
     expect(decideResumeHint({ ...base, resumedFromFlag: true }).kind).toBe("normal");
+  });
+
+  test("#1884: picker-switch + zero new turns → normal hint (the picked file exists on disk)", () => {
+    // No --resume flag, no turns written this process — but the user
+    // rebound to a saved session via the in-app picker. That JSONL
+    // already exists; the hint must still print.
+    expect(decideResumeHint({ ...base, pickedExistingSession: true }).kind).toBe("normal");
   });
 
   test("--resume + ≥1 new turn → normal hint", () => {

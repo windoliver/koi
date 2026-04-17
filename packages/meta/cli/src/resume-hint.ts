@@ -98,6 +98,12 @@ export interface ResumeHintDecisionInput {
   readonly clearPersistFailed: boolean;
   readonly clearedThisProcess: boolean;
   readonly resumedFromFlag: boolean;
+  /** True iff this process rebound `tuiSessionId` to an already-persisted
+   *  session via the in-app session picker (`onSessionSelect`). The picked
+   *  session's JSONL already exists on disk independent of startup
+   *  `--resume` and of any new turns — it must still be resumable even
+   *  when the user switches and quits without submitting. #1884. */
+  readonly pickedExistingSession: boolean;
   /** Turns counted since the rewind boundary was last armed. Only
    *  advances when `rewindBoundaryActive` is true (i.e. on --resume,
    *  /clear, or /new). A fresh launch's counter stays at 0 even after
@@ -121,10 +127,12 @@ export function decideResumeHint(input: ResumeHintDecisionInput): ResumeHintDeci
   // #1884: suppress the hint when no JSONL transcript was produced.
   // A fresh launch that never committed a turn writes no file, so
   // advertising the session id points at a nonexistent path. Preserve
-  // the hint when --resume opened a pre-existing file (it's still
-  // resumable even if this process added zero new turns).
-  const neverPersisted =
-    !input.clearedThisProcess && !input.resumedFromFlag && !input.anyTurnPersistedThisProcess;
+  // the hint when a backing transcript exists on disk — either opened
+  // at startup via --resume, or rebound mid-process via the in-app
+  // session picker (both point at real JSONL files).
+  const hasBackingTranscript =
+    input.resumedFromFlag || input.pickedExistingSession || input.anyTurnPersistedThisProcess;
+  const neverPersisted = !input.clearedThisProcess && !hasBackingTranscript;
   if (neverPersisted) return { kind: "never-persisted" };
 
   if (input.tuiSessionId === input.viewedSessionId) return { kind: "normal" };

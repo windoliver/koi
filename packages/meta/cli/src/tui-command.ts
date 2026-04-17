@@ -1867,6 +1867,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — set on the first settled (non-aborted) turn.
   let anyTurnPersistedThisProcess = false;
 
+  // #1884: true once the in-app session picker (`onSessionSelect`) has
+  // successfully rebound `tuiSessionId` to an already-persisted session.
+  // That transcript exists on disk independent of startup `--resume` and
+  // of any new turns — its id must still print as a resume hint even
+  // when the user picks it and quits without submitting.
+  // let: justified — set on successful picker rebind.
+  let pickedExistingSession = false;
+
   // The session id the user is currently VIEWING. Starts as
   // `tuiSessionId` (the startup session), gets rotated to the
   // picked session id after a successful `onSessionSelect`, and
@@ -2320,6 +2328,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             clearPersistFailed,
             clearedThisProcess,
             resumedFromFlag: flags.resume !== undefined,
+            pickedExistingSession,
             postClearTurnCount,
             anyTurnPersistedThisProcess,
             tuiSessionId,
@@ -3622,6 +3631,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // rebind above.
           tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          // #1884: the picked session's JSONL exists on disk — keep its
+          // id resumable via the post-quit hint even if the user quits
+          // without submitting a new turn in this process.
+          pickedExistingSession = true;
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
