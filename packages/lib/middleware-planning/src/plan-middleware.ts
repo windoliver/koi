@@ -186,14 +186,16 @@ async function handleWritePlan(
     return errorResponse(parsed);
   }
 
-  // Critical section: stale-check + in-memory commit + persistence hook
-  // run serialized per session via `state.pending`. This guarantees:
-  //   - commits land in arrival order (no last-writer-wins races)
-  //   - rollback on hook failure only restores OUR own prior snapshot
-  //     (captured inside the section) and cannot clobber a plan that
-  //     a concurrent turn committed after us
-  //   - persistence hooks fire in the same order as in-memory commits,
-  //     so a durable store cannot end on an older plan than memory
+  // Critical section: stale-check + persistence hook + in-memory commit
+  // run serialized per session via `state.pending`. Order matters:
+  //   1. Run the hook FIRST and only commit to in-memory state on success.
+  //      Overlapping turns read `currentPlan` from the session map; if we
+  //      exposed `parsed` before the hook resolved, a concurrent turn
+  //      could see (and act on) a plan that later rolls back.
+  //   2. Serialization guarantees commits land in arrival order, so a
+  //      successful newer turn never gets clobbered by an older turn.
+  //   3. Persistence hooks fire in the same order as commits, so a
+  //      durable store cannot end on an older plan than in-memory.
   const run = async (): Promise<ToolResponse> => {
     const snapshot = sessions.get(sessionId);
     if (snapshot === undefined) {
@@ -206,31 +208,28 @@ async function handleWritePlan(
       return errorResponse("plan already updated by a newer turn; write rejected as stale");
     }
 
-    const prior = snapshot.currentPlan;
-    const priorTurnIndex = snapshot.lastUpdateTurnIndex;
-
-    sessions.set(sessionId, {
-      ...snapshot,
-      currentPlan: parsed,
-      lastUpdateTurnIndex: turnIndex,
-    });
-
+    // Run the persistence hook BEFORE exposing `parsed` through session
+    // state. If it throws/rejects, no other turn has seen the uncommitted
+    // plan, so there is nothing to roll back.
     if (onPlanUpdate !== undefined) {
       try {
         await onPlanUpdate(parsed);
       } catch (err) {
-        const latest = sessions.get(sessionId);
-        if (latest !== undefined) {
-          sessions.set(sessionId, {
-            ...latest,
-            currentPlan: prior,
-            lastUpdateTurnIndex: priorTurnIndex,
-          });
-        }
         const message = err instanceof Error ? err.message : String(err);
         return errorResponse(`plan update hook failed: ${message}`);
       }
     }
+
+    // Re-fetch — the session may have ended while the hook was awaiting.
+    const post = sessions.get(sessionId);
+    if (post === undefined) {
+      return errorResponse("session ended during plan update");
+    }
+    sessions.set(sessionId, {
+      ...post,
+      currentPlan: parsed,
+      lastUpdateTurnIndex: turnIndex,
+    });
 
     return {
       output: formatPlanSummary(parsed),
@@ -265,6 +264,12 @@ function buildMiddleware(
       });
     },
     async onSessionEnd(ctx) {
+      const state = sessions.get(ctx.sessionId);
+      if (state === undefined) return;
+      // Drain any in-flight commit so persistence, rollback, and
+      // teardown complete in a defined order. The chain stores errors
+      // as no-ops (see `run` handler below) so awaiting never throws.
+      await state.pending.current;
       sessions.delete(ctx.sessionId);
     },
     describeCapabilities: (ctx) => capabilityFor(sessions.get(ctx.session.sessionId)),

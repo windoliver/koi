@@ -74,20 +74,28 @@ an undeclared tool and fail the turn.
 | `priority` | `number` | `450` | Middleware priority. Lower runs earlier. |
 | `onPlanUpdate` | `(plan) => void \| Promise<void>` | — | Commit hook. See "commit-with-rollback" below. |
 
-#### `onPlanUpdate` semantics (commit-with-rollback)
+#### `onPlanUpdate` semantics (hook-then-commit)
 
-The hook is fired after the new plan is staged in memory but before the
-tool response is returned. It may be sync or async — the middleware
-awaits the returned value before finalizing the commit. Safe for
-durable persistence.
+The hook runs BEFORE any in-memory commit — overlapping turns cannot
+observe a plan that has not yet been durably accepted. It may be sync
+or async; the middleware awaits the returned value and only promotes
+the new plan to `currentPlan` on success.
 
-- If the hook **returns (resolves)** normally, the plan commit is
-  finalized and `write_plan` returns success with the plan summary.
-- If the hook **throws (rejects)**, the middleware rolls the in-memory
-  plan back to its prior state and returns a tool error
-  (`{ error, planError: true }`) so the caller can retry. The in-memory
-  plan never advances past what any configured persistence layer has
-  durably accepted.
+- If the hook **returns (resolves)** normally, the plan is committed
+  to in-memory state and `write_plan` returns success with the plan
+  summary.
+- If the hook **throws (rejects)**, nothing is committed. The tool
+  returns `{ error, planError: true }` so the caller can retry. No
+  rollback is needed because no concurrent turn ever saw the plan.
+- During the hook's await window, concurrent model calls inject the
+  *last committed* plan, not the pending one. Capability descriptions
+  also reflect committed state only.
+
+#### Session teardown
+
+`onSessionEnd` drains the per-session commit chain before deleting
+session state, so an in-flight `onPlanUpdate` always completes (or
+fails) before teardown releases the session entry.
 
 ### PlanItem
 

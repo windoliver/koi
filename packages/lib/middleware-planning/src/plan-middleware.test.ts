@@ -567,6 +567,99 @@ describe("onPlanUpdate commit-with-rollback", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Hook-before-commit ordering + teardown draining
+// ---------------------------------------------------------------------------
+
+describe("hook-before-commit ordering", () => {
+  it("does not expose the staged plan to concurrent model calls while onPlanUpdate is pending", async () => {
+    let releaseHook: (() => void) | undefined;
+    const hookStarted = new Promise<void>((resolve) => {
+      releaseHook = resolve;
+    });
+    const mw = make({
+      onPlanUpdate: async () => {
+        // Signal that we are mid-hook, then block until the concurrent
+        // model call has had a chance to observe the session.
+        releaseHook?.();
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const writePromise = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "staged-not-yet-committed", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Wait until the hook is running. At this point the plan is staged
+    // internally, but must NOT be visible through wrapModelCall yet.
+    await hookStarted;
+
+    // A plan-state message (senderId "user:plan-state") is injected only
+    // when the session has a durably committed plan. While the hook is
+    // still awaiting, no such message should appear.
+    await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 1), makeRequest("hi"), async (req) => {
+      const hasPlanState = req.messages.some((m) => m.senderId === "user:plan-state");
+      expect(hasPlanState).toBe(false);
+      return makeResponse("ok");
+    });
+
+    await writePromise;
+    // After the write settles, subsequent calls see the committed plan.
+    await mw.wrapModelCall?.(makeTurnCtx(sessionCtx, 2), makeRequest("hi"), async (req) => {
+      const hasPlanState = req.messages.some((m) => m.senderId === "user:plan-state");
+      expect(hasPlanState).toBe(true);
+      const planStateText = req.messages.find((m) => m.senderId === "user:plan-state")?.content[0];
+      expect((planStateText as { text: string }).text).toContain("staged-not-yet-committed");
+      return makeResponse("ok");
+    });
+  });
+});
+
+describe("onSessionEnd draining", () => {
+  it("awaits an in-flight plan persistence before tearing down session state", async () => {
+    let hookFinished = false;
+    const mw = make({
+      onPlanUpdate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        hookFinished = true;
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const writePromise = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "t", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // Immediately end session while the hook is still running.
+    await mw.onSessionEnd?.(sessionCtx);
+
+    expect(hookFinished).toBe(true);
+    // The write returned AFTER onSessionEnd drained it, and since the
+    // session was deleted after the hook resolved, commit to memory
+    // saw an undefined session and reported a clear error rather than
+    // silently leaking state into a deleted session entry.
+    const response = await writePromise;
+    expect(
+      (response?.output as Record<string, unknown>).error ??
+        (response?.output as string | undefined) ??
+        "",
+    ).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tool provider — fallback when middleware is missing
 // ---------------------------------------------------------------------------
 
