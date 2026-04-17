@@ -10574,6 +10574,53 @@ describe("Golden: @koi/governance-core", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-defaults (2 queries)
+//
+// Standalone — no cassette replay. Exercises the out-of-box
+// createInMemoryController + createPatternBackend + DEFAULT_PRICING helpers
+// that ship as the stock GovernanceController / GovernanceBackend / pricing
+// table for createGovernanceMiddleware. These defaults are what `koi tui`
+// wires up when no platform-specific backend is supplied.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-defaults", () => {
+  test("withGovernanceDefaults produces a valid, middleware-ready config", async () => {
+    const { withGovernanceDefaults } = await import("@koi/governance-defaults");
+    const { validateGovernanceConfig, createGovernanceMiddleware } = await import(
+      "@koi/governance-core"
+    );
+
+    const config = withGovernanceDefaults({
+      controllerConfig: { costUsdLimit: 0.5, turnCountLimit: 3 },
+      rules: [{ match: { toolId: "Bash" }, decision: "deny", rule: "no-shell" }],
+    });
+
+    const validation = validateGovernanceConfig(config);
+    expect(validation.ok).toBe(true);
+
+    // Middleware construction should not throw.
+    const mw = createGovernanceMiddleware(config);
+    expect(mw.name).toBe("koi:governance-core");
+  });
+
+  test("in-memory controller enforces setpoint after record()", async () => {
+    const { createInMemoryController } = await import("@koi/governance-defaults");
+    const controller = createInMemoryController({ tokenUsageLimit: 100 });
+
+    await controller.record({ kind: "token_usage", count: 50 });
+    const underLimit = await controller.checkAll();
+    expect(underLimit).toEqual({ ok: true });
+
+    await controller.record({ kind: "token_usage", count: 80 });
+    const overLimit = await controller.checkAll();
+    expect(overLimit.ok).toBe(false);
+    if (!overLimit.ok) {
+      expect(overLimit.variable).toBe("token_usage");
+    }
+  });
+});
+
 describe("Golden: @koi/daemon", () => {
   test("supervisor starts and shuts down a subprocess worker", async () => {
     const { createSupervisor, createSubprocessBackend } = await import("@koi/daemon");
