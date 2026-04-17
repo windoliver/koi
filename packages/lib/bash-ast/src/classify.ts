@@ -160,24 +160,35 @@ function dispose(command: string, analysis: AstAnalysis): ClassificationResult |
       return regexClassifyTtp(command);
     }
     case "too-complex": {
-      // SECURITY: `shell-escape` `too-complex` reasons indicate bash
-      // source whose raw text does NOT match bash's effective semantics —
-      // backslash escapes in unquoted words, inside double-quoted strings,
-      // or as line continuations. For these, the raw-text regex classifier
-      // AND an interactive user prompt are both unsafe: the displayed
-      // command doesn't match the effective argv, so a user can't
-      // meaningfully approve `cat \/etc\/passwd` vs `cat /etc/passwd`.
-      // Hard-deny. Keyed off the stable `primaryCategory` enum, not raw
-      // tree-sitter node names, so grammar upgrades can't silently drop
-      // the fail-closed behaviour.
-      if (analysis.primaryCategory === "shell-escape") {
+      // SECURITY: categories in this switch group indicate the walker
+      // CANNOT trust its own analysis of the command. Either the parser
+      // could not produce a clean tree (`parse-error`), the tree shape
+      // violated walker assertions (`malformed`), the walker hit a node
+      // type not in its dispatch table (`unknown`), or the raw source
+      // does not match bash's effective semantics (`shell-escape`). In
+      // any of these cases, both the raw-text regex classifier and an
+      // interactive user prompt are unsafe — the displayed command may
+      // not match the effective argv, so a user can't meaningfully
+      // approve it. Fail closed. Keyed off the stable `primaryCategory`
+      // enum, not raw tree-sitter node names, so grammar upgrades can't
+      // silently drop the fail-closed behaviour.
+      if (
+        analysis.primaryCategory === "shell-escape" ||
+        analysis.primaryCategory === "parse-error" ||
+        analysis.primaryCategory === "malformed" ||
+        analysis.primaryCategory === "unknown"
+      ) {
         return {
           ok: false,
-          reason: `Bash source uses shell escape sequences that cannot be safely analysed: ${analysis.reason}`,
-          pattern: analysis.nodeType ?? "shell-escape",
+          reason: `Bash AST walker cannot safely analyse this command (${analysis.primaryCategory}): ${analysis.reason}`,
+          pattern: analysis.nodeType ?? analysis.primaryCategory,
           category: "injection",
         };
       }
+      // Remaining categories represent known-structured syntax the
+      // walker intentionally does not support (scope-trackable,
+      // command-substitution, parameter-expansion, positional,
+      // control-flow, heredoc, process-substitution, unsupported-syntax).
       // Caller decides: sync → regex fallback, async → elicit.
       return null;
     }

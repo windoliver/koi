@@ -167,4 +167,42 @@ describe("fail-closed — fast-check fuzz", () => {
       { numRuns: 500 },
     );
   });
+
+  // Fresh-loop round-3 regression: parser-untrusted primaryCategory
+  // values (shell-escape, parse-error, malformed, unknown) must hard-
+  // deny through classifyBashCommand without falling through to the
+  // regex TTP fallback. Categories where the walker CAN trust its
+  // parse of the structure (even if it declines to implement that
+  // structure) remain askable.
+  test("parse-error primaryCategory hard-denies via classifyBashCommand", () => {
+    // Unterminated double-quoted string triggers tree-sitter root.hasError
+    // on the currently vendored grammar; walker maps to parse-error.
+    const r = classifyBashCommand('echo "unterminated');
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.category).toBe("injection");
+    expect(r.reason).toContain("parse-error");
+  });
+
+  test("shell-escape primaryCategory hard-denies via classifyBashCommand", () => {
+    const r = classifyBashCommand("cat \\/etc\\/passwd");
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("unreachable");
+    expect(r.category).toBe("injection");
+    expect(r.reason).toContain("shell-escape");
+  });
+
+  test("askable primaryCategory (control-flow) does not hard-deny via the fail-closed path", () => {
+    // control-flow is a parser-TRUSTED category — structure is known,
+    // just unsupported. Must remain available to the regex TTP fallback
+    // and elicit paths; should not hit the injection hard-deny branch.
+    const r = classifyBashCommand("if true; then echo hi; fi");
+    // Either ok=true (regex TTP passes it) or ok=false with a category
+    // other than the parser-untrusted injection signature. The point is
+    // that it MUST NOT carry the bash-ast walker's injection reason.
+    if (!r.ok) {
+      expect(r.reason).not.toContain("parse-error");
+      expect(r.reason).not.toContain("walker cannot safely analyse");
+    }
+  });
 });
