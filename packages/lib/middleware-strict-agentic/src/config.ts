@@ -57,15 +57,17 @@ const FORWARD_WORK_RE =
 const CLAUSE_SPLITTER = /[.!?;—]+/;
 
 /**
- * Positive filler-language patterns — first-person-future constructions only.
+ * Positive filler-language patterns — first-person-future constructions.
  * The classifier blocks ONLY on a match, so the set is deliberately narrow.
- * Substantive answers that happen to contain "let's" or "next step" (e.g.
- * "Let's keep the current schema." or "Next step is deployment approval.")
- * must NOT be blocked, so those ambiguous standalone tokens are excluded —
- * integrators needing stricter rules pass a custom `isFillerOutput`.
+ *
+ * `let me <verb>` is matched for action-oriented phrases like "Let me inspect
+ * the file." but excludes the benign "let me know ..." form via negative
+ * lookahead. Bare `let's` and `next step` are excluded because they also
+ * appear in legitimate final answers ("Let's keep the current schema.",
+ * "Next step is deployment approval.").
  */
 const FILLER_PATTERN_RE =
-  /\b(i will|i'll|i am going to|i'm going to|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will))\b/i;
+  /\b(i will|i'll|i am going to|i'm going to|let me (?!know\b)(?:now\s+)?\w+|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will))\b/i;
 
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();
@@ -136,10 +138,13 @@ export function validateStrictAgenticConfig(input: unknown): Result<StrictAgenti
   }
 
   const retries = input.maxFillerRetries ?? DEFAULT_STRICT_AGENTIC_CONFIG.maxFillerRetries;
-  if (typeof retries !== "number" || !Number.isInteger(retries) || retries < 0) {
+  if (typeof retries !== "number" || !Number.isInteger(retries) || retries < 1) {
+    // Must be >= 1. Zero would trip the breaker on the first filler and
+    // silently disable blocking while `enabled` is still true — an unsafe
+    // footgun. Integrators who want to disable the guard set `enabled: false`.
     return {
       ok: false,
-      error: configError("StrictAgenticConfig.maxFillerRetries must be a non-negative integer"),
+      error: configError("StrictAgenticConfig.maxFillerRetries must be an integer >= 1"),
     };
   }
 

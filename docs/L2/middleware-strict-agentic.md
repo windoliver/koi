@@ -20,11 +20,11 @@ const { middleware } = createStrictAgenticMiddleware({
 | Field | Type | Default | Meaning |
 |-------|------|---------|---------|
 | `enabled` | `boolean` | `true` | Master switch. When `false`, middleware is a no-op. |
-| `maxFillerRetries` | `number` | `3` | Consecutive filler blocks per session before circuit-breaker releases. |
+| `maxFillerRetries` | `number` (>= 1) | `3` | Consecutive filler blocks per run before circuit-breaker releases. `0` is rejected by validation — use `enabled: false` to disable the gate. |
 | `feedbackMessage` | `string?` | see below | Override text injected when blocking. |
 | `isUserQuestion` | `(output: string) => boolean` | trimmed output ends with `?` | Exempt turns that ask the user a direct question. |
 | `isExplicitDone` | `(output: string) => boolean` | terminal `done`/`completed`/`finished`/`no further action` in the last 80 chars AND no negation (`not`, `n't`, `yet`, etc.) in that window | Exempt turns that explicitly declare completion. |
-| `isFillerOutput` | `(output: string) => boolean` | matches `/\b(i will\|i'll\|let me\|i'm going to\|here is my plan\|…)\b/i` | Positive match for planning language — the ONLY path that blocks. |
+| `isFillerOutput` | `(output: string) => boolean` | matches first-person-future constructions (`i will`, `i'll`, `i'm going to`, `here is my plan`, `the plan is`, `let me <verb>` excluding `let me know …`, etc.) | Positive match for planning language — the ONLY text-based path that blocks. |
 
 Default feedback:
 

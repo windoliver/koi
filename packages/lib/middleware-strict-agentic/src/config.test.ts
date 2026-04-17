@@ -27,11 +27,15 @@ describe("validateStrictAgenticConfig", () => {
     expect(result.value.feedbackMessage).toBe("custom");
   });
 
-  test("rejects negative maxFillerRetries", () => {
-    const result = validateStrictAgenticConfig({ maxFillerRetries: -1 });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.error.code).toBe("VALIDATION");
+  test("rejects maxFillerRetries < 1", () => {
+    // 0 would trip the breaker on the first filler and silently disable
+    // blocking. Negative values are obviously invalid.
+    for (const bad of [-1, 0]) {
+      const result = validateStrictAgenticConfig({ maxFillerRetries: bad });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("VALIDATION");
+    }
   });
 
   test("rejects non-boolean enabled", () => {

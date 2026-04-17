@@ -70,6 +70,29 @@ describe("classifyTurn", () => {
     ).toBe("user-question");
   });
 
+  test("let me <verb> is filler, but `let me know ...` is not (benign exclusion)", () => {
+    // Common first-person planning like "Let me inspect the file." must
+    // block. The benign "let me know ..." form — asking the user for input
+    // — is explicitly excluded via negative lookahead.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Let me inspect the file." }, resolved).kind,
+    ).toBe("filler");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Let me check the logs." }, resolved).kind,
+    ).toBe("filler");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Let me now run the migration." }, resolved)
+        .kind,
+    ).toBe("filler");
+    // Benign form: asking the user for input.
+    expect(
+      classifyTurn(
+        { toolCallCount: 0, outputText: "Let me know when the build is ready." },
+        resolved,
+      ).kind,
+    ).toBe("action");
+  });
+
   test("ambiguous standalone tokens like `let's` and `next step` do NOT trigger filler", () => {
     // Regression: the default filler regex previously matched bare "let's"
     // and "next step", blocking legitimate recommendations or summaries that
