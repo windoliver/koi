@@ -477,11 +477,21 @@ describe("prompt-injection containment", () => {
 // ---------------------------------------------------------------------------
 
 describe("onPlanUpdate context + state-replay opt-out", () => {
-  it("passes sessionId + epoch + turnIndex to onPlanUpdate for persistence keying", async () => {
-    const seen: { sessionId: string; epoch: number; turnIndex: number }[] = [];
+  it("passes sessionId + epoch + turnIndex + commitToken to onPlanUpdate for CAS-safe persistence", async () => {
+    const seen: {
+      sessionId: string;
+      epoch: number;
+      turnIndex: number;
+      commitToken: string;
+    }[] = [];
     const mw = make({
       onPlanUpdate: (_plan, ctx) => {
-        seen.push({ sessionId: ctx.sessionId, epoch: ctx.epoch, turnIndex: ctx.turnIndex });
+        seen.push({
+          sessionId: ctx.sessionId,
+          epoch: ctx.epoch,
+          turnIndex: ctx.turnIndex,
+          commitToken: ctx.commitToken,
+        });
       },
     });
     const sessionCtx = makeSessionCtx(sessionId("persistable-session"));
@@ -501,6 +511,9 @@ describe("onPlanUpdate context + state-replay opt-out", () => {
     expect(seen[0]?.turnIndex).toBe(7);
     expect(typeof seen[0]?.epoch).toBe("number");
     expect(seen[0]?.epoch).toBeGreaterThan(0);
+    // commitToken is the deterministic CAS key hosts use to
+    // de-duplicate retries that land in the post-hook race window.
+    expect(seen[0]?.commitToken).toBe(`persistable-session:${String(seen[0]?.epoch)}:7`);
   });
 
   it("bumps the epoch across onSessionEnd + onSessionStart for the same SessionId", async () => {
@@ -1099,6 +1112,40 @@ describe("write_plan injection dedup", () => {
     );
     const plan = response?.metadata?.currentPlan as unknown as readonly PlanItem[];
     expect(plan).toHaveLength(0);
+  });
+
+  it("rejects write_plan execution when the most recent model call had it filtered out", async () => {
+    // Reviewer R24: prompt suppression alone is insufficient —
+    // a programmatic caller (or a model that saw the tool on a
+    // prior turn) could still emit the tool request even after
+    // permissions filtered write_plan out of the current turn.
+    // wrapToolCall must reject in that case.
+    const mw = make();
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    // First observe filtered visibility (lastSeenAdvertised → false).
+    await mw.wrapModelCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        messages: [makeRequest("hi").messages[0] as InboundMessage],
+        tools: [], // permissions stripped everything
+        model: "test-model",
+      },
+      async () => makeResponse("ok"),
+    );
+
+    // Now attempt to execute write_plan anyway.
+    const response = await mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 1),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "unauthorized", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+    expect((response?.output as Record<string, unknown>).error).toContain("not authorized");
+    expect(response?.metadata?.blockedByHook).toBe(true);
   });
 
   it("suppresses the planning system prompt + state replay when write_plan is filtered out", async () => {

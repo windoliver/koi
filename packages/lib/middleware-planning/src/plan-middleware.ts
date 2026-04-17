@@ -109,12 +109,18 @@ interface PlanSessionState {
   /**
    * Per-session visibility observation. Updated on every wrapModelCall/
    * wrapModelStream based on whether write_plan appears in the
-   * filtered request.tools. describeCapabilities reads this flag so
-   * the capability banner tracks the actual visibility boundary.
-   * Default false — until we observe write_plan being advertised at
-   * least once we must not leak planning to the model.
+   * filtered request.tools. wrapToolCall's authorization gate reads
+   * `lastSeenAdvertised`:
+   *   - `true` → authorize (tool was visible in most recent model call)
+   *   - `false` → deny (tool was filtered out; prompt-only suppression
+   *     is insufficient and execution must also be rejected)
+   *   - `undefined` → not yet observed; authorize conservatively so
+   *     sessions that invoke write_plan before any wrapModelCall has
+   *     fired still work. In production this path is unreachable
+   *     because the model can only request a tool it saw in a prior
+   *     model request, which sets the flag.
    */
-  readonly visibility: { lastSeenAdvertised: boolean };
+  readonly visibility: { lastSeenAdvertised: boolean | undefined };
 }
 
 /** Escape characters that could break the fenced block and smuggle new
@@ -400,11 +406,25 @@ async function handleWritePlan(
           epoch: acceptedEpoch,
           turnIndex,
           signal: teardownSignal,
+          commitToken: `${String(sessionId)}:${String(acceptedEpoch)}:${String(turnIndex)}`,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return errorResponse(`plan update hook failed: ${message}`);
       }
+    }
+
+    // Commit token: deterministic CAS key for durable hosts. Every
+    // error response below carries this token so a host can query
+    // its backend for "did I persist this token?" and de-duplicate
+    // retries that fall into the post-hook race window.
+    const commitToken = `${String(sessionId)}:${String(acceptedEpoch)}:${String(turnIndex)}`;
+
+    function commitErrorResponse(message: string): ToolResponse {
+      return {
+        output: { error: message },
+        metadata: { planError: true, blockedByHook: true, reason: message, commitToken },
+      };
     }
 
     // If teardown aborted during or after the hook, we cannot trust
@@ -413,23 +433,21 @@ async function handleWritePlan(
     // recycled session's store, and a hook that honored the signal
     // may have half-written. Either way, DO NOT report success.
     if (teardownSignal.aborted) {
-      return errorResponse("plan update aborted by session teardown");
+      return commitErrorResponse("plan update aborted by session teardown");
     }
 
     // Re-fetch — the session may have ended or been recycled while
-    // the hook was awaiting. Previously we reported success in those
-    // cases because the hook had already persisted. That created a
-    // rollback/idempotency gap: the caller saw "Plan updated" but the
-    // next turn ran against an empty/stale plan. Now we fail-closed
-    // so the host can reconcile durable state with the new session.
+    // the hook was awaiting. Fail-closed so the host can reconcile
+    // durable state using the commit token we already handed to the
+    // hook, avoiding duplicate writes on retry.
     const post = sessions.get(sessionId);
     if (post === undefined) {
-      return errorResponse(
+      return commitErrorResponse(
         "session ended during plan commit; durable state may need reconciliation",
       );
     }
     if (post.epoch !== acceptedEpoch) {
-      return errorResponse(
+      return commitErrorResponse(
         "session was replaced during plan commit; durable state may need reconciliation",
       );
     }
@@ -441,7 +459,7 @@ async function handleWritePlan(
 
     return {
       output: formatPlanSummary(parsed),
-      metadata: { currentPlan: parsed as unknown as JsonObject },
+      metadata: { currentPlan: parsed as unknown as JsonObject, commitToken },
     };
   };
 
@@ -491,7 +509,7 @@ function buildMiddleware(
         pending: { current: Promise.resolve() },
         closing: { value: false },
         teardown: new AbortController(),
-        visibility: { lastSeenAdvertised: false },
+        visibility: { lastSeenAdvertised: undefined },
       });
     },
     async onSessionEnd(ctx) {
@@ -566,6 +584,20 @@ function buildMiddleware(
     },
     async wrapToolCall(ctx, request, next) {
       if (request.toolId !== WRITE_PLAN_TOOL_NAME) return next(request);
+      // Authorization gate: tool visibility from the most recent
+      // wrapModelCall determines whether write_plan is authorized for
+      // this session. Explicit `false` means upstream filtering hid
+      // the tool, so the execution path must also reject (prompt
+      // suppression alone is insufficient — a programmatic caller or
+      // stale model turn could still emit the request). `undefined`
+      // (never observed) is treated as permissive so test harnesses
+      // that bypass wrapModelCall still work.
+      const authState = sessions.get(ctx.session.sessionId);
+      if (authState !== undefined && authState.visibility.lastSeenAdvertised === false) {
+        return errorResponse(
+          "write_plan is not authorized for this session; tool was not advertised",
+        );
+      }
       return handleWritePlan(
         sessions,
         ctx.session.sessionId,

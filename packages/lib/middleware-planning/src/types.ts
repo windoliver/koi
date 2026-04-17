@@ -35,6 +35,18 @@ export interface PlanUpdateContext {
    * aborted as failed, even if the backend completed the write.
    */
   readonly signal: AbortSignal;
+  /**
+   * Deterministic CAS/idempotency key for this write:
+   *   `${sessionId}:${epoch}:${turnIndex}`
+   *
+   * Backends SHOULD key their durable writes by this token. After a
+   * post-hook teardown or session-replacement race the middleware
+   * returns an error to the caller with this same token in
+   * `metadata.commitToken`, letting the caller check "was this token
+   * already persisted?" before retrying — preventing duplicate or
+   * divergent durable state.
+   */
+  readonly commitToken: string;
 }
 
 /**
