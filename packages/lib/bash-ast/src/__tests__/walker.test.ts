@@ -474,4 +474,14 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("parse-error");
   });
+
+  test("line continuation routes to shell-escape via analyze.ts prefilter", async () => {
+    await initializeBashAst();
+    // JS source `"echo foo\\\nbar"` → bash sees backslash + newline + "bar" (line continuation).
+    // Triggers LINE_CONTINUATION_RE in analyze.ts BEFORE the walker runs.
+    const result = analyzeBashCommand("echo foo\\\nbar");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("shell-escape");
+  });
 });

@@ -66,7 +66,7 @@ export function analyzeBashCommand(command: string): AstAnalysis {
       kind: "too-complex",
       reason: "backslash line continuation is not supported",
       nodeType: "prefilter:line-continuation",
-      primaryCategory: "unknown",
+      primaryCategory: "shell-escape",
     };
   }
 
