@@ -196,41 +196,45 @@ function walkRedirectedStatement(node: Node): WalkResult {
     if (child.type === "heredoc_redirect") {
       return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "heredoc");
     }
-    // Structural assertion: redirected_statement should contain
-    // exactly one command child plus redirect nodes. Any other child
-    // type (e.g. `variable_assignments` in the rare multi-env
-    // redirect case) means the walker's mental model doesn't match
-    // the AST. Fail closed via `malformed` rather than hand a tree
-    // shape the walker didn't understand to regex/elicit fallback.
+    // Unexpected child type in redirected_statement — e.g. the
+    // multi-assignment form `FOO=bar BAZ=qux > out.txt` where
+    // `variable_assignments` is the inner child instead of a
+    // command. These are valid bash but the walker does not
+    // produce a static argv for them. Route to `unsupported-syntax`
+    // (askable) — the downstream regex/elicit path can still
+    // evaluate the raw source text.
     return tooComplex(
       `unexpected child in redirected_statement: ${child.type}`,
       child.type,
-      "malformed",
+      "unsupported-syntax",
     );
   }
 
   if (command === null) {
     // Redirect-only shapes like `> out.txt`, `2>&1`, or `>>out.txt`
-    // reach here. The walker cannot produce a static argv for a
-    // statement with no command, and permission rules keyed off argv
-    // cannot meaningfully evaluate it. Fail closed via `malformed`
-    // rather than let it fall through to regex/elicit where a user
-    // could approve execution of a structure the walker didn't
-    // actually model.
+    // reach here. These are valid bash but produce no argv for
+    // permission rules to match on. Route to `unsupported-syntax`
+    // (askable path): the downstream regex classifier + user approval
+    // surface can evaluate the raw source, even though the walker
+    // itself has no static argv to validate against.
     return tooComplex(
       "redirected_statement with no inner command",
       "redirected_statement",
-      "malformed",
+      "unsupported-syntax",
     );
   }
   return walkCommand(command, redirects);
 }
 
 /** Walk a `command` node. Collects env vars, argv, and attaches pre-extracted
- * redirects (from an enclosing `redirected_statement`, if any). */
+ * redirects (from an enclosing `redirected_statement`, if any) plus any
+ * inline `file_redirect` children emitted directly under the command
+ * (e.g. `FOO=bar >out env` has `variable_assignment`, `file_redirect`,
+ * `command_name` as sibling children of the same `command` node). */
 function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
   const argv: string[] = [];
   const envVars: { name: string; value: string }[] = [];
+  const allRedirects: Redirect[] = [...redirects];
   let sawCommandName = false;
 
   // SECURITY pre-scan: detect the locale-translated-string split form.
@@ -277,6 +281,18 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
       sawCommandName = true;
       continue;
     }
+    if (child.type === "file_redirect") {
+      // Inline redirect: `FOO=bar >out env` emits file_redirect as a
+      // sibling of variable_assignment and command_name (rather than
+      // wrapping the whole thing in a redirected_statement).
+      const r = walkFileRedirect(child);
+      if (r.kind === "too-complex") return r;
+      allRedirects.push(r.redirect);
+      continue;
+    }
+    if (child.type === "heredoc_redirect") {
+      return tooComplex("heredoc redirects are not supported", "heredoc_redirect", "heredoc");
+    }
     // Post-command-name argument
     const v = walkArgNode(child);
     if (v.kind === "too-complex") return v;
@@ -299,7 +315,7 @@ function walkCommand(node: Node, redirects: readonly Redirect[]): WalkResult {
 
   return {
     kind: "ok",
-    commands: [{ argv, envVars, redirects, text: node.text }],
+    commands: [{ argv, envVars, redirects: allRedirects, text: node.text }],
   };
 }
 

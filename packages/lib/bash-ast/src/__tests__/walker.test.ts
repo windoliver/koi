@@ -682,6 +682,40 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
   // unsupported-syntax, matching the standalone case. Previously the
   // string-child dispatch's default arm sent it to `unknown`,
   // falsely flagging valid bash as grammar drift.
+  // Fresh-loop round-6 regression coverage: inline redirects within
+  // a single `command` node (e.g. 'FOO=bar >out env') must be parsed
+  // as simple with redirects populated, not fall through to
+  // walkArgNode default and produce primaryCategory 'unknown'. Valid
+  // redirect-only shapes ('>out.txt', '2>&1') stay in the
+  // unsupported-syntax (askable) bucket rather than hard-deny via
+  // malformed — they are legitimate bash.
+  test("inline file_redirect under command produces simple with redirects (FOO=bar >out env)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("FOO=bar >out env");
+    expect(result.kind).toBe("simple");
+    if (result.kind !== "simple") throw new Error("unreachable");
+    const cmd = result.commands[0];
+    expect(cmd?.argv).toEqual(["env"]);
+    expect(cmd?.envVars).toEqual([{ name: "FOO", value: "bar" }]);
+    expect(cmd?.redirects).toEqual([{ op: ">", target: "out" }]);
+  });
+
+  test("redirect-only >out.txt routes to unsupported-syntax (askable, not malformed)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand(">out.txt");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
+  test("redirect-only 2>&1 routes to unsupported-syntax", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("2>&1");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
+
   test('arithmetic_expansion inside quotes routes to unsupported-syntax (echo "$((1+2))")', async () => {
     await initializeBashAst();
     const result = analyzeBashCommand('echo "$((1+2))"');
