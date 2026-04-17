@@ -25,14 +25,23 @@ export interface ResolvedStrictAgenticConfig {
   readonly isExplicitDone: (output: string) => boolean;
 }
 
-export const DEFAULT_STRICT_AGENTIC_CONFIG: Pick<
-  StrictAgenticConfig,
-  "enabled" | "maxFillerRetries"
-> = {
+export const DEFAULT_STRICT_AGENTIC_CONFIG: {
+  readonly enabled: true;
+  readonly maxFillerRetries: 3;
+} = {
   enabled: true,
   maxFillerRetries: 3,
 } as const satisfies Pick<StrictAgenticConfig, "enabled" | "maxFillerRetries">;
 
+/**
+ * Word-boundary regex for default `isExplicitDone` predicate.
+ *
+ * Intentionally conservative: matches any of the listed words anywhere in the
+ * output, producing false positives on negated sentences like "I am not done
+ * yet". This is by design — per the spec (D2), text inspection is used only
+ * to EXEMPT turns from blocking, never to condemn them. Integrators requiring
+ * stricter semantics should pass a custom `isExplicitDone` via config.
+ */
 const EXPLICIT_DONE_RE = /\b(done|completed|finished|no further action)\b/i;
 
 function defaultIsUserQuestion(output: string): boolean {

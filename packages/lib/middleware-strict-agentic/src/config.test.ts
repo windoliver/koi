@@ -49,6 +49,18 @@ describe("validateStrictAgenticConfig", () => {
     expect(validateStrictAgenticConfig("string").ok).toBe(false);
     expect(validateStrictAgenticConfig(42).ok).toBe(false);
   });
+
+  test("rejects non-function isUserQuestion", () => {
+    const result = validateStrictAgenticConfig({ isUserQuestion: "not-a-function" });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe("VALIDATION");
+  });
+
+  test("rejects non-function isExplicitDone", () => {
+    const result = validateStrictAgenticConfig({ isExplicitDone: 42 });
+    expect(result.ok).toBe(false);
+  });
 });
 
 describe("resolveStrictAgenticConfig", () => {
@@ -75,6 +87,12 @@ describe("resolveStrictAgenticConfig", () => {
     expect(isExplicitDone("The feature is finished.")).toBe(true);
     expect(isExplicitDone("No further action required.")).toBe(true);
     expect(isExplicitDone("I will proceed.")).toBe(false);
+  });
+
+  test("default isUserQuestion rejects whitespace-only input", () => {
+    const { isUserQuestion } = resolveStrictAgenticConfig({});
+    expect(isUserQuestion("   ")).toBe(false);
+    expect(isUserQuestion("\t\n")).toBe(false);
   });
 
   test("custom predicates override defaults", () => {
