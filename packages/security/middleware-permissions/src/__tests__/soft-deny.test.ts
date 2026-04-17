@@ -959,10 +959,54 @@ describe("filterTools round-3 edge cases (#1650)", () => {
     expect(softConversions.length).toBe(1); // exactly one, not N
   });
 
-  test("unkeyable soft-deny: tool stripped from filterTools (mirrors execute-time fail-closed)", async () => {
-    // Build a backend whose deny decision has serializable reason but whose
-    // context (injected via TurnContext) is non-serializable — forcing
-    // decisionCacheKey(query) === undefined.
+  test("filter-time cap exhaustion dispatches HARDENED decision to observers (audit parity)", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: async (q: PermissionQuery): Promise<PermissionDecision> =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "soft-block", disposition: "soft" }
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "soft-block", disposition: "soft" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const dispatchCalls: PermissionDecision[] = [];
+    const mw = createPermissionsMiddleware({
+      backend: perToolBackend,
+      softDenyPerTurnCap: 1,
+    });
+    const ctx = makeTurnContext({
+      sessionId: "s-filter-audit-parity",
+      dispatchPermissionDecision: (_q, d) => {
+        dispatchCalls.push(d);
+      },
+    });
+
+    // Push counter to cap.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash"), noopToolHandler);
+    dispatchCalls.length = 0; // reset, only care about filter-time dispatches
+
+    // Filter-time call AFTER cap is exhausted: the dispatched decision should
+    // be the hardened one (disposition: "hard" + suffix) — matching the
+    // DenialTracker record's shape.
+    await mw.wrapModelCall?.(
+      ctx,
+      { messages: [] as never, tools: [{ name: "bash" }] as never },
+      async () => ({ content: "", model: "test" }) as never,
+    );
+    const dispatchedForBash = dispatchCalls.find(
+      (d) => d.effect === "deny" && d.reason.includes("soft-block"),
+    );
+    expect(dispatchedForBash).toBeDefined();
+    if (dispatchedForBash?.effect === "deny") {
+      expect(dispatchedForBash.disposition).toBe("hard");
+      expect(dispatchedForBash.reason).toContain("soft-deny retry cap");
+    }
+  });
+
+  test("unkeyable soft-deny: tool stripped + DenialTracker records origin: 'soft-conversion' + hardened dispatch", async () => {
     const backend: PermissionBackend = {
       check: async (_q: PermissionQuery): Promise<PermissionDecision> => ({
         effect: "deny",
@@ -972,13 +1016,18 @@ describe("filterTools round-3 edge cases (#1650)", () => {
       checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
         qs.map(() => ({ effect: "deny", reason: "unkeyable", disposition: "soft" }) as const),
     };
+    const dispatchCalls: PermissionDecision[] = [];
     const mw = createPermissionsMiddleware({ backend });
 
-    // Build a turn context whose metadata contains a circular reference so
-    // safeStringify fails. decisionCacheKey will return undefined.
+    // Circular metadata → decisionCacheKey(query) returns undefined.
     const cyclic: Record<string, unknown> = { self: null };
     cyclic.self = cyclic;
-    const baseCtx = makeTurnContext({ sessionId: "s-unkeyable" });
+    const baseCtx = makeTurnContext({
+      sessionId: "s-unkeyable",
+      dispatchPermissionDecision: (_q, d) => {
+        dispatchCalls.push(d);
+      },
+    });
     const ctx = { ...baseCtx, metadata: cyclic } as typeof baseCtx;
 
     let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
@@ -992,6 +1041,32 @@ describe("filterTools round-3 edge cases (#1650)", () => {
     );
 
     expect((observedTools ?? []).map((t) => t.name)).not.toContain("fs_write");
+
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sid: string): {
+          getAll(): ReadonlyArray<{
+            toolId: string;
+            origin?: string;
+            softness?: string;
+          }>;
+        };
+      }
+    ).__getDenialTrackerForTesting("s-unkeyable");
+    const records = tracker
+      .getAll()
+      .filter((r) => r.toolId === "fs_write" && r.origin === "soft-conversion");
+    expect(records.length).toBe(1);
+    expect(records[0]?.softness).toBe("hard");
+
+    const dispatched = dispatchCalls.find(
+      (d) => d.effect === "deny" && d.reason.includes("unkeyable"),
+    );
+    expect(dispatched).toBeDefined();
+    if (dispatched?.effect === "deny") {
+      expect(dispatched.disposition).toBe("hard");
+      expect(dispatched.reason).toContain("unkeyable context — failing closed");
+    }
   });
 });
 
