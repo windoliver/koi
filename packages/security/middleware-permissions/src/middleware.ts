@@ -1008,6 +1008,23 @@ export function createPermissionsMiddleware(
       // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
       void ctx.dispatchPermissionDecision?.(queries[i]!, decision);
       if (decision.effect === "deny") {
+        const dispositionIsSoft = (decision.disposition ?? "hard") === "soft";
+        if (dispositionIsSoft) {
+          // #1650: soft-deny → keep tool visible at model-call time. Record in
+          // isolated SoftDenyLog so high-volume soft denies don't evict native
+          // hard-deny history from the shared DenialTracker budget.
+          getSoftDenyLog(ctx.session.sessionId as string).record({
+            toolId: tool.name,
+            reason: decision.reason,
+            timestamp: clock(),
+            principal: ctx.session.agentId,
+            turnIndex: ctx.turnIndex,
+            // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
+            queryKey: decisionCacheKey(queries[i]!),
+          });
+          return true;
+        }
+        // Hard-deny: existing behavior — record with softness+origin, strip.
         sessionTracker.record({
           toolId: tool.name,
           reason: decision.reason,
@@ -1017,6 +1034,8 @@ export function createPermissionsMiddleware(
           source: denialSource(decision),
           // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
           queryKey: decisionCacheKey(queries[i]!),
+          softness: "hard",
+          origin: "native",
         });
         return false;
       }

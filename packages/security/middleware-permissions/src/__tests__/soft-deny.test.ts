@@ -519,3 +519,136 @@ describe("soft-deny execute-time path (#1650)", () => {
     expect(report.action).toBe("deny");
   });
 });
+
+describe("filterTools soft-deny visibility at model-call time (#1650 Task 11)", () => {
+  test("soft-deny tools remain in request.tools (not stripped)", async () => {
+    // Backend returns soft-deny for "bash", allow for "read".
+    const perToolBackend: PermissionBackend = {
+      check: (q: PermissionQuery): PermissionDecision => {
+        if (q.resource === "bash") {
+          return { effect: "deny", reason: "soft policy on bash", disposition: "soft" };
+        }
+        return { effect: "allow" };
+      },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "soft policy on bash", disposition: "soft" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({ backend: perToolBackend });
+    const ctx = makeTurnContext();
+
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    const request = {
+      messages: [],
+      tools: [{ name: "bash" }, { name: "read" }],
+    } as never;
+    await mw.wrapModelCall?.(ctx, request, async (req) => {
+      observedTools = (req.tools ?? []) as unknown as ReadonlyArray<{ readonly name: string }>;
+      return { content: "", model: "test" } as never;
+    });
+
+    const names = (observedTools ?? []).map((t) => t.name);
+    expect(names).toContain("bash"); // soft-deny → VISIBLE
+    expect(names).toContain("read");
+  });
+
+  test("hard-deny tools are STRIPPED from request.tools (unchanged behavior)", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: (q: PermissionQuery): PermissionDecision =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "hard policy on bash" } // no disposition → hard default
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "hard policy on bash" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({ backend: perToolBackend });
+    const ctx = makeTurnContext();
+
+    let observedTools: ReadonlyArray<{ readonly name: string }> | undefined;
+    const request = {
+      messages: [],
+      tools: [{ name: "bash" }, { name: "read" }],
+    } as never;
+    await mw.wrapModelCall?.(ctx, request, async (req) => {
+      observedTools = (req.tools ?? []) as unknown as ReadonlyArray<{ readonly name: string }>;
+      return { content: "", model: "test" } as never;
+    });
+
+    const names = (observedTools ?? []).map((t) => t.name);
+    expect(names).not.toContain("bash"); // hard-deny → STRIPPED
+    expect(names).toContain("read");
+  });
+
+  test("planning-time soft-deny records entry in SoftDenyLog (not DenialTracker)", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: (q: PermissionQuery): PermissionDecision =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "soft policy on bash", disposition: "soft" }
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "soft policy on bash", disposition: "soft" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({ backend: perToolBackend });
+    const ctx = makeTurnContext();
+    const request = { messages: [], tools: [{ name: "bash" }] } as never;
+
+    await mw.wrapModelCall?.(ctx, request, async () => ({ content: "", model: "test" }) as never);
+
+    const softDenyLog = (
+      mw as unknown as {
+        __getSoftDenyLogForTesting(sessionId: string): { getAll(): readonly unknown[] };
+      }
+    ).__getSoftDenyLogForTesting(ctx.session.sessionId as string);
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sessionId: string): { getAll(): readonly unknown[] };
+      }
+    ).__getDenialTrackerForTesting(ctx.session.sessionId as string);
+
+    expect(softDenyLog.getAll().length).toBe(1);
+    expect(tracker.getAll().length).toBe(0); // NOT in DenialTracker
+  });
+
+  test("planning-time hard-deny records entry in DenialTracker with softness: 'hard', origin: 'native'", async () => {
+    const perToolBackend: PermissionBackend = {
+      check: (q: PermissionQuery): PermissionDecision =>
+        q.resource === "bash"
+          ? { effect: "deny", reason: "hard policy on bash" }
+          : { effect: "allow" },
+      checkBatch: async (qs): Promise<readonly PermissionDecision[]> =>
+        qs.map((q) =>
+          q.resource === "bash"
+            ? ({ effect: "deny", reason: "hard policy on bash" } as const)
+            : ({ effect: "allow" } as const),
+        ),
+    };
+    const mw = createPermissionsMiddleware({ backend: perToolBackend });
+    const ctx = makeTurnContext();
+    const request = { messages: [], tools: [{ name: "bash" }] } as never;
+
+    await mw.wrapModelCall?.(ctx, request, async () => ({ content: "", model: "test" }) as never);
+
+    const tracker = (
+      mw as unknown as {
+        __getDenialTrackerForTesting(sessionId: string): {
+          getAll(): Array<{ softness?: string; origin?: string }>;
+        };
+      }
+    ).__getDenialTrackerForTesting(ctx.session.sessionId as string);
+    const entries = tracker.getAll();
+    expect(entries.length).toBe(1);
+    expect(entries[0]?.softness).toBe("hard");
+    expect(entries[0]?.origin).toBe("native");
+  });
+});
