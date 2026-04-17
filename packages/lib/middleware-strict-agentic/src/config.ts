@@ -57,13 +57,15 @@ const FORWARD_WORK_RE =
 const CLAUSE_SPLITTER = /[.!?;—]+/;
 
 /**
- * Positive filler-language patterns. The classifier blocks ONLY on a match —
- * plain substantive answers ("10", "Updated 3 files") fall through to `action`
- * and are allowed to complete. Intentional conservative matching so a
- * guardrail cannot accidentally re-prompt legitimate completions.
+ * Positive filler-language patterns — first-person-future constructions only.
+ * The classifier blocks ONLY on a match, so the set is deliberately narrow.
+ * Substantive answers that happen to contain "let's" or "next step" (e.g.
+ * "Let's keep the current schema." or "Next step is deployment approval.")
+ * must NOT be blocked, so those ambiguous standalone tokens are excluded —
+ * integrators needing stricter rules pass a custom `isFillerOutput`.
  */
 const FILLER_PATTERN_RE =
-  /\b(i will|i'll|i am going to|i'm going to|let me|let's|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will)|next step)\b/i;
+  /\b(i will|i'll|i am going to|i'm going to|here is my plan|here's my plan|i'm about to|the plan is|first[,.:]? i(?:'ll| will)|next[,.:]? i(?:'ll| will))\b/i;
 
 function defaultIsUserQuestion(output: string): boolean {
   const trimmed = output.trimEnd();

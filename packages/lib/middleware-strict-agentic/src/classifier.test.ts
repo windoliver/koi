@@ -51,6 +51,45 @@ describe("classifyTurn", () => {
     expect(classifyTurn({ toolCallCount: 1, outputText: "" }, resolved).kind).toBe("action");
   });
 
+  test("filler pattern wins over trailing `?` — cannot bypass gate by appending a question mark", () => {
+    // Regression: "I will update the file now?" previously classified as
+    // user-question because the trailing `?` predicate ran first. A model
+    // could escape the gate by appending `?` to any plan-only reply. Filler
+    // detection now runs BEFORE the question exemption so planning language
+    // still blocks.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "I will update the file now?" }, resolved).kind,
+    ).toBe("filler");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "I'll go ahead and make the change?" }, resolved)
+        .kind,
+    ).toBe("filler");
+    // A genuine question without planning language is still user-question.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Should I go ahead with this?" }, resolved).kind,
+    ).toBe("user-question");
+  });
+
+  test("ambiguous standalone tokens like `let's` and `next step` do NOT trigger filler", () => {
+    // Regression: the default filler regex previously matched bare "let's"
+    // and "next step", blocking legitimate recommendations or summaries that
+    // use those phrases.
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Let's keep the current schema." }, resolved)
+        .kind,
+    ).toBe("action");
+    expect(
+      classifyTurn({ toolCallCount: 0, outputText: "Next step is deployment approval." }, resolved)
+        .kind,
+    ).toBe("action");
+    expect(
+      classifyTurn(
+        { toolCallCount: 0, outputText: "Let me know when the build is ready." },
+        resolved,
+      ).kind,
+    ).toBe("action");
+  });
+
   test("filler pattern wins over explicit-done — a plan-only reply cannot bypass the gate by appending a completion keyword", () => {
     // Regression: "Here is my plan. Plan completed." previously classified as
     // explicit-done because the last clause contains "completed" with no

@@ -1,16 +1,13 @@
 /**
  * Pure classifier for strict-agentic. Zero side effects.
  *
- * Evaluates in this order:
+ * Evaluates in this order (filler detection runs BEFORE question/done
+ * exemptions so a model cannot bypass the gate by tacking on a trailing `?`
+ * or a completion keyword to an otherwise plan-only reply):
  *   1. toolCallCount > 0        → action
- *   2. isUserQuestion(output)   → user-question
- *   3. blank output (no tools)  → filler  (degraded / silent-failure guard)
- *   4. isFillerOutput(output)   → filler  (evaluated BEFORE explicit-done so
- *                                          a model cannot bypass the gate by
- *                                          appending a completion keyword to
- *                                          an otherwise plan-only reply —
- *                                          e.g. "Here is my plan. Plan
- *                                          completed." must still block)
+ *   2. blank output (no tools)  → filler  (degraded / silent-failure guard)
+ *   3. isFillerOutput(output)   → filler
+ *   4. isUserQuestion(output)   → user-question
  *   5. isExplicitDone(output)   → explicit-done
  *   6. otherwise                → action
  *
@@ -39,9 +36,9 @@ export function classifyTurn(
   config: Pick<ResolvedStrictAgenticConfig, "isUserQuestion" | "isExplicitDone" | "isFillerOutput">,
 ): ClassificationResult {
   if (facts.toolCallCount > 0) return { kind: "action" };
-  if (config.isUserQuestion(facts.outputText)) return { kind: "user-question" };
   if (facts.outputText.trim().length === 0) return { kind: "filler" };
   if (config.isFillerOutput(facts.outputText)) return { kind: "filler" };
+  if (config.isUserQuestion(facts.outputText)) return { kind: "user-question" };
   if (config.isExplicitDone(facts.outputText)) return { kind: "explicit-done" };
   return { kind: "action" };
 }
