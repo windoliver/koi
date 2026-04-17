@@ -480,4 +480,39 @@ describe("pre-iteration abort self-cleanup", () => {
 
     await runtime.dispose();
   });
+
+  test("aborted iterable A cannot clobber newer run B if consumed late", async () => {
+    const registry = createSessionRegistry();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: completingAdapter(),
+      sessionRegistry: registry,
+    });
+
+    // Run A — start then abort pre-iteration.
+    const iterA = runtime.run({ kind: "text", text: "A" })[Symbol.asyncIterator]();
+    const sidA = sessionId(runtime.sessionId);
+    expect(registry.interrupt(sidA)).toBe(true);
+    // Post-abort, all state is released.
+    expect(registry.listActive()).not.toContain(sidA);
+
+    // Run B — starts on the fresh (post-abort) latch.
+    const iterB = runtime.run({ kind: "text", text: "B" })[Symbol.asyncIterator]();
+    // B should be running and tracked.
+    const bFirst = await iterB.next();
+    expect(bFirst.done).toBe(false);
+
+    // NOW iterate A (the stale iterable). It must fail the epoch check
+    // and throw rather than re-entering streamEvents.
+    await expect(iterA.next()).rejects.toThrow(
+      /Run was discarded|Runtime has been disposed|Runtime is being disposed|Runtime teardown/,
+    );
+
+    // B is still active — `run()` still rejects concurrent starts.
+    expect(() => runtime.run({ kind: "text", text: "C" })).toThrow(/Agent is already running/);
+
+    // Drain B to completion and dispose cleanly.
+    while (!(await iterB.next()).done) {}
+    await runtime.dispose();
+  });
 });

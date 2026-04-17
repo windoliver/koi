@@ -423,7 +423,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
   async function* streamEvents(
     input: EngineInput,
     expectedEpoch: number,
-    abortController: AbortController,
+    _abortController: AbortController,
     runSignal: AbortSignal,
     onAbort: () => void,
     unregisterFromRegistry: (() => void) | undefined,
@@ -461,6 +461,40 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         preIterationCleanup = undefined;
         running = false;
         runningEpoch = undefined;
+      }
+      // #1682: if the stale iterable's own signal was aborted (i.e. the
+      // epoch was bumped by onAbort's pre-iteration self-clean rather than
+      // by cycleSession/dispose) AND no newer run has taken the latch,
+      // emit the terminal done instead of throwing. This preserves the
+      // pre-start interrupt short-circuit contract for consumers that
+      // iterate the abandoned iterable after an onAbort epoch bump, while
+      // still throwing when a newer run B is active (running + different
+      // runningEpoch guarantees that path is unreachable here since
+      // running would be true with runningEpoch !== expectedEpoch, and
+      // the latch guard above would have skipped cleanup).
+      if (
+        !disposed &&
+        !disposing &&
+        lifecycleInFlight === undefined &&
+        expectedEpoch !== sessionEpoch &&
+        runSignal.aborted &&
+        !running
+      ) {
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: {
+              totalTokens: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              turns: 0,
+              durationMs: 0,
+            },
+          },
+        } satisfies EngineEvent;
+        return;
       }
       const reason = disposed
         ? "Runtime has been disposed."
@@ -1593,15 +1627,15 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         if (preIterationCleanup !== undefined) {
           preIterationCleanup();
           preIterationCleanup = undefined;
-          // Safe to release: the running guard prevented a parallel
-          // run() from stealing the latch, and the generator body
-          // has not started (would have cleared preIterationCleanup).
-          // If the consumer later iterates the abandoned iterable,
-          // the stale-epoch / disposed / inflight guards at the top
-          // of streamEvents still fire first (epoch won't change
-          // unless cycleSession runs); if none trip, the pre-start
-          // abort short-circuit yields the terminal `done` and the
-          // finally runs idempotent cleanup.
+          // #1682: ALSO invalidate the abandoned iterable. Without
+          // bumping sessionEpoch, a later consumer of the stale
+          // iterable passes the epoch check, re-enters streamEvents,
+          // and its finally would clobber shared globals belonging
+          // to a newer run B that started in the meantime. Bumping
+          // here forces the stale iterable to fail the epoch check
+          // and throw on first iteration, matching the invalidation
+          // semantics of cycleSession/dispose.
+          sessionEpoch += 1;
           running = false;
           runningEpoch = undefined;
         }
