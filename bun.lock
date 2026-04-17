@@ -554,6 +554,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",

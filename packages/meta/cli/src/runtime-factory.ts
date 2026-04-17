@@ -58,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
 import { createPermissionBackend } from "@koi/permissions";
@@ -1115,6 +1116,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
 
+  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
+  // Always installed in production runtime so the model can maintain a
+  // plan across turns (CC parity). The bundle ships two halves: the
+  // middleware intercepts write_plan calls; the provider registers the
+  // write_plan Tool so the query-engine's advertised-tool snapshot
+  // recognizes the call as declared. Both halves MUST be wired.
+  const planBundle = createPlanMiddleware();
+
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
   const engineAdapter = createTranscriptAdapter({
@@ -1660,14 +1669,14 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),
       ...(goalMw !== undefined ? { goal: goalMw } : {}),
-      // presetExtras includes both the code-owned stack middleware
-      // and main's env-var-gated audit preset extras (from
-      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), kept for backward
-      // compatibility with that host opt-in. Zone B manifest
-      // middleware flows through the separate `manifestMiddleware`
-      // slot and is composed strictly INSIDE the security core
-      // layers, regardless of array position here.
-      presetExtras: [...stackContribution.middleware, ...auditPresetExtras],
+      // presetExtras includes both the code-owned stack middleware,
+      // main's env-var-gated audit preset extras (from
+      // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`), and the always-on
+      // planning middleware (its provider half is registered below).
+      // Zone B manifest middleware flows through the separate
+      // `manifestMiddleware` slot and is composed strictly INSIDE the
+      // security core layers, regardless of array position here.
+      presetExtras: [...stackContribution.middleware, ...auditPresetExtras, planBundle.middleware],
       manifestMiddleware: zoneBMiddleware,
       ...(systemPromptMw !== undefined ? { systemPrompt: systemPromptMw } : {}),
       ...(sessionTranscriptMw !== undefined ? { sessionTranscript: sessionTranscriptMw } : {}),
@@ -1758,7 +1767,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
           },
         };
       })(),
-      providers: [...coreProviders, ...stackContribution.providers],
+      providers: [...coreProviders, ...stackContribution.providers, ...planBundle.providers],
       approvalHandler,
       userId: userInfo().username,
       // Loop detection defaults to ENABLED (createKoi's default).

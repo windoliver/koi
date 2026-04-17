@@ -303,9 +303,22 @@ async function handleWritePlan(
     }
 
     // Re-fetch — the session may have ended while the hook was awaiting.
+    // If it did, the hook ALREADY succeeded (onPlanUpdate returned
+    // without throwing), so the durable store is ahead of in-memory.
+    // Reporting failure here would make the caller believe its plan
+    // was rejected when it was in fact persisted — the exact partial-
+    // failure scenario we're trying to avoid. We report success and
+    // skip the in-memory commit (the session is gone; nothing can
+    // read from it anyway).
     const post = sessions.get(sessionId);
     if (post === undefined) {
-      return errorResponse("session ended during plan update");
+      return {
+        output: formatPlanSummary(parsed),
+        metadata: {
+          currentPlan: parsed as unknown as JsonObject,
+          sessionEndedDuringCommit: true,
+        },
+      };
     }
     sessions.set(sessionId, {
       ...post,

@@ -650,6 +650,44 @@ describe("onSessionEnd draining", () => {
     expect(response?.output).toBeDefined();
   });
 
+  it("reports success when onPlanUpdate persisted before teardown deleted the session", async () => {
+    // Reviewer R11/F2: after a slow but eventually-successful hook,
+    // the write path must NOT return failure just because the session
+    // entry is gone. Durable storage already has the plan; reporting
+    // failure to the caller creates retry-on-already-persisted chaos.
+    let hookFinished = false;
+    const mw = make({
+      onPlanUpdate: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        hookFinished = true;
+      },
+    });
+    const sessionCtx = makeSessionCtx();
+    await mw.onSessionStart?.(sessionCtx);
+
+    const writePromise = mw.wrapToolCall?.(
+      makeTurnCtx(sessionCtx, 0),
+      {
+        toolId: WRITE_PLAN_TOOL_NAME,
+        input: planInput([{ content: "persisted", status: "pending" }]),
+      },
+      async () => ({ output: "x" }),
+    );
+
+    // End the session without awaiting its drain — simulates a
+    // teardown deadline expiring before the hook resolved. The hook
+    // still completes on its own timer while nothing is blocking it,
+    // and the write's commit-to-memory step then sees an undefined
+    // session. It must report SUCCESS (the hook already persisted),
+    // not an error.
+    void mw.onSessionEnd?.(sessionCtx);
+
+    const response = await writePromise;
+    expect(hookFinished).toBe(true);
+    expect(response?.output).toContain("Plan updated");
+    expect((response?.output as Record<string, unknown>).error).toBeUndefined();
+  });
+
   it("rejects new write_plan calls arriving after teardown begins", async () => {
     const mw = make({
       onPlanUpdate: async () => {
