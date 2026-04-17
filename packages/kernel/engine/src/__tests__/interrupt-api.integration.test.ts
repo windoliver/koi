@@ -270,6 +270,47 @@ describe("auto-cleanup on normal completion", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 5a: registry.interrupt reports already-aborted when input.signal first
+// ---------------------------------------------------------------------------
+
+describe("registry composite-signal: interrupt reports already-aborted when caller aborted input.signal first", () => {
+  test("registry.interrupt reports already-aborted when caller aborted input.signal first", async () => {
+    const registry = createSessionRegistry();
+    const external = new AbortController();
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      // Pass external.signal to the adapter so it can exit when the signal fires.
+      adapter: pausingAdapter(external.signal),
+      sessionRegistry: registry,
+    });
+    const sid = sessionId(runtime.sessionId);
+    const iter = runtime
+      .run({
+        kind: "text",
+        text: "hi",
+        signal: external.signal,
+      } as Parameters<typeof runtime.run>[0])
+      [Symbol.asyncIterator]();
+
+    // Drain one step so generator has registered + cleared preIterationCleanup.
+    await iter.next();
+
+    // External abort via input.signal — runtime.isInterrupted() should be true.
+    external.abort("from-input-signal");
+    await Promise.resolve();
+    expect(runtime.isInterrupted()).toBe(true);
+
+    // registry.interrupt must now report "already interrupted" via the
+    // composite signal check, not a spurious "I newly cancelled" true.
+    expect(registry.interrupt(sid, "double-cancel")).toBe(false);
+
+    // Drain remaining events and dispose.
+    while (!(await iter.next()).done) {}
+    await runtime.dispose();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test 5: isInterrupted reflects an external input.signal abort
 // ---------------------------------------------------------------------------
 

@@ -1655,6 +1655,7 @@ export async function createKoi(options: CreateKoiOptions): Promise<KoiRuntime> 
         unregisterFromRegistry = options.sessionRegistry?.register(
           registeredSessionId,
           abortController,
+          runSignal,
         );
       } catch (err) {
         activeController = undefined;

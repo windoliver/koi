@@ -13,51 +13,88 @@ import type { SessionId } from "@koi/core";
 import { KoiRuntimeError } from "@koi/errors";
 
 export interface SessionRegistry {
-  readonly register: (sessionId: SessionId, controller: AbortController) => () => void;
+  /**
+   * Register a live run. Returns an unregister function that is safe to call
+   * multiple times.
+   *
+   * Within a single runtime the engine's "running" guard ensures at most one
+   * register() per sessionId at a time. When a single registry is shared
+   * across multiple runtimes (e.g. a process-wide registry with per-session
+   * agents), callers are responsible for ensuring sessionId uniqueness. A
+   * duplicate register() throws CONFLICT (retryable) so hosts can handle
+   * the collision — e.g. by unregistering the prior entry or routing the
+   * interrupt differently.
+   *
+   * `runSignal` should be the composite signal the run actually observes
+   * (typically `AbortSignal.any([input.signal, controller.signal])`).
+   * `interrupt()` and `isInterrupted()` read abort state from this signal,
+   * so external aborts on `input.signal` are reflected correctly.
+   */
+  readonly register: (
+    sessionId: SessionId,
+    controller: AbortController,
+    runSignal: AbortSignal,
+  ) => () => void;
   readonly interrupt: (sessionId: SessionId, reason?: string) => boolean;
   readonly isInterrupted: (sessionId: SessionId) => boolean;
   readonly listActive: () => readonly SessionId[];
 }
 
-export function createSessionRegistry(): SessionRegistry {
-  const entries = new Map<SessionId, AbortController>();
+type RegistryEntry = {
+  readonly controller: AbortController;
+  readonly runSignal: AbortSignal;
+};
 
-  function register(sessionId: SessionId, controller: AbortController): () => void {
+export function createSessionRegistry(): SessionRegistry {
+  const entries = new Map<SessionId, RegistryEntry>();
+
+  function register(
+    sessionId: SessionId,
+    controller: AbortController,
+    runSignal: AbortSignal,
+  ): () => void {
     if (entries.has(sessionId)) {
+      // CONFLICT (retryable) — per-runtime the "running" guard prevents
+      // duplicate register(); cross-runtime collisions are possible when
+      // hosts share one registry across multiple runtimes that resume or
+      // rebind the same persisted session id. Callers who need this
+      // pattern should use per-runtime registries or coordinate session
+      // id uniqueness before submission.
       throw KoiRuntimeError.from(
-        "INTERNAL",
-        `Session "${sessionId}" is already registered. The engine's "running" guard should prevent concurrent runs; a duplicate register() here indicates a lifecycle bug.`,
+        "CONFLICT",
+        `Session "${sessionId}" is already registered. Another runtime on this registry is tracking the same session — use per-runtime registries when resuming the same persisted session across runtimes, or ensure session ids are unique within a shared registry.`,
         { context: { sessionId } },
       );
     }
-    entries.set(sessionId, controller);
+    const entry: RegistryEntry = { controller, runSignal };
+    entries.set(sessionId, entry);
     // let justified: mutable flag to make the returned unregister idempotent.
     let cleared = false;
     return () => {
       if (cleared) return;
       cleared = true;
-      // Defensive: only clear if we're still the registered controller
+      // Defensive: only clear if we're still the registered entry
       // for this sessionId. (A future re-registration could have overwritten
       // us; unlikely given the "running" guard, but cheap to check.)
       const current = entries.get(sessionId);
-      if (current === controller) {
+      if (current === entry) {
         entries.delete(sessionId);
       }
     };
   }
 
   function interrupt(sessionId: SessionId, reason?: string): boolean {
-    const controller = entries.get(sessionId);
-    if (controller === undefined) return false;
-    if (controller.signal.aborted) return false;
-    controller.abort(reason);
+    const entry = entries.get(sessionId);
+    if (entry === undefined) return false;
+    if (entry.runSignal.aborted) return false;
+    entry.controller.abort(reason);
     return true;
   }
 
   function isInterrupted(sessionId: SessionId): boolean {
-    const controller = entries.get(sessionId);
-    if (controller === undefined) return false;
-    return controller.signal.aborted;
+    const entry = entries.get(sessionId);
+    if (entry === undefined) return false;
+    return entry.runSignal.aborted;
   }
 
   function listActive(): readonly SessionId[] {
