@@ -484,4 +484,60 @@ describe("walker — rejects dynamic content (phase-1 scope)", () => {
     if (result.kind !== "too-complex") throw new Error("unreachable");
     expect(result.primaryCategory).toBe("shell-escape");
   });
+
+  // Special-parameter regression coverage. Bash special parameters beyond
+  // the original $1..$9/$@/$*/$#/$?/$! set — $0, $$, $-, $_ — must route to
+  // `positional` (not `scope-trackable`) because they depend on
+  // shell/process state, not tracked environment scope.
+  test("simple_expansion $0 routes to positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $0");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  test("simple_expansion $$ routes to positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $$");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  test("simple_expansion $- routes to positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $-");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  test("simple_expansion $_ routes to positional", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand("echo $_");
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  test("double-quoted $$ routes to positional (via site 273 dispatch)", async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo "$$"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("positional");
+  });
+
+  // Bare `$` in argument position. Tree-sitter-bash splits `echo $"msg"`
+  // (argument position) into `$` + `string` children — the `$` child lands
+  // in walkArgNode's new `case "$":` arm. Prior to the fix this hit the
+  // default and incorrectly produced `unknown`.
+  test('bare $ in argument position (echo $"msg") routes to unsupported-syntax', async () => {
+    await initializeBashAst();
+    const result = analyzeBashCommand('echo $"msg"');
+    expect(result.kind).toBe("too-complex");
+    if (result.kind !== "too-complex") throw new Error("unreachable");
+    expect(result.primaryCategory).toBe("unsupported-syntax");
+  });
 });

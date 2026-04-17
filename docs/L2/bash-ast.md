@@ -141,7 +141,7 @@ The eleven categories:
 |---|---|---|
 | `scope-trackable` | `$VAR` or `$(cmd)`. Future scope-tracking (see [#1661](https://github.com/windoliver/koi/issues/1661)) would rescue some of these. Excludes `${VAR}`. | `echo $X`, `echo $(date)` |
 | `parameter-expansion` | Any `${...}` form. | `echo ${X:-def}` |
-| `positional` | `$1..$9`, `$@`, `$*`, `$#`, `$?`, `$!` — and mixed forms like `$1suffix` (prefix rule). | `echo $1`, `echo "prefix$@"` |
+| `positional` | Bash special parameters: `$0`..`$9`, `$@`, `$*`, `$#`, `$?`, `$!`, `$$`, `$-`, `$_` — and mixed forms like `$1suffix` (prefix rule). These depend on shell/process state, not tracked environment scope, so they are not `scope-trackable`. | `echo $1`, `echo $$`, `echo "prefix$@"` |
 | `control-flow` | `for`/`while`/`if`/`case`/`function`/`subshell`. | `if true; then echo hi; fi` |
 | `shell-escape` | Backslash escapes in `word` or inside double-quoted strings; line-continuation prefilter. Raw source text does not match bash's effective semantics. | `cat \/etc\/passwd` |
 | `heredoc` | `heredoc_redirect`. | `cat <<EOF\nhi\nEOF` |

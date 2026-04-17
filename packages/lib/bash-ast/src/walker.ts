@@ -46,6 +46,37 @@ const SEPARATOR_NODE_TYPES: ReadonlySet<string> = new Set([
   "",
 ]);
 
+/**
+ * Text prefixes that identify a bash special parameter (`$0`..`$9`, `$@`, `$*`,
+ * `$#`, `$?`, `$!`, `$$`, `$-`, `$_`). A `simple_expansion` whose text starts
+ * with one of these is a special-parameter reference — not something scope
+ * tracking could rescue — and routes to category `positional`.
+ *
+ * Mixed-literal concatenation (`$1suffix`, `"prefix$0done"`) is still matched
+ * by the startsWith check because tree-sitter-bash emits the whole merged
+ * token as one `simple_expansion` text under this grammar.
+ */
+const SPECIAL_PARAMETER_PREFIXES: readonly string[] = [
+  "$0",
+  "$1",
+  "$2",
+  "$3",
+  "$4",
+  "$5",
+  "$6",
+  "$7",
+  "$8",
+  "$9",
+  "$@",
+  "$*",
+  "$#",
+  "$?",
+  "$!",
+  "$$",
+  "$-",
+  "$_",
+];
+
 /** Valid file-redirect operator tokens. */
 const REDIRECT_OP_TYPES: ReadonlySet<string> = new Set([
   ">",
@@ -317,26 +348,10 @@ function walkArgNode(node: Node):
         // expansion / command_substitution / etc.). The walker can't extract
         // a static argv, but it can route the rejection category by the
         // child's node type so callers see why the string failed.
-        const POSITIONAL_PREFIXES = [
-          "$1",
-          "$2",
-          "$3",
-          "$4",
-          "$5",
-          "$6",
-          "$7",
-          "$8",
-          "$9",
-          "$@",
-          "$*",
-          "$#",
-          "$?",
-          "$!",
-        ];
         let childCategory: TooComplexCategory;
         switch (child.type) {
           case "simple_expansion":
-            childCategory = POSITIONAL_PREFIXES.some((p) => child.text.startsWith(p))
+            childCategory = SPECIAL_PARAMETER_PREFIXES.some((p) => child.text.startsWith(p))
               ? "positional"
               : "scope-trackable";
             break;
@@ -365,23 +380,7 @@ function walkArgNode(node: Node):
         "unsupported-syntax",
       );
     case "simple_expansion": {
-      const POSITIONAL_PREFIXES = [
-        "$1",
-        "$2",
-        "$3",
-        "$4",
-        "$5",
-        "$6",
-        "$7",
-        "$8",
-        "$9",
-        "$@",
-        "$*",
-        "$#",
-        "$?",
-        "$!",
-      ];
-      const isPositional = POSITIONAL_PREFIXES.some((p) => node.text.startsWith(p));
+      const isPositional = SPECIAL_PARAMETER_PREFIXES.some((p) => node.text.startsWith(p));
       return tooComplex(
         "variable expansion ($VAR) is not supported",
         "simple_expansion",
@@ -432,6 +431,17 @@ function walkArgNode(node: Node):
       return tooComplex(
         'translated string $"..." is not supported',
         "translated_string",
+        "unsupported-syntax",
+      );
+    case "$":
+      // Bare `$` token in argument position. Tree-sitter-bash splits
+      // `echo $"msg"` into a `$` child plus a `string` child (only the
+      // command-name form emits a `translated_string` node), so the `$`
+      // lands here as a standalone node type. Treat as unsupported
+      // locale-translation syntax rather than a walker-bug signal.
+      return tooComplex(
+        "bare $ in argument position (likely locale-translated string) is not supported",
+        "$",
         "unsupported-syntax",
       );
     default:

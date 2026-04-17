@@ -112,6 +112,18 @@ const UNKNOWN_CORPUS: ReadonlyArray<readonly [string]> = [
   ["cat <<EOF\nhi\nEOF"],
   ['echo "unterminated'],
   ["echo foo\\\nbar"],
+  // Special parameters beyond the original positional set — $0, $$, $-, $_
+  // (regression for the round-2 adversarial finding that these were routing
+  // to scope-trackable instead of positional) and the bare-$ argument
+  // shape emitted for `echo $"msg"` (regression for the round-2 unknown-
+  // leak finding).
+  ["echo $0"],
+  ["echo $$"],
+  ["echo $-"],
+  ["echo $_"],
+  ['echo "$0"'],
+  ['echo "$$"'],
+  ['echo $"msg"'],
   // From bypass-corpus.test.ts — injection + bypass patterns:
   ["eval $(cat /etc/passwd)"],
   ["eval `cat /etc/passwd`"],

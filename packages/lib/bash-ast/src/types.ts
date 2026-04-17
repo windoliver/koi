@@ -71,9 +71,19 @@ export interface SimpleCommand {
  *     analyze (command substitution, variable expansion, control flow,
  *     function definitions, …). The caller must route to a fallback
  *     policy — currently, the `@koi/bash-security` regex classifier.
+ *     The `primaryCategory` field is REQUIRED and provides a stable,
+ *     version-independent classification (see `TooComplexCategory`).
  *   - `parse-unavailable` — the parser itself could not run. `cause`
  *     discriminates the reason. **Callers MUST fail closed on this
  *     outcome** — do not fall through to a permissive path.
+ *
+ * **Breaking-change posture:** adding a required field to the `too-complex`
+ * variant is a source-breaking change for any consumer constructing the
+ * literal directly. `@koi/bash-ast` is marked `"private": true` in
+ * `package.json` — a monorepo-internal workspace package — so this break
+ * is absorbed atomically across the repo. If this package is ever promoted
+ * to a published artifact, re-evaluate before any future required-field
+ * additions and consider additive/optional fields instead.
  */
 export type AstAnalysis =
   | { readonly kind: "simple"; readonly commands: readonly SimpleCommand[] }
