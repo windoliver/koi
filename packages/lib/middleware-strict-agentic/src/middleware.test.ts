@@ -342,6 +342,36 @@ describe("wrapModelStream", () => {
     expect(result?.kind).toBe("block");
   });
 
+  test("records turn state before yielding done (survives iterator.return())", async () => {
+    // Regression: consumeModelStream yields `done` and then immediately
+    // return()s the iterator, which aborts the upstream generator before
+    // its for-await loop exits naturally. If recordTurn were called AFTER
+    // the loop, state would be lost and onBeforeStop would fail open.
+    const { middleware } = createStrictAgenticMiddleware({});
+    const turn = makeTurn("s-stream", "t-return-early");
+    const chunks: ModelChunk[] = [
+      { kind: "text_delta", delta: "Planning without action." },
+      { kind: "done", response: { content: "Planning without action.", model: "test" } },
+    ];
+    const stream = middleware.wrapModelStream?.(turn, REQUEST, streamOf(chunks));
+    if (stream === undefined) throw new Error("wrapModelStream missing");
+
+    // Simulate consumeModelStream: read until done, then return() the iterator.
+    const iter = stream[Symbol.asyncIterator]();
+    for (;;) {
+      const res = await iter.next();
+      if (res.done === true) break;
+      if (res.value.kind === "done") {
+        await iter.return?.();
+        break;
+      }
+    }
+
+    const result = await middleware.onBeforeStop?.(turn);
+    // State was recorded eagerly on `done` → classifier sees filler → block
+    expect(result?.kind).toBe("block");
+  });
+
   test("noop mode passes stream through without recording", async () => {
     const { middleware } = createStrictAgenticMiddleware({ enabled: false });
     const turn = makeTurn("s-stream", "t-stream-4");

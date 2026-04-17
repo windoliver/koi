@@ -82,9 +82,14 @@ export function createStrictAgenticMiddleware(
 
     // Streaming path — runtime prefers this when the adapter implements `stream`.
     // Passes every chunk through unmodified and accumulates facts for classification.
-    // Prefers the final `done.response` when the adapter emits one; otherwise
-    // falls back to chunk-level counting so providers without a terminal `done`
-    // chunk still get gated.
+    //
+    // Flush-eagerly pattern (see packages/lib/middleware-goal/src/goal.ts:783):
+    // consumeModelStream calls iterator.return() after processing the terminal
+    // `done` chunk, which aborts upstream generators before their for-await
+    // loop exits naturally. We therefore record turn state when we observe
+    // `done` — BEFORE yielding it — and also have a post-loop fallback for
+    // adapters that omit `done`. Tool-call count merges streamed chunks with
+    // any richContent the terminal response carries.
     async *wrapModelStream(
       ctx: TurnContext,
       request: ModelRequest,
@@ -96,27 +101,30 @@ export function createStrictAgenticMiddleware(
       }
       let toolCallCount = 0;
       let text = "";
-      let finalResponse: ModelResponse | undefined;
+      let recorded = false;
       for await (const chunk of next(request)) {
-        if (chunk.kind === "text_delta") text += chunk.delta;
-        else if (chunk.kind === "tool_call_start") toolCallCount += 1;
-        else if (chunk.kind === "done") finalResponse = chunk.response;
+        if (chunk.kind === "text_delta") {
+          text += chunk.delta;
+        } else if (chunk.kind === "tool_call_start") {
+          toolCallCount += 1;
+        } else if (chunk.kind === "done") {
+          const mergedToolCallCount = Math.max(
+            toolCallCount,
+            countToolCalls(chunk.response.richContent),
+          );
+          const mergedText = text.length > 0 ? text : chunk.response.content;
+          store.recordTurn(ctx.turnId, {
+            toolCallCount: mergedToolCallCount,
+            outputText: mergedText,
+          });
+          recorded = true;
+        }
         yield chunk;
       }
-      // Merge terminal and streamed evidence. Some adapters send non-empty
-      // text_delta chunks and then a done chunk with empty content / no
-      // richContent (the terminal chunk is a lifecycle marker, not the payload).
-      // Taking max(...) on tool calls and preferring the non-empty signal for
-      // text prevents the gate from reclassifying a successful stream as filler.
-      const mergedToolCallCount =
-        finalResponse !== undefined
-          ? Math.max(toolCallCount, countToolCalls(finalResponse.richContent))
-          : toolCallCount;
-      const mergedText = text.length > 0 ? text : (finalResponse?.content ?? "");
-      store.recordTurn(ctx.turnId, {
-        toolCallCount: mergedToolCallCount,
-        outputText: mergedText,
-      });
+      // Fallback for adapters that close the stream without emitting `done`.
+      if (!recorded) {
+        store.recordTurn(ctx.turnId, { toolCallCount, outputText: text });
+      }
     },
 
     async onBeforeStop(ctx: TurnContext): Promise<StopGateResult> {
