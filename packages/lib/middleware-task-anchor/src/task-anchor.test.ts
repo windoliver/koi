@@ -301,13 +301,28 @@ describe("createTaskAnchorMiddleware — empty-board nudge", () => {
     const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 2 });
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
-    await runTurn(mw, session, 0, { toolId: "bash" }); // tool activity, idle=1
-    await runTurn(mw, session, 1); // idle=2
-    const c2 = await runTurn(mw, session, 2); // idle=2 at start → fire
-    const injected = extractInjected(c2);
+    // Empty-board nudge requires prior task-tool engagement (round-9 fix).
+    // A task_list read sets `sawTaskTool` without latching mutation rollback.
+    await runTurn(mw, session, 0, { toolId: "task_list" }); // sawTaskTool=true, idle=0 (reset)
+    await runTurn(mw, session, 1); // idle=1
+    await runTurn(mw, session, 2); // idle=2
+    const c3 = await runTurn(mw, session, 3); // idle=2 at start → fire
+    const injected = extractInjected(c3);
     expect(injected).toBeDefined();
     const text = (injected?.content[0] as { text: string } | undefined)?.text ?? "";
     expect(text).toContain("task_create");
+  });
+
+  test("empty-board nudge does NOT fire when only non-task tool was used (shell-only session)", async () => {
+    // Round-9 regression: a CLI session using only shell/bash shouldn't get
+    // pushed toward task decomposition via task_create nudges.
+    const board = makeBoard([]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+    await runTurn(mw, session, 0, { toolId: "bash" }); // idle=1 but sawTaskTool stays false
+    const c1 = await runTurn(mw, session, 1); // idle=1 ≥ K, but no task-tool engagement
+    expect(extractInjected(c1)).toBeUndefined();
   });
 
   test("no nudge when board empty + no tool activity yet", async () => {
@@ -557,8 +572,8 @@ describe("createTaskAnchorMiddleware — retry/stop-gate preservation", () => {
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
 
-    // Pre-heat sawAnyTool via a non-task tool.
-    await runTurn(mw, session, 0, { toolId: "bash" });
+    // Pre-heat sawTaskTool via a successful task_list read.
+    await runTurn(mw, session, 0, { toolId: "task_list" });
 
     // Turn 1 (blocked): task_create validation fails (returns { ok: false }).
     const ctx1: TurnContext = { ...makeTurnCtx(session, 1), stopBlocked: true };
@@ -581,29 +596,55 @@ describe("createTaskAnchorMiddleware — retry/stop-gate preservation", () => {
     const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
+    // Pre-heat sawTaskTool via a prior successful task_list. Without this,
+    // the nudge stays dormant (round-10 semantics: nudge requires genuine
+    // task-board interaction, not failed attempts).
+    await runTurn(mw, session, 0, { toolId: "task_list" });
 
-    // Turn 0 (blocked): task_create throws → taskToolThisTurn must stay false.
-    const ctx0: TurnContext = { ...makeTurnCtx(session, 0), stopBlocked: true };
-    await mw.onBeforeTurn?.(ctx0);
+    // Turn 1 (blocked): task_create throws → no mutation flag gets set.
+    const ctx1: TurnContext = { ...makeTurnCtx(session, 1), stopBlocked: true };
+    await mw.onBeforeTurn?.(ctx1);
     const throwingTool: ToolHandler = async () => {
       throw new Error("task_create failed");
     };
     let threw = false;
     try {
-      await mw.wrapToolCall?.(ctx0, { toolId: "task_create", input: {} }, throwingTool);
+      await mw.wrapToolCall?.(ctx1, { toolId: "task_create", input: {} }, throwingTool);
     } catch {
       threw = true;
     }
     expect(threw).toBe(true);
-    // sawAnyTool=true but taskToolThisTurn=false. No injection happened either.
+    await mw.onAfterTurn?.(ctx1);
+
+    // Turn 2 (retry, board still empty): nudge fires — failed task_create did
+    // not mutate the board, so `forceRequiresTasks` was never latched.
+    const c2 = await runTurn(mw, session, 2);
+    const retryText = (extractInjected(c2)?.content[0] as { text: string } | undefined)?.text ?? "";
+    expect(retryText).toContain("task_create");
+  });
+
+  test("denied task-tool attempts alone do NOT enable the empty-board nudge (no engagement loop)", async () => {
+    // Round-10 regression: a session where every task-tool call is denied
+    // must not spin into a "call task_create → denied → nudge → call task_create"
+    // loop. sawTaskTool stays false until a SUCCESSFUL non-blocked call lands.
+    const board = makeBoard([]);
+    const mw = createTaskAnchorMiddleware({ getBoard: () => board, idleTurnThreshold: 1 });
+    const session = makeSessionCtx();
+    await mw.onSessionStart?.(session);
+
+    // Turn 0: task_create returns { ok: false } (denied by validation).
+    const ctx0 = makeTurnCtx(session, 0);
+    await mw.onBeforeTurn?.(ctx0);
+    const deniedTool: ToolHandler = async () => ({
+      output: { ok: false, error: "permission denied" },
+    });
+    await mw.wrapToolCall?.(ctx0, { toolId: "task_create", input: {} }, deniedTool);
     await mw.onAfterTurn?.(ctx0);
 
-    // Turn 1 (retry, board still empty, no successful task mutation): nudge
-    // must NOT be suppressed — the blocked turn's failed tool cannot stand
-    // in for "the board is authoritative". idle=1 → shouldInject=true.
+    // Turn 1 (idle=1≥1): would nudge if sawTaskTool was set, but denied
+    // attempts should NOT latch it.
     const c1 = await runTurn(mw, session, 1);
-    const retryText = (extractInjected(c1)?.content[0] as { text: string } | undefined)?.text ?? "";
-    expect(retryText).toContain("task_create");
+    expect(extractInjected(c1)).toBeUndefined();
   });
 
   test("getBoard returning undefined (no-board contract) clears the force flag", async () => {
@@ -802,22 +843,23 @@ describe("createTaskAnchorMiddleware — retry/stop-gate preservation", () => {
     const session = makeSessionCtx();
     await mw.onSessionStart?.(session);
 
-    // Turn 0: non-task tool to set sawAnyTool. After: idle=1.
-    await runTurn(mw, session, 0, { toolId: "bash" });
+    // Turn 0: task_list sets sawTaskTool=true AND resets idle to 0 after turn.
+    await runTurn(mw, session, 0, { toolId: "task_list" });
+    await runTurn(mw, session, 1); // idle=1 after
 
-    // Turn 1 (blocked): shouldInject=true + empty board + sawAnyTool → nudge fires.
-    const ctx1: TurnContext = { ...makeTurnCtx(session, 1), stopBlocked: true };
-    await mw.onBeforeTurn?.(ctx1);
-    const capture1: Capture = {};
-    await mw.wrapModelCall?.(ctx1, makeRequest(), captureHandler(capture1));
+    // Turn 2 (blocked): shouldInject=true (idle=1≥1) + empty board + sawTaskTool → nudge fires.
+    const ctx2: TurnContext = { ...makeTurnCtx(session, 2), stopBlocked: true };
+    await mw.onBeforeTurn?.(ctx2);
+    const capture2: Capture = {};
+    await mw.wrapModelCall?.(ctx2, makeRequest(), captureHandler(capture2));
     const nudgeText =
-      (extractInjected(capture1)?.content[0] as { text: string } | undefined)?.text ?? "";
+      (extractInjected(capture2)?.content[0] as { text: string } | undefined)?.text ?? "";
     expect(nudgeText).toContain("task_create");
-    await mw.onAfterTurn?.(ctx1);
+    await mw.onAfterTurn?.(ctx2);
 
-    // Turn 2 (retry, board still empty): nudge must be re-injected.
-    const c2 = await runTurn(mw, session, 2);
-    const retryText = (extractInjected(c2)?.content[0] as { text: string } | undefined)?.text ?? "";
+    // Turn 3 (retry, board still empty): nudge must be re-injected.
+    const c3 = await runTurn(mw, session, 3);
+    const retryText = (extractInjected(c3)?.content[0] as { text: string } | undefined)?.text ?? "";
     expect(retryText).toContain("task_create");
   });
 

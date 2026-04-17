@@ -37,10 +37,16 @@ export interface TaskAnchorConfig {
   readonly nudgeOnEmptyBoard?: boolean | undefined;
   /** Header text inside the system-reminder block. Default: `"Current tasks"`. */
   readonly header?: string | undefined;
+  /** Max rendered tasks per reminder. Extras are collapsed into `… N more tasks`.
+   *  Default: 50. Guards against prompt-budget blowup when a long-running
+   *  coordinator session accumulates hundreds of tasks and the middleware
+   *  re-injects on every idle turn. */
+  readonly maxTasksInReminder?: number | undefined;
 }
 
 export const DEFAULT_IDLE_TURN_THRESHOLD = 3;
 export const DEFAULT_HEADER = "Current tasks";
+export const DEFAULT_MAX_TASKS_IN_REMINDER = 50;
 
 export function defaultIsTaskTool(toolId: string): boolean {
   return toolId.startsWith("task_");
@@ -159,6 +165,23 @@ export function validateTaskAnchorConfig(input: unknown): Result<TaskAnchorConfi
       error: {
         code: "VALIDATION",
         message: "TaskAnchorConfig.header must be a non-empty string",
+        retryable: RETRYABLE_DEFAULTS.VALIDATION,
+      },
+    };
+  }
+
+  if (
+    c.maxTasksInReminder !== undefined &&
+    (typeof c.maxTasksInReminder !== "number" ||
+      !Number.isInteger(c.maxTasksInReminder) ||
+      c.maxTasksInReminder < 0)
+  ) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message:
+          "TaskAnchorConfig.maxTasksInReminder must be a non-negative integer (0 disables the cap)",
         retryable: RETRYABLE_DEFAULTS.VALIDATION,
       },
     };

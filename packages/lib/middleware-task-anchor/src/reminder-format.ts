@@ -88,22 +88,114 @@ function formatTaskLine(task: Task): string {
   return `- [${statusLabel(task.status)}] ${normalizeTaskId(task.id)} — ${sanitizeTaskText(subject)}`;
 }
 
-/** Format the live board into the reminder body. */
-export function formatTaskList(board: TaskBoard): string {
+/**
+ * Reminder render priority — actionable states first so they always land
+ * inside the cap, with failed/killed ahead of completed so failure signals
+ * survive truncation. Matches the intent of `task_list`: show the work that
+ * needs attention first.
+ */
+const STATUS_ORDER: readonly TaskStatus[] = [
+  "in_progress",
+  "pending",
+  "failed",
+  "killed",
+  "completed",
+];
+
+const KNOWN_STATUSES: ReadonlySet<string> = new Set(STATUS_ORDER);
+
+/** Format the live board into the reminder body.
+ *
+ * Ordering: `in_progress` → `pending` → `failed` → `killed` → `completed`
+ * (priority bucket + insertion order within each). Actionable tasks land
+ * inside the cap first, then terminal history fills the remaining budget.
+ *
+ * Truncation policy (HARD global cap):
+ *   - Total rendered lines never exceed `maxTasks + 1` (cap + overflow marker).
+ *   - Priority order means terminal history is dropped FIRST, so the most
+ *     actionable signal survives. Failed/killed come before completed within
+ *     the terminal half so failure signals aren't buried.
+ *   - Pathological boards with thousands of live tasks get paged: the cap
+ *     drops excess live tasks into the overflow summary with per-status
+ *     counts and a directive to call `task_list` for the full set.
+ *   - A prompt-bloat risk takes precedence over full-visibility of every
+ *     live task ID because the alternative (unbounded reminder) can exceed
+ *     provider context windows and cause hard request failures.
+ *
+ * The overflow marker preserves per-status counts so the model retains the
+ * signal that failures/killed/live tasks were hidden (not just completed).
+ *
+ * `maxTasks` of 0 or negative disables the cap entirely. */
+export function formatTaskList(board: TaskBoard, maxTasks = 0): string {
   const tasks = board.all();
   if (tasks.length === 0) return "";
-  const lines: string[] = [];
-  for (const task of tasks) {
-    lines.push(formatTaskLine(task));
+
+  // Priority-ordered view: actionable first, failures before completions.
+  // Tasks with unknown statuses (version skew / corrupted store rows) are
+  // appended at the end so they're never silently dropped from the reminder.
+  const prioritized: Task[] = [];
+  for (const status of STATUS_ORDER) {
+    for (const task of tasks) {
+      if (task.status === status) prioritized.push(task);
+    }
   }
-  return lines.join("\n");
+  for (const task of tasks) {
+    if (!KNOWN_STATUSES.has(task.status)) prioritized.push(task);
+  }
+
+  const cap = maxTasks > 0 ? maxTasks : prioritized.length;
+  const limit = Math.min(prioritized.length, cap);
+  const rendered: string[] = [];
+  for (let i = 0; i < limit; i++) {
+    const task = prioritized[i];
+    if (task !== undefined) rendered.push(formatTaskLine(task));
+  }
+
+  if (prioritized.length > limit) {
+    // Per-status overflow counts so failed/killed/live signals survive.
+    const hidden: Record<TaskStatus, number> = {
+      in_progress: 0,
+      pending: 0,
+      failed: 0,
+      killed: 0,
+      completed: 0,
+    };
+    for (let i = limit; i < prioritized.length; i++) {
+      const task = prioritized[i];
+      if (task !== undefined) hidden[task.status] += 1;
+    }
+    const parts: string[] = [];
+    for (const status of STATUS_ORDER) {
+      if (hidden[status] > 0) parts.push(`${String(hidden[status])} ${status}`);
+    }
+    const total = prioritized.length - limit;
+
+    // Recovery path: ALWAYS include `task_list` for the full board so hidden
+    // live/pending tasks can be re-surfaced. When failures or killed tasks
+    // are hidden, ADD status-filtered calls so the followup doesn't re-bury
+    // them behind completed history (task_list's default ordering puts
+    // completed before failed/killed).
+    const recoveryHints: string[] = ["task_list"];
+    if (hidden.failed > 0) recoveryHints.push('task_list({status:"failed"})');
+    if (hidden.killed > 0) recoveryHints.push('task_list({status:"killed"})');
+    const recovery = `call ${recoveryHints.join(" and ")} to reload the full board`;
+
+    rendered.push(
+      `… ${String(total)} more task${total === 1 ? "" : "s"} (${parts.join(", ")}) — ${recovery}`,
+    );
+  }
+  return rendered.join("\n");
 }
 
-/** Build the full `<system-reminder>` block for a populated board. */
+/** Build the full `<system-reminder>` block for a populated board.
+ *  `header` is passed through `sanitizeTaskText` so an integrator that sources
+ *  it from less-trusted config, env, or manifest metadata cannot inject a
+ *  `</system-reminder>` closing tag or newline directives that would reshape
+ *  the privileged block. */
 export function buildTaskReminder(header: string, body: string): string {
   return [
     "<system-reminder>",
-    `${header} (internal IDs — do NOT echo them to the user):`,
+    `${sanitizeTaskText(header)} (internal IDs — do NOT echo them to the user):`,
     body,
     "Don't mention this reminder or the task IDs to the user.",
     "</system-reminder>",

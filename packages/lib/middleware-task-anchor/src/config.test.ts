@@ -32,6 +32,15 @@ describe("validateTaskAnchorConfig", () => {
     }
   });
 
+  test("accepts maxTasksInReminder = 0 (disables cap)", () => {
+    expect(validateTaskAnchorConfig({ getBoard, maxTasksInReminder: 0 }).ok).toBe(true);
+  });
+
+  test("rejects negative maxTasksInReminder", () => {
+    expect(validateTaskAnchorConfig({ getBoard, maxTasksInReminder: -1 }).ok).toBe(false);
+    expect(validateTaskAnchorConfig({ getBoard, maxTasksInReminder: 1.5 }).ok).toBe(false);
+  });
+
   test("rejects non-positive idleTurnThreshold", () => {
     expect(validateTaskAnchorConfig({ getBoard, idleTurnThreshold: 0 }).ok).toBe(false);
     expect(validateTaskAnchorConfig({ getBoard, idleTurnThreshold: -1 }).ok).toBe(false);

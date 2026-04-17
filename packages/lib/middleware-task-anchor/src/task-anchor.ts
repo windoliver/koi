@@ -20,6 +20,7 @@ import { KoiRuntimeError, swallowError } from "@koi/errors";
 import {
   DEFAULT_HEADER,
   DEFAULT_IDLE_TURN_THRESHOLD,
+  DEFAULT_MAX_TASKS_IN_REMINDER,
   defaultIsMutatingTaskTool,
   defaultIsTaskTool,
   type TaskAnchorConfig,
@@ -30,7 +31,11 @@ import { buildEmptyBoardNudge, buildTaskReminder, formatTaskList } from "./remin
 
 interface SessionState {
   idle: number;
-  sawAnyTool: boolean;
+  /** True once any successful task-related tool has run at least once in this
+   *  session. Gates the empty-board nudge so that sessions that never engage
+   *  with the task board don't receive unsolicited `task_create` nudges after
+   *  a non-task tool call (e.g. `bash`). */
+  sawTaskTool: boolean;
   /** Any successful task-related tool ran this turn (reads or mutations). Resets idle. */
   taskToolThisTurn: boolean;
   /** A *mutating* task tool ran successfully this turn. Drives rollback that suppresses empty-board nudge. */
@@ -60,7 +65,7 @@ interface SessionState {
 function initialState(): SessionState {
   return {
     idle: 0,
-    sawAnyTool: false,
+    sawTaskTool: false,
     taskToolThisTurn: false,
     mutatingTaskToolThisTurn: false,
     shouldInject: false,
@@ -137,11 +142,12 @@ function pickReminderText(
   state: SessionState,
   header: string,
   nudgeOnEmptyBoard: boolean,
+  maxTasksInReminder: number,
 ): string | undefined {
-  const body = formatTaskList(board);
+  const body = formatTaskList(board, maxTasksInReminder);
   if (body.length > 0) return buildTaskReminder(header, body);
   if (state.forceRequiresTasks) return undefined;
-  if (nudgeOnEmptyBoard && state.sawAnyTool) return buildEmptyBoardNudge();
+  if (nudgeOnEmptyBoard && state.sawTaskTool) return buildEmptyBoardNudge();
   return undefined;
 }
 
@@ -164,6 +170,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
   const isMutatingTaskTool = config.isMutatingTaskTool ?? defaultIsMutatingTaskTool;
   const nudgeOnEmptyBoard = config.nudgeOnEmptyBoard ?? true;
   const header = config.header ?? DEFAULT_HEADER;
+  const maxTasksInReminder = config.maxTasksInReminder ?? DEFAULT_MAX_TASKS_IN_REMINDER;
 
   const sessions = new Map<SessionId, SessionState>();
 
@@ -281,7 +288,13 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         return next(request);
       }
 
-      const text = pickReminderText(result.board, state, header, nudgeOnEmptyBoard);
+      const text = pickReminderText(
+        result.board,
+        state,
+        header,
+        nudgeOnEmptyBoard,
+        maxTasksInReminder,
+      );
       if (text === undefined) {
         // Board was observed and is empty (nudge suppressed by current state).
         // Clear the force flags so a non-blocked completion lifts protection,
@@ -328,7 +341,13 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
         return;
       }
 
-      const text = pickReminderText(result.board, state, header, nudgeOnEmptyBoard);
+      const text = pickReminderText(
+        result.board,
+        state,
+        header,
+        nudgeOnEmptyBoard,
+        maxTasksInReminder,
+      );
       if (text === undefined) {
         // See wrapModelCall — track empty observation for blocked-retry restore.
         state.observedEmptyThisTurn = true;
@@ -348,22 +367,19 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
 
     async wrapToolCall(ctx, request, next) {
       const state = sessions.get(ctx.session.sessionId);
-      if (state) state.sawAnyTool = true;
       const response = await next(request);
-      // Only flag task-tool activity AFTER a successful mutation. Two
-      // failure modes must NOT mark the board as mutated:
-      //   - Thrown exceptions (handled by the `await` above — this line
-      //     never runs on throw)
-      //   - Non-throwing `{ ok: false, error }` results returned by
-      //     `@koi/task-tools` for schema/validation/rejected-update paths
-      // Otherwise a rejected `task_create` on a stop-gated turn would
-      // suppress the empty-board nudge on retry or silently reset idle
-      // on a normal turn.
-      if (state && isTaskToolSafely(isTaskTool, request.toolId)) {
-        // A tool call is a successful mutation signal only when:
-        //   - `next()` didn't throw (we're past the await)
-        //   - output is not `{ ok: false }` (task-tools validation failure shape)
-        //   - `response.metadata.blockedByHook !== true` (hook-veto contract)
+
+      // `sawTaskTool` gates the empty-board `task_create` nudge. It MUST
+      // only be set by a SUCCESSFUL non-blocked task-tool response so that:
+      //   - Policy-denied task attempts don't start a nudge loop
+      //   - Thrown/hook-blocked task calls don't imply board engagement
+      //   - The nudge stays dormant until the session has genuinely
+      //     interacted with the task board.
+      // Same success gate drives `taskToolThisTurn` / `mutatingTaskToolThisTurn`:
+      //   - Thrown exceptions (never reach this line)
+      //   - Non-throwing `{ ok: false, error }` results (task-tools validation)
+      //   - `response.metadata.blockedByHook === true` (hook-veto contract)
+      if (state !== undefined && isTaskToolSafely(isTaskTool, request.toolId)) {
         const out = response.output;
         const explicitFailure =
           out !== null &&
@@ -372,6 +388,7 @@ export function createTaskAnchorMiddleware(config: TaskAnchorConfig): KoiMiddlew
           (out as { ok: unknown }).ok === false;
         const hookBlocked = response.metadata?.blockedByHook === true;
         if (!explicitFailure && !hookBlocked) {
+          state.sawTaskTool = true;
           state.taskToolThisTurn = true;
           if (isTaskToolSafely(isMutatingTaskTool, request.toolId)) {
             state.mutatingTaskToolThisTurn = true;
