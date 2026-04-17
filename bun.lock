@@ -291,6 +291,14 @@
         "@opentelemetry/api": "^1.9.0",
       },
     },
+    "packages/lib/middleware-planning": {
+      "name": "@koi/middleware-planning",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -554,6 +562,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -645,6 +654,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
@@ -1215,6 +1225,8 @@
     "@koi/middleware-otel": ["@koi/middleware-otel@workspace:packages/lib/middleware-otel"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
+
+    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
 
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 

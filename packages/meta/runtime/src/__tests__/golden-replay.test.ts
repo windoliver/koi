@@ -20,6 +20,7 @@ import type {
   EngineInput,
   InboundMessage,
   JsonObject,
+  KoiMiddleware,
   ModelChunk,
   ModelRequest,
   ModelResponse,
@@ -36,6 +37,7 @@ import { createHookMiddleware, loadHooks } from "@koi/hooks";
 import { createTransportStateMachine } from "@koi/mcp";
 import { createGoalMiddleware } from "@koi/middleware-goal";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanMiddleware, WRITE_PLAN_TOOL_NAME } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import {
   buildEmptyBoardNudge,
@@ -709,6 +711,118 @@ describe("Golden: @koi/middleware-task-anchor", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Golden: @koi/middleware-planning (write_plan tool injection + MW span)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-planning", () => {
+  test("plan MW composes through createKoi, injects write_plan tool, produces MW span", async () => {
+    const cassette = await loadCassette(`${FIXTURES}/tool-use.cassette.json`);
+    const trajDir = `/tmp/koi-mw-planning-${Date.now()}`;
+    trajDirs.push(trajDir);
+    const docId = "replay-planning";
+
+    const store = createAtifDocumentStore(
+      { agentName: "planning-test" },
+      createFsAtifDelegate(trajDir),
+    );
+    const clock = createMonotonicClock();
+
+    const { middleware: eventTrace } = createEventTraceMiddleware({
+      store,
+      docId,
+      agentName: "planning-test",
+      clock,
+    });
+
+    const permBackend = createPermissionBackend({
+      mode: "bypass",
+      rules: [{ pattern: "*", action: "*", effect: "allow", source: "policy" }],
+    });
+    const permHandle = createPermissionsMiddleware({
+      backend: permBackend,
+      description: "bypass",
+    });
+
+    // @koi/middleware-planning — bundle includes MW + write_plan provider
+    // so the tool is advertised in the query-engine snapshot.
+    const planUpdates: number[] = [];
+    const planBundle = createPlanMiddleware({
+      onPlanUpdate: (plan) => {
+        planUpdates.push(plan.length);
+      },
+    });
+
+    expect(planBundle.middleware.name).toBe("plan");
+    expect(planBundle.middleware.priority).toBe(450);
+    expect(planBundle.providers).toHaveLength(1);
+    expect(planBundle.providers[0]?.name).toBe("plan-tool");
+
+    // Inner spy captures the streamed ModelRequest so we can confirm the
+    // plan MW injected the write_plan tool descriptor upstream of the
+    // adapter. Priority 999 places it deepest (innermost) in the onion.
+    let capturedToolNames: readonly string[] | undefined;
+    const streamSpy: KoiMiddleware = {
+      name: "plan-stream-spy",
+      priority: 999,
+      describeCapabilities: () => undefined,
+      async *wrapModelStream(_ctx, req, next) {
+        capturedToolNames = req.tools?.map((t) => t.name);
+        yield* next(req);
+      },
+    };
+
+    const adapter = createCassetteAdapter(cassette.chunks);
+
+    const runtime = await createKoi({
+      manifest: { name: "planning-test", version: "0.1.0", model: { name: MODEL } },
+      adapter,
+      middleware: [eventTrace, planBundle.middleware, streamSpy, permHandle].map((mw) =>
+        wrapMiddlewareWithTrace(mw, { store, docId, clock }),
+      ),
+      providers: [
+        createSingleToolProvider({
+          name: "add-numbers",
+          toolName: "add_numbers",
+          createTool: () => addTool,
+        }),
+        ...planBundle.providers,
+        createBuiltinSearchProvider({ cwd: process.cwd() }),
+      ],
+      loopDetection: false,
+    });
+
+    for await (const _e of runtime.run({
+      kind: "text",
+      text: "Use the add_numbers tool to compute 7 + 5.",
+    })) {
+      /* drain */
+    }
+
+    await runtime.dispose();
+    await new Promise((r) => setTimeout(r, 300));
+
+    // write_plan tool descriptor was injected into the model request.
+    expect(capturedToolNames).toBeDefined();
+    expect(capturedToolNames?.includes(WRITE_PLAN_TOOL_NAME)).toBe(true);
+
+    // MW span for the plan middleware fired end-to-end.
+    const steps = await store.getDocument(docId);
+    const mwSpans = steps.filter((s) => s.metadata?.type === "middleware_span");
+    const mwNames = new Set(mwSpans.map((s) => s.metadata?.middlewareName));
+    expect(mwNames.has("plan")).toBe(true);
+    expect(mwNames.has("permissions")).toBe(true);
+
+    // Tool flow still works alongside the plan MW.
+    const toolSteps = steps.filter((s) => s.kind === "tool_call" && s.identifier === "add_numbers");
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.outcome).toBe("success");
+
+    // Cassette did not invoke write_plan, so no onPlanUpdate should have fired.
+    expect(planUpdates).toEqual([]);
+  }, 15000);
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
 // ---------------------------------------------------------------------------
 
@@ -1290,6 +1404,106 @@ describe("permission-deny ATIF trajectory (golden file)", () => {
     expect(permSpans.length).toBeGreaterThan(0);
     // wrapModelStream is where filterTools strips the denied tool
     expect(permSpans.some((s) => s.extra?.hook === "wrapModelStream")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// permission-soft-deny trajectory: soft-deny — model sees tool, gets synthetic
+// tool_result, adapts in a follow-up turn (#1650)
+// ---------------------------------------------------------------------------
+
+describe("permission-soft-deny ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with fs_write in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    // fs_write is in tool_definitions (soft-deny keeps tool visible, not stripped)
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "fs_write")).toBe(true);
+  });
+
+  test("trajectory has at least 2 model steps — model adapted after synthetic deny", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly model_name?: string;
+      }[];
+    };
+    const modelSteps = doc.steps.filter((s) => s.source === "agent" && s.model_name !== undefined);
+    // Initial model call + follow-up after receiving the synthetic tool_result
+    expect(modelSteps.length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("wrapToolCall intercepted fs_write with nextCalled=false (tool executor not called)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly nextCalled?: boolean;
+          readonly decisions?: readonly {
+            readonly phase?: string;
+            readonly toolId?: string;
+            readonly action?: string;
+          }[];
+        };
+      }[];
+    };
+    const softDenySpan = doc.steps.find(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapToolCall" &&
+        s.extra?.nextCalled === false,
+    );
+    expect(softDenySpan).toBeDefined();
+    // Confirm the decision was a deny on fs_write
+    const execDeny = softDenySpan?.extra?.decisions?.find(
+      (d) => d.phase === "execute" && d.toolId === "fs_write" && d.action === "deny",
+    );
+    expect(execDeny).toBeDefined();
+  });
+
+  test("wrapModelStream does NOT filter fs_write (soft-deny keeps tool visible)", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly extra?: {
+          readonly type?: string;
+          readonly middlewareName?: string;
+          readonly hook?: string;
+          readonly decisions?: readonly {
+            readonly phase?: string;
+            readonly filteredCount?: number;
+            readonly filteredTools?: readonly { readonly tool: string }[];
+          }[];
+        };
+      }[];
+    };
+    const filterSpan = doc.steps.find(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "permissions" &&
+        s.extra?.hook === "wrapModelStream",
+    );
+    expect(filterSpan).toBeDefined();
+    const filterDecision = filterSpan?.extra?.decisions?.find((d) => d.phase === "filter");
+    if (filterDecision !== undefined) {
+      // fs_write must NOT be in the filtered list — soft-deny keeps it visible
+      const filteredNames = (filterDecision.filteredTools ?? []).map((t) => t.tool);
+      expect(filteredNames).not.toContain("fs_write");
+    }
+  });
+
+  test("trajectory has expected minimum step count", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/permission-soft-deny.trajectory.json`).json()) as {
+      readonly steps: readonly { readonly source: string }[];
+    };
+    // At minimum: MCP lifecycle (2) + model steps (2) + wrapToolCall span (1) + other MW spans
+    expect(doc.steps.length).toBeGreaterThanOrEqual(8);
   });
 });
 

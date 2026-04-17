@@ -67,6 +67,8 @@ export const DEFAULT_APPROVAL_TIMEOUT_MS: number = 30_000;
 export const DEFAULT_DENIAL_ESCALATION_THRESHOLD: number = 3;
 export const DEFAULT_DENIAL_ESCALATION_WINDOW_MS: number = 300_000;
 
+export const DEFAULT_SOFT_DENY_PER_TURN_CAP: number = 3;
+
 // ---------------------------------------------------------------------------
 // Middleware config
 // ---------------------------------------------------------------------------
@@ -126,6 +128,12 @@ export interface PermissionsMiddlewareConfig {
   readonly resolveToolPath?:
     | ((toolId: string, input: JsonObject) => string | undefined)
     | undefined;
+  /**
+   * Max cumulative soft denies per `decisionCacheKey` per turn before hard-throw.
+   * Counter is cumulative per turn — allow decisions do not reset it. Cleared at
+   * turn boundary via `onBeforeTurn`. Default: 3. #1650.
+   */
+  readonly softDenyPerTurnCap?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +290,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // resolveToolPath — function if set
   if (config.resolveToolPath !== undefined && typeof config.resolveToolPath !== "function") {
     return fail("config.resolveToolPath must be a function");
+  }
+
+  // softDenyPerTurnCap — positive number if set
+  if (config.softDenyPerTurnCap !== undefined && !isPositiveNumber(config.softDenyPerTurnCap)) {
+    return fail("config.softDenyPerTurnCap must be a positive number");
   }
 
   return { ok: true, value: config as unknown as PermissionsMiddlewareConfig };

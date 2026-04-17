@@ -1296,6 +1296,25 @@ describe("composeRuntimeMiddleware — zone B inside security guard", () => {
     });
     expect(chain.map((mw) => mw.name)).toEqual(["hooks", "permissions", "exfiltration-guard"]);
   });
+
+  test("plan slot sits INSIDE permissions so its tool-visibility gate sees filtered tools", () => {
+    // Reviewer R16: if planning ran OUTSIDE permissions, its
+    // wrapModelCall would see the pre-filter request.tools and
+    // instruct the model to call write_plan even on sessions where
+    // permissions had removed it.
+    const chain = composeRuntimeMiddleware({
+      hook: stubMiddleware("hooks"),
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      plan: stubMiddleware("plan"),
+    });
+    const names = chain.map((mw) => mw.name);
+    const permIdx = names.indexOf("permissions");
+    const guardIdx = names.indexOf("exfiltration-guard");
+    const planIdx = names.indexOf("plan");
+    expect(planIdx).toBeGreaterThan(permIdx);
+    expect(planIdx).toBeGreaterThan(guardIdx);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1349,5 +1368,37 @@ describe("buildInheritedMiddlewareForChildren", () => {
       "exfiltration-guard",
       "hooks",
     ]);
+  });
+
+  test("includes planning when provided so inherited write_plan tool works in children", () => {
+    const withPlan = buildInheritedMiddlewareForChildren({
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      hook: stubMiddleware("hooks"),
+      plan: stubMiddleware("plan"),
+    });
+    expect(withPlan.map((mw) => mw.name)).toEqual([
+      "permissions",
+      "exfiltration-guard",
+      "hooks",
+      "plan",
+    ]);
+  });
+
+  test("plan precedes systemPrompt in child chain so precedence matches the parent", () => {
+    // Reviewer R26: in composeRuntimeMiddleware (parent), plan is in
+    // Zone C-bottom BEFORE systemPrompt so the host's system prompt
+    // is the innermost/latest instruction layer. Children must
+    // preserve that ordering so system-instruction precedence does
+    // not drift between parent and delegated runs.
+    const chain = buildInheritedMiddlewareForChildren({
+      permissions: stubMiddleware("permissions"),
+      exfiltrationGuard: stubMiddleware("exfiltration-guard"),
+      hook: stubMiddleware("hooks"),
+      plan: stubMiddleware("plan"),
+      systemPrompt: stubMiddleware("system-prompt"),
+    });
+    const names = chain.map((mw) => mw.name);
+    expect(names.indexOf("plan")).toBeLessThan(names.indexOf("system-prompt"));
   });
 });
