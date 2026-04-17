@@ -83,7 +83,7 @@ import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
-import { formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
+import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
 import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js";
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
@@ -1857,6 +1857,24 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // let: justified — incremented per turn, reset on each boundary shift.
   let postClearTurnCount = 0;
 
+  // #1884: separate from `postClearTurnCount` which is gated on
+  // `rewindBoundaryActive` (only armed on --resume, /clear, /new). A
+  // fresh launch never arms it, so `postClearTurnCount` stays 0 even
+  // after many successful turns — unsuitable for detecting "did any
+  // turn produce a transcript this process". Track that explicitly
+  // here so the post-quit resume hint only suppresses when truly
+  // nothing was written to disk.
+  // let: justified — set on the first settled (non-aborted) turn.
+  let anyTurnPersistedThisProcess = false;
+
+  // #1884: true once the in-app session picker (`onSessionSelect`) has
+  // successfully rebound `tuiSessionId` to an already-persisted session.
+  // That transcript exists on disk independent of startup `--resume` and
+  // of any new turns — its id must still print as a resume hint even
+  // when the user picks it and quits without submitting.
+  // let: justified — set on successful picker rebind.
+  let pickedExistingSession = false;
+
   // The session id the user is currently VIEWING. Starts as
   // `tuiSessionId` (the startup session), gets rotated to the
   // picked session id after a successful `onSessionSelect`, and
@@ -2306,27 +2324,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // that left the session empty. `rewindBoundaryActive`
           // also flips on `--resume`, which must still print a
           // hint for inspection-only opens.
-          const sessionIsEmpty = clearedThisProcess && postClearTurnCount === 0;
-          if (clearPersistFailed) {
-            writeSync(2, "koi tui: session clear did not persist — NOT printing a resume hint.\n");
-          } else if (sessionIsEmpty) {
-            writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
-          } else if (tuiSessionId === viewedSessionId) {
-            // Non-picker (or picker-of-self) case: both ids agree.
-            // Print the single normal hint.
-            writeSync(1, formatResumeHint(tuiSessionId));
-          } else {
-            // Picker mode: `tuiSessionId` is the writable startup
-            // session where any work done this process landed on
-            // disk; `viewedSessionId` is the read-only archive the
-            // user was inspecting when they quit. Print BOTH so
-            // the user can choose — otherwise the hint would
-            // strand one handle. Without this, a user who did
-            // work in the startup session, opened the picker to
-            // inspect an older archive, and quit would only see
-            // the archive id and might conclude their recent
-            // work is lost.
-            writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+          const decision = decideResumeHint({
+            clearPersistFailed,
+            clearedThisProcess,
+            resumedFromFlag: flags.resume !== undefined,
+            pickedExistingSession,
+            postClearTurnCount,
+            anyTurnPersistedThisProcess,
+            tuiSessionId,
+            viewedSessionId,
+          });
+          switch (decision.kind) {
+            case "clear-persist-failed":
+              writeSync(
+                2,
+                "koi tui: session clear did not persist — NOT printing a resume hint.\n",
+              );
+              break;
+            case "cleared-empty":
+              writeSync(2, "koi tui: session was cleared — no resume hint to print.\n");
+              break;
+            case "never-persisted":
+              // #1884: silent — no JSONL on disk, nothing to advertise.
+              break;
+            case "normal":
+              writeSync(1, formatResumeHint(tuiSessionId));
+              break;
+            case "picker":
+              writeSync(1, formatPickerModeResumeHint(tuiSessionId, viewedSessionId));
+              break;
           }
         } catch {
           // stdout may be closed during abnormal teardown — swallow.
@@ -3605,6 +3631,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // rebind above.
           tuiSessionId = targetSid;
           viewedSessionId = targetSid;
+          // #1884: the picked session's JSONL exists on disk — keep its
+          // id resumable via the post-quit hint even if the user quits
+          // without submitting a new turn in this process.
+          pickedExistingSession = true;
           rewindBoundaryActive = true;
           clearedThisProcess = false;
           postClearTurnCount = 0;
@@ -3890,6 +3920,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // (#1753 review round 9).
         if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
           postClearTurnCount += 1;
+        }
+        // #1884: unconditional "this process wrote something" marker.
+        // Set on every settled, uninterrupted turn — not gated on the
+        // rewind boundary — so the post-quit hint suppression knows
+        // whether a JSONL transcript was actually produced.
+        if (drainOutcome === "settled" && !controller.signal.aborted) {
+          anyTurnPersistedThisProcess = true;
         }
 
         // Feed the cost bridge with this turn's token delta.
