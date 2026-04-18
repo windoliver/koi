@@ -117,12 +117,22 @@ describe("prefix", () => {
     expect(prefix([...many, "rm"])).toBe("rm");
   });
 
-  test("documented caveat: per-command global options are NOT stripped", () => {
-    // `git -c key=value push` — the `-c key=value` is a git pre-command option
-    // that we intentionally do not strip (would require per-command flag maps).
-    // Callers who rule `bash:git push` must also rule `bash:git *` or similar
-    // to catch this variant, OR rely on the structural DANGEROUS_PATTERNS.
-    expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("git -c");
+  test("per-command pre-subcommand options are peeled (round 10)", () => {
+    // `git -c key=value push` must resolve to `git push`, not `git -c`,
+    // so deny rules like `deny: bash:git push*` fire correctly.
+    expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("git push");
+    expect(prefix(["git", "-C", "/tmp/repo", "status"])).toBe("git status");
+    expect(prefix(["git", "--no-pager", "log"])).toBe("git log");
+    expect(prefix(["git", "--git-dir", "/tmp/.git", "--no-pager", "push"])).toBe("git push");
+    // docker --context, --host, kubectl --namespace
+    expect(prefix(["docker", "--context=ci", "compose", "up"])).toBe("docker compose up");
+    expect(prefix(["docker", "--host", "unix:///x", "compose", "up"])).toBe("docker compose up");
+    expect(prefix(["kubectl", "-n", "prod", "apply", "-f", "x.yaml"])).toBe("kubectl apply");
+    expect(prefix(["kubectl", "--namespace=prod", "--context", "c1", "get", "pods"])).toBe(
+      "kubectl get",
+    );
+    expect(prefix(["helm", "-n", "prod", "install"])).toBe("helm install");
+    expect(prefix(["npm", "--prefix", "/tmp/app", "run", "build"])).toBe("npm run build");
   });
 
   // ------- stacked-wrapper regression tests (PR review round 3) -------
@@ -485,7 +495,7 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
 
   test("parameter expansion ${VAR} does NOT trigger !complex", () => {
     expect(canonicalPrefix("echo ${HOME}")).toBe("echo");
-    expect(canonicalPrefix("git -C ${REPO} status")).toBe("git -C");
+    expect(canonicalPrefix("git -C ${REPO} status")).toBe("git status");
     expect(canonicalPrefix("bash ${HOME}/script.sh")).toBe("bash");
   });
 

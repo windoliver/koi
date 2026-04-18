@@ -625,6 +625,34 @@ export function createPermissionsMiddleware(
    * command, or unresolvable prefix) so callers can fall back to the
    * plain tool id — matches storage semantics for unenriched grants.
    */
+  /**
+   * Combine the plain-tool decision with the enriched-resource decision.
+   *
+   * Plain-tool explicit rules (deny/ask/allow written directly against
+   * the tool id or a group expansion) take precedence — the operator
+   * wrote them intentionally, and prefix enrichment must not erase
+   * them. Default-deny on the plain side is ignored because it's just
+   * the fall-through behavior when no rule matched; the operator
+   * expressed their policy via the enriched prefix rules instead.
+   */
+  function strictestDecision(
+    plain: PermissionDecision,
+    enriched: PermissionDecision,
+  ): PermissionDecision {
+    // Default-deny on plain: the operator did not write a plain-tool
+    // rule, so defer entirely to the enriched decision.
+    if (plain.effect === "deny" && isDefaultDeny(plain)) return enriched;
+    // Explicit plain deny always wins — operator said "no bash".
+    if (plain.effect === "deny") return plain;
+    // Explicit plain ask beats enriched allow; deny-first on enriched
+    // still wins over plain ask.
+    if (plain.effect === "ask") {
+      return enriched.effect === "deny" ? enriched : plain;
+    }
+    // Plain allows: use the enriched decision (more specific).
+    return enriched;
+  }
+
   function deriveBashKeys(
     toolId: string,
     rawCommand: string,
@@ -643,7 +671,12 @@ export function createPermissionsMiddleware(
     const danger = classifyCommand(trimmed);
     const dangerous = danger.severity === "critical" || danger.severity === "high";
     const hash = computeStringHash(trimmed).slice(0, 16);
-    const policy = p === UNSAFE_PREFIX ? `${toolId}:${UNSAFE_PREFIX}:${hash}` : `${toolId}:${p}`;
+    // POLICY key for `!complex` is stable (no hash) so denial
+    // tracking and soft-deny escalation aggregate across distinct
+    // compound commands. An agent spamming different `bash -c` /
+    // pipeline / redirection variants hits the same bucket and
+    // trips the per-session retry cap predictably.
+    const policy = p === UNSAFE_PREFIX ? `${toolId}:${UNSAFE_PREFIX}` : `${toolId}:${p}`;
     // GRANT key: always includes the hash, and escalates to `!complex`
     // for dangerous forms so an approval for `python -c "print(1)"`
     // does NOT cover a later `python -c "os.system('rm')"`. Same
@@ -1421,7 +1454,18 @@ export function createPermissionsMiddleware(
       const { policy: resource, grant: grantKey } = enrichResource(request.toolId, request.input);
       const query = queryForTool(ctx, resource, request.metadata, resolvedPath);
       const startMs = clock();
-      const decision = await resolveDecision(query, ctx.session.sessionId as string);
+      // Dual-key evaluation: when the enriched resource differs from
+      // the plain tool id, consult the backend for BOTH and take the
+      // stricter decision. Without this, existing rules written
+      // against plain `bash` / `group:runtime` stop applying once
+      // prefix enrichment is enabled — a policy-compatibility hazard.
+      // Deny on either wins; ask on either wins over allow.
+      let decision = await resolveDecision(query, ctx.session.sessionId as string);
+      if (resource !== request.toolId) {
+        const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+        const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
+        decision = strictestDecision(plain, decision);
+      }
       const durationMs = clock() - startMs;
 
       // Non-deny paths: audit + dispatch here. Deny paths handle their own

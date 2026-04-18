@@ -97,6 +97,91 @@ const WRAPPER_SPECS: Readonly<Record<string, WrapperSpec>> = {
  */
 const FLAGLESS_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "nohup"]);
 
+/**
+ * Per-command pre-subcommand options for high-value CLIs. Without
+ * these, a form like `git -c key=value push` produces prefix
+ * `git -c` and bypasses deny rules on `bash:git push*`. After peeling
+ * these known options, the real subcommand (`push`) surfaces and the
+ * ARITY lookup produces the correct permission key.
+ */
+const COMMAND_PRE_OPTIONS: Readonly<Record<string, WrapperSpec>> = {
+  git: {
+    argFlags: new Set([
+      "-c",
+      "-C",
+      "--git-dir",
+      "--work-tree",
+      "--exec-path",
+      "--namespace",
+      "--config-env",
+      "--super-prefix",
+      "--list-cmds",
+    ]),
+    boolFlags: new Set([
+      "--version",
+      "--help",
+      "--no-pager",
+      "--bare",
+      "--html-path",
+      "--man-path",
+      "--info-path",
+      "--paginate",
+      "-p",
+      "--no-replace-objects",
+      "--no-optional-locks",
+    ]),
+  },
+  docker: {
+    argFlags: new Set([
+      "--context",
+      "--host",
+      "-H",
+      "--config",
+      "--log-level",
+      "-l",
+      "--tlscacert",
+      "--tlscert",
+      "--tlskey",
+    ]),
+    boolFlags: new Set(["--debug", "-D", "--tls", "--tlsverify", "--help", "--version", "-v"]),
+  },
+  kubectl: {
+    argFlags: new Set([
+      "--namespace",
+      "-n",
+      "--context",
+      "--kubeconfig",
+      "--cluster",
+      "--user",
+      "--server",
+      "-s",
+      "--token",
+      "--as",
+      "--as-group",
+      "--log-file",
+      "-v",
+    ]),
+    boolFlags: new Set(["--help", "-h", "--insecure-skip-tls-verify", "--disable-compression"]),
+  },
+  helm: {
+    argFlags: new Set([
+      "--namespace",
+      "-n",
+      "--kubeconfig",
+      "--kube-context",
+      "--registry-config",
+      "--repository-cache",
+      "--repository-config",
+    ]),
+    boolFlags: new Set(["--help", "--debug", "--version"]),
+  },
+  npm: {
+    // npm's `--prefix PATH`, `--userconfig FILE`, etc. come before the subcommand.
+    argFlags: new Set(["--prefix", "--userconfig", "--globalconfig", "--registry", "-C"]),
+    boolFlags: new Set(["--help", "--version", "-v", "--silent", "-g", "--global"]),
+  },
+};
+
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
@@ -594,11 +679,31 @@ export function prefix(tokens: readonly string[]): string {
   // path stays visible in the output so a rule for the trusted binary
   // doesn't leak to the untrusted path.
   const firstKey = basenameLoose(first);
+
+  // Peel per-command global options (git -c, docker --context, etc.)
+  // so `git -c protocol.version=2 push` resolves to `git push`, not
+  // `git -c`. Without this, deny-first rules like
+  // `deny: bash:git push*` are bypassable with a legal global option.
+  const preSpec = COMMAND_PRE_OPTIONS[firstKey];
+  let optsEnd = 1;
+  if (preSpec !== undefined) {
+    const afterOpts = peelWrapperOptions(normalized, 1, preSpec);
+    // Unknown pre-option: don't peel (fail-closed at policy layer —
+    // the unknown flag becomes the prefix token, surfacing the weird
+    // form to operators who can add a specific rule).
+    if (afterOpts >= 0) optsEnd = afterOpts;
+  }
+
+  // If pre-options consumed tokens, reconstruct a view with the
+  // command-name head + post-options tail so the ARITY lookup and
+  // multi-token key matching work as if the pre-options weren't there.
+  const view = optsEnd > 1 ? [first, ...normalized.slice(optsEnd)] : normalized;
+
   let bestArity = ARITY[firstKey] ?? 1;
 
   // Look for longer multi-token keys (e.g. `npm run`, `docker compose`).
-  for (let keyLen = 2; keyLen <= normalized.length; keyLen++) {
-    const segment = normalized.slice(0, keyLen);
+  for (let keyLen = 2; keyLen <= view.length; keyLen++) {
+    const segment = view.slice(0, keyLen);
     const head = segment[0] ?? "";
     const rest = segment.slice(1);
     const candidate = [basenameLoose(head), ...rest].join(" ");
@@ -608,6 +713,6 @@ export function prefix(tokens: readonly string[]): string {
     }
   }
 
-  const take = Math.min(bestArity, normalized.length);
-  return normalized.slice(0, take).join(" ");
+  const take = Math.min(bestArity, view.length);
+  return view.slice(0, take).join(" ");
 }
