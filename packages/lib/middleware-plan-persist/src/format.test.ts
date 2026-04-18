@@ -29,8 +29,8 @@ describe("generatePlanMarkdown", () => {
     expect(generatePlanMarkdown(items, META)).toBe(
       [
         "---",
-        "generated: 2026-04-17T10:23:00.000Z",
-        "sessionId: sess-1",
+        `generated: "2026-04-17T10:23:00.000Z"`,
+        `sessionId: "sess-1"`,
         "epoch: 1",
         "turnIndex: 7",
         "---",
@@ -58,6 +58,33 @@ describe("generatePlanMarkdown", () => {
     const md = generatePlanMarkdown([], META);
     expect(md).toContain("# Plan\n");
     expect(md).not.toContain("- [");
+  });
+
+  test("sessionId containing newline / triple-dash / quote does NOT corrupt frontmatter structure", () => {
+    // Opaque sessionId crafted to break a naive raw-interpolated
+    // frontmatter line. JSON-encoding turns these into safe escape
+    // sequences that survive round-trip without terminating the block.
+    const malicious = {
+      ...META,
+      sessionId: 'evil\n---\n# Hijacked\n- [ ] injected\n"quoted"',
+    };
+    const md = generatePlanMarkdown([{ content: "real", status: "pending" }], malicious);
+
+    // Frontmatter delimiters must still appear exactly once each
+    // (opening and closing), proving the sessionId did not terminate
+    // the block early. Newlines inside JSON string escapes are `\n`
+    // sequences, not real newlines, so the line scan stays correct.
+    const lines = md.split("\n");
+    const dashLineIndices = lines.map((l, i) => (l === "---" ? i : -1)).filter((i) => i >= 0);
+    expect(dashLineIndices.length).toBe(2);
+
+    // Round-trip — the parsed body must contain only the real item,
+    // not the attempted injection from the malicious sessionId.
+    const parsed = parsePlanMarkdown(md);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.items).toEqual([{ content: "real", status: "pending" }]);
+    }
   });
 });
 

@@ -255,7 +255,7 @@ describe("savePlan", () => {
     if (result.ok) {
       expect(result.path).toBe(join(BASE, "20260417-102300-auth-refactor.md"));
       const content = state.files.get(result.path) ?? "";
-      expect(content).toContain("sessionId: sess-1");
+      expect(content).toContain(`sessionId: "sess-1"`);
       expect(content).toContain("epoch: 2");
       expect(content).toContain("turnIndex: 5");
       expect(content).toContain("- [ ] Audit auth code");
@@ -730,6 +730,24 @@ describe("loadPlan", () => {
     const result = await backend.loadPlan(join(BASE, "missing.md"));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("file not found");
+  });
+
+  test("rejects loads from the active-journal directory (cross-session disclosure guard)", async () => {
+    const { fs, state } = createMemFs();
+    const backend = createPlanPersistBackend({ cwd: CWD, fs });
+
+    // Seed a journal under _active/ for some sessionId.
+    await backend.onPlanUpdate(SAMPLE_PLAN, ctx("sess-secret"));
+    const journalPath = [...state.files.keys()].find((k) => k.includes(`/_active/`));
+    expect(journalPath).toBeDefined();
+    if (!journalPath) return;
+
+    // A different session (or any caller) tries to read it via plan_load.
+    const result = await backend.loadPlan(journalPath);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("active journal not loadable");
+    }
   });
 
   test("returns invalid-format for a malformed file", async () => {

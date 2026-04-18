@@ -56,10 +56,20 @@ function escapePlanItem(raw: string): string {
 }
 
 export function generatePlanMarkdown(items: readonly PlanItem[], meta: PlanFileMetadata): string {
+  // sessionId is documented as opaque + unconstrained — a raw value
+  // containing `\n`, `---`, or other line-oriented frontmatter
+  // delimiters would corrupt the file structure (`restoreFromJournal`
+  // and `loadPlan` would either parse the wrong items or reject the
+  // file as `corrupt`). Encode every untrusted-shape value through
+  // JSON.stringify so embedded control characters survive a round-trip
+  // as escape sequences instead of breaking the frontmatter block.
+  // `generated` is package-controlled (ISO string) but we encode it
+  // for consistency. `epoch` and `turnIndex` are numbers and safe by
+  // construction.
   const frontmatter = [
     "---",
-    `generated: ${meta.generated}`,
-    `sessionId: ${meta.sessionId}`,
+    `generated: ${JSON.stringify(meta.generated)}`,
+    `sessionId: ${JSON.stringify(meta.sessionId)}`,
     `epoch: ${String(meta.epoch)}`,
     `turnIndex: ${String(meta.turnIndex)}`,
     "---",

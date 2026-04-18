@@ -26,7 +26,7 @@
 
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { KoiRuntimeError } from "@koi/errors";
 import {
   DEFAULT_BASE_DIR,
@@ -309,6 +309,23 @@ export function createPlanPersistBackend(config?: PlanPersistConfig): PlanPersis
     const baseDirReal = await ensureBaseDirReal();
     const safe = await resolveSafePath(path, baseDir, baseDirReal, cwd, fs);
     if (!safe.ok) return safe;
+    // Refuse to load active-journal files through the model-callable
+    // path. Journals are per-session ownership state keyed by
+    // sha256(sessionId); leaking another session's journal would
+    // bypass the package's session-isolation contract. Hosts that
+    // legitimately need the active journal call `restoreFromJournal`
+    // directly, which requires the sessionId at the API boundary.
+    // Named checkpoints (top-level <ts>-<slug>.md) remain loadable —
+    // those are explicitly designed for cross-session reuse per the
+    // issue spec ("plans should survive restarts, be git-diffable,
+    // editable by the user").
+    const journalDirReal = await fs.realpath(journalDir).catch(() => journalDir);
+    if (safe.path === journalDirReal || safe.path.startsWith(journalDirReal + sep)) {
+      return {
+        ok: false,
+        error: "active journal not loadable via plan_load — use restoreFromJournal",
+      };
+    }
     let source: string;
     try {
       source = await fs.readFile(safe.path, "utf8");

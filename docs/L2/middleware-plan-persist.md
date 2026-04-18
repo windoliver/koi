@@ -177,22 +177,31 @@ collisions return `{ error: "filename collision" }`.
 
 | | |
 |-|-|
-| **Input** | `{ path: string }` — absolute or relative to `cwd`; must resolve under `baseDir`. |
+| **Input** | `{ path: string }` — absolute or relative to `cwd`; must resolve under `baseDir` AND must NOT be under `<baseDir>/_active/`. |
 | **Output** | `{ path: string, items: PlanItem[] }` |
 | **Behavior** | Reads and parses the markdown plan file. The model is prompted in the tool result to call `write_plan` with the returned items to hydrate session state. |
-| **Errors** | `{ error: "path outside baseDir" }`, `{ error: "file not found" }`, `{ error: "invalid plan format" }`. |
+| **Errors** | `{ error: "path outside baseDir" }`, `{ error: "active journal not loadable via plan_load — use restoreFromJournal" }`, `{ error: "file not found" }`, `{ error: "invalid plan format: ..." }`. |
 
 `plan_load` is intentionally a read-only operation. It does NOT call
 `write_plan` itself — the planning middleware owns the canonical
 in-memory state, and routing through `write_plan` keeps the
 hook-then-commit invariant intact.
 
+**Active-journal isolation.** Files under `<baseDir>/_active/` are
+per-session ownership state keyed by `sha256(sessionId)` and are NOT
+loadable through `plan_load` — that would let one session disclose
+another's journal. Hosts that legitimately need the active journal
+call `bundle.restoreFromJournal(sessionId)` directly, which requires
+the sessionId at the API boundary. Top-level named checkpoints
+(`<ts>-<slug>.md`) remain freely loadable per the issue's
+"git-diffable cross-session reuse" requirement.
+
 ## File format
 
 ```markdown
 ---
-generated: 2026-04-17T10:23:00.000Z
-sessionId: <branded session id>
+generated: "2026-04-17T10:23:00.000Z"
+sessionId: "<opaque session id>"
 epoch: 1
 turnIndex: 7
 ---
@@ -202,6 +211,13 @@ turnIndex: 7
 - [in_progress] Design new session model
 - [x] Migrate existing sessions
 ```
+
+String-typed frontmatter values (`generated`, `sessionId`) are written
+as JSON-quoted strings so opaque session ids containing newlines, the
+`---` delimiter, or other line-oriented markup cannot terminate the
+frontmatter early or inject plan items into the parsed body. Numeric
+fields (`epoch`, `turnIndex`) are written bare — they are produced by
+the middleware itself and are safe by construction.
 
 Status mapping:
 
