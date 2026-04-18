@@ -34,6 +34,22 @@ export interface UrlSafetyOptions {
   readonly allowlistHosts?: readonly string[];
   readonly allowedProtocols?: readonly string[];
   readonly dnsResolver?: DnsResolver;
+  /**
+   * When `true`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
+   * A or AAAA is fatal — the full authoritative set must be observed.
+   * Closes the "attacker-hostname with public A + private AAAA where
+   * AAAA times out during validation but succeeds at connect time" vector
+   * at the cost of rejecting hostnames under flaky IPv6 DNS.
+   *
+   * Default: `false` (availability-friendly). A single successful family
+   * is accepted; the other family's transient failure is treated as
+   * "no records of this family". Only the fully-failed case (both
+   * families error) fails closed.
+   *
+   * Set to `true` for high-assurance deployments where SSRF is a higher
+   * priority than IPv6-DNS resilience.
+   */
+  readonly requireFullDnsCoverage?: boolean;
 }
 
 export type SafeUrlResult =
@@ -46,38 +62,53 @@ const DEFAULT_PROTOCOLS: readonly string[] = ["http:", "https:"];
 // undermines the "every A/AAAA" assumption the rebinding defence relies on.
 // Query both record families directly via dns.resolve4 / dns.resolve6.
 //
-// Partial-failure handling: a real resolver error (TIMEOUT, SERVFAIL, etc.)
-// on EITHER family fails the whole lookup. If resolve4 succeeded but
-// resolve6 timed out, an attacker hostname with a public A and a private
-// AAAA would otherwise slip through — we'd never see the AAAA record but
-// the actual fetch-time resolution still could. Only the "no records of
-// this family" condition (ENODATA / ENOTFOUND) is treated as benign.
+// Failure policy is factored out as a closure so requireFullDnsCoverage can
+// switch between strict (any real error is fatal) and availability-friendly
+// (a single successful family is enough) without changing the resolve flow.
 const BENIGN_NO_RECORD_CODES: ReadonlySet<string> = new Set(["ENODATA", "ENOTFOUND"]);
+
+interface FamilyResult {
+  readonly addresses: readonly string[];
+  readonly error: unknown;
+}
 
 async function resolveFamily(
   fn: (h: string) => Promise<string[]>,
   hostname: string,
-): Promise<string[]> {
+): Promise<FamilyResult> {
   try {
-    return await fn(hostname);
+    return { addresses: await fn(hostname), error: undefined };
   } catch (e: unknown) {
     const code = (e as { code?: unknown }).code;
-    if (typeof code === "string" && BENIGN_NO_RECORD_CODES.has(code)) return [];
-    throw e;
+    if (typeof code === "string" && BENIGN_NO_RECORD_CODES.has(code)) {
+      return { addresses: [], error: undefined };
+    }
+    return { addresses: [], error: e };
   }
 }
 
-const defaultDnsResolver: DnsResolver = async (hostname) => {
-  // IP literals short-circuit — resolve4/6 reject literals with ENOTFOUND.
-  if (isIP(hostname) !== 0) return [hostname];
+function buildDefaultResolver(strict: boolean): DnsResolver {
+  return async (hostname) => {
+    if (isIP(hostname) !== 0) return [hostname];
+    const [v4, v6] = await Promise.all([
+      resolveFamily(dns.resolve4, hostname),
+      resolveFamily(dns.resolve6, hostname),
+    ]);
+    // Strict mode: any real resolver error (not just no-records) is fatal.
+    if (strict) {
+      if (v4.error !== undefined) throw v4.error;
+      if (v6.error !== undefined) throw v6.error;
+    } else if (v4.error !== undefined && v6.error !== undefined) {
+      // Lenient mode: fail only when BOTH families errored. A single-family
+      // success is trusted; flaky IPv6 DNS doesn't block healthy IPv4 hosts.
+      throw v4.error;
+    }
+    return [...new Set([...v4.addresses, ...v6.addresses])];
+  };
+}
 
-  const [v4, v6] = await Promise.all([
-    resolveFamily(dns.resolve4, hostname),
-    resolveFamily(dns.resolve6, hostname),
-  ]);
-  // Dedupe while preserving first-seen order.
-  return [...new Set([...v4, ...v6])];
-};
+const defaultDnsResolverLenient = buildDefaultResolver(false);
+const defaultDnsResolverStrict = buildDefaultResolver(true);
 
 function isIpLiteral(hostname: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return true;
@@ -126,7 +157,9 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
   }
 
-  const resolver = options?.dnsResolver ?? defaultDnsResolver;
+  const resolver =
+    options?.dnsResolver ??
+    (options?.requireFullDnsCoverage ? defaultDnsResolverStrict : defaultDnsResolverLenient);
   let addresses: readonly string[];
   try {
     addresses = await resolver(bareHost);
