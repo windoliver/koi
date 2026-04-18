@@ -139,6 +139,52 @@ describe("registerDynamicClient", () => {
     expect(info).toBeUndefined();
   });
 
+  test("rejects registrations whose returned redirect_uris do not include ours", async () => {
+    // RFC 7591 §3.2.1: when the AS echoes redirect_uris, it advertises
+    // the URIs it actually accepted. If our requested callback was
+    // narrowed/rewritten away, persisting the registration would create
+    // a sticky failure on the next authorization with invalid_redirect_uri.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            client_id: "rewritten",
+            redirect_uris: ["http://127.0.0.1:7777/callback"],
+          }),
+          { status: 201 },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info).toBeUndefined();
+  });
+
+  test("accepts registrations whose returned redirect_uris include ours", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            client_id: "ok",
+            redirect_uris: ["http://127.0.0.1:8912/callback", "http://127.0.0.1:7777/callback"],
+          }),
+          { status: 201 },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info?.clientId).toBe("ok");
+  });
+
   test("returns undefined when fetch throws", async () => {
     globalThis.fetch = mock(() => Promise.reject(new Error("network"))) as unknown as typeof fetch;
 

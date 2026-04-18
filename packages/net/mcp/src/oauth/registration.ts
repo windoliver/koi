@@ -68,6 +68,7 @@ export async function registerDynamicClient(
       readonly client_id?: unknown;
       readonly client_secret?: unknown;
       readonly token_endpoint_auth_method?: unknown;
+      readonly redirect_uris?: unknown;
     };
 
     if (typeof data.client_id !== "string" || data.client_id.length === 0) {
@@ -87,6 +88,20 @@ export async function registerDynamicClient(
         data.token_endpoint_auth_method !== "none")
     ) {
       return undefined;
+    }
+
+    // Validate the AS's accepted redirect URI contract. RFC 7591 §3.2.1
+    // SHOULDs servers to echo metadata they actually accepted; when the
+    // response includes `redirect_uris`, our requested URI MUST appear in
+    // it — otherwise the AS narrowed/rewrote our callback and the next
+    // authorization will fail with invalid_redirect_uri. Persisting that
+    // registration would create a sticky failure across sessions.
+    // When the field is absent we trust the request was accepted as-is.
+    if (Array.isArray(data.redirect_uris)) {
+      const accepted = data.redirect_uris.filter((u): u is string => typeof u === "string");
+      if (!accepted.includes(redirectUri)) {
+        return undefined;
+      }
     }
 
     return {

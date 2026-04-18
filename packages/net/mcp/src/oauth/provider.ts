@@ -155,6 +155,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     return getTokenManager().then((tm) => tm.getAccessToken() as Promise<string>);
   };
 
+  /**
+   * Drop both the in-memory cache and the persisted record for a
+   * dynamically-registered client so the next auth attempt re-runs DCR.
+   * Used when the AS rejects the client during token exchange — left
+   * unhandled, the bad client_id would survive `koi mcp logout` (which
+   * deliberately keeps client-info) and trap the operator in a loop.
+   */
+  const invalidateRegisteredClient = async (): Promise<void> => {
+    cachedClient = undefined;
+    tokenManager = undefined;
+    await storage.delete(computeClientKey(serverName, serverUrl));
+  };
+
   // --- Interactive auth flow ---
   const startAuthFlow = async (): Promise<boolean> => {
     const metadata = await getMetadata();
@@ -203,7 +216,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       resourceIndicator,
     );
 
-    if (tokens === undefined) return false;
+    if (tokens === undefined) {
+      // Token exchange failed. If we used a dynamically-registered client
+      // (registeredAt > 0), the AS may have revoked or lost it — there is
+      // no normal recovery path because logout deliberately keeps the
+      // client-info key. Drop the cached/persisted DCR client so the next
+      // `koi mcp auth` re-registers from scratch instead of repeating the
+      // failure with the same dead client_id.
+      if (client.registeredAt > 0) {
+        await invalidateRegisteredClient();
+      }
+      return false;
+    }
 
     // Store tokens
     const tm = await getTokenManager();

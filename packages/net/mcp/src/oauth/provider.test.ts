@@ -660,6 +660,106 @@ describe("createOAuthAuthProvider", () => {
     expect(parsed.redirectUri).toBe("http://127.0.0.1:9999/callback");
   });
 
+  test("invalidates persisted DCR client when token exchange fails", async () => {
+    // Recovery from a server-side client revocation: if exchangeCode
+    // returns no tokens, the DCR record could still be wired to a
+    // dead client_id. logout deliberately keeps client-info, so the
+    // bad registration would otherwise survive across `koi mcp auth`
+    // attempts. The provider must drop it on terminal exchange failure.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    const clientKey = computeClientKey("revoked", "https://mcp.example.com");
+    await storage.set(
+      clientKey,
+      JSON.stringify({
+        clientId: "dead-client",
+        registeredAt: 1700000000,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+        redirectUri: "http://127.0.0.1:8912/callback",
+      }),
+    );
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "revoked",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(false);
+    // DCR record should be cleared so the next attempt re-registers.
+    expect(await storage.get(clientKey)).toBeUndefined();
+  });
+
+  test("preserves configured (non-DCR) clientId on token exchange failure", async () => {
+    // The persisted-client invalidation only fires for
+    // dynamically-registered clients (registeredAt > 0). A statically
+    // configured clientId is operator-managed; we must not silently
+    // mutate storage on its behalf.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    const clientKey = computeClientKey("static", "https://mcp.example.com");
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(new Response("nope", { status: 400 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "static",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "configured",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(false);
+    // We never persisted anything for the static path — and we must
+    // not have attempted a delete that could surface as a side effect.
+    expect(await storage.get(clientKey)).toBeUndefined();
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",
