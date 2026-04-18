@@ -1105,6 +1105,58 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(2);
   });
 
+  test("failed noCache restore does not overwrite a newer concurrent cache write", async () => {
+    // Regression for #1903 review round 6: if a concurrent default reader
+    // populates the cache with fresh content while a `noCache` refresh is
+    // in flight, and the refresh then fails, the snapshot must NOT be
+    // restored on top — that would resurrect stale content over a newer
+    // live response.
+    let callCount = 0;
+    let signalRefreshStarted: (() => void) | undefined;
+    let releaseRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    const refreshHeld = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("old", { status: 200 });
+      if (callCount === 2) {
+        // This is the `noCache` refresh. Let the concurrent writer run,
+        // then throw so the restore path fires.
+        signalRefreshStarted?.();
+        await refreshHeld;
+        throw new Error("network down");
+      }
+      // Concurrent default reader — succeeds with "new".
+      return new Response("new", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // primes "old"
+
+    const refreshP = executor.fetch("https://example.com", { noCache: true });
+    await refreshStarted;
+    // Concurrent default reader wins the race and populates "new".
+    const concurrent = await executor.fetch("https://example.com");
+    if (concurrent.ok) expect(concurrent.value.body).toBe("new");
+
+    releaseRefresh?.();
+    const forced = await refreshP;
+    expect(forced.ok).toBe(false);
+
+    // The cache must still hold "new" — the failing refresh must not
+    // have restored the stale "old" on top.
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("new");
+      expect(followUp.value.cached).toBe(true);
+    }
+  });
+
   test("failed noCache restore preserves original expiry (no TTL extension loop)", async () => {
     // Regression for #1903 review round 5: a nearly-expired entry must
     // not be kept alive by repeated failed refresh attempts. Restore the

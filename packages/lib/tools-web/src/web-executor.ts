@@ -223,6 +223,12 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
       const restoreSavedOnFailure = (): void => {
         if (savedValue === undefined || fetchCache === undefined) return;
+        // Fence against concurrent writers: if another request repopulated
+        // the key (default reader missed cache and fetched origin, or a
+        // peer `noCache` refresh won the race), keep their value. Restoring
+        // our snapshot on top would resurrect stale content over a newer
+        // live response.
+        if (fetchCache.getEntry(cacheKey) !== undefined) return;
         const remaining = savedExpiresAt - Date.now();
         // Negative remaining = entry expired while the refresh was in
         // flight. Do not resurrect it; leave the key empty.
