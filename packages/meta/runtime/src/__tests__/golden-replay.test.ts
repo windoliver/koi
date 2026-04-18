@@ -946,6 +946,55 @@ describe("Golden: @koi/middleware-plan-persist", () => {
       await rm(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  test("trajectory fixture proves plan + plan-persist composed end-to-end and the saved checkpoint reached the model", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/plan-persist-flow.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("plan-persist-flow");
+
+    // Both middlewares wired and BOTH intercept their target tool (planning
+    // owns koi_plan_write, plan-persist owns koi_plan_save), so each must
+    // fire at least one wrapToolCall span where nextCalled is false — the
+    // signal that the middleware handled the call itself instead of
+    // delegating downstream. wrapModelStream spans pass through (nextCalled
+    // true) because neither MW short-circuits the model loop.
+    const planToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    const persistToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan-persist" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    expect(planToolSpans.length).toBeGreaterThan(0);
+    expect(persistToolSpans.length).toBeGreaterThan(0);
+    expect(planToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+    expect(persistToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+
+    // The save tool's path response must reach the model. The trajectory's
+    // final agent observation contains the absolute path returned by
+    // koi_plan_save — proves: write_plan committed → onPlanUpdate fired →
+    // mirror populated → koi_plan_save read mirror → wrote checkpoint →
+    // path was surfaced back to the LLM in the next turn.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
+  });
 });
 
 // ---------------------------------------------------------------------------
