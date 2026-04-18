@@ -148,7 +148,7 @@ describe("createWebFetchTool", () => {
 
   describe("noCache flag", () => {
     test("forwards noCache=true to the executor", async () => {
-      let captured: { noCache?: boolean } | undefined;
+      let captured: { readonly noCache: boolean | undefined } | undefined;
       const executor: WebExecutor = {
         fetch: async (_url, options) => {
           captured = { noCache: options?.noCache };
@@ -165,7 +165,7 @@ describe("createWebFetchTool", () => {
     });
 
     test("omits noCache when caller does not set it (executor default applies)", async () => {
-      let captured: { noCache?: boolean } | undefined;
+      let captured: { readonly noCache: boolean | undefined } | undefined;
       const executor: WebExecutor = {
         fetch: async (_url, options) => {
           captured = { noCache: options?.noCache };
