@@ -267,3 +267,130 @@ describe("parseStartFlags — --until-pass / --max-iter (#1624)", () => {
     expect(withFlag.allowSideEffects).toBe(true);
   });
 });
+
+describe("parseStartFlags — headless mode", () => {
+  test("--headless without --prompt rejects with clear message", () => {
+    expect(() => parseStartFlags(["--headless"])).toThrow(/--headless requires --prompt/);
+  });
+
+  test("--headless --prompt X parses", () => {
+    const f = parseStartFlags(["--headless", "--prompt", "do X"]);
+    expect(f.headless).toBe(true);
+    expect(f.mode).toEqual({ kind: "prompt", text: "do X" });
+  });
+
+  test("--allow-tool requires --headless", () => {
+    expect(() => parseStartFlags(["--allow-tool", "Bash"])).toThrow(
+      /--allow-tool requires --headless/,
+    );
+  });
+
+  test("--allow-tool repeatable under --headless", () => {
+    const f = parseStartFlags([
+      "--headless",
+      "--prompt",
+      "x",
+      "--allow-tool",
+      "Bash",
+      "--allow-tool",
+      "WebFetch",
+    ]);
+    expect(f.allowTools).toEqual(["Bash", "WebFetch"]);
+  });
+
+  test("--max-duration-ms parses positive int", () => {
+    const f = parseStartFlags(["--headless", "--prompt", "x", "--max-duration-ms", "5000"]);
+    expect(f.maxDurationMs).toBe(5000);
+  });
+
+  test("--max-duration-ms rejects zero", () => {
+    expect(() =>
+      parseStartFlags(["--headless", "--prompt", "x", "--max-duration-ms", "0"]),
+    ).toThrow(/positive integer/);
+  });
+
+  test("--max-duration-ms rejects non-numeric", () => {
+    expect(() =>
+      parseStartFlags(["--headless", "--prompt", "x", "--max-duration-ms", "abc"]),
+    ).toThrow(/positive integer/);
+  });
+
+  test("--max-duration-ms requires --headless", () => {
+    expect(() => parseStartFlags(["--max-duration-ms", "1000"])).toThrow(
+      /--max-duration-ms requires --headless/,
+    );
+  });
+
+  test("--headless defaults: allowTools=[], maxDurationMs=undefined", () => {
+    const f = parseStartFlags(["--headless", "--prompt", "x"]);
+    expect(f.allowTools).toEqual([]);
+    expect(f.maxDurationMs).toBeUndefined();
+  });
+
+  test("--headless + --until-pass rejected", () => {
+    expect(() =>
+      parseStartFlags([
+        "--headless",
+        "--prompt",
+        "x",
+        "--until-pass",
+        "bun",
+        "--allow-side-effects",
+      ]),
+    ).toThrow(/--headless cannot be combined with --until-pass/);
+  });
+
+  test("--headless + --resume rejected (resumed banners would pollute NDJSON)", () => {
+    expect(() => parseStartFlags(["--headless", "--prompt", "x", "--resume", "ses_abc"])).toThrow(
+      /--headless cannot be combined with --resume/,
+    );
+  });
+
+  test("--allow-tool rejects wildcard '*' (would re-enable auto-allow)", () => {
+    expect(() => parseStartFlags(["--headless", "--prompt", "x", "--allow-tool", "*"])).toThrow(
+      /exact tool IDs/,
+    );
+  });
+
+  test("--allow-tool rejects 'group:' prefix", () => {
+    expect(() =>
+      parseStartFlags(["--headless", "--prompt", "x", "--allow-tool", "group:runtime"]),
+    ).toThrow(/exact tool IDs/);
+  });
+
+  test("--allow-tool rejects glob suffix 'fs_*'", () => {
+    expect(() => parseStartFlags(["--headless", "--prompt", "x", "--allow-tool", "fs_*"])).toThrow(
+      /exact tool IDs/,
+    );
+  });
+
+  test("--allow-tool accepts MCP-namespaced IDs (slash)", () => {
+    const f = parseStartFlags(["--headless", "--prompt", "x", "--allow-tool", "mcp/server/tool"]);
+    expect(f.allowTools).toEqual(["mcp/server/tool"]);
+  });
+
+  test("--max-duration-ms rejects values above Node's setTimeout ceiling", () => {
+    expect(() =>
+      parseStartFlags(["--headless", "--prompt", "x", "--max-duration-ms", "3000000000"]),
+    ).toThrow(/Node setTimeout cannot handle larger values|must be ≤/);
+  });
+
+  test("--max-duration-ms accepts the ceiling value exactly (ceiling leaves room for shutdown grace)", () => {
+    // Ceiling is MAX_TIMER_MS - SHUTDOWN_GRACE_MS so the backstop timer
+    // (maxDurationMs + grace) does not overflow Node's setTimeout.
+    const ceiling = 2 ** 31 - 1 - 10_000;
+    const f = parseStartFlags([
+      "--headless",
+      "--prompt",
+      "x",
+      "--max-duration-ms",
+      String(ceiling),
+    ]);
+    expect(f.maxDurationMs).toBe(ceiling);
+
+    // One over should reject.
+    expect(() =>
+      parseStartFlags(["--headless", "--prompt", "x", "--max-duration-ms", String(ceiling + 1)]),
+    ).toThrow(/leaves|must be ≤/);
+  });
+});

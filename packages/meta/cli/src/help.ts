@@ -47,6 +47,14 @@ Options:
       --verifier-timeout <ms>      Per-iteration verifier timeout (default 120000)
       --allow-side-effects         Required with --until-pass (trust-boundary opt-in)
       --verifier-inherit-env       Forward parent env to verifier subprocess
+      --headless                   CI/CD mode: NDJSON stdout, auto-deny ask perms
+                                     exit 0=ok 1=agent-fail 2=perm-denied
+                                     3=budget 4=timeout 5=internal. Requires --prompt.
+      --allow-tool <name>          Whitelist a tool for auto-allow in --headless (repeatable)
+      --max-duration-ms <n>        Run deadline in ms + 10s teardown grace (--headless only).
+                                     Hard timeout: calls process.exit on expiry, so in-process
+                                     embedders should invoke via subprocess if they need to
+                                     survive the deadline.
   -h, --help                       Show this help
 `;
 
