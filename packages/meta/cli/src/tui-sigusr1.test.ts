@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { constants as osConstants } from "node:os";
 import {
   createSigusr1Handler,
   generateTuiStartupHint,
+  removeStoredEarlySigusr1Handler,
   SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
@@ -69,6 +70,81 @@ describe("generateTuiStartupHint", () => {
 
   test("is pure — same pid yields same output", () => {
     expect(generateTuiStartupHint(42)).toBe(generateTuiStartupHint(42));
+  });
+});
+
+describe("removeStoredEarlySigusr1Handler", () => {
+  const EARLY_KEY = Symbol.for("koi:tui:sigusr1:early-handler");
+  type Holder = Record<symbol, unknown>;
+
+  // Always clean up after each test: remove any SIGUSR1 listener added
+  // by the test and clear the globalThis stash.
+  afterEach(() => {
+    const holder = globalThis as Holder;
+    const fn = holder[EARLY_KEY];
+    if (typeof fn === "function") {
+      process.removeListener("SIGUSR1", fn as () => void);
+    }
+    delete holder[EARLY_KEY];
+  });
+
+  test("is a no-op when no early handler has been stored", () => {
+    const before = process.listenerCount("SIGUSR1");
+    expect(() => removeStoredEarlySigusr1Handler()).not.toThrow();
+    expect(process.listenerCount("SIGUSR1")).toBe(before);
+  });
+
+  test.skipIf(!SIGUSR1_SUPPORTED)(
+    "removes the specific stored listener and clears the stash",
+    () => {
+      const holder = globalThis as Holder;
+      const baseline = process.listenerCount("SIGUSR1");
+      const earlyFn = (): void => {};
+      holder[EARLY_KEY] = earlyFn;
+      process.on("SIGUSR1", earlyFn);
+      expect(process.listenerCount("SIGUSR1")).toBe(baseline + 1);
+
+      removeStoredEarlySigusr1Handler();
+
+      expect(process.listenerCount("SIGUSR1")).toBe(baseline);
+      expect(holder[EARLY_KEY]).toBeUndefined();
+    },
+  );
+
+  test.skipIf(!SIGUSR1_SUPPORTED)(
+    "preserves unrelated SIGUSR1 listeners owned by embedding hosts (#1906 R6)",
+    () => {
+      const holder = globalThis as Holder;
+      const baseline = process.listenerCount("SIGUSR1");
+
+      // Simulate a host listener installed before the TUI boots.
+      const hostListener = (): void => {};
+      process.on("SIGUSR1", hostListener);
+
+      // Simulate bin.ts's inline early handler.
+      const earlyFn = (): void => {};
+      holder[EARLY_KEY] = earlyFn;
+      process.on("SIGUSR1", earlyFn);
+
+      expect(process.listenerCount("SIGUSR1")).toBe(baseline + 2);
+
+      removeStoredEarlySigusr1Handler();
+
+      // Host listener must still be attached.
+      expect(process.listenerCount("SIGUSR1")).toBe(baseline + 1);
+      expect(process.listeners("SIGUSR1")).toContain(hostListener);
+
+      // Cleanup: remove the host listener so the test doesn't leak.
+      process.removeListener("SIGUSR1", hostListener);
+    },
+  );
+
+  test("ignores non-function values in the stash (defensive)", () => {
+    const holder = globalThis as Holder;
+    holder[EARLY_KEY] = { not: "a function" };
+    const before = process.listenerCount("SIGUSR1");
+    expect(() => removeStoredEarlySigusr1Handler()).not.toThrow();
+    expect(process.listenerCount("SIGUSR1")).toBe(before);
   });
 });
 

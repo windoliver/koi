@@ -94,7 +94,12 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
-import { createSigusr1Handler, generateTuiStartupHint, SIGUSR1_SUPPORTED } from "./tui-sigusr1.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  removeStoredEarlySigusr1Handler,
+  SIGUSR1_SUPPORTED,
+} from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -4217,17 +4222,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.once("SIGHUP", onProcessSighup);
   // Swap the early SIGUSR1 handler (installed inline at the top of bin.ts
   // to cover the bootstrap window — #1906) for the full graceful-shutdown
-  // handler. Remove-then-install instead of leaving both attached: the
-  // early handler calls `process.exit()` directly, so if it fired first it
-  // would kill the process before graceful shutdown runs. We use
-  // removeAllListeners rather than a targeted removeListener because the
-  // early handler's reference lives in bin.ts's closure and is not
-  // exported — this TUI process is the sole owner of SIGUSR1 by design,
-  // so nuking all listeners is safe.
+  // handler. Remove the specific early listener by reference (via the
+  // Symbol.for stash bin.ts wrote to globalThis) rather than nuking all
+  // SIGUSR1 listeners — an embedding host may have installed its own
+  // SIGUSR1 handler on the same process, and runTuiCommand must not
+  // trample it.
   // SIGUSR1 doesn't exist on Windows — gate both operations so the
   // process.on call cannot throw on unsupported platforms.
   if (SIGUSR1_SUPPORTED) {
-    process.removeAllListeners("SIGUSR1");
+    removeStoredEarlySigusr1Handler();
     // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
     // handler has flipped idempotent still has a listener installed —
     // unhandled SIGUSR1 otherwise defaults to inspector-launch / non-graceful

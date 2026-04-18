@@ -89,10 +89,33 @@ export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
  * review). Any helper that wrapped `process.on("SIGUSR1", …)` in this
  * module would need to be imported, which pushes the install behind an
  * `await import(...)` — widening the race window by one module-resolution
- * round-trip. `bin.ts` therefore re-states the minimal 4-line handler
- * inline, and `runTuiCommand` uses `process.removeAllListeners("SIGUSR1")`
- * to clear it before wiring the full graceful-shutdown handler.
+ * round-trip.
+ *
+ * bin.ts stores its inline handler on `globalThis[EARLY_HANDLER_KEY]`
+ * (Symbol.for, no import required) so `runTuiCommand` can swap that
+ * specific listener without touching any unrelated SIGUSR1 handlers an
+ * embedding host may have installed on the same process.
  */
+
+const EARLY_HANDLER_KEY = Symbol.for("koi:tui:sigusr1:early-handler");
+
+type EarlyHandlerHolder = Record<symbol, unknown>;
+
+/**
+ * Remove the inline early SIGUSR1 handler stashed by `bin.ts` on
+ * `globalThis[Symbol.for("koi:tui:sigusr1:early-handler")]`. Safe
+ * no-op when no early handler was stored (e.g. direct unit-test
+ * invocation of `runTuiCommand`) or when the stored value is not a
+ * function. Touches ONLY that specific listener — any SIGUSR1
+ * listeners installed by an embedding host survive.
+ */
+export function removeStoredEarlySigusr1Handler(): void {
+  const holder = globalThis as EarlyHandlerHolder;
+  const fn = holder[EARLY_HANDLER_KEY];
+  if (typeof fn !== "function") return;
+  process.removeListener("SIGUSR1", fn as () => void);
+  delete holder[EARLY_HANDLER_KEY];
+}
 
 /**
  * One-line startup hint printed before the TUI takes over the terminal.

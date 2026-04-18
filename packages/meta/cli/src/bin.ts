@@ -16,6 +16,12 @@
  * maintained duplicate to keep in sync.
  */
 
+// node:os is a builtin — no file-system load, safe to static-import on the
+// fast path. Used only by the synchronous SIGUSR1 block below to pick the
+// platform-correct signal number (#1906). A single identifier added to the
+// post-fast-path budget, well under the #1637 ceiling.
+import { constants as osConstants } from "node:os";
+
 const VERSION = "0.0.0";
 
 const HELP = `koi v${VERSION} — agent engine CLI
@@ -85,26 +91,32 @@ if (!hasSubcommand) {
 
 // Early SIGUSR1 handler (#1906) — installed SYNCHRONOUSLY at the top of the
 // browser-build child so the re-exec wrapper's forwarded SIGUSR1 cannot land
-// on the child before any handler is armed. Must be inline (no imports):
-// the only awaits between child start and this block are V8/Bun runtime
-// init, which is unavoidable; any dynamic-import here would widen the race
-// by a module-resolution round-trip.
+// on the child before any handler is armed. The handler is inline (no
+// tui-sigusr1.js import) — the only awaits between child start and this
+// block are V8/Bun runtime init, and any dynamic-import here would widen
+// the race by a module-resolution round-trip.
 //
 // Gated on KOI_TUI_BROWSER_SOLID=1 (set by the parent when spawning) so
 // non-TUI invocations (koi --version, koi start, koi serve) keep their
 // existing SIGUSR1 semantics. Also gated to non-Windows because Windows
 // does not deliver SIGUSR1 (#1906 review).
 //
-// Exit code inlined instead of imported to avoid pulling tui-sigusr1.js
-// into bin.ts's bootstrap path. Platform mapping mirrors
-// os.constants.signals.SIGUSR1: darwin=30 → 158; all other POSIX
-// platforms (linux, freebsd, netbsd, openbsd, aix, sunos)=10 → 138.
-// runTuiCommand() later calls process.removeAllListeners("SIGUSR1") to
-// swap this minimal handler for the full graceful-shutdown one.
+// Exit code is read from os.constants.signals.SIGUSR1 so it matches the
+// canonical 128+signum value on every POSIX platform (macOS=30→158,
+// Linux=10→138, BSD family=30→158, etc.). Fallback covers the
+// theoretical case where the signal constant is absent.
+//
+// Handler reference is stashed on globalThis via Symbol.for so
+// runTuiCommand can locate and remove ONLY this specific listener
+// (not every SIGUSR1 listener — an embedding host may own others).
 if (process.env.KOI_TUI_BROWSER_SOLID === "1" && process.platform !== "win32") {
-  process.on("SIGUSR1", () => {
-    process.exit(process.platform === "darwin" ? 158 : 138);
-  });
+  const sigNum = osConstants.signals.SIGUSR1 ?? (process.platform === "darwin" ? 30 : 10);
+  const earlyHandler = (): void => {
+    process.exit(128 + sigNum);
+  };
+  const holder = globalThis as Record<symbol, unknown>;
+  holder[Symbol.for("koi:tui:sigusr1:early-handler")] = earlyHandler;
+  process.on("SIGUSR1", earlyHandler);
 }
 
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.
