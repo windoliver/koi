@@ -54,7 +54,7 @@ export function createWebFetchTool(
           noCache: {
             type: "boolean",
             description:
-              "Force a live fetch with no stale fallback. Evicts any pre-existing cached response for this URL before issuing the request. A successful fresh response refreshes the cache so later default callers see the new content. Any failure (non-cacheable response, origin error, network error, timeout, SSRF block) returns the error and leaves the key empty — the next default fetch will also hit origin. Use when verifying a just-changed page: stale data is worse than no data. Default: false.",
+              "Force a live fetch with no stale fallback. Scope is cache-only: this flag does NOT rewrite HTTP error statuses into errors — a 500/429/404 response still returns normally so you can inspect status/body. What it guarantees: the pre-existing cached response for this URL is evicted before the request, a cacheable 200 refreshes the cache, and anything else (non-cacheable response, HTTP error, transport failure) leaves the key empty so the next default fetch also hits origin. Transport errors (network, timeout, SSRF block) still surface via the usual error object. Use when verifying a just-changed page: stale data is worse than no data. Default: false.",
           },
         },
         required: ["url"],

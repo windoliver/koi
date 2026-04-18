@@ -62,19 +62,28 @@ export interface WebFetchOptions {
   /**
    * Force-revalidation mode. Semantics: "do not serve stale, period."
    *
-   * Evicts any pre-existing entry for the URL up front (so concurrent
-   * default readers during the refresh RTT miss cache and hit origin
-   * themselves) and issues a live request:
+   * Scope: this flag controls cache behavior only. It does NOT rewrite
+   * HTTP error statuses into transport-level failures — a 500, 429, or
+   * 404 response still comes back as `{ ok: true, value: {...} }` so
+   * callers can inspect the status/body and decide what to do. What
+   * `noCache` guarantees is about the LRU, not the return type:
    *
-   * - Cacheable success (200 within origin's declared freshness budget):
-   *   the new response is written to the cache. Later default callers
-   *   see the fresh content without needing `noCache` themselves.
-   * - Non-cacheable response (e.g. 500, 206, or a cache-forbidding
-   *   header) or any transport failure (network error, abort, SSRF
-   *   rejection): the key is left empty. The call returns the failure
-   *   to the caller; no stale fallback is served here or on the very
-   *   next default fetch. If stale-on-error graceful degradation is
-   *   needed, callers should simply not set `noCache`.
+   * - The pre-existing entry for the URL is evicted up front (so
+   *   concurrent default readers during the refresh RTT miss cache
+   *   and hit origin themselves instead of being handed the known-to-
+   *   be-revalidating stale value).
+   * - A cacheable 200 response within origin's freshness budget writes
+   *   through, so later default callers see the fresh content.
+   * - A non-cacheable response (4xx/5xx, 206, `Cache-Control:
+   *   no-store|no-cache|private|must-revalidate`, past `Expires`, any
+   *   `Vary`) or a transport failure leaves the key empty. The very
+   *   next default fetch hits origin rather than replaying anything
+   *   from before `noCache` was invoked.
+   *
+   * Callers who want stale-on-error graceful degradation simply don't
+   * set `noCache`. Transport failures (network error, timeout, SSRF
+   * reject) still surface as `{ ok: false, error }` exactly as they
+   * would without `noCache`.
    *
    * Use when verifying a just-changed page or refreshing after a known
    * update — cases where stale data is worse than no data.

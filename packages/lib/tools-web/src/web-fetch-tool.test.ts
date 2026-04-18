@@ -193,6 +193,35 @@ describe("createWebFetchTool", () => {
       expect(schema.properties.noCache).toBeDefined();
       expect(schema.properties.noCache?.type).toBe("boolean");
     });
+
+    test("noCache does NOT upgrade HTTP 500 into a transport error", async () => {
+      // Contract nail-down for #1903 review: `noCache` controls cache
+      // behavior only. A 500/429/404 origin response still comes back
+      // as a normal successful fetch so the caller can inspect status
+      // and body — the caller decides whether to treat it as an error.
+      // Transport failures (network, timeout, SSRF block) still flow
+      // through the usual {error, code} shape.
+      const response: Result<WebFetchResult, KoiError> = {
+        ok: true,
+        value: {
+          status: 500,
+          statusText: "Internal Server Error",
+          headers: { "content-type": "text/plain" },
+          body: "upstream exploded",
+          truncated: false,
+          finalUrl: "https://example.com",
+          cached: false,
+        },
+      };
+      const tool = createWebFetchTool(mockExecutor(response), "web", POLICY);
+      const result = (await tool.execute({
+        url: "https://example.com",
+        noCache: true,
+      })) as { status: number; body: string; error?: string };
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(500);
+      expect(result.body).toBe("upstream exploded");
+    });
   });
 
   describe("SSRF protection", () => {
