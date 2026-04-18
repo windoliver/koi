@@ -252,6 +252,69 @@ describe("createSafeFetcher", () => {
     ).rejects.toThrow(/cross-origin 308/i);
   });
 
+  test("refuses cross-origin 302 redirect with PUT body (body exfiltration defence)", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn } = recordingFetch({
+      "https://a.example.com/put": new Response(null, {
+        status: 302,
+        headers: { Location: "https://b.example.com/steal" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    await expect(
+      safeFetch("https://a.example.com/put", {
+        method: "PUT",
+        body: JSON.stringify({ api_key: "secret" }),
+      }),
+    ).rejects.toThrow(/cross-origin 302|body replay/i);
+  });
+
+  test("refuses cross-origin 301 redirect with PATCH body", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn } = recordingFetch({
+      "https://a.example.com/patch": new Response(null, {
+        status: 301,
+        headers: { Location: "https://b.example.com/final" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    await expect(
+      safeFetch("https://a.example.com/patch", { method: "PATCH", body: "delta" }),
+    ).rejects.toThrow(/cross-origin 301/i);
+  });
+
+  test("allows cross-origin 302 with POST (body dropped by downgrade)", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn, calls } = recordingFetch({
+      "https://a.example.com/post": new Response(null, {
+        status: 302,
+        headers: { Location: "https://b.example.com/final" },
+      }),
+      "https://b.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    const res = await safeFetch("https://a.example.com/post", {
+      method: "POST",
+      body: "payload",
+    });
+    expect(res.status).toBe(200);
+    // POST + 302 downgrades to GET with no body → cross-origin follow is safe.
+    expect(calls[1]?.method).toBe("GET");
+    expect(calls[1]?.body).toBeNull();
+  });
+
   test("allows cross-origin 307 without body (idempotent request, no exfil risk)", async () => {
     const resolver = async (hostname: string): Promise<readonly string[]> => {
       if (hostname === "a.example.com") return ["93.184.216.34"];

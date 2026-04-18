@@ -294,27 +294,31 @@ function redactCrossOriginHeaders(headers: Headers): void {
 
 function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
   const crossOrigin = new URL(s.url).origin !== new URL(newUrl).origin;
-  const methodPreserving = status === 307 || status === 308;
+  const upperMethod = s.method.toUpperCase();
 
-  // Refuse cross-origin method-preserving redirects by default: 307/308
-  // replay the original method AND body to a new origin. Headers we can
-  // redact; bodies often carry the same secrets in JSON (API keys, signed
-  // payloads, credentials) and there's no safe generic way to sanitise
-  // them. Force the caller to handle this explicitly.
-  if (crossOrigin && methodPreserving && s.body !== undefined && s.body !== null) {
+  // Compute the method downgrade that the Fetch spec applies on each status.
+  //   303 → GET (except HEAD stays HEAD).
+  //   301/302 + POST → GET (browser-aligned; spec says preserve, most UAs downgrade).
+  //   307/308 → preserve method + body.
+  const downgrade =
+    (status === 303 && upperMethod !== "HEAD") ||
+    ((status === 301 || status === 302) && upperMethod === "POST");
+
+  // Refuse cross-origin redirects that would still forward a body after any
+  // downgrade. Covers 307/308 for every method (body always preserved) AND
+  // 301/302 for non-POST methods like PUT/PATCH (body preserved — our
+  // downgrade only fires for POST). An attacker-controlled upstream can
+  // otherwise answer PUT with 302 Location: attacker and exfiltrate the
+  // original payload (API keys in JSON, signed body, etc.) cross-origin.
+  const hasBody = s.body !== null && s.body !== undefined;
+  if (crossOrigin && !downgrade && hasBody) {
     throw new Error(
-      `url-safety: refused cross-origin ${status} redirect — method-preserving redirects to ${newUrl} would replay the request body to a different origin; if this is intentional, re-issue the request manually against the redirect target`,
+      `url-safety: refused cross-origin ${status} redirect — body replay to ${newUrl} would leak the original ${upperMethod} payload to a different origin; if this is intentional, re-issue the request manually against the redirect target`,
     );
   }
 
   s.url = newUrl;
 
-  const upperMethod = s.method.toUpperCase();
-  const downgrade =
-    // 303 → GET for every method EXCEPT HEAD (fetch spec: HEAD stays HEAD).
-    (status === 303 && upperMethod !== "HEAD") ||
-    // 301/302 + POST → GET (browser-aligned).
-    ((status === 301 || status === 302) && upperMethod === "POST");
   if (downgrade) {
     s.method = "GET";
     s.body = undefined;
