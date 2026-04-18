@@ -78,6 +78,25 @@ describe("executionStack — --yolo bash elicit bypass", () => {
     expect(calls).toBe(1);
   });
 
+  test("yolo=true: list + redirect command (the original bug) does NOT prompt", async () => {
+    // The reported bug was `cd /foo && bun test 2>&1` — the walker
+    // classifies this as a `list` with an embedded `redirected_statement`
+    // and cannot statically prove it safe. Under yolo the elicit
+    // callback must still short-circuit for this specific AST shape.
+    // let: mutation tracks call count
+    let calls = 0;
+    const approvalHandler: ApprovalHandler = async () => {
+      calls++;
+      return { kind: "deny", reason: "should not be called" };
+    };
+    const { bashHandle } = await activateWithYolo({ yolo: true, approvalHandler });
+
+    const result = await bashHandle.tool.execute({ command: "echo hi && ls 2>&1" });
+
+    expect(calls).toBe(0);
+    expect("error" in (result as object)).toBe(false);
+  });
+
   test("yolo=true: hard-deny patterns still blocked (defense in depth)", async () => {
     // let: must be reachable from assertion scope
     let calls = 0;
