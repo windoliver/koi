@@ -27,22 +27,42 @@ export interface PatternBackendConfig {
   readonly defaultDeny?: boolean | undefined;
 }
 
+function payloadObject(request: PolicyRequest):
+  | {
+      readonly toolId?: unknown;
+      readonly model?: unknown;
+    }
+  | undefined {
+  // PolicyRequest.payload is typed `JsonObject`, but a real caller may still
+  // hand us `null` / an array / a primitive through an `as never` cast or
+  // untyped RPC layer. Guard every property access so malformed payloads
+  // return a structured `schema.invalid` verdict rather than throwing out of
+  // the evaluator (governance-core treats thrown errors as POLICY_VIOLATION
+  // already, but we want the cleaner, classified failure path).
+  const payload = request.payload as unknown;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  return payload as { readonly toolId?: unknown; readonly model?: unknown };
+}
+
 function matches(rule: PatternRule, request: PolicyRequest): boolean {
   const { match } = rule;
   if (match.kind !== undefined && match.kind !== request.kind) return false;
-
-  const payload = request.payload as {
-    readonly toolId?: unknown;
-    readonly model?: unknown;
-  };
 
   // Selectors are kind-scoped: `toolId` only applies to `tool_call` requests
   // with a string `toolId` payload, and `model` only applies to `model_call`
   // requests with a string `model` payload. Applying these selectors
   // unconditionally would mis-deny `custom:foo` kinds that happen to carry a
-  // `toolId` key. Non-string payload fields on the right kind are handled by
-  // the separate schema check below (fail-closed) so they don't silently
-  // bypass deny rules.
+  // `toolId` key. Non-string / missing payload fields on the right kind are
+  // handled by the separate schema check (fail-closed) so they don't
+  // silently bypass deny rules.
+  const payload = payloadObject(request);
+  if (payload === undefined) {
+    // Selectors can't match on a non-object payload. Leave it to the schema
+    // check to convert this into a `schema.invalid` verdict for kinds that
+    // require string selector fields.
+    if (match.toolId !== undefined || match.model !== undefined) return false;
+    return true;
+  }
   if (match.toolId !== undefined) {
     if (request.kind !== "tool_call") return false;
     if (typeof payload.toolId !== "string" || payload.toolId !== match.toolId) return false;
@@ -57,16 +77,17 @@ function matches(rule: PatternRule, request: PolicyRequest): boolean {
 /**
  * Detect malformed payloads for kinds with required string fields. `tool_call`
  * must carry a string `toolId`, `model_call` must carry a string `model`.
- * Falling through on a missing/wrongly-typed field would silently bypass any
- * tool- or model-scoped deny rule; we fail closed with a `schema.invalid`
- * violation instead.
+ * Non-object / null / array payloads on those kinds are equally malformed.
+ * Falling through on a missing / wrongly-typed field would silently bypass
+ * any tool- or model-scoped deny rule; we fail closed with a
+ * `schema.invalid` violation instead.
  */
 function findSchemaViolation(request: PolicyRequest): GovernanceVerdict | undefined {
-  const payload = request.payload as {
-    readonly toolId?: unknown;
-    readonly model?: unknown;
-  };
-  if (request.kind === "tool_call" && typeof payload.toolId !== "string") {
+  const payload = payloadObject(request);
+  if (
+    request.kind === "tool_call" &&
+    (payload === undefined || typeof payload.toolId !== "string")
+  ) {
     return {
       ok: false,
       violations: [
@@ -78,7 +99,10 @@ function findSchemaViolation(request: PolicyRequest): GovernanceVerdict | undefi
       ],
     };
   }
-  if (request.kind === "model_call" && typeof payload.model !== "string") {
+  if (
+    request.kind === "model_call" &&
+    (payload === undefined || typeof payload.model !== "string")
+  ) {
     return {
       ok: false,
       violations: [

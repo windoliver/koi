@@ -81,6 +81,18 @@ describe("createInMemoryController", () => {
       expect(() => createInMemoryController({ agentDepth: 1.5 })).toThrow(/agentDepth/);
     });
 
+    test("rejects errorRateMinSamples > errorRateWindow (silent no-op combo)", () => {
+      expect(() =>
+        createInMemoryController({ errorRateWindow: 5, errorRateMinSamples: 10 }),
+      ).toThrow(/errorRateMinSamples/);
+    });
+
+    test("accepts errorRateMinSamples === errorRateWindow (boundary case)", () => {
+      expect(() =>
+        createInMemoryController({ errorRateWindow: 5, errorRateMinSamples: 5 }),
+      ).not.toThrow();
+    });
+
     test("setpoints come from config", () => {
       const controller = createInMemoryController({
         tokenUsageLimit: 1000,

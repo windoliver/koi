@@ -100,6 +100,23 @@ describe("withGovernanceDefaults", () => {
     expect(controller.reading("cost_usd")?.current).toBe(0);
   });
 
+  test("custom pricing without sonnet still falls back via shipped DEFAULT_PRICING anchor", async () => {
+    const { controller } = withGovernanceDefaults({
+      pricing: { "my-only-model": { inputUsdPer1M: 1, outputUsdPer1M: 2 } },
+      controllerConfig: { costUsdLimit: 100 },
+    });
+    // Simulate middleware dropping costUsd because cost.calculate() threw
+    // for an unknown model alias not present in the custom pricing map.
+    await controller.record({
+      kind: "token_usage",
+      count: 1_000_000,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+    });
+    // Helper falls back to DEFAULT_PRICING[claude-sonnet-4-6].inputUsdPer1M = 3.
+    expect(controller.reading("cost_usd")?.current).toBeCloseTo(3, 10);
+  });
+
   test("caller-supplied fallbackPricing overrides the default sonnet anchor", async () => {
     const { controller } = withGovernanceDefaults({
       fallbackPricing: { inputUsdPer1M: 100, outputUsdPer1M: 200 },

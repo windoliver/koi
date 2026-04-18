@@ -133,6 +133,28 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
   validatePositiveInt("errorRateMinSamples", config.errorRateMinSamples);
   validateNonNegativeInt("agentDepth", config.agentDepth);
 
+  // Cross-field invariant: tool_outcomes is capped at `errorRateWindow`, so
+  // if `minSamples > window` the check path can never accumulate enough
+  // samples to fire and `error_rate` becomes a silent no-op. Reject that
+  // config at construction to avoid a safety gate being silently disabled
+  // by a syntactically valid pair of integers.
+  if (
+    config.errorRateMinSamples !== undefined &&
+    config.errorRateWindow !== undefined &&
+    config.errorRateMinSamples > config.errorRateWindow
+  ) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      "errorRateMinSamples must be <= errorRateWindow — otherwise the check can never fire",
+      {
+        context: {
+          errorRateMinSamples: config.errorRateMinSamples,
+          errorRateWindow: config.errorRateWindow,
+        },
+      },
+    );
+  }
+
   const now = config.now ?? Date.now;
   const errorRateWindow = config.errorRateWindow ?? DEFAULT_ERROR_RATE_WINDOW;
   const errorRateMinSamples = config.errorRateMinSamples ?? DEFAULT_ERROR_RATE_MIN_SAMPLES;

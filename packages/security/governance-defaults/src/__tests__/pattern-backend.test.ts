@@ -12,17 +12,20 @@ function req(
   const kind = overrides.kind ?? "tool_call";
   // Provide a well-formed default payload for kinds with required string
   // fields so tests that don't specifically exercise schema-fail-closed aren't
-  // tripped by the schema check.
+  // tripped by the schema check. Distinguish "payload omitted" from
+  // "payload explicitly null/undefined" so malformed-payload tests actually
+  // forward the malformed value.
   const defaultPayload: PolicyRequest["payload"] =
     kind === "tool_call"
       ? { toolId: "default-tool" }
       : kind === "model_call"
         ? { model: "default-model" }
         : {};
+  const payload = "payload" in overrides ? overrides.payload : defaultPayload;
   return {
     kind,
     agentId: toAgentId("a1"),
-    payload: overrides.payload ?? defaultPayload,
+    payload: payload as PolicyRequest["payload"],
     timestamp: 1000,
   };
 }
@@ -137,6 +140,51 @@ describe("createPatternBackend", () => {
       );
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.violations[0]?.rule).toBe("schema.invalid");
+    });
+
+    test("non-object payload (null) fails closed with schema.invalid on tool_call", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      const result = await backend.evaluator.evaluate(
+        req({ kind: "tool_call", payload: null as unknown as PolicyRequest["payload"] }),
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.violations[0]?.rule).toBe("schema.invalid");
+    });
+
+    test("array payload fails closed on tool_call", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      const result = await backend.evaluator.evaluate(
+        req({
+          kind: "tool_call",
+          payload: ["not", "an", "object"] as unknown as PolicyRequest["payload"],
+        }),
+      );
+      expect(result.ok).toBe(false);
+    });
+
+    test("undefined payload fails closed on model_call", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      const result = await backend.evaluator.evaluate(
+        req({ kind: "model_call", payload: undefined as unknown as PolicyRequest["payload"] }),
+      );
+      expect(result.ok).toBe(false);
+    });
+
+    test("evaluator never throws on malformed payloads — always returns a verdict", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "deny" }],
+      });
+      // Throwing would route through generic backend-failure handling. We
+      // want a structured schema.invalid verdict instead.
+      for (const payload of [null, undefined, 42, "str", []]) {
+        const result = await backend.evaluator.evaluate(
+          req({
+            kind: "tool_call",
+            payload: payload as unknown as PolicyRequest["payload"],
+          }),
+        );
+        expect(result.ok).toBe(false);
+      }
     });
 
     test("schema check does not gate kinds without required selector fields", async () => {

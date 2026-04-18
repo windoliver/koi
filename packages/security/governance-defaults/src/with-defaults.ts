@@ -79,18 +79,23 @@ export function withGovernanceDefaults(
 ): DefaultGovernanceConfig {
   const pricing = overrides.pricing ?? DEFAULT_PRICING;
 
-  // Resolve the fallback pricing: caller override → pricing table's sonnet
-  // entry → no fallback. If the helper built the controller AND no explicit
-  // fallback config is set in `controllerConfig`, seed the fallback into the
-  // controller so the spend cap still advances when the cost calculator
-  // throws for an unknown model. A caller-supplied controller is not touched.
+  // Resolve the fallback pricing: caller override → caller's pricing table's
+  // sonnet entry → shipped DEFAULT_PRICING's sonnet entry → no fallback.
+  // The third step matters: a caller-supplied custom pricing map may omit
+  // `claude-sonnet-4-6`, and without this floor the helper would silently
+  // disable fallback accounting and reopen the spend-cap fail-open path.
+  // If the helper built the controller AND no explicit fallback config is
+  // set in `controllerConfig`, seed the fallback into the controller so the
+  // spend cap still advances when the cost calculator throws for an unknown
+  // model. A caller-supplied controller is not touched.
   let fallbackEntry: PricingEntry | null;
   if (overrides.fallbackPricing === null) {
     fallbackEntry = null;
   } else if (overrides.fallbackPricing !== undefined) {
     fallbackEntry = overrides.fallbackPricing;
   } else {
-    fallbackEntry = pricing[DEFAULT_FALLBACK_MODEL] ?? null;
+    fallbackEntry =
+      pricing[DEFAULT_FALLBACK_MODEL] ?? DEFAULT_PRICING[DEFAULT_FALLBACK_MODEL] ?? null;
   }
 
   const baseControllerConfig = overrides.controllerConfig ?? {};
