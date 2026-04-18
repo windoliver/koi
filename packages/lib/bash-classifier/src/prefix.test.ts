@@ -409,6 +409,38 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`/bin/sh -c "git push"`)).toBe("git push");
   });
 
+  // ------- round 10: wrapper-hidden -c + redirections -------
+
+  test("wrapper-prefixed bash -c recurses into the inner command", () => {
+    expect(canonicalPrefix(`env bash -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`timeout 30 bash -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`nohup /usr/bin/bash -c "git push"`)).toBe("git push");
+    expect(canonicalPrefix(`env FOO=1 timeout --signal=KILL 30 bash -c "rm -rf /"`)).toBe("rm");
+  });
+
+  test("stdout redirect returns !complex", () => {
+    expect(canonicalPrefix(`echo hi >/tmp/x`)).toBe("!complex");
+    expect(canonicalPrefix(`git status > /tmp/out`)).toBe("!complex");
+  });
+
+  test("stdin redirect returns !complex", () => {
+    expect(canonicalPrefix(`sudo tee /etc/sysctl.conf < config`)).toBe("!complex");
+  });
+
+  test("process substitution returns !complex", () => {
+    expect(canonicalPrefix(`cat <(sudo rm)`)).toBe("!complex");
+    expect(canonicalPrefix(`diff <(ls) <(ls /tmp)`)).toBe("!complex");
+  });
+
+  test("append redirect returns !complex", () => {
+    expect(canonicalPrefix(`echo oops >>/etc/passwd`)).toBe("!complex");
+  });
+
+  test("redirections inside quoted strings do NOT trigger !complex", () => {
+    expect(canonicalPrefix(`echo "a > b < c"`)).toBe("echo");
+    expect(canonicalPrefix(`git commit -m "added feature <x>"`)).toBe("git commit");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that

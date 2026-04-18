@@ -344,8 +344,7 @@ const BASH_LONG_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
  *
  * Returns `null` when `-c` is not found before script argv starts.
  */
-function extractShellDashCArg(cmdLine: string): string | null {
-  const tokens = shellTokenize(cmdLine);
+function extractShellDashCArgFromTokens(tokens: readonly string[]): string | null {
   if (tokens.length < 2) return null;
 
   const first = tokens[0];
@@ -354,8 +353,7 @@ function extractShellDashCArg(cmdLine: string): string | null {
   // `/usr/bin/bash -c "sudo rm"` → inherits policy of the inner command.
   // An attacker-writable `./bash` or `/tmp/bash` is arbitrary code and
   // must not collapse into a trusted-bash rule, so we use the strict
-  // basename here. Untrusted path-qualified shells remain as their own
-  // prefix (`./bash`, `/tmp/bash`) for the caller to rule on explicitly.
+  // basename here.
   if (!SHELL_INTERP.test(basenameTrusted(first))) return null;
 
   let i = 1;
@@ -390,6 +388,10 @@ function extractShellDashCArg(cmdLine: string): string | null {
     return null;
   }
   return null;
+}
+
+function extractShellDashCArg(cmdLine: string): string | null {
+  return extractShellDashCArgFromTokens(shellTokenize(cmdLine));
 }
 
 const MAX_INTERP_DEPTH = 4;
@@ -435,6 +437,10 @@ function hasShellControlOperators(s: string): boolean {
     }
     if (c === ";" || c === "|" || c === "&" || c === "`" || c === "\n") return true;
     if (c === "$" && s[i + 1] === "(") return true;
+    // Redirections: >, >>, <, <<, <<<, and process substitution <(...),
+    // >(...). These can perform side effects or hidden command execution
+    // under a benign-looking prefix; fail closed.
+    if (c === ">" || c === "<") return true;
   }
   return false;
 }
@@ -455,14 +461,22 @@ export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   if (trimmed.length === 0) return "";
   if (hasShellControlOperators(trimmed)) return UNSAFE_PREFIX;
   if (depth >= MAX_INTERP_DEPTH) return UNSAFE_PREFIX;
-  const inner = extractShellDashCArg(trimmed);
-  if (inner !== null) return canonicalPrefix(inner, depth + 1);
-  // Use shell-aware tokenization so quoted env assignments like
-  // `FOO="x y" sudo rm` stay as a single token and the ENV_ASSIGN
-  // strip in normalize() can peel them correctly. Naive whitespace
-  // split would fragment the quoted value into multiple tokens and
-  // let a crafted quote leak as the derived prefix.
-  return prefix(shellTokenize(trimmed));
+
+  // First try: direct shell-interp hop on the raw command.
+  const directInner = extractShellDashCArg(trimmed);
+  if (directInner !== null) return canonicalPrefix(directInner, depth + 1);
+
+  // Tokenize + normalize (strip env assignments, peel wrappers). After
+  // normalization, the leading token may now be a shell interpreter that
+  // was previously hidden behind a wrapper (`env bash -c "sudo rm"`,
+  // `timeout 30 bash -c "sudo rm"`). Re-check for a -c hop before
+  // falling back to prefix lookup.
+  const tokens = shellTokenize(trimmed);
+  const normalized = normalize(tokens);
+  const innerAfterNormalize = extractShellDashCArgFromTokens(normalized);
+  if (innerAfterNormalize !== null) return canonicalPrefix(innerAfterNormalize, depth + 1);
+
+  return prefix(normalized);
 }
 
 export function prefix(tokens: readonly string[]): string {
