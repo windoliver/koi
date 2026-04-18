@@ -10672,3 +10672,98 @@ describe("Golden: @koi/middleware-strict-agentic", () => {
     expect(result?.kind).toBe("continue");
   });
 });
+
+describe("Golden: @koi/agent-summary", () => {
+  test("createAgentSummary returns both session and range APIs", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "hello",
+              timestamp: 1,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "greet",
+          status: "succeeded",
+          actions: [],
+          outcomes: [],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    expect(typeof summary.summarizeSession).toBe("function");
+    expect(typeof summary.summarizeRange).toBe("function");
+  });
+
+  test("summarizeSession produces kind: clean envelope with correct identity", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "please",
+              timestamp: 1,
+            },
+            {
+              id: "a1" as never,
+              role: "assistant" as const,
+              content: "ok",
+              timestamp: 2,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "test",
+          status: "succeeded",
+          actions: [],
+          outcomes: ["done"],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    const r = await summary.summarizeSession("sess-golden" as never);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(`${r.value.summary.sessionId}`).toBe("sess-golden");
+      expect(r.value.summary.meta.rangeOrigin).toBe("raw");
+      expect(r.value.summary.meta.hasCompactionPrefix).toBe(false);
+    } else {
+      throw new Error("expected kind: clean");
+    }
+  });
+});

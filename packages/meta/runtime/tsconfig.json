@@ -9,6 +9,7 @@
     { "path": "../../kernel/core" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/agent-runtime" },
+    { "path": "../../lib/agent-summary" },
     { "path": "../../lib/harness" },
     { "path": "../../kernel/engine" },
     { "path": "../../kernel/engine-compose" },
