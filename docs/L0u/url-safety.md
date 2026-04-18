@@ -36,11 +36,15 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 
 | Field | Default | Purpose |
 |-------|---------|---------|
-| `allowPrivate` | `false` | Skip private IP and blocked-host checks. For tests and local dev only. Protocol allowlist still applies. |
-| `allowlistHosts` | — | Per-hostname bypass of `BLOCKED_HOSTS` and `isBlockedIp`. Takes precedence; DNS resolution is skipped for allowlisted hosts. A successful allowlist hit returns `resolvedIps: []` (empty array) — callers consuming `resolvedIps` on an OK result should account for this. |
+| `allowPrivate` | `false` | Skip private IP and blocked-host checks. For tests and local dev only. Protocol allowlist still applies; DNS resolution still runs and failure is still fatal. |
+| `allowlistHosts` | — | Per-hostname bypass of `BLOCKED_HOSTS` and `isBlockedIp`. DNS resolution still runs so `createSafeFetcher` can pin to validated IPs; the allowlist only skips the per-address blocklist gate. DNS failure for an allowlisted hostname is still fatal. |
 | `allowedProtocols` | `["http:", "https:"]` | Protocol allowlist. Set to `["https:"]` for HTTPS-only clients. |
-| `dnsResolver` | `dns.lookup` with `{ all: true }` | Injectable resolver for tests. Must return every A/AAAA record — returning a single record defeats DNS rebinding protection. |
+| `dnsResolver` | strict `dns.resolve4` + `dns.resolve6` | Injectable resolver for tests. Defaults to the authoritative path (full A/AAAA enumeration, family-error fatal). Set `strictAuthoritativeDns: false` to fall back to `dns.lookup({ all: true })` for `/etc/hosts` / NSS / mDNS parity. |
+| `strictAuthoritativeDns` | `true` | Use authoritative `resolve4`/`resolve6` (strict rebinding invariant). `false` delegates to `dns.lookup` for OS-parity with the transport. |
+| `requireFullDnsCoverage` | `true` | Any real resolver error (TIMEOUT/SERVFAIL) on either A or AAAA is fatal. Set `false` in flaky-IPv6 environments at the cost of reopening the partial-coverage SSRF window. |
 | `maxRedirects` (fetcher only) | `5` | Maximum redirect hops before throwing `url-safety: exceeded N redirects`. |
+| `maxBufferedBodyBytes` (fetcher only) | `10 MB` | Byte cap on stream-body buffering for redirect replay. `0` disables buffering — stream bodies on `redirect: "follow"` then reject up front. |
+| `trustCustomTransport` (fetcher only) | `false` | Opt-in for callers who supply `dispatcher`/`agent`. Default rejects the combination because a custom transport can bypass the validated IP set. |
 
 ---
 
@@ -103,17 +107,19 @@ The two classes are exported separately so a policy consumer can inspect them di
 
 1. **Parse** — `new URL(url)`. Any parse error → `ok: false`.
 2. **Protocol** — the URL's protocol must be in `allowedProtocols`. Default: `http:`, `https:`.
-3. **Hostname lowercased** — normalises before all subsequent checks.
-4. **Allowlist** — if `allowlistHosts` contains the bare hostname, return `ok: true` immediately (no DNS).
-5. **Blocked-hosts** — if `BLOCKED_HOSTS` contains the hostname, return `ok: false` (skipped when `allowPrivate`).
-6. **IP literal** — if the hostname is an IPv4 dotted-decimal or IPv6 literal, call `isBlockedIp` and return accordingly (skipped when `allowPrivate`).
-7. **DNS resolve** — call `dnsResolver(hostname)`. Empty result or resolver error → `ok: false`. Every returned IP is checked via `isBlockedIp`; the first blocked IP short-circuits to `ok: false`.
+3. **Hostname lowercased**, IPv6 brackets stripped.
+4. **Blocked-hosts** — if `BLOCKED_HOSTS` contains the hostname, return `ok: false`. Skipped when the host is in `allowlistHosts` or when `allowPrivate` is set.
+5. **IP literal** — if the hostname is an IPv4 dotted-decimal or IPv6 literal, call `isBlockedIp` and return accordingly. Again skipped for allowlisted / `allowPrivate`.
+6. **DNS resolve** — call `dnsResolver(hostname)`. Empty result or resolver error → `ok: false`. DNS resolution runs for every hostname URL (including allowlisted ones) so `createSafeFetcher` can pin to the validated IPs.
+7. **Per-IP blocklist** — each returned IP is checked via `isBlockedIp`; the first blocked IP short-circuits to `ok: false`. Skipped for allowlisted / `allowPrivate`.
 
 ---
 
 ## DNS rebinding — what's pinned and what isn't
 
-`isSafeUrl` resolves the hostname with `dns.lookup({ all: true })` and blocks if any A/AAAA record is private. `createSafeFetcher` then closes the rebind window for **HTTP** by rewriting the outbound URL to the validated IP and setting a `Host:` header — the TCP socket connects to the exact address the validator approved, no second resolution possible. When a hostname resolves to multiple IPs, all of them were individually validated, and the wrapper tries them in order on connect failure so normal multi-address failover still works.
+`isSafeUrl` defaults to the authoritative `dns.resolve4`/`dns.resolve6` path — full A/AAAA enumeration directly from DNS, with a real resolver error on either family treated as fatal. Every returned address is checked against `isBlockedIp` and the hostname is rejected if any is private. `createSafeFetcher` then closes the rebind window for **HTTP** by rewriting the outbound URL to a validated IP and setting a `Host:` header — the TCP socket connects to the exact address the validator approved, no second resolution possible. When a hostname resolves to multiple IPs, all of them were individually validated; the wrapper tries them in order on connect failure so normal multi-address failover still works.
+
+Callers that need OS-level resolution parity (`/etc/hosts`, NSS, mDNS, search domains) can set `strictAuthoritativeDns: false` to delegate validation to `dns.lookup({ all: true })` — the same path the transport uses at connect time. That avoids "reachable but rejected" outages for internal names at the cost of weaker rebinding defence (OS resolvers may filter or reorder records).
 
 **HTTPS cannot be pinned the same way** — rewriting the host-part of an `https://` URL to an IP breaks TLS SNI and certificate hostname verification, which are a much stronger protection than DNS pinning. For HTTPS the wrapper therefore leaves the URL hostname intact and accepts a sub-second TOCTOU window between `isSafeUrl` and the socket connect. Attacker-controlled low-TTL DNS could in theory resolve to a different address on the actual connect than on the check; in practice this is mitigated by OS/resolver caching and the fact that HTTPS also requires a valid certificate for the connected IP. `createSafeFetcher` narrows this window further by re-running `isSafeUrl` at the TOP of every redirect-loop iteration — including hop 0 after any stream body has been buffered — so a slow upload cannot widen the gap by seconds. For air-tight HTTPS pinning, route outbound calls through a reverse proxy with a locked resolver.
 
