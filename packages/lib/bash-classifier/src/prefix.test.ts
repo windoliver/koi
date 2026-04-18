@@ -81,15 +81,28 @@ describe("prefix", () => {
     expect(prefix(["stdbuf", "-oL", "-eL", "git", "log"])).toBe("git log");
   });
 
-  test("basenames an absolute path in the leading position", () => {
+  test("basenames a TRUSTED system path in the leading position", () => {
     expect(prefix(["/usr/bin/sudo", "rm"])).toBe("sudo");
     expect(prefix(["/opt/homebrew/bin/git", "push"])).toBe("git push");
-    expect(prefix(["./node_modules/.bin/jest"])).toBe("jest");
+    expect(prefix(["/bin/ls", "-la"])).toBe("ls");
+    expect(prefix(["/usr/local/bin/node", "app.js"])).toBe("node");
   });
 
-  test("basenames after a wrapper too", () => {
+  test("preserves UNTRUSTED path-qualified binaries as distinct prefixes (round 7)", () => {
+    // Policy rule `bash:git push` must NOT apply to a user-dropped
+    // ./git or /tmp/git — those are attacker-controllable and should
+    // be separate permission keys.
+    expect(prefix(["./git", "push"])).toBe("./git push");
+    expect(prefix(["./node_modules/.bin/jest"])).toBe("./node_modules/.bin/jest");
+    expect(prefix(["/tmp/git", "push"])).toBe("/tmp/git push");
+    expect(prefix(["~/bin/git", "push"])).toBe("~/bin/git push");
+  });
+
+  test("basenames after a wrapper too (trusted paths only)", () => {
     expect(prefix(["env", "/usr/bin/sudo", "rm"])).toBe("sudo");
     expect(prefix(["command", "/usr/local/bin/git", "status"])).toBe("git status");
+    // Untrusted path preserves through the wrapper too.
+    expect(prefix(["env", "./sudo", "rm"])).toBe("./sudo");
   });
 
   test("does NOT peel `sudo` or shell interpreters (they are actions)", () => {

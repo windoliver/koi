@@ -1340,13 +1340,14 @@ export function createPermissionsMiddleware(
       // so that soft vs hard-converted decisions use the correct final decision object.
       if (decision.effect !== "deny") {
         if (auditSink !== undefined) {
-          auditDecision(ctx, request.toolId, decision, durationMs, auditSink);
+          auditDecision(ctx, resource, decision, durationMs, auditSink);
         }
         // Allow/ask: fire-and-forget dispatch here.
         void ctx.dispatchPermissionDecision?.(query, decision);
         ctx.reportDecision?.({
           phase: "execute",
           toolId: request.toolId,
+          resource,
           toolInput: safePreviewJson(request.input, 300),
           action: decision.effect,
           durationMs,
@@ -1377,12 +1378,13 @@ export function createPermissionsMiddleware(
 
         const emitDenyAudit = (finalDecision: DenyDecision): void => {
           if (auditSink !== undefined) {
-            auditDecision(ctx, request.toolId, finalDecision, durationMs, auditSink);
+            auditDecision(ctx, resource, finalDecision, durationMs, auditSink);
           }
           void ctx.dispatchPermissionDecision?.(query, finalDecision);
           ctx.reportDecision?.({
             phase: "execute",
             toolId: request.toolId,
+            resource,
             toolInput: safePreviewJson(request.input, 300),
             action: "deny",
             durationMs,
@@ -1613,7 +1615,7 @@ export function createPermissionsMiddleware(
           if (auditSink !== undefined) {
             auditApprovalOutcome(
               ctx,
-              request.toolId,
+              resource,
               { kind: "always-allow", scope: "always" },
               request.input,
               clock() - persistentStartMs,
@@ -1742,7 +1744,7 @@ export function createPermissionsMiddleware(
         if (result !== undefined && auditSink !== undefined) {
           auditApprovalOutcome(
             ctx,
-            request.toolId,
+            resource,
             result,
             request.input,
             coalescedDurationMs,
@@ -1908,7 +1910,7 @@ export function createPermissionsMiddleware(
       if (auditSink !== undefined) {
         auditApprovalOutcome(
           ctx,
-          request.toolId,
+          resource,
           approvalResult,
           request.input,
           approvalDurationMs,

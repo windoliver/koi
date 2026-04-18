@@ -93,10 +93,45 @@ const FLAGLESS_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "e
 
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
-function basename(t: string): string {
+/**
+ * System bin directories whose contents are trusted to be the canonical
+ * binary. `/usr/bin/git` is treated as equivalent to a PATH-resolved
+ * `git`; any other path (`./git`, `/tmp/git`, `~/bin/git`, user-writable
+ * dirs) is kept path-qualified so a dropped malicious binary cannot
+ * silently inherit a rule meant for the system binary.
+ */
+const TRUSTED_BIN_PREFIXES: readonly string[] = [
+  "/usr/bin/",
+  "/usr/local/bin/",
+  "/usr/sbin/",
+  "/bin/",
+  "/sbin/",
+  "/opt/homebrew/bin/",
+  "/opt/homebrew/sbin/",
+  "/opt/local/bin/",
+];
+
+/** Unconditional basename (used for shell-interpreter detection only). */
+function basenameLoose(t: string): string {
   if (!t.includes("/")) return t;
   const slash = t.lastIndexOf("/");
   return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
+}
+
+/**
+ * Basename only when the path is rooted in a trusted system bin
+ * directory. Otherwise preserve the full path so policy rules cannot be
+ * bypassed by dropping a same-named binary into a writable directory.
+ */
+function basenameTrusted(t: string): string {
+  if (!t.includes("/")) return t;
+  for (const prefix of TRUSTED_BIN_PREFIXES) {
+    if (t.startsWith(prefix)) {
+      const rest = t.slice(prefix.length);
+      if (rest.length > 0 && !rest.includes("/")) return rest;
+    }
+  }
+  return t;
 }
 
 /**
@@ -158,7 +193,7 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
   }
   const head = tokens[i];
   if (head === undefined) return tokens.slice(i);
-  const base = basename(head);
+  const base = basenameTrusted(head);
 
   if (FLAGLESS_WRAPPERS.has(base)) {
     const wrapperEnd = i + 1;
@@ -315,7 +350,11 @@ function extractShellDashCArg(cmdLine: string): string | null {
 
   const first = tokens[0];
   if (first === undefined) return null;
-  if (!SHELL_INTERP.test(basename(first))) return null;
+  // Shell-interpreter detection intentionally uses the loose basename:
+  // `./bash -c "sudo rm"` or `/tmp/bash -c …` is still a shell hop we
+  // want to unwrap (and then recurse into the inner command, which
+  // itself gets path-qualified handling).
+  if (!SHELL_INTERP.test(basenameLoose(first))) return null;
 
   let i = 1;
   while (i < tokens.length) {
@@ -425,11 +464,20 @@ export function prefix(tokens: readonly string[]): string {
 
   const first = normalized[0];
   if (first === undefined) return "";
-  let bestArity = ARITY[first] ?? 1;
+  // ARITY lookup uses the loose basename so untrusted path-qualified
+  // binaries (`./git`, `/tmp/git`) still pick up the correct arity and
+  // produce `./git push` / `/tmp/git push` as the permission key. The
+  // path stays visible in the output so a rule for the trusted binary
+  // doesn't leak to the untrusted path.
+  const firstKey = basenameLoose(first);
+  let bestArity = ARITY[firstKey] ?? 1;
 
-  // Look for longer multi-token keys. Keys are at most 2 tokens in practice.
+  // Look for longer multi-token keys (e.g. `npm run`, `docker compose`).
   for (let keyLen = 2; keyLen <= normalized.length; keyLen++) {
-    const candidate = normalized.slice(0, keyLen).join(" ");
+    const segment = normalized.slice(0, keyLen);
+    const head = segment[0] ?? "";
+    const rest = segment.slice(1);
+    const candidate = [basenameLoose(head), ...rest].join(" ");
     const a = ARITY[candidate];
     if (a !== undefined) {
       bestArity = a;
