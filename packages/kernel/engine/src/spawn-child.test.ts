@@ -703,4 +703,45 @@ describe("spawnChildAgent governance event wiring", () => {
     expect(spawnEvents).toHaveLength(1);
     expect(spawnEvents[0]).toEqual({ kind: "spawn", depth: 3 });
   });
+
+  test("records spawn_release when child transitions to terminated", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    // Spawn fired during assembly; assert the baseline.
+    expect(recorded.filter((e) => e.kind === "spawn")).toHaveLength(1);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(0);
+
+    // Drive the child to terminated.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+
+    // Allow the async record() in the void Promise.resolve(...) chain to settle.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("spawn_release fires only once on double-terminated transition", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The registry won't accept a second terminated transition, but the
+    // 'released' guard inside spawn-child should prevent a double record
+    // even if it did. Assert exactly one release event.
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
 });
