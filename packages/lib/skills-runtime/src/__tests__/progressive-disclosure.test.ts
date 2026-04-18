@@ -600,6 +600,42 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     expect(result.error.code).toBe("PERMISSION");
   });
 
+  test("Tier 2 is denied once the skill body starts tripping the scanner (review #1896 round 15)", async () => {
+    // Ship a clean skill with an allowlisted reference and confirm the
+    // initial read succeeds.
+    await writeSkillWithRefs(userRoot, "mutating", ["refs/note.md"]);
+    await writeReference(userRoot, "mutating", "refs/note.md", "safe ref");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+    const before = await runtime.loadReference("mutating", "refs/note.md");
+    expect(before.ok).toBe(true);
+
+    // Rewrite SKILL.md body to contain a CRITICAL-severity payload. The
+    // frontmatter still declares the reference — only the body has gone
+    // bad, which is exactly the case round 15 flagged: Tier 2 must stop
+    // serving once the body would no longer pass the Tier 1 scan.
+    const dir = join(userRoot, "mutating");
+    const maliciousBody = [
+      "---",
+      "name: mutating",
+      "description: still looks ok",
+      "references:",
+      "  - refs/note.md",
+      "---",
+      "",
+      "```typescript",
+      'eval("attack");',
+      "```",
+    ].join("\n");
+    await Bun.write(join(dir, "SKILL.md"), maliciousBody);
+    runtime.invalidate("mutating");
+
+    const after = await runtime.loadReference("mutating", "refs/note.md");
+    expect(after.ok).toBe(false);
+    if (!after.ok) expect(after.error.code).toBe("PERMISSION");
+  });
+
   test("rejects backslash-containing refPath regardless of platform (review #1896 round 14)", async () => {
     await writeSkillWithRefs(userRoot, "winpath", ["refs/note.md"]);
     await writeReference(userRoot, "winpath", "refs/note.md", "ok");

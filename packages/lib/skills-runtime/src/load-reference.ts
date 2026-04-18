@@ -238,6 +238,62 @@ function validationError<T>(
 }
 
 /**
+ * Classify a filesystem error (review #1896 round 15). Previously every
+ * failure in the open/read path was flattened to NOT_FOUND, which hid
+ * real EACCES / EPERM / EIO events behind the "missing file" signal —
+ * operators lost the ability to tell a bad path from a broken one.
+ *
+ * ENOENT / ENOTDIR stay NOT_FOUND. EACCES / EPERM become PERMISSION
+ * with `errorKind: "REFERENCE_ACCESS_DENIED"`. Everything else
+ * (EIO, transient errors, descriptor-level failures) becomes INTERNAL
+ * with `errorKind: "REFERENCE_IO_ERROR"`. In all cases the original
+ * errno is preserved in `context.errno` for telemetry.
+ */
+function classifyFsError(
+  name: string,
+  refPath: string,
+  cause: unknown,
+  defaultMessage: string,
+): Result<string, KoiError> {
+  const err = cause as NodeJS.ErrnoException;
+  const errno = err?.code;
+  if (errno === "ENOENT" || errno === "ENOTDIR") {
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: defaultMessage,
+        retryable: false,
+        cause,
+        context: { name, refPath, errno },
+      },
+    };
+  }
+  if (errno === "EACCES" || errno === "EPERM") {
+    return {
+      ok: false,
+      error: {
+        code: "PERMISSION",
+        message: `${defaultMessage} (access denied)`,
+        retryable: false,
+        cause,
+        context: { errorKind: "REFERENCE_ACCESS_DENIED", name, refPath, errno },
+      },
+    };
+  }
+  return {
+    ok: false,
+    error: {
+      code: "INTERNAL",
+      message: `${defaultMessage} (I/O error)`,
+      retryable: errno === "EIO" || errno === "EAGAIN" || errno === "EBUSY",
+      cause,
+      context: { errorKind: "REFERENCE_IO_ERROR", name, refPath, errno: errno ?? "unknown" },
+    },
+  };
+}
+
+/**
  * Reads `refPath` relative to the skill directory `dirPath`.
  *
  * @param name - skill name, used only for error context
@@ -422,16 +478,12 @@ export async function loadReference(
         "PATH_TRAVERSAL",
       );
     }
-    return {
-      ok: false,
-      error: {
-        code: "NOT_FOUND",
-        message: `Reference "${refPath}" not found for skill "${name}"`,
-        retryable: false,
-        cause,
-        context: { name, refPath, resolvedPath: joined },
-      },
-    };
+    return classifyFsError(
+      name,
+      refPath,
+      cause,
+      `Reference "${refPath}" not found for skill "${name}"`,
+    );
   }
 
   let content: string;
@@ -548,16 +600,12 @@ export async function loadReference(
 
     content = new TextDecoder("utf-8").decode(slice);
   } catch (cause: unknown) {
-    return {
-      ok: false,
-      error: {
-        code: "NOT_FOUND",
-        message: `Could not read reference "${refPath}" for skill "${name}"`,
-        retryable: false,
-        cause,
-        context: { name, refPath, resolvedPath: joined },
-      },
-    };
+    return classifyFsError(
+      name,
+      refPath,
+      cause,
+      `Could not read reference "${refPath}" for skill "${name}"`,
+    );
   } finally {
     await handle.close().catch(() => {
       // Close-failure is non-fatal — the fd goes away when the process exits.

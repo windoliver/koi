@@ -1212,6 +1212,22 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // the fresh-read above and the file open below must take effect.
     if (!stillAuthorized()) return revoked();
 
+    // Scanned-body gate (review #1896 round 15). Frontmatter declares the
+    // reference list, but the skill *body* is what the scanner inspects
+    // for malicious content. Without this gate, a skill that became
+    // blocked between discovery and this call would still surface its
+    // declared references. Route through the runtime's load() — it
+    // re-reads + re-scans the body, caches the result, and returns
+    // PERMISSION when the scanner refuses the skill. Treat any
+    // non-success as a hard stop: Tier 2 must not outlive Tier 1
+    // admission.
+    const skillLoad = await load(name);
+    if (!skillLoad.ok) {
+      if (skillLoad.error.code === "PERMISSION") return deniedReference(name, refPath);
+      return { ok: false, error: skillLoad.error } satisfies Result<string, KoiError>;
+    }
+    if (!stillAuthorized()) return revoked();
+
     const result = await loadReference(name, entry.dirPath, refPath, {
       scanner,
       blockOnSeverity: resolvedConfig.blockOnSeverity,
