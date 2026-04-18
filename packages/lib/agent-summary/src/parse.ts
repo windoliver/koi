@@ -1,22 +1,14 @@
 import { z } from "zod";
+import type { Action, Status } from "./types.js";
 
-const ACTION_SCHEMA = z.strictObject({
-  kind: z.enum(["tool_call", "edit", "decision"]),
-  name: z.string(),
-  paths: z.array(z.string()).optional(),
-  detail: z.string().optional(),
-});
-
-const CONTENT_SCHEMA = z.strictObject({
-  goal: z.string(),
-  status: z.enum(["succeeded", "partial", "failed"]),
-  actions: z.array(ACTION_SCHEMA),
-  outcomes: z.array(z.string()),
-  errors: z.array(z.string()),
-  learnings: z.array(z.string()),
-});
-
-export type ParsedContent = z.infer<typeof CONTENT_SCHEMA>;
+export interface ParsedContent {
+  readonly goal: string;
+  readonly status: Status;
+  readonly actions: readonly Action[];
+  readonly outcomes: readonly string[];
+  readonly errors: readonly string[];
+  readonly learnings: readonly string[];
+}
 
 export interface ParseError {
   readonly reason: string;
@@ -25,6 +17,23 @@ export interface ParseError {
 export type ParseResult =
   | { readonly ok: true; readonly value: ParsedContent }
   | { readonly ok: false; readonly error: ParseError };
+
+function contentSchema(): z.ZodType<ParsedContent> {
+  const actionSchema = z.strictObject({
+    kind: z.enum(["tool_call", "edit", "decision"]),
+    name: z.string(),
+    paths: z.array(z.string()).optional(),
+    detail: z.string().optional(),
+  });
+  return z.strictObject({
+    goal: z.string(),
+    status: z.enum(["succeeded", "partial", "failed"]),
+    actions: z.array(actionSchema),
+    outcomes: z.array(z.string()),
+    errors: z.array(z.string()),
+    learnings: z.array(z.string()),
+  });
+}
 
 export function parseOutput(raw: string): ParseResult {
   const cleaned = stripScratchpad(stripCodeFence(raw.trim()));
@@ -39,7 +48,7 @@ export function parseOutput(raw: string): ParseResult {
       },
     };
   }
-  const result = CONTENT_SCHEMA.safeParse(parsed);
+  const result = contentSchema().safeParse(parsed);
   if (!result.success) {
     return {
       ok: false,
