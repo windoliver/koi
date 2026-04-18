@@ -44,21 +44,39 @@ const DEFAULT_PROTOCOLS: readonly string[] = ["http:", "https:"];
 
 // dns.lookup goes through the OS resolver, which may filter or cache — that
 // undermines the "every A/AAAA" assumption the rebinding defence relies on.
-// Query both record types directly via dns.resolve4 / dns.resolve6 so the
-// classifier sees the full authoritative address set. ENOTFOUND on a single
-// family is non-fatal as long as the other family returned addresses.
+// Query both record families directly via dns.resolve4 / dns.resolve6.
+//
+// Partial-failure handling: a real resolver error (TIMEOUT, SERVFAIL, etc.)
+// on EITHER family fails the whole lookup. If resolve4 succeeded but
+// resolve6 timed out, an attacker hostname with a public A and a private
+// AAAA would otherwise slip through — we'd never see the AAAA record but
+// the actual fetch-time resolution still could. Only the "no records of
+// this family" condition (ENODATA / ENOTFOUND) is treated as benign.
+const BENIGN_NO_RECORD_CODES: ReadonlySet<string> = new Set(["ENODATA", "ENOTFOUND"]);
+
+async function resolveFamily(
+  fn: (h: string) => Promise<string[]>,
+  hostname: string,
+): Promise<string[]> {
+  try {
+    return await fn(hostname);
+  } catch (e: unknown) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string" && BENIGN_NO_RECORD_CODES.has(code)) return [];
+    throw e;
+  }
+}
+
 const defaultDnsResolver: DnsResolver = async (hostname) => {
-  // If the hostname is already an IP literal, short-circuit — resolve4/6
-  // reject literals with ENOTFOUND, even though lookup() accepts them.
+  // IP literals short-circuit — resolve4/6 reject literals with ENOTFOUND.
   if (isIP(hostname) !== 0) return [hostname];
 
-  const results = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
-  const addresses: string[] = [];
-  for (const r of results) {
-    if (r.status === "fulfilled") addresses.push(...r.value);
-  }
+  const [v4, v6] = await Promise.all([
+    resolveFamily(dns.resolve4, hostname),
+    resolveFamily(dns.resolve6, hostname),
+  ]);
   // Dedupe while preserving first-seen order.
-  return [...new Set(addresses)];
+  return [...new Set([...v4, ...v6])];
 };
 
 function isIpLiteral(hostname: string): boolean {
