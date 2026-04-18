@@ -234,6 +234,25 @@ function basenameTrusted(t: string): string {
 }
 
 /**
+ * Absolute paths outside the trusted allowlist (`/nix/store/...`,
+ * `/tmp/git`, `./sudo`, etc.) are neither safe to basename (would
+ * leak trust to an attacker-dropped binary) nor safe to keep as a
+ * distinct prefix (loses subcommand-specific deny rules on the
+ * real binary name). Route them to the `!complex` sentinel so
+ * operators must explicitly opt in per-command.
+ */
+function isUntrustedPathBinary(t: string): boolean {
+  if (!t.includes("/")) return false;
+  for (const prefix of TRUSTED_BIN_PREFIXES) {
+    if (t.startsWith(prefix)) {
+      const rest = t.slice(prefix.length);
+      if (rest.length > 0 && !rest.includes("/")) return false; // trusted
+    }
+  }
+  return true;
+}
+
+/**
  * Peel a known wrapper's options according to its spec. Returns the new
  * index into `tokens`, or `-1` when an unknown flag is encountered (caller
  * should treat as fail-closed and preserve the wrapper as the head).
@@ -570,10 +589,13 @@ function hasShellControlOperators(s: string): boolean {
     }
     if (c === ";" || c === "|" || c === "&" || c === "`" || c === "\n") return true;
     if (c === "$" && s[i + 1] === "(") return true;
-    // Redirections: >, >>, <, <<, <<<, and process substitution <(...),
-    // >(...). These can perform side effects or hidden command execution
-    // under a benign-looking prefix; fail closed.
-    if (c === ">" || c === "<") return true;
+    // Process substitution `<(…)` / `>(…)` executes a nested command.
+    // Plain redirections (`>`, `>>`, `<`, `<<<`) are intentionally NOT
+    // treated as complex: `echo hi > /tmp/x` is one command with a
+    // side effect and should keep its natural prefix (operators who
+    // want to restrict file writes can deny `bash:echo` directly or
+    // use sibling packages for target-aware checks).
+    if ((c === "<" || c === ">") && s[i + 1] === "(") return true;
     // Subshell: `(sudo rm)` — `(` always triggers (function-def and
     // subshell are both compound-executing forms).
     if (c === "(" || c === ")") return true;
@@ -696,11 +718,16 @@ export function prefix(tokens: readonly string[]): string {
   if (first === undefined) return "";
   // Fail-closed sentinel from normalize (e.g. flagged `command -p`).
   if (first === UNSAFE_SENTINEL_TOKEN) return UNSAFE_PREFIX;
-  // ARITY lookup uses the loose basename so untrusted path-qualified
-  // binaries (`./git`, `/tmp/git`) still pick up the correct arity and
-  // produce `./git push` / `/tmp/git push` as the permission key. The
-  // path stays visible in the output so a rule for the trusted binary
-  // doesn't leak to the untrusted path.
+  // Untrusted absolute/relative paths (`./git`, `/tmp/sudo`,
+  // `/nix/store/.../bin/sudo`, `~/bin/git`) must not share a
+  // permission key with the trusted binary of the same name, but
+  // keeping them as a distinct path-qualified prefix would let them
+  // slip past subcommand deny rules (`deny: bash:sudo*` would miss
+  // `bash:/nix/store/.../bin/sudo`). Route through the `!complex`
+  // sentinel so operators opt in per-command.
+  if (isUntrustedPathBinary(first)) return UNSAFE_PREFIX;
+  // ARITY lookup uses the loose basename for the remaining trusted
+  // paths already handled by normalize's basenameTrusted.
   const firstKey = basenameLoose(first);
 
   // Peel per-command global options (git -c, docker --context, etc.)

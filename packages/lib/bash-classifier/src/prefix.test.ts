@@ -88,21 +88,24 @@ describe("prefix", () => {
     expect(prefix(["/usr/local/bin/node", "app.js"])).toBe("node");
   });
 
-  test("preserves UNTRUSTED path-qualified binaries as distinct prefixes (round 7)", () => {
-    // Policy rule `bash:git push` must NOT apply to a user-dropped
-    // ./git or /tmp/git — those are attacker-controllable and should
-    // be separate permission keys.
-    expect(prefix(["./git", "push"])).toBe("./git push");
-    expect(prefix(["./node_modules/.bin/jest"])).toBe("./node_modules/.bin/jest");
-    expect(prefix(["/tmp/git", "push"])).toBe("/tmp/git push");
-    expect(prefix(["~/bin/git", "push"])).toBe("~/bin/git push");
+  test("UNTRUSTED path-qualified binaries fail closed to !complex (loop-3)", () => {
+    // Attacker-dropped `./git`, Nix-store binaries, /tmp/... binaries
+    // must not share a permission key with the trusted binary nor slip
+    // past subcommand deny rules by keeping the full path. Route to
+    // the `!complex` bucket so operators opt in explicitly.
+    expect(prefix(["./git", "push"])).toBe("!complex");
+    expect(prefix(["./node_modules/.bin/jest"])).toBe("!complex");
+    expect(prefix(["/tmp/git", "push"])).toBe("!complex");
+    expect(prefix(["~/bin/git", "push"])).toBe("!complex");
+    expect(prefix(["/nix/store/abc/bin/sudo", "rm"])).toBe("!complex");
+    expect(prefix(["/opt/homebrew/Cellar/git/2.45/bin/git", "push"])).toBe("!complex");
   });
 
   test("basenames after a wrapper too (trusted paths only)", () => {
     expect(prefix(["env", "/usr/bin/sudo", "rm"])).toBe("sudo");
     expect(prefix(["command", "/usr/local/bin/git", "status"])).toBe("git status");
-    // Untrusted path preserves through the wrapper too.
-    expect(prefix(["env", "./sudo", "rm"])).toBe("./sudo");
+    // Untrusted path after a wrapper → also fails closed.
+    expect(prefix(["env", "./sudo", "rm"])).toBe("!complex");
   });
 
   test("does NOT peel `sudo` or shell interpreters (they are actions)", () => {
@@ -425,11 +428,13 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`FOO='x; y' git push`)).toBe("git push");
   });
 
-  test("untrusted path-qualified shell is NOT an interpreter hop", () => {
-    // `./bash` is attacker-writable; must not inherit policy of the
-    // inner command via -c unwrap.
-    expect(canonicalPrefix(`./bash -c "sudo rm"`)).toBe("./bash");
-    expect(canonicalPrefix(`/tmp/bash -c "sudo rm"`)).toBe("/tmp/bash");
+  test("untrusted path-qualified shell fails closed to !complex (loop-3)", () => {
+    // `./bash` is attacker-writable; must neither unwrap (would
+    // inherit inner-command policy) nor emit a distinct path-qualified
+    // prefix (would slip past subcommand denies). Fail closed to
+    // `!complex` so operators opt in explicitly.
+    expect(canonicalPrefix(`./bash -c "sudo rm"`)).toBe("!complex");
+    expect(canonicalPrefix(`/tmp/bash -c "sudo rm"`)).toBe("!complex");
   });
 
   test("trusted path-qualified shell IS an interpreter hop", () => {
@@ -446,22 +451,23 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`env FOO=1 timeout --signal=KILL 30 bash -c "rm -rf /"`)).toBe("rm");
   });
 
-  test("stdout redirect returns !complex", () => {
-    expect(canonicalPrefix(`echo hi >/tmp/x`)).toBe("!complex");
-    expect(canonicalPrefix(`git status > /tmp/out`)).toBe("!complex");
+  test("single-command redirects keep their natural prefix (loop-3)", () => {
+    // Plain file redirections are side effects on one command, not
+    // multi-command composition. Let operators control them via
+    // prefix rules (`allow: bash:echo`, `deny: bash:git status`) or
+    // target-aware sibling packages rather than collapsing them all
+    // into the `!complex` bucket.
+    expect(canonicalPrefix(`echo hi >/tmp/x`)).toBe("echo");
+    expect(canonicalPrefix(`git status > /tmp/out`)).toBe("git status");
+    expect(canonicalPrefix(`sudo tee /etc/sysctl.conf < config`)).toBe("sudo");
+    expect(canonicalPrefix(`echo oops >>/etc/passwd`)).toBe("echo");
   });
 
-  test("stdin redirect returns !complex", () => {
-    expect(canonicalPrefix(`sudo tee /etc/sysctl.conf < config`)).toBe("!complex");
-  });
-
-  test("process substitution returns !complex", () => {
+  test("process substitution <(…) / >(…) still returns !complex", () => {
+    // These DO execute a nested command — safety net remains.
     expect(canonicalPrefix(`cat <(sudo rm)`)).toBe("!complex");
     expect(canonicalPrefix(`diff <(ls) <(ls /tmp)`)).toBe("!complex");
-  });
-
-  test("append redirect returns !complex", () => {
-    expect(canonicalPrefix(`echo oops >>/etc/passwd`)).toBe("!complex");
+    expect(canonicalPrefix(`tee >(sudo cat)`)).toBe("!complex");
   });
 
   test("redirections inside quoted strings do NOT trigger !complex", () => {
