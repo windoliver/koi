@@ -62,6 +62,7 @@ export const L2_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/mcp",
   "@koi/middleware-audit",
   "@koi/middleware-memory-recall",
+  "@koi/middleware-strict-agentic",
   "@koi/plugins",
   "@koi/sandbox-os",
   "@koi/session",

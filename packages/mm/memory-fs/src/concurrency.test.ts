@@ -225,6 +225,70 @@ describe("write critical section", () => {
   });
 });
 
+describe("upsert critical section", () => {
+  test("10 concurrent upserts same (name,type) force=false → 1 created, 9 conflict", async () => {
+    const dir = makeDir("upsert-no-force");
+    const store = createMemoryStore({ dir });
+
+    const input = {
+      name: "Concurrent Upsert",
+      description: "Same name and type",
+      type: "user" as const,
+      content: "Content for the concurrent upsert no-force test scenario.",
+    };
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, () => store.upsert(input, { force: false })),
+    );
+
+    const created = results.filter((r) => r.action === "created");
+    const conflict = results.filter((r) => r.action === "conflict");
+    expect(created.length).toBe(1);
+    expect(conflict.length).toBe(9);
+
+    // On disk there is exactly one .md file for the record.
+    const all = await store.list();
+    expect(all.length).toBe(1);
+  });
+
+  test("10 concurrent upserts same (name,type) force=true → all updated, 1 file", async () => {
+    const dir = makeDir("upsert-force");
+    const store = createMemoryStore({ dir });
+
+    // Seed a record so every concurrent upsert hits a name+type match.
+    const seed = await store.upsert(
+      {
+        name: "Force Target",
+        description: "Seed record",
+        type: "project" as const,
+        content: "Initial seed content for concurrent force upsert test scenario.",
+      },
+      { force: false },
+    );
+    expect(seed.action).toBe("created");
+
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        store.upsert(
+          {
+            name: "Force Target",
+            description: `Update ${String(i)}`,
+            type: "project" as const,
+            content: `Force-updated content iteration ${String(i)} with unique marker fff${String(i)}fff and padding.`,
+          },
+          { force: true },
+        ),
+      ),
+    );
+
+    expect(results.every((r) => r.action === "updated")).toBe(true);
+
+    // On disk there is exactly one .md file for the record.
+    const all = await store.list();
+    expect(all.length).toBe(1);
+  });
+});
+
 describe("file-lock stale ownership", () => {
   test("dead-PID lock is stolen on next write", async () => {
     const dir = makeDir("stale-pid");

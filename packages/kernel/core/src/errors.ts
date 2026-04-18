@@ -54,7 +54,27 @@ export type KoiErrorCode =
    *
    * retryable: true — the same operation should succeed after authorization.
    */
-  | "AUTH_REQUIRED";
+  | "AUTH_REQUIRED"
+  /**
+   * A capacity limit has been reached (e.g., maxWorkers in Supervisor, connection pool
+   * exhausted, quota exceeded). The caller may retry once capacity is freed.
+   *
+   * Distinct from RATE_LIMIT (time-window throttle). RESOURCE_EXHAUSTED means a hard
+   * resource cap was hit — retrying sooner than capacity is freed will fail again.
+   *
+   * retryable: true — retrying after capacity is freed will succeed.
+   */
+  | "RESOURCE_EXHAUSTED"
+  /**
+   * A required backend or service is not currently available (e.g., no registered
+   * WorkerBackend can handle a spawn request, a downstream dependency is unreachable).
+   *
+   * Distinct from NOT_FOUND (resource doesn't exist) and EXTERNAL (call failed).
+   * UNAVAILABLE means the capability exists but is not reachable right now.
+   *
+   * retryable: false — caller must resolve configuration or wait for service recovery.
+   */
+  | "UNAVAILABLE";
 
 export interface KoiError {
   readonly code: KoiErrorCode;
@@ -83,6 +103,8 @@ export const RETRYABLE_DEFAULTS: Readonly<Record<KoiErrorCode, boolean>> = Objec
   INTERNAL: false,
   STALE_REF: false,
   AUTH_REQUIRED: true, // retryable — operation succeeds once the user authorizes
+  RESOURCE_EXHAUSTED: true, // retryable — retry once capacity is freed
+  UNAVAILABLE: false, // not retryable — caller must fix config or wait for service recovery
 });
 
 export type Result<T, E = KoiError> =

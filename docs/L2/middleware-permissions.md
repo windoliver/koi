@@ -909,6 +909,96 @@ If `metadata.callId` were allowed to leak into policy-visible surfaces, either (
 
 `DEFAULT_APPROVAL_TIMEOUT_MS = 30_000` remains the engine-side fail-closed deadline for agent-to-agent / non-interactive callers. The interactive TUI opts into a longer 60-minute window by passing `approvalTimeoutMs: 60 * 60 * 1000` (see `@koi/tui` + `packages/meta/cli/src/tui-runtime.ts`). Long enough that no realistic human decision window triggers it, but still finite so a wedged renderer / stuck bridge eventually aborts the turn rather than hanging forever. `Number.POSITIVE_INFINITY` is accepted by `validatePermissionsConfig` for tests that need truly unbounded waits.
 
+---
+
+## Soft Deny — Recoverable Denials (#1650)
+
+The `PermissionDecision` type now includes an optional `disposition` field on deny outcomes. Rules may opt into soft-deny by setting `on_deny: "soft"` — the middleware returns a synthetic `ToolResponse` instead of throwing, allowing the agent to adapt.
+
+### `disposition` Field on Deny Decisions
+
+When `decision.effect === "deny"`:
+
+```typescript
+// Hard (default, pre-#1650 behavior)
+{ effect: "deny", reason: "...", disposition: "hard" }
+
+// Soft (opt-in, returns synthetic response to agent)
+{ effect: "deny", reason: "...", disposition: "soft" }
+
+// Pre-#1650 records have no disposition field (treat as "hard")
+{ effect: "deny", reason: "..." }  // disposition absent
+```
+
+The `disposition` field is **only present on deny outcomes**. Allow and ask decisions never have it.
+
+### Audit Trail and Denial Records
+
+`AuditEntry` schema **remains unchanged** — no new top-level fields. The disposition is visible in the audit metadata only when relevant.
+
+The `DenialRecord` type (for observability) gains two optional fields:
+
+```typescript
+interface DenialRecord {
+  readonly toolId: string;
+  readonly reason: string;
+  readonly timestamp: number;
+  readonly principal: string;
+  readonly turnIndex: number;
+  readonly source: DenialSource;
+  readonly queryKey?: string;
+
+  // New in #1650:
+  readonly softness?: "soft" | "hard" | undefined;
+  readonly origin?: "native" | "soft-conversion" | undefined;
+}
+```
+
+**`softness`** — the disposition of the deny:
+- `"soft"` — opted into soft-deny via `on_deny: "soft"`
+- `"hard"` — native hard deny or promoted from soft (when cap exceeded)
+- Absent — pre-#1650 records still in memory (treat as `"hard"`)
+
+**`origin`** — where the record came from:
+- `"native"` — produced by the rule evaluator, user approval denial, fail-closed, or pre-existing escalation
+- `"soft-conversion"` — promoted from soft to hard when exceeding per-turn cap or unkeyable fail-closed
+- Absent — pre-#1650 records
+
+### Soft-Deny Log vs. Denial Tracker
+
+Soft-deny events are recorded in two separate structures:
+
+**`SoftDenyLog`** (internal, NOT exported):
+- Per-session append-only log of soft-deny events
+- Bounded by a 1024-entry FIFO (same size as `DenialTracker`)
+- Not exposed via public API
+- Used only for observability and debug views within the package
+
+**`DenialTracker`** (public, existing):
+- Records **hard denies only** (including promoted soft→hard)
+- Backs Mechanism A's session-wide escalation prefilter
+- Queryable via `getAll()`, `getByTool()`, etc.
+- Cleared on session end
+
+Keeping soft-deny events isolated prevents high-volume recoverable probes from evicting hard-deny history that escalation depends on.
+
+### Mechanism A Prefilter Exclusion
+
+The session-wide escalation prefilter (Mechanism A, existing feature) now **explicitly excludes** denial records where:
+
+```typescript
+record.origin === "soft-conversion" || record.softness === "soft"
+```
+
+This prevents per-turn soft-deny cap events from feeding into session-wide escalation thresholds. A tool that is soft-denied repeatedly within a turn (but under the cap) will not trigger automatic session-wide hard-blocking.
+
+### Cross-Tool Rotation Edge Case
+
+When the agent rotates between multiple tools all hitting the same soft-deny rule, each tool's cache key maintains its own per-turn counter. If many tools probe the same underlying resource, the combined soft-deny volume can exceed the per-turn cap × tool count before hitting the engine's max-iterations limit.
+
+**This is a known limitation.** Classifier-driven query normalization (filed separately, not yet implemented) will address this by coalescing repeated probes on the same resource into a single cache key, closing the gap at the policy level.
+
+---
 
 ## Changelog
 

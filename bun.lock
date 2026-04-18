@@ -291,6 +291,14 @@
         "@opentelemetry/api": "^1.9.0",
       },
     },
+    "packages/lib/middleware-planning": {
+      "name": "@koi/middleware-planning",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
     "packages/lib/middleware-report": {
       "name": "@koi/middleware-report",
       "version": "0.0.0",
@@ -304,6 +312,21 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-strict-agentic": {
+      "name": "@koi/middleware-strict-agentic",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
+    "packages/lib/middleware-task-anchor": {
+      "name": "@koi/middleware-task-anchor",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/model-registry": {
@@ -546,8 +569,10 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-task-anchor": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/permissions": "workspace:*",
@@ -610,6 +635,7 @@
         "@koi/context-manager": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/cost-aggregator": "workspace:*",
+        "@koi/daemon": "workspace:*",
         "@koi/decision-ledger": "workspace:*",
         "@koi/dream": "workspace:*",
         "@koi/engine": "workspace:*",
@@ -618,6 +644,7 @@
         "@koi/fs-local": "workspace:*",
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
+        "@koi/governance-core": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -636,8 +663,11 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
+        "@koi/middleware-strict-agentic": "workspace:*",
+        "@koi/middleware-task-anchor": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
@@ -752,6 +782,13 @@
         "@koi/core": "workspace:*",
       },
     },
+    "packages/net/daemon": {
+      "name": "@koi/daemon",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/net/mcp": {
       "name": "@koi/mcp",
       "version": "0.0.0",
@@ -790,6 +827,14 @@
     },
     "packages/security/audit-sink-sqlite": {
       "name": "@koi/audit-sink-sqlite",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/governance-core": {
+      "name": "@koi/governance-core",
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
@@ -1138,6 +1183,8 @@
 
     "@koi/cost-aggregator": ["@koi/cost-aggregator@workspace:packages/lib/cost-aggregator"],
 
+    "@koi/daemon": ["@koi/daemon@workspace:packages/net/daemon"],
+
     "@koi/decision-ledger": ["@koi/decision-ledger@workspace:packages/lib/decision-ledger"],
 
     "@koi/dream": ["@koi/dream@workspace:packages/mm/dream"],
@@ -1167,6 +1214,8 @@
     "@koi/fs-scoped": ["@koi/fs-scoped@workspace:packages/lib/fs-scoped"],
 
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
+
+    "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
@@ -1206,9 +1255,15 @@
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
 
+    "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
+
     "@koi/middleware-report": ["@koi/middleware-report@workspace:packages/lib/middleware-report"],
 
     "@koi/middleware-semantic-retry": ["@koi/middleware-semantic-retry@workspace:packages/lib/middleware-semantic-retry"],
+
+    "@koi/middleware-strict-agentic": ["@koi/middleware-strict-agentic@workspace:packages/lib/middleware-strict-agentic"],
+
+    "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
