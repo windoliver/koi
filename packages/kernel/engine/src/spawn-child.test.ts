@@ -6,10 +6,12 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineOutput,
+  GovernanceController,
+  GovernanceEvent,
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, GOVERNANCE, toolToken } from "@koi/core";
 import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import type { CascadingTermination, InMemoryRegistry, ProcessTree } from "@koi/engine-reconcile";
 import {
@@ -85,11 +87,12 @@ function mockTool(name: string): Tool {
 }
 
 /**
- * Build a mock parent Agent entity with optional tools.
+ * Build a mock parent Agent entity with optional components map.
  * Tools must be keyed as `tool:<name>` to match the SubsystemToken convention.
+ * Pass a GovernanceController keyed by `GOVERNANCE` for gov-8 tests.
  */
-function mockParentAgent(depth = 0, tools?: ReadonlyMap<string, unknown>): Agent {
-  const components = tools ?? new Map<string, unknown>();
+function mockParentAgent(depth = 0, components?: ReadonlyMap<string, unknown>): Agent {
+  const comps = components ?? new Map<string, unknown>();
   return {
     pid: {
       id: agentId("parent-1"),
@@ -99,20 +102,55 @@ function mockParentAgent(depth = 0, tools?: ReadonlyMap<string, unknown>): Agent
     },
     manifest: { name: "parent", version: "0.1.0", model: { name: "test" } },
     state: "running",
-    component: <T>(tok: SubsystemToken<T>) => components.get(tok as string) as T | undefined,
-    has: (tok) => components.has(tok as string),
-    hasAll: (...tokens) => tokens.every((t) => components.has(t as string)),
+    component: <T>(tok: SubsystemToken<T>) => comps.get(tok as string) as T | undefined,
+    has: (tok) => comps.has(tok as string),
+    hasAll: (...tokens) => tokens.every((t) => comps.has(t as string)),
     query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> => {
       const result = new Map<SubsystemToken<T>, T>();
-      for (const [key, value] of components) {
+      for (const [key, value] of comps) {
         if (key.startsWith(prefix)) {
           result.set(key as SubsystemToken<T>, value as T);
         }
       }
       return result;
     },
-    components: () => components as ReadonlyMap<string, unknown>,
+    components: () => comps as ReadonlyMap<string, unknown>,
   };
+}
+
+/**
+ * Mock GovernanceController exposing only the methods spawn-child reads
+ * (record + minimal stubs for the rest of the interface). The spy array
+ * captures every event passed to record() in order.
+ */
+function mockGovernanceController(): {
+  controller: GovernanceController;
+  recorded: GovernanceEvent[];
+} {
+  const recorded: GovernanceEvent[] = [];
+  const controller: GovernanceController = {
+    check: (_variable: string) => ({ ok: true }),
+    checkAll: () => ({ ok: true }),
+    record: (event) => {
+      recorded.push(event);
+    },
+    snapshot: () => ({
+      timestamp: Date.now(),
+      readings: [],
+      healthy: true,
+      violations: [],
+    }),
+    variables: () => new Map(),
+    reading: (_variable: string) => undefined,
+  };
+  return { controller, recorded };
+}
+
+/** Build a parent agent with a GovernanceController attached. */
+function mockParentAgentWithGovernance(depth = 0): { parent: Agent; recorded: GovernanceEvent[] } {
+  const { controller, recorded } = mockGovernanceController();
+  const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+  return { parent: mockParentAgent(depth, components), recorded };
 }
 
 /** Build minimal SpawnChildOptions with sensible defaults. */
@@ -629,5 +667,40 @@ describe("spawnChildAgent error handling", () => {
       // Ledger was released before re-throw
       expect(ledger.activeCount()).toBe(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gov-8: GovernanceController spawn / spawn_release wiring
+// ---------------------------------------------------------------------------
+
+describe("spawnChildAgent governance event wiring", () => {
+  let registry: InMemoryRegistry;
+
+  beforeEach(() => {
+    registry = createInMemoryRegistry();
+  });
+
+  afterEach(async () => {
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("records spawn event with child depth on parent's controller", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    const spawnEvents = recorded.filter((e) => e.kind === "spawn");
+    expect(spawnEvents).toHaveLength(1);
+    const [event] = spawnEvents;
+    expect(event).toEqual({ kind: "spawn", depth: result.childPid.depth });
+  });
+
+  test("records spawn event with depth = parent.depth + 1 for nested spawn", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(2);
+    await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    const spawnEvents = recorded.filter((e) => e.kind === "spawn");
+    expect(spawnEvents).toHaveLength(1);
+    expect(spawnEvents[0]).toEqual({ kind: "spawn", depth: 3 });
   });
 });
