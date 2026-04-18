@@ -332,20 +332,56 @@ describe("createSafeFetcher", () => {
     ).rejects.toThrow(/not supported/);
   });
 
-  test("does not pin HTTP when multiple IPs are returned (preserves failover)", async () => {
+  test("multi-IP HTTP pins to first resolved IP and falls over to next on connect error", async () => {
+    const multiResolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const attempts: string[] = [];
+    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      attempts.push(url);
+      const headers = new Headers(init?.headers);
+      // First IP fails to connect; second IP succeeds.
+      if (url === "http://93.184.216.34/x") throw new TypeError("ECONNREFUSED");
+      if (url === "http://93.184.216.35/x") {
+        expect(headers.get("host")).toBe("dual.example.com");
+        return new Response("ok", { status: 200 });
+      }
+      throw new Error(`unexpected ${url}`);
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: multiResolver });
+    const res = await safeFetch("http://dual.example.com/x");
+    expect(res.status).toBe(200);
+    expect(attempts).toEqual(["http://93.184.216.34/x", "http://93.184.216.35/x"]);
+  });
+
+  test("multi-IP HTTP pins each validated IP (closes rebind window)", async () => {
     const multiResolver = async (hostname: string): Promise<readonly string[]> => {
       if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
       throw new Error(`ENOTFOUND ${hostname}`);
     };
     const { fn, calls } = recordingFetch({
-      "http://dual.example.com/x": new Response("ok", { status: 200 }),
+      "http://93.184.216.34/x": new Response("ok", { status: 200 }),
     });
     const safeFetch = createSafeFetcher(fn, { dnsResolver: multiResolver });
     await safeFetch("http://dual.example.com/x");
     expect(calls).toHaveLength(1);
-    // URL kept hostname — runtime decides which IP to connect to.
-    expect(calls[0]?.url).toBe("http://dual.example.com/x");
-    expect(calls[0]?.headers["host"]).toBeUndefined();
+    // URL is rewritten to first IP; Host header carries the original hostname.
+    expect(calls[0]?.url).toBe("http://93.184.216.34/x");
+    expect(calls[0]?.headers["host"]).toBe("dual.example.com");
+  });
+
+  test("multi-IP pin throws if all IPs unreachable", async () => {
+    const multiResolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const fn = (async () => {
+      throw new TypeError("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: multiResolver });
+    await expect(safeFetch("http://dual.example.com/x")).rejects.toThrow(/ECONNREFUSED/);
   });
 
   test("rejects blocked URL before consuming any stream body bytes", async () => {
@@ -369,7 +405,7 @@ describe("createSafeFetcher", () => {
     expect(readCount).toBeLessThanOrEqual(1);
   });
 
-  test("aborts stream buffering when signal is triggered", async () => {
+  test("aborts stream buffering when signal is already triggered", async () => {
     const { fn } = recordingFetch({
       "https://public.example.com/up": new Response("ok", { status: 200 }),
     });
@@ -389,6 +425,37 @@ describe("createSafeFetcher", () => {
         signal: controller.signal,
       }),
     ).rejects.toThrow(/aborted/i);
+  });
+
+  test("interrupts an in-flight stream read when signal aborts mid-buffer", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const controller = new AbortController();
+    // Stream never produces more data until we abort; reader.read() is stuck pending.
+    let cancelCalled = false;
+    const stream = new ReadableStream({
+      pull(_c) {
+        // Intentionally never resolve — simulates a stalled upstream.
+        return new Promise<void>(() => undefined);
+      },
+      cancel() {
+        cancelCalled = true;
+      },
+    });
+    const promise = safeFetch("https://public.example.com/up", {
+      method: "POST",
+      body: stream,
+      signal: controller.signal,
+    });
+    // Abort after a microtask so the read is already pending.
+    await Promise.resolve();
+    controller.abort();
+    await expect(promise).rejects.toThrow(/aborted/i);
+    // Give the reader.cancel() a tick to fire.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(cancelCalled).toBe(true);
   });
 
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {

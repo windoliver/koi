@@ -99,7 +99,7 @@ The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.
 
 ## DNS rebinding — what's pinned and what isn't
 
-`isSafeUrl` resolves the hostname with `dns.lookup({ all: true })` and blocks if any A/AAAA record is private. `createSafeFetcher` then closes the rebind window for **HTTP** by rewriting the outbound URL to the validated IP and setting a `Host:` header — the TCP socket connects to the exact address the validator approved, no second resolution possible.
+`isSafeUrl` resolves the hostname with `dns.lookup({ all: true })` and blocks if any A/AAAA record is private. `createSafeFetcher` then closes the rebind window for **HTTP** by rewriting the outbound URL to the validated IP and setting a `Host:` header — the TCP socket connects to the exact address the validator approved, no second resolution possible. When a hostname resolves to multiple IPs, all of them were individually validated, and the wrapper tries them in order on connect failure so normal multi-address failover still works.
 
 **HTTPS cannot be pinned the same way** — rewriting the host-part of an `https://` URL to an IP breaks TLS SNI and certificate hostname verification, which are a much stronger protection than DNS pinning. For HTTPS the wrapper therefore leaves the URL hostname intact and accepts a sub-second TOCTOU window between `isSafeUrl` and the socket connect. Attacker-controlled low-TTL DNS could in theory resolve to a different address on the actual connect than on the check; in practice this is mitigated by OS/resolver caching and the fact that HTTPS also requires a valid certificate for the connected IP.
 

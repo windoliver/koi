@@ -20,13 +20,13 @@
  *      credentials, referrer, etc.).
  *   6. On cross-origin redirects strips authorization / cookie /
  *      proxy-authorization / proxy-authenticate.
- *   7. HTTP pinning: when the validated hostname resolves to EXACTLY one
- *      IP, the outbound request is rewritten to that IP + Host header so
- *      the TCP socket cannot be rebound between check and connect. When
- *      multiple IPs are returned, the original hostname is used so that
- *      the runtime's normal multi-address failover still works (all IPs
- *      were already validated via isBlockedIp). HTTPS is never pinned
- *      (TLS SNI / cert verification).
+ *   7. HTTP pinning: after validation, rewrite the outbound URL to each
+ *      resolved IP (with a Host header preserving the original hostname)
+ *      so the TCP socket cannot be DNS-rebound between check and connect.
+ *      When multiple IPs pass validation, they are tried sequentially on
+ *      connect failure so multi-A/AAAA failover still works — each attempt
+ *      goes to an already-validated address, so rebind is not possible.
+ *      HTTPS is never pinned (TLS SNI / cert verification).
  *   8. Throws on block, on exceeding maxRedirects, or on oversized bodies.
  *
  * Default base is global fetch. Callers pass their own to inject for testing.
@@ -64,6 +64,30 @@ function extractUrl(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | null | undefined): Promise<T> {
+  if (signal === undefined || signal === null) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(new DOMException("url-safety: body buffering aborted", "AbortError"));
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
 async function bufferBody(
   body: FetchInit["body"],
   maxBytes: number,
@@ -86,7 +110,7 @@ async function bufferBody(
       if (signal?.aborted === true) {
         throw new DOMException("url-safety: body buffering aborted", "AbortError");
       }
-      const { value, done } = await reader.read();
+      const { value, done } = await raceAbort(reader.read(), signal);
       if (done) break;
       if (value === undefined) continue;
       total += value.byteLength;
@@ -197,23 +221,63 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
 }
 
 /**
- * Pin an http:// request to the validated IP so the TCP connect cannot
- * be rebound between isSafeUrl and the socket. Only pins when EXACTLY
- * one IP is returned — with multiple IPs, the runtime's normal address
- * failover is preserved (all IPs were validated already). Returns the
- * URL to actually pass to fetch; mutates `headers` to carry the Host.
+ * Build a pinned URL for a single IP. `parsed` is the already-parsed
+ * original URL so the caller can reuse it. Mutates `headers` to set Host.
  */
-function pinHttpToIp(url: string, check: SafeUrlResult, headers: Headers): string {
-  if (!check.ok) return url;
-  if (check.resolvedIps.length !== 1) return url;
+function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
+  headers.set("host", originalUrl.host);
+  const p = new URL(originalUrl.href);
+  p.hostname = ip.includes(":") ? `[${ip}]` : ip;
+  return p.href;
+}
+
+function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
+  if (!check.ok) return undefined;
+  if (check.resolvedIps.length === 0) return undefined;
   const parsed = new URL(url);
-  if (parsed.protocol !== "http:") return url;
-  const ip = check.resolvedIps[0];
-  if (ip === undefined) return url;
-  if (parsed.hostname === ip) return url; // already an IP literal
-  headers.set("host", parsed.host);
-  parsed.hostname = ip.includes(":") ? `[${ip}]` : ip;
-  return parsed.href;
+  if (parsed.protocol !== "http:") return undefined;
+  // Already an IP literal — hostname matches one of the resolvedIps; no rewrite.
+  if (check.resolvedIps.includes(parsed.hostname)) return undefined;
+  return parsed;
+}
+
+/**
+ * Perform a single outbound fetch with HTTP IP pinning.
+ *
+ *   HTTPS or IP-literal: pass through to `base(url, init)`.
+ *   HTTP with N resolved IPs: try each IP in order, rewriting the URL to
+ *     that IP + setting the Host header. On a thrown error (connect /
+ *     TLS / transient network) fall through to the next IP. If the fetch
+ *     returns a Response (any status), that IP succeeded — return it.
+ *     Closes the DNS-rebind window AND preserves multi-address failover
+ *     (all IPs were validated already, so every attempt is safe).
+ *
+ * AbortError short-circuits the loop.
+ */
+async function fetchWithPin(
+  base: typeof fetch,
+  url: string,
+  check: SafeUrlResult,
+  state: HopState,
+): Promise<Response> {
+  const parsed = shouldPinHttp(url, check);
+  if (parsed === undefined) {
+    state.headers.delete("host");
+    return base(url, toInit(state));
+  }
+
+  let lastError: unknown;
+  for (const ip of check.ok ? check.resolvedIps : []) {
+    const pinnedUrl = rewriteToIp(parsed, ip, state.headers);
+    try {
+      return await base(pinnedUrl, toInit(state));
+    } catch (e: unknown) {
+      // AbortError must propagate — never silently retry a cancelled request.
+      if (e instanceof DOMException && e.name === "AbortError") throw e;
+      lastError = e;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("url-safety: all pinned IPs failed");
 }
 
 export function createSafeFetcher(
@@ -248,8 +312,7 @@ export function createSafeFetcher(
         }
       }
 
-      const pinnedUrl = pinHttpToIp(state.url, check, state.headers);
-      const response = await base(pinnedUrl, toInit(state));
+      const response = await fetchWithPin(base, state.url, check, state);
 
       if (response.status < 300 || response.status >= 400) {
         return response;
