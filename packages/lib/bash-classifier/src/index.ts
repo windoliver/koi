@@ -8,5 +8,5 @@
 export { ARITY } from "./arity.js";
 export { classifyCommand } from "./classify.js";
 export { DANGEROUS_PATTERNS } from "./patterns.js";
-export { canonicalPrefix, prefix } from "./prefix.js";
+export { canonicalPrefix, prefix, UNSAFE_PREFIX } from "./prefix.js";
 export type { Category, ClassifyResult, DangerousPattern, Severity } from "./types.js";

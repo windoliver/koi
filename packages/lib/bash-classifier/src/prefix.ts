@@ -23,22 +23,73 @@
 
 import { ARITY } from "./arity.js";
 
-// Wrappers whose leading occurrence is peeled off to expose the real
-// command. These do NOT include `sudo` (which is itself a security-
-// relevant action) or shells like `bash` / `sh` (whose `-c` form is
-// flagged by the structural pattern registry).
-const WRAPPERS: ReadonlySet<string> = new Set([
-  "env",
-  "command",
-  "builtin",
-  "exec",
-  "nohup",
-  "time",
-  "timeout",
-  "stdbuf",
-  "nice",
-  "ionice",
-]);
+/** Per-wrapper option grammar. Unknown flags fail closed. */
+interface WrapperSpec {
+  readonly argFlags: ReadonlySet<string>; // flag + next token
+  readonly boolFlags: ReadonlySet<string>; // flag only
+}
+
+const WRAPPER_SPECS: Readonly<Record<string, WrapperSpec>> = {
+  env: {
+    argFlags: new Set(["-u", "--unset", "-S", "--split-string", "-C", "--chdir"]),
+    boolFlags: new Set(["-i", "--ignore-environment", "-0", "--null", "--help", "--version"]),
+  },
+  nice: {
+    argFlags: new Set(["-n", "--adjustment"]),
+    boolFlags: new Set(["--help", "--version"]),
+  },
+  ionice: {
+    argFlags: new Set([
+      "-c",
+      "-n",
+      "-p",
+      "-P",
+      "-u",
+      "--class",
+      "--classdata",
+      "--pid",
+      "--pgid",
+      "--uid",
+    ]),
+    boolFlags: new Set(["-t", "--ignore", "-h", "--help", "--version"]),
+  },
+  stdbuf: {
+    argFlags: new Set(["-i", "-o", "-e", "--input", "--output", "--error"]),
+    boolFlags: new Set(["--help", "--version"]),
+  },
+  timeout: {
+    argFlags: new Set(["-k", "-s", "--kill-after", "--signal"]),
+    boolFlags: new Set([
+      "-f",
+      "--foreground",
+      "--preserve-status",
+      "-v",
+      "--verbose",
+      "--help",
+      "--version",
+    ]),
+  },
+  time: {
+    argFlags: new Set(["-o", "-f", "--format", "--output", "--log-file"]),
+    boolFlags: new Set([
+      "-p",
+      "-v",
+      "-q",
+      "-a",
+      "--portability",
+      "--verbose",
+      "--quiet",
+      "--append",
+    ]),
+  },
+};
+
+/**
+ * Wrappers without structured options (or with trivial ones). We peel the
+ * wrapper itself but refuse to skip any flag: a leading flag after one of
+ * these typically indicates a form we haven't modeled, so we fail closed.
+ */
+const FLAGLESS_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "exec", "nohup"]);
 
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
@@ -49,22 +100,50 @@ function basename(t: string): string {
 }
 
 /**
- * Consume leading option tokens, pairing each single-letter short flag
- * (`-n`, `-c`, `-s`, `-k`, `-p`) with the following token as its arg.
- * Conservative: over-consumes a benign extra token rather than leaving
- * a raw flag as the new leading prefix, which would let an attacker
- * fall back into the generic bash permission bucket.
+ * Peel a known wrapper's options according to its spec. Returns the new
+ * index into `tokens`, or `-1` when an unknown flag is encountered (caller
+ * should treat as fail-closed and preserve the wrapper as the head).
  */
-function consumeFlagsAndArgs(tokens: readonly string[], from: number): number {
+function peelWrapperOptions(tokens: readonly string[], from: number, spec: WrapperSpec): number {
   let i = from;
   while (i < tokens.length) {
     const t = tokens[i] ?? "";
     if (!t.startsWith("-")) break;
-    i++;
-    // Single-letter short flag (-n / -c / -k etc.) — assume it takes an
-    // arg and consume the next token too. --long=val is self-contained;
-    // --long or -xy (bundled short) we treat as flag-only.
-    if (/^-[a-zA-Z]$/.test(t) && i < tokens.length) i++;
+    // --long=value is single-token; only allow if the long-form is known.
+    if (t.startsWith("--") && t.includes("=")) {
+      const name = t.slice(0, t.indexOf("="));
+      if (spec.argFlags.has(name) || spec.boolFlags.has(name)) {
+        i++;
+        continue;
+      }
+      return -1;
+    }
+    if (spec.argFlags.has(t)) {
+      i += 2;
+      continue;
+    }
+    if (spec.boolFlags.has(t)) {
+      i++;
+      continue;
+    }
+    // Bundled short form: `-oL`, `-i0` etc., where `-o` / `-i` are known
+    // arg-taking short flags and the rest of the token is the inline value.
+    let bundled = false;
+    for (const flag of spec.argFlags) {
+      if (
+        flag.length === 2 &&
+        flag.startsWith("-") &&
+        !flag.startsWith("--") &&
+        t.startsWith(flag) &&
+        t.length > 2
+      ) {
+        i++;
+        bundled = true;
+        break;
+      }
+    }
+    if (bundled) continue;
+    return -1;
   }
   return i;
 }
@@ -80,22 +159,41 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
   const head = tokens[i];
   if (head === undefined) return tokens.slice(i);
   const base = basename(head);
-  if (WRAPPERS.has(base)) {
+
+  if (FLAGLESS_WRAPPERS.has(base)) {
+    const wrapperEnd = i + 1;
+    const next = tokens[wrapperEnd] ?? "";
+    // If the next token is a flag, we haven't modeled it — fail closed by
+    // preserving the wrapper as the head token.
+    if (next.startsWith("-")) return [base, ...tokens.slice(wrapperEnd)];
+    return tokens.slice(wrapperEnd);
+  }
+
+  const spec = WRAPPER_SPECS[base];
+  if (spec !== undefined) {
+    const wrapperStart = i;
     i++;
+    // env: also consume post-wrapper VAR=value assignments
     if (base === "env") {
       while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
-    } else if (base === "nice" || base === "ionice" || base === "stdbuf") {
-      // nice -n <pri>, ionice -c <class> -n <level>, stdbuf -oL -eL …
-      i = consumeFlagsAndArgs(tokens, i);
-    } else if (base === "timeout") {
-      // `timeout` accepts flags before and/or after the duration, e.g.
-      // `timeout --signal=KILL 30 cmd` or `timeout 30 --preserve-status cmd`.
-      i = consumeFlagsAndArgs(tokens, i);
+    }
+    const afterOpts1 = peelWrapperOptions(tokens, i, spec);
+    if (afterOpts1 < 0) {
+      // Unknown flag — fail closed: preserve wrapper as head.
+      return [base, ...tokens.slice(wrapperStart + 1)];
+    }
+    i = afterOpts1;
+    if (base === "timeout") {
+      // Optional duration arg between flag groups.
       if (i < tokens.length && /^\d/.test(tokens[i] ?? "")) i++;
-      i = consumeFlagsAndArgs(tokens, i);
+      const afterOpts2 = peelWrapperOptions(tokens, i, spec);
+      if (afterOpts2 < 0) return [base, ...tokens.slice(wrapperStart + 1)];
+      i = afterOpts2;
     }
     return tokens.slice(i);
   }
+
+  // Not a wrapper — basename the head and leave the rest alone.
   return [base, ...tokens.slice(i + 1)];
 }
 
@@ -256,20 +354,66 @@ function extractShellDashCArg(cmdLine: string): string | null {
 const MAX_INTERP_DEPTH = 4;
 
 /**
- * Canonical permission prefix from a raw command string, unwrapping
- * shell-interpreter hops (`bash -c "sudo rm"` → prefix of `sudo rm`).
+ * Sentinel prefix emitted when the command line contains shell control
+ * operators (`;`, `&&`, `||`, `|`, `&`, command substitution), or exceeds
+ * the safe interpreter-unwrap budget. Operators that want to permit
+ * complex compound commands must opt in explicitly with a rule against
+ * `!complex`. Defaults deny safely.
+ */
+export const UNSAFE_PREFIX = "!complex";
+
+/**
+ * Returns `true` if the unquoted portion of `s` contains any shell
+ * control operator that would compose multiple simple commands into one
+ * line: `;`, `&&`, `||`, `|`, `&`, `$(…)`, or backticks. Ignores
+ * operators inside single- or double-quoted strings.
+ */
+function hasShellControlOperators(s: string): boolean {
+  let quote: "'" | '"' | null = null;
+  const len = s.length;
+  for (let i = 0; i < len; i++) {
+    const c = s[i];
+    if (c === undefined) break;
+    if (quote !== null) {
+      if (c === quote) {
+        quote = null;
+      } else if (c === "\\" && quote === '"' && i + 1 < len) {
+        i++;
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      continue;
+    }
+    if (c === "\\" && i + 1 < len) {
+      i++;
+      continue;
+    }
+    if (c === ";" || c === "|" || c === "&" || c === "`") return true;
+    if (c === "$" && s[i + 1] === "(") return true;
+  }
+  return false;
+}
+
+/**
+ * Canonical permission prefix from a raw command string. Unwraps
+ * shell-interpreter hops (`bash -c "sudo rm"` → prefix of `sudo rm`) and
+ * applies wrapper normalization.
  *
- * Bounded recursion depth prevents adversarial nesting
- * (`bash -c "sh -c 'bash -c ...'"`) from pinning the extractor. When the
- * budget is exhausted, falls back to the outer prefix.
+ * Fails closed — returns `UNSAFE_PREFIX` ("!complex") — when:
+ *   - The command contains shell control operators (`;`, `&&`, `||`, `|`,
+ *     `&`, `$(…)`, backticks) — can't safely canonicalize to one prefix.
+ *   - Interpreter-hop recursion exceeds `MAX_INTERP_DEPTH` — adversarial
+ *     nesting should not silently collapse to the outer prefix.
  */
 export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   const trimmed = cmdLine.trim();
   if (trimmed.length === 0) return "";
-  if (depth < MAX_INTERP_DEPTH) {
-    const inner = extractShellDashCArg(trimmed);
-    if (inner !== null) return canonicalPrefix(inner, depth + 1);
-  }
+  if (hasShellControlOperators(trimmed)) return UNSAFE_PREFIX;
+  if (depth >= MAX_INTERP_DEPTH) return UNSAFE_PREFIX;
+  const inner = extractShellDashCArg(trimmed);
+  if (inner !== null) return canonicalPrefix(inner, depth + 1);
   return prefix(trimmed.split(/\s+/));
 }
 

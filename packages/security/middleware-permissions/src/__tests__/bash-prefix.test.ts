@@ -438,6 +438,60 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     });
   }
 
+  test("compound command (semicolon) resolves to `bash:!complex` and is denied by default", async () => {
+    // Default-deny applied because no rule matches `bash:!complex`.
+    const denyByDefault = ruleBackend([]);
+    const mwDefault = createPermissionsMiddleware({
+      backend: denyByDefault,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+    await expect(
+      mwDefault.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "git status; rm -rf /tmp" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+  });
+
+  test("compound command escapes narrow allow rule (only !complex rule allows it)", async () => {
+    // Operator allows a narrow prefix. Compound commands do NOT match it.
+    const narrow = ruleBackend(["bash:git *"]);
+    const mwNarrow = createPermissionsMiddleware({
+      backend: narrow,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+    // `git status` alone: allowed
+    await mwNarrow.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "git status" }),
+      noopHandler,
+    );
+    // `git status; rm -rf /tmp`: resource is bash:!complex, NOT matched
+    await expect(
+      mwNarrow.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "git status; rm -rf /tmp" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+  });
+
+  test("bash -c wrapping a compound command is caught as !complex", async () => {
+    const backend = ruleBackend(["bash:git *"]);
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+    await expect(
+      mw.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: `bash -c "git status && sudo rm"` }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+  });
+
   test("benign env-prefixed command still allowed", async () => {
     const result = await mw.wrapToolCall?.(
       makeTurnContext(),

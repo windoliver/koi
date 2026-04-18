@@ -200,6 +200,31 @@ createPermissionsMiddleware({
 - `npm run build -- --watch` → `bash:npm run build` (arity 3 for `npm run`)
 - `git log --oneline` → `bash:git log` (matches `bash:git *` — goes to ask)
 - `sudo apt install` → `bash:sudo` (matches `bash:sudo*` — denied)
+- `FOO=1 /usr/bin/sudo rm` → `bash:sudo` (wrappers + env + absolute path
+  normalized)
+- `bash -c "git push"` → `bash:git push` (interpreter hop unwrapped)
+
+### Fail-closed sentinel: `bash:!complex`
+
+The classifier fails closed for any command it cannot canonicalize to a
+single action. The prefix becomes the literal `!complex` and the
+resource key is `bash:!complex`. This covers:
+
+- **Compound commands** with shell control operators: `;`, `&&`, `||`,
+  `|`, `&`, `$(…)`, backticks.
+- **Unknown wrapper flags** (e.g. `env -Z foo sudo rm`): the wrapper
+  itself becomes the prefix (`bash:env`) rather than silently skipping
+  into a misleading inner command.
+- **Deeply nested interpreter hops** beyond the 4-level unwrap budget.
+
+Operators who want to permit compound commands must opt in explicitly:
+
+```typescript
+{ allow: ["bash:!complex"] }   // accept compound / unparseable forms
+{ deny:  ["bash:!complex"] }   // explicit deny for observability
+```
+
+With no rule on `bash:!complex`, default-deny applies (fail-safe).
 
 Caveats:
 - Enrichment runs only at `wrapToolCall` (execution), not at tool-list
@@ -207,8 +232,12 @@ Caveats:
   are gated at execution time.
 - Returning `undefined` or an empty string from the resolver falls back to
   the plain tool name — safe default.
-- Audit entries and denial tracking remain keyed by the plain tool ID, not
-  the enriched resource.
+- Denial tracking, soft-deny log, and `always-allow` grants (both session
+  and persistent) are keyed on the enriched resource, so policy decisions
+  on `bash:git push` do not leak to `bash:rm`.
+- `revokePersistentApproval(userId, agentId, resource)` expects the
+  enriched resource — use `listPersistentApprovals()` to discover stored
+  keys.
 
 See `@koi/bash-classifier` for the `ARITY` table and `DANGEROUS_PATTERNS`
 registry.
