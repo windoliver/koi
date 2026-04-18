@@ -744,4 +744,17 @@ describe("spawnChildAgent governance event wiring", () => {
     // even if it did. Assert exactly one release event.
     expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
   });
+
+  test("records spawn_release via dispose-override when no registry provided", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    // No `registry` option → spawn-child wires cleanup through dispose()
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    expect(recorded.filter((e) => e.kind === "spawn")).toHaveLength(1);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(0);
+
+    await result.runtime.dispose();
+
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
 });
