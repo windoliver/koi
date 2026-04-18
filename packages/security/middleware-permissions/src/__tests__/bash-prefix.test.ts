@@ -817,6 +817,108 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     expect(approvalHandler).toHaveBeenCalled();
   });
 
+  test("medium-severity dangers (sudo, bash -c, chown root) also ratchet to ask (loop-4)", async () => {
+    // Ratchet covers every severity level now, not just high/critical.
+    // Otherwise `sudo`, `su`, `bash -c`, `chown root` ride on broad
+    // `allow: bash:*` rules and bypass human review.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash:*"], deny: [], ask: [] },
+    });
+    const approvals: string[] = [];
+    const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+      approvals.push(req.toolId);
+      return { kind: "deny", reason: "medium-severity needs review" };
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    for (const cmd of [
+      "sudo apt install git",
+      "bash -c 'echo hi'",
+      "chown root:root /tmp/foo",
+      "su alice",
+    ]) {
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: cmd }), noopHandler),
+      ).rejects.toThrow("needs review");
+    }
+    expect(approvals).toHaveLength(4);
+  });
+
+  test("quoted-fragment obfuscation also ratchets to ask (loop-4)", async () => {
+    // Bash concatenates adjacent quotes: `py''thon -c` executes as
+    // `python -c`. Classifier runs on a shell-normalized form so the
+    // dangerous pattern still matches and the ratchet fires.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash:*"], deny: [], ask: [] },
+    });
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "obfuscated payload",
+      }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    await expect(
+      mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("bash", {
+          command: `py''thon -c "import os; os.system('rm')"`,
+        }),
+        noopHandler,
+      ),
+    ).rejects.toThrow("obfuscated payload");
+    expect(approvalHandler).toHaveBeenCalled();
+  });
+
+  test("redirections escalate to !complex and bypass benign-prefix allows (loop-4)", async () => {
+    // `allow: bash:echo` must NOT authorize
+    // `echo attacker >> ~/.ssh/authorized_keys`. The redirect routes
+    // to the `!complex` bucket (default-deny) regardless of the
+    // echo-specific allow.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash:echo", "bash:cat"], deny: [], ask: [] },
+    });
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+
+    await expect(
+      mw.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "echo attacker >> ~/.ssh/authorized_keys" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+
+    await expect(
+      mw.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "cat secret > /tmp/leak" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+
+    // Benign (non-redirected) echo still works under allow: bash:echo.
+    await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "echo hello world" }),
+      noopHandler,
+    );
+  });
+
   test("broad allow + dangerous command → ratcheted to ask (loop-3)", async () => {
     // Operator has `allow: bash:python` — benign `python script.py`
     // should execute. But `python -c "os.system(...)"` matches the

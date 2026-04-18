@@ -11,7 +11,7 @@
  */
 
 import { DANGEROUS_PATTERNS } from "./patterns.js";
-import { prefix } from "./prefix.js";
+import { prefix, shellTokenize } from "./prefix.js";
 import type { ClassifyResult, DangerousPattern, Severity } from "./types.js";
 
 const SEVERITY_ORDER: Readonly<Record<Severity, number>> = {
@@ -38,10 +38,34 @@ function tokenize(cmdLine: string): readonly string[] {
   return trimmed.split(/\s+/);
 }
 
+/**
+ * Shell-normalized form of the command: tokens shell-tokenized (strips
+ * surrounding quotes and collapses `py''thon`, `e""val` style quoted-
+ * fragment concatenation) then rejoined with single spaces. Matching
+ * patterns against this in addition to the raw string closes the
+ * obvious quoting-obfuscation bypass where an adversary writes
+ * `py''thon -c '...'` and evades the `\bpython\b` regex.
+ */
+function shellNormalized(cmdLine: string): string {
+  const toks = shellTokenize(cmdLine);
+  return toks.join(" ");
+}
+
 export function classifyCommand(cmdLine: string): ClassifyResult {
   const tokens = tokenize(cmdLine);
   const cmdPrefix = prefix(tokens);
-  const matched = DANGEROUS_PATTERNS.filter((p) => p.regex.test(cmdLine));
+  const normalized = shellNormalized(cmdLine);
+  // Match against BOTH the raw string (preserves operators/spacing
+  // patterns like `| sh`) AND the shell-normalized form (closes
+  // quoted-fragment obfuscation). Union the matches.
+  const seen = new Set<string>();
+  const matched: DangerousPattern[] = [];
+  for (const p of DANGEROUS_PATTERNS) {
+    if ((p.regex.test(cmdLine) || p.regex.test(normalized)) && !seen.has(p.id)) {
+      seen.add(p.id);
+      matched.push(p);
+    }
+  }
   return {
     prefix: cmdPrefix,
     matchedPatterns: matched,

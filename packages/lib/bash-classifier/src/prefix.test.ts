@@ -467,16 +467,17 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`env FOO=1 timeout --signal=KILL 30 bash -c "rm -rf /"`)).toBe("rm");
   });
 
-  test("single-command redirects keep their natural prefix (loop-3)", () => {
-    // Plain file redirections are side effects on one command, not
-    // multi-command composition. Let operators control them via
-    // prefix rules (`allow: bash:echo`, `deny: bash:git status`) or
-    // target-aware sibling packages rather than collapsing them all
-    // into the `!complex` bucket.
-    expect(canonicalPrefix(`echo hi >/tmp/x`)).toBe("echo");
-    expect(canonicalPrefix(`git status > /tmp/out`)).toBe("git status");
-    expect(canonicalPrefix(`sudo tee /etc/sysctl.conf < config`)).toBe("sudo");
-    expect(canonicalPrefix(`echo oops >>/etc/passwd`)).toBe("echo");
+  test("redirections fail closed to !complex (loop-4)", () => {
+    // Redirect targets are hidden side effects. `allow: bash:echo`
+    // must NOT silently authorize `echo attacker >> ~/.ssh/
+    // authorized_keys` or `cat secret > /tmp/leak`. Route to the
+    // `!complex` bucket so operators opt in per-command (or via
+    // target-aware sibling packages).
+    expect(canonicalPrefix(`echo hi >/tmp/x`)).toBe("!complex");
+    expect(canonicalPrefix(`git status > /tmp/out`)).toBe("!complex");
+    expect(canonicalPrefix(`sudo tee /etc/sysctl.conf < config`)).toBe("!complex");
+    expect(canonicalPrefix(`echo oops >>/etc/passwd`)).toBe("!complex");
+    expect(canonicalPrefix(`cat /etc/passwd <<< sentinel`)).toBe("!complex");
   });
 
   test("process substitution <(…) / >(…) still returns !complex", () => {

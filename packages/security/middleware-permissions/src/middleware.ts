@@ -1483,17 +1483,19 @@ export function createPermissionsMiddleware(
         }
         decision = combined;
       }
-      // Dangerous-command ratchet: if the raw command matches a
-      // high/critical DANGEROUS_PATTERN and the combined decision is
-      // "allow", upgrade to "ask" so a human reviews it. Broad allow
-      // rules like `allow: bash:python` therefore cannot silently
-      // authorize `python -c "os.system('rm')"`. Explicit deny still
-      // wins; existing "ask" remains.
+      // Dangerous-command ratchet: if the raw command matches ANY
+      // DANGEROUS_PATTERN and the combined decision is "allow",
+      // upgrade to "ask" so a human reviews it. This includes
+      // medium-severity trust-boundary crossings like `sudo`, `su`,
+      // `chown root`, `bash -c`. Broad allow rules like
+      // `allow: bash:*` therefore cannot silently authorize
+      // structural-danger forms. Explicit deny still wins; existing
+      // "ask" is preserved.
       if (decision.effect === "allow" && config.resolveBashCommand !== undefined) {
         const raw = config.resolveBashCommand(request.toolId, request.input);
         if (raw !== undefined && raw.trim().length > 0) {
           const danger = classifyCommand(raw.trim());
-          if (danger.severity === "critical" || danger.severity === "high") {
+          if (danger.severity !== null) {
             const categories = Array.from(new Set(danger.matchedPatterns.map((p) => p.category)));
             decision = {
               effect: "ask",

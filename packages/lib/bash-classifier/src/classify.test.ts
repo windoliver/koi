@@ -135,4 +135,21 @@ describe("classifyCommand", () => {
     expect(classifyCommand("docker compose up -d").prefix).toBe("docker compose up");
     expect(classifyCommand("kubectl apply -f x.yaml").prefix).toBe("kubectl apply");
   });
+
+  // ------- loop-4: quoted-fragment obfuscation -------
+
+  test("adjacent-quoted interpreters like `py''thon -c` still match (loop-4)", () => {
+    // Bash concatenates adjacent quoted fragments into one token at
+    // execution time. Policy evaluation must match the same
+    // normalized form so `py''thon -c …` and `e""val …` cannot
+    // bypass dangerous-pattern detection with a trivial quoting
+    // trick.
+    expect(classifyCommand(`py''thon -c "import os; os.system('rm')"`).severity).toBe("high");
+    expect(classifyCommand(`e""val "$payload"`).severity).toBe("high");
+    expect(classifyCommand(`s''udo rm -rf /tmp`).matchedPatterns.map((p) => p.id)).toContain(
+      "sudo",
+    );
+    expect(classifyCommand(`/usr/bin/s''udo rm`).severity).toBe("medium");
+    expect(classifyCommand(`no''de -e "require('child_process').exec('x')"`).severity).toBe("high");
+  });
 });

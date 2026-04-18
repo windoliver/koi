@@ -382,7 +382,7 @@ const SHELL_INTERP = /^(?:ba|z|da|a)?sh$/;
  * heredocs, or other complex shell grammar — those caller-visible commands
  * are caught by the structural `DANGEROUS_PATTERNS` regex set instead.
  */
-function shellTokenize(s: string): readonly string[] {
+export function shellTokenize(s: string): readonly string[] {
   const tokens: string[] = [];
   let buf = "";
   let inBuf = false;
@@ -576,13 +576,14 @@ function hasShellControlOperators(s: string): boolean {
     }
     if (c === ";" || c === "|" || c === "&" || c === "`" || c === "\n") return true;
     if (c === "$" && s[i + 1] === "(") return true;
-    // Process substitution `<(…)` / `>(…)` executes a nested command.
-    // Plain redirections (`>`, `>>`, `<`, `<<<`) are intentionally NOT
-    // treated as complex: `echo hi > /tmp/x` is one command with a
-    // side effect and should keep its natural prefix (operators who
-    // want to restrict file writes can deny `bash:echo` directly or
-    // use sibling packages for target-aware checks).
-    if ((c === "<" || c === ">") && s[i + 1] === "(") return true;
+    // Redirections (`>`, `>>`, `<`, `<<<`) and process substitution
+    // (`<(…)`, `>(…)`) both perform hidden side effects. The classifier
+    // does not inspect redirect targets, so `echo x >> ~/.ssh/
+    // authorized_keys` or `cat secret > /tmp/leak` could otherwise
+    // ride on a benign `allow: bash:echo` / `allow: bash:cat`. Route
+    // any redirection/process-substitution form to the `!complex`
+    // bucket so operators must opt in per-command.
+    if (c === ">" || c === "<") return true;
     // Subshell: `(sudo rm)` — `(` always triggers (function-def and
     // subshell are both compound-executing forms).
     if (c === "(" || c === ")") return true;
