@@ -2253,6 +2253,44 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
+  // 8b. url-safety-block: @koi/tools-web routed through @koi/url-safety.
+  // Permissions bypass at the policy layer, so the request reaches the tool;
+  // the tool's DNS-free preflightBlockReason (BLOCKED_HOSTS lookup in
+  // @koi/url-safety) rejects `localhost` with a PERMISSION result. Locks in
+  // that the block reason flows through tool-preflight → tool → model.
+  {
+    name: "url-safety-block",
+    prompt:
+      'Use the web_fetch tool on "http://localhost:3000/admin" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
+  // 8c. url-safety-dns-block: exercises the DEEPER defence line —
+  // createSafeFetcher's DNS-resolved IP check. `localtest.me` is a public
+  // DNS name that resolves to 127.0.0.1, so it passes the tool's DNS-free
+  // preflight (not in BLOCKED_HOSTS, not in BLOCKED_HOST_SUFFIXES, not an
+  // IP literal) but fails @koi/url-safety's isSafeUrl once DNS returns
+  // 127.0.0.1. Executor maps the rejection to PERMISSION with the
+  // "url-safety: Host <name> resolves to blocked IP <ip>" wording. Locks in
+  // that the DNS-rebind defence reaches the model verbatim — a regression
+  // that bypasses the resolved-IP check would let localtest.me succeed.
+  {
+    name: "url-safety-dns-block",
+    prompt:
+      'Use the web_fetch tool on "http://localtest.me/" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
   // 9. task-board: @koi/tasks + @koi/task-tools exercised — create + list via real createTaskTools
   {
     name: "task-board",

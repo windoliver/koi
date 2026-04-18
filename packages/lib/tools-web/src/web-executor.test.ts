@@ -1,6 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { DnsResolverFn } from "./url-policy.js";
-import type { SearchProvider } from "./web-executor.js";
+import type { DnsResolverFn, SearchProvider } from "./web-executor.js";
 import { createWebExecutor } from "./web-executor.js";
 
 // ---------------------------------------------------------------------------
@@ -195,6 +194,88 @@ describe("createWebExecutor.fetch initial SSRF gate", () => {
 // fetch — retryable flag respects HTTP method safety
 // ---------------------------------------------------------------------------
 
+describe("createWebExecutor.fetch allowHttps policy on redirects", () => {
+  test("refuses http→https redirect when allowHttps is false", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(u);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/final" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+    const result = await executor.fetch("http://example.com/start");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toMatch(/protocol/i);
+    }
+    expect(mutableCalls).toHaveLength(1);
+  });
+});
+
+describe("createWebExecutor.fetch DNS-vs-policy error separation", () => {
+  test("transient DNS resolution failure maps to EXTERNAL (retryable), not PERMISSION", async () => {
+    const failingResolver = async () => {
+      throw Object.assign(new Error("SERVFAIL"), { code: "SERVFAIL" });
+    };
+    const fetchFn = mock(
+      async () => new Response("should not reach", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: failingResolver,
+      allowHttps: true,
+    });
+    const result = await executor.fetch("https://example.com/x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).toMatch(/DNS/i);
+    }
+  });
+
+  test("permanent DNS failure (ENOTFOUND / no addresses) is EXTERNAL but NOT retryable", async () => {
+    const notFoundResolver = async () => {
+      throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+    };
+    const fetchFn = mock(async () => new Response("x")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: notFoundResolver,
+      allowHttps: true,
+    });
+    const result = await executor.fetch("https://nonexistent.example.com/x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      // Permanent — retrying won't help, don't trigger the retry loop.
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  test("real SSRF block still maps to PERMISSION (non-retryable)", async () => {
+    const fetchFn = mock(
+      async () => new Response("should not reach", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    // localhost is blocked by name, not by DNS.
+    const result = await executor.fetch("http://localhost/admin");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+});
+
 describe("createWebExecutor.fetch retryable", () => {
   test("GET failure is retryable", async () => {
     const fetchFn = mock(async () => {
@@ -259,6 +340,40 @@ describe("createWebExecutor.fetch retryable", () => {
 // ---------------------------------------------------------------------------
 
 describe("createWebExecutor.fetch redirect SSRF", () => {
+  test("blocks redirect to .internal suffix BEFORE following", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(reqUrl);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://service.internal/leak" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://public.example.com/start");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+    // Redirect target was rejected — only the initial hop executed.
+    expect(mutableCalls).toHaveLength(1);
+  });
+
+  test("blocks redirect to .local suffix BEFORE following", async () => {
+    const fetchFn = mock(async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://printer.local/admin" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://public.example.com/start");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
   test("blocks redirect to localhost BEFORE following", async () => {
     const mutableCalls: string[] = [];
     const fetchFn = mock(async (input: string | URL | Request) => {
@@ -280,7 +395,6 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("Redirect");
       expect(result.error.message).toContain("localhost");
     }
     expect(mutableCalls).toHaveLength(1);
@@ -400,8 +514,8 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const headers = init?.headers as Record<string, string> | undefined;
-      mutableHeaderSnaps.push({ url: reqUrl, Host: headers?.Host });
+      const host = new Headers(init?.headers).get("host") ?? undefined;
+      mutableHeaderSnaps.push({ url: reqUrl, Host: host });
       if (reqUrl.includes(PUBLIC_IP) || reqUrl.includes("a.example")) {
         return new Response(null, {
           status: 302,
@@ -434,8 +548,8 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe("EXTERNAL");
-      expect(result.error.message).toContain("Too many redirects");
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toMatch(/exceeded.*redirects/i);
     }
   });
 
@@ -497,7 +611,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://origin-a.com/start") {
         return new Response(null, {
           status: 302,
@@ -518,14 +632,15 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     });
 
     expect(result.ok).toBe(true);
+    // Headers are lowercased by the WHATWG Headers API.
     expect(mutableHeaderSnaps[0]).toEqual({
-      Authorization: "Bearer secret",
-      Cookie: "session=abc",
-      "Proxy-Authorization": "Basic xyz",
-      "Content-Type": "text/plain",
+      authorization: "Bearer secret",
+      cookie: "session=abc",
+      "proxy-authorization": "Basic xyz",
+      "content-type": "text/plain",
     });
     expect(mutableHeaderSnaps[1]).toEqual({
-      "Content-Type": "text/plain",
+      "content-type": "text/plain",
     });
   });
 
@@ -534,7 +649,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://example.com/a") {
         return new Response(null, {
           status: 302,
@@ -550,8 +665,8 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     });
 
     expect(mutableHeaderSnaps[1]).toEqual({
-      Authorization: "Bearer secret",
-      "X-Custom": "keep",
+      authorization: "Bearer secret",
+      "x-custom": "keep",
     });
   });
 
@@ -560,7 +675,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://a.com/") {
         return new Response(null, {
           status: 302,
@@ -899,7 +1014,7 @@ describe("createWebExecutor.fetch HTTPS", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("private/reserved");
+      expect(result.error.message).toMatch(/blocked IP|resolves to blocked/i);
     }
     expect(fetchFn).not.toHaveBeenCalled();
   });
