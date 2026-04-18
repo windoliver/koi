@@ -230,8 +230,8 @@ export function createAgentSummary(deps: AgentSummaryDeps): AgentSummary {
       actions: parsed.value.actions.map((a) => ({
         kind: a.kind,
         name: a.name,
-        ...(a.paths !== undefined ? { paths: a.paths } : {}),
-        ...(a.detail !== undefined ? { detail: a.detail } : {}),
+        ...(a.paths !== undefined && a.paths !== null ? { paths: a.paths } : {}),
+        ...(a.detail !== undefined && a.detail !== null ? { detail: a.detail } : {}),
       })),
       outcomes: parsed.value.outcomes,
       errors: parsed.value.errors,
