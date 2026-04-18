@@ -350,11 +350,13 @@ function extractShellDashCArg(cmdLine: string): string | null {
 
   const first = tokens[0];
   if (first === undefined) return null;
-  // Shell-interpreter detection intentionally uses the loose basename:
-  // `./bash -c "sudo rm"` or `/tmp/bash -c …` is still a shell hop we
-  // want to unwrap (and then recurse into the inner command, which
-  // itself gets path-qualified handling).
-  if (!SHELL_INTERP.test(basenameLoose(first))) return null;
+  // Interpreter-hop unwrap is only safe for a trusted shell binary:
+  // `/usr/bin/bash -c "sudo rm"` → inherits policy of the inner command.
+  // An attacker-writable `./bash` or `/tmp/bash` is arbitrary code and
+  // must not collapse into a trusted-bash rule, so we use the strict
+  // basename here. Untrusted path-qualified shells remain as their own
+  // prefix (`./bash`, `/tmp/bash`) for the caller to rule on explicitly.
+  if (!SHELL_INTERP.test(basenameTrusted(first))) return null;
 
   let i = 1;
   while (i < tokens.length) {
@@ -455,7 +457,12 @@ export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   if (depth >= MAX_INTERP_DEPTH) return UNSAFE_PREFIX;
   const inner = extractShellDashCArg(trimmed);
   if (inner !== null) return canonicalPrefix(inner, depth + 1);
-  return prefix(trimmed.split(/\s+/));
+  // Use shell-aware tokenization so quoted env assignments like
+  // `FOO="x y" sudo rm` stay as a single token and the ENV_ASSIGN
+  // strip in normalize() can peel them correctly. Naive whitespace
+  // split would fragment the quoted value into multiple tokens and
+  // let a crafted quote leak as the derived prefix.
+  return prefix(shellTokenize(trimmed));
 }
 
 export function prefix(tokens: readonly string[]): string {

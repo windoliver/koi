@@ -382,6 +382,33 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix("git status \\\norigin main")).toBe("git status");
   });
 
+  // ------- round 9: quoted top-level tokenization + trusted-path shell-interp -------
+
+  test("quoted env assignments at the top level are tokenized correctly", () => {
+    // `FOO="x y" sudo rm` — the value contains a space. Naive split
+    // would fragment the quoted value and make the leading "y\"" leak
+    // as the prefix. Shell-aware tokenization keeps the assignment
+    // atomic so it strips cleanly.
+    expect(canonicalPrefix(`FOO="x y" sudo rm`)).toBe("sudo");
+    expect(canonicalPrefix(`env FOO="x y" BAR='a b' sudo rm`)).toBe("sudo");
+    // `;` inside a quoted env value is NOT a control operator — it's
+    // part of the string value assigned to FOO. The command is still
+    // one command and the prefix is `git push`.
+    expect(canonicalPrefix(`FOO='x; y' git push`)).toBe("git push");
+  });
+
+  test("untrusted path-qualified shell is NOT an interpreter hop", () => {
+    // `./bash` is attacker-writable; must not inherit policy of the
+    // inner command via -c unwrap.
+    expect(canonicalPrefix(`./bash -c "sudo rm"`)).toBe("./bash");
+    expect(canonicalPrefix(`/tmp/bash -c "sudo rm"`)).toBe("/tmp/bash");
+  });
+
+  test("trusted path-qualified shell IS an interpreter hop", () => {
+    expect(canonicalPrefix(`/usr/bin/bash -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`/bin/sh -c "git push"`)).toBe("git push");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that
