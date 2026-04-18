@@ -636,6 +636,8 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 
 > **Spawn crash guard + record synthesis (#1855):** `set_spawn_terminal` no longer no-ops when no prior `spawn_requested` was recorded — it synthesizes a `finishedSpawns` record from fallback `agentName`/`description` metadata carried on the action. This recovers UI visibility for child agents whose `spawn_requested` dispatch was lost (e.g., `store.dispatch` threw). The `TuiAction` type gains optional `agentName` and `description` fields on `set_spawn_terminal`. Both reducer implementations (immutable `reduce.ts` and mutable `mutations.ts`) handle the synthesis path. The `onSpawnEvent` host callback in `tui-command.ts` is wrapped in try-catch as defense-in-depth.
 
+> **Overlay Enter preventDefault (#1898):** `SelectOverlay` / `SlashOverlay` now route their consumed keys through a new `consumeSelectOverlayKey` helper that calls `key.preventDefault()` whenever the underlying `handleSelectOverlayKey` returns `true` (Enter / Esc / Tab / Up / Down / Ctrl+P / Ctrl+N). Without preventDefault, a focused modal's Enter also reached InputArea's OpenTUI `<textarea>` and inserted `"\n"` into its buffer; after the modal closed, typing `/sessions` produced `"\n/sessions"` which `detectSlashPrefix` rejects (position-0 match only), so the text was submitted to the LLM instead of reopening the picker. Covered by `consume-select-overlay-key.test.ts`.
+
 ### Phase-2 DX polish
 
 StatusBar locked to `height: 1` / `flexShrink: 0` so chips can't

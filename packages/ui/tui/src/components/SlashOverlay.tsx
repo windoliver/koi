@@ -15,7 +15,7 @@ import type { JSX } from "solid-js";
 import { createMemo, For, Show } from "solid-js";
 import { matchCommands, type SlashCommand, type SlashMatch } from "../commands/slash-detection.js";
 import { COLORS } from "../theme.js";
-import { createScrollableList, handleSelectOverlayKey } from "./select-overlay-helpers.js";
+import { consumeSelectOverlayKey, createScrollableList } from "./select-overlay-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,7 +63,7 @@ export function SlashOverlay(props: SlashOverlayProps): JSX.Element {
 
   useKeyboard((key: KeyEvent) => {
     if (!props.focused) return;
-    handleSelectOverlayKey(key, {
+    consumeSelectOverlayKey(key, {
       onClose: props.onDismiss,
       onSelect: (): void => {
         const match = matches()[list.selectedIdx()];
