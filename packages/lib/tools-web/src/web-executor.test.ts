@@ -1297,6 +1297,41 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
+  test("single-flight: concurrent default misses share one origin fetch", async () => {
+    // Regression for #1903 post-merge review round 8: the CDN-skew
+    // concern where two concurrent misses return different
+    // representations is mitigated by request coalescing. A second
+    // default caller that arrives while an identical default is still
+    // in flight piggybacks on the shared promise instead of issuing
+    // its own origin hit — so there is at most one live network
+    // request per key per refresh cycle, and the divergent-response
+    // scenario literally cannot happen.
+    let callCount = 0;
+    let releaseOrigin: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseOrigin = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      await held;
+      return new Response("shared-body", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const first = executor.fetch("https://example.com");
+    // Yield so `first` actually registers its single-flight slot.
+    await Promise.resolve();
+    const second = executor.fetch("https://example.com");
+
+    releaseOrigin?.();
+    const [r1, r2] = await Promise.all([first, second]);
+
+    expect(callCount).toBe(1);
+    if (r1.ok) expect(r1.value.body).toBe("shared-body");
+    if (r2.ok) expect(r2.value.body).toBe("shared-body");
+  });
+
   test("stale-fast / fresh-slow race: only first-in-flight writes (no backwards rollback)", async () => {
     // Regression for #1903 review round 3 of post-merge loop: arrival
     // order is not a reliable freshness signal under CDN/blue-green

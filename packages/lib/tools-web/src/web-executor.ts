@@ -211,9 +211,18 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   // still try to write against its captured generation, because the
   // `?? 0` fallback on a pruned key would treat that stale captured
   // generation as current and wave it through.
+  //
+  // `singleFlight`: per-key shared promise for default GET/HEAD misses.
+  // When one caller is already fetching a cacheable key from origin,
+  // later default callers await the same promise instead of each hitting
+  // origin. This reduces origin load during burst traffic and
+  // eliminates the CDN-skew window where two concurrent origin reads
+  // could return different representations. `noCache` bypasses this
+  // coalescing — a forced refresh always issues its own request.
   const keyGenerations = new Map<string, number>();
   const activeRefreshes = new Map<string, number>();
   const inFlightCount = new Map<string, number>();
+  const singleFlight = new Map<string, Promise<Result<WebFetchResult, KoiError>>>();
 
   return {
     providerName: config.searchProvider?.name,
@@ -325,7 +334,41 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           releaseInFlightAndMaybePrune();
           return { ok: true, value: { ...cached, cached: true } };
         }
+        // Single-flight: if another default caller is already fetching
+        // this key from origin, piggyback on their request rather than
+        // issuing our own. Both callers get the same body, which means
+        // concurrent misses cannot return different representations
+        // from a skewed CDN. `noCache` deliberately bypasses this to
+        // guarantee a live fetch.
+        const pending = singleFlight.get(cacheKey);
+        if (pending !== undefined) {
+          releaseInFlightAndMaybePrune();
+          return pending;
+        }
       }
+
+      // Register as the single-flight primary for default GET/HEAD
+      // misses so concurrent peers can await us. noCache never shares
+      // (it's forced-fresh by definition), and non-keyCacheable
+      // requests wouldn't be useful to share anyway (custom headers
+      // change representation, bodies change semantics).
+      let resolveFlight: (r: Result<WebFetchResult, KoiError>) => void = () => {};
+      const registerSingleFlight = keyCacheable && !noCache && fetchCache !== undefined;
+      if (registerSingleFlight) {
+        const flight = new Promise<Result<WebFetchResult, KoiError>>((resolve) => {
+          resolveFlight = resolve;
+        });
+        singleFlight.set(cacheKey, flight);
+      }
+      const publishFlight = (
+        result: Result<WebFetchResult, KoiError>,
+      ): Result<WebFetchResult, KoiError> => {
+        if (registerSingleFlight) {
+          resolveFlight(result);
+          singleFlight.delete(cacheKey);
+        }
+        return result;
+      };
 
       // Capture the generation AFTER any noCache bump. A default request
       // started before us against an older generation will carry that
@@ -345,7 +388,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       try {
         if (options?.signal?.aborted) {
           clearTimeout(timer);
-          return abortedError();
+          return publishFlight(abortedError());
         }
         if (options?.signal) {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
@@ -354,14 +397,14 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // SSRF first pass: fast string-based pattern match before DNS
         if (isBlockedUrl(url)) {
           clearTimeout(timer);
-          return permissionError(`Access to private/internal URL blocked: ${url}`);
+          return publishFlight(permissionError(`Access to private/internal URL blocked: ${url}`));
         }
 
         // SSRF second pass: resolve and validate the IP to mitigate DNS rebinding
         const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
         if (dnsResult.blocked) {
           clearTimeout(timer);
-          return permissionError(`DNS validation blocked: ${dnsResult.reason}`);
+          return publishFlight(permissionError(`DNS validation blocked: ${dnsResult.reason}`));
         }
 
         // Pin the resolved IP for HTTP to prevent DNS rebinding
@@ -381,7 +424,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
         clearTimeout(timer);
 
-        if (!result.ok) return result;
+        if (!result.ok) return publishFlight(result);
 
         const rawBody = await result.value.response.text();
         const truncated = rawBody.length > maxBodyChars;
@@ -440,10 +483,10 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           }
         }
 
-        return { ok: true, value: fetchResult };
+        return publishFlight({ ok: true, value: fetchResult });
       } catch (e: unknown) {
         clearTimeout(timer);
-        return catchFetchError(url, method, e);
+        return publishFlight(catchFetchError(url, method, e));
       } finally {
         releaseRefreshSlot();
         releaseInFlightAndMaybePrune();
