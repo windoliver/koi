@@ -280,10 +280,18 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
-        // Translate @koi/url-safety rejections into PERMISSION errors so
-        // the tool surfaces them to the model the same way the old policy
-        // did. Network/timeout failures still flow through catchFetchError.
         if (e instanceof Error && e.message.startsWith("url-safety:")) {
+          // @koi/url-safety uses the same error channel for true policy
+          // blocks and for resolver-layer failures. Distinguish the two so
+          // the model / runtime can retry on transient DNS issues instead
+          // of treating a SERVFAIL / TIMEOUT as an authorization denial.
+          const isDnsFailure = /DNS resolution failed|DNS returned no addresses/i.test(e.message);
+          if (isDnsFailure) {
+            return {
+              ok: false,
+              error: { code: "EXTERNAL", message: e.message, retryable: true },
+            };
+          }
           return permissionError(e.message);
         }
         return catchFetchError(url, method, e);

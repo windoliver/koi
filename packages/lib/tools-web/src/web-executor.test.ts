@@ -194,6 +194,43 @@ describe("createWebExecutor.fetch initial SSRF gate", () => {
 // fetch — retryable flag respects HTTP method safety
 // ---------------------------------------------------------------------------
 
+describe("createWebExecutor.fetch DNS-vs-policy error separation", () => {
+  test("transient DNS resolution failure maps to EXTERNAL (retryable), not PERMISSION", async () => {
+    const failingResolver = async () => {
+      throw Object.assign(new Error("SERVFAIL"), { code: "SERVFAIL" });
+    };
+    const fetchFn = mock(
+      async () => new Response("should not reach", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: failingResolver,
+      allowHttps: true,
+    });
+    const result = await executor.fetch("https://example.com/x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).toMatch(/DNS/i);
+    }
+  });
+
+  test("real SSRF block still maps to PERMISSION (non-retryable)", async () => {
+    const fetchFn = mock(
+      async () => new Response("should not reach", { status: 200 }),
+    ) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    // localhost is blocked by name, not by DNS.
+    const result = await executor.fetch("http://localhost/admin");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+});
+
 describe("createWebExecutor.fetch retryable", () => {
   test("GET failure is retryable", async () => {
     const fetchFn = mock(async () => {
