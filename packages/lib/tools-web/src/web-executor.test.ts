@@ -931,6 +931,134 @@ describe("createWebExecutor.fetch caching", () => {
       expect(followUp.value.cached).toBe(true);
     }
   });
+
+  test("concurrent default reader during noCache refresh does not see stale entry", async () => {
+    // Regression for #1903 review round 4: while a `noCache` fetch is in
+    // flight the pre-existing entry must be hidden from default readers
+    // so they cannot race in and be served a known-to-be-revalidating
+    // stale body. The saved entry is restored only when the refresh
+    // fails to reach origin.
+    let callCount = 0;
+    let signalRefreshInFlight: (() => void) | undefined;
+    let releaseRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshInFlight = resolve;
+    });
+    const refreshHeld = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("old", { status: 200 });
+      if (callCount === 2) {
+        signalRefreshInFlight?.();
+        await refreshHeld;
+        return new Response("new", { status: 200 });
+      }
+      // Concurrent reader during in-flight refresh — resolves immediately.
+      return new Response("concurrent-fresh", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // prime "old"
+
+    const refreshP = executor.fetch("https://example.com", { noCache: true });
+    await refreshStarted;
+    // Concurrent default reader arrives while refresh is in flight — must
+    // not be served the pre-existing "old" entry.
+    const concurrent = await executor.fetch("https://example.com");
+    if (concurrent.ok) expect(concurrent.value.cached).toBe(false);
+    expect(callCount).toBeGreaterThanOrEqual(2);
+
+    releaseRefresh?.();
+    await refreshP;
+  });
+
+  // -------------------------------------------------------------------------
+  // Origin freshness directives are honored (#1903 review round 4)
+  // -------------------------------------------------------------------------
+
+  test("does not cache responses with Cache-Control: max-age=0", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("fresh", {
+        status: 200,
+        headers: { "cache-control": "public, max-age=0" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with Cache-Control: must-revalidate", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("fresh", {
+        status: 200,
+        headers: { "cache-control": "public, must-revalidate, max-age=60" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with Pragma: no-cache", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("fresh", {
+        status: 200,
+        headers: { pragma: "no-cache" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with an Expires date in the past", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("stale", {
+        status: 200,
+        headers: { expires: new Date(Date.now() - 3600_000).toUTCString() },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("still caches responses with a future Expires and no revalidation flag", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("cacheable", {
+        status: 200,
+        headers: { expires: new Date(Date.now() + 3600_000).toUTCString() },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+    await executor.fetch("https://example.com");
+    const second = await executor.fetch("https://example.com");
+    expect(callCount).toBe(1);
+    if (second.ok) expect(second.value.cached).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

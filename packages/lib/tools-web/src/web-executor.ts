@@ -199,10 +199,26 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const keyCacheable =
         fetchCache !== undefined && !hasCustomHeaders && (method === "GET" || method === "HEAD");
 
-      if (keyCacheable && fetchCache !== undefined && !noCache) {
+      // `noCache` also hides the entry from concurrent default callers
+      // while the refresh is in flight. We snapshot the pre-existing entry
+      // and evict it so any reader arriving during the network RTT misses
+      // cache (and hits origin themselves) rather than being handed the
+      // known-to-be-revalidating value. On transport failure the snapshot
+      // is restored so one hiccup doesn't wipe the last-known-good response.
+      let savedEntry: WebFetchResult | undefined;
+      if (noCache && keyCacheable && fetchCache !== undefined) {
+        savedEntry = fetchCache.get(cacheKey);
+        if (savedEntry !== undefined) fetchCache.delete(cacheKey);
+      } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
+
+      const restoreSavedOnFailure = (): void => {
+        if (savedEntry !== undefined && fetchCache !== undefined) {
+          fetchCache.set(cacheKey, savedEntry);
+        }
+      };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
@@ -212,6 +228,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         if (options?.signal) {
           if (options.signal.aborted) {
             clearTimeout(timer);
+            restoreSavedOnFailure();
             return abortedError();
           }
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
@@ -220,6 +237,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // SSRF first pass: fast string-based pattern match before DNS
         if (isBlockedUrl(url)) {
           clearTimeout(timer);
+          restoreSavedOnFailure();
           return permissionError(`Access to private/internal URL blocked: ${url}`);
         }
 
@@ -227,6 +245,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
         if (dnsResult.blocked) {
           clearTimeout(timer);
+          restoreSavedOnFailure();
           return permissionError(`DNS validation blocked: ${dnsResult.reason}`);
         }
 
@@ -247,7 +266,10 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
         clearTimeout(timer);
 
-        if (!result.ok) return result;
+        if (!result.ok) {
+          restoreSavedOnFailure();
+          return result;
+        }
 
         const rawBody = await result.value.response.text();
         const truncated = rawBody.length > maxBodyChars;
@@ -269,25 +291,25 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
         // Cache only demonstrably-replayable success responses. Transient
         // failures (4xx/5xx), partial content (206), and any response marked
-        // `Cache-Control: no-store|no-cache|private` would otherwise become
-        // sticky for the TTL and mask recovery from every subsequent caller.
+        // non-cacheable by origin would otherwise become sticky for the TTL
+        // and mask recovery from every subsequent caller.
         //
-        // Reconciliation for `noCache`: we evict a pre-existing entry *only*
-        // once the live request reaches origin and returns a non-cacheable
-        // response — that's evidence the old value is stale. Transport
-        // errors/aborts never reach this block, so the prior entry stays as
-        // a last-known-good fallback.
+        // Reconciliation for `noCache`: if we got a cacheable response we
+        // write it through (overwriting any prior entry). If origin returned
+        // something non-cacheable the pre-existing entry is now known-stale,
+        // so we do NOT restore `savedEntry` — it stays evicted. A transport
+        // error/abort never reaches this block (handled by the restore-on-
+        // failure paths above), so the prior entry survives as fallback.
         if (keyCacheable && fetchCache !== undefined) {
           if (isCacheableResponse(fetchResult)) {
             fetchCache.set(cacheKey, fetchResult);
-          } else if (noCache) {
-            fetchCache.delete(cacheKey);
           }
         }
 
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
+        restoreSavedOnFailure();
         return catchFetchError(url, method, e);
       }
     },
@@ -483,15 +505,37 @@ function normalizeUrl(url: string): string {
  *
  * Restricted to HTTP 200 (full-body success) — 206 partials would leak
  * range-specific bytes across callers, and 4xx/5xx responses would make
- * transient failures sticky for the TTL. Responses that ask us not to
- * cache (`Cache-Control: no-store|no-cache|private`) are also skipped so
- * origins can opt their own resources out of memoization.
+ * transient failures sticky for the TTL. On top of status, we honor the
+ * full set of origin freshness/revalidation signals so a page that asks
+ * for revalidation on every read is never served from our in-memory LRU:
+ *
+ * - `Cache-Control: no-store | no-cache | private` — explicit opt-out
+ * - `Cache-Control: must-revalidate | proxy-revalidate` — origin requires
+ *   validation every read, not replay
+ * - `Cache-Control: max-age=0 | s-maxage=0` — freshness budget is zero
+ * - `Pragma: no-cache` — HTTP/1.0 revalidation directive
+ * - `Expires` in the past — response is already stale at receive time
  */
 function isCacheableResponse(result: WebFetchResult): boolean {
   if (result.status !== 200) return false;
+
   const cc = result.headers["cache-control"]?.toLowerCase();
-  if (cc === undefined) return true;
-  return !(cc.includes("no-store") || cc.includes("no-cache") || cc.includes("private"));
+  if (cc !== undefined) {
+    if (cc.includes("no-store") || cc.includes("no-cache") || cc.includes("private")) return false;
+    if (cc.includes("must-revalidate") || cc.includes("proxy-revalidate")) return false;
+    if (/(?:^|[,\s])(?:s-)?max-age\s*=\s*0(?:\D|$)/.test(cc)) return false;
+  }
+
+  const pragma = result.headers.pragma?.toLowerCase();
+  if (pragma?.includes("no-cache")) return false;
+
+  const expires = result.headers.expires;
+  if (expires !== undefined) {
+    const t = Date.parse(expires);
+    if (!Number.isNaN(t) && t <= Date.now()) return false;
+  }
+
+  return true;
 }
 
 const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {
