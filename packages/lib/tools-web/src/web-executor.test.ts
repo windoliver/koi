@@ -194,6 +194,32 @@ describe("createWebExecutor.fetch initial SSRF gate", () => {
 // fetch — retryable flag respects HTTP method safety
 // ---------------------------------------------------------------------------
 
+describe("createWebExecutor.fetch allowHttps policy on redirects", () => {
+  test("refuses http→https redirect when allowHttps is false", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const u = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(u);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/final" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: mockDnsResolver,
+      allowHttps: false,
+    });
+    const result = await executor.fetch("http://example.com/start");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toMatch(/protocol/i);
+    }
+    expect(mutableCalls).toHaveLength(1);
+  });
+});
+
 describe("createWebExecutor.fetch DNS-vs-policy error separation", () => {
   test("transient DNS resolution failure maps to EXTERNAL (retryable), not PERMISSION", async () => {
     const failingResolver = async () => {

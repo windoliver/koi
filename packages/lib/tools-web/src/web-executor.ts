@@ -159,8 +159,15 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   // Callers needing OS-parity lookup (for /etc/hosts / NSS / mDNS) must
   // pass their own resolver via config.dnsResolver — that's now an
   // explicit security trade-off rather than a silent downgrade.
+  // Thread `allowHttps` into isSafeUrl's per-hop protocol check so the
+  // policy applies to redirect targets too. Without this, an `http://` URL
+  // that 302s to `https://...` would cross the policy boundary during
+  // redirect follow — the initial-URL scheme check (below) catches the
+  // first hop only.
+  const allowedProtocols: readonly string[] = allowHttps ? ["http:", "https:"] : ["http:"];
   const safeFetchOptions = {
     ...(dnsResolver !== undefined ? { dnsResolver } : {}),
+    allowedProtocols,
     maxRedirects: MAX_REDIRECTS,
   } as const;
 
