@@ -10820,4 +10820,48 @@ describe("Golden: @koi/agent-summary", () => {
       throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
     }
   });
+
+  test("ATIF trajectory + summary sidecar are well-formed (from record-cassettes.ts afterRecord)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const trajRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(trajRaw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly { readonly source: string }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("agent-summary");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    const sidecarRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.summary.json"),
+      "utf8",
+    );
+    const sidecar = JSON.parse(sidecarRaw) as {
+      readonly trajectorySessionId: string;
+      readonly recordedFrom: string;
+      readonly envelope: {
+        readonly kind: "clean" | "degraded" | "compacted";
+        readonly summary?: {
+          readonly sessionId: string;
+          readonly goal: string;
+          readonly status: "succeeded" | "partial" | "failed";
+        };
+      };
+    };
+    expect(sidecar.trajectorySessionId).toBe(trajectory.session_id);
+    expect(sidecar.recordedFrom).toBe("agent-summary.trajectory.json");
+    expect(sidecar.envelope.kind).toBe("clean");
+    if (sidecar.envelope.kind === "clean" && sidecar.envelope.summary) {
+      expect(sidecar.envelope.summary.sessionId).toBe(trajectory.session_id);
+      expect(sidecar.envelope.summary.goal).toBeTruthy();
+      expect(sidecar.envelope.summary.status).toBe("succeeded");
+    }
+  });
 });
