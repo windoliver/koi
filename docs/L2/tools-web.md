@@ -210,9 +210,55 @@ Cache properties:
   ● LRU eviction (oldest entry removed when full)
   ● TTL expiry (stale entries removed on access)
   ● GET/HEAD only (POST/PUT/DELETE bypass cache)
+  ● Bodies on GET/HEAD disable the cache for that call (logical inequality
+    of two GETs with different payloads — avoids cross-contamination)
+  ● Custom request headers disable the cache (representation would differ)
   ● Search results cached by query + maxResults
   ● Configurable: cacheTtlMs (0 = off), maxCacheEntries (100)
 ```
+
+**Admission policy (status + origin directives, #1903):**
+Only HTTP 200 responses are stored, and only when the origin has not asked
+for revalidation. The following are all treated as non-cacheable and
+populate no entry:
+
+- `Cache-Control: no-store | no-cache | private`
+- `Cache-Control: must-revalidate | proxy-revalidate`
+- `Cache-Control: max-age=0` (or `s-maxage=0`)
+- `Pragma: no-cache`
+- `Expires` date in the past at receive time
+- Any `Vary` header (the key is just `METHOD:URL`; we cannot honor Vary
+  without widening the key, so we conservatively skip the cache)
+- Anything that isn't status 200 — 206 Partial Content, 3xx, 4xx, and
+  5xx stay out so transient failures can't become sticky
+
+**Per-entry TTL (origin freshness cap, #1903):**
+The cache LRU accepts a per-entry TTL override. On a cacheable write the
+entry's lifetime is `min(cacheTtlMs, remainingOriginFreshness)`, where
+`remainingOriginFreshness` is derived per RFC 7234 from
+`max-age - max(Age, now - Date)` (falling back to the `Expires`/`Date`
+delta). `s-maxage` is intentionally ignored — this is a private
+per-process cache, not a shared one, so a response that says
+`max-age=60, s-maxage=3600` expires at 60 s locally. Responses that arrive
+already stale (`Age >= max-age`) are not cached at all.
+
+**Forced-fresh (`noCache` option, #1903):**
+`WebFetchOptions.noCache = true` and the `web_fetch` tool's `noCache`
+argument both opt into "do not serve stale, period" semantics:
+
+- The pre-existing entry (if any) is evicted before the live request,
+  so concurrent default readers during the refresh RTT miss cache and
+  hit origin themselves (instead of being handed the known-to-be-
+  revalidating stale value).
+- A successful cacheable response writes through, but only if the key is
+  still absent — if a concurrent writer already repopulated the key, the
+  slower `noCache` response is dropped rather than overwriting a newer
+  entry and rolling the cache backwards (CDN skew, blue/green rollout).
+- Any failure (non-cacheable response, transport error, timeout, SSRF
+  block) returns the error and leaves the key empty. The next default
+  fetch hits origin. `noCache` is explicitly not a stale-on-error
+  fallback primitive — callers that want graceful degradation simply
+  don't set it.
 
 ---
 
