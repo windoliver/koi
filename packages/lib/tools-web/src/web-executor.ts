@@ -189,15 +189,22 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const method = options?.method ?? "GET";
       const hasCustomHeaders =
         options?.headers !== undefined && Object.keys(options.headers).length > 0;
+      const hasRequestBody = options?.body !== undefined && options.body !== "";
       const noCache = options?.noCache === true;
       const normalizedUrl = normalizeUrl(url);
       const cacheKey = `${method}:${normalizedUrl}`;
       // Key is eligible for caching if it's a GET/HEAD without custom headers
-      // (headers like Accept, Range, or auth tokens change representation).
+      // (headers like Accept, Range, or auth tokens change representation) and
+      // without a request body (unusual for GET/HEAD but permitted by the
+      // executor contract — two GETs to the same URL with different bodies
+      // are logically distinct and must not alias to the same cache entry).
       // `noCache` only flips the *read* side — reconciliation still runs
       // once we know what the live response looks like (see below).
       const keyCacheable =
-        fetchCache !== undefined && !hasCustomHeaders && (method === "GET" || method === "HEAD");
+        fetchCache !== undefined &&
+        !hasCustomHeaders &&
+        !hasRequestBody &&
+        (method === "GET" || method === "HEAD");
 
       // `noCache` also hides the entry from concurrent default callers
       // while the refresh is in flight. We snapshot the pre-existing entry
@@ -519,11 +526,16 @@ function normalizeUrl(url: string): string {
 }
 
 /**
- * Remaining freshness (ms) per RFC 7234 §4.2, simplified for an end-cache:
+ * Remaining freshness (ms) per RFC 7234, simplified for an end-cache:
  *
- *   freshness_lifetime = s-maxage ?? max-age ?? (Expires - Date)
+ *   freshness_lifetime = max-age ?? (Expires - Date)
  *   current_age        = max(Age, now - Date)
  *   remaining          = freshness_lifetime - current_age
+ *
+ * This executor's LRU is a *private* per-process cache, so `s-maxage` (a
+ * directive for shared caches only) is intentionally ignored — otherwise
+ * a response like `max-age=60, s-maxage=3600` would be replayed for an
+ * hour even though origin permits end clients only 60 seconds.
  *
  * Returns `undefined` when origin declared no concrete lifetime (caller
  * falls back to the cache-wide TTL) and `0` when the response was already
@@ -539,12 +551,8 @@ function extractOriginFreshnessMs(result: WebFetchResult): number | undefined {
 
   let lifetimeMs: number | undefined;
   if (cc !== undefined) {
-    const sMaxAge = matchCacheDirectiveSeconds(cc, "s-maxage");
-    if (sMaxAge !== undefined) lifetimeMs = sMaxAge * 1000;
-    else {
-      const maxAge = matchCacheDirectiveSeconds(cc, "max-age");
-      if (maxAge !== undefined) lifetimeMs = maxAge * 1000;
-    }
+    const maxAge = matchCacheDirectiveSeconds(cc, "max-age");
+    if (maxAge !== undefined) lifetimeMs = maxAge * 1000;
   }
   if (lifetimeMs === undefined) {
     const expiresMs = parseHttpDateMs(result.headers.expires);

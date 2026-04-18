@@ -1159,13 +1159,17 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(2);
   });
 
-  test("s-maxage takes precedence over max-age when capping the entry TTL", async () => {
+  test("ignores s-maxage (this is a private end-cache, not a shared one)", async () => {
+    // Regression for #1903 review round 8: `s-maxage` is defined for
+    // shared caches only. This executor's LRU is per-process/private,
+    // so a response like `max-age=60, s-maxage=3600` must expire at 60s
+    // (the end-client budget), never the 3600s shared-cache budget.
     let callCount = 0;
     const fetchFn = mock(async () => {
       callCount++;
-      return new Response("shared-cache-hint", {
+      return new Response("body", {
         status: 200,
-        headers: { "cache-control": "public, max-age=3600, s-maxage=1" },
+        headers: { "cache-control": "public, max-age=1, s-maxage=3600" },
       });
     }) as unknown as typeof globalThis.fetch;
 
@@ -1175,6 +1179,26 @@ describe("createWebExecutor.fetch caching", () => {
     await new Promise((resolve) => setTimeout(resolve, 1100));
     await executor.fetch("https://example.com");
     expect(callCount).toBe(2);
+  });
+
+  test("does not alias GET requests that differ by body", async () => {
+    // Regression for #1903 review round 8: GET-with-body is unusual but
+    // permitted by the executor contract. Two GETs to the same URL with
+    // different bodies are logically distinct requests and must never
+    // read the same cache entry.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response(`call-${callCount}`, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const first = await executor.fetch("https://example.com", { body: "payload-a" });
+    const second = await executor.fetch("https://example.com", { body: "payload-b" });
+    expect(callCount).toBe(2);
+    if (first.ok) expect(first.value.cached).toBe(false);
+    if (second.ok) expect(second.value.cached).toBe(false);
   });
 
   test("failed noCache restore does not overwrite a newer concurrent cache write", async () => {
