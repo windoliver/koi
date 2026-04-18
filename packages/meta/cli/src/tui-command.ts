@@ -94,6 +94,7 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
+import { createSigusr1Handler, generateTuiStartupHint } from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -4164,6 +4165,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSighup = (): void => {
     void shutdown(129, "SIGHUP received (terminal hangup)");
   };
+  // SIGUSR1 (#1906): out-of-band escape hatch when OpenTUI's native input
+  // thread deadlocks on __ulock_wait2 — raw mode stops Ctrl+C from reaching
+  // us as SIGINT, but the JS signal layer still delivers SIGUSR1 because it
+  // bypasses the TTY reader entirely. User runs `kill -USR1 <pid>` from
+  // another terminal; handler routes into the same shutdown path as SIGINT.
+  const onProcessSigusr1 = createSigusr1Handler({
+    shutdown: (code, reason) => {
+      void shutdown(code, reason);
+    },
+    write: (msg) => {
+      process.stderr.write(msg);
+    },
+  });
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
@@ -4193,6 +4207,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
+  // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
+  // handler has flipped idempotent still has a listener installed — Node's
+  // default for unhandled SIGUSR1 is to start the inspector, which would
+  // confuse supervisors probing for liveness during shutdown.
+  process.on("SIGUSR1", onProcessSigusr1);
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
@@ -4201,6 +4220,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   if (process.stdin.isTTY) {
     process.stdin.once("close", onStdinClose);
   }
+
+  // Print the SIGUSR1 escape-hatch hint BEFORE start() takes over the
+  // terminal. OpenTUI enters the alternate screen buffer on start and
+  // restores the main buffer on exit, so the hint lands in the user's
+  // scrollback and is visible from any other terminal session that runs
+  // `ps` to recover the PID. See issue #1906.
+  process.stderr.write(generateTuiStartupHint(process.pid));
 
   try {
     await result.value.start();
@@ -4222,6 +4248,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
     process.removeListener("SIGHUP", onProcessSighup);
+    process.removeListener("SIGUSR1", onProcessSigusr1);
     process.stdin.removeListener("close", onStdinClose);
   }
 }
