@@ -38,29 +38,118 @@ function tokenize(cmdLine: string): readonly string[] {
   return trimmed.split(/\s+/);
 }
 
+/** Basename a token (for command-prefix comparison). */
+function basename(t: string): string {
+  if (!t.includes("/")) return t;
+  const slash = t.lastIndexOf("/");
+  return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
+}
+
 /**
- * Shell-normalized form of the command: tokens shell-tokenized (strips
- * surrounding quotes and collapses `py''thon`, `e""val` style quoted-
- * fragment concatenation) then rejoined with single spaces. Matching
- * patterns against this in addition to the raw string closes the
- * obvious quoting-obfuscation bypass where an adversary writes
- * `py''thon -c '...'` and evades the `\bpython\b` regex.
+ * Split the raw command line on unquoted command-boundary operators
+ * (`;`, `&&`, `||`, `|`, `&`, newline). Preserves quoting context so
+ * operators inside `"..."` or `'...'` do NOT split.
  */
-function shellNormalized(cmdLine: string): string {
-  const toks = shellTokenize(cmdLine);
-  return toks.join(" ");
+function splitSegments(cmdLine: string): readonly string[] {
+  const segments: string[] = [];
+  let buf = "";
+  let quote: "'" | '"' | null = null;
+  const len = cmdLine.length;
+  for (let i = 0; i < len; i++) {
+    const c = cmdLine[i];
+    if (c === undefined) break;
+    if (quote !== null) {
+      if (c === quote) quote = null;
+      else if (c === "\\" && quote === '"' && i + 1 < len) {
+        buf += c + (cmdLine[i + 1] ?? "");
+        i++;
+        continue;
+      }
+      buf += c;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      buf += c;
+      continue;
+    }
+    if (c === "\\" && i + 1 < len) {
+      buf += c + (cmdLine[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    // Operator detection: `;`, `|` (optionally `||`), `&` (optionally
+    // `&&`), `\n`.
+    if (c === ";" || c === "\n") {
+      if (buf.length > 0) segments.push(buf);
+      buf = "";
+      continue;
+    }
+    if (c === "|") {
+      if (buf.length > 0) segments.push(buf);
+      buf = "";
+      // Skip the second `|` if this is `||`.
+      if (cmdLine[i + 1] === "|") i++;
+      continue;
+    }
+    if (c === "&") {
+      if (buf.length > 0) segments.push(buf);
+      buf = "";
+      if (cmdLine[i + 1] === "&") i++;
+      continue;
+    }
+    buf += c;
+  }
+  if (buf.length > 0) segments.push(buf);
+  return segments;
+}
+
+/**
+ * Extract the set of "command-position" base names across every
+ * segment of the input. Prevents `echo "sudo"` from matching the
+ * `sudo` pattern: the word appears inside a quoted arg, not in a
+ * command-head position.
+ */
+function commandHeads(cmdLine: string): ReadonlySet<string> {
+  const heads = new Set<string>();
+  for (const seg of splitSegments(cmdLine)) {
+    const tokens = shellTokenize(seg);
+    let i = 0;
+    // Skip leading VAR=value env assignments.
+    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
+    const head = tokens[i];
+    if (head !== undefined && head.length > 0) heads.add(basename(head));
+  }
+  return heads;
 }
 
 export function classifyCommand(cmdLine: string): ClassifyResult {
   const tokens = tokenize(cmdLine);
   const cmdPrefix = prefix(tokens);
-  const normalized = shellNormalized(cmdLine);
-  // Match against BOTH the raw string (preserves operators/spacing
-  // patterns like `| sh`) AND the shell-normalized form (closes
-  // quoted-fragment obfuscation). Union the matches.
-  const seen = new Set<string>();
+  const heads = commandHeads(cmdLine);
   const matched: DangerousPattern[] = [];
+  const seen = new Set<string>();
   for (const p of DANGEROUS_PATTERNS) {
+    // Patterns with `commandPrefixes` only fire when one of the
+    // listed names actually appears in command position. Keeps
+    // `echo "sudo"` from matching the `sudo` pattern.
+    if (p.commandPrefixes !== undefined) {
+      let anyMatch = false;
+      for (const name of p.commandPrefixes) {
+        for (const head of heads) {
+          if (head === name || head.startsWith(`${name}.`)) {
+            anyMatch = true;
+            break;
+          }
+        }
+        if (anyMatch) break;
+      }
+      if (!anyMatch) continue;
+    }
+    // Regex runs on raw (operator/pipeline context) AND on a
+    // shell-normalized view (closes quoted-fragment obfuscation
+    // like `py''thon -c`).
+    const normalized = shellTokenize(cmdLine).join(" ");
     if ((p.regex.test(cmdLine) || p.regex.test(normalized)) && !seen.has(p.id)) {
       seen.add(p.id);
       matched.push(p);

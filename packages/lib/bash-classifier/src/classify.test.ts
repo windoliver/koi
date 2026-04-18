@@ -136,6 +136,30 @@ describe("classifyCommand", () => {
     expect(classifyCommand("kubectl apply -f x.yaml").prefix).toBe("kubectl apply");
   });
 
+  // ------- loop-5: false-positive prevention (quoted args) -------
+
+  test("dangerous keywords inside quoted args do NOT match (loop-5)", () => {
+    // `echo "sudo rm"` is one benign command; `sudo` is a string arg,
+    // not the command being executed. Pattern matching must be
+    // scoped to command-position tokens.
+    expect(classifyCommand(`echo "sudo rm -rf /"`).severity).toBeNull();
+    expect(classifyCommand(`grep "eval" file`).severity).toBeNull();
+    expect(classifyCommand(`git commit -m "document bash -c behavior"`).severity).toBeNull();
+    expect(classifyCommand(`echo "python -c"`).severity).toBeNull();
+    expect(classifyCommand(`printf '%s\\n' 'sudo anything'`).severity).toBeNull();
+  });
+
+  test("dangerous keywords in command position still match (loop-5)", () => {
+    // Positive control: the scoping change did not break legitimate
+    // detection. Each command has `sudo` or `eval` in executable
+    // position so the pattern must still classify.
+    expect(classifyCommand(`sudo rm -rf /tmp`).severity).toBe("medium");
+    expect(classifyCommand(`ls && sudo rm`).matchedPatterns.map((p) => p.id)).toContain("sudo");
+    expect(classifyCommand(`ls; sudo rm`).matchedPatterns.map((p) => p.id)).toContain("sudo");
+    expect(classifyCommand(`FOO=1 sudo rm`).matchedPatterns.map((p) => p.id)).toContain("sudo");
+    expect(classifyCommand(`eval "$(cat x)"`).severity).toBe("high");
+  });
+
   // ------- loop-4: quoted-fragment obfuscation -------
 
   test("adjacent-quoted interpreters like `py''thon -c` still match (loop-4)", () => {

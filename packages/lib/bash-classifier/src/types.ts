@@ -31,6 +31,17 @@ export interface DangerousPattern {
   readonly category: Category;
   readonly severity: Severity;
   readonly message: string;
+  /**
+   * When set, the pattern only fires if the command's first-token
+   * basename is in this set. Prevents false positives where the
+   * dangerous word appears inside a quoted argument (e.g.
+   * `echo "sudo"` must NOT match the `sudo` pattern).
+   *
+   * Patterns without `commandPrefixes` still match on raw string —
+   * use this for structural shapes (fork bomb, `curl | sh`,
+   * redirections) that are not identified by a single command name.
+   */
+  readonly commandPrefixes?: readonly string[];
 }
 
 /** Output of `classifyCommand`. */

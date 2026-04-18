@@ -8,6 +8,13 @@
  *
  * Patterns are stateless (no `g`/`y` flags) so concurrent `test()` calls
  * cannot interfere through `RegExp.prototype.lastIndex`.
+ *
+ * Most patterns carry `commandPrefixes` so classifyCommand only fires
+ * the regex when the command's first-token basename is in the list.
+ * This prevents false positives where the dangerous keyword appears
+ * inside a quoted argument (`echo "sudo"`, `git commit -m "bash -c"`).
+ * Structural shapes (fork bomb, `curl | sh`) have no prefix set and
+ * match on raw string only.
  */
 
 import type { DangerousPattern } from "./types.js";
@@ -37,6 +44,7 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
     category: "file-destructive",
     severity: "critical",
     message: "rm -rf targeting root, a system directory, or $HOME is unrecoverable",
+    commandPrefixes: ["rm"],
   },
   {
     id: "dd-to-device",
@@ -44,6 +52,7 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
     category: "file-destructive",
     severity: "critical",
     message: "dd writing to a /dev/ block device destroys all data on the target disk",
+    commandPrefixes: ["dd"],
   },
   {
     id: "mkfs",
@@ -51,6 +60,7 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
     category: "file-destructive",
     severity: "critical",
     message: "mkfs/mkswap formats a filesystem and destroys all data on the device",
+    commandPrefixes: ["mkfs", "mke2fs", "mkswap"],
   },
   {
     id: "shred",
@@ -58,11 +68,16 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
     category: "file-destructive",
     severity: "high",
     message: "shred -u/-n overwrites and deletes files irrecoverably",
+    commandPrefixes: ["shred"],
   },
 ];
 
 const NETWORK_EXFIL: readonly DangerousPattern[] = [
   {
+    // Structural: curl anywhere in a pipeline to sh. Command prefix
+    // would be `curl`, but this pattern targets the pipeline shape;
+    // keep raw-string matching so it also fires for wrapper-prefixed
+    // forms like `env curl ... | sh`.
     id: "curl-pipe-shell",
     regex: /\bcurl\b[^|#\n]*\|\s*(?:ba|z)?sh\b/,
     category: "network-exfil",
@@ -82,11 +97,14 @@ const NETWORK_EXFIL: readonly DangerousPattern[] = [
     category: "network-exfil",
     severity: "high",
     message: "netcat with listen or exec flags is a reverse-shell vector",
+    commandPrefixes: ["nc", "ncat"],
   },
 ];
 
 const CODE_EXEC: readonly DangerousPattern[] = [
   {
+    // Same pipeline shape as curl-pipe-shell but with the code-exec
+    // category. No commandPrefixes — structural.
     id: "curl-pipe-shell-exec",
     regex: /\bcurl\b[^|#\n]*\|\s*(?:ba|z)?sh\b/,
     category: "code-exec",
@@ -99,6 +117,7 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     category: "code-exec",
     severity: "high",
     message: "eval executes arbitrary strings as shell commands",
+    commandPrefixes: ["eval"],
   },
   {
     id: "shell-dash-c",
@@ -106,6 +125,7 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     category: "code-exec",
     severity: "medium",
     message: "sh/bash/zsh -c executes an arbitrary command string",
+    commandPrefixes: ["sh", "bash", "zsh", "dash", "ash"],
   },
   {
     id: "powershell-invoke-expression",
@@ -113,6 +133,7 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     category: "code-exec",
     severity: "high",
     message: "PowerShell Invoke-Expression executes arbitrary strings as commands",
+    commandPrefixes: ["powershell", "pwsh"],
   },
   {
     id: "powershell-iex",
@@ -120,29 +141,28 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     category: "code-exec",
     severity: "high",
     message: "PowerShell IEX is the Invoke-Expression alias",
+    commandPrefixes: ["powershell", "pwsh"],
   },
 ];
 
 const MODULE_LOAD: readonly DangerousPattern[] = [
   {
-    // python -c / -cm inline string execution — the string can call
-    // any module (`import os; os.system`, `eval(…)`, `compile(…)`),
-    // so the flag itself is the arbitrary-code-exec primitive.
+    // python -c / -cm inline string execution.
     id: "python-dash-c",
     regex: /\bpython[23]?\b[^#\n]*\s-[a-zA-Z]*c\b/,
     category: "module-load",
     severity: "high",
     message: "python -c evaluates an arbitrary script string",
+    commandPrefixes: ["python", "python2", "python3"],
   },
   {
-    // node / deno / bun -e inline string execution. The flag itself
-    // is the entry point to arbitrary code — match on the flag shape,
-    // not on a specific payload substring.
+    // node / deno / bun -e inline string execution.
     id: "node-dash-e",
     regex: /\b(?:node|deno|bun)\b[^#\n]*\s-e\b/,
     category: "module-load",
     severity: "high",
     message: "node/deno/bun -e evaluates an arbitrary script string",
+    commandPrefixes: ["node", "deno", "bun"],
   },
   {
     id: "perl-e",
@@ -150,6 +170,7 @@ const MODULE_LOAD: readonly DangerousPattern[] = [
     category: "module-load",
     severity: "high",
     message: "perl -e/-E executes an arbitrary script string",
+    commandPrefixes: ["perl"],
   },
   {
     id: "ruby-e",
@@ -157,22 +178,23 @@ const MODULE_LOAD: readonly DangerousPattern[] = [
     category: "module-load",
     severity: "high",
     message: "ruby -e/-E executes an arbitrary script string",
+    commandPrefixes: ["ruby"],
   },
   {
-    // php -r / --run — inline PHP execution.
     id: "php-r",
     regex: /\bphp\b[^#\n]*\s(?:-r|--run)\b/,
     category: "module-load",
     severity: "high",
     message: "php -r evaluates an arbitrary PHP string",
+    commandPrefixes: ["php"],
   },
   {
-    // osascript -e — macOS AppleScript inline execution.
     id: "osascript-e",
     regex: /\bosascript\b[^#\n]*\s-e\b/,
     category: "module-load",
     severity: "high",
     message: "osascript -e evaluates an arbitrary AppleScript",
+    commandPrefixes: ["osascript"],
   },
 ];
 
@@ -183,6 +205,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     category: "privilege-escalation",
     severity: "medium",
     message: "sudo executes commands with elevated privileges",
+    commandPrefixes: ["sudo"],
   },
   {
     id: "su",
@@ -190,6 +213,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     category: "privilege-escalation",
     severity: "medium",
     message: "su switches to another user account",
+    commandPrefixes: ["su"],
   },
   {
     id: "chmod-setuid",
@@ -197,6 +221,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     category: "privilege-escalation",
     severity: "high",
     message: "chmod with setuid/setgid bit enables privilege escalation",
+    commandPrefixes: ["chmod"],
   },
   {
     id: "chmod-777-system",
@@ -206,6 +231,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     category: "privilege-escalation",
     severity: "high",
     message: "chmod -R 777 on root or a system directory is a catastrophic permission change",
+    commandPrefixes: ["chmod"],
   },
   {
     id: "chown-root",
@@ -213,6 +239,7 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     category: "privilege-escalation",
     severity: "medium",
     message: "chown root reassigns ownership to the root user",
+    commandPrefixes: ["chown"],
   },
 ];
 
