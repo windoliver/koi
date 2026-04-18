@@ -466,9 +466,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // succeeded. This guarantees that if any earlier step throws, spawn_count
   // is never incremented — preserving the spawn / spawn_release pairing
   // invariant without requiring rollback on every failure path.
+  //
+  // record() failures are swallowed: governance is optional per the L0
+  // contract (engine works without a controller), so a broken/slow backend
+  // must not strand the acquired ledger slot, the registered child entry,
+  // or the issued delegation grant. spawn_release will still fire on
+  // termination — the controller clamps spawn_count to 0 on over-release,
+  // so an unrecorded spawn followed by a release is safe. governanceRecorded
+  // is set on success so the cleanup paths only fire spawn_release if there
+  // is something to release, avoiding noise on the "broken backend" path.
   // Depth payload is the child's depth, matching "a child was spawned at depth N".
+  let governanceRecorded = false; // let justified: tracks whether spawn was recorded so cleanup fires spawn_release only when paired
   if (parentGovController !== undefined) {
-    await parentGovController.record({ kind: "spawn", depth: childPid.depth });
+    try {
+      await parentGovController.record({ kind: "spawn", depth: childPid.depth });
+      governanceRecorded = true;
+    } catch (err: unknown) {
+      console.error(
+        `[spawn-child] governance spawn record failed for child "${childPid.id}" — continuing without governance bookkeeping`,
+        err,
+      );
+    }
   }
 
   // 8. Create child handle for lifecycle monitoring + determine dispose override
@@ -498,12 +516,13 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         void (release instanceof Promise ? release : undefined);
         // gov-8: pair spawn_release with the spawn record. Sits inside the
         // `released` guard so a double-terminated event cannot double-decrement
-        // spawn_count. The `Promise.resolve().then(...)` form (rather than
-        // `Promise.resolve(record(...))`) catches BOTH synchronous throws and
-        // rejected promises from record() — without it, a sync throw inside
-        // record() would skip the .catch() and abort the rest of the cleanup
-        // (dispose, delegation revoke).
-        if (parentGovController !== undefined) {
+        // spawn_count. Only fire if `governanceRecorded` — otherwise the spawn
+        // record itself failed and there is nothing to pair against. The
+        // `Promise.resolve().then(...)` form (rather than `Promise.resolve(record(...))`)
+        // catches BOTH synchronous throws and rejected promises from record()
+        // — without it, a sync throw inside record() would skip the .catch()
+        // and abort the rest of the cleanup (dispose, delegation revoke).
+        if (parentGovController !== undefined && governanceRecorded) {
           void Promise.resolve()
             .then(() => parentGovController.record({ kind: "spawn_release" }))
             .catch((err: unknown) => {
@@ -549,8 +568,9 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         // hung governance backend cannot block originalDispose() — disposal
         // must always run regardless of bookkeeping outcome. The
         // `Promise.resolve().then(...)` form also catches synchronous throws
-        // inside record().
-        if (parentGovController !== undefined) {
+        // inside record(). Skip if the spawn record itself failed —
+        // there is nothing to pair against.
+        if (parentGovController !== undefined && governanceRecorded) {
           void Promise.resolve()
             .then(() => parentGovController.record({ kind: "spawn_release" }))
             .catch((err: unknown) => {
