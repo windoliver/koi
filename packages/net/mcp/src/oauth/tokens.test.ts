@@ -163,11 +163,19 @@ describe("client info persistence", () => {
     storage = createMockStorage();
   });
 
-  test("computeClientKey format is distinct from token key", () => {
+  test("computeClientKey is name-independent (URL-only)", () => {
+    // Keying by URL — not server alias — ensures renaming a config
+    // entry or defining the same MCP URL under two names reuses the
+    // same DCR registration instead of orphaning a fresh client on
+    // the AS each time.
     const clientKey = computeClientKey("my-server", "https://example.com");
     const tokenKey = computeServerKey("my-server", "https://example.com");
-    expect(clientKey).toMatch(/^mcp-oauth-client\|my-server\|[a-f0-9]{16}$/);
+    expect(clientKey).toMatch(/^mcp-oauth-client\|[a-f0-9]{16}$/);
     expect(clientKey).not.toBe(tokenKey);
+    // Two different aliases pointing at the same URL → same client key.
+    expect(clientKey).toBe(computeClientKey("renamed", "https://example.com"));
+    // Two aliases with the same name pointing at different URLs → distinct.
+    expect(clientKey).not.toBe(computeClientKey("my-server", "https://other.com"));
   });
 
   test("readClientInfo returns undefined when nothing stored", async () => {

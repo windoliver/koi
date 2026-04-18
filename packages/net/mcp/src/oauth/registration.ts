@@ -79,10 +79,16 @@ export async function registerDynamicClient(
 
     // Capture the RFC 7592 client-management metadata up front so any
     // post-validation rejection below can attempt to delete the orphan.
-    // Without this, repeated retries against partially-compatible servers
-    // would accumulate dead client registrations.
+    // The URI is validated against the registration endpoint origin
+    // (HTTPS + same host) before any DELETE — a malicious or compromised
+    // AS could otherwise point `registration_client_uri` at an
+    // attacker-controlled host and exfiltrate the management token
+    // (SSRF / credential leak primitive).
     const cleanupUri =
-      typeof data.registration_client_uri === "string" ? data.registration_client_uri : undefined;
+      typeof data.registration_client_uri === "string" &&
+      isSafeManagementUri(data.registration_client_uri, registrationEndpoint)
+        ? data.registration_client_uri
+        : undefined;
     const cleanupToken =
       typeof data.registration_access_token === "string"
         ? data.registration_access_token
@@ -136,13 +142,36 @@ export async function registerDynamicClient(
 }
 
 /**
+ * Validates a candidate RFC 7592 management URI before we will issue
+ * an authenticated DELETE to it. Constraints:
+ *
+ *   1. URI must parse and use the `https:` scheme.
+ *   2. Origin (host) must match the registration endpoint that issued it.
+ *
+ * A malicious or compromised registration response could otherwise
+ * point `registration_client_uri` at an arbitrary host and turn rollback
+ * into an SSRF + management-token exfiltration primitive.
+ */
+function isSafeManagementUri(candidate: string, registrationEndpoint: string): boolean {
+  try {
+    const u = new URL(candidate);
+    if (u.protocol !== "https:") return false;
+    const reg = new URL(registrationEndpoint);
+    return u.host === reg.host;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * RFC 7592 client-management DELETE — best-effort cleanup of a freshly
  * registered DCR client we cannot use. Failures are intentionally
  * swallowed: we already decided not to persist this registration, so
  * surfacing a delete error to the caller would just mask the original
  * rejection reason. Worst case the orphan persists on the AS until
  * server-side TTLs expire, which is the same outcome as having no
- * cleanup at all.
+ * cleanup at all. The caller is expected to have already validated
+ * `registrationClientUri` via `isSafeManagementUri`.
  */
 async function deleteRegisteredClient(
   registrationClientUri: string,

@@ -228,13 +228,18 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
 }
 
 /**
- * Storage key for dynamically-registered client info. Separate from the
- * token key so clearing tokens does not invalidate the registered client.
- * Format: `mcp-oauth-client|{name}|{sha256(url)[:16]}`
+ * Storage key for dynamically-registered client info. Keyed solely by
+ * normalized `serverUrl` — alias renames or duplicate aliases pointing
+ * at the same MCP server URL must reuse the same registered client.
+ * Including `serverName` here previously caused config renames to
+ * trigger new registrations and orphan the prior client on the AS.
+ * Format: `mcp-oauth-client|{sha256(url)[:16]}`. The `serverName`
+ * parameter is retained for symmetry with `computeServerKey()` but
+ * deliberately ignored.
  */
-export function computeClientKey(serverName: string, serverUrl: string): string {
+export function computeClientKey(_serverName: string, serverUrl: string): string {
   const hash = createHash("sha256").update(serverUrl).digest("hex").substring(0, 16);
-  return `mcp-oauth-client|${serverName}|${hash}`;
+  return `mcp-oauth-client|${hash}`;
 }
 
 /** Read persisted `OAuthClientInfo` for a server; undefined when absent or corrupt. */

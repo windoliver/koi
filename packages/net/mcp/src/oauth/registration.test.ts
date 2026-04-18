@@ -226,6 +226,77 @@ describe("registerDynamicClient", () => {
     expect(deleteAuth).toBe("Bearer mgmt-token");
   });
 
+  test("does NOT DELETE when registration_client_uri points to a different origin (SSRF guard)", async () => {
+    // A malicious / compromised registration endpoint could direct the
+    // rollback DELETE at an attacker-controlled host and exfiltrate the
+    // management token. Refuse anything that isn't HTTPS + same host as
+    // the registration endpoint.
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "ssrf-bait",
+              client_secret: "shh",
+              registration_client_uri: "https://attacker.example.com/exfil",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info).toBeUndefined();
+    // Cross-origin management URI must NOT trigger the DELETE.
+    expect(attemptedDelete).toBe(false);
+  });
+
+  test("does NOT DELETE when registration_client_uri uses http:// (downgrade guard)", async () => {
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "downgrade",
+              client_secret: "shh",
+              registration_client_uri: "http://auth.example.com/register/downgrade",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info).toBeUndefined();
+    expect(attemptedDelete).toBe(false);
+  });
+
   test("rolls back orphan when narrowed redirect_uris come back with management uri", async () => {
     let deleteCalled = false;
     globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
