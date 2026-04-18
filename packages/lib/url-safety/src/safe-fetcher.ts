@@ -195,6 +195,14 @@ async function buildState(
   maxBufferedBodyBytes: number,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
+  // Native fetch rejects with TypeError if the Request body was already
+  // consumed upstream. Match that contract — otherwise buildState would
+  // silently turn a mutating POST/PUT into an empty request to the target.
+  if (req !== undefined && req.bodyUsed) {
+    throw new TypeError(
+      "url-safety: Request body is already consumed (bodyUsed=true); clone or re-create the Request before passing to safeFetch",
+    );
+  }
   const url = extractUrl(input);
 
   const headers = new Headers(req?.headers);
@@ -254,15 +262,28 @@ function toInit(s: HopState): FetchInit {
   };
 }
 
-const CROSS_ORIGIN_STRIPPED_HEADERS: readonly string[] = [
-  "authorization",
-  "cookie",
-  "proxy-authorization",
-  "proxy-authenticate",
-];
+// Cross-origin redirects: switch from a denylist to an allowlist. Anything
+// not in this set gets dropped on origin change because a server-side
+// fetcher has no CORS signal telling us which custom headers are sensitive.
+// x-api-key, x-amz-security-token, signed-request tokens, and per-vendor
+// bearer schemes are far too common to enumerate safely.
+const CROSS_ORIGIN_SAFE_HEADERS: ReadonlySet<string> = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "user-agent",
+  "content-type",
+  "content-language",
+  "cache-control",
+  "pragma",
+]);
 
-function stripCrossOriginHeaders(headers: Headers): void {
-  for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) headers.delete(name);
+function redactCrossOriginHeaders(headers: Headers): void {
+  const toDelete: string[] = [];
+  headers.forEach((_v, k) => {
+    if (!CROSS_ORIGIN_SAFE_HEADERS.has(k.toLowerCase())) toDelete.push(k);
+  });
+  for (const name of toDelete) headers.delete(name);
 }
 
 function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
@@ -281,7 +302,7 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
     s.headers.delete("content-location");
   }
 
-  if (crossOrigin) stripCrossOriginHeaders(s.headers);
+  if (crossOrigin) redactCrossOriginHeaders(s.headers);
 }
 
 /**

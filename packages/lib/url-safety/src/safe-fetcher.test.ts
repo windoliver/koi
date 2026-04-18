@@ -156,7 +156,7 @@ describe("createSafeFetcher", () => {
     expect(calls[1]?.headers["content-type"]).toBe("text/plain");
   });
 
-  test("strips Authorization/Cookie on cross-origin redirect", async () => {
+  test("redacts all non-safelisted headers on cross-origin redirect", async () => {
     const resolver = async (hostname: string): Promise<readonly string[]> => {
       if (hostname === "a.example.com") return ["93.184.216.34"];
       if (hostname === "b.example.com") return ["93.184.216.35"];
@@ -174,16 +174,42 @@ describe("createSafeFetcher", () => {
       headers: {
         Authorization: "Bearer secret",
         Cookie: "session=abc",
+        "X-API-Key": "k",
+        "X-Amz-Security-Token": "t",
         "X-Trace": "keep",
+        Accept: "application/json",
       },
     });
     expect(calls).toHaveLength(2);
+    // First hop: caller-set headers all survive.
     expect(calls[0]?.headers["authorization"]).toBe("Bearer secret");
-    expect(calls[0]?.headers["cookie"]).toBe("session=abc");
+    expect(calls[0]?.headers["x-api-key"]).toBe("k");
+    // Second hop: everything except the safelist is redacted — denylist
+    // was too narrow; custom auth headers like x-api-key/x-amz-security-token
+    // are exactly what hostile redirects try to exfiltrate.
     expect(calls[1]?.headers["authorization"]).toBeUndefined();
     expect(calls[1]?.headers["cookie"]).toBeUndefined();
-    // Non-credential headers preserved.
-    expect(calls[1]?.headers["x-trace"]).toBe("keep");
+    expect(calls[1]?.headers["x-api-key"]).toBeUndefined();
+    expect(calls[1]?.headers["x-amz-security-token"]).toBeUndefined();
+    expect(calls[1]?.headers["x-trace"]).toBeUndefined();
+    // Safelist headers do survive (content-negotiation only).
+    expect(calls[1]?.headers["accept"]).toBe("application/json");
+  });
+
+  test("rejects Request with bodyUsed=true (matches native fetch contract)", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x", {
+      method: "POST",
+      body: "payload",
+      headers: { "Content-Type": "text/plain" },
+    });
+    // Disturb the body upstream.
+    await req.text();
+    expect(req.bodyUsed).toBe(true);
+    await expect(safeFetch(req)).rejects.toThrow(/bodyUsed|consumed/i);
   });
 
   test("keeps Authorization on same-origin redirect", async () => {

@@ -109,7 +109,7 @@ The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.
 
 For high-stakes deployments that need bit-for-bit guarantees on HTTPS targets, route outbound requests through a reverse proxy with a locked, non-attacker-controlled resolver rather than relying solely on this package.
 
-Redirects: each hop is re-validated via `isSafeUrl` before it is followed, so the protection applies to the entire redirect chain, not just the first URL. Cross-origin redirects additionally strip `Authorization`, `Cookie`, `Proxy-Authorization`, and `Proxy-Authenticate` so credentials bound to the origin aren't leaked to a redirect target.
+Redirects: each hop is re-validated via `isSafeUrl` before it is followed, so the protection applies to the entire redirect chain, not just the first URL. On cross-origin redirects the wrapper applies an **allowlist** for headers — anything other than a small set of content-negotiation headers (`accept`, `accept-encoding`, `accept-language`, `user-agent`, `content-type`, `content-language`, `cache-control`, `pragma`) is redacted. A denylist (`authorization`, `cookie`, …) is too narrow for a server-side fetcher because custom auth headers (`x-api-key`, `x-amz-security-token`, vendor-specific bearer headers) are common and impossible to enumerate safely.
 
 ### Request bodies
 
