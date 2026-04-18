@@ -35,6 +35,7 @@ import type {
   SkillsRuntime,
   SkillsRuntimeConfig,
 } from "./types.js";
+import { validateFrontmatter } from "./validate.js";
 
 export type { SkillSpawnRequest } from "./execution.js";
 export { mapSkillToSpawnRequest } from "./execution.js";
@@ -1030,6 +1031,42 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // loadReference() — Tier 2 (issue #1642)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Re-reads a skill's SKILL.md frontmatter and returns the current
+   * `references:` allowlist. Runs on every Tier 2 call so policy revocation
+   * via `invalidate(name)` takes effect immediately (review #1896 round 5).
+   *
+   * Frontmatter parse errors surface as VALIDATION so the caller sees the
+   * same error code an operator would get at discover time — no silent
+   * fallback to an empty list.
+   */
+  async function readDeclaredReferences(
+    skillName: string,
+    dirPath: string,
+  ): Promise<Result<readonly string[], KoiError>> {
+    const skillMdPath = join(dirPath, "SKILL.md");
+    let content: string;
+    try {
+      content = await Bun.file(skillMdPath).text();
+    } catch (cause: unknown) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Skill "${skillName}" SKILL.md could not be read for reference allowlist check`,
+          retryable: false,
+          cause,
+          context: { skillName, skillMdPath },
+        },
+      };
+    }
+    const parsed = parseSkillMd(content, skillMdPath);
+    if (!parsed.ok) return parsed;
+    const fm = validateFrontmatter(parsed.value.frontmatter, skillMdPath);
+    if (!fm.ok) return fm;
+    return { ok: true, value: fm.value.references ?? [] };
+  }
+
   const loadReferenceImpl = async (
     name: string,
     refPath: string,
@@ -1064,8 +1101,16 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // every in-tree file (e.g. .env, operator notes) to any caller that
     // knows the skill name. Require the skill author to declare each
     // surface-able path explicitly in SKILL.md's `references:` block.
-    const declared = entry.metadata.references;
-    if (declared === undefined || declared.length === 0) {
+    //
+    // Round 5: re-read SKILL.md on every call rather than trusting the
+    // cached discover-time metadata. If an operator edits `references:`
+    // to revoke a path and then calls `invalidate(name)` (which only
+    // clears the body cache for clean skills), the old allowlist would
+    // otherwise remain authoritative. Policy-revocation must take effect
+    // immediately, so the allowlist is read fresh from disk here.
+    const declared = await readDeclaredReferences(name, entry.dirPath);
+    if (!declared.ok) return declared;
+    if (declared.value.length === 0) {
       return {
         ok: false,
         error: {
@@ -1076,14 +1121,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
         },
       };
     }
-    if (!declared.includes(refPath)) {
+    if (!declared.value.includes(refPath)) {
       return {
         ok: false,
         error: {
           code: "PERMISSION",
           message: `Reference "${refPath}" is not in the declared references list for skill "${name}".`,
           retryable: false,
-          context: { name, refPath, declared },
+          context: { name, refPath, declared: declared.value },
         },
       };
     }

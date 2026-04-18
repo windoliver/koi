@@ -23,7 +23,11 @@ async function writeSkillWithRefs(
   name: string,
   references: readonly string[],
 ): Promise<void> {
-  const refsBlock = `references:\n${references.map((r) => `  - ${r}`).join("\n")}\n`;
+  // Empty array → inline `[]` so YAML parses as an array, not null.
+  const refsBlock =
+    references.length === 0
+      ? "references: []\n"
+      : `references:\n${references.map((r) => `  - ${r}`).join("\n")}\n`;
   const content = `---\nname: ${name}\ndescription: Test ${name}.\n${refsBlock}---\n\n# ${name}\n`;
   await Bun.write(join(root, name, "SKILL.md"), content, { createPath: true });
 }
@@ -280,6 +284,48 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     const result = await runtime.loadReference("guarded", "../sibling.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("allowlist revocation via SKILL.md edit + invalidate(name) takes effect immediately (review #1896 round 5)", async () => {
+    // Initial skill declares a reference.
+    await writeSkillWithRefs(userRoot, "revokable", ["refs/note.md"]);
+    await writeReference(userRoot, "revokable", "refs/note.md", "v1");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    // First read succeeds.
+    const before = await runtime.loadReference("revokable", "refs/note.md");
+    expect(before.ok).toBe(true);
+
+    // Operator edits SKILL.md to remove the reference, then calls
+    // invalidate(name) per the contract. With the fix, the fresh
+    // frontmatter read inside loadReference picks up the revocation.
+    await writeSkillWithRefs(userRoot, "revokable", []);
+    runtime.invalidate("revokable");
+
+    const after = await runtime.loadReference("revokable", "refs/note.md");
+    expect(after.ok).toBe(false);
+    if (!after.ok) expect(after.error.code).toBe("PERMISSION");
+  });
+
+  test("rejects unsupported extensions (.sh, .py) outright (review #1896 round 5)", async () => {
+    await writeSkillWithRefs(userRoot, "scripts", ["scripts/run.sh"]);
+    // Skill declares run.sh but the runtime refuses to surface shell files
+    // — the scanner cannot AST-parse them, so Tier 2 must not serve them.
+    await writeReference(userRoot, "scripts", "scripts/run.sh", "#!/bin/sh\necho hi\n");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const result = await runtime.loadReference("scripts", "scripts/run.sh");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({
+        errorKind: "REFERENCE_UNSUPPORTED_EXTENSION",
+      });
+    }
   });
 
   test("does not cache reference bodies between calls", async () => {

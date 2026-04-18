@@ -21,10 +21,7 @@ describe("loadReference — Tier 2 file loading", () => {
     root = await mkdtemp(join(tmpdir(), "skill-ref-"));
     await Bun.write(join(root, "my-skill", "SKILL.md"), "---\nname: my-skill\n---\n");
     await Bun.write(join(root, "my-skill", "references", "rules.md"), "reference content");
-    await Bun.write(
-      join(root, "my-skill", "scripts", "nested", "run.sh"),
-      "#!/bin/bash\necho hi\n",
-    );
+    await Bun.write(join(root, "my-skill", "scripts", "nested", "run.md"), "echo hi markdown");
   });
 
   afterEach(async () => {
@@ -40,14 +37,16 @@ describe("loadReference — Tier 2 file loading", () => {
 
   test("reads a file nested multiple levels deep", async () => {
     const dir = join(root, "my-skill");
-    const result = await loadReference("my-skill", dir, "scripts/nested/run.sh");
+    const result = await loadReference("my-skill", dir, "scripts/nested/run.md");
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.value).toContain("echo hi");
+    if (result.ok) expect(result.value).toContain("echo hi markdown");
   });
 
   test("rejects parent-directory escape with PATH_TRAVERSAL", async () => {
     const dir = join(root, "my-skill");
-    const result = await loadReference("my-skill", dir, "../sibling-secret");
+    // `../sibling.md` — allowed extension but escape target. The static
+    // traversal check must still reject it.
+    const result = await loadReference("my-skill", dir, "../sibling.md");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -183,10 +182,12 @@ describe("loadReference — binary guard", () => {
 
   test("rejects a file whose leading bytes contain a NUL", async () => {
     const buf = new Uint8Array([...Buffer.from("prefix"), 0x00, ...Buffer.from("suffix")]);
-    await Bun.write(join(root, "s", "blob.bin"), buf);
+    // Use an allowed extension (.txt) so the extension gate doesn't short-
+    // circuit before the binary guard can run.
+    await Bun.write(join(root, "s", "blob.txt"), buf);
     const dir = join(root, "s");
 
-    const result = await loadReference("s", dir, "blob.bin");
+    const result = await loadReference("s", dir, "blob.txt");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -246,9 +247,10 @@ describe("loadReference — TOCTOU race (review #1896 round 2)", () => {
 
   test("rejects a non-regular-file target (directory) with REFERENCE_NOT_FILE", async () => {
     const dir = join(root, "s");
-    // Create an empty sub-directory with the same name as the requested ref.
-    await Bun.write(join(dir, "refs", ".keep"), "");
-    const result = await loadReference("s", dir, "refs");
+    // Create a directory whose name carries an allowed extension so the
+    // extension gate passes and the fstat isFile() check is exercised.
+    await Bun.write(join(dir, "refs.md", ".keep"), "");
+    const result = await loadReference("s", dir, "refs.md");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");

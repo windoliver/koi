@@ -75,11 +75,47 @@ const SOURCE_EXTENSIONS = new Set<string>([
   ".cjs",
 ]);
 
-function isSourceExtension(refPath: string): boolean {
+/**
+ * Extensions that Tier 2 is allowed to surface (review #1896 round 5).
+ *
+ * Positive allowlist: text/prose formats and JS/TS source files only. The
+ * scanner cannot AST-parse shell, Python, Ruby, etc., so handing them to
+ * the model would let a helper script hide behavior past the security gate
+ * (Tier 1 never exposes them; Tier 2 must not become a back door). Callers
+ * that need a broader surface have to widen this list deliberately.
+ */
+const ALLOWED_REFERENCE_EXTENSIONS = new Set<string>([
+  ".md",
+  ".mdx",
+  ".txt",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
+
+function getExtension(refPath: string): string | undefined {
   const lastDot = refPath.lastIndexOf(".");
-  if (lastDot < 0) return false;
-  const ext = refPath.slice(lastDot).toLowerCase();
-  return SOURCE_EXTENSIONS.has(ext);
+  if (lastDot < 0) return undefined;
+  return refPath.slice(lastDot).toLowerCase();
+}
+
+function isSourceExtension(refPath: string): boolean {
+  const ext = getExtension(refPath);
+  return ext !== undefined && SOURCE_EXTENSIONS.has(ext);
+}
+
+function isAllowedExtension(refPath: string): boolean {
+  const ext = getExtension(refPath);
+  return ext !== undefined && ALLOWED_REFERENCE_EXTENSIONS.has(ext);
 }
 
 export interface LoadReferenceOptions {
@@ -149,6 +185,15 @@ export async function loadReference(
       refPath,
       `Reference path for skill "${name}" must be relative to the skill directory`,
       "PATH_TRAVERSAL",
+    );
+  }
+
+  if (!isAllowedExtension(refPath)) {
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" has an unsupported extension — only text and JS/TS source files are allowed`,
+      "REFERENCE_UNSUPPORTED_EXTENSION",
     );
   }
 
