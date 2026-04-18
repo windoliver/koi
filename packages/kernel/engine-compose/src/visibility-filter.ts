@@ -44,15 +44,20 @@ export function createVisibilityFilter(
   config?: VisibilityFilterConfig,
 ): AgentRegistry {
   const strict = config?.strictVisibility === true;
+  const descriptor: AgentRegistry["descriptor"] =
+    inner.descriptor !== undefined ? (agentId) => inner.descriptor?.(agentId) : undefined;
 
   async function list(
     filter?: RegistryFilter,
     visibility?: VisibilityContext,
   ): Promise<readonly RegistryEntry[]> {
+    if (visibility === undefined && strict) {
+      return [];
+    }
+
     const candidates = await inner.list(filter, visibility);
 
     if (visibility === undefined) {
-      if (strict) return [];
       return candidates;
     }
 
@@ -89,13 +94,15 @@ export function createVisibilityFilter(
   }
 
   return {
-    register: inner.register,
-    deregister: inner.deregister,
-    lookup: inner.lookup,
+    register: (entry) => inner.register(entry),
+    deregister: (agentId) => inner.deregister(agentId),
+    lookup: (agentId) => inner.lookup(agentId),
     list,
-    transition: inner.transition,
-    patch: inner.patch,
-    watch: inner.watch,
-    [Symbol.asyncDispose]: inner[Symbol.asyncDispose].bind(inner),
+    transition: (agentId, targetPhase, expectedGeneration, reason) =>
+      inner.transition(agentId, targetPhase, expectedGeneration, reason),
+    patch: (agentId, fields) => inner.patch(agentId, fields),
+    watch: (listener) => inner.watch(listener),
+    ...(descriptor !== undefined ? { descriptor } : {}),
+    [Symbol.asyncDispose]: () => inner[Symbol.asyncDispose](),
   };
 }

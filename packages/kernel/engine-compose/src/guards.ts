@@ -67,6 +67,11 @@ interface EffectiveTimeout {
   readonly source: "wall_clock" | "inactivity";
 }
 
+interface TimeoutRace {
+  readonly promise: Promise<never>;
+  readonly cancel: () => void;
+}
+
 /**
  * Compute the effective timeout for the next awaited operation based on both
  * wall-clock and inactivity limits. Returns the tighter of the two with its
@@ -106,15 +111,13 @@ function computeEffectiveTimeout(
 }
 
 /**
- * Create a promise that rejects after `ms` milliseconds with a TIMEOUT error.
- * The timer is unref'd so it doesn't keep the process alive.
+ * Create a timeout race promise and a cancellation hook.
+ * The timer is always cleared by callers to avoid timer buildup on the hot path.
  */
-function createTimeoutRejection(
-  timeout: EffectiveTimeout,
-  limits: IterationLimits,
-): Promise<never> {
-  return new Promise<never>((_resolve, reject) => {
-    const timer = setTimeout(() => {
+function createTimeoutRace(timeout: EffectiveTimeout, limits: IterationLimits): TimeoutRace {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const promise = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
       const message =
         timeout.source === "inactivity"
           ? `Inactivity timeout: no activity for ${limits.maxInactivityMs}ms (limit: ${limits.maxInactivityMs}ms)`
@@ -134,6 +137,29 @@ function createTimeoutRejection(
       (timer as { unref: () => void }).unref();
     }
   });
+  return {
+    promise,
+    cancel: () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      timer = undefined;
+    },
+  };
+}
+
+async function raceWithTimeout<T>(
+  operation: Promise<T>,
+  timeout: EffectiveTimeout | undefined,
+  limits: IterationLimits,
+): Promise<T> {
+  if (timeout === undefined) return operation;
+  const race = createTimeoutRace(timeout, limits);
+  try {
+    return await Promise.race([operation, race.promise]);
+  } finally {
+    race.cancel();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,10 +258,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
       // Without this, a non-streaming provider that stops responding would
       // hang the session indefinitely (same risk as stalled streams).
       const timeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-      const response =
-        timeout === undefined
-          ? await next(request)
-          : await Promise.race([next(request), createTimeoutRejection(timeout, limits)]);
+      const response = await raceWithTimeout(next(request), timeout, limits);
       touchActivity();
 
       trackUsage(response.usage?.inputTokens ?? 0, response.usage?.outputTokens ?? 0);
@@ -255,10 +278,7 @@ export function createIterationGuard(config?: Partial<IterationLimits>): KoiMidd
               // Race the next chunk against inactivity + wall-clock timeouts.
               // Without this, a stalled provider stream would hang indefinitely.
               const chunkTimeout = computeEffectiveTimeout(limits, startedAt, lastActivityMs);
-              const result =
-                chunkTimeout === undefined
-                  ? await iter.next()
-                  : await Promise.race([iter.next(), createTimeoutRejection(chunkTimeout, limits)]);
+              const result = await raceWithTimeout(iter.next(), chunkTimeout, limits);
               if (result.done) break;
               const chunk = result.value;
               touchActivity();
@@ -427,6 +447,111 @@ function checkPingPong(
 }
 
 /** Check for no-progress (identical output) on a per-tool basis and throw if stalled. */
+interface NoProgressHashLimits {
+  readonly maxNodes: number;
+  readonly maxStringLength: number;
+  readonly maxArrayLength: number;
+}
+
+const DEFAULT_NO_PROGRESS_HASH_LIMITS: NoProgressHashLimits = Object.freeze({
+  maxNodes: 2_048,
+  maxStringLength: 512,
+  maxArrayLength: 128,
+});
+
+/**
+ * Hash tool output with bounded traversal to avoid full JSON serialization
+ * costs on huge payloads. Returns undefined if traversal exceeds limits.
+ */
+function hashOutputForNoProgress(
+  value: unknown,
+  limits: NoProgressHashLimits = DEFAULT_NO_PROGRESS_HASH_LIMITS,
+): number | undefined {
+  const seen = new Set<object>();
+  // let justified: mutable state for bounded traversal and incremental hashing
+  let nodesVisited = 0;
+  let exceeded = false;
+  let hash = fnv1a("output");
+
+  const mix = (token: string): void => {
+    hash ^= fnv1a(token);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  };
+
+  const visit = (node: unknown): void => {
+    if (exceeded) return;
+    nodesVisited++;
+    if (nodesVisited > limits.maxNodes) {
+      exceeded = true;
+      return;
+    }
+
+    if (node === null) {
+      mix("null");
+      return;
+    }
+
+    if (typeof node === "string") {
+      mix(`str:${node.slice(0, limits.maxStringLength)}`);
+      return;
+    }
+    if (typeof node === "number") {
+      mix(`num:${String(node)}`);
+      return;
+    }
+    if (typeof node === "boolean") {
+      mix(`bool:${node ? "1" : "0"}`);
+      return;
+    }
+    if (typeof node === "bigint") {
+      mix(`bigint:${String(node)}`);
+      return;
+    }
+    if (typeof node === "undefined") {
+      mix("undefined");
+      return;
+    }
+    if (typeof node === "symbol" || typeof node === "function") {
+      mix(`unsupported:${typeof node}`);
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      mix("[");
+      mix(`len:${String(node.length)}`);
+      const boundedLength = Math.min(node.length, limits.maxArrayLength);
+      for (let i = 0; i < boundedLength; i++) {
+        visit(node[i]);
+        if (exceeded) return;
+      }
+      if (node.length > boundedLength) {
+        mix("truncated-array");
+      }
+      mix("]");
+      return;
+    }
+
+    const record = node as Record<string, unknown>;
+    if (seen.has(record)) {
+      mix("[Circular]");
+      return;
+    }
+    seen.add(record);
+    mix("{");
+    const keys = Object.keys(record).sort();
+    for (const key of keys) {
+      mix(`key:${key}`);
+      visit(record[key]);
+      if (exceeded) break;
+    }
+    mix("}");
+    seen.delete(record);
+  };
+
+  visit(value);
+  return exceeded ? undefined : hash >>> 0;
+}
+
 function checkNoProgress(
   toolId: string,
   outputHash: number,
@@ -690,17 +815,11 @@ export function createLoopDetector(config?: Partial<LoopDetectionConfig>): KoiMi
       // Execute the tool call
       const response = await next(request);
 
-      // Post-call checks — hash output for no-progress detection.
-      // Safely serialize output, skipping check on circular refs or very large outputs.
+      // Post-call checks — bounded output hashing for no-progress detection.
+      // Skip check when outputs exceed hash limits to keep hot-path cost bounded.
       if (noProgressEnabled) {
-        let serialized: string | undefined;
-        try {
-          serialized = JSON.stringify(response.output);
-        } catch {
-          // Circular reference or non-serializable output — skip no-progress check
-        }
-        if (serialized !== undefined && serialized.length <= 65_536) {
-          const outputHash = fnv1a(serialized);
+        const outputHash = hashOutputForNoProgress(response.output);
+        if (outputHash !== undefined) {
           checkNoProgress(request.toolId, outputHash, noProgressState, noProgressThreshold);
         }
       }

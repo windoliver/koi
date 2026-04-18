@@ -137,6 +137,37 @@ describe("createVisibilityFilter", () => {
       filtered.watch(listener);
       expect(inner.watch).toHaveBeenCalledWith(listener);
     });
+
+    test("delegates optional descriptor when present", async () => {
+      const descriptor = mock(async () => undefined);
+      const inner: AgentRegistry = {
+        ...createStubRegistry([e1]),
+        descriptor,
+      };
+      const perms = createStubPermissions(() => ({ effect: "allow" }));
+      const filtered = createVisibilityFilter(inner, perms);
+
+      await filtered.descriptor?.(agentId("agent-a"));
+      expect(descriptor).toHaveBeenCalledWith(agentId("agent-a"));
+    });
+
+    test("preserves inner this-binding for delegated methods", async () => {
+      const inner = {
+        ...createStubRegistry(),
+        marker: "inner-registry",
+        register(entry: RegistryEntry) {
+          if (this.marker !== "inner-registry") {
+            throw new Error("lost this binding");
+          }
+          return entry;
+        },
+      } as AgentRegistry & { readonly marker: string };
+      const perms = createStubPermissions(() => ({ effect: "allow" }));
+      const filtered = createVisibilityFilter(inner, perms);
+
+      const result = await Promise.resolve(filtered.register(e1));
+      expect(result).toEqual(e1);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -160,6 +191,7 @@ describe("createVisibilityFilter", () => {
 
       const result = await filtered.list();
       expect(result).toHaveLength(0);
+      expect(inner.list).not.toHaveBeenCalled();
     });
   });
 
