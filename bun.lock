@@ -548,9 +548,6 @@
     "packages/lib/url-safety": {
       "name": "@koi/url-safety",
       "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
     },
     "packages/lib/validation": {
       "name": "@koi/validation",
