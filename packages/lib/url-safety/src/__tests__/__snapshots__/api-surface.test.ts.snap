@@ -92,6 +92,16 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
      * up front, matching strict-streaming semantics.
      */
     readonly maxBufferedBodyBytes?: number;
+    /**
+     * Opt-in acknowledgement that a caller-supplied \`dispatcher\` / \`agent\`
+     * controls the connection path independently of \`isSafeUrl\`. Default
+     * \`false\` fails closed on any request that combines this wrapper's
+     * SSRF guarantee with a transport that bypasses it. Set to \`true\`
+     * only if the transport itself applies equivalent destination-pinning
+     * (e.g., a locked-resolver egress proxy that enforces its own
+     * allowlist).
+     */
+    readonly trustCustomTransport?: boolean;
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 

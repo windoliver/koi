@@ -43,6 +43,16 @@ export interface SafeFetcherOptions extends UrlSafetyOptions {
    * up front, matching strict-streaming semantics.
    */
   readonly maxBufferedBodyBytes?: number;
+  /**
+   * Opt-in acknowledgement that a caller-supplied `dispatcher` / `agent`
+   * controls the connection path independently of `isSafeUrl`. Default
+   * `false` fails closed on any request that combines this wrapper's
+   * SSRF guarantee with a transport that bypasses it. Set to `true`
+   * only if the transport itself applies equivalent destination-pinning
+   * (e.g., a locked-resolver egress proxy that enforces its own
+   * allowlist).
+   */
+  readonly trustCustomTransport?: boolean;
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -389,19 +399,6 @@ async function fetchWithPin(
   check: SafeUrlResult,
   state: HopState,
 ): Promise<Response> {
-  // http:// + custom transport is ambiguous: we can't rewrite the URL to an
-  // IP (that would break hostname-based proxy routing), but leaving the
-  // hostname gives the transport its own DNS resolution which reopens the
-  // rebind window this library exists to close. Fail closed by default —
-  // the caller should either use https:// (TLS cert narrows the attack)
-  // or drop the custom transport so we can pin to the validated IP.
-  const parsedForPin = new URL(url);
-  if (parsedForPin.protocol === "http:" && hasCustomTransport(state.carry)) {
-    throw new Error(
-      `url-safety: refused http:// request to ${url} with a custom dispatcher/agent — IP pinning would break proxy routing and skipping it reopens DNS rebinding. Use https:// or drop the custom transport.`,
-    );
-  }
-
   const parsed = shouldPinHttp(url, check);
   if (parsed === undefined) {
     state.headers.delete("host");
@@ -433,6 +430,7 @@ export function createSafeFetcher(
 ): typeof fetch {
   const maxRedirects = options?.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const maxBufferedBodyBytes = options?.maxBufferedBodyBytes ?? DEFAULT_MAX_BUFFERED_BODY_BYTES;
+  const trustCustomTransport = options?.trustCustomTransport === true;
 
   const safeFetchImpl = async (
     input: Parameters<typeof fetch>[0],
@@ -450,6 +448,18 @@ export function createSafeFetcher(
     const effectiveRedirect: FetchInit["redirect"] = init?.redirect ?? req?.redirect ?? "follow";
 
     const state = await buildState(input, init, maxBufferedBodyBytes);
+
+    // Any custom transport (undici dispatcher / older fetch agent) controls
+    // the actual connect path — it can route anywhere, ignoring the validated
+    // IP set. Fail closed for both http and https unless the caller has
+    // explicitly asserted the transport enforces an equivalent pin/allowlist.
+    if (!trustCustomTransport && hasCustomTransport(state.carry)) {
+      throw new Error(
+        "url-safety: refused — a caller-supplied dispatcher/agent can bypass the validated address set; " +
+          "drop the custom transport to use built-in IP pinning, or set trustCustomTransport: true to opt in explicitly " +
+          "(only when the transport itself enforces an equivalent egress policy).",
+      );
+    }
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       // Host header is per-hop derived state.

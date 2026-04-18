@@ -366,7 +366,7 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["authorization"]).toBeUndefined();
   });
 
-  test("refuses http:// with custom dispatcher (ambiguous pin vs proxy)", async () => {
+  test("refuses http:// with custom dispatcher by default", async () => {
     const { fn } = recordingFetch({
       "http://public.example.com/x": new Response("ok", { status: 200 }),
     });
@@ -374,14 +374,28 @@ describe("createSafeFetcher", () => {
     const dispatcher: unknown = { kind: "test-dispatcher" };
     await expect(
       safeFetch("http://public.example.com/x", { dispatcher } as unknown as RequestInit),
-    ).rejects.toThrow(/custom dispatcher|IP pinning would break/i);
+    ).rejects.toThrow(/dispatcher|agent|bypass/i);
   });
 
-  test("allows https:// with custom dispatcher (TLS cert narrows rebind risk)", async () => {
-    const { fn, calls } = recordingFetch({
+  test("refuses https:// with custom dispatcher by default (transport can bypass pin)", async () => {
+    const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const dispatcher: unknown = { kind: "test-dispatcher" };
+    await expect(
+      safeFetch("https://public.example.com/x", { dispatcher } as unknown as RequestInit),
+    ).rejects.toThrow(/dispatcher|agent|bypass/i);
+  });
+
+  test("trustCustomTransport=true opts into caller-enforced egress policy", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const dispatcher: unknown = { kind: "test-dispatcher" };
     await safeFetch("https://public.example.com/x", { dispatcher } as unknown as RequestInit);
     expect(calls).toHaveLength(1);
@@ -418,14 +432,16 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(3);
   });
 
-  test("preserves dispatcher/agent init options (proxy/egress transport)", async () => {
+  test("preserves dispatcher/agent init options (proxy/egress transport, opt-in)", async () => {
     const capturedInits: RequestInit[] = [];
     const fn = (async (input: string | URL | Request, init?: RequestInit) => {
       capturedInits.push(init ?? {});
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
-    // Fake dispatcher/agent references (we only care the options survive).
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const dispatcher: unknown = { kind: "test-dispatcher" };
     const agent: unknown = { kind: "test-agent" };
     const initArg = { dispatcher, agent } as unknown as RequestInit;
