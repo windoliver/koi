@@ -89,16 +89,25 @@ describe("prefix", () => {
   });
 
   test("UNTRUSTED path-qualified binaries fail closed to !complex (loop-3)", () => {
-    // Attacker-dropped `./git`, Nix-store binaries, /tmp/... binaries
-    // must not share a permission key with the trusted binary nor slip
-    // past subcommand deny rules by keeping the full path. Route to
-    // the `!complex` bucket so operators opt in explicitly.
+    // Attacker-writable relative/absolute paths outside trusted roots
+    // must not share a permission key with the trusted binary. Route
+    // to the `!complex` bucket so operators opt in explicitly.
     expect(prefix(["./git", "push"])).toBe("!complex");
     expect(prefix(["./node_modules/.bin/jest"])).toBe("!complex");
     expect(prefix(["/tmp/git", "push"])).toBe("!complex");
     expect(prefix(["~/bin/git", "push"])).toBe("!complex");
-    expect(prefix(["/nix/store/abc/bin/sudo", "rm"])).toBe("!complex");
-    expect(prefix(["/opt/homebrew/Cellar/git/2.45/bin/git", "push"])).toBe("!complex");
+    expect(prefix(["/random/place/sudo", "rm"])).toBe("!complex");
+  });
+
+  test("package-manager store paths are trusted (Nix, Homebrew Cellar)", () => {
+    // Content-addressed and versioned package installs produce real
+    // system binaries. Treat them as equivalent to `/usr/bin/<name>`
+    // so existing prefix rules keep working on Nix/NixOS, Homebrew,
+    // and Linuxbrew hosts.
+    expect(prefix(["/nix/store/abc123-sudo-1.9.13/bin/sudo", "rm"])).toBe("sudo");
+    expect(prefix(["/opt/homebrew/Cellar/git/2.45/bin/git", "push"])).toBe("git push");
+    expect(prefix(["/opt/homebrew/opt/node/bin/node", "app.js"])).toBe("node");
+    expect(prefix(["/home/linuxbrew/.linuxbrew/bin/git", "status"])).toBe("git status");
   });
 
   test("basenames after a wrapper too (trusted paths only)", () => {
@@ -120,22 +129,29 @@ describe("prefix", () => {
     expect(prefix([...many, "rm"])).toBe("rm");
   });
 
-  test("per-command pre-subcommand options are peeled (round 10)", () => {
-    // `git -c key=value push` must resolve to `git push`, not `git -c`,
-    // so deny rules like `deny: bash:git push*` fire correctly.
-    expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("git push");
-    expect(prefix(["git", "-C", "/tmp/repo", "status"])).toBe("git status");
+  test("cosmetic pre-subcommand options are peeled; security-relevant ones fail closed (loop-3)", () => {
+    // Cosmetic flags are harmless: peel + compute normal prefix.
     expect(prefix(["git", "--no-pager", "log"])).toBe("git log");
-    expect(prefix(["git", "--git-dir", "/tmp/.git", "--no-pager", "push"])).toBe("git push");
-    // docker --context, --host, kubectl --namespace
-    expect(prefix(["docker", "--context=ci", "compose", "up"])).toBe("docker compose up");
-    expect(prefix(["docker", "--host", "unix:///x", "compose", "up"])).toBe("docker compose up");
-    expect(prefix(["kubectl", "-n", "prod", "apply", "-f", "x.yaml"])).toBe("kubectl apply");
+    expect(prefix(["git", "-p", "status"])).toBe("git status");
+    expect(prefix(["docker", "-v", "ps"])).toBe("docker ps");
+    expect(prefix(["npm", "--silent", "run", "build"])).toBe("npm run build");
+
+    // Security-relevant flags (context, namespace, host, config
+    // overrides, global install) change the trust boundary. Fail
+    // closed so `allow: bash:kubectl apply` doesn't implicitly cover
+    // every cluster, and `bash:docker compose up` doesn't cover
+    // every daemon.
+    expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("!complex");
+    expect(prefix(["git", "-C", "/tmp/repo", "status"])).toBe("!complex");
+    expect(prefix(["docker", "--context=ci", "compose", "up"])).toBe("!complex");
+    expect(prefix(["docker", "--host", "unix:///x", "compose", "up"])).toBe("!complex");
+    expect(prefix(["kubectl", "-n", "prod", "apply", "-f", "x.yaml"])).toBe("!complex");
     expect(prefix(["kubectl", "--namespace=prod", "--context", "c1", "get", "pods"])).toBe(
-      "kubectl get",
+      "!complex",
     );
-    expect(prefix(["helm", "-n", "prod", "install"])).toBe("helm install");
-    expect(prefix(["npm", "--prefix", "/tmp/app", "run", "build"])).toBe("npm run build");
+    expect(prefix(["helm", "--kube-context", "prod", "install"])).toBe("!complex");
+    expect(prefix(["npm", "--prefix", "/tmp/app", "run", "build"])).toBe("!complex");
+    expect(prefix(["npm", "-g", "install", "lodash"])).toBe("!complex");
   });
 
   test("unknown pre-subcommand flags fail closed to !complex (loop-3)", () => {
@@ -519,8 +535,10 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
 
   test("parameter expansion ${VAR} does NOT trigger !complex", () => {
     expect(canonicalPrefix("echo ${HOME}")).toBe("echo");
-    expect(canonicalPrefix("git -C ${REPO} status")).toBe("git status");
+    // `-C` on git is a security-relevant flag (changes working dir),
+    // so the combination fails closed — but ${VAR} alone doesn't.
     expect(canonicalPrefix("bash ${HOME}/script.sh")).toBe("bash");
+    expect(canonicalPrefix("sudo ${MY_CMD}")).toBe("sudo");
   });
 
   test("brace expansion file{1,2} does NOT trigger !complex", () => {

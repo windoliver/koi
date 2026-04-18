@@ -113,80 +113,39 @@ const FLAGLESS_WRAPPERS: ReadonlySet<string> = new Set(["command", "builtin", "e
  * ARITY lookup produces the correct permission key.
  */
 const COMMAND_PRE_OPTIONS: Readonly<Record<string, WrapperSpec>> = {
+  // Only cosmetic / help flags are peelable. Security-relevant
+  // flags (context, namespace, host, global install, config
+  // overrides) intentionally fail closed so policy rules cannot
+  // silently authorize `kubectl apply` across clusters or
+  // `npm install` as a global package via broad prefix allows.
   git: {
-    argFlags: new Set([
-      "-c",
-      "-C",
-      "--git-dir",
-      "--work-tree",
-      "--exec-path",
-      "--namespace",
-      "--config-env",
-      "--super-prefix",
-      "--list-cmds",
-    ]),
+    argFlags: new Set(),
     boolFlags: new Set([
       "--version",
       "--help",
       "--no-pager",
-      "--bare",
       "--html-path",
       "--man-path",
       "--info-path",
       "--paginate",
       "-p",
-      "--no-replace-objects",
-      "--no-optional-locks",
     ]),
   },
   docker: {
-    argFlags: new Set([
-      "--context",
-      "--host",
-      "-H",
-      "--config",
-      "--log-level",
-      "-l",
-      "--tlscacert",
-      "--tlscert",
-      "--tlskey",
-    ]),
-    boolFlags: new Set(["--debug", "-D", "--tls", "--tlsverify", "--help", "--version", "-v"]),
+    argFlags: new Set(),
+    boolFlags: new Set(["--help", "--version", "-v"]),
   },
   kubectl: {
-    argFlags: new Set([
-      "--namespace",
-      "-n",
-      "--context",
-      "--kubeconfig",
-      "--cluster",
-      "--user",
-      "--server",
-      "-s",
-      "--token",
-      "--as",
-      "--as-group",
-      "--log-file",
-      "-v",
-    ]),
-    boolFlags: new Set(["--help", "-h", "--insecure-skip-tls-verify", "--disable-compression"]),
+    argFlags: new Set(),
+    boolFlags: new Set(["--help", "-h"]),
   },
   helm: {
-    argFlags: new Set([
-      "--namespace",
-      "-n",
-      "--kubeconfig",
-      "--kube-context",
-      "--registry-config",
-      "--repository-cache",
-      "--repository-config",
-    ]),
+    argFlags: new Set(),
     boolFlags: new Set(["--help", "--debug", "--version"]),
   },
   npm: {
-    // npm's `--prefix PATH`, `--userconfig FILE`, etc. come before the subcommand.
-    argFlags: new Set(["--prefix", "--userconfig", "--globalconfig", "--registry", "-C"]),
-    boolFlags: new Set(["--help", "--version", "-v", "--silent", "-g", "--global"]),
+    argFlags: new Set(),
+    boolFlags: new Set(["--help", "--version", "-v", "--silent"]),
   },
 };
 
@@ -195,9 +154,8 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /**
  * System bin directories whose contents are trusted to be the canonical
  * binary. `/usr/bin/git` is treated as equivalent to a PATH-resolved
- * `git`; any other path (`./git`, `/tmp/git`, `~/bin/git`, user-writable
- * dirs) is kept path-qualified so a dropped malicious binary cannot
- * silently inherit a rule meant for the system binary.
+ * `git`; any other path (`./git`, `/tmp/git`, user-writable dirs) is
+ * routed to the `!complex` sentinel rather than a distinct prefix.
  */
 const TRUSTED_BIN_PREFIXES: readonly string[] = [
   "/usr/bin/",
@@ -208,6 +166,27 @@ const TRUSTED_BIN_PREFIXES: readonly string[] = [
   "/opt/homebrew/bin/",
   "/opt/homebrew/sbin/",
   "/opt/local/bin/",
+];
+
+/**
+ * Content-addressed and package-layout trusted roots. Matches paths
+ * shaped `/nix/store/<hash>-<pkg>/bin/<binary>`,
+ * `/opt/homebrew/Cellar/<pkg>/<ver>/bin/<binary>`, etc. These install
+ * layouts produce realpath-resolved binaries equivalent to
+ * `/usr/bin/<binary>`, so treat them the same for policy purposes.
+ */
+const TRUSTED_BIN_PATTERNS: readonly RegExp[] = [
+  /^\/nix\/store\/[^/]+\/bin\/([^/]+)$/,
+  /^\/nix\/store\/[^/]+\/sbin\/([^/]+)$/,
+  /^\/opt\/homebrew\/Cellar\/[^/]+\/[^/]+\/bin\/([^/]+)$/,
+  /^\/opt\/homebrew\/Cellar\/[^/]+\/[^/]+\/sbin\/([^/]+)$/,
+  /^\/opt\/homebrew\/opt\/[^/]+\/bin\/([^/]+)$/,
+  /^\/opt\/homebrew\/opt\/[^/]+\/libexec\/bin\/([^/]+)$/,
+  /^\/usr\/local\/Cellar\/[^/]+\/[^/]+\/bin\/([^/]+)$/,
+  /^\/opt\/local\/libexec\/gnubin\/([^/]+)$/,
+  // Linuxbrew
+  /^\/home\/linuxbrew\/\.linuxbrew\/bin\/([^/]+)$/,
+  /^\/home\/linuxbrew\/\.linuxbrew\/Cellar\/[^/]+\/[^/]+\/bin\/([^/]+)$/,
 ];
 
 /** Unconditional basename (used for shell-interpreter detection only). */
@@ -230,24 +209,32 @@ function basenameTrusted(t: string): string {
       if (rest.length > 0 && !rest.includes("/")) return rest;
     }
   }
+  for (const pattern of TRUSTED_BIN_PATTERNS) {
+    const m = t.match(pattern);
+    const captured = m?.[1];
+    if (captured !== undefined) return captured;
+  }
   return t;
 }
 
 /**
- * Absolute paths outside the trusted allowlist (`/nix/store/...`,
- * `/tmp/git`, `./sudo`, etc.) are neither safe to basename (would
+ * Paths outside the trusted allowlist + patterns (`/tmp/git`,
+ * `./sudo`, user-writable dirs) are neither safe to basename (would
  * leak trust to an attacker-dropped binary) nor safe to keep as a
- * distinct prefix (loses subcommand-specific deny rules on the
- * real binary name). Route them to the `!complex` sentinel so
- * operators must explicitly opt in per-command.
+ * distinct prefix (loses subcommand-specific deny rules on the real
+ * binary name). Route them to the `!complex` sentinel so operators
+ * must explicitly opt in per-command.
  */
 function isUntrustedPathBinary(t: string): boolean {
   if (!t.includes("/")) return false;
   for (const prefix of TRUSTED_BIN_PREFIXES) {
     if (t.startsWith(prefix)) {
       const rest = t.slice(prefix.length);
-      if (rest.length > 0 && !rest.includes("/")) return false; // trusted
+      if (rest.length > 0 && !rest.includes("/")) return false;
     }
+  }
+  for (const pattern of TRUSTED_BIN_PATTERNS) {
+    if (pattern.test(t)) return false;
   }
   return true;
 }

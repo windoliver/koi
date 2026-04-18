@@ -817,6 +817,45 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     expect(approvalHandler).toHaveBeenCalled();
   });
 
+  test("broad allow + dangerous command → ratcheted to ask (loop-3)", async () => {
+    // Operator has `allow: bash:python` — benign `python script.py`
+    // should execute. But `python -c "os.system(...)"` matches the
+    // module-load danger pattern and must force human review even
+    // though the prefix `bash:python` is explicitly allowed.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash:python"], deny: [], ask: [] },
+    });
+    const approvalCalls: string[] = [];
+    const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+      approvalCalls.push(req.toolId);
+      return { kind: "deny", reason: "dangerous, reviewing" };
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // Benign python form: allowed (no ratchet).
+    await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "python script.py" }),
+      noopHandler,
+    );
+    expect(approvalCalls).toHaveLength(0);
+
+    // Dangerous python -c form: ratcheted to ask → handler consulted.
+    await expect(
+      mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("bash", { command: `python -c "import os; os.system('rm')"` }),
+        noopHandler,
+      ),
+    ).rejects.toThrow("dangerous, reviewing");
+    expect(approvalCalls).toHaveLength(1);
+  });
+
   test("plain-deny wins → tracking keys on plain tool id for escalation aggregation (loop-3)", async () => {
     // With `deny: ["bash"]`, repeated denied calls across subcommand
     // variants must aggregate under the same denial bucket (`bash`),
@@ -902,16 +941,18 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
       ),
     ).rejects.toThrow();
 
-    // Another dangerous simple command: `mkfs.ext4 /dev/sdb1`. The
-    // natural prefix is `mkfs.ext4`. A deny like `deny: bash:mkfs*`
-    // would still work (though we don't set it here to show the
-    // allow: bash:* path goes through for dangerous commands not
-    // explicitly denied — operator opts in to additional denies).
-    await mw.wrapToolCall?.(
-      makeTurnContext(),
-      makeToolRequest("bash", { command: "mkfs.ext4 /dev/sdb1" }),
-      noopHandler,
-    );
+    // Dangerous simple commands that broad `allow: bash:*` would have
+    // authorized are now ratcheted to ask even under that allow. With
+    // no approval handler configured, the call rejects. Operators can
+    // still deny explicitly; the point is that broad allows alone are
+    // not enough to authorize structural-danger forms.
+    await expect(
+      mw.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "mkfs.ext4 /dev/sdb1" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
   });
 
   test("benign env-prefixed command still allowed", async () => {

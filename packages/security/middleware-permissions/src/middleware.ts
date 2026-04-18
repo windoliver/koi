@@ -1483,6 +1483,25 @@ export function createPermissionsMiddleware(
         }
         decision = combined;
       }
+      // Dangerous-command ratchet: if the raw command matches a
+      // high/critical DANGEROUS_PATTERN and the combined decision is
+      // "allow", upgrade to "ask" so a human reviews it. Broad allow
+      // rules like `allow: bash:python` therefore cannot silently
+      // authorize `python -c "os.system('rm')"`. Explicit deny still
+      // wins; existing "ask" remains.
+      if (decision.effect === "allow" && config.resolveBashCommand !== undefined) {
+        const raw = config.resolveBashCommand(request.toolId, request.input);
+        if (raw !== undefined && raw.trim().length > 0) {
+          const danger = classifyCommand(raw.trim());
+          if (danger.severity === "critical" || danger.severity === "high") {
+            const categories = Array.from(new Set(danger.matchedPatterns.map((p) => p.category)));
+            decision = {
+              effect: "ask",
+              reason: `dangerous command pattern matched (${categories.join(", ")})`,
+            };
+          }
+        }
+      }
       const durationMs = clock() - startMs;
 
       // Non-deny paths: audit + dispatch here. Deny paths handle their own
