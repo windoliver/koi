@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { agentId, workerId } from "@koi/core";
 import { createSubprocessBackend } from "../subprocess-backend.js";
 
@@ -47,6 +50,42 @@ describe("subprocess terminate/kill", () => {
       if (ev.kind === "crashed" || ev.kind === "exited") break;
     }
     expect(events).toContain("crashed");
+  });
+
+  it("captures stdout/stderr to logPath when backendHints.logPath is set", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "koi-subproc-log-"));
+    try {
+      const logPath = join(dir, "w-log.log");
+      // Pre-create the file so Bun.file can write to it — Bun's file-sink
+      // opens for truncate+write and errors if the path is missing parent
+      // dirs. The tmpdir above already exists, so touching the file is enough.
+      await Bun.write(logPath, "");
+
+      const backend = createSubprocessBackend();
+      const spawned = await backend.spawn({
+        workerId: workerId("log-1"),
+        agentId: agentId("agent-log-1"),
+        command: [
+          "bun",
+          "-e",
+          'process.stdout.write("hello-stdout\\n"); process.stderr.write("hello-stderr\\n");',
+        ],
+        backendHints: { logPath },
+      });
+      expect(spawned.ok).toBe(true);
+
+      // Drain watch() until terminal so we know the process has finished
+      // and stdio flushes are complete.
+      for await (const ev of backend.watch(workerId("log-1"))) {
+        if (ev.kind === "exited" || ev.kind === "crashed") break;
+      }
+
+      const contents = await readFile(logPath, "utf8");
+      expect(contents).toContain("hello-stdout");
+      expect(contents).toContain("hello-stderr");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("prunes dead workers from internal state after exit", async () => {

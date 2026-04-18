@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
+  attachRegistry,
   computeBackoff,
+  createFileSessionRegistry,
   createSubprocessBackend,
   createSupervisor,
   registerSignalHandlers,
@@ -15,5 +17,7 @@ describe("@koi/daemon public exports", () => {
     expect(typeof createSubprocessBackend).toBe("function");
     expect(typeof registerSignalHandlers).toBe("function");
     expect(typeof computeBackoff).toBe("function");
+    expect(typeof createFileSessionRegistry).toBe("function");
+    expect(typeof attachRegistry).toBe("function");
   });
 });

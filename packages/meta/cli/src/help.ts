@@ -186,6 +186,27 @@ Options:
   -h, --help             Show this help
 `;
 
+const bgHelp = `koi bg — Manage background agent sessions
+
+Usage:
+  koi bg <subcommand> [worker-id] [options]
+
+Subcommands:
+  ps                     List background sessions
+  logs <id>              Tail a session's log file
+  kill <id>              Terminate a session (SIGTERM, then SIGKILL after 5s)
+  attach <id>            Attach to a session (read-only on subprocess backend)
+  detach                 Detach from an attached session (tmux backend only)
+
+Options:
+  -f, --follow           Keep tailing after printing existing log content (logs)
+      --json             Emit JSON instead of text (ps)
+      --registry-dir <p> Override the default registry directory
+  -h, --help             Show this help
+
+Default registry: $KOI_STATE_DIR/daemon/sessions, or ~/.koi/daemon/sessions.
+`;
+
 export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   init: initHelp,
   start: startHelp,
@@ -199,4 +220,5 @@ export const COMMAND_HELP: Readonly<Record<KnownCommand, string>> = {
   deploy: deployHelp,
   mcp: mcpHelp,
   plugin: pluginHelp,
+  bg: bgHelp,
 };

@@ -897,6 +897,15 @@ type WorkerEvent = {
     readonly kind: "started";
     readonly workerId: WorkerId;
     readonly at: number;
+    /**
+     * OS process identity for backends that have one (subprocess, tmux).
+     * Omitted by backends that lack a PID (in-process, some remote).
+     * Registry bridges that care about PID-based kill MUST propagate
+     * this into the session record on every respawn — without it, a
+     * restarted worker's registry entry keeps the pre-restart PID and
+     * \`bg kill\` can signal a reused PID.
+     */
+    readonly pid?: number;
 } | {
     readonly kind: "heartbeat";
     readonly workerId: WorkerId;
@@ -948,6 +957,153 @@ interface Supervisor {
     readonly list: () => readonly ProcessDescriptor[];
     readonly watchAll: () => AsyncIterable<WorkerEvent>;
 }
+/**
+ * Lifecycle status of a background session. The registry is the single
+ * cross-process source of truth for these states; consumers (CLI \`ps\`,
+ * observability dashboards, external orchestrators) read registry entries
+ * rather than querying a live supervisor.
+ *
+ * - \`starting\`: \`register()\` has been called but no \`started\` event has been
+ *   observed yet. Transient — visible only in race windows.
+ * - \`running\`: \`started\` event observed; worker is live.
+ * - \`exited\`: \`exited\` event observed (code=0 OR intentional termination).
+ * - \`crashed\`: \`crashed\` event observed (code≠0 unsolicited, or backend fault).
+ * - \`detached\`: operator-initiated detach; worker remains live but registry
+ *   entry is retained for later \`koi bg attach\` reconnection. Used by tmux
+ *   backend (3b-6); subprocess backend never emits this state.
+ * - \`terminating\`: transient claim written by off-path killers (\`koi bg
+ *   kill\`) BEFORE they signal the PID. Serves as a compare-and-swap
+ *   receipt: if the claim update fails, the caller knows identity
+ *   drifted since their last read and MUST NOT send a signal. A healthy
+ *   kill transitions the record through \`terminating → exited\`. An
+ *   orphaned \`terminating\` means the killer crashed between claim and
+ *   signal — operators can resume by re-running \`bg kill\`.
+ */
+type BackgroundSessionStatus = "starting" | "running" | "exited" | "crashed" | "detached" | "terminating";
+/**
+ * Persisted per-session record. The registry stores one of these per worker.
+ * Nullable lifecycle fields (\`endedAt\`, \`exitCode\`) are populated when the
+ * worker terminates. All fields are serializable so the record round-trips
+ * through JSON persistence unchanged.
+ *
+ * Named \`BackgroundSession*\` (not \`Session*\`) to disambiguate from
+ * \`@koi/core/session\` — that module models chat sessions for crash recovery;
+ * this module models OS-process lifecycle for the daemon.
+ */
+interface BackgroundSessionRecord {
+    readonly workerId: WorkerId;
+    readonly agentId: AgentId;
+    /** Optional logical session id (chat-session, job-id, etc.). */
+    readonly sessionId?: string | undefined;
+    /** OS process id. 0 for backends that lack a PID (in-process, some remote). */
+    readonly pid: number;
+    readonly status: BackgroundSessionStatus;
+    readonly startedAt: number;
+    readonly endedAt?: number | undefined;
+    readonly exitCode?: number | undefined;
+    /** Absolute path to the log file. Empty string if no log capture. */
+    readonly logPath: string;
+    readonly command: readonly string[];
+    readonly backendKind: WorkerBackendKind;
+    /**
+     * Monotonic version bumped on every successful write. Enables optimistic
+     * concurrency control: \`update()\` reads the record, applies the patch
+     * against that specific version, and retries if a concurrent writer
+     * advanced the version between read and rename. Treated as 0 when
+     * absent (pre-CAS records or fresh registrations).
+     */
+    readonly version?: number | undefined;
+}
+/**
+ * Partial update applied via \`update(id, patch)\`. \`workerId\`, \`agentId\`,
+ * \`command\`, and \`backendKind\` are immutable post-register. \`pid\` and
+ * \`startedAt\` MAY be updated — on worker restart the supervisor spawns a
+ * fresh OS process under the same \`workerId\`, and the registry entry must
+ * reflect the new process identity or \`bg kill\` will signal a dead/reused
+ * PID. Callers that wire \`attachRegistry\` to a restartable supervisor are
+ * responsible for patching \`pid\` + \`startedAt\` on every respawn (the
+ * bridge only observes lifecycle events, not the spawn path, and so
+ * cannot learn the new PID on its own).
+ */
+interface BackgroundSessionUpdate {
+    readonly status?: BackgroundSessionStatus;
+    readonly endedAt?: number;
+    readonly exitCode?: number;
+    readonly sessionId?: string;
+    readonly logPath?: string;
+    readonly pid?: number;
+    readonly startedAt?: number;
+    /**
+     * Optional compare-and-swap guard. When set, the registry rejects the
+     * update with \`CONFLICT\` if the persisted record's \`version\` differs,
+     * which protects callers that captured a specific record identity
+     * (e.g. \`bg kill\` holding onto a pre-signal PID) from clobbering a
+     * fresh session that the supervisor respawned under the same
+     * \`workerId\` between the caller's read and its final write.
+     *
+     * Absent means "last-writer-wins" — the registry just bumps the
+     * version to \`(current ?? 0) + 1\` as usual. Integrators wiring
+     * \`attachRegistry\` do NOT need to set this; it's an escape hatch for
+     * off-path writers.
+     */
+    readonly expectedVersion?: number;
+    /**
+     * Optional second CAS predicate: reject with \`CONFLICT\` if the
+     * persisted \`pid\` differs. Paired with \`expectedVersion\` to defend
+     * against the niche case where a restart happens to land on the same
+     * version number (e.g. a crash-during-update left the version stuck).
+     */
+    readonly expectedPid?: number;
+    /**
+     * When true, the merge drops any previously-stored \`endedAt\` and
+     * \`exitCode\` from the record. Required for correct \`started\`-event
+     * handling: a transient/permanent restart produces a fresh \`running\`
+     * status, and the prior exit's terminal metadata would otherwise
+     * linger and mislead observers (e.g. showing \`status=running\` with
+     * a stale \`exitCode=137\`).
+     */
+    readonly clearTerminal?: boolean;
+}
+/**
+ * Discriminated union of registry change events. Emitted by \`watch()\`.
+ * Consumers use these to react to session lifecycle without polling.
+ */
+type BackgroundSessionEvent = {
+    readonly kind: "registered";
+    readonly record: BackgroundSessionRecord;
+} | {
+    readonly kind: "updated";
+    readonly record: BackgroundSessionRecord;
+} | {
+    readonly kind: "unregistered";
+    readonly workerId: WorkerId;
+};
+/**
+ * Cross-process background-session registry. Backing store is
+ * implementation-defined (file-backed JSON, SQLite, remote KV, etc.);
+ * consumers should treat all operations as possibly-async and always \`await\`.
+ *
+ * Single-writer: multiple registry instances on the same backing directory
+ * produce undefined behavior. Integrations should share one registry
+ * instance per process.
+ */
+interface BackgroundSessionRegistry {
+    readonly register: (record: BackgroundSessionRecord) => Promise<Result<void, KoiError>>;
+    readonly update: (id: WorkerId, patch: BackgroundSessionUpdate) => Promise<Result<BackgroundSessionRecord, KoiError>>;
+    readonly unregister: (id: WorkerId) => Promise<Result<void, KoiError>>;
+    readonly get: (id: WorkerId) => Promise<BackgroundSessionRecord | undefined>;
+    readonly list: () => Promise<readonly BackgroundSessionRecord[]>;
+    readonly watch: () => AsyncIterable<BackgroundSessionEvent>;
+}
+/**
+ * Pure validator: checks that a candidate \`BackgroundSessionRecord\` is
+ * well-formed. Used by registry implementations to reject malformed writes
+ * early.
+ *
+ * Side-effect-free data validation, permitted in L0 per the architecture-doc
+ * exceptions for pure helpers that operate only on L0 types.
+ */
+declare function validateBackgroundSessionRecord(record: BackgroundSessionRecord): Result<BackgroundSessionRecord, KoiError>;
 declare function validateSupervisorConfig(config: SupervisorConfig): Result<SupervisorConfig, KoiError>;
 
 /**
@@ -2805,7 +2961,7 @@ declare function validateSessionIdSyntax(id: string, name?: string): Result<void
  */
 declare function validateNonEmpty(value: string, name: string): Result<void, KoiError>;
 
-export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AnomalyBase, type AnomalyDetail, type AnomalySignal, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompactResult, type CompensatingOp, ComponentProvider, type CompositionSchedulerEvent, type ContentReplacement, type ContextSummary, type ContextSummaryRef, type CriterionResult, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DEFAULT_WORKER_RESTART_POLICY, type DecisionCorrelationId, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, ModelChunk, type NexusPath, type NodeCapability, type NodeId, type OutcomeEvaluation, type OutcomeEvaluationResult, type OutcomeReport, type OutcomeReportInput, type OutcomeRubric, type OutcomeStore, type OutcomeValence, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, type PermissionEscalation, ProcessDescriptor, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, RestartType, Result, type ReviewDecision, type RubricCriterion, SNAPSHOT_STATUS_KEY, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SnapshotStatus, SubsystemToken, type Supervisor, type SupervisorConfig, type SystemSignal, type SystemSignalSource, type SystemSignalSourceOptions, TaskBoardSnapshot, TaskId, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TruncateResult, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, type WorkerBackend, type WorkerBackendKind, type WorkerEvent, type WorkerHandle, type WorkerId, type WorkerRestartPolicy, type WorkerSpawnRequest, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, decisionCorrelationId, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isModelChunk, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateNonEmpty, validateSessionIdSyntax, validateSupervisorConfig, validation, workerId };
+export { ALL_CATALOG_SOURCES, ALL_CHANGE_TARGETS, type AdvertisedTool, Agent, type AgentBundle, AgentCondition, type AgentDeregisteredEvent, AgentDescriptor, AgentGroupId, AgentId, AgentManifest, type AgentPatchedEvent, type AgentRegisteredEvent, AgentRegistry, type AgentSnapshot, type AgentSnapshotStore, type AgentStateEvent, type AgentStateEventKind, AgentStatus, type AgentTransitionedEvent, type AncestorQuery, type AnomalyBase, type AnomalyDetail, type AnomalySignal, type AuditEntry, type AuditSink, BACKTRACK_REASON_KEY, BUNDLE_FORMAT_VERSION, type BackgroundSessionEvent, type BackgroundSessionRecord, type BackgroundSessionRegistry, type BackgroundSessionStatus, type BackgroundSessionUpdate, type BacktrackConstraint, type BacktrackReason, type BacktrackReasonKind, BrickArtifact, type BrickComponentMap, BrickId, BrickKind, BrickRef, type BundleId, type CapabilityDenyReason, type CapabilityId, CapabilityProof, type CapabilityRegistry, type CapabilityScope, type CapabilityToken, type CapabilityVerifier, type CapabilityVerifyResult, type CapacityReport, type CatalogEntry, type CatalogPage, type CatalogQuery, type CatalogReader, type CatalogSource, type CatalogSourceError, type ChainCompactor, type ChainId, type ChangeKind, type ChangeTarget, type CheckpointPolicy, type CompactResult, type CompensatingOp, ComponentProvider, type CompositionSchedulerEvent, type ContentReplacement, type ContextSummary, type ContextSummaryRef, type CriterionResult, DEFAULT_CATALOG_SEARCH_LIMIT, DEFAULT_CHECKPOINT_POLICY, DEFAULT_FORGE_BUDGET, DEFAULT_RECONCILE_RUNNER_CONFIG, DEFAULT_THREAD_PRUNING_POLICY, DEFAULT_WORKER_RESTART_POLICY, type DecisionCorrelationId, DelegationDenyReason, type DiagnosticItem, type DiagnosticProvider, type DiagnosticRange, type DiagnosticSeverity, EXTENSION_PRIORITY, EngineEvent, EngineState, type PermissionDecision as EscalationDecision, type PermissionRequest as EscalationRequest, type EventCursor, type ExaptationKind, type ExaptationSignal, type FileOpKind, type FileOpRecord, type ForgeBudget, type ForgeDemandSignal, type ForgeTrigger, type ForkRef, type GateRequirement, type GuardContext, type HarnessId, type HarnessMetrics, type HarnessPhase, type HarnessSnapshot, type HarnessSnapshotStore, type HarnessStatus, type HarnessThreadSnapshot, INITIAL_AGENT_STATUS, ImplementationArtifact, JsonObject, type KernelExtension, type KeyArtifact, KoiError, KoiMiddleware, MAX_NEXUS_PATH_LENGTH, type MessageThreadSnapshot, ModelChunk, type NexusPath, type NodeCapability, type NodeId, type OutcomeEvaluation, type OutcomeEvaluationResult, type OutcomeReport, type OutcomeReportInput, type OutcomeRubric, type OutcomeStore, type OutcomeValence, PROPOSAL_GATE_REQUIREMENTS, PatchableRegistryFields, type PendingFrame, PermissionConfig, type PermissionEscalation, ProcessDescriptor, ProcessState, type Proposal, type ProposalEvent, type ProposalGate, type ProposalId, type ProposalInput, type ProposalResult, type ProposalStatus, type ProposalUnsubscribe, type PruningPolicy, type PutOptions, type ReconcileContext, type ReconcileResult, type ReconcileRunnerConfig, type ReconciliationController, type RecoveryPlan, type RedactionRule, RegistryEntry, RestartType, Result, type ReviewDecision, type RubricCriterion, SNAPSHOT_STATUS_KEY, type ScopeAccessRequest, type ScopeEnforcer, type ScopeSubsystem, type ServiceProviderConfig, type SessionFilter, SessionId, type SessionPersistence, type SessionRecord, type SessionStatus, type SessionTranscript, type SingleToolProviderConfig, SkillComponent, type SkippedRecoveryEntry, type SkippedTranscriptEntry, type SnapshotChainStore, type SnapshotNode, type SnapshotStatus, SubsystemToken, type Supervisor, type SupervisorConfig, type SystemSignal, type SystemSignalSource, type SystemSignalSourceOptions, TaskBoardSnapshot, TaskId, type ThreadId, type ThreadMessage, type ThreadMessageId, type ThreadMessageRole, type ThreadMetrics, type ThreadPruningPolicy, type ThreadSnapshot, type ThreadSnapshotStore, type ThreadStore, Tool, ToolCallId, type ToolCallPayload, type ToolErrorPayload, type ToolFailureRecord, type ToolHealthMetrics, type ToolHealthSnapshot, type ToolHealthState, ToolPolicy, type ToolResultPayload, type TraceEvent, type TraceEventKind, type TranscriptEntry, type TranscriptEntryId, type TranscriptEntryRole, type TranscriptLoadResult, type TranscriptPage, type TranscriptPageOptions, type TransitionContext, TransitionReason, type TruncateResult, type TuiAdapter, type TurnTrace, type UsagePurposeObservation, type ValidationDiagnostic, type ValidationResult, type VerifierCache, type VerifyContext, type WorkerBackend, type WorkerBackendKind, type WorkerEvent, type WorkerHandle, type WorkerId, type WorkerRestartPolicy, type WorkerSpawnRequest, ZoneId, bundleId, capabilityId, chainId, conflict, createServiceProvider, createSingleToolProvider, decisionCorrelationId, evolveRegistryEntry, external, harnessId, internal, isAgentStateEvent, isCapabilityToken, isHarnessSnapshot, isMessageSnapshot, isModelChunk, isProcessState, isToolCallPayload, nexusPath, nodeId, notFound, permission, proposalId, rateLimit, staleRef, threadId, threadMessageId, timeout, transcriptEntryId, validateBackgroundSessionRecord, validateNonEmpty, validateSessionIdSyntax, validateSupervisorConfig, validation, workerId };
 "
 `;
 
@@ -3447,6 +3603,22 @@ interface EventBackend {
 }
 
 export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfig, EventEnvelope, EventInput, ReadOptions, ReadResult, SubscribeOptions, SubscriptionHandle };
+"
+`;
+
+exports[`@koi/core API surface ./governance has stable type surface 1`] = `
+"export { bj as ContextPressureTrend, cB as GOVERNANCE_VARIABLES, cD as GovernanceCheck, cE as GovernanceController, cF as GovernanceEvent, cG as GovernanceSnapshot, cH as GovernanceVariable, cI as GovernanceVariableContributor, ez as SensorReading, gw as governanceContributorToken } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './model-HASH.js';
+import './permission-HASH.js';
+import './hook.js';
+import './sandbox-HASH.js';
+import './webhook.js';
+import './zone.js';
+import './filesystem-HASH.js';
 "
 `;
 
@@ -5865,21 +6037,5 @@ type MainToWorkerMessage = {
 };
 
 export type { MainToWorkerMessage, WorkerEngineInput, WorkerToMainMessage };
-"
-`;
-
-exports[`@koi/core API surface ./governance has stable type surface 1`] = `
-"export { bj as ContextPressureTrend, cB as GOVERNANCE_VARIABLES, cD as GovernanceCheck, cE as GovernanceController, cF as GovernanceEvent, cG as GovernanceSnapshot, cH as GovernanceVariable, cI as GovernanceVariableContributor, ez as SensorReading, gw as governanceContributorToken } from './assembly-HASH.js';
-import './errors.js';
-import './common.js';
-import './message.js';
-import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
-import './hook.js';
-import './sandbox-HASH.js';
-import './webhook.js';
-import './zone.js';
-import './filesystem-HASH.js';
 "
 `;

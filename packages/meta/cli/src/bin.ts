@@ -35,6 +35,7 @@ Commands:
   stop [manifest]        Stop the service
   deploy [manifest]      Install/uninstall OS service
   plugin <subcommand>    Manage plugins (install, remove, enable, disable, update, list)
+  bg <subcommand>        Manage background agent sessions (ps, logs, kill, attach, detach)
 
 Global flags:
   --version, -V          Show version

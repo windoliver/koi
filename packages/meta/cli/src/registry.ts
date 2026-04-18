@@ -31,4 +31,5 @@ export const COMMAND_LOADERS: Readonly<Record<KnownCommand, () => Promise<unknow
   deploy: () => import("./commands/deploy.js"),
   mcp: () => import("./commands/mcp.js"),
   plugin: () => import("./commands/plugin.js"),
+  bg: () => import("./commands/bg.js"),
 };

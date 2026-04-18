@@ -69,7 +69,20 @@ export interface WorkerHandle {
 // ---------------------------------------------------------------------------
 
 export type WorkerEvent =
-  | { readonly kind: "started"; readonly workerId: WorkerId; readonly at: number }
+  | {
+      readonly kind: "started";
+      readonly workerId: WorkerId;
+      readonly at: number;
+      /**
+       * OS process identity for backends that have one (subprocess, tmux).
+       * Omitted by backends that lack a PID (in-process, some remote).
+       * Registry bridges that care about PID-based kill MUST propagate
+       * this into the session record on every respawn — without it, a
+       * restarted worker's registry entry keeps the pre-restart PID and
+       * `bg kill` can signal a reused PID.
+       */
+      readonly pid?: number;
+    }
   | { readonly kind: "heartbeat"; readonly workerId: WorkerId; readonly at: number }
   | {
       readonly kind: "exited";
@@ -135,6 +148,220 @@ export interface Supervisor {
   readonly shutdown: (reason: string) => Promise<Result<void, KoiError>>;
   readonly list: () => readonly ProcessDescriptor[];
   readonly watchAll: () => AsyncIterable<WorkerEvent>;
+}
+
+// ---------------------------------------------------------------------------
+// Session registry — cross-process session metadata
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle status of a background session. The registry is the single
+ * cross-process source of truth for these states; consumers (CLI `ps`,
+ * observability dashboards, external orchestrators) read registry entries
+ * rather than querying a live supervisor.
+ *
+ * - `starting`: `register()` has been called but no `started` event has been
+ *   observed yet. Transient — visible only in race windows.
+ * - `running`: `started` event observed; worker is live.
+ * - `exited`: `exited` event observed (code=0 OR intentional termination).
+ * - `crashed`: `crashed` event observed (code≠0 unsolicited, or backend fault).
+ * - `detached`: operator-initiated detach; worker remains live but registry
+ *   entry is retained for later `koi bg attach` reconnection. Used by tmux
+ *   backend (3b-6); subprocess backend never emits this state.
+ * - `terminating`: transient claim written by off-path killers (`koi bg
+ *   kill`) BEFORE they signal the PID. Serves as a compare-and-swap
+ *   receipt: if the claim update fails, the caller knows identity
+ *   drifted since their last read and MUST NOT send a signal. A healthy
+ *   kill transitions the record through `terminating → exited`. An
+ *   orphaned `terminating` means the killer crashed between claim and
+ *   signal — operators can resume by re-running `bg kill`.
+ */
+export type BackgroundSessionStatus =
+  | "starting"
+  | "running"
+  | "exited"
+  | "crashed"
+  | "detached"
+  | "terminating";
+
+/**
+ * Persisted per-session record. The registry stores one of these per worker.
+ * Nullable lifecycle fields (`endedAt`, `exitCode`) are populated when the
+ * worker terminates. All fields are serializable so the record round-trips
+ * through JSON persistence unchanged.
+ *
+ * Named `BackgroundSession*` (not `Session*`) to disambiguate from
+ * `@koi/core/session` — that module models chat sessions for crash recovery;
+ * this module models OS-process lifecycle for the daemon.
+ */
+export interface BackgroundSessionRecord {
+  readonly workerId: WorkerId;
+  readonly agentId: AgentId;
+  /** Optional logical session id (chat-session, job-id, etc.). */
+  readonly sessionId?: string | undefined;
+  /** OS process id. 0 for backends that lack a PID (in-process, some remote). */
+  readonly pid: number;
+  readonly status: BackgroundSessionStatus;
+  readonly startedAt: number;
+  readonly endedAt?: number | undefined;
+  readonly exitCode?: number | undefined;
+  /** Absolute path to the log file. Empty string if no log capture. */
+  readonly logPath: string;
+  readonly command: readonly string[];
+  readonly backendKind: WorkerBackendKind;
+  /**
+   * Monotonic version bumped on every successful write. Enables optimistic
+   * concurrency control: `update()` reads the record, applies the patch
+   * against that specific version, and retries if a concurrent writer
+   * advanced the version between read and rename. Treated as 0 when
+   * absent (pre-CAS records or fresh registrations).
+   */
+  readonly version?: number | undefined;
+}
+
+/**
+ * Partial update applied via `update(id, patch)`. `workerId`, `agentId`,
+ * `command`, and `backendKind` are immutable post-register. `pid` and
+ * `startedAt` MAY be updated — on worker restart the supervisor spawns a
+ * fresh OS process under the same `workerId`, and the registry entry must
+ * reflect the new process identity or `bg kill` will signal a dead/reused
+ * PID. Callers that wire `attachRegistry` to a restartable supervisor are
+ * responsible for patching `pid` + `startedAt` on every respawn (the
+ * bridge only observes lifecycle events, not the spawn path, and so
+ * cannot learn the new PID on its own).
+ */
+export interface BackgroundSessionUpdate {
+  readonly status?: BackgroundSessionStatus;
+  readonly endedAt?: number;
+  readonly exitCode?: number;
+  readonly sessionId?: string;
+  readonly logPath?: string;
+  readonly pid?: number;
+  readonly startedAt?: number;
+  /**
+   * Optional compare-and-swap guard. When set, the registry rejects the
+   * update with `CONFLICT` if the persisted record's `version` differs,
+   * which protects callers that captured a specific record identity
+   * (e.g. `bg kill` holding onto a pre-signal PID) from clobbering a
+   * fresh session that the supervisor respawned under the same
+   * `workerId` between the caller's read and its final write.
+   *
+   * Absent means "last-writer-wins" — the registry just bumps the
+   * version to `(current ?? 0) + 1` as usual. Integrators wiring
+   * `attachRegistry` do NOT need to set this; it's an escape hatch for
+   * off-path writers.
+   */
+  readonly expectedVersion?: number;
+  /**
+   * Optional second CAS predicate: reject with `CONFLICT` if the
+   * persisted `pid` differs. Paired with `expectedVersion` to defend
+   * against the niche case where a restart happens to land on the same
+   * version number (e.g. a crash-during-update left the version stuck).
+   */
+  readonly expectedPid?: number;
+  /**
+   * When true, the merge drops any previously-stored `endedAt` and
+   * `exitCode` from the record. Required for correct `started`-event
+   * handling: a transient/permanent restart produces a fresh `running`
+   * status, and the prior exit's terminal metadata would otherwise
+   * linger and mislead observers (e.g. showing `status=running` with
+   * a stale `exitCode=137`).
+   */
+  readonly clearTerminal?: boolean;
+}
+
+/**
+ * Discriminated union of registry change events. Emitted by `watch()`.
+ * Consumers use these to react to session lifecycle without polling.
+ */
+export type BackgroundSessionEvent =
+  | { readonly kind: "registered"; readonly record: BackgroundSessionRecord }
+  | { readonly kind: "updated"; readonly record: BackgroundSessionRecord }
+  | { readonly kind: "unregistered"; readonly workerId: WorkerId };
+
+/**
+ * Cross-process background-session registry. Backing store is
+ * implementation-defined (file-backed JSON, SQLite, remote KV, etc.);
+ * consumers should treat all operations as possibly-async and always `await`.
+ *
+ * Single-writer: multiple registry instances on the same backing directory
+ * produce undefined behavior. Integrations should share one registry
+ * instance per process.
+ */
+export interface BackgroundSessionRegistry {
+  readonly register: (record: BackgroundSessionRecord) => Promise<Result<void, KoiError>>;
+  readonly update: (
+    id: WorkerId,
+    patch: BackgroundSessionUpdate,
+  ) => Promise<Result<BackgroundSessionRecord, KoiError>>;
+  readonly unregister: (id: WorkerId) => Promise<Result<void, KoiError>>;
+  readonly get: (id: WorkerId) => Promise<BackgroundSessionRecord | undefined>;
+  readonly list: () => Promise<readonly BackgroundSessionRecord[]>;
+  readonly watch: () => AsyncIterable<BackgroundSessionEvent>;
+}
+
+/**
+ * Pure validator: checks that a candidate `BackgroundSessionRecord` is
+ * well-formed. Used by registry implementations to reject malformed writes
+ * early.
+ *
+ * Side-effect-free data validation, permitted in L0 per the architecture-doc
+ * exceptions for pure helpers that operate only on L0 types.
+ */
+export function validateBackgroundSessionRecord(
+  record: BackgroundSessionRecord,
+): Result<BackgroundSessionRecord, KoiError> {
+  if (record.workerId.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.workerId must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (record.agentId.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.agentId must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (!Number.isFinite(record.startedAt) || record.startedAt < 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.startedAt must be a non-negative finite number",
+        retryable: false,
+      },
+    };
+  }
+  if (record.command.length === 0) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.command must be non-empty",
+        retryable: false,
+      },
+    };
+  }
+  if (!Number.isFinite(record.pid)) {
+    return {
+      ok: false,
+      error: {
+        code: "VALIDATION",
+        message: "BackgroundSessionRecord.pid must be a finite number",
+        retryable: false,
+      },
+    };
+  }
+  return { ok: true, value: record };
 }
 
 // ---------------------------------------------------------------------------

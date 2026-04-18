@@ -273,6 +273,11 @@ export type { SingleToolProviderConfig } from "./create-single-tool-provider.js"
 export { createSingleToolProvider } from "./create-single-tool-provider.js";
 // daemon — OS-process supervisor + worker backend contracts
 export type {
+  BackgroundSessionEvent,
+  BackgroundSessionRecord,
+  BackgroundSessionRegistry,
+  BackgroundSessionStatus,
+  BackgroundSessionUpdate,
   Supervisor,
   SupervisorConfig,
   WorkerBackend,
@@ -285,6 +290,7 @@ export type {
 } from "./daemon.js";
 export {
   DEFAULT_WORKER_RESTART_POLICY,
+  validateBackgroundSessionRecord,
   validateSupervisorConfig,
   workerId,
 } from "./daemon.js";
