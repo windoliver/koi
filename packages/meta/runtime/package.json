@@ -43,6 +43,7 @@
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/dream": "workspace:*",
     "@koi/middleware-goal": "workspace:*",
+    "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-exfiltration-guard": "workspace:*",
     "@koi/middleware-otel": "workspace:*",

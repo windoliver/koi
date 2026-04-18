@@ -823,6 +823,132 @@ describe("Golden: @koi/middleware-planning", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-plan-persist (2 standalone queries)
+// No-LLM tests that exercise the file-backed persistence surface from the
+// runtime consumer boundary. Catches re-export regressions and proves the
+// public bundle wiring matches what runtime hosts will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-plan-persist", () => {
+  test("middleware bundle saves a mirrored plan to disk and loads it back", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME, PLAN_SAVE_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-golden-`);
+    try {
+      const bundle = createPlanPersistMiddleware({
+        cwd: tmpRoot,
+        baseDir: ".koi/plans",
+        now: () => Date.UTC(2026, 3, 17, 10, 0, 0),
+        rand: () => 0.5,
+      });
+      expect(bundle.middleware.name).toBe("plan-persist");
+      expect(bundle.providers).toHaveLength(2);
+
+      // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
+      bundle.onPlanUpdate(
+        [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "in_progress" },
+        ],
+        {
+          sessionId: "golden-sess",
+          epoch: 1,
+          turnIndex: 0,
+          signal: new AbortController().signal,
+        },
+      );
+
+      const session = {
+        agentId: "plan-persist-golden",
+        sessionId: sessionId("golden-sess"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const passthrough = async (req: {
+        readonly toolId: string;
+      }): Promise<{ readonly output: unknown }> => ({
+        output: { passthrough: req.toolId },
+      });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const saved = await wrap(
+        ctx,
+        { toolId: PLAN_SAVE_TOOL_NAME, input: { slug: "golden-flow" } },
+        passthrough,
+      );
+      const savedOut = saved.output as { readonly path: string };
+      expect(savedOut.path.endsWith("20260417-100000-golden-flow.md")).toBe(true);
+
+      const loaded = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: savedOut.path } },
+        passthrough,
+      );
+      const loadedOut = loaded.output as {
+        readonly items: readonly { readonly content: string; readonly status: string }[];
+      };
+      expect(loadedOut.items).toEqual([
+        { content: "First", status: "pending" },
+        { content: "Second", status: "in_progress" },
+      ]);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("middleware bundle rejects path traversal at the load tool boundary", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-traversal-`);
+    try {
+      const bundle = createPlanPersistMiddleware({ cwd: tmpRoot });
+      const session = {
+        agentId: "plan-persist-traversal",
+        sessionId: sessionId("trav"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+      const passthrough = async (): Promise<{ readonly output: unknown }> => ({ output: {} });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const res = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: "/etc/passwd" } },
+        passthrough,
+      );
+      const out = res.output as { readonly error?: string };
+      expect(out.error).toBe("path outside baseDir");
+      expect(res.metadata?.planPersistError).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
 // ---------------------------------------------------------------------------
 
