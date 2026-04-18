@@ -9,6 +9,7 @@
  * and denial tracking.
  */
 
+import { prefix as bashPrefix } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -589,6 +590,24 @@ export function createPermissionsMiddleware(
   // -----------------------------------------------------------------------
   // Internal helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Derive the canonical permission resource key for a tool call. When
+   * `resolveBashCommand` is configured and returns a non-empty command
+   * string, the key is `<toolId>:<prefix>` (e.g. `bash:git push`). Returns
+   * the plain tool name otherwise.
+   */
+  function enrichResource(toolId: string, input: JsonObject | undefined): string {
+    if (config.resolveBashCommand === undefined || input === undefined) return toolId;
+    const raw = config.resolveBashCommand(toolId, input);
+    if (raw === undefined) return toolId;
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return toolId;
+    const tokens = trimmed.split(/\s+/);
+    const p = bashPrefix(tokens);
+    if (p.length === 0) return toolId;
+    return `${toolId}:${p}`;
+  }
 
   function queryForTool(
     ctx: TurnContext,
@@ -1303,7 +1322,8 @@ export function createPermissionsMiddleware(
       // the in-flight dedup key. (#1759 review round 6)
       // Resolve file path for fs tools so permission rules can match on context.path.
       const resolvedPath = config.resolveToolPath?.(request.toolId, request.input);
-      const query = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+      const resource = enrichResource(request.toolId, request.input);
+      const query = queryForTool(ctx, resource, request.metadata, resolvedPath);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
       const durationMs = clock() - startMs;

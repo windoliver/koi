@@ -129,6 +129,27 @@ export interface PermissionsMiddlewareConfig {
     | ((toolId: string, input: JsonObject) => string | undefined)
     | undefined;
   /**
+   * Optional bash-command resolver. When set, the middleware extracts the
+   * raw command string from a tool's input and derives the canonical
+   * permission prefix via `@koi/bash-classifier#prefix()`. The resource key
+   * passed to the backend becomes `<toolId>:<prefix>`, e.g. `bash:git push`
+   * or `shell:npm run build` — enabling rules like
+   *
+   *   { allow: ["bash:git push", "bash:git status"], deny: ["bash:rm*"] }
+   *
+   * The callback receives the tool ID and input object. Return the raw
+   * command string for bash-like tools, or `undefined` for tools that do
+   * not carry a shell command. Returning an empty or whitespace-only
+   * string falls back to the plain tool name.
+   *
+   * Asymmetry note: enrichment only runs at `wrapToolCall` (execution
+   * time), not at `wrapModelCall` (tool-list filter). Tool listing uses
+   * the plain tool name because the model has not chosen a command yet.
+   */
+  readonly resolveBashCommand?:
+    | ((toolId: string, input: JsonObject) => string | undefined)
+    | undefined;
+  /**
    * Max cumulative soft denies per `decisionCacheKey` per turn before hard-throw.
    * Counter is cumulative per turn — allow decisions do not reset it. Cleared at
    * turn boundary via `onBeforeTurn`. Default: 3. #1650.
@@ -290,6 +311,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // resolveToolPath — function if set
   if (config.resolveToolPath !== undefined && typeof config.resolveToolPath !== "function") {
     return fail("config.resolveToolPath must be a function");
+  }
+
+  // resolveBashCommand — function if set
+  if (config.resolveBashCommand !== undefined && typeof config.resolveBashCommand !== "function") {
+    return fail("config.resolveBashCommand must be a function");
   }
 
   // softDenyPerTurnCap — positive number if set

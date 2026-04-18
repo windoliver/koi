@@ -327,4 +327,22 @@ describe("validatePermissionsConfig", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.retryable).toBe(false);
   });
+
+  // resolveBashCommand
+  test("accepts resolveBashCommand function", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      resolveBashCommand: () => undefined,
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects non-function resolveBashCommand", () => {
+    const result = validatePermissionsConfig({
+      backend: validBackend,
+      resolveBashCommand: "not-a-function",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("resolveBashCommand");
+  });
 });

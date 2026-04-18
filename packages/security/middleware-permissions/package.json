@@ -21,6 +21,7 @@
     "optional": true
   },
   "dependencies": {
+    "@koi/bash-classifier": "workspace:*",
     "@koi/core": "workspace:*",
     "@koi/errors": "workspace:*"
   }

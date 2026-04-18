@@ -169,6 +169,52 @@ const groups = {
 
 ---
 
+## Bash Prefix Enrichment
+
+For shell/exec tools, a single rule like `allow: "bash"` is too coarse — it
+grants every possible command the agent invents. Finer-grained rules need a
+canonical permission key like `bash:git push` rather than the opaque string
+the agent chose.
+
+Configure `resolveBashCommand` to extract the raw command string from the
+tool input. The middleware runs it through `@koi/bash-classifier#prefix()`
+and replaces the resource key with `<toolId>:<prefix>` for the backend check.
+
+```typescript
+createPermissionsMiddleware({
+  backend: createPatternPermissionBackend({
+    rules: {
+      allow: ["bash:git push", "bash:git status", "bash:npm run build"],
+      ask:   ["bash:git *"],       // prefix wildcard — any other git subcommand
+      deny:  ["bash:sudo*", "bash:rm*"],
+    },
+  }),
+  resolveBashCommand: (toolId, input) =>
+    toolId === "bash" && typeof input.command === "string"
+      ? (input.command as string)
+      : undefined,
+});
+```
+
+- `git push origin main` → resource `bash:git push` (matches `bash:git push`)
+- `npm run build -- --watch` → `bash:npm run build` (arity 3 for `npm run`)
+- `git log --oneline` → `bash:git log` (matches `bash:git *` — goes to ask)
+- `sudo apt install` → `bash:sudo` (matches `bash:sudo*` — denied)
+
+Caveats:
+- Enrichment runs only at `wrapToolCall` (execution), not at tool-list
+  filtering. The model still sees `bash` as available; individual commands
+  are gated at execution time.
+- Returning `undefined` or an empty string from the resolver falls back to
+  the plain tool name — safe default.
+- Audit entries and denial tracking remain keyed by the plain tool ID, not
+  the enriched resource.
+
+See `@koi/bash-classifier` for the `ARITY` table and `DANGEROUS_PATTERNS`
+registry.
+
+---
+
 ## Decision Cache
 
 Avoids redundant permission checks when the same tool is used repeatedly:
