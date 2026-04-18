@@ -94,6 +94,13 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  removeStoredEarlySigusr1Handler,
+  SIGUSR1_EXIT_CODE,
+  SIGUSR1_SUPPORTED,
+} from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1396,6 +1403,105 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const yoloPermissionBackend = flags.yolo
     ? createPatternPermissionBackend({ rules: { allow: ["*"], deny: [], ask: [] } })
     : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Shutdown latch — declared here (hoisted from its original position at
+  // line ~2274) so the interim SIGUSR1 teardown below and the full
+  // `shutdown()` further down share ONE idempotence flag (#1906 R4 review).
+  // Without a shared latch, SIGUSR1 during bootstrap kicks off interim
+  // teardown but bootstrap continues forward; a subsequent SIGUSR1 or
+  // graceful path would race the interim teardown. Consolidating to a
+  // single sentinel means the first shutdown request wins and every later
+  // signal — interim, full, or /quit — is a no-op.
+  // ---------------------------------------------------------------------------
+  // let: justified — set once on first shutdown request, shared across
+  // interim teardown, full shutdown, and section 4b upgrade.
+  let shutdownStarted = false;
+
+  // ---------------------------------------------------------------------------
+  // Interim SIGUSR1 handler (#1906 R1/R2/R4) — covers the window from this
+  // point through section 4b where the full `shutdown()` handler installs.
+  // SIGUSR1 during runtime/MCP bootstrap runs an ASYNC, ordered teardown
+  // (matching the normal shutdown sequencing: SIGTERM background tasks
+  // → await runtime.dispose → dispose filesystem backend → flush OTel →
+  // close approvals → dispose batcher → process.exit) with a 6s hard-exit
+  // failsafe so a wedged dispose cannot strand the user. Upgraded to the
+  // full handler at section 4b once `shutdown` is defined.
+  // ---------------------------------------------------------------------------
+  // Interim hard-exit failsafe: shorter than the full shutdown's 8s because
+  // there is strictly less to tear down this early in bootstrap.
+  const INTERIM_SHUTDOWN_HARD_EXIT_MS = 6_000;
+  // let: justified — set once, then cleared when the full handler takes over.
+  let interimSigusr1Handler: (() => void) | null = null;
+  if (SIGUSR1_SUPPORTED) {
+    const interimTeardown = async (exitCode: number): Promise<void> => {
+      // Use the shared `shutdownStarted` latch so a second SIGUSR1 during
+      // interim teardown — or an accidental later call from the full
+      // shutdown path — is a no-op. Flipping it before the first async step
+      // also means bootstrap code that later checks `shutdownStarted` can
+      // short-circuit instead of racing the teardown.
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+      // Arm the hard-exit failsafe FIRST so even if an awaited step wedges
+      // we are not stranded. Unref'd so natural completion still lets
+      // the explicit process.exit below run when everything finishes.
+      const hardExit = setTimeout(() => {
+        process.exit(exitCode);
+      }, INTERIM_SHUTDOWN_HARD_EXIT_MS);
+      if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+        (hardExit as { unref: () => void }).unref();
+      }
+      // Ref'd keepalive — mirror the full `shutdown()` pattern (line ~2326).
+      // Bun drops pending microtasks once the last real handle disappears,
+      // so without this interval the first `await runtime.dispose()` can
+      // let the event loop exit before the continuation resumes, skipping
+      // every subsequent cleanup step and the final `process.exit`. The
+      // hard-exit failsafe still guards against a wedged await.
+      const keepAlive = setInterval(() => {
+        /* ref'd keepalive only */
+      }, 1000);
+      try {
+        // Kick background-task SIGTERM synchronously so stubborn subprocesses
+        // start dying before we begin the async dispose chain.
+        try {
+          runtimeHandle?.shutdownBackgroundTasks();
+        } catch {}
+        try {
+          if (runtimeHandle !== null) {
+            await runtimeHandle.runtime.dispose();
+          }
+        } catch {}
+        try {
+          await resolvedFilesystemBackend?.dispose?.();
+        } catch {}
+        try {
+          await otelHandle?.shutdown();
+        } catch {}
+        try {
+          approvalStore?.close();
+        } catch {}
+        try {
+          batcher.dispose();
+        } catch {}
+      } finally {
+        clearInterval(keepAlive);
+        process.exit(exitCode);
+      }
+    };
+    interimSigusr1Handler = createSigusr1Handler({
+      shutdown: (code) => {
+        void interimTeardown(code);
+      },
+      write: (msg) => {
+        try {
+          process.stderr.write(msg);
+        } catch {}
+      },
+    });
+    removeStoredEarlySigusr1Handler();
+    process.on("SIGUSR1", interimSigusr1Handler);
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -1522,6 +1628,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
   }).then((handle) => {
+    // If an interim SIGUSR1 teardown started while createKoiRuntime was
+    // in flight (#1906 R10), the teardown couldn't dispose `handle`
+    // because it wasn't assigned yet. Dispose it here directly and do
+    // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
+    // (transcript priming, /mcp refresh) would run against an
+    // already-disposed runtime.
+    if (shutdownStarted) {
+      handle.shutdownBackgroundTasks();
+      void handle.runtime.dispose().catch(() => {
+        /* best effort — hard-exit failsafe will still fire */
+      });
+      return;
+    }
     runtimeHandle = handle;
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
@@ -2264,8 +2383,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // wedges. The failsafe is unref'd, so natural cleanup completion before
   // the timer fires still lets the process exit cleanly via `process.exit`.
   const SHUTDOWN_HARD_EXIT_MS = 8000;
-  // let: justified — set once on first shutdown call
-  let shutdownStarted = false;
+  // `shutdownStarted` is hoisted to the pre-createKoiRuntime block so
+  // interim SIGUSR1 teardown and this full shutdown share one latch
+  // (#1906 R4 review).
   const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
@@ -2457,6 +2577,44 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   };
 
   // ---------------------------------------------------------------------------
+  // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
+  // ---------------------------------------------------------------------------
+  //
+  // Progressive handler upgrade:
+  //   1. bin.ts inline early handler: bare `process.exit()` (process-start → runTuiCommand entry).
+  //   2. interim teardown handler: tears down what exists so far — runtime,
+  //      filesystem backend, otel, approvals, batcher — but cannot touch
+  //      appHandle, resetBarrier, abortActiveStream because they are not
+  //      declared yet. Installed right before createKoiRuntime.
+  //   3. Full handler (THIS section): routes into `shutdown()` which adds
+  //      abortActiveStream, resetBarrier wait, appHandle.stop, run-report,
+  //      resume hint, SIGKILL-escalation wait.
+  //
+  // Swap the interim handler out by reference so an embedding host's own
+  // SIGUSR1 listeners (if any) are not trampled. The interim teardown is
+  // no-longer reachable from here; the full handler supersedes it.
+  const onProcessSigusr1 = createSigusr1Handler({
+    shutdown: (code, reason) => {
+      void shutdown(code, reason);
+    },
+    write: (msg) => {
+      process.stderr.write(msg);
+    },
+  });
+  if (SIGUSR1_SUPPORTED && !shutdownStarted) {
+    // Skip the upgrade if the interim teardown is already in flight —
+    // installing the full handler now would let a fresh SIGUSR1 enter
+    // `shutdown()` concurrently with the interim teardown. The shared
+    // `shutdownStarted` latch makes `shutdown()` a no-op in that case,
+    // but there is no reason to wire up the listener at all.
+    if (interimSigusr1Handler !== null) {
+      process.removeListener("SIGUSR1", interimSigusr1Handler);
+      interimSigusr1Handler = null;
+    }
+    process.on("SIGUSR1", onProcessSigusr1);
+  }
+
+  // ---------------------------------------------------------------------------
   // 5. Initialize tree-sitter for markdown rendering
   // ---------------------------------------------------------------------------
 
@@ -2629,6 +2787,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
     store.dispatch({ kind: "set_at_results", results }),
   );
+
+  // If an interim SIGUSR1 teardown already flipped the shutdown latch
+  // during bootstrap, do not create the TUI app or start the renderer
+  // (#1906 R5). The interim teardown + hard-exit failsafe will terminate
+  // the process shortly; creating the TUI would just allocate more state
+  // for the teardown to race.
+  if (shutdownStarted) {
+    // Wait for the interim teardown's hard-exit failsafe (6s) to fire.
+    await new Promise<void>((resolve) => setTimeout(resolve, INTERIM_SHUTDOWN_HARD_EXIT_MS + 500));
+    // If for some reason we're still alive (teardown wedged, failsafe
+    // didn't fire), fall through to process.exit as a last resort.
+    process.exit(SIGUSR1_EXIT_CODE);
+  }
 
   const result = createTuiApp({
     store,
@@ -4150,6 +4321,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const onProcessSigint = (): void => {
+    // Once any shutdown path (SIGUSR1, SIGTERM, SIGHUP, /quit) has flipped
+    // `shutdownStarted`, drop further SIGINTs. Without this, a Ctrl+C that
+    // lands during the 8 s cooperative shutdown window can re-enter the
+    // SIGINT state machine's `onForce`, kick a concurrent background-task
+    // teardown, and overwrite the in-flight shutdown's exit code. The
+    // SIGUSR1 handler relies on this invariant to preserve exit code 158
+    // (#1906).
+    if (shutdownStarted) return;
     sigintHandler.handleSignal();
   };
   // SIGTERM is a separate termination cause (supervisor/OOM/operator kill)
@@ -4164,6 +4343,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSighup = (): void => {
     void shutdown(129, "SIGHUP received (terminal hangup)");
   };
+  // SIGUSR1 (#1906): the full handler was already installed in section 4b
+  // so a signal during bootstrap (before this section runs) goes through
+  // `shutdown` instead of a bare process.exit. See 4b for the rationale.
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
@@ -4193,6 +4375,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
+  // SIGUSR1 is already armed from section 4b (#1906) — no install here.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
@@ -4200,6 +4383,27 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   tuiRunning = true;
   if (process.stdin.isTTY) {
     process.stdin.once("close", onStdinClose);
+  }
+
+  // Print the SIGUSR1 escape-hatch hint BEFORE start() takes over the
+  // terminal. OpenTUI enters the alternate screen buffer on start and
+  // restores the main buffer on exit, so the hint lands in the user's
+  // scrollback and is visible from any other terminal session that runs
+  // `ps` to recover the PID. See issue #1906. Skipped on Windows where
+  // SIGUSR1 does not exist (the hint would advertise a non-functional
+  // escape mechanism).
+  //
+  // Guarded: a stderr write failure (already-closed stream in an embedded
+  // caller or a detached test process) must not propagate, because the
+  // `try/finally` below is what removes the signal listeners installed
+  // above. Without this catch, a throw here would leak SIGINT/SIGTERM/
+  // SIGHUP/SIGUSR1 listeners into the host process.
+  if (SIGUSR1_SUPPORTED) {
+    try {
+      process.stderr.write(generateTuiStartupHint(process.pid));
+    } catch {
+      /* stderr unwritable — best-effort hint, never leak signal handlers */
+    }
   }
 
   try {
@@ -4222,7 +4426,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.removeListener("SIGINT", onProcessSigint);
     process.removeListener("SIGTERM", onProcessSigterm);
     process.removeListener("SIGHUP", onProcessSighup);
+    process.removeListener("SIGUSR1", onProcessSigusr1);
     process.stdin.removeListener("close", onStdinClose);
+    // If `done()` resolved because `shutdown()` called `appHandle.stop()`,
+    // shutdown() is still mid-flight — it has more awaits (runtime.dispose,
+    // otel flush, resume hint) before reaching its final
+    // `process.exit(exitCode)`. Returning here would let bin.ts's
+    // `process.exit(0)` fire first, clobbering the intended SIGUSR1/SIGTERM
+    // exit code. Await a never-resolving promise so bin.ts cannot reach
+    // its own `process.exit` until shutdown completes (or the hard-exit
+    // failsafe fires — 8 s for the full path, 6 s for the interim).
+    if (shutdownStarted) {
+      await new Promise<never>(() => {
+        /* never resolves — shutdown() or its hard-exit failsafe owns the exit */
+      });
+    }
   }
 }
 
