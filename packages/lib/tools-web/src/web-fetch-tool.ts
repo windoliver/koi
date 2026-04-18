@@ -17,7 +17,7 @@ import type { WebExecutor } from "./web-executor.js";
  * URL is definitively blocked regardless of DNS; if it returns undefined,
  * the executor (with its full DNS-backed isSafeUrl) is the final decision.
  */
-function preflightBlockReason(url: string): string | undefined {
+export function preflightBlockReason(url: string): string | undefined {
   let parsed: URL;
   try {
     parsed = new URL(url);
