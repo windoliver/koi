@@ -96,6 +96,22 @@ describe("isSafeUrl", () => {
     if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
   });
 
+  test("default resolver must fail when A succeeds but AAAA errors (full-coverage invariant)", async () => {
+    // Simulate the built-in authoritative-strict default by injecting a
+    // resolver that throws — isSafeUrl must propagate that as a rejection.
+    // createSafeFetcher cannot pin HTTPS to an IP, so the validator must
+    // observe the complete A+AAAA set before approving. A partial answer
+    // (public A seen, blocked AAAA hidden behind a transient error) would
+    // otherwise slip past the check.
+    const result = await isSafeUrl("https://mixed.example.com/", {
+      dnsResolver: async () => {
+        throw Object.assign(new Error("SERVFAIL on AAAA"), { code: "SERVFAIL" });
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/DNS|SERVFAIL/i);
+  });
+
   test("allowPrivate=true keeps DNS failure fatal (rebind-safety invariant)", async () => {
     const result = await isSafeUrl("https://unknown.example.com/", {
       allowPrivate: true,

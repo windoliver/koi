@@ -57,11 +57,16 @@ interface UrlSafetyOptions {
      */
     readonly strictAuthoritativeDns?: boolean;
     /**
-     * When \`true\`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
-     * A or AAAA family is fatal. When \`false\` (default), a single-family
-     * success is trusted and the other family's transient failure is
-     * treated as "no records of this family". Only applies when the
-     * authoritative resolver is in use (the OS-lookup path is single-call).
+     * When \`true\` (the default), a real resolver error (TIMEOUT/SERVFAIL/etc.)
+     * on EITHER A or AAAA family is fatal. This closes the rebinding vector
+     * where a hostname's public A is approved while a blocked AAAA lookup
+     * transiently failed — the later HTTPS connect (which the wrapper can't
+     * pin) could still reach the unseen AAAA address.
+     *
+     * Set to \`false\` to accept single-family success and treat the other
+     * family's transient failure as "no records of this family". Useful
+     * for flaky-IPv6 environments, but re-opens the partial-coverage SSRF
+     * window. Only applies when the authoritative resolver is in use.
      */
     readonly requireFullDnsCoverage?: boolean;
 }

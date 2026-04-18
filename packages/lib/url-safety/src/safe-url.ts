@@ -54,11 +54,16 @@ export interface UrlSafetyOptions {
   readonly strictAuthoritativeDns?: boolean;
 
   /**
-   * When `true`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
-   * A or AAAA family is fatal. When `false` (default), a single-family
-   * success is trusted and the other family's transient failure is
-   * treated as "no records of this family". Only applies when the
-   * authoritative resolver is in use (the OS-lookup path is single-call).
+   * When `true` (the default), a real resolver error (TIMEOUT/SERVFAIL/etc.)
+   * on EITHER A or AAAA family is fatal. This closes the rebinding vector
+   * where a hostname's public A is approved while a blocked AAAA lookup
+   * transiently failed — the later HTTPS connect (which the wrapper can't
+   * pin) could still reach the unseen AAAA address.
+   *
+   * Set to `false` to accept single-family success and treat the other
+   * family's transient failure as "no records of this family". Useful
+   * for flaky-IPv6 environments, but re-opens the partial-coverage SSRF
+   * window. Only applies when the authoritative resolver is in use.
    */
   readonly requireFullDnsCoverage?: boolean;
 }
@@ -132,12 +137,12 @@ const defaultLookupResolver: DnsResolver = async (hostname) => {
 
 function pickResolver(options: UrlSafetyOptions | undefined): DnsResolver {
   if (options?.dnsResolver !== undefined) return options.dnsResolver;
-  // Default: authoritative resolver. Only explicit `false` opts into
-  // OS-lookup parity — `undefined` picks the security-first default.
+  // Default: authoritative resolver with full A+AAAA coverage (strict).
+  // Only explicit opt-outs relax either axis.
   if (options?.strictAuthoritativeDns === false) return defaultLookupResolver;
-  return options?.requireFullDnsCoverage === true
-    ? defaultAuthoritativeResolverStrict
-    : defaultAuthoritativeResolverLenient;
+  return options?.requireFullDnsCoverage === false
+    ? defaultAuthoritativeResolverLenient
+    : defaultAuthoritativeResolverStrict;
 }
 
 function isIpLiteral(hostname: string): boolean {
