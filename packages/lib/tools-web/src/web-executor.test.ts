@@ -242,6 +242,25 @@ describe("createWebExecutor.fetch DNS-vs-policy error separation", () => {
     }
   });
 
+  test("permanent DNS failure (ENOTFOUND / no addresses) is EXTERNAL but NOT retryable", async () => {
+    const notFoundResolver = async () => {
+      throw Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+    };
+    const fetchFn = mock(async () => new Response("x")) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({
+      fetchFn,
+      dnsResolver: notFoundResolver,
+      allowHttps: true,
+    });
+    const result = await executor.fetch("https://nonexistent.example.com/x");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("EXTERNAL");
+      // Permanent — retrying won't help, don't trigger the retry loop.
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
   test("real SSRF block still maps to PERMISSION (non-retryable)", async () => {
     const fetchFn = mock(
       async () => new Response("should not reach", { status: 200 }),

@@ -288,15 +288,23 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       } catch (e: unknown) {
         clearTimeout(timer);
         if (e instanceof Error && e.message.startsWith("url-safety:")) {
-          // @koi/url-safety uses the same error channel for true policy
-          // blocks and for resolver-layer failures. Distinguish the two so
-          // the model / runtime can retry on transient DNS issues instead
-          // of treating a SERVFAIL / TIMEOUT as an authorization denial.
+          // @koi/url-safety uses the same error channel for policy blocks
+          // and resolver-layer failures. Distinguish three classes:
+          //   - Transient DNS (SERVFAIL / TIMEOUT / EAI_AGAIN) → EXTERNAL
+          //     + retryable, so the runtime/model can retry.
+          //   - Permanent DNS (ENOTFOUND / NXDOMAIN / "no addresses") →
+          //     EXTERNAL + NOT retryable; the hostname is bad input, no
+          //     amount of retrying will fix it.
+          //   - Everything else (policy blocks) → PERMISSION + not
+          //     retryable.
           const isDnsFailure = /DNS resolution failed|DNS returned no addresses/i.test(e.message);
           if (isDnsFailure) {
+            const hasPermanentMarker = /ENOTFOUND|NXDOMAIN|no addresses/i.test(e.message);
+            const hasTransientMarker = /SERVFAIL|TIMEOUT|EAI_AGAIN/i.test(e.message);
+            const retryable = hasTransientMarker || !hasPermanentMarker;
             return {
               ok: false,
-              error: { code: "EXTERNAL", message: e.message, retryable: true },
+              error: { code: "EXTERNAL", message: e.message, retryable },
             };
           }
           return permissionError(e.message);

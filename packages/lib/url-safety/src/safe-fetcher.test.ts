@@ -485,6 +485,23 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(3);
   });
 
+  test("refuses HTTP-pinned Request when trustCustomTransport is true (can't preserve both)", async () => {
+    // HTTP pinning rewrites the URL to the validated IP — that drops the
+    // Request's internal dispatcher/agent, which is the whole point of
+    // trustCustomTransport. Fail closed with a clear error instead of
+    // silently violating one guarantee.
+    const { fn } = recordingFetch({
+      "http://93.184.216.34/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
+    await expect(safeFetch(new Request("http://public.example.com/x"))).rejects.toThrow(
+      /refused HTTP pinning for a Request input with trustCustomTransport/i,
+    );
+  });
+
   test("Request passthrough with trustCustomTransport: true preserves Request", async () => {
     // With opt-in, Request is passed through verbatim so internal transport
     // state (undici dispatcher on symbols, credentials, cache) survives.

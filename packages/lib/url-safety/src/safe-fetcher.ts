@@ -508,7 +508,21 @@ async function fetchWithPin(
     return base(url, toInit(state));
   }
   // Pinned path: URL is rewritten to an IP, so we can't preserve the
-  // original Request object.
+  // original Request object. If the caller explicitly opted into
+  // Request-level custom transport (trustCustomTransport=true + Request
+  // input), we have two conflicting guarantees — HTTP pinning rewrites
+  // the URL and loses the Request, but the caller asked us to preserve
+  // their transport. Fail closed with a descriptive error rather than
+  // silently dropping either guarantee.
+  if (state.originalRequest !== undefined && state.trustCustomTransport) {
+    state.originalRequest = undefined;
+    throw new Error(
+      "url-safety: refused HTTP pinning for a Request input with trustCustomTransport — the URL " +
+        "must be rewritten to a validated IP, which drops the Request's internal dispatcher/agent. " +
+        "Either use https:// (no pinning), pass URL+init instead of a Request, or accept the pin " +
+        "by supplying transport through init (which survives URL rewrite).",
+    );
+  }
   state.originalRequest = undefined;
 
   const canRetry = IDEMPOTENT_METHODS.has(state.method.toUpperCase());
