@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 /**
  * IP-literal classification — returns true if the address falls into any
  * blocked range (private, loopback, link-local, CGNAT, multicast, reserved,
- * cloud metadata). Fail-closed: malformed input returns true.
+ * cloud metadata, translation prefixes). Fail-closed: malformed input returns true.
  *
  * Ranges (rationale):
  *   IPv4:
@@ -24,12 +24,14 @@ import { isIP } from "node:net";
  *     ::/128          unspecified
  *     ::1/128         loopback
  *     ::ffff:0:0/96   IPv4-mapped (extract and re-check the v4)
+ *     64:ff9b::/96    NAT64 well-known prefix (RFC6052 — translates v4 into v6)
+ *     100::/64        discard-only (RFC6666)
+ *     2001::/32       Teredo tunnel (can embed arbitrary IPv4)
+ *     2001:db8::/32   documentation / not routed (RFC3849)
+ *     2002::/16       6to4 (embeds IPv4 in groups 2-3; re-check the embedded v4)
  *     fc00::/7        unique-local (incl. fd00:ec2::254 AWS IMDS)
  *     fe80::/10       link-local
  *     ff00::/8        multicast
- *     2001::/32       Teredo tunnel (can embed arbitrary IPv4)
- *     2001:db8::/32   documentation / not routed
- *     2002::/16       6to4 (embeds IPv4 in groups 2-3)
  */
 
 function parseIpv4ToBigInt(ip: string): bigint | undefined {
@@ -61,71 +63,138 @@ const BLOCKED_V4: readonly (readonly [bigint, bigint])[] = [
   [0xf0000000n, 0xf0000000n], // 240.0.0.0/4 (covers 255.255.255.255)
 ];
 
-const BLOCKED_V6_FIRST_HEXTET_PREFIXES: readonly string[] = [
-  "fc",
-  "fd",
-  "fe8",
-  "fe9",
-  "fea",
-  "feb",
-  "ff",
-];
-
 function isBlockedV4(ip: string): boolean {
   const n = parseIpv4ToBigInt(ip);
   if (n === undefined) return true;
   return BLOCKED_V4.some(([net, mask]) => (n & mask) === net);
 }
 
-function extractMappedV4(ip: string): string | undefined {
-  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(ip);
-  if (dotted?.[1] !== undefined) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip);
-  const h1 = hex?.[1];
-  const h2 = hex?.[2];
-  if (h1 !== undefined && h2 !== undefined) {
-    const hi = Number.parseInt(h1, 16);
-    const lo = Number.parseInt(h2, 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+/**
+ * Expand an IPv6 literal into exactly 8 16-bit hextet numbers.
+ * Handles `::` compression and optional trailing dotted-decimal IPv4.
+ * Caller must have pre-validated with `isIP(ip) === 6`.
+ */
+function expandV6(addr: string): readonly number[] | undefined {
+  let work = addr;
+  let tail: number[] = [];
+  if (work.includes(".")) {
+    const lastColon = work.lastIndexOf(":");
+    const v4 = work.slice(lastColon + 1);
+    work = work.slice(0, lastColon);
+    const octets = v4.split(".").map(Number);
+    if (octets.length !== 4) return undefined;
+    const [o0, o1, o2, o3] = octets;
+    if (o0 === undefined || o1 === undefined || o2 === undefined || o3 === undefined)
+      return undefined;
+    if ([o0, o1, o2, o3].some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return undefined;
+    tail = [(o0 << 8) | o1, (o2 << 8) | o3];
   }
-  return undefined;
+  const dbl = work.indexOf("::");
+  let head: string[];
+  let mid: string[];
+  if (dbl === -1) {
+    head = work.split(":");
+    mid = [];
+  } else {
+    const headStr = work.slice(0, dbl);
+    const midStr = work.slice(dbl + 2);
+    head = headStr === "" ? [] : headStr.split(":");
+    mid = midStr === "" ? [] : midStr.split(":");
+  }
+  const target = 8 - tail.length;
+  const fill = target - head.length - mid.length;
+  if (fill < 0) return undefined;
+  const hex = [...head, ...new Array<string>(fill).fill("0"), ...mid];
+  const nums = hex.map((h) => Number.parseInt(h, 16));
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return undefined;
+  const full = [...nums, ...tail];
+  return full.length === 8 ? full : undefined;
+}
+
+function v4FromGroups(hi: number, lo: number): string {
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
 function isBlockedV6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "0:0:0:0:0:0:0:1") return true;
-  if (lower === "::" || lower === "0:0:0:0:0:0:0:0") return true;
+  if (isIP(ip) !== 6) return true; // fail-closed on malformed
+  const g = expandV6(ip.toLowerCase());
+  if (g === undefined) return true;
+  const [g0, g1, g2, g3, g4, g5, g6, g7] = g as readonly [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
 
-  const mapped = extractMappedV4(lower);
-  if (mapped !== undefined) return isBlockedV4(mapped);
-
-  const firstHextet = lower.split(":")[0] ?? "";
-  for (const prefix of BLOCKED_V6_FIRST_HEXTET_PREFIXES) {
-    if (firstHextet.startsWith(prefix)) return true;
+  // ::/128 unspecified
+  if (
+    g0 === 0 &&
+    g1 === 0 &&
+    g2 === 0 &&
+    g3 === 0 &&
+    g4 === 0 &&
+    g5 === 0 &&
+    g6 === 0 &&
+    g7 === 0
+  ) {
+    return true;
   }
 
-  // Teredo 2001::/32 and documentation 2001:db8::/32
-  if (firstHextet === "2001") {
-    const second = lower.split(":")[1] ?? "";
-    if (second === "" || second === "0" || second === "0000" || second === "db8") return true;
+  // ::1/128 loopback
+  if (
+    g0 === 0 &&
+    g1 === 0 &&
+    g2 === 0 &&
+    g3 === 0 &&
+    g4 === 0 &&
+    g5 === 0 &&
+    g6 === 0 &&
+    g7 === 1
+  ) {
+    return true;
   }
 
-  // 6to4 2002::/16 — embedded v4 in groups 2 + 3
-  if (firstHextet === "2002") {
-    const parts = lower.split(":");
-    const g1 = parts[1];
-    const g2 = parts[2];
-    if (g1 !== undefined && g2 !== undefined) {
-      const h1 = Number.parseInt(g1.padStart(4, "0"), 16);
-      const h2 = Number.parseInt(g2.padStart(4, "0"), 16);
-      if (!Number.isNaN(h1) && !Number.isNaN(h2)) {
-        const embedded = `${(h1 >> 8) & 0xff}.${h1 & 0xff}.${(h2 >> 8) & 0xff}.${h2 & 0xff}`;
-        if (isBlockedV4(embedded)) return true;
-      }
-    }
+  // ::ffff:0:0/96 IPv4-mapped — re-check embedded v4
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) {
+    return isBlockedV4(v4FromGroups(g6, g7));
   }
 
-  return isIP(ip) !== 6;
+  // 64:ff9b::/96 NAT64 well-known prefix — re-check embedded v4.
+  // Even public embedded v4 is treated as suspicious here because NAT64 reachability
+  // depends on a local gateway we shouldn't trust implicitly; conservative-block on
+  // private embedded target, which is the documented SSRF concern.
+  if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+    if (isBlockedV4(v4FromGroups(g6, g7))) return true;
+  }
+
+  // 100::/64 RFC6666 discard-only
+  if (g0 === 0x0100 && g1 === 0 && g2 === 0 && g3 === 0) return true;
+
+  // 2001::/32 Teredo (g0=2001, g1=0)
+  if (g0 === 0x2001 && g1 === 0) return true;
+
+  // 2001:db8::/32 documentation
+  if (g0 === 0x2001 && g1 === 0x0db8) return true;
+
+  // 2002::/16 6to4 — embedded v4 in groups 1+2
+  if (g0 === 0x2002) {
+    if (isBlockedV4(v4FromGroups(g1, g2))) return true;
+  }
+
+  // fc00::/7 unique-local (covers fd00:ec2::254 IMDS)
+  if ((g0 & 0xfe00) === 0xfc00) return true;
+
+  // fe80::/10 link-local
+  if ((g0 & 0xffc0) === 0xfe80) return true;
+
+  // ff00::/8 multicast
+  if ((g0 & 0xff00) === 0xff00) return true;
+
+  return false;
 }
 
 export function isBlockedIp(ip: string): boolean {

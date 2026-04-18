@@ -80,6 +80,26 @@ describe("isBlockedIp — IPv6", () => {
     expect(isBlockedIp("not::valid")).toBe(true);
   });
 
+  test("blocks NAT64 (64:ff9b::/96) embedding private IPv4", () => {
+    // 64:ff9b::c0a8:1 → embeds 192.168.0.1 (RFC1918)
+    expect(isBlockedIp("64:ff9b::c0a8:1")).toBe(true);
+    // 64:ff9b::7f00:1 → embeds 127.0.0.1 (loopback)
+    expect(isBlockedIp("64:ff9b::7f00:1")).toBe(true);
+    // dotted-decimal form — 64:ff9b::169.254.169.254 (IMDS)
+    expect(isBlockedIp("64:ff9b::169.254.169.254")).toBe(true);
+  });
+
+  test("blocks 100::/64 discard-only (RFC6666)", () => {
+    expect(isBlockedIp("100::1")).toBe(true);
+    expect(isBlockedIp("100::ffff:abcd")).toBe(true);
+  });
+
+  test("blocks zero-padded variants of Teredo/doc/6to4", () => {
+    // Zero-padded first hextet must still match — the expander normalizes.
+    expect(isBlockedIp("2001:0000::1")).toBe(true);
+    expect(isBlockedIp("2001:0db8::1")).toBe(true);
+  });
+
   test("allows routable public IPv6", () => {
     expect(isBlockedIp("2606:4700:4700::1111")).toBe(false);
     expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
