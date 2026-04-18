@@ -88,13 +88,42 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | null | undefine
   });
 }
 
+function asyncIteratorOf(body: unknown): AsyncIterator<unknown> | undefined {
+  if (body === null || body === undefined || typeof body !== "object") return undefined;
+  const fn = (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator];
+  if (typeof fn !== "function") return undefined;
+  return (fn as () => AsyncIterator<unknown>).call(body);
+}
+
+function chunkToBytes(chunk: unknown): Uint8Array | undefined {
+  if (chunk instanceof Uint8Array) return chunk;
+  if (typeof chunk === "string") return new TextEncoder().encode(chunk);
+  if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk);
+  if (ArrayBuffer.isView(chunk)) {
+    return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  }
+  return undefined;
+}
+
+function concatBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 async function bufferBody(
   body: FetchInit["body"],
   maxBytes: number,
   signal: AbortSignal | null | undefined,
 ): Promise<FetchInit["body"]> {
   if (body === null || body === undefined) return body;
-  if (!(body instanceof ReadableStream)) return body;
+  const isStream = body instanceof ReadableStream;
+  const asyncIter = isStream ? undefined : asyncIteratorOf(body);
+  if (!isStream && asyncIter === undefined) return body;
 
   if (maxBytes <= 0) {
     throw new Error(
@@ -104,35 +133,60 @@ async function bufferBody(
 
   const chunks: Uint8Array[] = [];
   let total = 0;
-  const reader = body.getReader();
-  try {
-    while (true) {
-      if (signal?.aborted === true) {
-        throw new DOMException("url-safety: body buffering aborted", "AbortError");
+
+  if (isStream) {
+    const reader = body.getReader();
+    try {
+      while (true) {
+        if (signal?.aborted === true) {
+          throw new DOMException("url-safety: body buffering aborted", "AbortError");
+        }
+        const { value, done } = await raceAbort(reader.read(), signal);
+        if (done) break;
+        if (value === undefined) continue;
+        total += value.byteLength;
+        if (total > maxBytes) {
+          throw new Error(
+            `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
+          );
+        }
+        chunks.push(value);
       }
-      const { value, done } = await raceAbort(reader.read(), signal);
-      if (done) break;
-      if (value === undefined) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(
-          `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
-        );
-      }
-      chunks.push(value);
+    } catch (e: unknown) {
+      await reader.cancel().catch(() => undefined);
+      throw e;
     }
-  } catch (e: unknown) {
-    await reader.cancel().catch(() => undefined);
-    throw e;
+  } else if (asyncIter !== undefined) {
+    try {
+      while (true) {
+        if (signal?.aborted === true) {
+          throw new DOMException("url-safety: body buffering aborted", "AbortError");
+        }
+        const next = await raceAbort(asyncIter.next(), signal);
+        if (next.done === true) break;
+        const bytes = chunkToBytes(next.value);
+        if (bytes === undefined) {
+          throw new TypeError(
+            "url-safety: AsyncIterable body yielded an unsupported chunk type (expected Uint8Array, string, ArrayBuffer, or TypedArray)",
+          );
+        }
+        total += bytes.byteLength;
+        if (total > maxBytes) {
+          throw new Error(
+            `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
+          );
+        }
+        chunks.push(bytes);
+      }
+    } catch (e: unknown) {
+      if (typeof asyncIter.return === "function") {
+        await asyncIter.return().catch(() => undefined);
+      }
+      throw e;
+    }
   }
 
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
+  return concatBytes(chunks, total);
 }
 
 async function buildState(
@@ -185,8 +239,14 @@ async function buildState(
 
 function toInit(s: HopState): FetchInit {
   const omitBody = s.method === "GET" || s.method === "HEAD";
+  // Body has been buffered to a Uint8Array (non-stream), so we can safely
+  // drop any caller-provided `duplex` — Node 22 fetch only needs it for
+  // streaming bodies, and carrying "half" forward with a buffered body
+  // is benign but misleading about the outgoing request.
+  const carryWithoutDuplex = { ...s.carry };
+  delete (carryWithoutDuplex as Record<string, unknown>).duplex;
   return {
-    ...s.carry,
+    ...carryWithoutDuplex,
     method: s.method,
     headers: s.headers,
     ...(omitBody ? {} : { body: s.body }),

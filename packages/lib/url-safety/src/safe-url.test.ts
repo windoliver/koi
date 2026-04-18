@@ -87,6 +87,26 @@ describe("isSafeUrl", () => {
     expect(bad.ok).toBe(false);
   });
 
+  test("allowPrivate=true still resolves DNS so pinning can use validated IPs", async () => {
+    const result = await isSafeUrl("https://example.com/", {
+      allowPrivate: true,
+      dnsResolver: mapResolver({ "example.com": ["127.0.0.1"] }),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
+  });
+
+  test("allowPrivate=true is lenient on DNS errors (not fatal)", async () => {
+    const result = await isSafeUrl("https://unknown.example.com/", {
+      allowPrivate: true,
+      dnsResolver: async () => {
+        throw new Error("ENOTFOUND");
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.resolvedIps).toEqual([]);
+  });
+
   test("allowlistHosts bypasses blocklist for explicit host only", async () => {
     const result = await isSafeUrl("http://127.0.0.1/", {
       allowlistHosts: ["127.0.0.1"],

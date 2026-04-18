@@ -485,15 +485,62 @@ describe("createSafeFetcher", () => {
     );
   });
 
-  test("preserves duplex when caller passes it with an AsyncIterable-like body", async () => {
+  test("buffers AsyncIterable body so 307 redirect can replay it", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/upload": new Response(null, {
+        status: 307,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+      "https://public.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const body = {
+      async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
+        yield new TextEncoder().encode("hel");
+        yield new TextEncoder().encode("lo");
+      },
+    };
+    const res = await safeFetch("https://public.example.com/upload", {
+      method: "POST",
+      body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>["body"],
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    // Both hops see the buffered bytes — not a re-iterated (empty) stream.
+    expect(calls[0]?.body).toBe("hello");
+    expect(calls[1]?.body).toBe("hello");
+  });
+
+  test("rejects AsyncIterable chunks of unsupported type", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const body = {
+      async *[Symbol.asyncIterator](): AsyncGenerator<unknown> {
+        yield { not: "bytes" };
+      },
+    };
+    await expect(
+      safeFetch("https://public.example.com/up", {
+        method: "POST",
+        body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>["body"],
+        duplex: "half",
+      } as RequestInit & { duplex: "half" }),
+    ).rejects.toThrow(/unsupported chunk type/);
+  });
+
+  test("drops caller-supplied duplex after buffering AsyncIterable body", async () => {
+    // Since AsyncIterable bodies are now buffered to Uint8Array, duplex is
+    // no longer needed on the outgoing request. The wrapper strips it so
+    // the downstream init accurately describes a non-streaming body.
     const capturedInits: RequestInit[] = [];
     const fn = (async (input: string | URL | Request, init?: RequestInit) => {
       capturedInits.push(init ?? {});
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
-    // Pass a duplex-needing body via the init. The recording mock won't
-    // actually iterate it; we only verify the duplex option survives.
     const body = {
       async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
         yield new TextEncoder().encode("hi");
@@ -504,11 +551,10 @@ describe("createSafeFetcher", () => {
       body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>["body"],
       duplex: "half",
     } as RequestInit & { duplex: "half" });
-    expect(capturedInits).toHaveLength(1);
     const first = capturedInits[0];
     expect(first).toBeDefined();
     if (first !== undefined) {
-      expect((first as RequestInit & { duplex?: string }).duplex).toBe("half");
+      expect((first as RequestInit & { duplex?: string }).duplex).toBeUndefined();
     }
   });
 

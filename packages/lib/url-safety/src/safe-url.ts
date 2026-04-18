@@ -83,26 +83,36 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
   }
 
-  if (options?.allowPrivate) {
-    return { ok: true, hostname: bareHost, resolvedIps: [] };
-  }
-
   const resolver = options?.dnsResolver ?? defaultDnsResolver;
   let addresses: readonly string[];
   try {
     addresses = await resolver(bareHost);
   } catch (e: unknown) {
+    // Under allowPrivate, DNS failure is not fatal — the caller opted out of
+    // strict rebinding protection. Return ok with an empty resolvedIps so
+    // createSafeFetcher falls back to hostname-based connect.
+    if (options?.allowPrivate) {
+      return { ok: true, hostname: bareHost, resolvedIps: [] };
+    }
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, reason: `DNS resolution failed for ${bareHost}: ${message}` };
   }
 
   if (addresses.length === 0) {
+    if (options?.allowPrivate) {
+      return { ok: true, hostname: bareHost, resolvedIps: [] };
+    }
     return { ok: false, reason: `DNS returned no addresses for ${bareHost}` };
   }
 
-  for (const ip of addresses) {
-    if (isBlockedIp(ip)) {
-      return { ok: false, reason: `Host ${bareHost} resolves to blocked IP ${ip}` };
+  // Under strict mode (allowPrivate=false), every resolved IP must be public.
+  // Under allowPrivate=true, we still resolve so HTTP pinning works against
+  // the validator-approved address set — we just skip the isBlockedIp gate.
+  if (!options?.allowPrivate) {
+    for (const ip of addresses) {
+      if (isBlockedIp(ip)) {
+        return { ok: false, reason: `Host ${bareHost} resolves to blocked IP ${ip}` };
+      }
     }
   }
 
