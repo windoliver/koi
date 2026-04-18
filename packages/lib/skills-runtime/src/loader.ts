@@ -100,6 +100,14 @@ export interface LoaderContext {
     result: Result<SkillDefinition, KoiError>,
     cacheHit: boolean,
   ) => void;
+  /**
+   * Epoch guard against stale cache writes (review #1896 round 11). Called
+   * right before the cache insert completes; if it returns `false` the
+   * loader MUST NOT write to the cache. Used by the runtime to suppress
+   * results from load() calls whose async work finished after a
+   * concurrent `invalidate()` or `registerExternal()` reset the cache.
+   */
+  readonly shouldCommit?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +199,14 @@ export async function loadSkill(
 
   const result = await loadSkillUncached(name, dirPath, source, ctx);
 
-  // Cache both successes and failures (to avoid re-scanning known-bad skills)
-  ctx.cache.set(name, result);
+  // Cache both successes and failures (to avoid re-scanning known-bad
+  // skills), but only when the runtime epoch has not advanced underneath
+  // us (review #1896 round 11). A stale-insert after an invalidate() or
+  // registerExternal() would resurrect obsolete data; the shouldCommit
+  // guard suppresses that.
+  if (ctx.shouldCommit === undefined || ctx.shouldCommit()) {
+    ctx.cache.set(name, result);
+  }
   ctx.onLoad?.(name, result, false);
   return result;
 }

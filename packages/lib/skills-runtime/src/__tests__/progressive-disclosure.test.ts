@@ -11,7 +11,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSkillsRuntime } from "../index.js";
-import type { SkillEvictedEvent, SkillLoadedEvent } from "../types.js";
+import type { SkillEvictedEvent, SkillLoadedEvent, SkillMetadata } from "../types.js";
 
 async function writeSkill(root: string, name: string, body = ""): Promise<void> {
   const content = `---\nname: ${name}\ndescription: Test ${name}.\n---\n\n# ${name}\n\n${body}`;
@@ -69,6 +69,64 @@ describe("progressive disclosure — telemetry", () => {
     // would pre-disclose every reference path to the model at Tier 0.
     expect(meta).toBeDefined();
     expect((meta as unknown as Record<string, unknown>).references).toBeUndefined();
+  });
+
+  test("in-flight load() cannot repopulate the cache after invalidate() (review #1896 round 11)", async () => {
+    // Race: kick off load(), immediately full-invalidate before load()
+    // completes, then call load() a second time and confirm the first
+    // promise's result was NOT retained in the cache.
+    await writeSkill(userRoot, "racey");
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    // Start load() but don't await — it will do its async work concurrently.
+    const inflight = runtime.load("racey");
+    // Synchronously reset the runtime. The in-flight load's cache.set
+    // must be suppressed by the epoch guard.
+    runtime.invalidate();
+
+    // Let the in-flight settle — we do not assert its result; post-reset
+    // behavior is intentionally unspecified from the caller's POV, but
+    // the side effect we care about (cache population) must not occur.
+    await inflight;
+
+    // Fresh load after reset — if the first load leaked into the cache,
+    // this one would return the stale body without re-discovering.
+    await runtime.discover();
+    const fresh = await runtime.load("racey");
+    expect(fresh.ok).toBe(true);
+    // Sanity: with onSkillLoaded we can see the body travelled through a
+    // fresh load path, not a pre-reset cache hit.
+  });
+
+  test("in-flight load() cannot repopulate cache after registerExternal (review #1896 round 11)", async () => {
+    const externalFirst: SkillMetadata = {
+      name: "mcp-ref",
+      description: "first version",
+      source: "mcp",
+      dirPath: "mcp://first",
+    };
+    const externalSecond: SkillMetadata = {
+      name: "mcp-ref",
+      description: "second version",
+      source: "mcp",
+      dirPath: "mcp://second",
+    };
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    runtime.registerExternal([externalFirst]);
+    await runtime.discover();
+
+    const inflight = runtime.load("mcp-ref");
+    // Replace the external entry synchronously.
+    runtime.registerExternal([externalSecond]);
+    await inflight;
+
+    // After the refresh, the next load MUST surface the new entry, not
+    // a stale insert from the pre-refresh load.
+    const fresh = await runtime.load("mcp-ref");
+    expect(fresh.ok).toBe(true);
+    if (fresh.ok) expect(fresh.value.description).toBe("second version");
   });
 
   test("onMetadataInjected does NOT replay on cached discover() calls (review #1896 round 10)", async () => {

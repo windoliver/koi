@@ -767,6 +767,12 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     const inflight = loadInflight.get(name);
     if (inflight !== undefined) return inflight;
 
+    // Snapshot the runtime generation so we can suppress cache writes
+    // from load() calls whose async work finishes after a concurrent
+    // invalidate()/registerExternal() reset — review #1896 round 11.
+    const loadStartGeneration = runtimeGeneration;
+    const shouldCommit = (): boolean => runtimeGeneration === loadStartGeneration;
+
     // 3. Create the load promise and register it synchronously before any await.
     //    This closes the race window: any concurrent caller arriving after this
     //    point will find the promise in loadInflight and join it.
@@ -797,6 +803,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
           skillsRoot: entry.skillsRoot,
           config: resolvedConfig,
           onLoad: emitLoaded,
+          shouldCommit,
         };
         return loadSkill(name, entry.dirPath, entry.source, ctx);
       }
@@ -816,7 +823,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
           body: extSkill.description,
         };
         const result: Result<SkillDefinition, KoiError> = { ok: true, value: definition };
-        cache.set(name, result);
+        if (shouldCommit()) {
+          cache.set(name, result);
+        }
         emitLoaded(name, result, false);
         return result;
       }
@@ -990,6 +999,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // ---------------------------------------------------------------------------
 
   const registerExternal = (skills: readonly SkillMetadata[]): void => {
+    // Bump generation so any in-flight load() whose async work finishes
+    // after this call is suppressed from writing a stale entry back into
+    // the cache (review #1896 round 11). Matches the guard on the full
+    // invalidate() path.
+    runtimeGeneration += 1;
     const oldExternal = externalSkills;
     // Full replacement: build a new map from the provided skills.
     const newExternal = new Map(skills.map((s) => [s.name, s]));
