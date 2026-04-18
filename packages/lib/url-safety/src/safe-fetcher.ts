@@ -195,12 +195,15 @@ async function buildState(
   maxBufferedBodyBytes: number,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
-  // Native fetch rejects with TypeError if the Request body was already
-  // consumed upstream. Match that contract — otherwise buildState would
-  // silently turn a mutating POST/PUT into an empty request to the target.
-  if (req !== undefined && req.bodyUsed) {
+  // Match native fetch semantics: a consumed Request is only invalid if we'd
+  // actually reuse req.body. A common middleware pattern is to pass a
+  // previously-read Request together with a fresh `init.body` (after
+  // logging / signing / transforming the payload) — fetch accepts that, so
+  // must we. Only throw when the outgoing body would truly come from the
+  // disturbed Request stream.
+  if (req !== undefined && req.bodyUsed && init?.body === undefined) {
     throw new TypeError(
-      "url-safety: Request body is already consumed (bodyUsed=true); clone or re-create the Request before passing to safeFetch",
+      "url-safety: Request body is already consumed (bodyUsed=true) and no init.body was provided; clone or re-create the Request before passing to safeFetch",
     );
   }
   const url = extractUrl(input);

@@ -395,7 +395,7 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["x-trace"]).toBe("abc");
   });
 
-  test("rejects Request with bodyUsed=true (matches native fetch contract)", async () => {
+  test("rejects Request with bodyUsed=true when no replacement body provided", async () => {
     const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
@@ -405,10 +405,28 @@ describe("createSafeFetcher", () => {
       body: "payload",
       headers: { "Content-Type": "text/plain" },
     });
-    // Disturb the body upstream.
     await req.text();
     expect(req.bodyUsed).toBe(true);
     await expect(safeFetch(req)).rejects.toThrow(/bodyUsed|consumed/i);
+  });
+
+  test("accepts bodyUsed Request when init.body provides a replacement", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x", {
+      method: "POST",
+      body: "original",
+      headers: { "Content-Type": "text/plain" },
+    });
+    // Middleware pattern: log/sign/transform the original, then re-send with
+    // a transformed body on the same Request.
+    await req.text();
+    expect(req.bodyUsed).toBe(true);
+    const res = await safeFetch(req, { body: "replacement" });
+    expect(res.status).toBe(200);
+    expect(calls[0]?.body).toBe("replacement");
   });
 
   test("keeps Authorization on same-origin redirect", async () => {

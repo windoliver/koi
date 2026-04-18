@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS } from "./blocked.js";
+import { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, EMBEDDED_V4_IPV6_PREFIXES } from "./blocked.js";
 
 describe("BLOCKED_HOSTS", () => {
   test("includes cloud metadata hostnames and loopback aliases", () => {
@@ -26,7 +26,30 @@ describe("BLOCKED_CIDR_RANGES", () => {
     expect(BLOCKED_CIDR_RANGES).toContain("fe80::/10");
   });
 
+  test("does NOT contain embedded-v4 IPv6 prefixes (those are a separate class)", () => {
+    // These prefixes allow public embedded v4 through — they belong to
+    // EMBEDDED_V4_IPV6_PREFIXES, not the full-block list.
+    expect(BLOCKED_CIDR_RANGES).not.toContain("::ffff:0:0/96");
+    expect(BLOCKED_CIDR_RANGES).not.toContain("64:ff9b::/96");
+    expect(BLOCKED_CIDR_RANGES).not.toContain("64:ff9b:1::/48");
+    expect(BLOCKED_CIDR_RANGES).not.toContain("2002::/16");
+  });
+
   test("is frozen", () => {
     expect(Object.isFrozen(BLOCKED_CIDR_RANGES)).toBe(true);
+  });
+});
+
+describe("EMBEDDED_V4_IPV6_PREFIXES", () => {
+  test("lists every IPv6 prefix whose embedded v4 the classifier re-checks", () => {
+    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("::ffff:0:0/96");
+    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("::/96");
+    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("64:ff9b::/96");
+    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("64:ff9b:1::/48");
+    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("2002::/16");
+  });
+
+  test("is frozen", () => {
+    expect(Object.isFrozen(EMBEDDED_V4_IPV6_PREFIXES)).toBe(true);
   });
 });

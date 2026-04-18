@@ -5,7 +5,7 @@
  * cloud metadata endpoints. Exports frozen data constants so downstream
  * packages (governance-security, tools-browser) can extend.
  */
-export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS } from "./blocked.js";
+export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, EMBEDDED_V4_IPV6_PREFIXES } from "./blocked.js";
 export { isBlockedIp } from "./ip-classify.js";
 export type { SafeFetcherOptions } from "./safe-fetcher.js";
 export { createSafeFetcher } from "./safe-fetcher.js";

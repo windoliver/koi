@@ -5,10 +5,30 @@ exports[`@koi/url-safety API surface . has stable type surface 1`] = `
  * Frozen blocklists consumed by ip-classify.ts (for matching) and exported
  * as public data so governance / tools-browser can extend policy.
  *
- * Why these specific ranges: see the header comment in ip-classify.ts.
+ * Two classes of IPv6 coverage exist and the distinction is LOAD-BEARING for
+ * downstream policy: some prefixes are blocked wholesale, others are
+ * re-checked against their embedded IPv4 address. Use the correct constant.
+ *
+ * See the header comment in ip-classify.ts for the RFC rationale of each
+ * entry.
  */
 declare const BLOCKED_HOSTS: readonly string[];
+/**
+ * Ranges blocked wholesale — every address inside the CIDR is rejected.
+ */
 declare const BLOCKED_CIDR_RANGES: readonly string[];
+/**
+ * IPv6 prefixes that embed an IPv4 address. The classifier decodes the
+ * embedded v4 and re-runs the IPv4 blocklist against it — an address in
+ * these prefixes pointing at a PUBLIC v4 target is allowed (that's just
+ * legitimate translation traffic to a public host), while one pointing at
+ * a private v4 is rejected.
+ *
+ * Separated from \`BLOCKED_CIDR_RANGES\` so the two policy surfaces are
+ * distinguishable: a security auditor reading the constants can see
+ * exactly which ranges are full-block vs. embedded-v4-recheck.
+ */
+declare const EMBEDDED_V4_IPV6_PREFIXES: readonly string[];
 
 declare function isBlockedIp(ip: string): boolean;
 
@@ -75,6 +95,6 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 
-export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, type DnsResolver, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
+export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, type DnsResolver, EMBEDDED_V4_IPV6_PREFIXES, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
 "
 `;

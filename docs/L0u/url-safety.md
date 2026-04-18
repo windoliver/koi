@@ -65,26 +65,35 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | `240.0.0.0/4` | Reserved for future use; covers broadcast (`255.255.255.255`) |
 | `255.255.255.255/32` | Limited broadcast (RFC919) — listed separately in `BLOCKED_CIDR_RANGES` even though `240.0.0.0/4` covers it mathematically |
 
-### IPv6 blocked ranges
+### IPv6 blocked ranges (full block)
+
+Every address inside these prefixes is rejected.
 
 | CIDR | Why |
 |------|-----|
 | `::/128` | Unspecified address |
 | `::1/128` | Loopback |
-| `::ffff:0:0/96` | IPv4-mapped — the embedded IPv4 is extracted and re-checked against the IPv4 table |
-| `::/96` | IPv4-compatible IPv6 (deprecated, RFC4291) — URL parser canonicalises `[::127.0.0.1]` to `[::7f00:1]`; re-check embedded v4 |
-| `64:ff9b::/96` | NAT64 well-known prefix (RFC6052) |
-| `64:ff9b:1::/48` | NAT64 local-use prefix (RFC8215) |
 | `100::/64` | Discard prefix (RFC6666) |
-| `2001::/32` | Teredo — embeds arbitrary IPv4; any private embedding is blocked |
+| `2001::/32` | Teredo tunnel |
 | `2001:db8::/32` | Documentation (RFC3849) |
-| `2002::/16` | 6to4 — embeds IPv4 in groups 2–3; private embeddings are blocked |
 | `fc00::/7` | Unique-local (RFC4193); covers `fd00:ec2::254` (AWS IPv6 IMDS) |
 | `fe80::/10` | Link-local |
 | `fec0::/10` | Site-local (deprecated RFC3879, still legacy-routed in some networks) |
 | `ff00::/8` | Multicast |
 
-The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.ts`. The classifier itself is implemented with bigint bitmask arithmetic (IPv4) and first-hextet prefix matching plus embedded-address extraction (IPv6) in `ip-classify.ts`.
+### IPv6 prefixes with embedded-v4 re-check
+
+These prefixes wrap an IPv4 address. The classifier decodes the embedded v4 and re-runs the IPv4 blocklist against it — an address pointing at a **public** v4 is allowed (that's just legitimate translation traffic), a **private** v4 is rejected.
+
+| CIDR | Why |
+|------|-----|
+| `::ffff:0:0/96` | IPv4-mapped (RFC4291) |
+| `::/96` | IPv4-compatible (deprecated RFC4291) — URL parser canonicalises `[::127.0.0.1]` to `[::7f00:1]` |
+| `64:ff9b::/96` | NAT64 well-known prefix (RFC6052) |
+| `64:ff9b:1::/48` | NAT64 local-use prefix (RFC8215) |
+| `2002::/16` | 6to4 — embeds IPv4 in groups 2–3 |
+
+The two classes are exported separately so a policy consumer can inspect them distinctly: `BLOCKED_CIDR_RANGES` for full-block ranges, `EMBEDDED_V4_IPV6_PREFIXES` for embedded-v4 re-check prefixes. The classifier itself is implemented with bigint bitmask arithmetic (IPv4) and first-hextet prefix matching plus embedded-address extraction (IPv6) in `ip-classify.ts`.
 
 ---
 
