@@ -805,6 +805,50 @@ describe("createOAuthAuthProvider", () => {
     expect(await storage.get(clientKey)).toBeUndefined();
   });
 
+  test("token() is side-effect free — does NOT trigger DCR when no tokens are stored", async () => {
+    // A passive `token()` probe (transport checking whether we have
+    // auth) must never create a server-side OAuth client. Reconnect
+    // retries and background health checks would otherwise leak fresh
+    // DCR registrations on every loop — and client-info is kept across
+    // `logout`, so those orphans accumulate.
+    const storage = createMockStorage();
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    let registerCalls = 0;
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ client_id: "should-not-run" }), { status: 201 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "probe",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    const result = await provider.token();
+    expect(result).toBeUndefined();
+    expect(registerCalls).toBe(0);
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

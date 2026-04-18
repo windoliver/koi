@@ -29,12 +29,24 @@ export interface TokenManagerOptions {
   readonly serverUrl: string;
   readonly storage: SecureStorage;
   readonly metadata?: AuthServerMetadata | undefined;
+  /**
+   * Eager client_id, when known up-front (configured static client). Mutually
+   * exclusive with `getClientId` — `getClientId` is preferred for DCR flows
+   * because it lets the token manager resolve (and trigger registration)
+   * lazily, only when a refresh actually needs a client.
+   */
   readonly clientId?: string | undefined;
   /**
-   * RFC 8707 resource indicator. When set, sent alongside refresh requests
-   * so the authorization server can bind the rotated access token to the
-   * same MCP server URL used during initial authorization. Defaults to
-   * `serverUrl` via `createTokenManager`.
+   * Lazy client_id resolver. Invoked exclusively from the refresh path so
+   * that a passive `getAccessToken()` call with no stored tokens never
+   * triggers DCR. A plain `token()` probe must be side-effect free —
+   * otherwise reconnect retries can leak orphaned OAuth client
+   * registrations on the authorization server.
+   */
+  readonly getClientId?: (() => Promise<string | undefined>) | undefined;
+  /**
+   * RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
+   * the refresh body MUST mirror the initial-auth choice exactly.
    */
   readonly resource?: string | undefined;
   /**
@@ -60,7 +72,16 @@ const REFRESH_TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
-  const { serverName, serverUrl, storage, metadata, clientId, onInvalidClient } = options;
+  const { serverName, serverUrl, storage, metadata, clientId, getClientId, onInvalidClient } =
+    options;
+  // Lazy resolver fallback: when the caller provides a static `clientId`,
+  // wrap it in a getter so the refresh path is uniform. Both branches
+  // ultimately produce a `string | undefined` only inside refresh —
+  // never during the initial getTokens() probe.
+  const resolveClientId = async (): Promise<string | undefined> => {
+    if (getClientId !== undefined) return getClientId();
+    return clientId;
+  };
   // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
   // callers — provider in particular — set `resource` to the effective
   // value chosen for initial authorization. The refresh body MUST mirror
@@ -116,10 +137,15 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     // Capture the refresh token we used — needed for compare-and-swap below
     const usedRefreshToken = tokens.refreshToken;
 
+    // Resolve clientId LAZILY here — never during the no-tokens probe
+    // above. For DCR-backed configs this triggers registration only
+    // when there is something to refresh.
+    const refreshClientId = await resolveClientId();
+
     const refreshResult = await refreshAccessToken(
       usedRefreshToken,
       metadata.tokenEndpoint,
-      clientId,
+      refreshClientId,
       resource,
     );
 

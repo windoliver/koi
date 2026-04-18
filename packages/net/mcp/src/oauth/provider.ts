@@ -134,20 +134,28 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   async function getTokenManager(): Promise<TokenManager> {
     if (tokenManager !== undefined) return tokenManager;
     const metadata = await getMetadata();
-    const client = await getClient();
     tokenManager = createTokenManager({
       serverName,
       serverUrl,
       storage,
       metadata,
-      clientId: client?.clientId,
       resource: resourceIndicator,
-      // Forward invalid_client signals from the refresh path to the DCR
-      // invalidator so a revoked client_id does not survive the next
-      // re-auth cycle. Configured static clients are guarded inside
-      // invalidateRegisteredClient via the registeredAt check.
-      onInvalidClient:
-        client !== undefined && client.registeredAt > 0 ? invalidateRegisteredClient : undefined,
+      // Lazy: a passive `token()` call with no stored tokens must NOT
+      // trigger DCR. Resolution fires only inside the refresh path,
+      // when there is actually a token set worth rotating.
+      getClientId: async () => {
+        const client = await getClient();
+        return client?.clientId;
+      },
+      // Forward refresh-time invalid_client signals to the DCR
+      // invalidator. The callback re-checks `cachedClient` so we only
+      // delete persisted state for clients we actually registered —
+      // configured static clients are operator-managed.
+      onInvalidClient: async () => {
+        if (cachedClient !== undefined && cachedClient.registeredAt > 0) {
+          await invalidateRegisteredClient();
+        }
+      },
     });
     return tokenManager;
   }
@@ -164,14 +172,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   /**
    * Drop both the in-memory cache and the persisted record for a
    * dynamically-registered client so the next auth attempt re-runs DCR.
-   * Used when the AS rejects the client during token exchange — left
-   * unhandled, the bad client_id would survive `koi mcp logout` (which
-   * deliberately keeps client-info) and trap the operator in a loop.
+   * Used when the AS rejects the client during token exchange or refresh
+   * — left unhandled, the bad client_id would survive `koi mcp logout`
+   * (which deliberately keeps client-info) and trap the operator in a
+   * loop. The delete runs under the same withLock the resolution path
+   * uses so cross-process concurrent flows cannot read a stale record
+   * while invalidation is in flight.
    */
   const invalidateRegisteredClient = async (): Promise<void> => {
     cachedClient = undefined;
     tokenManager = undefined;
-    await storage.delete(computeClientKey(serverName, serverUrl));
+    const lockKey = computeClientKey(serverName, serverUrl);
+    await storage.withLock(lockKey, () => storage.delete(lockKey));
   };
 
   // --- Interactive auth flow ---
