@@ -88,14 +88,14 @@ describe("loadReference — Tier 2 file loading", () => {
   test("rejects a symlink that escapes the skill directory", async () => {
     const dir = join(root, "my-skill");
     // Create a sibling file the symlink will point at.
-    const sibling = join(root, "sibling", "secret.txt");
+    const sibling = join(root, "sibling", "secret.md");
     await writeFile(sibling, "sibling data", { flag: "w" }).catch(async () => {
       await Bun.write(sibling, "sibling data");
     });
     // Symlink inside the skill dir pointing outside it.
-    await symlink(sibling, join(dir, "references", "escape.txt"));
+    await symlink(sibling, join(dir, "references", "escape.md"));
 
-    const result = await loadReference("my-skill", dir, "references/escape.txt");
+    const result = await loadReference("my-skill", dir, "references/escape.md");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -182,12 +182,12 @@ describe("loadReference — binary guard", () => {
 
   test("rejects a file whose leading bytes contain a NUL", async () => {
     const buf = new Uint8Array([...Buffer.from("prefix"), 0x00, ...Buffer.from("suffix")]);
-    // Use an allowed extension (.txt) so the extension gate doesn't short-
+    // Use an allowed extension (.md) so the extension gate doesn't short-
     // circuit before the binary guard can run.
-    await Bun.write(join(root, "s", "blob.txt"), buf);
+    await Bun.write(join(root, "s", "blob.md"), buf);
     const dir = join(root, "s");
 
-    const result = await loadReference("s", dir, "blob.txt");
+    const result = await loadReference("s", dir, "blob.md");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
@@ -234,10 +234,10 @@ describe("loadReference — TOCTOU race (review #1896 round 2)", () => {
     // oracles for arbitrary host paths via the error shape.
     const dir = join(root, "s");
     const outside = join(root, "outside-tree");
-    await Bun.write(join(outside, "secret.txt"), "SECRET");
+    await Bun.write(join(outside, "secret.md"), "SECRET");
     await symlink(outside, join(dir, "refs"));
 
-    const result = await loadReference("s", dir, "refs/secret.txt");
+    const result = await loadReference("s", dir, "refs/secret.md");
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");

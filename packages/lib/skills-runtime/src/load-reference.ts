@@ -76,22 +76,25 @@ const SOURCE_EXTENSIONS = new Set<string>([
 ]);
 
 /**
- * Extensions that Tier 2 is allowed to surface (review #1896 round 5).
+ * Extensions that Tier 2 is allowed to surface.
  *
- * Positive allowlist: text/prose formats and JS/TS source files only. The
- * scanner cannot AST-parse shell, Python, Ruby, etc., so handing them to
- * the model would let a helper script hide behavior past the security gate
- * (Tier 1 never exposes them; Tier 2 must not become a back door). Callers
- * that need a broader surface have to widen this list deliberately.
+ * Positive allowlist, tightened in review #1896 round 6 to exactly the
+ * formats the skill-scanner can meaningfully inspect:
+ * - `.md` / `.mdx`: scanSkill() extracts fenced code blocks and runs the
+ *   AST rules on each, plus prose text rules across the whole document.
+ * - `.ts` / `.tsx` / `.mts` / `.cts` / `.js` / `.jsx` / `.mjs` / `.cjs`:
+ *   scanner.scan() AST-parses the whole file.
+ *
+ * Non-markdown config formats (.json / .yaml / .toml) and raw script
+ * languages (.sh / .py / .rb / etc.) are intentionally excluded: the
+ * scanner has no whole-file rules for them, and letting them through
+ * would let a skill smuggle dangerous content past the security gate.
+ * A caller that needs a broader surface must widen the allowlist in
+ * tandem with adding proper scanner coverage for the new format.
  */
 const ALLOWED_REFERENCE_EXTENSIONS = new Set<string>([
   ".md",
   ".mdx",
-  ".txt",
-  ".json",
-  ".yaml",
-  ".yml",
-  ".toml",
   ".ts",
   ".tsx",
   ".mts",

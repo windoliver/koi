@@ -55,6 +55,22 @@ describe("progressive disclosure — telemetry", () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
+  test("Tier 0 metadata does not expose the Tier 2 references list (review #1896 round 6)", async () => {
+    await writeSkillWithRefs(userRoot, "with-refs", ["refs/note.md"]);
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    const result = await runtime.discover();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const meta = result.value.get("with-refs");
+    // The structural assertion: the property is intentionally absent from
+    // SkillMetadata (Omit<ValidatedFrontmatter, "references">). Leaking it
+    // would pre-disclose every reference path to the model at Tier 0.
+    expect(meta).toBeDefined();
+    expect((meta as unknown as Record<string, unknown>).references).toBeUndefined();
+  });
+
   test("onMetadataInjected fires with the Tier 0 count on discover()", async () => {
     await writeSkill(userRoot, "alpha");
     await writeSkill(userRoot, "bravo");

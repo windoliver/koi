@@ -68,8 +68,14 @@ export interface ValidatedFrontmatter {
  * Metadata for a discovered skill, derived from frontmatter only.
  * Available after discover() without needing to call load().
  * Extends ValidatedFrontmatter with source and location information.
+ *
+ * `references` is intentionally omitted here (review #1896 round 6). The
+ * Tier 2 allowlist is a trust-boundary detail that must not leak through
+ * Tier 0 (`discover()` / `query()`) into model context. Consumers that
+ * need to authorize a Tier 2 read should call `loadReference()`, which
+ * re-parses the frontmatter from disk.
  */
-export interface SkillMetadata extends ValidatedFrontmatter {
+export interface SkillMetadata extends Omit<ValidatedFrontmatter, "references"> {
   /** Which tier this skill came from. */
   readonly source: SkillSource;
   /** Absolute path to the skill directory (or URI for non-filesystem sources). */
