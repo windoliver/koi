@@ -1000,6 +1000,21 @@ describe("createSafeFetcher", () => {
     expect(res.headers.get("X-Seen")).toBe("http://93.184.216.34/x");
   });
 
+  test("does not pin HTTP IPv6-literal URLs (bracket normalization)", async () => {
+    // URL.hostname returns `[2001:4860:4860::8888]` with brackets for an IPv6
+    // literal; isSafeUrl stores `2001:4860:4860::8888` without. The pin check
+    // must normalise both sides, otherwise IPv6-literal traffic gets a Host
+    // header injected and the URL rewritten — breaking legitimate requests.
+    const { fn, calls } = recordingFetch({
+      "http://[2001:4860:4860::8888]/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("http://[2001:4860:4860::8888]/x");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://[2001:4860:4860::8888]/x");
+    expect(calls[0]?.headers["host"]).toBeUndefined();
+  });
+
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
     const { fn, calls } = recordingFetch({
       "http://93.184.216.34/x": new Response("ok", { status: 200 }),

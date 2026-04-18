@@ -404,7 +404,14 @@ function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:") return undefined;
   // Already an IP literal — hostname matches one of the resolvedIps; no rewrite.
-  if (check.resolvedIps.includes(parsed.hostname)) return undefined;
+  // Node's URL.hostname keeps brackets around IPv6 literals (`[2001:db8::1]`)
+  // while isSafeUrl stores the bare literal; strip before comparing so v6
+  // literals short-circuit like v4 literals do.
+  const bareHostname =
+    parsed.hostname.startsWith("[") && parsed.hostname.endsWith("]")
+      ? parsed.hostname.slice(1, -1)
+      : parsed.hostname;
+  if (check.resolvedIps.includes(bareHostname)) return undefined;
   return parsed;
 }
 
