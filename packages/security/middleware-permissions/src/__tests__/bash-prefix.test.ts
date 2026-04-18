@@ -363,4 +363,78 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       "bash:rm",
     );
   });
+
+  test("revokePersistentApproval removes enriched-resource grants", () => {
+    const grants = new Set<string>(["bash:git status"]);
+    const persistentApprovals = {
+      has: mock((_u: string, _a: string, r: string) => grants.has(r)),
+      grant: mock(() => {}),
+      revoke: mock((_u: string, _a: string, r: string) => grants.delete(r)),
+      revokeAll: mock(() => grants.clear()),
+      list: mock(() => []),
+      close: mock(() => {}),
+    };
+
+    const mw = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "allow" }) },
+      persistentApprovals,
+    });
+
+    expect(mw.revokePersistentApproval("user-1", "agent:test", "bash:git status")).toBe(true);
+    expect(persistentApprovals.revoke).toHaveBeenCalledWith(
+      "user-1",
+      "agent:test",
+      "bash:git status",
+    );
+    expect(grants.has("bash:git status")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bypass-hardening tests (PR review round 2): wrappers, env, abs paths
+// ---------------------------------------------------------------------------
+
+describe("bash prefix — wrapper and path bypass hardening", () => {
+  const backend = {
+    check(q: PermissionQuery): PermissionDecision {
+      // Deny any resource that resolves to bash:sudo*
+      if (q.resource.startsWith("bash:sudo")) {
+        return { effect: "deny", reason: "sudo is denied" };
+      }
+      return { effect: "allow" };
+    },
+  };
+
+  const mw = createPermissionsMiddleware({
+    backend,
+    resolveBashCommand: (_toolId, input) => input.command as string,
+  });
+
+  const bypasses: readonly { readonly label: string; readonly command: string }[] = [
+    { label: "leading env assignments", command: "FOO=1 sudo rm -rf /tmp" },
+    { label: "env wrapper with env vars", command: "env FOO=1 sudo rm" },
+    { label: "command wrapper", command: "command sudo rm" },
+    { label: "absolute path to sudo", command: "/usr/bin/sudo rm foo" },
+    { label: "nohup wrapper", command: "nohup sudo rm" },
+    { label: "timeout wrapper with duration", command: "timeout 30 sudo rm" },
+    { label: "stdbuf wrapper with options", command: "stdbuf -oL -eL sudo rm" },
+    { label: "exec wrapper + abs path", command: "exec /usr/bin/sudo rm" },
+  ];
+
+  for (const { label, command } of bypasses) {
+    test(`deny rule bash:sudo* catches "${label}"`, async () => {
+      await expect(
+        mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("bash", { command }), noopHandler),
+      ).rejects.toThrow("sudo is denied");
+    });
+  }
+
+  test("benign env-prefixed command still allowed", async () => {
+    const result = await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "FOO=1 git status" }),
+      noopHandler,
+    );
+    expect(result?.output).toBe("ok");
+  });
 });

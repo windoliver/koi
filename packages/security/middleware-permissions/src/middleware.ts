@@ -402,8 +402,14 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
   /**
    * Revoke a persistent always-allow grant. Returns true if a grant existed.
    * No-op if no persistent store is configured.
+   *
+   * The `resource` argument must match the key the grant was stored under.
+   * When the middleware was configured with `resolveBashCommand`, grants are
+   * keyed by the enriched resource (e.g. `bash:git status`), not by the raw
+   * tool id — so revocation must pass the same enriched string. Use
+   * `listPersistentApprovals()` to discover the exact keys to revoke.
    */
-  readonly revokePersistentApproval: (userId: string, agentId: string, toolId: string) => boolean;
+  readonly revokePersistentApproval: (userId: string, agentId: string, resource: string) => boolean;
   /**
    * Revoke all persistent always-allow grants.
    * No-op if no persistent store is configured.
@@ -1519,13 +1525,16 @@ export function createPermissionsMiddleware(
       };
     },
     clearSessionApprovals,
-    revokePersistentApproval(userId: string, agentId: string, toolId: string): boolean {
+    revokePersistentApproval(userId: string, agentId: string, resource: string): boolean {
       if (persistentStore === undefined) return false;
+      // `resource` must match the key the grant was stored under — when
+      // `resolveBashCommand` is configured, that is the enriched form
+      // (e.g. `bash:git status`), not the plain tool id.
       // Removes the durable row only. Active sessions retain their own
       // session-scoped bypass until session end — the in-memory set does not
       // encode user identity or grant source, so clearing it would break
       // unrelated session-only approvals. New sessions will prompt again.
-      return persistentStore.revoke(userId, agentId, toolId);
+      return persistentStore.revoke(userId, agentId, resource);
     },
     revokeAllPersistentApprovals(): void {
       // Same rationale: only clear durable state. Session-scoped grants

@@ -50,4 +50,65 @@ describe("prefix", () => {
       expect(arity).toBeGreaterThanOrEqual(1);
     }
   });
+
+  // ------- bypass-hardening regression tests (PR review round 2) -------
+
+  test("strips leading VAR=value env assignments", () => {
+    expect(prefix(["FOO=1", "rm", "-rf", "/tmp"])).toBe("rm");
+    expect(prefix(["FOO=1", "BAR=2", "sudo", "rm"])).toBe("sudo");
+  });
+
+  test("peels `env` wrapper with its VAR=value arguments", () => {
+    expect(prefix(["env", "FOO=1", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["env", "PATH=/x", "BAR=y", "git", "push"])).toBe("git push");
+    expect(prefix(["env", "git", "status"])).toBe("git status");
+  });
+
+  test("peels other common wrappers", () => {
+    expect(prefix(["command", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["builtin", "eval", "$cmd"])).toBe("eval");
+    expect(prefix(["exec", "bash", "-c", "whoami"])).toBe("bash");
+    expect(prefix(["nohup", "git", "pull"])).toBe("git pull");
+    expect(prefix(["time", "npm", "run", "build"])).toBe("npm run build");
+  });
+
+  test("peels `timeout <n>` and its duration argument", () => {
+    expect(prefix(["timeout", "30", "git", "push"])).toBe("git push");
+    expect(prefix(["timeout", "5s", "rm", "-rf"])).toBe("rm");
+  });
+
+  test("peels `stdbuf` option flags", () => {
+    expect(prefix(["stdbuf", "-oL", "-eL", "git", "log"])).toBe("git log");
+  });
+
+  test("basenames an absolute path in the leading position", () => {
+    expect(prefix(["/usr/bin/sudo", "rm"])).toBe("sudo");
+    expect(prefix(["/opt/homebrew/bin/git", "push"])).toBe("git push");
+    expect(prefix(["./node_modules/.bin/jest"])).toBe("jest");
+  });
+
+  test("basenames after a wrapper too", () => {
+    expect(prefix(["env", "/usr/bin/sudo", "rm"])).toBe("sudo");
+    expect(prefix(["command", "/usr/local/bin/git", "status"])).toBe("git status");
+  });
+
+  test("does NOT peel `sudo` or shell interpreters (they are actions)", () => {
+    // sudo itself is security-relevant and must stay visible at the prefix
+    expect(prefix(["sudo", "rm"])).toBe("sudo");
+    expect(prefix(["bash", "-c", "rm -rf /"])).toBe("bash");
+    expect(prefix(["sh", "-c", "id"])).toBe("sh");
+  });
+
+  test("adversarial: many leading env assignments do not produce pathological output", () => {
+    const many = Array(100).fill("A=1");
+    expect(prefix([...many, "rm"])).toBe("rm");
+  });
+
+  test("documented caveat: per-command global options are NOT stripped", () => {
+    // `git -c key=value push` — the `-c key=value` is a git pre-command option
+    // that we intentionally do not strip (would require per-command flag maps).
+    // Callers who rule `bash:git push` must also rule `bash:git *` or similar
+    // to catch this variant, OR rely on the structural DANGEROUS_PATTERNS.
+    expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("git -c");
+  });
 });
