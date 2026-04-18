@@ -1202,6 +1202,55 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
+  test("stale-fast / fresh-slow race: only first-in-flight writes (no backwards rollback)", async () => {
+    // Regression for #1903 review round 3 of post-merge loop: arrival
+    // order is not a reliable freshness signal under CDN/blue-green
+    // skew. Single-flight write-token guarantees that only the FIRST
+    // concurrent miss writes to the cache — the second fetch completes
+    // but skips the write. That rules out both rollback ordering bugs
+    // (stale-fast beats fresh-slow AND fresh-fast beats stale-slow).
+    let callCount = 0;
+    let releaseStaleFast: (() => void) | undefined;
+    let releaseFreshSlow: (() => void) | undefined;
+    const staleReady = new Promise<void>((r) => {
+      releaseStaleFast = r;
+    });
+    const freshReady = new Promise<void>((r) => {
+      releaseFreshSlow = r;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        await staleReady;
+        return new Response("stale-edge-v0", { status: 200 });
+      }
+      await freshReady;
+      return new Response("fresh-edge-v1", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const staleP = executor.fetch("https://example.com");
+    const freshP = executor.fetch("https://example.com");
+
+    // Stale edge returns first — it holds the write token, writes.
+    releaseStaleFast?.();
+    await staleP;
+
+    // Fresh edge returns after — no write token, MUST NOT overwrite.
+    releaseFreshSlow?.();
+    await freshP;
+
+    // Cache holds whatever the first writer put in (stale-edge-v0 here);
+    // the test's point is that later writers can't rewrite the key,
+    // not that we picked the "right" body (we have no way to tell).
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      expect(followUp.value.cached).toBe(true);
+      expect(followUp.value.body).toBe("stale-edge-v0");
+    }
+  });
+
   test("slower default fetch does not overwrite a faster peer's cache write", async () => {
     // Regression for #1903 review round 11: two concurrent default GETs
     // both miss an empty cache and fetch from origin. If they complete
@@ -1293,14 +1342,16 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
-  test("successful noCache refresh does not overwrite a newer concurrent write", async () => {
-    // Regression for #1903 review round 10: while a `noCache` refresh
-    // is in flight, a concurrent default reader can miss cache, fetch
-    // origin, and populate the key with a newer representation. When
-    // the slower `noCache` response finally arrives, it must NOT
-    // overwrite that newer entry — doing so would roll the cache
-    // backwards to a potentially older response for the full TTL,
-    // defeating the whole point of `noCache`.
+  test("noCache holds the write token: concurrent default readers fetch but cannot cache", async () => {
+    // Single-flight semantics (#1903 round 3 of post-merge loop): when
+    // `noCache` is in flight it holds the per-key write token, so a
+    // concurrent default reader arriving during the refresh RTT misses
+    // cache, fetches live, returns that live body to its caller, but
+    // does NOT populate the cache. When `noCache` finishes, its
+    // response is the authoritative cache state for this refresh
+    // cycle. This is intentional: without ETag/Last-Modified we have
+    // no basis to pick between concurrent responses, and making the
+    // explicit refresher authoritative is the cleanest contract.
     let callCount = 0;
     let signalRefreshStarted: (() => void) | undefined;
     let releaseRefresh: (() => void) | undefined;
@@ -1314,13 +1365,11 @@ describe("createWebExecutor.fetch caching", () => {
       callCount++;
       if (callCount === 1) return new Response("v1-prime", { status: 200 });
       if (callCount === 2) {
-        // `noCache` refresh — responds with a possibly-skewed body.
         signalRefreshStarted?.();
         await refreshHeld;
-        return new Response("v1-from-stale-edge", { status: 200 });
+        return new Response("v2-from-refresh", { status: 200 });
       }
-      // Concurrent default reader picks up a newer representation.
-      return new Response("v2-from-fresh-edge", { status: 200 });
+      return new Response("v3-concurrent-reader", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
@@ -1328,31 +1377,36 @@ describe("createWebExecutor.fetch caching", () => {
     await executor.fetch("https://example.com"); // prime v1
     const refreshP = executor.fetch("https://example.com", { noCache: true });
     await refreshStarted;
+
     // Concurrent default reader — misses cache (noCache evicted), hits
-    // origin, writes "v2-from-fresh-edge".
+    // origin live, gets v3. Returns v3 to its caller BUT does not
+    // write to cache (noCache holds the token).
     const concurrent = await executor.fetch("https://example.com");
-    if (concurrent.ok) expect(concurrent.value.body).toBe("v2-from-fresh-edge");
+    if (concurrent.ok) {
+      expect(concurrent.value.body).toBe("v3-concurrent-reader");
+      expect(concurrent.value.cached).toBe(false);
+    }
 
     releaseRefresh?.();
-    const forced = await refreshP;
-    expect(forced.ok).toBe(true);
+    await refreshP;
 
-    // Cache must still hold "v2-from-fresh-edge", not the
-    // "v1-from-stale-edge" that the slower noCache response returned.
+    // The refresh's body is what the cache holds — the noCache caller
+    // is the authoritative refresher for this cycle.
     const followUp = await executor.fetch("https://example.com");
     if (followUp.ok) {
-      expect(followUp.value.body).toBe("v2-from-fresh-edge");
+      expect(followUp.value.body).toBe("v2-from-refresh");
       expect(followUp.value.cached).toBe(true);
     }
   });
 
-  test("concurrent default writer during noCache refresh is not overwritten on failure", async () => {
-    // If a concurrent default reader fills the cache while the `noCache`
-    // refresh is in flight, and the refresh then fails, the failed
-    // refresh must leave the concurrent reader's fresh entry alone. With
-    // "no stale fallback" semantics this is the easy case — we evict
-    // up front and never restore, so whatever the concurrent writer put
-    // in is simply kept.
+  test("failed noCache refresh: cache stays empty even after concurrent default reader runs", async () => {
+    // Single-flight variant of the failed-refresh path: while `noCache`
+    // is in flight it holds the write token. A concurrent default reader
+    // during the refresh RTT fetches live but does not cache. When the
+    // refresh then fails, the key is still empty — neither the noCache
+    // caller nor the concurrent reader wrote anything. The next default
+    // fetch hits origin again, which is exactly the "no stale fallback"
+    // contract.
     let callCount = 0;
     let signalRefreshStarted: (() => void) | undefined;
     let releaseRefresh: (() => void) | undefined;
@@ -1370,7 +1424,7 @@ describe("createWebExecutor.fetch caching", () => {
         await refreshHeld;
         throw new Error("network down");
       }
-      return new Response("new", { status: 200 });
+      return new Response("concurrent-live", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
@@ -1380,17 +1434,20 @@ describe("createWebExecutor.fetch caching", () => {
     const refreshP = executor.fetch("https://example.com", { noCache: true });
     await refreshStarted;
     const concurrent = await executor.fetch("https://example.com");
-    if (concurrent.ok) expect(concurrent.value.body).toBe("new");
+    if (concurrent.ok) {
+      expect(concurrent.value.body).toBe("concurrent-live");
+      expect(concurrent.value.cached).toBe(false);
+    }
 
     releaseRefresh?.();
     const forced = await refreshP;
     expect(forced.ok).toBe(false);
 
+    // Key must be empty — the refresh failed and the concurrent reader
+    // didn't have the write token, so no one populated the cache.
     const followUp = await executor.fetch("https://example.com");
-    if (followUp.ok) {
-      expect(followUp.value.body).toBe("new");
-      expect(followUp.value.cached).toBe(true);
-    }
+    if (followUp.ok) expect(followUp.value.cached).toBe(false);
+    expect(callCount).toBe(4);
   });
 });
 
@@ -1447,7 +1504,7 @@ describe("createWebExecutor.search", () => {
     }
   });
 
-  test("caches search results when cacheTtlMs > 0", async () => {
+  test("caches search results when searchCacheTtlMs > 0", async () => {
     let callCount = 0;
     const searchProvider: SearchProvider = {
       name: "mock",
@@ -1457,11 +1514,40 @@ describe("createWebExecutor.search", () => {
       },
     };
 
-    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000, allowHttps: false });
+    const executor = createWebExecutor({
+      searchProvider,
+      searchCacheTtlMs: 60_000,
+      allowHttps: false,
+    });
 
     await executor.search("query");
     await executor.search("query");
     expect(callCount).toBe(1);
+  });
+
+  test("cacheTtlMs alone does NOT enable search caching (separate knob)", async () => {
+    // Regression for #1903 review: fetch and search cache TTLs are
+    // independent so enabling the response cache doesn't silently cache
+    // search results under the same budget. Operators reasoning about
+    // stale search need `searchCacheTtlMs` explicitly.
+    let callCount = 0;
+    const searchProvider: SearchProvider = {
+      name: "mock",
+      search: async () => {
+        callCount++;
+        return { ok: true as const, value: [{ title: "R", url: "https://r.com", snippet: "s" }] };
+      },
+    };
+
+    const executor = createWebExecutor({
+      searchProvider,
+      cacheTtlMs: 60_000, // response-cache only
+      allowHttps: false,
+    });
+
+    await executor.search("query");
+    await executor.search("query");
+    expect(callCount).toBe(2);
   });
 
   test("normalizes cache key: same query with different case hits cache", async () => {
@@ -1474,7 +1560,11 @@ describe("createWebExecutor.search", () => {
       },
     };
 
-    const executor = createWebExecutor({ searchProvider, cacheTtlMs: 60_000, allowHttps: false });
+    const executor = createWebExecutor({
+      searchProvider,
+      searchCacheTtlMs: 60_000,
+      allowHttps: false,
+    });
 
     await executor.search("Hello World");
     await executor.search("hello world");

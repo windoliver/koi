@@ -135,8 +135,16 @@ export interface WebExecutorConfig {
   readonly maxBodyChars?: number | undefined;
   /** Default timeout in ms (default: 15_000). */
   readonly defaultTimeoutMs?: number | undefined;
-  /** Cache TTL in ms. Set to 0 to disable caching (default: 0 — disabled). */
+  /** Response cache TTL (ms) for `fetch()` GET/HEAD. Set to 0 to disable (default: 0). */
   readonly cacheTtlMs?: number | undefined;
+  /**
+   * Separate cache TTL (ms) for `search()` results. Defaults to 0 (disabled)
+   * independent of `cacheTtlMs`: search staleness has different operator
+   * semantics from response caching (fresh results matter more during
+   * incidents or on fast-moving topics) and deserves its own knob so hosts
+   * can enable one without silently enabling the other.
+   */
+  readonly searchCacheTtlMs?: number | undefined;
   /** Max cache entries (default: 100). */
   readonly maxCacheEntries?: number | undefined;
   /**
@@ -172,15 +180,25 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   const maxBodyChars = config.maxBodyChars ?? DEFAULT_MAX_BODY_CHARS;
   const defaultTimeout = config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+  const searchCacheTtlMs = config.searchCacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const maxCacheEntries = config.maxCacheEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
   const { allowHttps } = config;
 
   const fetchCache =
     cacheTtlMs > 0 ? createLruCache<WebFetchResult>(maxCacheEntries, cacheTtlMs) : undefined;
   const searchCache =
-    cacheTtlMs > 0
-      ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, cacheTtlMs)
+    searchCacheTtlMs > 0
+      ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, searchCacheTtlMs)
       : undefined;
+  // Single-flight token set: only the first concurrent miss for a given
+  // cache key is allowed to write the result back. Prevents arrival-order
+  // races where a late-returning response from a stale CDN edge would
+  // otherwise pin older content on top of a fresher response that already
+  // populated the cache (or vice versa — arrival order is not a reliable
+  // freshness signal under CDN/blue-green skew). Concurrent misses still
+  // each fetch from origin (we're not blocking readers on a shared
+  // promise), but at most one of them updates the LRU.
+  const inFlightWrites = new Set<string>();
 
   return {
     providerName: config.searchProvider?.name,
@@ -236,6 +254,17 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
+
+      // Single-flight write token: only the first concurrent miss for
+      // this key is allowed to populate the cache. Later misses still
+      // fetch from origin (so they each get a live response and can't be
+      // held hostage to the first fetch's latency), but they won't write.
+      // This is strictly safer than arrival-order fencing — which could
+      // pin either the stale-fast or the fresh-slow response depending
+      // on which happens to return first.
+      const holdsWriteToken =
+        keyCacheable && fetchCache !== undefined && !inFlightWrites.has(cacheKey);
+      if (holdsWriteToken) inFlightWrites.add(cacheKey);
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
@@ -311,33 +340,26 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // so we do NOT restore `savedEntry` — it stays evicted. A transport
         // error/abort never reaches this block (handled by the restore-on-
         // failure paths above), so the prior entry survives as fallback.
-        if (keyCacheable && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
+        if (
+          holdsWriteToken &&
+          keyCacheable &&
+          fetchCache !== undefined &&
+          isCacheableResponse(fetchResult)
+        ) {
           // Cap to origin's declared freshness budget so a response that
           // says `max-age=5` never lingers for the full cache-wide TTL.
           const originTtlMs = extractOriginFreshnessMs(fetchResult);
           const entryTtlMs =
             originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
-          if (entryTtlMs > 0) {
-            // Write-back fence: both `noCache` refreshes and ordinary
-            // cache-miss writes are vulnerable to the same ordering race.
-            // Two concurrent default GETs can both miss cache, fetch from
-            // different edges, and complete out-of-order — the slower
-            // response (potentially from a stale edge or older deploy
-            // replica) would otherwise overwrite the faster one. Since
-            // our key is just `METHOD:URL` and we have no ETag/Last-
-            // Modified compare, the safest invariant is "first writer
-            // after an empty key wins": any occupancy at write time is
-            // strictly newer than us and we keep it.
-            if (fetchCache.getEntry(cacheKey) === undefined) {
-              fetchCache.set(cacheKey, fetchResult, entryTtlMs);
-            }
-          }
+          if (entryTtlMs > 0) fetchCache.set(cacheKey, fetchResult, entryTtlMs);
         }
 
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
         return catchFetchError(url, method, e);
+      } finally {
+        if (holdsWriteToken) inFlightWrites.delete(cacheKey);
       }
     },
 

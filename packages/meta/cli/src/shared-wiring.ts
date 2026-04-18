@@ -1037,6 +1037,11 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
     const webExecutor = createWebExecutor({
       allowHttps: true,
       cacheTtlMs: resolveWebCacheTtlMs(process.env),
+      // Keep search caching off. `KOI_WEB_CACHE_TTL_MS` is documented as a
+      // `web_fetch` response-cache knob; search staleness has different
+      // operator semantics (incidents, fast-moving topics) and shouldn't
+      // be silently enabled just because fetch caching is.
+      searchCacheTtlMs: 0,
     });
     providers.push(
       createWebProvider({
