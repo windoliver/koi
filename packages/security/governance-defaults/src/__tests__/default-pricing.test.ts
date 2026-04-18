@@ -27,8 +27,22 @@ describe("DEFAULT_PRICING", () => {
     }
   });
 
-  test("is frozen so callers cannot mutate the shared table", () => {
+  test("is deep-frozen so callers cannot mutate nested entries", () => {
     expect(Object.isFrozen(DEFAULT_PRICING)).toBe(true);
+    for (const entry of Object.values(DEFAULT_PRICING)) {
+      expect(Object.isFrozen(entry)).toBe(true);
+    }
+  });
+
+  test("nested mutation attempts do not poison future calculators", () => {
+    const before = DEFAULT_PRICING["gpt-4o-mini"]?.inputUsdPer1M ?? 0;
+    try {
+      // Attempt to mutate — strict mode throws, loose mode is a no-op.
+      (DEFAULT_PRICING["gpt-4o-mini"] as { inputUsdPer1M: number }).inputUsdPer1M = 999;
+    } catch {
+      /* expected in strict mode */
+    }
+    expect(DEFAULT_PRICING["gpt-4o-mini"]?.inputUsdPer1M).toBe(before);
   });
 });
 

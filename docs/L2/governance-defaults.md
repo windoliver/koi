@@ -53,7 +53,7 @@ Implements `GovernanceController` from `@koi/core/governance` with all ten well-
 
 ```typescript
 interface InMemoryControllerConfig {
-  readonly tokenUsageLimit?: number;       // default: Infinity
+  readonly tokenUsageLimit?: number;       // default: Infinity (no enforcement)
   readonly costUsdLimit?: number;          // default: Infinity
   readonly turnCountLimit?: number;        // default: Infinity
   readonly spawnDepthLimit?: number;       // default: Infinity
@@ -61,12 +61,26 @@ interface InMemoryControllerConfig {
   readonly durationMsLimit?: number;       // default: Infinity
   readonly forgeDepthLimit?: number;       // default: Infinity
   readonly forgeBudgetLimit?: number;      // default: Infinity
-  readonly errorRateLimit?: number;        // default: 1 (no enforcement)
-  readonly contextOccupancyLimit?: number; // default: 1 (no enforcement)
+  readonly errorRateLimit?: number;        // default: Infinity
+  readonly contextOccupancyLimit?: number; // default: Infinity
   readonly errorRateWindow?: number;       // default: 20 (tool outcomes)
+  readonly errorRateMinSamples?: number;   // default: 3
+  readonly agentDepth?: number;            // default: 0
+  readonly fallbackInputUsdPer1M?: number; // default: 0 (no fallback)
+  readonly fallbackOutputUsdPer1M?: number;// default: 0
   readonly now?: () => number;             // default: Date.now
 }
 ```
+
+**Threshold semantics** — bounded counters and rates fail when the current value **reaches** the limit (`>=`); `spawn_depth` is the only exception and fails only strictly above its limit. Mirrors `@koi/engine-reconcile`'s governance-controller. Every sensor is enforced only when its limit is finite, so a zero-config controller never self-bricks.
+
+**`retryable` flag** — `spawn_count`, `error_rate`, and `context_occupancy` are transient (back off and retry). Everything else is terminal.
+
+**`spawn_depth` sensor** — reads the controller's own `agentDepth` (passed in config). It is **not** mutated by `spawn` / `spawn_release` events, which track concurrent live children via `spawn_count`.
+
+**Cost fallback** — when a `token_usage` event omits `costUsd` (e.g. because `cost.calculate()` threw for an unknown model) and non-zero `fallback*UsdPer1M` rates are configured, the controller applies per-token pricing so the spend cap still advances. Invalid `costUsd` (NaN / negative / Infinity) is rejected so a buggy calculator cannot poison the accumulator.
+
+**`context_occupancy` sensor** — there is no L0 event that sets it. Hosts call `controller.setContextOccupancy(fraction)` (an extension method on `InMemoryController`) to drive it, typically from a context-manager hook.
 
 **Reset semantics** — see comments on `GovernanceEvent` in `@koi/core/governance`:
 
@@ -74,6 +88,8 @@ interface InMemoryControllerConfig {
 |-------|-------------|
 | `iteration_reset` | `turn_count`, `duration_ms` start. NOT token/cost/spawn/error-rate. |
 | `session_reset` | `turn_count`, `duration_ms`, rolling `error_rate` window. NOT token/cost/spawn. |
+
+**Forge caveat** — the L0 `GovernanceEvent` union has no `forge_release` event, so the default controller cannot track real nesting depth. `forge_depth` and `forge_budget` both read the cumulative forge-event counter. Hosts that need true depth accounting must supply their own `GovernanceController`.
 
 ### `createPatternBackend(config)`
 

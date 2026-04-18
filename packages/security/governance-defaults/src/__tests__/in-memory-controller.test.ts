@@ -11,12 +11,20 @@ describe("createInMemoryController", () => {
       expect(names).toEqual(expected);
     });
 
-    test("limits default to Infinity (or 1 for rates) when unspecified", () => {
+    test("limits default to Infinity when unspecified — every sensor is zero-config no-op", () => {
       const controller = createInMemoryController({});
       const vars = controller.variables();
-      expect(vars.get(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.limit).toBe(Number.POSITIVE_INFINITY);
-      expect(vars.get(GOVERNANCE_VARIABLES.ERROR_RATE)?.limit).toBe(1);
-      expect(vars.get(GOVERNANCE_VARIABLES.CONTEXT_OCCUPANCY)?.limit).toBe(1);
+      for (const name of Object.values(GOVERNANCE_VARIABLES)) {
+        expect(vars.get(name)?.limit).toBe(Number.POSITIVE_INFINITY);
+      }
+    });
+
+    test("zero-config controller does not self-brick after repeated tool failures", async () => {
+      const controller = createInMemoryController({});
+      for (let i = 0; i < 10; i += 1) {
+        await controller.record({ kind: "tool_error", toolName: "t" });
+      }
+      expect((await controller.checkAll()).ok).toBe(true);
     });
 
     test("setpoints come from config", () => {
@@ -163,6 +171,47 @@ describe("createInMemoryController", () => {
       });
       expect(controller.reading("cost_usd")?.current).toBe(0);
     });
+
+    test("falls back to per-token pricing when costUsd is omitted (pricing-failure path)", async () => {
+      const controller = createInMemoryController({
+        fallbackInputUsdPer1M: 3,
+        fallbackOutputUsdPer1M: 15,
+      });
+      // Simulates middleware dropping costUsd because cost.calculate() threw
+      // for an unknown model alias.
+      await controller.record({
+        kind: "token_usage",
+        count: 1_500_000,
+        inputTokens: 1_000_000,
+        outputTokens: 500_000,
+      });
+      // 1M input * $3/1M + 0.5M output * $15/1M = $3 + $7.5 = $10.5
+      expect(controller.reading("cost_usd")?.current).toBeCloseTo(10.5, 10);
+    });
+
+    test("fallback pricing not applied when event provides a valid costUsd", async () => {
+      const controller = createInMemoryController({
+        fallbackInputUsdPer1M: 100,
+        fallbackOutputUsdPer1M: 100,
+      });
+      await controller.record({
+        kind: "token_usage",
+        count: 1000,
+        inputTokens: 500,
+        outputTokens: 500,
+        costUsd: 0.01,
+      });
+      expect(controller.reading("cost_usd")?.current).toBeCloseTo(0.01, 10);
+    });
+
+    test("fallback pricing not applied when tokens are absent", async () => {
+      const controller = createInMemoryController({
+        fallbackInputUsdPer1M: 3,
+        fallbackOutputUsdPer1M: 15,
+      });
+      await controller.record({ kind: "token_usage", count: 500 });
+      expect(controller.reading("cost_usd")?.current).toBe(0);
+    });
   });
 
   describe("record(turn)", () => {
@@ -212,12 +261,38 @@ describe("createInMemoryController", () => {
   });
 
   describe("record(forge)", () => {
-    test("forge_depth and forge_budget both increment per event", async () => {
+    test("forge_depth and forge_budget both increment per event (shared counter)", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "forge" });
       await controller.record({ kind: "forge", toolName: "build_tool" });
       expect(controller.reading("forge_depth")?.current).toBe(2);
       expect(controller.reading("forge_budget")?.current).toBe(2);
+    });
+  });
+
+  describe("setContextOccupancy", () => {
+    test("updates the sensor reading", () => {
+      const controller = createInMemoryController({});
+      controller.setContextOccupancy(0.75);
+      expect(controller.reading("context_occupancy")?.current).toBe(0.75);
+    });
+
+    test("fires the gate when configured limit is reached", async () => {
+      const controller = createInMemoryController({ contextOccupancyLimit: 0.9 });
+      controller.setContextOccupancy(0.89);
+      expect((await controller.check("context_occupancy")).ok).toBe(true);
+      controller.setContextOccupancy(0.9);
+      const result = await controller.check("context_occupancy");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(true);
+    });
+
+    test("ignores NaN and negative inputs so the gate cannot be silently disabled", () => {
+      const controller = createInMemoryController({});
+      controller.setContextOccupancy(0.5);
+      controller.setContextOccupancy(Number.NaN);
+      controller.setContextOccupancy(-1);
+      expect(controller.reading("context_occupancy")?.current).toBe(0.5);
     });
   });
 
@@ -354,6 +429,24 @@ describe("createInMemoryController", () => {
       const snap = await controller.snapshot();
       const token = snap.readings.find((r) => r.name === "token_usage");
       expect(token?.utilization).toBe(0);
+    });
+
+    test("snapshot and its readings are frozen — callbacks cannot mutate governance state", async () => {
+      const controller = createInMemoryController({ tokenUsageLimit: 1000 });
+      await controller.record({ kind: "token_usage", count: 100 });
+      const snap = await controller.snapshot();
+      expect(Object.isFrozen(snap)).toBe(true);
+      expect(Object.isFrozen(snap.readings)).toBe(true);
+      const first = snap.readings[0];
+      expect(first).toBeDefined();
+      if (first !== undefined) expect(Object.isFrozen(first)).toBe(true);
+    });
+
+    test("reading() return value is frozen", () => {
+      const controller = createInMemoryController({ tokenUsageLimit: 1000 });
+      const reading = controller.reading("token_usage");
+      expect(reading).toBeDefined();
+      if (reading !== undefined) expect(Object.isFrozen(reading)).toBe(true);
     });
   });
 

@@ -1,7 +1,7 @@
 export type { CostCalculator, PricingEntry } from "./cost-calculator.js";
 export { createFlatRateCostCalculator } from "./cost-calculator.js";
 export { DEFAULT_PRICING } from "./default-pricing.js";
-export type { InMemoryControllerConfig } from "./in-memory-controller.js";
+export type { InMemoryController, InMemoryControllerConfig } from "./in-memory-controller.js";
 export { createInMemoryController } from "./in-memory-controller.js";
 export type {
   PatternBackendConfig,

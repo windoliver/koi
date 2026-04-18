@@ -24,7 +24,31 @@ export interface InMemoryControllerConfig {
   readonly errorRateMinSamples?: number | undefined;
   /** Depth of THIS controller's agent in the spawn tree. Default: 0. */
   readonly agentDepth?: number | undefined;
+  /**
+   * Per-token fallback pricing applied when a `token_usage` event arrives
+   * without a valid `costUsd` (middleware omits `costUsd` on calculator
+   * failure). When any of `inputTokens`/`outputTokens` are present and these
+   * rates are > 0, the controller computes
+   * `input*inputUsdPer1M/1e6 + output*outputUsdPer1M/1e6` so the spend cap
+   * still advances even when `cost.calculate()` fails for an unknown model.
+   * Default: both 0 (no fallback — spend cap stops advancing on pricing
+   * failure, matching governance-core's current fail-silent behaviour).
+   */
+  readonly fallbackInputUsdPer1M?: number | undefined;
+  readonly fallbackOutputUsdPer1M?: number | undefined;
   readonly now?: (() => number) | undefined;
+}
+
+/**
+ * Extends `GovernanceController` with a host-callable setter for
+ * `context_occupancy`. The L0 `GovernanceEvent` union has no event for
+ * context pressure, so hosts that want to drive the `context_occupancy`
+ * sensor call this setter directly (e.g. from a context-manager hook).
+ * Passing this controller where `GovernanceController` is expected is safe —
+ * the extra method is additive.
+ */
+export interface InMemoryController extends GovernanceController {
+  readonly setContextOccupancy: (fraction: number) => void;
 }
 
 const DEFAULT_ERROR_RATE_WINDOW = 20;
@@ -48,7 +72,7 @@ function computeUtilization(current: number, limit: number): number {
   return Math.min(1, current / limit);
 }
 
-export function createInMemoryController(config: InMemoryControllerConfig): GovernanceController {
+export function createInMemoryController(config: InMemoryControllerConfig): InMemoryController {
   const now = config.now ?? Date.now;
   const errorRateWindow = config.errorRateWindow ?? DEFAULT_ERROR_RATE_WINDOW;
   const errorRateMinSamples = config.errorRateMinSamples ?? DEFAULT_ERROR_RATE_MIN_SAMPLES;
@@ -62,8 +86,14 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
   const durationMsLimit = config.durationMsLimit ?? INF;
   const forgeDepthLimit = config.forgeDepthLimit ?? INF;
   const forgeBudgetLimit = config.forgeBudgetLimit ?? INF;
-  const errorRateLimit = config.errorRateLimit ?? 1;
-  const contextOccupancyLimit = config.contextOccupancyLimit ?? 1;
+  // Rate limits default to Infinity (no enforcement). Using `1` as the default
+  // together with `>=` comparison would cause a self-brick after three tool
+  // failures — `rate === 1` reaches the limit and permanently denies calls.
+  const errorRateLimit = config.errorRateLimit ?? INF;
+  const contextOccupancyLimit = config.contextOccupancyLimit ?? INF;
+
+  const fallbackInputUsdPer1M = config.fallbackInputUsdPer1M ?? 0;
+  const fallbackOutputUsdPer1M = config.fallbackOutputUsdPer1M ?? 0;
 
   const state: MutableState = {
     tokenUsed: 0,
@@ -87,6 +117,17 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     return { ok: false, variable, reason, retryable };
   }
 
+  /**
+   * `limit === Infinity` means the variable is not enforced — no reading, no
+   * rate, can ever reach it, so every check short-circuits to ok. This is the
+   * zero-config default for every sensor so a bare `createInMemoryController({})`
+   * never accidentally gates on a baseline reading (e.g. `rate === 1` vs a
+   * default `errorRateLimit === 1`).
+   */
+  function enforced(limit: number): boolean {
+    return Number.isFinite(limit);
+  }
+
   // --- Per-variable definitions ---
   //
   // Semantics follow `@koi/engine-reconcile`'s governance-controller:
@@ -95,8 +136,9 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
   //   * `spawn_depth` fails only above the limit (`>`) because depth-at-limit
   //     is the last valid frame; `spawn_depth` sensor models this controller's
   //     own agent depth (fixed at construction), not child spawn events.
-  //   * `retryable` differs per variable — `spawn_count` / `error_rate` are
-  //     transient (caller can back off), everything else is terminal.
+  //   * `retryable` differs per variable — `spawn_count` / `error_rate` /
+  //     `context_occupancy` are transient (caller can back off), everything
+  //     else is terminal.
 
   const spawnDepthVar: GovernanceVariable = {
     name: GOVERNANCE_VARIABLES.SPAWN_DEPTH,
@@ -105,7 +147,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Depth of this controller's agent in the spawn tree",
     check: (): GovernanceCheck =>
-      agentDepth > spawnDepthLimit
+      enforced(spawnDepthLimit) && agentDepth > spawnDepthLimit
         ? fail(
             GOVERNANCE_VARIABLES.SPAWN_DEPTH,
             `spawn_depth ${agentDepth} exceeds limit ${spawnDepthLimit}`,
@@ -121,7 +163,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: true,
     description: "Concurrent live child agents — retryable once a release reclaims capacity",
     check: (): GovernanceCheck =>
-      state.spawnCount >= spawnCountLimit
+      enforced(spawnCountLimit) && state.spawnCount >= spawnCountLimit
         ? fail(
             GOVERNANCE_VARIABLES.SPAWN_COUNT,
             `spawn_count ${state.spawnCount} reached limit ${spawnCountLimit}`,
@@ -137,7 +179,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Turns this iteration (reset by iteration_reset/session_reset)",
     check: (): GovernanceCheck =>
-      state.turnCount >= turnCountLimit
+      enforced(turnCountLimit) && state.turnCount >= turnCountLimit
         ? fail(
             GOVERNANCE_VARIABLES.TURN_COUNT,
             `turn_count ${state.turnCount} reached limit ${turnCountLimit}`,
@@ -153,7 +195,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Cumulative tokens — runtime-lifetime (not reset)",
     check: (): GovernanceCheck =>
-      state.tokenUsed >= tokenUsageLimit
+      enforced(tokenUsageLimit) && state.tokenUsed >= tokenUsageLimit
         ? fail(
             GOVERNANCE_VARIABLES.TOKEN_USAGE,
             `token_usage ${state.tokenUsed} reached limit ${tokenUsageLimit}`,
@@ -169,6 +211,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Wall-clock ms this iteration (reset by iteration_reset/session_reset)",
     check: (): GovernanceCheck => {
+      if (!enforced(durationMsLimit)) return { ok: true };
       const elapsed = now() - state.iterationStart;
       return elapsed >= durationMsLimit
         ? fail(
@@ -187,6 +230,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: true,
     description: "Rolling tool error rate — retryable (back off and retry)",
     check: (): GovernanceCheck => {
+      if (!enforced(errorRateLimit)) return { ok: true };
       if (state.toolOutcomes.length < errorRateMinSamples) return { ok: true };
       const rate = errorRate();
       return rate >= errorRateLimit
@@ -206,7 +250,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Cumulative cost USD — runtime-lifetime (not reset)",
     check: (): GovernanceCheck =>
-      state.costUsed >= costUsdLimit
+      enforced(costUsdLimit) && state.costUsed >= costUsdLimit
         ? fail(
             GOVERNANCE_VARIABLES.COST_USD,
             `cost_usd ${state.costUsed.toFixed(4)} reached limit ${costUsdLimit.toFixed(4)}`,
@@ -215,15 +259,19 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
         : { ok: true },
   };
 
+  // forge_depth in the default controller is a cumulative forge-event counter
+  // (same value as forge_budget) because the L0 `GovernanceEvent` union has no
+  // `forge_release` event — real nesting depth cannot be tracked without one.
+  // Hosts that need true depth accounting must supply their own controller.
   const forgeDepthVar: GovernanceVariable = {
     name: GOVERNANCE_VARIABLES.FORGE_DEPTH,
     read: () => state.forgeBudget,
     limit: forgeDepthLimit,
     retryable: false,
     description:
-      "Forge nesting — tracked as cumulative count in the default controller because the L0 GovernanceEvent union has no forge_release event",
+      "Cumulative forge-event count. The L0 contract has no forge_release; depth is not modelled separately.",
     check: (): GovernanceCheck =>
-      state.forgeBudget >= forgeDepthLimit
+      enforced(forgeDepthLimit) && state.forgeBudget >= forgeDepthLimit
         ? fail(
             GOVERNANCE_VARIABLES.FORGE_DEPTH,
             `forge_depth ${state.forgeBudget} reached limit ${forgeDepthLimit}`,
@@ -239,7 +287,7 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     retryable: false,
     description: "Cumulative forge calls",
     check: (): GovernanceCheck =>
-      state.forgeBudget >= forgeBudgetLimit
+      enforced(forgeBudgetLimit) && state.forgeBudget >= forgeBudgetLimit
         ? fail(
             GOVERNANCE_VARIABLES.FORGE_BUDGET,
             `forge_budget ${state.forgeBudget} reached limit ${forgeBudgetLimit}`,
@@ -254,9 +302,9 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     limit: contextOccupancyLimit,
     retryable: true,
     description:
-      "Context window fraction — no L0 event sets this; hosts with a custom setter may override",
+      "Context-window fraction — driven by the host via setContextOccupancy(). No L0 event updates it.",
     check: (): GovernanceCheck =>
-      state.contextOccupancy >= contextOccupancyLimit
+      enforced(contextOccupancyLimit) && state.contextOccupancy >= contextOccupancyLimit
         ? fail(
             GOVERNANCE_VARIABLES.CONTEXT_OCCUPANCY,
             `context_occupancy ${state.contextOccupancy.toFixed(2)} reached limit ${contextOccupancyLimit.toFixed(2)}`,
@@ -286,15 +334,26 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
             ? (event.inputTokens ?? 0) + (event.outputTokens ?? 0)
             : event.count;
         state.tokenUsed += tokens;
-        // Trust boundary: `event.costUsd` is pre-computed by a CostCalculator the
-        // host supplied. Reject NaN / negative so a buggy calculator cannot poison
-        // `costUsed` and silently disable the spend cap (NaN comparisons always
-        // return false; negatives would offset later spend). Invalid input is
-        // simply dropped — the controller has no per-token fallback rates; hosts
-        // that want fallback pricing should use a `CostCalculator` that never
-        // throws.
+        // Trust boundary: `event.costUsd` is pre-computed by a CostCalculator
+        // the host supplied. Reject NaN / negative / Infinity so a buggy
+        // calculator cannot poison `costUsed` (NaN comparisons always return
+        // false; negatives would offset later spend). When costUsd is absent
+        // or invalid, fall back to per-token pricing if the host configured
+        // non-zero fallback rates — otherwise the spend cap stops advancing
+        // for this event, matching governance-core's current behaviour and
+        // leaving it to the middleware's `onUsage` hook or audit sink to
+        // surface the gap.
         if (event.costUsd !== undefined && Number.isFinite(event.costUsd) && event.costUsd >= 0) {
           state.costUsed += event.costUsd;
+        } else if (
+          (event.inputTokens !== undefined || event.outputTokens !== undefined) &&
+          (fallbackInputUsdPer1M > 0 || fallbackOutputUsdPer1M > 0)
+        ) {
+          const input = event.inputTokens ?? 0;
+          const output = event.outputTokens ?? 0;
+          state.costUsed +=
+            (input / 1_000_000) * fallbackInputUsdPer1M +
+            (output / 1_000_000) * fallbackOutputUsdPer1M;
         }
         return;
       }
@@ -337,6 +396,14 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
     }
   }
 
+  function setContextOccupancy(fraction: number): void {
+    // Ignore invalid inputs so a host cannot silently disable the gate by
+    // setting NaN. Clamp to [0, Infinity] — the upper bound is enforced by
+    // the sensor's own limit, not by the setter.
+    if (!Number.isFinite(fraction) || fraction < 0) return;
+    state.contextOccupancy = fraction;
+  }
+
   return {
     check: (variable: string): GovernanceCheck => {
       const v = variables.get(variable);
@@ -356,33 +423,36 @@ export function createInMemoryController(config: InMemoryControllerConfig): Gove
       const violations: string[] = [];
       for (const v of variables.values()) {
         const current = v.read();
-        readings.push({
-          name: v.name,
-          current,
-          limit: v.limit,
-          utilization: computeUtilization(current, v.limit),
-        });
+        readings.push(
+          Object.freeze({
+            name: v.name,
+            current,
+            limit: v.limit,
+            utilization: computeUtilization(current, v.limit),
+          }),
+        );
         const result = v.check();
         if (!result.ok) violations.push(result.variable);
       }
-      return {
+      return Object.freeze({
         timestamp: now(),
-        readings,
+        readings: Object.freeze(readings),
         healthy: violations.length === 0,
-        violations,
-      };
+        violations: Object.freeze(violations),
+      });
     },
     variables: (): ReadonlyMap<string, GovernanceVariable> => variables,
     reading: (variable: string): SensorReading | undefined => {
       const v = variables.get(variable);
       if (v === undefined) return undefined;
       const current = v.read();
-      return {
+      return Object.freeze({
         name: v.name,
         current,
         limit: v.limit,
         utilization: computeUtilization(current, v.limit),
-      };
+      });
     },
+    setContextOccupancy,
   };
 }
