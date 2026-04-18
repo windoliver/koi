@@ -125,6 +125,10 @@ Redirects: each hop is re-validated via `isSafeUrl` before it is followed, so th
 
 **Cross-origin redirects that would still carry a body are refused.** The test is "would the post-downgrade request send a body to a different origin?", not just the status code. That covers 307/308 for any method (body always preserved), plus 301/302 for non-POST methods like PUT/PATCH (downgrade only drops body for POST). Bodies often carry the same secrets the header allowlist redacts (API keys in JSON, signed payloads), and there's no safe generic way to sanitise them. The wrapper throws; if the caller genuinely needs the replay they can re-issue the request manually against the validated redirect target.
 
+### `Response.url` semantics under HTTP pinning
+
+When the wrapper pins an `http://` request to the validated IP, the underlying `fetch(pinnedUrl, …)` returns a `Response` whose `Response.url` reflects the IP form (e.g., `http://93.184.216.34/…`) rather than the original hostname. `Response.redirected` similarly describes the transport-layer view, not the wrapper's manual redirect handling. Callers that log the final URL, perform origin checks on it, or derive follow-up URLs from it must track the original URL themselves — the wrapper does not synthesize a rewritten `Response` because doing so would drop streaming body semantics and other `fetch`-native metadata.
+
 ### Request bodies
 
 Stream-backed bodies (`ReadableStream`, `Request.body`) are consumed into a `Uint8Array` once at the start of `createSafeFetcher`, so 307/308 redirects that preserve method + body can safely replay. This also avoids Node 22's `RequestInit` `duplex: "half"` requirement. Callers that need genuine streaming uploads should use the underlying `fetch` directly — this wrapper optimises for correctness over streaming throughput.

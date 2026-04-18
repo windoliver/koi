@@ -969,6 +969,23 @@ describe("createSafeFetcher", () => {
     }
   });
 
+  test("Response.url reflects the pinned IP for HTTP-pinned requests (documented)", async () => {
+    // When HTTP pinning rewrites the outbound URL to the validated IP, the
+    // underlying fetch returns a Response whose .url field is the IP form.
+    // Documented limitation — the wrapper does not synthesize a new Response
+    // because that would drop streaming body semantics and fetch metadata.
+    // Callers that need the original URL should track it themselves.
+    const fn = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return new Response("ok", { status: 200, headers: { "X-Seen": url } });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const res = await safeFetch("http://public.example.com/x");
+    expect(res.status).toBe(200);
+    // Underlying fetch saw the pinned URL — that's the documented behaviour.
+    expect(res.headers.get("X-Seen")).toBe("http://93.184.216.34/x");
+  });
+
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
     const { fn, calls } = recordingFetch({
       "http://93.184.216.34/x": new Response("ok", { status: 200 }),
