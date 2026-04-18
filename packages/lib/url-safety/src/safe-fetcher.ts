@@ -229,10 +229,14 @@ async function buildState(
   pick("integrity");
   pick("keepalive");
   pick("cache");
-  // Duplex must survive into the outgoing init: Node 22 fetch requires
-  // duplex: "half" whenever a streaming (AsyncIterable) body is passed
-  // through and we don't buffer it.
+  // Duplex must survive when the caller preserves a raw stream body.
   pick("duplex" as keyof FetchInit);
+  // Transport-layer options used by callers to force traffic through a
+  // proxy, custom CA/mTLS stack, or audited egress path. Stripping these
+  // would silently bypass the very egress controls this wrapper exists
+  // to harden. Node/undici: `dispatcher`; older Node fetch: `agent`.
+  pick("dispatcher" as keyof FetchInit);
+  pick("agent" as keyof FetchInit);
 
   const signal = init?.signal ?? req?.signal;
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
@@ -426,11 +430,15 @@ export function createSafeFetcher(
       // Host header is per-hop derived state.
       state.headers.delete("host");
 
-      if (hop > 0) {
-        check = await isSafeUrl(state.url, options);
-        if (!check.ok) {
-          throw new Error(`url-safety: ${check.reason}`);
-        }
+      // Re-validate at the TOP of every iteration — including hop 0 after
+      // buildState. A slow body-buffer stretches the TOCTOU window between
+      // the pre-buildState validation and the actual socket connect. For
+      // HTTPS the wrapper can't rewrite the URL to the IP (TLS SNI), so
+      // narrowing the window is the best we can do without a custom
+      // dispatcher that separates SNI from the socket address.
+      check = await isSafeUrl(state.url, options);
+      if (!check.ok) {
+        throw new Error(`url-safety: ${check.reason}`);
       }
 
       const response = await fetchWithPin(base, state.url, check, state);

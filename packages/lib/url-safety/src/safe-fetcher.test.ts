@@ -303,6 +303,23 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["authorization"]).toBeUndefined();
   });
 
+  test("preserves dispatcher/agent init options (proxy/egress transport)", async () => {
+    const capturedInits: RequestInit[] = [];
+    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+      capturedInits.push(init ?? {});
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    // Fake dispatcher/agent references (we only care the options survive).
+    const dispatcher: unknown = { kind: "test-dispatcher" };
+    const agent: unknown = { kind: "test-agent" };
+    const initArg = { dispatcher, agent } as unknown as RequestInit;
+    await safeFetch("https://public.example.com/x", initArg);
+    const first = capturedInits[0] as Record<string, unknown>;
+    expect(first["dispatcher"]).toBe(dispatcher);
+    expect(first["agent"]).toBe(agent);
+  });
+
   test("omitting init.headers inherits from Request (no regression for common case)", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
