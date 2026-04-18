@@ -83,6 +83,12 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { DenialEscalationConfig } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
 import {
+  createPlanPersistMiddleware,
+  PLAN_LOAD_TOOL_NAME,
+  PLAN_SAVE_TOOL_NAME,
+} from "@koi/middleware-plan-persist";
+import { createPlanMiddleware, WRITE_PLAN_DESCRIPTOR } from "@koi/middleware-planning";
+import {
   createRetrySignalBroker,
   createSemanticRetryMiddleware,
 } from "@koi/middleware-semantic-retry";
@@ -373,6 +379,28 @@ const taskAnchorBoard = await createManagedTaskBoard({
     process.exit(1);
   }
 }
+
+// ---------------------------------------------------------------------------
+// @koi/middleware-plan-persist + @koi/middleware-planning — full restart-
+// safe write_plan flow. Planning provides koi_plan_write; plan-persist
+// hooks onPlanUpdate to mirror every commit to a per-session journal AND
+// exposes koi_plan_save / koi_plan_load tools. Wired here at module scope
+// so the plan-persist-flow query below can attach both bundles.
+// ---------------------------------------------------------------------------
+
+const { mkdtempSync: mkdtempSyncForPlanPersist } = await import("node:fs");
+const { tmpdir: tmpDirForPlanPersist } = await import("node:os");
+const { join: joinForPlanPersist } = await import("node:path");
+const planPersistTmpDir = mkdtempSyncForPlanPersist(
+  joinForPlanPersist(tmpDirForPlanPersist(), "koi-golden-plan-persist-"),
+);
+const planPersistBundle = createPlanPersistMiddleware({
+  cwd: planPersistTmpDir,
+  baseDir: ".koi/plans",
+});
+const planningBundle = createPlanMiddleware({
+  onPlanUpdate: planPersistBundle.onPlanUpdate,
+});
 
 // ---------------------------------------------------------------------------
 // @koi/spawn-tools — agent_spawn tool with stub SpawnFn
@@ -2271,6 +2299,37 @@ const queries: readonly QueryConfig[] = [
       }),
     ],
     maxTurns: 2,
+  },
+
+  // 9c. plan-persist-flow: @koi/middleware-plan-persist + @koi/middleware-planning
+  // Model writes a plan with two items, then checkpoints it via koi_plan_save.
+  // Exercises: planning's wrapToolCall (write_plan) → onPlanUpdate hook fires →
+  // plan-persist mirrors + writes _active journal → plan-persist's wrapToolCall
+  // (koi_plan_save) reads mirror, writes <ts>-<slug>.md via exclusive link commit.
+  {
+    name: "plan-persist-flow",
+    prompt:
+      "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+      "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+      "Step 1: Call `koi_plan_write` with plan = " +
+      "[{content:'Audit auth code', status:'pending'}, " +
+      "{content:'Design new session model', status:'pending'}].\n" +
+      "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+      "Step 3: Report the saved file path returned by koi_plan_save.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [
+      {
+        kind: "command",
+        name: "on-plan-tool",
+        cmd: ["echo", "plan-tool-done"],
+        filter: { events: ["tool.succeeded"] },
+      },
+    ],
+    providers: [...planningBundle.providers, ...planPersistBundle.providers],
+    extraMiddleware: [planningBundle.middleware, planPersistBundle.middleware],
+    maxTurns: 3,
   },
 
   // 10. mcp-tool-use: MCP resolver discovers + executes tool from in-process server
@@ -4214,6 +4273,52 @@ await recordCassette("plan-mode", () =>
       todoToolForCassette.descriptor,
       exitPlanModeToolForCassette.descriptor,
       createGlobTool({ cwd: process.cwd() }).descriptor,
+    ],
+  }),
+);
+
+await recordCassette("plan-persist-flow", () =>
+  modelAdapter.stream({
+    messages: [
+      {
+        senderId: "user",
+        timestamp: Date.now(),
+        content: [
+          {
+            kind: "text",
+            text:
+              "You have access to two tools: `koi_plan_write` (creates/replaces a structured plan) " +
+              "and `koi_plan_save` (persists the latest plan to disk under a slug).\n" +
+              "Step 1: Call `koi_plan_write` with plan = " +
+              "[{content:'Audit auth code', status:'pending'}, " +
+              "{content:'Design new session model', status:'pending'}].\n" +
+              "Step 2: Call `koi_plan_save` with slug='auth-refactor'.\n" +
+              "Step 3: Report the saved file path returned by koi_plan_save.",
+          },
+        ],
+      },
+    ],
+    tools: [
+      WRITE_PLAN_DESCRIPTOR,
+      {
+        name: PLAN_SAVE_TOOL_NAME,
+        description:
+          "Persist the latest write_plan output to disk under .koi/plans/<timestamp>-<slug>.md. " +
+          "Optional `slug` controls the filename suffix.",
+        inputSchema: {
+          type: "object",
+          properties: { slug: { type: "string" } },
+        },
+      },
+      {
+        name: PLAN_LOAD_TOOL_NAME,
+        description: "Read a previously persisted plan from disk and return its items.",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string" } },
+          required: ["path"],
+        },
+      },
     ],
   }),
 );

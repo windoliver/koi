@@ -823,6 +823,181 @@ describe("Golden: @koi/middleware-planning", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-plan-persist (2 standalone queries)
+// No-LLM tests that exercise the file-backed persistence surface from the
+// runtime consumer boundary. Catches re-export regressions and proves the
+// public bundle wiring matches what runtime hosts will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-plan-persist", () => {
+  test("middleware bundle saves a mirrored plan to disk and loads it back", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME, PLAN_SAVE_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-golden-`);
+    try {
+      const bundle = createPlanPersistMiddleware({
+        cwd: tmpRoot,
+        baseDir: ".koi/plans",
+        now: () => Date.UTC(2026, 3, 17, 10, 0, 0),
+        rand: () => 0.5,
+      });
+      expect(bundle.middleware.name).toBe("plan-persist");
+      expect(bundle.providers).toHaveLength(2);
+
+      // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
+      await bundle.onPlanUpdate(
+        [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "in_progress" },
+        ],
+        {
+          sessionId: "golden-sess",
+          epoch: 1,
+          turnIndex: 0,
+          signal: new AbortController().signal,
+        },
+      );
+
+      const session = {
+        agentId: "plan-persist-golden",
+        sessionId: sessionId("golden-sess"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const passthrough = async (req: {
+        readonly toolId: string;
+      }): Promise<{ readonly output: unknown }> => ({
+        output: { passthrough: req.toolId },
+      });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const saved = await wrap(
+        ctx,
+        { toolId: PLAN_SAVE_TOOL_NAME, input: { slug: "golden-flow" } },
+        passthrough,
+      );
+      const savedOut = saved.output as { readonly path: string };
+      expect(savedOut.path.endsWith("20260417-100000-golden-flow.md")).toBe(true);
+
+      const loaded = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: savedOut.path } },
+        passthrough,
+      );
+      const loadedOut = loaded.output as {
+        readonly items: readonly { readonly content: string; readonly status: string }[];
+      };
+      expect(loadedOut.items).toEqual([
+        { content: "First", status: "pending" },
+        { content: "Second", status: "in_progress" },
+      ]);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("middleware bundle rejects path traversal at the load tool boundary", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-traversal-`);
+    try {
+      const bundle = createPlanPersistMiddleware({ cwd: tmpRoot });
+      const session = {
+        agentId: "plan-persist-traversal",
+        sessionId: sessionId("trav"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+      const passthrough = async (): Promise<{ readonly output: unknown }> => ({ output: {} });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const res = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: "/etc/passwd" } },
+        passthrough,
+      );
+      const out = res.output as { readonly error?: string };
+      expect(out.error).toBe("path outside baseDir");
+      expect(res.metadata?.planPersistError).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("trajectory fixture proves plan + plan-persist composed end-to-end and the saved checkpoint reached the model", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/plan-persist-flow.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("plan-persist-flow");
+
+    // Both middlewares wired and BOTH intercept their target tool (planning
+    // owns koi_plan_write, plan-persist owns koi_plan_save), so each must
+    // fire at least one wrapToolCall span where nextCalled is false — the
+    // signal that the middleware handled the call itself instead of
+    // delegating downstream. wrapModelStream spans pass through (nextCalled
+    // true) because neither MW short-circuits the model loop.
+    const planToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    const persistToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan-persist" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    expect(planToolSpans.length).toBeGreaterThan(0);
+    expect(persistToolSpans.length).toBeGreaterThan(0);
+    expect(planToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+    expect(persistToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+
+    // The save tool's path response must reach the model. The trajectory's
+    // final agent observation contains the absolute path returned by
+    // koi_plan_save — proves: write_plan committed → onPlanUpdate fired →
+    // mirror populated → koi_plan_save read mirror → wrote checkpoint →
+    // path was surfaced back to the LLM in the next turn.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
 // ---------------------------------------------------------------------------
 
@@ -10571,6 +10746,53 @@ describe("Golden: @koi/governance-core", () => {
     expect(threw).toBeInstanceOf(Error);
     const err = threw as Error;
     expect(err.message).toContain("blocked by policy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/governance-defaults (2 queries)
+//
+// Standalone — no cassette replay. Exercises the out-of-box
+// createInMemoryController + createPatternBackend + DEFAULT_PRICING helpers
+// that ship as the stock GovernanceController / GovernanceBackend / pricing
+// table for createGovernanceMiddleware. These defaults are what `koi tui`
+// wires up when no platform-specific backend is supplied.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/governance-defaults", () => {
+  test("withGovernanceDefaults produces a valid, middleware-ready config", async () => {
+    const { withGovernanceDefaults } = await import("@koi/governance-defaults");
+    const { validateGovernanceConfig, createGovernanceMiddleware } = await import(
+      "@koi/governance-core"
+    );
+
+    const config = withGovernanceDefaults({
+      controllerConfig: { costUsdLimit: 0.5, turnCountLimit: 3 },
+      rules: [{ match: { toolId: "Bash" }, decision: "deny", rule: "no-shell" }],
+    });
+
+    const validation = validateGovernanceConfig(config);
+    expect(validation.ok).toBe(true);
+
+    // Middleware construction should not throw.
+    const mw = createGovernanceMiddleware(config);
+    expect(mw.name).toBe("koi:governance-core");
+  });
+
+  test("in-memory controller enforces setpoint after record()", async () => {
+    const { createInMemoryController } = await import("@koi/governance-defaults");
+    const controller = createInMemoryController({ tokenUsageLimit: 100 });
+
+    await controller.record({ kind: "token_usage", count: 50 });
+    const underLimit = await controller.checkAll();
+    expect(underLimit).toEqual({ ok: true });
+
+    await controller.record({ kind: "token_usage", count: 80 });
+    const overLimit = await controller.checkAll();
+    expect(overLimit.ok).toBe(false);
+    if (!overLimit.ok) {
+      expect(overLimit.variable).toBe("token_usage");
+    }
   });
 });
 

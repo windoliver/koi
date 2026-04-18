@@ -47,6 +47,27 @@ const frontmatterSchema = z
         message: 'execution must be "inline" or "fork"',
       })
       .optional(),
+    // Tier 2 reference allowlist (issue #1642 round 4). Relative POSIX paths
+    // only; leading slashes, `..` segments, empty strings, and backslashes
+    // (round 14 — would be treated as separators on Windows runtimes) are
+    // all rejected at parse time.
+    references: z
+      .array(
+        z
+          .string()
+          .refine(
+            (p) =>
+              p.length > 0 &&
+              !p.startsWith("/") &&
+              !p.includes("\\") &&
+              !p.split("/").some((seg) => seg === "" || seg === "." || seg === ".."),
+            {
+              message:
+                "reference paths must be non-empty, relative POSIX paths without '..' segments or backslashes",
+            },
+          ),
+      )
+      .optional(),
     // Catch-all for extra string fields (e.g., version, author)
     // Handled separately after base parse
   })
@@ -87,6 +108,7 @@ const frontmatterSchema = z
       "requires",
       "includes",
       "execution",
+      "references",
     ]);
     const metadata: Record<string, string> = {};
     for (const [key, value] of Object.entries(raw)) {
@@ -94,6 +116,11 @@ const frontmatterSchema = z
         metadata[key] = value;
       }
     }
+
+    const rawRefs = raw.references;
+    const references: readonly string[] | undefined = Array.isArray(rawRefs)
+      ? rawRefs.filter((r: unknown): r is string => typeof r === "string")
+      : undefined;
 
     return {
       name: raw.name,
@@ -108,6 +135,7 @@ const frontmatterSchema = z
           ? (metadata as Readonly<Record<string, string>>)
           : undefined,
       executionMode,
+      references,
     };
   });
 

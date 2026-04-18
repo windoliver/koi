@@ -57,6 +57,15 @@ export interface MiddlewareCompositionInput {
    */
   readonly plan?: KoiMiddleware | undefined;
   /**
+   * Plan-persist middleware — file-backed persistence layered on top
+   * of planning. Sits adjacent to `plan` so they share the same
+   * composition zone: plan-persist intercepts `koi_plan_save` /
+   * `koi_plan_load`, and the planning bundle's `onPlanUpdate` hook
+   * (wired at construction) mirrors every `koi_plan_write` commit to
+   * disk. Optional and only meaningful when `plan` is also set.
+   */
+  readonly planPersist?: KoiMiddleware | undefined;
+  /**
    * Preset / plugin middleware contributed by stack activation. Appended
    * after the checkpoint layer so presets can observe the core stack
    * without interleaving with it. Order within the preset list is
@@ -144,6 +153,7 @@ export function composeRuntimeMiddleware(
     ...(input.modelRouter !== undefined ? [input.modelRouter] : []),
     ...(input.goal !== undefined ? [input.goal] : []),
     ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
     ...(input.sessionTranscript !== undefined ? [input.sessionTranscript] : []),
   ];
@@ -200,12 +210,14 @@ export function buildInheritedMiddlewareForChildren(input: {
   readonly hook: KoiMiddleware;
   readonly systemPrompt?: KoiMiddleware | undefined;
   readonly plan?: KoiMiddleware | undefined;
+  readonly planPersist?: KoiMiddleware | undefined;
 }): readonly KoiMiddleware[] {
   return [
     input.permissions,
     input.exfiltrationGuard,
     input.hook,
     ...(input.plan !== undefined ? [input.plan] : []),
+    ...(input.planPersist !== undefined ? [input.planPersist] : []),
     ...(input.systemPrompt !== undefined ? [input.systemPrompt] : []),
   ];
 }

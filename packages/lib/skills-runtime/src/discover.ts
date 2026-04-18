@@ -44,6 +44,16 @@ export interface DiscoveredSkillEntry {
   readonly skillsRoot: string;
   /** Frontmatter metadata (no body, no security scan). May be minimal if frontmatter fails. */
   readonly metadata: SkillMetadata;
+  /**
+   * Tier 2 references declared at the time this skill was discovered.
+   *
+   * Internal-only (not exposed on SkillMetadata) so Tier 0 never leaks the
+   * allowlist to the model. Used by `loadReference()` as the upper bound
+   * on authorization — additions made to SKILL.md after discovery are
+   * ignored until a rediscovery/rescan, while removals take effect as
+   * soon as the file changes on disk (review #1896 round 7).
+   */
+  readonly references?: readonly string[];
 }
 
 export interface DiscoverConfig {
@@ -112,17 +122,18 @@ export async function discoverSkills(
     rawList.map(async ([name, raw]) => ({
       name,
       raw,
-      metadata: await readSkillMetadata(name, raw.dirPath, raw.source),
+      info: await readSkillDiscoveryInfo(name, raw.dirPath, raw.source),
     })),
   );
 
   const entries = new Map<string, DiscoveredSkillEntry>();
-  for (const { name, raw, metadata } of metadataResults) {
+  for (const { name, raw, info } of metadataResults) {
     entries.set(name, {
       source: raw.source,
       dirPath: raw.dirPath,
       skillsRoot: raw.skillsRoot,
-      metadata,
+      metadata: info.metadata,
+      ...(info.references !== undefined ? { references: info.references } : {}),
     });
   }
 
@@ -149,6 +160,27 @@ export async function readSkillMetadata(
   dirPath: string,
   source: SkillSource,
 ): Promise<SkillMetadata> {
+  return (await readSkillDiscoveryInfo(dirName, dirPath, source)).metadata;
+}
+
+interface SkillDiscoveryInfo {
+  readonly metadata: SkillMetadata;
+  /** Tier 2 references declared at discovery time, or undefined if none. */
+  readonly references?: readonly string[];
+}
+
+/**
+ * Reads SKILL.md and returns both the Tier 0 metadata and (separately) the
+ * Tier 2 `references:` allowlist captured at discovery time. Keeping the
+ * references off `SkillMetadata` preserves the Tier 0 contract while still
+ * letting the runtime authorize Tier 2 reads against a frozen-at-discovery
+ * snapshot (review #1896 rounds 6 & 7).
+ */
+async function readSkillDiscoveryInfo(
+  dirName: string,
+  dirPath: string,
+  source: SkillSource,
+): Promise<SkillDiscoveryInfo> {
   const fallback: SkillMetadata = { name: dirName, description: "", source, dirPath };
   const skillMdPath = join(dirPath, "SKILL.md");
 
@@ -156,16 +188,20 @@ export async function readSkillMetadata(
   try {
     content = await Bun.file(skillMdPath).text();
   } catch {
-    return fallback;
+    return { metadata: fallback };
   }
 
   const parseResult = parseSkillMd(content, skillMdPath);
-  if (!parseResult.ok) return fallback;
+  if (!parseResult.ok) return { metadata: fallback };
 
   const fmResult = validateFrontmatter(parseResult.value.frontmatter, skillMdPath);
-  if (!fmResult.ok) return fallback;
+  if (!fmResult.ok) return { metadata: fallback };
 
-  return mapFrontmatterToMetadata(fmResult.value, source, dirPath);
+  const info: SkillDiscoveryInfo = {
+    metadata: mapFrontmatterToMetadata(fmResult.value, source, dirPath),
+    ...(fmResult.value.references !== undefined ? { references: fmResult.value.references } : {}),
+  };
+  return info;
 }
 
 /**
@@ -240,12 +276,13 @@ export async function resolveSingleSkill(
 
     // File is present → build the entry. The metadata uses the tier's
     // current frontmatter so edits made during recovery are reflected.
-    const metadata = await readSkillMetadata(name, dirPath, tier);
+    const info = await readSkillDiscoveryInfo(name, dirPath, tier);
     return {
       source: tier,
       dirPath,
       skillsRoot: resolvedRoot,
-      metadata,
+      metadata: info.metadata,
+      ...(info.references !== undefined ? { references: info.references } : {}),
     };
   }
 

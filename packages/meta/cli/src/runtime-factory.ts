@@ -58,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
@@ -191,6 +192,19 @@ export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
   source: "policy",
 };
 
+/**
+ * Auto-allow rules for `koi_plan_save` / `koi_plan_load` — installed
+ * alongside `TUI_WRITE_PLAN_ALLOW_RULE` only when planning is opted
+ * in. Both are no-side-effect-outside-baseDir by construction (the
+ * plan-persist adapter validates baseDir against cwd at construction
+ * and rejects path traversal at the tool boundary), so they are safe
+ * to auto-allow.
+ */
+export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "koi_plan_save", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "koi_plan_load", action: "invoke", effect: "allow", source: "policy" },
+];
+
 // ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
@@ -217,6 +231,25 @@ export interface KoiRuntimeConfig {
    * mode". `koi start` passes "koi start — auto-allow".
    */
   readonly permissionsDescription?: string | undefined;
+  /**
+   * When `true`, the Bash AST-walker's `elicit` fallback auto-allows
+   * every prompt instead of going through the approval handler. The
+   * TUI passes this when `--yolo` is active so the TTP-classifier
+   * path does not re-prompt for commands the walker cannot parse
+   * (e.g. `cmd && cmd 2>&1` lists with redirects). Defaults to `false`.
+   */
+  readonly bashElicitAutoApprove?: boolean | undefined;
+  /**
+   * Default per-submit wall-clock cap in ms. When omitted the factory
+   * uses 1_800_000 (30 min) — matches the interactive TUI posture.
+   * Non-interactive hosts (`koi start`) pass a tighter value (300_000
+   * / 5 min) so a runaway active loop has a smaller blast radius.
+   *
+   * Always overridable via `KOI_MAX_DURATION_MS` env var. Use `0` in
+   * the env var to disable the cap entirely (clamped to setTimeout's
+   * int32 max, ~24.8 days).
+   */
+  readonly defaultMaxDurationMs?: number | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -786,6 +819,52 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  * If you add a new caller, pass both fields explicitly and document
  * the chosen posture.
  */
+const DEFAULT_MAX_DURATION_MS = 1_800_000;
+/** Track the last invalid KOI_MAX_DURATION_MS we warned about so we
+ * don't spam the console across hot-reload / repeated factory calls. */
+// let justified: module-scoped memo for the diagnostic emitter.
+let lastWarnedInvalidEnv: string | undefined;
+// Node's setTimeout clamps delays above 2^31-1 to 1ms (emits
+// TimeoutOverflowWarning). The iteration guard passes `maxDurationMs`
+// directly into setTimeout, so any "effectively unlimited" sentinel
+// must stay within int32 range. 2^31-1 ms ≈ 24.8 days — well beyond
+// any realistic turn duration.
+const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
+
+// Strict unsigned-integer form. Rejects zero-equivalent aliases like
+// `"00"`, `"+0"`, `"-0"`, `"0.0"`, `"0e0"` — all of which Number()
+// coerces to 0 and would otherwise flip the cap off via the
+// `n === 0` branch.
+const UNSIGNED_INT_RE = /^(0|[1-9]\d*)$/;
+
+/** @internal — exported for unit tests only; not part of the public API. */
+export function resolveMaxDurationMs(hostDefault?: number): number {
+  const fallback = hostDefault ?? DEFAULT_MAX_DURATION_MS;
+  const raw = process.env.KOI_MAX_DURATION_MS;
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  // Strict parse: `Number("")` returns 0 and Number("00") also returns 0,
+  // either of which would flip the cap off silently. Require the raw
+  // string to match an unsigned decimal integer before trusting it.
+  if (!UNSIGNED_INT_RE.test(trimmed)) {
+    // Diagnostic: operator-supplied but unparseable. Warn once per
+    // distinct raw value so mistakes are visible without log spam.
+    if (lastWarnedInvalidEnv !== raw) {
+      lastWarnedInvalidEnv = raw;
+      // biome-ignore lint/suspicious/noConsole: operator-visible startup diagnostic.
+      console.warn(
+        `[koi] ignoring KOI_MAX_DURATION_MS=${JSON.stringify(raw)}: ` +
+          "expected an unsigned decimal integer (ms) or '0' to disable. " +
+          `Using default ${fallback}ms.`,
+      );
+    }
+    return fallback;
+  }
+  if (trimmed === "0") return MAX_SETTIMEOUT_SAFE_MS;
+  const n = Number(trimmed);
+  return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
@@ -971,6 +1050,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // the task surface is vestigial and would only create
     // detector false-positive exposure.
     taskBoardTools: spawnStackActive,
+    ...(config.bashElicitAutoApprove === true ? { bashElicitAutoApprove: true } : {}),
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   };
   const earlyContext: import("./preset-stacks.js").StackActivationContext = {
@@ -1065,7 +1145,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
+    ...(config.planningEnabled === true
+      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+      : []),
     {
       pattern: "fs_read",
       action: "invoke",
@@ -1154,14 +1236,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
 
-  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
-  // Opt-in via `config.planningEnabled` — default off until durable
-  // plan persistence lands (#1842). Without persistence, plan state
-  // is ephemeral: `koi tui --resume` silently drops the committed
-  // plan while the rest of the conversation survives, which would
-  // make a multi-step task continue against stale state. Hosts that
-  // explicitly accept the limitation can opt in.
-  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
+  // --- @koi/middleware-planning + @koi/middleware-plan-persist ---
+  // Opt-in via `config.planningEnabled`. When on, both bundles are
+  // wired together: plan-persist's `onPlanUpdate` is plugged into
+  // planning's commit hook so every successful `koi_plan_write` is
+  // mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md` and
+  // `koi_plan_save` / `koi_plan_load` tools become available to the
+  // model. The journal makes plan checkpoints survive process
+  // restart; the model can also explicitly checkpoint with a slug for
+  // git-diffable / cross-session named plans (#1842).
+  //
+  // Note: plan-persist hydrates its own mirror but cannot reach
+  // planning's in-process `currentPlan` (no public setter), so a
+  // restart's prior plan is recoverable via the save/load tools but
+  // is NOT auto-injected into the model's prompt. Hosts that want
+  // that behavior can call `planPersist.restoreFromJournal(sessionId)`
+  // and inject the items into a system reminder.
+  const planPersistBundle =
+    config.planningEnabled === true ? createPlanPersistMiddleware({ cwd }) : undefined;
+  const planBundle =
+    config.planningEnabled === true
+      ? createPlanMiddleware({
+          ...(planPersistBundle !== undefined
+            ? { onPlanUpdate: planPersistBundle.onPlanUpdate }
+            : {}),
+        })
+      : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1358,8 +1458,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // needs the middleware to intercept the tool call. Otherwise
       // the call falls through to the provider's throwing fallback.
       // The middleware is session-keyed, so sharing with children is
-      // safe — parent and child have distinct sessionIds.
+      // safe — parent and child have distinct sessionIds. The same
+      // logic applies to plan-persist: when planning is on, children
+      // inherit koi_plan_save/koi_plan_load and need the middleware
+      // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1720,6 +1824,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // gate — if permissions removes write_plan from request.tools,
       // planning must see the filtered list, not the pre-filter one.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
       // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
       // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
@@ -1821,6 +1926,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...coreProviders,
         ...stackContribution.providers,
         ...(planBundle !== undefined ? planBundle.providers : []),
+        ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],
       approvalHandler,
       userId: userInfo().username,
@@ -1853,16 +1959,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
       resetIterationBudgetPerRun: true,
-      governance: {
-        iteration: {
-          // Per-iteration UX budgets (reset on every run via
-          // resetIterationBudgetPerRun above):
-          maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
-          maxDurationMs: 300_000, // 5 min per submit
-          // Cumulative spend ceiling (NOT reset by iteration_reset):
-          maxTokens: 1_000_000,
-        },
-      },
+      // The iteration guard (wired by the default guard extension) and
+      // the governance controller are separate enforcement paths. Both
+      // must see the same resolved duration or the tighter of the two
+      // wins — e.g. the guard's 5-min default would fire before the
+      // 30-min governance cap. Thread the resolved values into `limits`
+      // (guard) as well as `governance.iteration` (controller).
+      ...(() => {
+        const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
+        // Pin `maxInactivityMs` to the resolved duration in all hosts
+        // so the two enforcement paths (wall-clock, inactivity) share
+        // one contract. Leaving inactivity at the engine's 5-min
+        // default made quiet model-think phases trip TIMEOUT well
+        // before the advertised cap. For `koi start` the resolved
+        // duration is 5 min anyway (via `defaultMaxDurationMs`), so
+        // this match is a no-op; for the interactive TUI it extends
+        // inactivity to 30 min, which is the intended posture.
+        return {
+          limits: {
+            maxTurns: 25,
+            maxDurationMs: resolvedDuration,
+            maxInactivityMs: resolvedDuration,
+            maxTokens: 1_000_000,
+          },
+          governance: {
+            iteration: {
+              maxTurns: 25,
+              // Per-submit wall-clock cap. TUI default 30 min; `koi start`
+              // default 5 min (via `defaultMaxDurationMs`). Override with
+              // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
+              // for 1h, or `0` to disable the cap entirely).
+              maxDurationMs: resolvedDuration,
+              maxInactivityMs: resolvedDuration,
+              maxTokens: 1_000_000,
+            },
+          },
+        };
+      })(),
     });
     // Hand the live runtime to the rotation closure above. The
     // engine never invokes `rotateSessionId` during construction

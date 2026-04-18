@@ -120,7 +120,15 @@ export function StatusBar(props: StatusBarProps): JSX.Element {
   });
 
   return (
-    <box flexDirection="row" width="100%" paddingLeft={1} paddingRight={1} gap={2}>
+    <box
+      flexDirection="row"
+      width="100%"
+      height={1}
+      flexShrink={0}
+      paddingLeft={1}
+      paddingRight={1}
+      gap={2}
+    >
       <ModelChip info={sessionInfo()} />
       <Show when={showMetrics()}>
         <MetricsChip metrics={cumulativeMetrics()} />

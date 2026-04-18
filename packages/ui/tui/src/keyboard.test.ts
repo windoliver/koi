@@ -178,6 +178,15 @@ describe("handleGlobalKey — Escape", () => {
     handleGlobalKey(key("escape"), state, cbs);
     expect(cbs.onDismissModal).toHaveBeenCalledTimes(1);
   });
+
+  test("Esc while agent is processing → interrupts (beats modal/back)", () => {
+    const state: TuiState = { ...createInitialState(), agentStatus: "processing" };
+    const cbs = makeCallbacks();
+    handleGlobalKey(key("escape"), state, cbs);
+    expect(cbs.onInterrupt).toHaveBeenCalledTimes(1);
+    expect(cbs.onDismissModal).not.toHaveBeenCalled();
+    expect(cbs.onBack).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
