@@ -823,19 +823,6 @@ export function resolveMaxDurationMs(hostDefault?: number): number {
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
-/**
- * @internal — did the operator explicitly set KOI_MAX_DURATION_MS?
- * Used to decide whether to broaden `maxInactivityMs` alongside the
- * wall-clock cap. When true, the operator has opted into a non-default
- * long-running posture and expects the inactivity window to match;
- * when false, the engine's tighter default inactivity window is kept
- * so non-interactive hosts don't silently broaden their hang budget.
- */
-export function isMaxDurationMsExplicit(): boolean {
-  const raw = process.env.KOI_MAX_DURATION_MS;
-  return raw !== undefined && UNSIGNED_INT_RE.test(raw.trim());
-}
-
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
@@ -1877,20 +1864,20 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // (guard) as well as `governance.iteration` (controller).
       ...(() => {
         const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
-        const explicitInactivity = isMaxDurationMsExplicit() ? resolvedDuration : undefined;
-        // Only pin `maxInactivityMs` to the resolved duration when the
-        // operator explicitly set KOI_MAX_DURATION_MS. Without that
-        // signal, leave the engine's default inactivity window in
-        // place so non-interactive hosts (automation, CI) keep their
-        // tighter hang budget.
-        const inactivityOverride =
-          explicitInactivity !== undefined ? { maxInactivityMs: explicitInactivity } : {};
+        // Pin `maxInactivityMs` to the resolved duration in all hosts
+        // so the two enforcement paths (wall-clock, inactivity) share
+        // one contract. Leaving inactivity at the engine's 5-min
+        // default made quiet model-think phases trip TIMEOUT well
+        // before the advertised cap. For `koi start` the resolved
+        // duration is 5 min anyway (via `defaultMaxDurationMs`), so
+        // this match is a no-op; for the interactive TUI it extends
+        // inactivity to 30 min, which is the intended posture.
         return {
           limits: {
             maxTurns: 25,
             maxDurationMs: resolvedDuration,
+            maxInactivityMs: resolvedDuration,
             maxTokens: 1_000_000,
-            ...inactivityOverride,
           },
           governance: {
             iteration: {
@@ -1900,7 +1887,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
               // for 1h, or `0` to disable the cap entirely).
               maxDurationMs: resolvedDuration,
-              ...inactivityOverride,
+              maxInactivityMs: resolvedDuration,
               maxTokens: 1_000_000,
             },
           },

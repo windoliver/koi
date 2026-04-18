@@ -17,12 +17,7 @@ import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
-import {
-  createKoiRuntime,
-  isMaxDurationMsExplicit,
-  MAX_TRAJECTORY_STEPS,
-  resolveMaxDurationMs,
-} from "./runtime-factory.js";
+import { createKoiRuntime, MAX_TRAJECTORY_STEPS, resolveMaxDurationMs } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -155,39 +150,6 @@ describe("resolveMaxDurationMs — KOI_MAX_DURATION_MS coercion", () => {
       process.env.KOI_MAX_DURATION_MS = raw;
       expect(resolveMaxDurationMs()).toBe(DEFAULT);
     }
-  });
-});
-
-describe("isMaxDurationMsExplicit — inactivity pinning trigger", () => {
-  const ORIGINAL = process.env.KOI_MAX_DURATION_MS;
-  afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.KOI_MAX_DURATION_MS;
-    else process.env.KOI_MAX_DURATION_MS = ORIGINAL;
-  });
-
-  test("unset → false (engine default inactivity kept)", () => {
-    delete process.env.KOI_MAX_DURATION_MS;
-    expect(isMaxDurationMsExplicit()).toBe(false);
-  });
-
-  test("empty string → false (not opted in)", () => {
-    process.env.KOI_MAX_DURATION_MS = "";
-    expect(isMaxDurationMsExplicit()).toBe(false);
-  });
-
-  test("invalid → false", () => {
-    process.env.KOI_MAX_DURATION_MS = "abc";
-    expect(isMaxDurationMsExplicit()).toBe(false);
-  });
-
-  test("valid unsigned int → true (caller opted in)", () => {
-    process.env.KOI_MAX_DURATION_MS = "3600000";
-    expect(isMaxDurationMsExplicit()).toBe(true);
-  });
-
-  test("'0' (disable sentinel) → true", () => {
-    process.env.KOI_MAX_DURATION_MS = "0";
-    expect(isMaxDurationMsExplicit()).toBe(true);
   });
 });
 
