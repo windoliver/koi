@@ -2253,6 +2253,23 @@ const queries: readonly QueryConfig[] = [
     providers: [webProvider],
   },
 
+  // 8b. url-safety-block: @koi/tools-web routed through @koi/url-safety.
+  // Permissions bypass at the policy layer, so the request reaches the tool;
+  // the tool's createSafeFetcher rejects the SSRF target with a PERMISSION
+  // result whose reason is verbatim the url-safety block wording. Locks in
+  // that the block reason flows through executor → tool → model.
+  {
+    name: "url-safety-block",
+    prompt:
+      'Use the web_fetch tool on "http://localhost:3000/admin" and copy the exact error message you receive back to me verbatim.',
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [webProvider],
+    maxTurns: 2,
+  },
+
   // 9. task-board: @koi/tasks + @koi/task-tools exercised — create + list via real createTaskTools
   {
     name: "task-board",
