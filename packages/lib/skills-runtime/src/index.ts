@@ -18,19 +18,24 @@ import { createScanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills, resolveSingleSkill } from "./discover.js";
+import { loadReference, validateReferencePath } from "./load-reference.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
+import { createBodyCache } from "./lru-cache.js";
 import { parseSkillMd } from "./parse.js";
 import type { ResolvedInclude } from "./resolve-includes.js";
 import { resolveIncludes } from "./resolve-includes.js";
 import type {
   SkillDefinition,
+  SkillEvictedEvent,
+  SkillLoadedEvent,
   SkillMetadata,
   SkillQuery,
   SkillSource,
   SkillsRuntime,
   SkillsRuntimeConfig,
 } from "./types.js";
+import { validateFrontmatter } from "./validate.js";
 
 export type { SkillSpawnRequest } from "./execution.js";
 export { mapSkillToSpawnRequest } from "./execution.js";
@@ -38,7 +43,12 @@ export { mapFrontmatterToDefinition, mapFrontmatterToMetadata } from "./map-fron
 export type { SkillInjectorConfig } from "./middleware.js";
 export { createSkillInjectorMiddleware } from "./middleware.js";
 export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
-export type { ValidatedFrontmatter, ValidatedSkillRequires } from "./types.js";
+export type {
+  SkillEvictedEvent,
+  SkillLoadedEvent,
+  ValidatedFrontmatter,
+  ValidatedSkillRequires,
+} from "./types.js";
 export type {
   SkillDefinition,
   SkillMetadata,
@@ -374,8 +384,37 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Decision 13A: instance-scoped scanner (no module-level global)
   const scanner = createScanner();
 
-  // Decision 2A: instance-scoped body cache
-  const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+  // Issue #1642: instance-scoped LRU body cache. `cacheMaxBodies` of
+  // Infinity / 0 / negative preserves legacy unbounded behavior.
+  const onSkillEvicted = config?.onSkillEvicted;
+  const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+    max: config?.cacheMaxBodies ?? Number.POSITIVE_INFINITY,
+    ...(onSkillEvicted !== undefined
+      ? {
+          onEvict: (e) => {
+            onSkillEvicted({ name: e.key, reason: e.reason } satisfies SkillEvictedEvent);
+          },
+        }
+      : {}),
+  });
+
+  const onSkillLoaded = config?.onSkillLoaded;
+  const onMetadataInjected = config?.onMetadataInjected;
+  const emitLoaded = (
+    name: string,
+    result: Result<SkillDefinition, KoiError>,
+    cacheHit: boolean,
+  ): void => {
+    if (onSkillLoaded === undefined) return;
+    if (!result.ok) return;
+    const event: SkillLoadedEvent = {
+      name,
+      source: result.value.source,
+      bodyBytes: result.value.body.length,
+      cacheHit,
+    };
+    onSkillLoaded(event);
+  };
 
   // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
   // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
@@ -414,6 +453,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // this before committing so a stale async completion cannot repopulate
   // state after a reset.
   let runtimeGeneration = 0;
+  // Per-skill generation counters (review #1896 round 12). `invalidate(name)`
+  // bumps the entry for that skill so a concurrent load(name) whose async
+  // work finishes afterward refuses to write its stale body back to the
+  // cache. The runtime-wide `runtimeGeneration` covers reset and external-
+  // refresh, but not targeted invalidation — without this per-skill
+  // counter, `invalidate(name)` had no way to revoke an in-flight load.
+  const skillGeneration = new Map<string, number>();
+  const getSkillGeneration = (n: string): number => skillGeneration.get(n) ?? 0;
   // Projected metadata map cached to preserve reference identity across discover() calls.
   // Rebuilt whenever filesystem or external entries change.
   let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
@@ -480,7 +527,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // When registerExternal() replaces the map, this goes stale and triggers a rebuild.
   let lastExternalRef: ReadonlyMap<string, SkillMetadata> = externalSkills;
 
-  const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
+  const discoverInternal = async (): Promise<
+    Result<ReadonlyMap<string, SkillMetadata>, KoiError>
+  > => {
     // Issue #1722 round 10: a generation mismatch (invalidate() racing
     // with an in-flight rescan/discover) must not surface as INTERNAL.
     // Instead we loop and restart against the fresh state. There is no
@@ -716,19 +765,33 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const load = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     // 1. Body cache hit
     const cached = cache.get(name);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      emitLoaded(name, cached, true);
+      return cached;
+    }
 
     // 2. Inflight dedup: join if this skill is already loading.
     // Both checks below are synchronous — no interleave between check and registration.
     const inflight = loadInflight.get(name);
     if (inflight !== undefined) return inflight;
 
+    // Snapshot the runtime + per-skill generation so we can suppress cache
+    // writes from load() calls whose async work finishes after a concurrent
+    // invalidate() / invalidate(name) / registerExternal() — review #1896
+    // rounds 11 and 12.
+    const loadStartGeneration = runtimeGeneration;
+    const loadStartSkillGen = getSkillGeneration(name);
+    const shouldCommit = (): boolean =>
+      runtimeGeneration === loadStartGeneration && getSkillGeneration(name) === loadStartSkillGen;
+
     // 3. Create the load promise and register it synchronously before any await.
     //    This closes the race window: any concurrent caller arriving after this
     //    point will find the promise in loadInflight and join it.
     const promise: Promise<Result<SkillDefinition, KoiError>> = (async () => {
-      // Ensure discovery has run
-      const discoverResult = await discover();
+      // Ensure discovery has run. Use the internal helper so Tier 0
+      // telemetry (onMetadataInjected) is not re-fired by routine load()
+      // calls — review #1896 round 3.
+      const discoverResult = await discoverInternal();
       if (!discoverResult.ok) return discoverResult;
 
       // Issue #1722: blocked-at-discovery entries short-circuit with a
@@ -750,6 +813,8 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
           scanner,
           skillsRoot: entry.skillsRoot,
           config: resolvedConfig,
+          onLoad: emitLoaded,
+          shouldCommit,
         };
         return loadSkill(name, entry.dirPath, entry.source, ctx);
       }
@@ -757,6 +822,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // Check external entries (MCP-derived skills)
       const extSkill = externalSkills.get(name);
       if (extSkill !== undefined) {
+        const extCached = cache.get(name);
+        if (extCached !== undefined) {
+          emitLoaded(name, extCached, true);
+          return extCached;
+        }
         // External skills have no filesystem body — generate a minimal SkillDefinition.
         // Body is the description (MCP tools don't have SKILL.md files).
         const definition: SkillDefinition = {
@@ -764,7 +834,10 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
           body: extSkill.description,
         };
         const result: Result<SkillDefinition, KoiError> = { ok: true, value: definition };
-        cache.set(name, result);
+        if (shouldCommit()) {
+          cache.set(name, result);
+        }
+        emitLoaded(name, result, false);
         return result;
       }
 
@@ -792,7 +865,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const loadAll = async (): Promise<
     Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
   > => {
-    const discoverResult = await discover();
+    const discoverResult = await discoverInternal();
     if (!discoverResult.ok) {
       // Discovery failed — surface as outer Result error (Issue 3A)
       return { ok: false, error: discoverResult.error };
@@ -844,7 +917,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const query = async (
     filter?: SkillQuery,
   ): Promise<Result<readonly SkillMetadata[], KoiError>> => {
-    const discoverResult = await discover();
+    const discoverResult = await discoverInternal();
     if (!discoverResult.ok) return discoverResult;
 
     // Linear scan over merged metadata (filesystem + external)
@@ -916,6 +989,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // untouched. We assign a fresh per-name generation so an in-flight
       // rescan's commit step can detect re-invalidations that raced with
       // its async window.
+      // Bump the per-skill generation (review #1896 round 12). Any load()
+      // that started before this call and finishes afterward will see the
+      // mismatch via shouldCommit() and refuse to write its stale body
+      // back into the cache.
+      skillGeneration.set(name, getSkillGeneration(name) + 1);
       cache.delete(name);
       loadInflight.delete(name);
       if (blockedEntry.has(name)) {
@@ -937,6 +1015,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // ---------------------------------------------------------------------------
 
   const registerExternal = (skills: readonly SkillMetadata[]): void => {
+    // Bump generation so any in-flight load() whose async work finishes
+    // after this call is suppressed from writing a stale entry back into
+    // the cache (review #1896 round 11). Matches the guard on the full
+    // invalidate() path.
+    runtimeGeneration += 1;
     const oldExternal = externalSkills;
     // Full replacement: build a new map from the provided skills.
     const newExternal = new Map(skills.map((s) => [s.name, s]));
@@ -945,14 +1028,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // Without this, load() returns stale definitions after MCP reconnect.
     for (const [name] of oldExternal) {
       if (!newExternal.has(name) || newExternal.get(name) !== oldExternal.get(name)) {
-        cache.delete(name);
+        cache.delete(name, "external-refresh");
         loadInflight.delete(name);
       }
     }
     // Also evict newly added names in case they shadow a previously-loaded filesystem skill
     for (const [name] of newExternal) {
       if (!oldExternal.has(name)) {
-        cache.delete(name);
+        cache.delete(name, "external-refresh");
         loadInflight.delete(name);
       }
     }
@@ -962,5 +1045,213 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     discoveredMetaMap = undefined;
   };
 
-  return { discover, load, loadAll, query, invalidate, registerExternal };
+  // ---------------------------------------------------------------------------
+  // discover() — public wrapper emitting onMetadataInjected (issue #1642)
+  // ---------------------------------------------------------------------------
+
+  // Tracks the last Tier 0 map we fired `onMetadataInjected` for, so
+  // cached `discover()` calls (fast path: same merged map, no rescan) do
+  // not replay the injection hook. Review #1896 round 10: integrators use
+  // this callback to inject the full listing into a model turn; a replay
+  // on every cached call silently duplicates the listing into prompt
+  // context. Identity comparison is enough — `discoverInternal` replaces
+  // the map reference whenever the filesystem / external / blocked sets
+  // actually change.
+  let lastInjectedMapRef: ReadonlyMap<string, SkillMetadata> | undefined;
+
+  const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
+    const result = await discoverInternal();
+    if (result.ok && onMetadataInjected !== undefined && result.value !== lastInjectedMapRef) {
+      lastInjectedMapRef = result.value;
+      onMetadataInjected(result.value.size);
+    }
+    return result;
+  };
+
+  // ---------------------------------------------------------------------------
+  // loadReference() — Tier 2 (issue #1642)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Uniform denial for any undeclared / revoked / un-discovered Tier 2 read
+   * (review #1896 round 7). Returning the declared allowlist in error
+   * context would be an enumeration oracle — a caller could probe any
+   * invalid path, read the returned list, and then issue valid reads.
+   * Keep the error shape identical for every denial reason.
+   */
+  function deniedReference(skillName: string, refPath: string): Result<string, KoiError> {
+    return {
+      ok: false,
+      error: {
+        code: "PERMISSION",
+        message: `Reference "${refPath}" is not available for skill "${skillName}".`,
+        retryable: false,
+        context: { name: skillName, refPath },
+      },
+    };
+  }
+
+  /**
+   * Re-reads a skill's SKILL.md frontmatter and returns the current
+   * `references:` allowlist. Runs on every Tier 2 call so policy revocation
+   * via `invalidate(name)` takes effect immediately (review #1896 round 5).
+   *
+   * Frontmatter parse errors surface as VALIDATION so the caller sees the
+   * same error code an operator would get at discover time — no silent
+   * fallback to an empty list.
+   */
+  async function readDeclaredReferences(
+    skillName: string,
+    dirPath: string,
+  ): Promise<Result<readonly string[], KoiError>> {
+    const skillMdPath = join(dirPath, "SKILL.md");
+    let content: string;
+    try {
+      content = await Bun.file(skillMdPath).text();
+    } catch (cause: unknown) {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Skill "${skillName}" SKILL.md could not be read for reference allowlist check`,
+          retryable: false,
+          cause,
+          context: { skillName, skillMdPath },
+        },
+      };
+    }
+    const parsed = parseSkillMd(content, skillMdPath);
+    if (!parsed.ok) return parsed;
+    const fm = validateFrontmatter(parsed.value.frontmatter, skillMdPath);
+    if (!fm.ok) return fm;
+    return { ok: true, value: fm.value.references ?? [] };
+  }
+
+  const loadReferenceImpl = async (
+    name: string,
+    refPath: string,
+  ): Promise<Result<string, KoiError>> => {
+    // Epoch snapshot (review #1896 round 14). A Tier 2 read that starts
+    // just before an invalidate(name) / invalidate() / registerExternal()
+    // must not return content that policy has since revoked. Capture the
+    // generations now; every commit point below re-checks them and fails
+    // closed on mismatch, so the documented "immediate revocation"
+    // contract holds for in-flight reads too.
+    const startRuntimeGen = runtimeGeneration;
+    const startSkillGen = getSkillGeneration(name);
+    const stillAuthorized = (): boolean =>
+      runtimeGeneration === startRuntimeGen && getSkillGeneration(name) === startSkillGen;
+    const revoked = (): Result<string, KoiError> => deniedReference(name, refPath);
+
+    // Ensure discovery has run so we can locate the skill's directory.
+    // Internal variant — do not re-fire the onMetadataInjected hook from
+    // routine Tier 2 reads (review #1896 round 3).
+    const discoverResult = await discoverInternal();
+    if (!discoverResult.ok) return discoverResult;
+    if (!stillAuthorized()) return revoked();
+
+    // Syntactic hygiene first (review #1896 round 9). Malformed inputs
+    // like `../x.md` or `/etc/passwd` must surface as VALIDATION /
+    // PATH_TRAVERSAL rather than getting masked by the allowlist denial
+    // below — otherwise monitoring keyed off traversal errors loses
+    // signal. The check is syntactic and reveals no allowlist state, so
+    // it does not create an enumeration oracle.
+    const hygiene = validateReferencePath(name, refPath);
+    if (!hygiene.ok) return hygiene;
+
+    // Prefer the filesystem entry (has the resolved dir). External (MCP)
+    // skills have no filesystem body, so Tier 2 references are only valid
+    // for filesystem-sourced skills — fail closed.
+    const entry = discoveredEntry?.get(name);
+    if (entry === undefined) {
+      // Blocked-at-discovery names must behave like NOT_FOUND for Tier 2 —
+      // we never hand out files inside a skill that was rejected by the
+      // security scanner.
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Skill "${name}" not found. Tier 2 references are only available for discovered filesystem skills.`,
+          retryable: false,
+          context: { name, refPath },
+        },
+      };
+    }
+
+    // Tier 2 allowlist — intersection of two sources (review #1896 rounds 4–7):
+    //
+    // 1. The discovery-time snapshot (`entry.references`). This is the
+    //    upper bound: allowlist *expansions* made after discovery are
+    //    ignored until a rediscovery, so new paths go through the normal
+    //    discover pipeline (shadowing + security scan at load time)
+    //    instead of becoming live the instant SKILL.md is touched.
+    //
+    // 2. The current on-disk list. Re-read on every call so *revocations*
+    //    take effect immediately — an operator who removes a path from
+    //    SKILL.md followed by `invalidate(name)` (or even without it)
+    //    should lose access right away, without waiting for a full
+    //    re-discovery.
+    //
+    // A path is authorized only if it appears in BOTH sets.
+    const snapshot = entry.references;
+    if (snapshot === undefined || snapshot.length === 0) {
+      // Use a uniform message so failure shape does not distinguish
+      // "no declaration ever" from "declaration revoked" from "path not
+      // in the list" — every denied read looks identical to the caller.
+      return deniedReference(name, refPath);
+    }
+    if (!snapshot.includes(refPath)) {
+      return deniedReference(name, refPath);
+    }
+    const current = await readDeclaredReferences(name, entry.dirPath);
+    if (!current.ok) return current;
+    if (!current.value.includes(refPath)) {
+      return deniedReference(name, refPath);
+    }
+    // Post-await re-check: an invalidate() or invalidate(name) between
+    // the fresh-read above and the file open below must take effect.
+    if (!stillAuthorized()) return revoked();
+
+    // Scanned-body gate (review #1896 round 15). Frontmatter declares the
+    // reference list, but the skill *body* is what the scanner inspects
+    // for malicious content. Without this gate, a skill that became
+    // blocked between discovery and this call would still surface its
+    // declared references. Route through the runtime's load() — it
+    // re-reads + re-scans the body, caches the result, and returns
+    // PERMISSION when the scanner refuses the skill. Treat any
+    // non-success as a hard stop: Tier 2 must not outlive Tier 1
+    // admission.
+    const skillLoad = await load(name);
+    if (!skillLoad.ok) {
+      if (skillLoad.error.code === "PERMISSION") return deniedReference(name, refPath);
+      return { ok: false, error: skillLoad.error } satisfies Result<string, KoiError>;
+    }
+    if (!stillAuthorized()) return revoked();
+
+    const result = await loadReference(name, entry.dirPath, refPath, {
+      scanner,
+      blockOnSeverity: resolvedConfig.blockOnSeverity,
+      skillsRoot: entry.skillsRoot,
+      ...(resolvedConfig.onSecurityFinding !== undefined
+        ? { onSecurityFinding: resolvedConfig.onSecurityFinding }
+        : {}),
+    });
+
+    // Final guard before handing the content back. A revoke that happens
+    // while we were reading the file must still suppress the result —
+    // otherwise we'd hand the caller one last copy after policy was
+    // withdrawn. Drop the content and return the uniform denial shape.
+    if (!stillAuthorized()) return revoked();
+    return result;
+  };
+
+  return {
+    discover,
+    load,
+    loadAll,
+    query,
+    loadReference: loadReferenceImpl,
+    invalidate,
+    registerExternal,
+  };
 }
