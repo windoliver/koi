@@ -142,12 +142,32 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     // when there is something to refresh.
     const refreshClientId = await resolveClientId();
 
-    const refreshResult = await refreshAccessToken(
+    let refreshResult = await refreshAccessToken(
       usedRefreshToken,
       metadata.tokenEndpoint,
       refreshClientId,
       resource,
     );
+
+    // RFC 8707 compatibility shim: if we sent `resource` and the AS
+    // rejected it (`invalid_target` / `invalid_request`), retry once
+    // without `resource` before classifying the failure as terminal.
+    // Without this, a legacy authorization server upgrade silently logs
+    // operators out on the first refresh because the default sends
+    // `resource` and any 4xx is treated as a revoked token.
+    if (
+      !refreshResult.ok &&
+      refreshResult.terminal &&
+      refreshResult.resourceRejected &&
+      resource !== undefined
+    ) {
+      refreshResult = await refreshAccessToken(
+        usedRefreshToken,
+        metadata.tokenEndpoint,
+        refreshClientId,
+        undefined,
+      );
+    }
 
     // Surface invalid_client to the provider so it can drop the persisted
     // DCR client BEFORE the next interactive auth — without this, the
@@ -256,10 +276,17 @@ function isExpired(tokens: OAuthTokens): boolean {
  * `error: "invalid_client"`, distinguishing client-revocation from
  * `invalid_grant` and other terminal failures so the provider can drop
  * the persisted DCR client_id before the next interactive auth.
+ * `resourceRejected` is set on `invalid_target` / `invalid_request` so
+ * the caller can retry without RFC 8707 `resource` against legacy AS.
  */
 type RefreshResult =
   | { readonly ok: true; readonly tokens: OAuthTokens }
-  | { readonly ok: false; readonly terminal: boolean; readonly invalidClient: boolean };
+  | {
+      readonly ok: false;
+      readonly terminal: boolean;
+      readonly invalidClient: boolean;
+      readonly resourceRejected: boolean;
+    };
 
 async function refreshAccessToken(
   refreshToken: string,
@@ -289,11 +316,17 @@ async function refreshAccessToken(
     if (!response.ok) {
       // 400/401 = terminal (invalid_grant, revoked token). 5xx = transient.
       // RFC 6749 §5.2 token-error responses always carry an `error` field;
-      // parse it so we can surface invalid_client distinctly without
-      // losing the terminal-vs-transient classification.
+      // parse it once so we can surface invalid_client + resource-related
+      // rejections distinctly without losing terminal/transient
+      // classification.
       const terminal = response.status < 500;
-      const invalidClient = terminal ? await isInvalidClientError(response) : false;
-      return { ok: false, terminal, invalidClient };
+      const errorCode = terminal ? await readErrorCode(response) : undefined;
+      return {
+        ok: false,
+        terminal,
+        invalidClient: errorCode === "invalid_client",
+        resourceRejected: errorCode === "invalid_target" || errorCode === "invalid_request",
+      };
     }
 
     const data = (await response.json()) as {
@@ -305,7 +338,7 @@ async function refreshAccessToken(
     };
 
     if (typeof data.access_token !== "string") {
-      return { ok: false, terminal: true, invalidClient: false };
+      return { ok: false, terminal: true, invalidClient: false, resourceRejected: false };
     }
 
     return {
@@ -321,21 +354,20 @@ async function refreshAccessToken(
     };
   } catch {
     // Network error, timeout — transient, preserve tokens
-    return { ok: false, terminal: false, invalidClient: false };
+    return { ok: false, terminal: false, invalidClient: false, resourceRejected: false };
   }
 }
 
 /**
- * Cheap content-sniff: is the failed token-endpoint response an explicit
- * `error: "invalid_client"`? Bodies that fail to parse (or omit `error`)
- * default to `false` so transient framing problems do not be classified
- * as client revocation.
+ * Read RFC 6749 §5.2 token-error `error` field. Returns undefined for
+ * unparseable bodies or missing fields so transient framing problems
+ * never get misclassified as client revocation or resource rejection.
  */
-async function isInvalidClientError(response: Response): Promise<boolean> {
+async function readErrorCode(response: Response): Promise<string | undefined> {
   try {
     const body = (await response.clone().json()) as { readonly error?: unknown };
-    return body.error === "invalid_client";
+    return typeof body.error === "string" ? body.error : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

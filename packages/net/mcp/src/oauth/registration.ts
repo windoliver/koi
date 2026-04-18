@@ -69,11 +69,28 @@ export async function registerDynamicClient(
       readonly client_secret?: unknown;
       readonly token_endpoint_auth_method?: unknown;
       readonly redirect_uris?: unknown;
+      readonly registration_client_uri?: unknown;
+      readonly registration_access_token?: unknown;
     };
 
     if (typeof data.client_id !== "string" || data.client_id.length === 0) {
       return undefined;
     }
+
+    // Capture the RFC 7592 client-management metadata up front so any
+    // post-validation rejection below can attempt to delete the orphan.
+    // Without this, repeated retries against partially-compatible servers
+    // would accumulate dead client registrations.
+    const cleanupUri =
+      typeof data.registration_client_uri === "string" ? data.registration_client_uri : undefined;
+    const cleanupToken =
+      typeof data.registration_access_token === "string"
+        ? data.registration_access_token
+        : undefined;
+    const rollback = async (): Promise<void> => {
+      if (cleanupUri === undefined) return;
+      await deleteRegisteredClient(cleanupUri, cleanupToken);
+    };
 
     // Fail fast on confidential registrations. We requested
     // `token_endpoint_auth_method: none` (public client + PKCE). If the AS
@@ -87,6 +104,7 @@ export async function registerDynamicClient(
       (typeof data.token_endpoint_auth_method === "string" &&
         data.token_endpoint_auth_method !== "none")
     ) {
+      await rollback();
       return undefined;
     }
 
@@ -100,6 +118,7 @@ export async function registerDynamicClient(
     if (Array.isArray(data.redirect_uris)) {
       const accepted = data.redirect_uris.filter((u): u is string => typeof u === "string");
       if (!accepted.includes(redirectUri)) {
+        await rollback();
         return undefined;
       }
     }
@@ -113,5 +132,33 @@ export async function registerDynamicClient(
     };
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * RFC 7592 client-management DELETE — best-effort cleanup of a freshly
+ * registered DCR client we cannot use. Failures are intentionally
+ * swallowed: we already decided not to persist this registration, so
+ * surfacing a delete error to the caller would just mask the original
+ * rejection reason. Worst case the orphan persists on the AS until
+ * server-side TTLs expire, which is the same outcome as having no
+ * cleanup at all.
+ */
+async function deleteRegisteredClient(
+  registrationClientUri: string,
+  registrationAccessToken: string | undefined,
+): Promise<void> {
+  try {
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (registrationAccessToken !== undefined) {
+      headers.Authorization = `Bearer ${registrationAccessToken}`;
+    }
+    await fetch(registrationClientUri, {
+      method: "DELETE",
+      headers,
+      signal: AbortSignal.timeout(REGISTRATION_TIMEOUT_MS),
+    });
+  } catch {
+    // Best effort.
   }
 }

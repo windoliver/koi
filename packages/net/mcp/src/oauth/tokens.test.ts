@@ -406,6 +406,70 @@ describe("createTokenManager — refresh flow", () => {
     expect(await tm.hasTokens()).toBe(false);
   });
 
+  test("retries refresh without resource on invalid_target (RFC 8707 compatibility)", async () => {
+    // Default RFC 8707 sends `resource` on every refresh. A legacy AS
+    // that doesn't recognize it returns 4xx invalid_target. Treating
+    // that as terminal would log operators out on upgrade. Retry once
+    // without `resource` instead so existing sessions survive.
+    let calls = 0;
+    let secondCallHadResource: boolean | undefined;
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      calls += 1;
+      const body = new URLSearchParams((init?.body as string) ?? "");
+      if (calls === 1) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "invalid_target" }), { status: 400 }),
+        );
+      }
+      secondCallHadResource = body.has("resource");
+      return Promise.resolve(new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com/v1",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      resource: "https://mcp.example.com/v1",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBe("ok");
+    expect(calls).toBe(2);
+    expect(secondCallHadResource).toBe(false);
+    // Tokens should be preserved + rotated, NOT cleared.
+    expect(await tm.hasTokens()).toBe(true);
+  });
+
+  test("preserves tokens when invalid_target retry also fails", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: "invalid_target" }), { status: 400 })),
+    ) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      resource: "https://mcp.example.com",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    // Both attempts failed terminal — clear tokens (no longer revivable).
+    expect(await tm.hasTokens()).toBe(false);
+  });
+
   test("fires onInvalidClient callback when refresh returns invalid_client", async () => {
     // Refresh-time client revocation must surface to the provider so it
     // can drop the persisted DCR client BEFORE the next interactive
