@@ -378,6 +378,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
   test("computeBashGrantKey mirrors internal grant-key hashing", () => {
     const mw = createPermissionsMiddleware({
       backend: { check: () => ({ effect: "allow" }) },
+      resolveBashCommand: (_toolId, input) => input.command as string,
     });
     const k1 = mw.computeBashGrantKey("bash", "git status");
     const k2 = mw.computeBashGrantKey("bash", "git status");
@@ -395,6 +396,19 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     // Empty command falls back to plain tool id.
     expect(mw.computeBashGrantKey("bash", "")).toBe("bash");
     expect(mw.computeBashGrantKey("bash", "   ")).toBe("bash");
+  });
+
+  test("computeBashGrantKey returns plain toolId when resolveBashCommand is not configured (round 6)", () => {
+    // Without enrichment, grants are stored under the plain tool id.
+    // computeBashGrantKey must match that storage behavior — otherwise
+    // callers compute a hashed key that never existed and revocation
+    // silently misses the real grant.
+    const mw = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "allow" }) },
+      // resolveBashCommand intentionally unset
+    });
+    expect(mw.computeBashGrantKey("bash", "git push")).toBe("bash");
+    expect(mw.computeBashGrantKey("fs_write", "foo")).toBe("fs_write");
   });
 
   test("revokePersistentApproval uses the exact-command grant key", () => {

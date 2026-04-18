@@ -504,10 +504,12 @@ function hasShellControlOperators(s: string): boolean {
  *     nesting should not silently collapse to the outer prefix.
  */
 /**
- * Returns `true` when the tokenized command is an `env -S <script>`
- * invocation. `-S` evaluates its argument as a shell script string; we
- * cannot safely peel that arg the way we peel `-u VAR`, and we can't
- * cheaply parse the script itself at this layer — so fail closed.
+ * Returns `true` when the tokenized command is any `env [opts…] -S
+ * <script>` invocation. Walks every leading env option (not just the
+ * first) so `env -i -S "sudo rm"` and `env -u PATH --split-string=...`
+ * are all detected. `-S` evaluates its argument as a shell script
+ * string; we cannot safely peel that arg, and we cannot cheaply parse
+ * the script itself at this layer — so fail closed.
  */
 function isEnvDashS(tokens: readonly string[]): boolean {
   let i = 0;
@@ -516,15 +518,36 @@ function isEnvDashS(tokens: readonly string[]): boolean {
   if (head === undefined) return false;
   if (basenameTrusted(head) !== "env") return false;
   i++;
-  while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
-  const flag = tokens[i] ?? "";
-  return (
-    flag === "-S" ||
-    flag === "--split-string" ||
-    flag.startsWith("--split-string=") ||
-    // Bundled short form like `-Sc command` — very rare but fail closed.
-    (flag.startsWith("-") && flag.length > 1 && flag.includes("S"))
-  );
+  // Walk through every env option until we hit a non-flag token or
+  // run out. Any `-S`/`--split-string` form at any position triggers
+  // fail-closed.
+  while (i < tokens.length) {
+    const t = tokens[i] ?? "";
+    if (ENV_ASSIGN.test(t)) {
+      i++;
+      continue;
+    }
+    if (!t.startsWith("-")) return false;
+    if (t === "--") return false;
+    if (t === "-S" || t === "--split-string" || t.startsWith("--split-string=")) {
+      return true;
+    }
+    // Bundled short form that includes `S`: -iS, -uSx, etc.
+    if (t.length > 1 && !t.startsWith("--") && t.includes("S")) return true;
+    // Known arg-taking env flags consume their arg.
+    if (t === "-u" || t === "--unset" || t === "-C" || t === "--chdir") {
+      i += 2;
+      continue;
+    }
+    // --long=value is single-token.
+    if (t.startsWith("--") && t.includes("=")) {
+      i++;
+      continue;
+    }
+    // Any other flag: advance one.
+    i++;
+  }
+  return false;
 }
 
 export function canonicalPrefix(cmdLine: string, depth: number = 0): string {

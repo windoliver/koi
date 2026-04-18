@@ -516,6 +516,18 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`/usr/bin/env -S 'sudo rm'`)).toBe("!complex");
   });
 
+  test("env -S detection walks past preceding env options (round 6)", () => {
+    // `-S` can appear after any number of other env options. The
+    // detector must walk all leading flags, not stop at the first.
+    expect(canonicalPrefix(`env -i -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -u PATH -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -u A -u B --split-string='sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env --chdir /tmp --split-string='rm -rf /'`)).toBe("!complex");
+    expect(canonicalPrefix(`env -0 -i -u VAR -S 'sudo'`)).toBe("!complex");
+    // Bundled short flag form with S — fail closed.
+    expect(canonicalPrefix(`env -iS 'sudo rm'`)).toBe("!complex");
+  });
+
   test("wrapper `--` end-of-options sentinel reveals the inner command", () => {
     expect(canonicalPrefix(`env -- sudo rm`)).toBe("sudo");
     expect(canonicalPrefix(`env -i -- sudo rm`)).toBe("sudo");

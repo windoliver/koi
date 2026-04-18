@@ -1601,10 +1601,15 @@ export function createPermissionsMiddleware(
       return persistentStore.revoke(userId, agentId, grantKey);
     },
     computeBashGrantKey(toolId: string, rawCommand: string): string {
-      // Mirrors enrichResource's grant-key construction so external
-      // callers (CLI revoke, TUI approvals panel) can reliably
+      // Mirrors enrichResource's grant-key construction exactly so
+      // external callers (CLI revoke, TUI approvals panel) can
       // reconstruct the stored key without reverse-engineering the
-      // hash format.
+      // hash format. When `resolveBashCommand` is NOT configured, the
+      // middleware stores grants under the plain tool id — honor that
+      // here too, or callers will compute a hashed key that never
+      // existed in persistent storage and revocation will silently
+      // miss the real grant.
+      if (config.resolveBashCommand === undefined) return toolId;
       const trimmed = rawCommand.trim();
       if (trimmed.length === 0) return toolId;
       const p = canonicalPrefix(trimmed);
