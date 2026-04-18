@@ -543,6 +543,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
     },
     "packages/lib/url-safety": {

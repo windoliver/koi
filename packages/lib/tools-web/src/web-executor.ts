@@ -6,19 +6,19 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type { DnsResolver } from "@koi/url-safety";
+import { createSafeFetcher } from "@koi/url-safety";
 import {
-  CROSS_ORIGIN_SENSITIVE_HEADERS,
   DEFAULT_CACHE_TTL_MS,
   DEFAULT_MAX_BODY_CHARS,
   DEFAULT_MAX_CACHE_ENTRIES,
   DEFAULT_TIMEOUT_MS,
   MAX_REDIRECTS,
   MAX_TIMEOUT_MS,
-  REDIRECT_STATUS_CODES,
 } from "./constants.js";
 import { createLruCache } from "./lru-cache.js";
-import type { DnsResolverFn } from "./url-policy.js";
-import { isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
+
+export type DnsResolverFn = DnsResolver;
 
 // ---------------------------------------------------------------------------
 // Search provider types (defined locally to avoid L2→L2 dep)
@@ -152,6 +152,12 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, cacheTtlMs)
       : undefined;
 
+  const safeFetchOptions = {
+    dnsResolver: dnsResolver ?? defaultDnsResolver,
+    maxRedirects: MAX_REDIRECTS,
+    strictAuthoritativeDns: false,
+  } as const;
+
   return {
     providerName: config.searchProvider?.name,
     fetch: async (
@@ -185,6 +191,14 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
+      // Tool-scoped domain-suffix blocklist (pre-DNS). `.internal` / `.local`
+      // are reserved for internal/name-service use per RFC6762 / RFC2606 —
+      // blocking by suffix stops a malicious DNS record that points an
+      // internal hostname at a public IP from passing the safe-fetch gate.
+      if (hasBlockedSuffix(url)) {
+        return permissionError(`Access to reserved internal domain blocked: ${url}`);
+      }
+
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
@@ -198,53 +212,45 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
-        // SSRF first pass: fast string-based pattern match before DNS
-        if (isBlockedUrl(url)) {
-          clearTimeout(timer);
-          return permissionError(`Access to private/internal URL blocked: ${url}`);
-        }
+        // Wrap fetchFn per-call so we can observe the final URL the safe
+        // fetcher actually connects to (post-redirects, post-pin). Without
+        // this, createSafeFetcher's internal loop is opaque to the executor.
+        let lastRequestedUrl = url;
+        const trackingFetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+          lastRequestedUrl =
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          return (fetchFn as typeof fetch)(input, init);
+        }) as unknown as typeof fetch;
+        const safeFetch = createSafeFetcher(trackingFetchFn, safeFetchOptions);
 
-        // SSRF second pass: resolve and validate the IP to mitigate DNS rebinding
-        const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
-        if (dnsResult.blocked) {
-          clearTimeout(timer);
-          return permissionError(`DNS validation blocked: ${dnsResult.reason}`);
-        }
-
-        // Pin the resolved IP for HTTP to prevent DNS rebinding
-        const pinned = pinResolvedIp(url, dnsResult.ip);
-        const result = await executeRedirectLoop(
-          fetchFn,
-          dnsResolver ?? defaultDnsResolver,
-          pinned?.url ?? url,
-          url,
+        const response = await safeFetch(url, {
           method,
-          pinned?.hostHeader !== undefined
-            ? { ...options?.headers, Host: pinned.hostHeader }
-            : options?.headers,
-          options?.body,
-          controller.signal,
-        );
+          headers: options?.headers,
+          body: options?.body,
+          signal: controller.signal,
+        });
 
         clearTimeout(timer);
 
-        if (!result.ok) return result;
-
-        const rawBody = await result.value.response.text();
+        const rawBody = await response.text();
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;
 
         const headers: Readonly<Record<string, string>> = Object.fromEntries([
-          ...result.value.response.headers.entries(),
+          ...response.headers.entries(),
         ]);
 
         const fetchResult: WebFetchResult = {
-          status: result.value.response.status,
-          statusText: result.value.response.statusText,
+          status: response.status,
+          statusText: response.statusText,
           headers,
           body,
           truncated,
-          finalUrl: result.value.finalUrl,
+          // lastRequestedUrl = URL of the final fetch hop, captured via the
+          // tracking fetchFn wrapper. Real Response.url would also carry this
+          // but mock fetches in tests don't bind URLs, so tracking the
+          // outbound call is more reliable across runtimes.
+          finalUrl: lastRequestedUrl,
           cached: false,
         };
 
@@ -259,6 +265,12 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
+        // Translate @koi/url-safety rejections into PERMISSION errors so
+        // the tool surfaces them to the model the same way the old policy
+        // did. Network/timeout failures still flow through catchFetchError.
+        if (e instanceof Error && e.message.startsWith("url-safety:")) {
+          return permissionError(e.message);
+        }
         return catchFetchError(url, method, e);
       }
     },
@@ -327,117 +339,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 }
 
 // ---------------------------------------------------------------------------
-// Redirect loop (extracted to keep factory under size limit)
-// ---------------------------------------------------------------------------
-
-interface RedirectResult {
-  readonly response: Response;
-  readonly finalUrl: string;
-}
-
-async function executeRedirectLoop(
-  fetchFn: typeof globalThis.fetch,
-  dnsResolver: DnsResolverFn,
-  startUrl: string,
-  logicalUrl: string,
-  startMethod: string,
-  startHeaders: Readonly<Record<string, string>> | undefined,
-  startBody: string | undefined,
-  signal: AbortSignal,
-): Promise<Result<RedirectResult, KoiError>> {
-  let currentUrl = startUrl;
-  let currentLogicalUrl = logicalUrl;
-  let currentMethod = startMethod;
-  let currentHeaders = startHeaders;
-  let currentBody = startBody;
-  let response: Response | undefined;
-
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    response = await fetchFn(currentUrl, {
-      method: currentMethod,
-      headers: currentHeaders,
-      body: currentBody,
-      signal,
-      redirect: "manual",
-    });
-
-    if (!REDIRECT_STATUS_CODES.has(response.status)) break;
-
-    const location = response.headers.get("location");
-    if (location === null || location === "") break;
-
-    const nextUrl = new URL(location, currentLogicalUrl).href;
-
-    if (isBlockedUrl(nextUrl)) {
-      return permissionError(`Redirect to private/internal URL blocked: ${nextUrl}`);
-    }
-
-    const redirectDns = await resolveAndValidateUrl(nextUrl, dnsResolver);
-    if (redirectDns.blocked) {
-      return permissionError(`Redirect DNS validation blocked: ${redirectDns.reason}`);
-    }
-
-    // Strip sensitive headers on cross-origin redirects
-    if (currentHeaders !== undefined) {
-      const currentOrigin = new URL(currentLogicalUrl).origin;
-      const nextOrigin = new URL(nextUrl).origin;
-      if (currentOrigin !== nextOrigin) {
-        currentHeaders = Object.fromEntries(
-          Object.entries(currentHeaders).filter(
-            ([k]) => !CROSS_ORIGIN_SENSITIVE_HEADERS.has(k.toLowerCase()),
-          ),
-        );
-      }
-    }
-
-    const redirectPinned = pinResolvedIp(nextUrl, redirectDns.ip);
-    currentUrl = redirectPinned?.url ?? nextUrl;
-    currentLogicalUrl = nextUrl;
-    if (redirectPinned?.hostHeader !== undefined) {
-      currentHeaders = { ...currentHeaders, Host: redirectPinned.hostHeader };
-    } else if (currentHeaders !== undefined && "Host" in currentHeaders) {
-      const { Host: _, ...rest } = currentHeaders;
-      currentHeaders = rest;
-    }
-
-    // 303 always converts to GET; 301/302 convert for non-GET/HEAD
-    if (
-      response.status === 303 ||
-      ((response.status === 301 || response.status === 302) &&
-        currentMethod !== "GET" &&
-        currentMethod !== "HEAD")
-    ) {
-      currentMethod = "GET";
-      currentBody = undefined;
-    }
-  }
-
-  if (response === undefined) {
-    return {
-      ok: false,
-      error: {
-        code: "EXTERNAL",
-        message: `Fetch failed for ${logicalUrl}: no response received`,
-        retryable: true,
-      },
-    };
-  }
-
-  if (REDIRECT_STATUS_CODES.has(response.status)) {
-    return {
-      ok: false,
-      error: {
-        code: "EXTERNAL",
-        message: `Too many redirects (>${MAX_REDIRECTS}) for ${logicalUrl}`,
-        retryable: false,
-      },
-    };
-  }
-
-  return { ok: true, value: { response, finalUrl: currentLogicalUrl } };
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -447,6 +348,19 @@ function normalizeUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+const BLOCKED_SUFFIXES: readonly string[] = [".internal", ".local"];
+
+function hasBlockedSuffix(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return BLOCKED_SUFFIXES.some((suffix) => host === suffix.slice(1) || host.endsWith(suffix));
 }
 
 const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {

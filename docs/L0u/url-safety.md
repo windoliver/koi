@@ -2,7 +2,7 @@
 
 **Layer:** L0-utility. Depends only on Node built-ins (`node:net`, `node:dns`). Zero `@koi/*` imports.
 
-> **Rollout status.** This PR adds the library only. No outbound HTTP path in the monorepo has been migrated onto `@koi/url-safety` yet — `@koi/tools-web/web_fetch` still uses its own `url-policy.ts`, and nothing else calls `createSafeFetcher`. Treat this package as a shared building block that consumers must opt into; installing it does not retroactively harden existing callers. The migration of `@koi/tools-web` is a follow-up PR.
+> **Rollout status.** `@koi/tools-web` (powering `web_fetch` + `web_search`) now routes all outbound HTTP through `createSafeFetcher` and runs the pre-flight `isSafeUrl` check on user-supplied URLs. The old `url-policy.ts` string-match + ad-hoc redirect-loop has been removed. Other outbound paths (MCP servers, future loaders) still manage their own HTTP and should migrate as they're touched.
 
 ---
 
@@ -147,7 +147,7 @@ Stream-backed bodies (`ReadableStream`, `Request.body`) are consumed into a `Uin
 
 ## Consumers
 
-- **`@koi/tools-web`** — `web_fetch` built-in tool. Currently maintains its own `url-policy.ts`; planned to migrate to `@koi/url-safety` for unified coverage.
+- **`@koi/tools-web`** — `web_fetch` + `web_search` built-in tools. Routes all outbound HTTP through `createSafeFetcher`; `isSafeUrl` pre-flight in `web_fetch` rejects blocked URLs before any executor call. Tool-scoped domain-suffix block (`.internal`, `.local` per RFC6762/RFC2606) is applied on top of the generic safe-fetcher.
 - **Future `@koi/tools-browser` / vision loaders** — any L2 tool that fetches a URL on behalf of the model.
 - **Governance and audit packages** — `BLOCKED_HOSTS` and `BLOCKED_CIDR_RANGES` are public so policy layers can inspect or extend coverage without forking internal logic.
 

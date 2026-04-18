@@ -1,6 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
-import type { DnsResolverFn } from "./url-policy.js";
-import type { SearchProvider } from "./web-executor.js";
+import type { DnsResolverFn, SearchProvider } from "./web-executor.js";
 import { createWebExecutor } from "./web-executor.js";
 
 // ---------------------------------------------------------------------------
@@ -280,7 +279,6 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("Redirect");
       expect(result.error.message).toContain("localhost");
     }
     expect(mutableCalls).toHaveLength(1);
@@ -400,8 +398,8 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      const headers = init?.headers as Record<string, string> | undefined;
-      mutableHeaderSnaps.push({ url: reqUrl, Host: headers?.Host });
+      const host = new Headers(init?.headers).get("host") ?? undefined;
+      mutableHeaderSnaps.push({ url: reqUrl, Host: host });
       if (reqUrl.includes(PUBLIC_IP) || reqUrl.includes("a.example")) {
         return new Response(null, {
           status: 302,
@@ -434,8 +432,8 @@ describe("createWebExecutor.fetch redirect SSRF", () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error.code).toBe("EXTERNAL");
-      expect(result.error.message).toContain("Too many redirects");
+      expect(result.error.code).toBe("PERMISSION");
+      expect(result.error.message).toMatch(/exceeded.*redirects/i);
     }
   });
 
@@ -497,7 +495,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://origin-a.com/start") {
         return new Response(null, {
           status: 302,
@@ -518,14 +516,15 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     });
 
     expect(result.ok).toBe(true);
+    // Headers are lowercased by the WHATWG Headers API.
     expect(mutableHeaderSnaps[0]).toEqual({
-      Authorization: "Bearer secret",
-      Cookie: "session=abc",
-      "Proxy-Authorization": "Basic xyz",
-      "Content-Type": "text/plain",
+      authorization: "Bearer secret",
+      cookie: "session=abc",
+      "proxy-authorization": "Basic xyz",
+      "content-type": "text/plain",
     });
     expect(mutableHeaderSnaps[1]).toEqual({
-      "Content-Type": "text/plain",
+      "content-type": "text/plain",
     });
   });
 
@@ -534,7 +533,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://example.com/a") {
         return new Response(null, {
           status: 302,
@@ -550,8 +549,8 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     });
 
     expect(mutableHeaderSnaps[1]).toEqual({
-      Authorization: "Bearer secret",
-      "X-Custom": "keep",
+      authorization: "Bearer secret",
+      "x-custom": "keep",
     });
   });
 
@@ -560,7 +559,7 @@ describe("createWebExecutor.fetch cross-origin credential stripping", () => {
     const fetchFn = mock(async (input: string | URL | Request, init?: RequestInit) => {
       const reqUrl =
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      mutableHeaderSnaps.push({ ...(init?.headers as Record<string, string>) });
+      mutableHeaderSnaps.push(Object.fromEntries(new Headers(init?.headers).entries()));
       if (reqUrl === "https://a.com/") {
         return new Response(null, {
           status: 302,
@@ -899,7 +898,7 @@ describe("createWebExecutor.fetch HTTPS", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.code).toBe("PERMISSION");
-      expect(result.error.message).toContain("private/reserved");
+      expect(result.error.message).toMatch(/blocked IP|resolves to blocked/i);
     }
     expect(fetchFn).not.toHaveBeenCalled();
   });

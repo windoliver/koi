@@ -12,9 +12,10 @@ export {
 } from "./constants.js";
 export { htmlToMarkdown } from "./html-to-markdown.js";
 export { stripHtml } from "./strip-html.js";
-export type { DnsResolverFn, DnsValidationResult, PinnedUrl } from "./url-policy.js";
-export { isBlockedIp, isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
+// SSRF primitives moved to @koi/url-safety — import from there directly.
+// @koi/tools-web now routes all outbound HTTP through createSafeFetcher.
 export type {
+  DnsResolverFn,
   SearchProvider,
   WebExecutor,
   WebExecutorConfig,

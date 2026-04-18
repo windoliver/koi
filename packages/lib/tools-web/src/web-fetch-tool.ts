@@ -3,10 +3,10 @@
  */
 
 import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
+import { isSafeUrl } from "@koi/url-safety";
 import { MAX_TIMEOUT_MS } from "./constants.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { stripHtml } from "./strip-html.js";
-import { isBlockedUrl } from "./url-policy.js";
 import type { WebExecutor } from "./web-executor.js";
 
 const ALLOWED_METHODS = ["GET", "HEAD"] as const;
@@ -65,8 +65,12 @@ export function createWebFetchTool(
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return { error: "url must start with http:// or https://", code: "VALIDATION" };
       }
-      if (isBlockedUrl(url)) {
-        return { error: "Access to private/internal URLs is blocked", code: "PERMISSION" };
+      // Pre-flight SSRF check so we return PERMISSION before any executor
+      // call. Uses the tool's own lookup path (default dns.lookup) so the
+      // decision reflects what the transport would actually resolve to.
+      const safety = await isSafeUrl(url, { strictAuthoritativeDns: false });
+      if (!safety.ok) {
+        return { error: `Access blocked: ${safety.reason}`, code: "PERMISSION" };
       }
       const method = typeof args.method === "string" ? args.method.toUpperCase() : "GET";
       if (!(ALLOWED_METHODS as readonly string[]).includes(method)) {
