@@ -97,11 +97,19 @@ The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.
 
 ---
 
-## DNS rebinding — TOCTOU limitation
+## DNS rebinding — what's pinned and what isn't
 
-`isSafeUrl` resolves the hostname with `dns.lookup({ all: true })` and checks every returned A/AAAA record against `isBlockedIp`, blocking if any address is private. However, the actual TCP connection is made by the underlying `fetch` call which re-resolves the hostname independently. This creates a sub-second TOCTOU window: an attacker who controls DNS TTLs could serve a public IP during the check and a private IP during the connect.
+`isSafeUrl` resolves the hostname with `dns.lookup({ all: true })` and blocks if any A/AAAA record is private. `createSafeFetcher` then closes the rebind window for **HTTP** by rewriting the outbound URL to the validated IP and setting a `Host:` header — the TCP socket connects to the exact address the validator approved, no second resolution possible.
 
-`createSafeFetcher` narrows this window per redirect hop — each `Location` header is re-validated before the next request — but it does not eliminate the window for the origin hop or for any individual hop. In practice the gap is sub-second and mitigated by OS and resolver caching. For high-stakes deployments, route outbound requests through a reverse proxy with a locked, non-attacker-controlled resolver rather than relying solely on this package.
+**HTTPS cannot be pinned the same way** — rewriting the host-part of an `https://` URL to an IP breaks TLS SNI and certificate hostname verification, which are a much stronger protection than DNS pinning. For HTTPS the wrapper therefore leaves the URL hostname intact and accepts a sub-second TOCTOU window between `isSafeUrl` and the socket connect. Attacker-controlled low-TTL DNS could in theory resolve to a different address on the actual connect than on the check; in practice this is mitigated by OS/resolver caching and the fact that HTTPS also requires a valid certificate for the connected IP.
+
+For high-stakes deployments that need bit-for-bit guarantees on HTTPS targets, route outbound requests through a reverse proxy with a locked, non-attacker-controlled resolver rather than relying solely on this package.
+
+Redirects: each hop is re-validated via `isSafeUrl` before it is followed, so the protection applies to the entire redirect chain, not just the first URL. Cross-origin redirects additionally strip `Authorization`, `Cookie`, `Proxy-Authorization`, and `Proxy-Authenticate` so credentials bound to the origin aren't leaked to a redirect target.
+
+### Request bodies
+
+Stream-backed bodies (`ReadableStream`, `Request.body`) are consumed into a `Uint8Array` once at the start of `createSafeFetcher`, so 307/308 redirects that preserve method + body can safely replay. This also avoids Node 22's `RequestInit` `duplex: "half"` requirement. Callers that need genuine streaming uploads should use the underlying `fetch` directly — this wrapper optimises for correctness over streaming throughput.
 
 ---
 

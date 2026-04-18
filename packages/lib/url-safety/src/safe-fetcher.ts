@@ -1,19 +1,33 @@
 /**
- * createSafeFetcher — returns a fetch-compatible function that:
- *   1. validates the initial URL via isSafeUrl
- *   2. manually follows redirects (redirect: "manual") so each hop is
- *      re-validated against isSafeUrl before being followed
- *   3. rewrites method/body on redirects following the Fetch spec:
- *        303 → GET, drop body
- *        301/302 with POST → GET, drop body (browser-aligned)
- *        307/308 → preserve method + body
- *   4. preserves Request-object metadata (method, headers, body, signal,
- *      credentials, etc.) when `input` is a Request rather than a string/URL
- *   5. throws on block or when maxRedirects is exceeded
+ * createSafeFetcher — fetch wrapper that centralises SSRF defence.
+ *
+ * Behaviour:
+ *   1. Validates the initial URL via isSafeUrl.
+ *   2. Manually follows redirects (`redirect: "manual"`) so each hop is
+ *      re-validated before being followed.
+ *   3. Rewrites method/body on redirects following Fetch semantics:
+ *        303            → GET, drop body (and Content-* headers)
+ *        301/302 + POST → GET, drop body (browser-aligned)
+ *        307/308        → preserve method + body
+ *   4. Preserves Request-object metadata (method, headers, body, signal,
+ *      credentials, referrer, etc.) when `input` is a Request.
+ *   5. Buffers stream bodies once up-front into a Uint8Array so that
+ *      method-preserving redirects (307/308) can safely replay and so that
+ *      Node 22 fetch doesn't require the caller to set `duplex: "half"`.
+ *   6. On cross-origin redirects strips `authorization`, `cookie`,
+ *      `proxy-authorization`, `proxy-authenticate` — credentials belong
+ *      to the origin that authorised the call, not a redirect target.
+ *   7. For http:// requests, pins the outbound connection to the IP
+ *      returned by isSafeUrl's DNS lookup — rewrites the URL to the IP
+ *      and sets a Host header so the TCP socket cannot be rebound between
+ *      validation and connect. https:// cannot be safely pinned without
+ *      breaking TLS SNI / cert verification, so https retains a short
+ *      TOCTOU window (documented in docs/L0u/url-safety.md).
+ *   8. Throws on block, on exceeding maxRedirects, or on pin failure.
  *
  * Default base is global fetch. Callers pass their own to inject for testing.
  */
-import type { UrlSafetyOptions } from "./safe-url.js";
+import type { SafeUrlResult, UrlSafetyOptions } from "./safe-url.js";
 import { isSafeUrl } from "./safe-url.js";
 
 export interface SafeFetcherOptions extends UrlSafetyOptions {
@@ -32,10 +46,19 @@ interface HopState {
   readonly carry: FetchInit;
 }
 
-function initialState(
+async function bufferBody(body: FetchInit["body"]): Promise<FetchInit["body"]> {
+  if (body === null || body === undefined) return body;
+  if (body instanceof ReadableStream) {
+    const buf = await new Response(body).arrayBuffer();
+    return new Uint8Array(buf);
+  }
+  return body;
+}
+
+async function initialState(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
-): HopState {
+): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 
@@ -62,10 +85,13 @@ function initialState(
   pick("keepalive");
   pick("cache");
 
+  const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
+  const body = await bufferBody(rawBody);
+
   return {
     url,
     method: init?.method ?? req?.method ?? "GET",
-    body: init?.body ?? (req !== undefined ? req.body : undefined),
+    body,
     headers,
     carry,
   };
@@ -93,17 +119,10 @@ function stripCrossOriginHeaders(headers: Headers): void {
   for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) headers.delete(name);
 }
 
-function isStreamBody(body: unknown): body is ReadableStream {
-  return body instanceof ReadableStream;
-}
-
 function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
   const crossOrigin = new URL(s.url).origin !== new URL(newUrl).origin;
   s.url = newUrl;
 
-  // 303: always GET, drop body (Fetch spec).
-  // 301/302 + POST: browser-aligned — most UAs downgrade to GET.
-  // 307/308: preserve method + body verbatim.
   const downgrade =
     status === 303 || ((status === 301 || status === 302) && s.method.toUpperCase() === "POST");
   if (downgrade) {
@@ -116,18 +135,30 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
     s.headers.delete("content-location");
   }
 
-  // Non-replayable body on method-preserving redirect: the first fetch already
-  // consumed the stream, so resending is either a truncated/empty upload or a
-  // runtime error — fail closed rather than silently send a broken request.
-  if (!downgrade && isStreamBody(s.body)) {
-    throw new Error(
-      `url-safety: cannot follow ${status} redirect with a ReadableStream body (non-replayable); buffer the body before calling safeFetch`,
-    );
-  }
-
-  // Strip credentials on cross-origin redirects — the original caller
-  // authenticated to the first origin, not the redirect target.
   if (crossOrigin) stripCrossOriginHeaders(s.headers);
+}
+
+/**
+ * For http:// URLs, rewrite to connect to the validated IP directly —
+ * this closes the DNS-rebinding window between isSafeUrl and the TCP
+ * connect. Returns the URL to actually pass to fetch and mutates
+ * `headers` to carry the original Host.
+ *
+ * Returns the input URL unchanged for https://, IP-literal hosts, or
+ * when isSafeUrl did not produce resolved IPs.
+ */
+function pinHttpToIp(url: string, check: SafeUrlResult, headers: Headers): string {
+  if (!check.ok) return url;
+  if (check.resolvedIps.length === 0) return url;
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:") return url;
+  // IP-literal: hostname already matches resolvedIps[0]; no rewrite needed.
+  if (parsed.hostname === check.resolvedIps[0]) return url;
+  const ip = check.resolvedIps[0];
+  if (ip === undefined) return url;
+  headers.set("host", parsed.host);
+  parsed.hostname = ip.includes(":") ? `[${ip}]` : ip;
+  return parsed.href;
 }
 
 export function createSafeFetcher(
@@ -140,7 +171,7 @@ export function createSafeFetcher(
     input: Parameters<typeof fetch>[0],
     init: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const state = initialState(input, init);
+    const state = await initialState(input, init);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       const check = await isSafeUrl(state.url, options);
@@ -148,7 +179,8 @@ export function createSafeFetcher(
         throw new Error(`url-safety: ${check.reason}`);
       }
 
-      const response = await base(state.url, toInit(state));
+      const pinnedUrl = pinHttpToIp(state.url, check, state.headers);
+      const response = await base(pinnedUrl, toInit(state));
 
       if (response.status < 300 || response.status >= 400) {
         return response;

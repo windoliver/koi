@@ -26,9 +26,9 @@ interface RecordedCall {
 async function readBody(body: unknown): Promise<string | null> {
   if (body === null || body === undefined) return null;
   if (typeof body === "string") return body;
-  if (body instanceof ReadableStream) {
-    return await new Response(body).text();
-  }
+  if (body instanceof Uint8Array) return new TextDecoder().decode(body);
+  if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+  if (body instanceof ReadableStream) return await new Response(body).text();
   return String(body);
 }
 
@@ -201,8 +201,8 @@ describe("createSafeFetcher", () => {
     expect(calls[1]?.headers["authorization"]).toBe("Bearer secret");
   });
 
-  test("rejects 307 redirect with ReadableStream body (non-replayable)", async () => {
-    const { fn } = recordingFetch({
+  test("buffers ReadableStream body so 307 can replay", async () => {
+    const { fn, calls } = recordingFetch({
       "https://public.example.com/upload": new Response(null, {
         status: 307,
         headers: { Location: "https://public.example.com/final" },
@@ -216,12 +216,66 @@ describe("createSafeFetcher", () => {
         controller.close();
       },
     });
-    await expect(
-      safeFetch("https://public.example.com/upload", {
-        method: "POST",
-        body: stream,
+    const res = await safeFetch("https://public.example.com/upload", {
+      method: "POST",
+      body: stream,
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.body).toBe("payload");
+    expect(calls[1]?.method).toBe("POST");
+    expect(calls[1]?.body).toBe("payload");
+  });
+
+  test("Request POST with body can follow 307 after buffering", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/upload": new Response(null, {
+        status: 307,
+        headers: { Location: "https://public.example.com/final" },
       }),
-    ).rejects.toThrow(/ReadableStream/);
+      "https://public.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/upload", {
+      method: "POST",
+      body: "hello",
+      headers: { "Content-Type": "text/plain" },
+    });
+    const res = await safeFetch(req);
+    expect(res.status).toBe(200);
+    expect(calls[1]?.method).toBe("POST");
+    expect(calls[1]?.body).toBe("hello");
+  });
+
+  test("pins HTTP URL to resolved IP and sets Host header", async () => {
+    const { fn, calls } = recordingFetch({
+      "http://93.184.216.34/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("http://public.example.com/x");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("http://93.184.216.34/x");
+    expect(calls[0]?.headers["host"]).toBe("public.example.com");
+  });
+
+  test("does not pin HTTPS URLs (TLS SNI constraint)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("https://public.example.com/x");
+    expect(calls[0]?.url).toBe("https://public.example.com/x");
+    expect(calls[0]?.headers["host"]).toBeUndefined();
+  });
+
+  test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
+    const { fn, calls } = recordingFetch({
+      "http://93.184.216.34/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("http://93.184.216.34/x");
+    expect(calls[0]?.url).toBe("http://93.184.216.34/x");
   });
 
   test("Request input preserves method, headers, body", async () => {
