@@ -80,6 +80,23 @@ describe("isBlockedIp — IPv6", () => {
     expect(isBlockedIp("not::valid")).toBe(true);
   });
 
+  test("blocks IPv4-compatible IPv6 (::/96, deprecated RFC4291) of private v4", () => {
+    // URL parser canonicalises `[::127.0.0.1]` to `[::7f00:1]` — must still block.
+    expect(isBlockedIp("::7f00:1")).toBe(true);
+    // `::a00:1` encodes 10.0.0.1 (RFC1918).
+    expect(isBlockedIp("::a00:1")).toBe(true);
+    // `::a9fe:a9fe` encodes 169.254.169.254 (AWS IMDS).
+    expect(isBlockedIp("::a9fe:a9fe")).toBe(true);
+    // dotted-decimal form parsed by Node.
+    expect(isBlockedIp("::127.0.0.1")).toBe(true);
+  });
+
+  test("allows IPv4-compatible IPv6 of public v4", () => {
+    // `::808:808` encodes 8.8.8.8 (public).
+    expect(isBlockedIp("::808:808")).toBe(false);
+    expect(isBlockedIp("::8.8.8.8")).toBe(false);
+  });
+
   test("blocks NAT64 (64:ff9b::/96) embedding private IPv4", () => {
     // 64:ff9b::c0a8:1 → embeds 192.168.0.1 (RFC1918)
     expect(isBlockedIp("64:ff9b::c0a8:1")).toBe(true);

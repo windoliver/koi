@@ -96,15 +96,36 @@ describe("isSafeUrl", () => {
     if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
   });
 
-  test("allowPrivate=true is lenient on DNS errors (not fatal)", async () => {
+  test("allowPrivate=true keeps DNS failure fatal (rebind-safety invariant)", async () => {
     const result = await isSafeUrl("https://unknown.example.com/", {
       allowPrivate: true,
       dnsResolver: async () => {
         throw new Error("ENOTFOUND");
       },
     });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/DNS/i);
+  });
+
+  test("allowlistHosts resolves DNS for hostnames and pins to IPs", async () => {
+    const result = await isSafeUrl("http://trusted.example.com/", {
+      allowlistHosts: ["trusted.example.com"],
+      dnsResolver: mapResolver({ "trusted.example.com": ["127.0.0.1"] }),
+    });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.resolvedIps).toEqual([]);
+    // Allowlist skips the IP blocklist but still surfaces resolved IPs so
+    // createSafeFetcher can pin and prevent rebinding.
+    if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
+  });
+
+  test("allowlistHosts keeps DNS failure fatal even for allowlisted hostnames", async () => {
+    const result = await isSafeUrl("http://trusted.example.com/", {
+      allowlistHosts: ["trusted.example.com"],
+      dnsResolver: async () => {
+        throw new Error("ENOTFOUND");
+      },
+    });
+    expect(result.ok).toBe(false);
   });
 
   test("allowlistHosts bypasses blocklist for explicit host only", async () => {

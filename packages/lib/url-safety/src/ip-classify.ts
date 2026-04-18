@@ -81,6 +81,10 @@ function expandV6(addr: string): readonly number[] | undefined {
     const lastColon = work.lastIndexOf(":");
     const v4 = work.slice(lastColon + 1);
     work = work.slice(0, lastColon);
+    // If the original form had `::` immediately before the v4 (e.g. `::8.8.8.8`
+    // or `2001:db8::127.0.0.1`), slicing at lastColon dropped the second colon
+    // of the `::` token — re-append it so `::` survives the v4 extraction.
+    if (addr[lastColon - 1] === ":") work = `${work}:`;
     const octets = v4.split(".").map(Number);
     if (octets.length !== 4) return undefined;
     const [o0, o1, o2, o3] = octets;
@@ -160,6 +164,14 @@ function isBlockedV6(ip: string): boolean {
 
   // ::ffff:0:0/96 IPv4-mapped — re-check embedded v4
   if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0xffff) {
+    return isBlockedV4(v4FromGroups(g6, g7));
+  }
+
+  // ::/96 IPv4-compatible (deprecated, RFC4291) — g0-g5 all zero, embedded
+  // v4 in g6/g7. Node/Bun's URL parser canonicalises `[::127.0.0.1]` to
+  // `[::7f00:1]`, so we must re-check the embedded address the same way we
+  // re-check IPv4-mapped. :: (all zero) and ::1 are already handled above.
+  if (g0 === 0 && g1 === 0 && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
     return isBlockedV4(v4FromGroups(g6, g7));
   }
 

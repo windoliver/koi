@@ -4,17 +4,23 @@
  * Pipeline (fail-closed at every step):
  *   1. parse URL (new URL()) — rejects malformed input
  *   2. protocol ∈ allowedProtocols (default http: / https:)
- *   3. hostname lower-cased
- *   4. hostname ∈ allowlistHosts → OK (explicit opt-in)
- *   5. hostname ∈ BLOCKED_HOSTS → blocked (unless allowPrivate)
- *   6. if IP literal → isBlockedIp check (unless allowPrivate)
- *   7. else DNS resolve (injectable resolver) → every returned IP
- *      must pass isBlockedIp, else blocked. Empty result or error = blocked.
+ *   3. hostname lower-cased, IPv6 brackets stripped
+ *   4. BLOCKED_HOSTS match → blocked (skipped for allowlistHosts / allowPrivate)
+ *   5. IP literal → isBlockedIp (skipped for allowlistHosts / allowPrivate)
+ *   6. Hostname → DNS resolve (injectable). DNS failure / empty result is
+ *      fatal for every hostname URL — without a resolved IP set,
+ *      createSafeFetcher cannot pin and the later fetch-side resolution
+ *      could land on any address.
+ *   7. Per-IP isBlockedIp check (skipped for allowlistHosts / allowPrivate).
  *
- * DNS rebinding note: we resolve and check, but the actual fetch happens
- * separately — so a short TOCTOU window exists if the resolver TTL is low.
- * Callers that need true IP-pinning should use createSafeFetcher which wraps
- * fetch + revalidates each redirect hop.
+ * allowlistHosts + allowPrivate scope: both skip only the per-IP / per-host
+ * blocklist checks. Neither disables DNS resolution or the pinning that
+ * createSafeFetcher builds on top of `resolvedIps`.
+ *
+ * DNS rebinding note: we resolve and check. The HTTP path is pinned by
+ * createSafeFetcher; HTTPS retains a sub-second TOCTOU window (documented in
+ * docs/L0u/url-safety.md) because TLS SNI/cert verification requires the
+ * original hostname on the wire.
  */
 import { promises as dns } from "node:dns";
 import { BLOCKED_HOSTS } from "./blocked.js";
@@ -68,16 +74,20 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
   const hostnameLower = parsed.hostname.toLowerCase();
   const bareHost = stripBrackets(hostnameLower);
 
-  if (options?.allowlistHosts?.includes(bareHost)) {
-    return { ok: true, hostname: bareHost, resolvedIps: [] };
-  }
+  // allowlistHosts and allowPrivate both skip the per-IP blocklist check,
+  // but they DO NOT skip DNS resolution — we still resolve so
+  // createSafeFetcher can pin to validated IPs. DNS failure remains fatal
+  // for hostname URLs regardless; pin-on-nothing would let the downstream
+  // socket connect to whatever the OS resolver returns later.
+  const isAllowlisted = options?.allowlistHosts?.includes(bareHost) === true;
+  const skipIpCheck = isAllowlisted || options?.allowPrivate === true;
 
-  if (!options?.allowPrivate && BLOCKED_HOSTS.includes(bareHost)) {
+  if (!skipIpCheck && BLOCKED_HOSTS.includes(bareHost)) {
     return { ok: false, reason: `Blocked host ${bareHost}` };
   }
 
   if (isIpLiteral(bareHost)) {
-    if (!options?.allowPrivate && isBlockedIp(bareHost)) {
+    if (!skipIpCheck && isBlockedIp(bareHost)) {
       return { ok: false, reason: `Blocked IP literal ${bareHost}` };
     }
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
@@ -88,27 +98,15 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
   try {
     addresses = await resolver(bareHost);
   } catch (e: unknown) {
-    // Under allowPrivate, DNS failure is not fatal — the caller opted out of
-    // strict rebinding protection. Return ok with an empty resolvedIps so
-    // createSafeFetcher falls back to hostname-based connect.
-    if (options?.allowPrivate) {
-      return { ok: true, hostname: bareHost, resolvedIps: [] };
-    }
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, reason: `DNS resolution failed for ${bareHost}: ${message}` };
   }
 
   if (addresses.length === 0) {
-    if (options?.allowPrivate) {
-      return { ok: true, hostname: bareHost, resolvedIps: [] };
-    }
     return { ok: false, reason: `DNS returned no addresses for ${bareHost}` };
   }
 
-  // Under strict mode (allowPrivate=false), every resolved IP must be public.
-  // Under allowPrivate=true, we still resolve so HTTP pinning works against
-  // the validator-approved address set — we just skip the isBlockedIp gate.
-  if (!options?.allowPrivate) {
+  if (!skipIpCheck) {
     for (const ip of addresses) {
       if (isBlockedIp(ip)) {
         return { ok: false, reason: `Host ${bareHost} resolves to blocked IP ${ip}` };
