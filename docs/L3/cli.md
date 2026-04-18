@@ -13,6 +13,7 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 - **MCP tool labels**: namespaced MCP tools (`server__tool`) display as `Server ▸ subtitle` instead of being mislabeled by suffix matching.
 - **Nexus backend acceptance on `koi tui`**: `koi tui` now accepts a nexus-backed filesystem backend when `--allow-remote-fs` is passed. The nexus backend is validated with a pre-flight liveness check at startup; if unreachable the TUI exits with an error rather than starting in a degraded state.
 - **OAuth auth interceptor**: `createTuiRuntime()` wires an OAuth auth interceptor (`createOAuthAuthInterceptor`) into nexus HTTP transport. When the nexus server returns a 401 with a `WWW-Authenticate: Bearer` challenge, the interceptor triggers the TUI's OAuth flow (browser open + localhost redirect) transparently, refreshes the access token, and retries the original request. Tokens are persisted via `@koi/secure-storage` across TUI restarts.
+- **Overlay Enter preventDefault (#1898)** — `/sessions` could not be reopened after resuming via the picker. Cause: `SelectOverlay`/`SlashOverlay` consumed Enter but did not `preventDefault`, so the same Enter reached InputArea's `<textarea>` and inserted `"\n"`. Typing `/sessions` afterward produced `"\n/sessions"`, which `detectSlashPrefix` (position-0 match only) rejected, so the text was submitted to the LLM. Fix factors the preventDefault invariant into `consumeSelectOverlayKey` in `@koi/tui`.
 - **Slash-command UX fixes (#1851)** — three related changes in `tui-command.ts`:
   1. **Arg preservation on both dispatch paths.** `handleSlashSubmit` (Enter) and `handleSlashSelect` (Tab/overlay accept) now both receive the full text after `/` via `detectSlashFullText`, so commands like `/rewind 3`, `/export <path>`, `/zoom 2` deliver their args regardless of whether the user pressed Enter or Tab to accept.
   2. **`dispatchNotice()` now emits `add_info`, not `add_user_message`.** Session lifecycle notices (`/model`, `/cost`, `/tokens`, `/compact`, `/export`, `/zoom`) render as a cyan `InfoMessage` row rather than a synthetic `You:` turn, so they no longer pollute the rewind-hint heuristic or look like user input.
@@ -638,3 +639,14 @@ The TUI and `koi start` integrate the updated `@koi/permissions` + `@koi/middlew
 - See `docs/L2/permissions.md` for the rule schema, `docs/L2/middleware-permissions.md` for execute-time semantics (per-turn cap, filter-time visibility, `SoftDenyLog` / `DenialRecord` additions), and `docs/L3/runtime.md` for the runtime-layer summary.
 
 The rule loader (`rule-loader.ts`) preserves `on_deny` across every source tier, so operators who add soft rules via config files will see them honored by the CLI.
+
+### Phase-2 DX pass
+
+Rolled up nine DX fixes: StatusBar/TrajectoryView/tool-display TUI
+polish, ESC-to-interrupt in `keyboard.ts`, `--yolo` /
+`--dangerously-skip-permissions` flag (TUI auto-allow all tools +
+Bash AST-walker elicit bypass), host-scoped `defaultMaxDurationMs`
+(TUI=30m, `koi start`=5m) with strict `KOI_MAX_DURATION_MS` parse,
+and task-tools descriptor guidance for autonomous planning. L3
+wiring (integrated L2 set) is unchanged; see `docs/L2/task-tools.md`
+and `docs/L2/tui.md` for the underlying changes.

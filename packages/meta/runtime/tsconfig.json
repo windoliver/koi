@@ -52,6 +52,7 @@
     { "path": "../../lib/outcome-evaluator" },
     { "path": "../../security/middleware-permissions" },
     { "path": "../../security/governance-core" },
+    { "path": "../../security/governance-defaults" },
     { "path": "../../lib/bash-ast" },
     { "path": "../../lib/bash-security" },
     { "path": "../../lib/tools-bash" },
