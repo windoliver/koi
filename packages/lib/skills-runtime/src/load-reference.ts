@@ -132,12 +132,74 @@ export interface LoadReferenceOptions {
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
 }
 
-function validationError(
+/**
+ * Cheap syntactic hygiene check on `refPath` (review #1896 round 9).
+ *
+ * Runs the empty / null-byte / absolute / `..` / extension validations
+ * without touching the filesystem, so callers (e.g. the runtime wrapper
+ * in `index.ts`) can surface malformed inputs as VALIDATION before
+ * consulting any allowlist. This keeps malformed-path probes observable
+ * as `PATH_TRAVERSAL` / `REFERENCE_UNSUPPORTED_EXTENSION` instead of
+ * being masked as a generic PERMISSION denial.
+ *
+ * Returns an `Ok(undefined)` on success, or the matching VALIDATION
+ * error. The check is a subset of the hygiene steps inside
+ * `loadReference()` — running it upstream is an optimization, not a
+ * replacement; `loadReference()` still re-enforces everything.
+ */
+export function validateReferencePath(name: string, refPath: string): Result<undefined, KoiError> {
+  if (refPath.length === 0) {
+    return validationError(
+      name,
+      refPath,
+      `Reference path for skill "${name}" must not be empty`,
+      "EMPTY_REF_PATH",
+    );
+  }
+  if (NULL_BYTE.test(refPath)) {
+    return validationError(
+      name,
+      refPath,
+      `Reference path for skill "${name}" must not contain null bytes`,
+      "INVALID_REF_PATH",
+    );
+  }
+  if (isAbsolute(refPath)) {
+    return validationError(
+      name,
+      refPath,
+      `Reference path for skill "${name}" must be relative to the skill directory`,
+      "PATH_TRAVERSAL",
+    );
+  }
+  // String-level traversal check — catches `../x` even before a filesystem
+  // resolve. We reuse the same resolve/relative trick as loadReference().
+  const rel = relative(".", resolve(".", refPath));
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" escapes the skill directory`,
+      "PATH_TRAVERSAL",
+    );
+  }
+  if (!isAllowedExtension(refPath)) {
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" has an unsupported extension — only Markdown and JS/TS source files are allowed`,
+      "REFERENCE_UNSUPPORTED_EXTENSION",
+    );
+  }
+  return { ok: true, value: undefined };
+}
+
+function validationError<T>(
   name: string,
   refPath: string,
   message: string,
   errorKind: string,
-): Result<string, KoiError> {
+): Result<T, KoiError> {
   return {
     ok: false,
     error: {
@@ -345,20 +407,20 @@ export async function loadReference(
       );
     }
 
-    // Realpath-based boundary check uses the in-tree path that the
-    // descriptor was opened against. Because we still hold the open fd,
-    // the inode the descriptor points at cannot change under us — a swap
-    // after this point hits the new inode, not the one we read.
-    const realTarget = await realpath(joined);
-    const rel = relative(realDir, realTarget);
-    if (rel.startsWith("..") || isAbsolute(rel)) {
-      return validationError(
-        name,
-        refPath,
-        `Reference "${refPath}" for skill "${name}" escapes the skill directory`,
-        "PATH_TRAVERSAL",
-      );
-    }
+    // Boundary proof is complete at this point:
+    // - Pre-open: realpath(dirPath) and realpath(parentDir) both stayed
+    //   inside the skill directory. That covers every path segment
+    //   except the final one.
+    // - O_NOFOLLOW at open time protects the final segment.
+    // - fstat.nlink = 1 proves the inode has no out-of-tree aliases.
+    //
+    // Round 9: a second realpath(joined) AFTER open was racy — an
+    // atomic rename/replace between open() and realpath() would
+    // intermittently return NOT_FOUND or a different path even though
+    // the fd we hold still points at the original, validated inode.
+    // That realpath call added no safety (the fd is already pinned)
+    // and only created flakiness under concurrent edits, so it has
+    // been removed.
 
     // Bounded read — allocate exactly `maxBytes + 1`. If the file grew in
     // place between fstat and read (a racing writer appended) the extra

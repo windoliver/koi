@@ -18,7 +18,7 @@ import { createScanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills, resolveSingleSkill } from "./discover.js";
-import { loadReference } from "./load-reference.js";
+import { loadReference, validateReferencePath } from "./load-reference.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
 import { createBodyCache } from "./lru-cache.js";
@@ -1095,6 +1095,15 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // routine Tier 2 reads (review #1896 round 3).
     const discoverResult = await discoverInternal();
     if (!discoverResult.ok) return discoverResult;
+
+    // Syntactic hygiene first (review #1896 round 9). Malformed inputs
+    // like `../x.md` or `/etc/passwd` must surface as VALIDATION /
+    // PATH_TRAVERSAL rather than getting masked by the allowlist denial
+    // below — otherwise monitoring keyed off traversal errors loses
+    // signal. The check is syntactic and reveals no allowlist state, so
+    // it does not create an enumeration oracle.
+    const hygiene = validateReferencePath(name, refPath);
+    if (!hygiene.ok) return hygiene;
 
     // Prefer the filesystem entry (has the resolved dir). External (MCP)
     // skills have no filesystem body, so Tier 2 references are only valid

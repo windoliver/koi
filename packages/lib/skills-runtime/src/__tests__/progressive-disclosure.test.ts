@@ -250,12 +250,12 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     // Skill with SKILL.md but no `references:` block. Undeclared surfaces
     // fail closed — the runtime must not hand out arbitrary in-tree files.
     await writeSkill(userRoot, "no-refs");
-    await writeReference(userRoot, "no-refs", "secrets/.env", "KEY=abc");
+    await writeReference(userRoot, "no-refs", "secrets/notes.md", "secret prose");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
     await runtime.discover();
 
-    const result = await runtime.loadReference("no-refs", "secrets/.env");
+    const result = await runtime.loadReference("no-refs", "secrets/notes.md");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("PERMISSION");
   });
@@ -263,7 +263,7 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
   test("rejects reference paths that are not in the declared allowlist (review #1896 round 4)", async () => {
     await writeSkillWithRefs(userRoot, "narrow", ["public/ok.md"]);
     await writeReference(userRoot, "narrow", "public/ok.md", "safe");
-    await writeReference(userRoot, "narrow", "private/.env", "KEY=abc");
+    await writeReference(userRoot, "narrow", "private/notes.md", "secret");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
     await runtime.discover();
@@ -271,7 +271,7 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     const allowed = await runtime.loadReference("narrow", "public/ok.md");
     expect(allowed.ok).toBe(true);
 
-    const denied = await runtime.loadReference("narrow", "private/.env");
+    const denied = await runtime.loadReference("narrow", "private/notes.md");
     expect(denied.ok).toBe(false);
     if (!denied.ok) expect(denied.error.code).toBe("PERMISSION");
   });
@@ -285,21 +285,24 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("rejects path traversal even for declared references (defense in depth)", async () => {
-    // A declared path that itself contains `..` is rejected at the zod layer
-    // before it can reach the filesystem. This test exercises the alternative
-    // path: caller asks for a traversing path that is not declared, so the
-    // allowlist denies first.
+  test("rejects path traversal even for discovered skills (defense in depth)", async () => {
+    // A traversing path is rejected by the syntactic hygiene step
+    // before the allowlist is consulted (review #1896 round 9), so
+    // it surfaces as VALIDATION / PATH_TRAVERSAL rather than a
+    // generic PERMISSION denial.
     await writeSkillWithRefs(userRoot, "guarded", ["references/ok.md"]);
     await writeReference(userRoot, "guarded", "references/ok.md", "ok");
-    await Bun.write(join(userRoot, "sibling.txt"), "outside");
+    await Bun.write(join(userRoot, "sibling.md"), "outside");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
     await runtime.discover();
 
-    const result = await runtime.loadReference("guarded", "../sibling.txt");
+    const result = await runtime.loadReference("guarded", "../sibling.md");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
   });
 
   test("allowlist revocation via SKILL.md edit + invalidate(name) takes effect immediately (review #1896 round 5)", async () => {
@@ -323,6 +326,41 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     const after = await runtime.loadReference("revokable", "refs/note.md");
     expect(after.ok).toBe(false);
     if (!after.ok) expect(after.error.code).toBe("PERMISSION");
+  });
+
+  test("traversal attempts surface as VALIDATION, not PERMISSION (review #1896 round 9)", async () => {
+    // Undeclared malformed paths must remain observable as path-hygiene
+    // failures even when the caller has a discovered skill with an
+    // allowlist. Hiding them behind a generic PERMISSION would lose
+    // signal for monitoring keyed off PATH_TRAVERSAL.
+    await writeSkillWithRefs(userRoot, "guarded", ["refs/ok.md"]);
+    await writeReference(userRoot, "guarded", "refs/ok.md", "ok");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const traversal = await runtime.loadReference("guarded", "../escape.md");
+    expect(traversal.ok).toBe(false);
+    if (!traversal.ok) {
+      expect(traversal.error.code).toBe("VALIDATION");
+      expect(traversal.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+
+    const absolute = await runtime.loadReference("guarded", "/etc/passwd");
+    expect(absolute.ok).toBe(false);
+    if (!absolute.ok) {
+      expect(absolute.error.code).toBe("VALIDATION");
+      expect(absolute.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+
+    const badExt = await runtime.loadReference("guarded", "refs/ok.sh");
+    expect(badExt.ok).toBe(false);
+    if (!badExt.ok) {
+      expect(badExt.error.code).toBe("VALIDATION");
+      expect(badExt.error.context).toMatchObject({
+        errorKind: "REFERENCE_UNSUPPORTED_EXTENSION",
+      });
+    }
   });
 
   test("PERMISSION errors do not leak the allowlist (review #1896 round 7)", async () => {
