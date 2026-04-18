@@ -2,28 +2,32 @@
  * createSafeFetcher — fetch wrapper that centralises SSRF defence.
  *
  * Behaviour:
- *   1. Validates the initial URL via isSafeUrl.
- *   2. Manually follows redirects (`redirect: "manual"`) so each hop is
- *      re-validated before being followed.
- *   3. Rewrites method/body on redirects following Fetch semantics:
- *        303            → GET, drop body (and Content-* headers)
+ *   1. Extracts the initial URL from the input (string | URL | Request).
+ *      Validates it via isSafeUrl BEFORE touching the body. A blocked or
+ *      malformed URL rejects immediately — no body bytes are read and no
+ *      memory is allocated for buffering.
+ *   2. If the URL passes, buffers any stream-backed body (ReadableStream,
+ *      Request.body) into a bounded Uint8Array so 307/308 redirects can
+ *      safely replay and Node 22 fetch doesn't require duplex: "half".
+ *      The buffer honours an abort signal passed via init.signal.
+ *   3. Manually follows redirects (redirect: "manual"). Each hop URL is
+ *      re-validated before the next fetch.
+ *   4. Rewrites method/body on redirects per Fetch spec:
+ *        303            → GET, drop body + Content-* headers
  *        301/302 + POST → GET, drop body (browser-aligned)
  *        307/308        → preserve method + body
- *   4. Preserves Request-object metadata (method, headers, body, signal,
- *      credentials, referrer, etc.) when `input` is a Request.
- *   5. Buffers stream bodies once up-front into a Uint8Array so that
- *      method-preserving redirects (307/308) can safely replay and so that
- *      Node 22 fetch doesn't require the caller to set `duplex: "half"`.
- *   6. On cross-origin redirects strips `authorization`, `cookie`,
- *      `proxy-authorization`, `proxy-authenticate` — credentials belong
- *      to the origin that authorised the call, not a redirect target.
- *   7. For http:// requests, pins the outbound connection to the IP
- *      returned by isSafeUrl's DNS lookup — rewrites the URL to the IP
- *      and sets a Host header so the TCP socket cannot be rebound between
- *      validation and connect. https:// cannot be safely pinned without
- *      breaking TLS SNI / cert verification, so https retains a short
- *      TOCTOU window (documented in docs/L0u/url-safety.md).
- *   8. Throws on block, on exceeding maxRedirects, or on pin failure.
+ *   5. Preserves Request metadata (method, headers, body, signal,
+ *      credentials, referrer, etc.).
+ *   6. On cross-origin redirects strips authorization / cookie /
+ *      proxy-authorization / proxy-authenticate.
+ *   7. HTTP pinning: when the validated hostname resolves to EXACTLY one
+ *      IP, the outbound request is rewritten to that IP + Host header so
+ *      the TCP socket cannot be rebound between check and connect. When
+ *      multiple IPs are returned, the original hostname is used so that
+ *      the runtime's normal multi-address failover still works (all IPs
+ *      were already validated via isBlockedIp). HTTPS is never pinned
+ *      (TLS SNI / cert verification).
+ *   8. Throws on block, on exceeding maxRedirects, or on oversized bodies.
  *
  * Default base is global fetch. Callers pass their own to inject for testing.
  */
@@ -35,7 +39,7 @@ export interface SafeFetcherOptions extends UrlSafetyOptions {
   /**
    * Maximum bytes to buffer from a stream-backed request body so that
    * method-preserving redirects (307/308) can replay. Default: 10 MB.
-   * Set to `0` to disable buffering — stream bodies will then be rejected
+   * Set to 0 to disable buffering — stream bodies will then be rejected
    * up front, matching strict-streaming semantics.
    */
   readonly maxBufferedBodyBytes?: number;
@@ -54,7 +58,17 @@ interface HopState {
   readonly carry: FetchInit;
 }
 
-async function bufferBody(body: FetchInit["body"], maxBytes: number): Promise<FetchInit["body"]> {
+function extractUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+async function bufferBody(
+  body: FetchInit["body"],
+  maxBytes: number,
+  signal: AbortSignal | null | undefined,
+): Promise<FetchInit["body"]> {
   if (body === null || body === undefined) return body;
   if (!(body instanceof ReadableStream)) return body;
 
@@ -67,18 +81,25 @@ async function bufferBody(body: FetchInit["body"], maxBytes: number): Promise<Fe
   const chunks: Uint8Array[] = [];
   let total = 0;
   const reader = body.getReader();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value === undefined) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      throw new Error(
-        `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
-      );
+  try {
+    while (true) {
+      if (signal?.aborted === true) {
+        throw new DOMException("url-safety: body buffering aborted", "AbortError");
+      }
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new Error(
+          `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
+        );
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+  } catch (e: unknown) {
+    await reader.cancel().catch(() => undefined);
+    throw e;
   }
 
   const out = new Uint8Array(total);
@@ -90,13 +111,13 @@ async function bufferBody(body: FetchInit["body"], maxBytes: number): Promise<Fe
   return out;
 }
 
-async function initialState(
+async function buildState(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
   maxBufferedBodyBytes: number,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
-  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const url = extractUrl(input);
 
   const headers = new Headers(req?.headers);
   if (init?.headers !== undefined) {
@@ -121,8 +142,9 @@ async function initialState(
   pick("keepalive");
   pick("cache");
 
+  const signal = init?.signal ?? req?.signal;
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
-  const body = await bufferBody(rawBody, maxBufferedBodyBytes);
+  const body = await bufferBody(rawBody, maxBufferedBodyBytes, signal);
 
   return {
     url,
@@ -175,23 +197,20 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
 }
 
 /**
- * For http:// URLs, rewrite to connect to the validated IP directly —
- * this closes the DNS-rebinding window between isSafeUrl and the TCP
- * connect. Returns the URL to actually pass to fetch and mutates
- * `headers` to carry the original Host.
- *
- * Returns the input URL unchanged for https://, IP-literal hosts, or
- * when isSafeUrl did not produce resolved IPs.
+ * Pin an http:// request to the validated IP so the TCP connect cannot
+ * be rebound between isSafeUrl and the socket. Only pins when EXACTLY
+ * one IP is returned — with multiple IPs, the runtime's normal address
+ * failover is preserved (all IPs were validated already). Returns the
+ * URL to actually pass to fetch; mutates `headers` to carry the Host.
  */
 function pinHttpToIp(url: string, check: SafeUrlResult, headers: Headers): string {
   if (!check.ok) return url;
-  if (check.resolvedIps.length === 0) return url;
+  if (check.resolvedIps.length !== 1) return url;
   const parsed = new URL(url);
   if (parsed.protocol !== "http:") return url;
-  // IP-literal: hostname already matches resolvedIps[0]; no rewrite needed.
-  if (parsed.hostname === check.resolvedIps[0]) return url;
   const ip = check.resolvedIps[0];
   if (ip === undefined) return url;
+  if (parsed.hostname === ip) return url; // already an IP literal
   headers.set("host", parsed.host);
   parsed.hostname = ip.includes(":") ? `[${ip}]` : ip;
   return parsed.href;
@@ -208,16 +227,25 @@ export function createSafeFetcher(
     input: Parameters<typeof fetch>[0],
     init: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const state = await initialState(input, init, maxBufferedBodyBytes);
+    // Validate the URL BEFORE touching the body so blocked/malformed
+    // destinations fail fast without consuming stream memory.
+    const initialUrl = extractUrl(input);
+    let check = await isSafeUrl(initialUrl, options);
+    if (!check.ok) {
+      throw new Error(`url-safety: ${check.reason}`);
+    }
+
+    const state = await buildState(input, init, maxBufferedBodyBytes);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
-      // Host header is per-hop derived state. Clear any from a previous hop so
-      // a stale value can't leak from a pinned http:// to a subsequent https://.
+      // Host header is per-hop derived state.
       state.headers.delete("host");
 
-      const check = await isSafeUrl(state.url, options);
-      if (!check.ok) {
-        throw new Error(`url-safety: ${check.reason}`);
+      if (hop > 0) {
+        check = await isSafeUrl(state.url, options);
+        if (!check.ok) {
+          throw new Error(`url-safety: ${check.reason}`);
+        }
       }
 
       const pinnedUrl = pinHttpToIp(state.url, check, state.headers);

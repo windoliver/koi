@@ -33,28 +33,32 @@ declare function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<Saf
  * createSafeFetcher — fetch wrapper that centralises SSRF defence.
  *
  * Behaviour:
- *   1. Validates the initial URL via isSafeUrl.
- *   2. Manually follows redirects (\`redirect: "manual"\`) so each hop is
- *      re-validated before being followed.
- *   3. Rewrites method/body on redirects following Fetch semantics:
- *        303            → GET, drop body (and Content-* headers)
+ *   1. Extracts the initial URL from the input (string | URL | Request).
+ *      Validates it via isSafeUrl BEFORE touching the body. A blocked or
+ *      malformed URL rejects immediately — no body bytes are read and no
+ *      memory is allocated for buffering.
+ *   2. If the URL passes, buffers any stream-backed body (ReadableStream,
+ *      Request.body) into a bounded Uint8Array so 307/308 redirects can
+ *      safely replay and Node 22 fetch doesn't require duplex: "half".
+ *      The buffer honours an abort signal passed via init.signal.
+ *   3. Manually follows redirects (redirect: "manual"). Each hop URL is
+ *      re-validated before the next fetch.
+ *   4. Rewrites method/body on redirects per Fetch spec:
+ *        303            → GET, drop body + Content-* headers
  *        301/302 + POST → GET, drop body (browser-aligned)
  *        307/308        → preserve method + body
- *   4. Preserves Request-object metadata (method, headers, body, signal,
- *      credentials, referrer, etc.) when \`input\` is a Request.
- *   5. Buffers stream bodies once up-front into a Uint8Array so that
- *      method-preserving redirects (307/308) can safely replay and so that
- *      Node 22 fetch doesn't require the caller to set \`duplex: "half"\`.
- *   6. On cross-origin redirects strips \`authorization\`, \`cookie\`,
- *      \`proxy-authorization\`, \`proxy-authenticate\` — credentials belong
- *      to the origin that authorised the call, not a redirect target.
- *   7. For http:// requests, pins the outbound connection to the IP
- *      returned by isSafeUrl's DNS lookup — rewrites the URL to the IP
- *      and sets a Host header so the TCP socket cannot be rebound between
- *      validation and connect. https:// cannot be safely pinned without
- *      breaking TLS SNI / cert verification, so https retains a short
- *      TOCTOU window (documented in docs/L0u/url-safety.md).
- *   8. Throws on block, on exceeding maxRedirects, or on pin failure.
+ *   5. Preserves Request metadata (method, headers, body, signal,
+ *      credentials, referrer, etc.).
+ *   6. On cross-origin redirects strips authorization / cookie /
+ *      proxy-authorization / proxy-authenticate.
+ *   7. HTTP pinning: when the validated hostname resolves to EXACTLY one
+ *      IP, the outbound request is rewritten to that IP + Host header so
+ *      the TCP socket cannot be rebound between check and connect. When
+ *      multiple IPs are returned, the original hostname is used so that
+ *      the runtime's normal multi-address failover still works (all IPs
+ *      were already validated via isBlockedIp). HTTPS is never pinned
+ *      (TLS SNI / cert verification).
+ *   8. Throws on block, on exceeding maxRedirects, or on oversized bodies.
  *
  * Default base is global fetch. Callers pass their own to inject for testing.
  */
@@ -64,7 +68,7 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
     /**
      * Maximum bytes to buffer from a stream-backed request body so that
      * method-preserving redirects (307/308) can replay. Default: 10 MB.
-     * Set to \`0\` to disable buffering — stream bodies will then be rejected
+     * Set to 0 to disable buffering — stream bodies will then be rejected
      * up front, matching strict-streaming semantics.
      */
     readonly maxBufferedBodyBytes?: number;

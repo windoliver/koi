@@ -332,6 +332,65 @@ describe("createSafeFetcher", () => {
     ).rejects.toThrow(/not supported/);
   });
 
+  test("does not pin HTTP when multiple IPs are returned (preserves failover)", async () => {
+    const multiResolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn, calls } = recordingFetch({
+      "http://dual.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: multiResolver });
+    await safeFetch("http://dual.example.com/x");
+    expect(calls).toHaveLength(1);
+    // URL kept hostname — runtime decides which IP to connect to.
+    expect(calls[0]?.url).toBe("http://dual.example.com/x");
+    expect(calls[0]?.headers["host"]).toBeUndefined();
+  });
+
+  test("rejects blocked URL before consuming any stream body bytes", async () => {
+    const { fn } = recordingFetch({});
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    let readCount = 0;
+    const stream = new ReadableStream({
+      pull(controller) {
+        readCount += 1;
+        controller.enqueue(new TextEncoder().encode("x".repeat(1024)));
+        if (readCount >= 3) controller.close();
+      },
+    });
+    await expect(safeFetch("http://127.0.0.1/", { method: "POST", body: stream })).rejects.toThrow(
+      /Blocked/,
+    );
+    // ReadableStream may prime exactly one chunk into its internal queue before
+    // anyone calls getReader(). The important invariant is that our bufferBody
+    // did NOT start draining it (which would keep pulling until close). So we
+    // tolerate the one prime but would see readCount===3 if draining had begun.
+    expect(readCount).toBeLessThanOrEqual(1);
+  });
+
+  test("aborts stream buffering when signal is triggered", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const controller = new AbortController();
+    controller.abort();
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("payload"));
+        c.close();
+      },
+    });
+    await expect(
+      safeFetch("https://public.example.com/up", {
+        method: "POST",
+        body: stream,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/aborted/i);
+  });
+
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
     const { fn, calls } = recordingFetch({
       "http://93.184.216.34/x": new Response("ok", { status: 200 }),
