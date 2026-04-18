@@ -152,14 +152,15 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, cacheTtlMs)
       : undefined;
 
-  // .internal / .local suffix blocking is enforced by @koi/url-safety's
-  // isSafeUrl directly (against BLOCKED_HOST_SUFFIXES) — no tool-side
-  // wrapper needed. Leaving strictAuthoritativeDns at its default (true)
-  // gives full A/AAAA coverage, which is what HTTPS rebinding defence
-  // requires since the wrapper can't pin the TLS connect. Callers that
-  // need OS-lookup parity for internal names can pass their own resolver.
+  // Defer to @koi/url-safety's strict defaults (authoritative resolve4 +
+  // resolve6 with full-family coverage). HTTPS can't be IP-pinned (TLS
+  // SNI), so approving a URL only against what the local OS resolver
+  // returned would reopen rebinding when the OS filters one family.
+  // Callers needing OS-parity lookup (for /etc/hosts / NSS / mDNS) must
+  // pass their own resolver via config.dnsResolver — that's now an
+  // explicit security trade-off rather than a silent downgrade.
   const safeFetchOptions = {
-    dnsResolver: dnsResolver ?? defaultDnsResolver,
+    ...(dnsResolver !== undefined ? { dnsResolver } : {}),
     maxRedirects: MAX_REDIRECTS,
   } as const;
 
@@ -363,11 +364,6 @@ function normalizeUrl(url: string): string {
     return url;
   }
 }
-
-const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {
-  const results = await Bun.dns.lookup(hostname, {});
-  return results.map((r) => r.address);
-};
 
 function permissionError<T>(message: string): Result<T, KoiError> {
   return {
