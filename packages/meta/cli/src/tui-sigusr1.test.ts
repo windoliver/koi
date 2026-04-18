@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { constants as osConstants } from "node:os";
 import { createSigusr1Handler, generateTuiStartupHint, SIGUSR1_EXIT_CODE } from "./tui-sigusr1.js";
 
 describe("createSigusr1Handler", () => {
@@ -67,7 +68,15 @@ describe("generateTuiStartupHint", () => {
 });
 
 describe("SIGUSR1_EXIT_CODE", () => {
-  test("follows the 128+signal convention for SIGUSR1 on macOS (30)", () => {
-    expect(SIGUSR1_EXIT_CODE).toBe(158);
+  test("follows the canonical 128 + SIGUSR1 convention for the current platform", () => {
+    // macOS assigns SIGUSR1 = 30 → 158; Linux assigns SIGUSR1 = 10 → 138.
+    // Both are the conventional `128 + signum` a supervisor would compute
+    // from an unhandled default-action exit.
+    const expected = 128 + (osConstants.signals.SIGUSR1 ?? 30);
+    expect(SIGUSR1_EXIT_CODE).toBe(expected);
+  });
+
+  test("is one of the known POSIX values (138 or 158)", () => {
+    expect([138, 158]).toContain(SIGUSR1_EXIT_CODE);
   });
 });

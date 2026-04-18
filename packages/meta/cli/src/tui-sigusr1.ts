@@ -16,6 +16,8 @@
  * 8s hard-exit failsafe, so a per-handler failsafe is not needed here.
  */
 
+import { constants as osConstants } from "node:os";
+
 export interface Sigusr1HandlerDeps {
   /** Forwards to the TUI command's closure-local `shutdown()`. */
   readonly shutdown: (exitCode: number, reason: string) => void;
@@ -24,12 +26,35 @@ export interface Sigusr1HandlerDeps {
 }
 
 /**
- * Exit code `128 + signal_number`. SIGUSR1 is signal 30 on macOS and 10
- * on Linux; we pin to 158 (macOS) because this is the platform the deadlock
- * was reported on and because portable incident tooling should key on the
- * reason string, not the exact numeric code.
+ * Platform-specific fallback signal numbers for SIGUSR1. Used only when
+ * `os.constants.signals.SIGUSR1` is unavailable (Windows, or an unusual
+ * libc). Matches macOS (30) and Linux (10) POSIX conventions so supervisors
+ * and incident tooling see `128 + sigNum` on every platform.
  */
-export const SIGUSR1_EXIT_CODE = 158;
+const FALLBACK_SIGUSR1 = {
+  darwin: 30,
+  linux: 10,
+} as const satisfies Record<string, number>;
+
+function resolveSigusr1Number(): number {
+  const fromOs = osConstants.signals.SIGUSR1;
+  if (typeof fromOs === "number" && fromOs > 0) return fromOs;
+  if (process.platform === "darwin") return FALLBACK_SIGUSR1.darwin;
+  // Linux-convention default covers every other POSIX platform (freebsd,
+  // netbsd, openbsd) that also assigns SIGUSR1 = 10. Windows lacks SIGUSR1
+  // entirely, but the handler can never fire there — the signal is simply
+  // not delivered — so any sentinel value is moot.
+  return FALLBACK_SIGUSR1.linux;
+}
+
+/**
+ * Exit code `128 + signal_number`. Computed at module load because the
+ * signal-number map is platform-specific: macOS assigns SIGUSR1 = 30
+ * (exit 158), Linux assigns SIGUSR1 = 10 (exit 138). Supervisors keying
+ * on `(exitCode - 128) === signalNum` get the canonical value on every
+ * platform without per-callsite conditionals.
+ */
+export const SIGUSR1_EXIT_CODE: number = 128 + resolveSigusr1Number();
 
 export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
   // let: justified — set once on first signal to make subsequent signals no-ops.

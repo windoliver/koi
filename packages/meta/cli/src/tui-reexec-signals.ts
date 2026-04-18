@@ -22,10 +22,12 @@ import type { Subprocess } from "bun";
 const PARENT_SIGTERM_ESCALATION_MS = 10_000;
 
 /**
- * Arm SIGINT, SIGTERM, and SIGHUP handlers on the re-exec parent process
- * BEFORE spawning the child. Returns a function to bind the child process
- * reference once spawned. This two-phase design eliminates the race window
- * where a signal could arrive between spawn and handler installation (#1750).
+ * Arm SIGINT, SIGTERM, SIGHUP, and SIGUSR1 handlers on the re-exec parent
+ * process BEFORE spawning the child. Returns a function to bind the child
+ * process reference once spawned. This two-phase design eliminates the race
+ * window where a signal could arrive between spawn and handler installation
+ * (#1750). SIGUSR1 is the #1906 frozen-TUI escape hatch; the parent forwards
+ * it to the child without escalation because the child owns the failsafe.
  *
  * Usage:
  * ```ts
@@ -78,6 +80,10 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // let: justified — exit code matching the pending signal kind.
   // 143 = SIGTERM (128+15), 129 = SIGHUP (128+1).
   let pendingExitCode = 143;
+  // let: justified — tracks whether a SIGUSR1 arrived pre-bind. Independent
+  // of `pendingSignal` because SIGUSR1 does not start the SIGTERM/SIGHUP
+  // escalation path; it is a cooperative escape delivered to the child.
+  let pendingSigusr1 = false;
 
   const forwardToChild = (proc: Subprocess, exitCode: number): void => {
     try {
@@ -117,13 +123,32 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   const onSighup = (): void => {
     forward(129);
   };
+  // SIGUSR1 (#1906): forward to the child's cooperative escape handler. The
+  // user sees the wrapper PID in `ps`, so `kill -USR1 <wrapper>` must route
+  // through to the child. Unlike SIGTERM/SIGHUP, do NOT escalate with
+  // SIGKILL — the child's own `shutdown()` path owns the failsafe (8 s
+  // hard-exit) and we want the child's exit code to flow back naturally.
+  // Installing this handler also masks Node's default SIGUSR1 behavior
+  // (inspector launch), which would otherwise orphan the child.
+  const onSigusr1 = (): void => {
+    if (child !== null) {
+      try {
+        child.kill("SIGUSR1");
+      } catch {
+        // Child already exited — nothing to forward.
+      }
+    } else {
+      pendingSigusr1 = true;
+    }
+  };
 
-  // Only arm SIGTERM/SIGHUP pre-spawn. SIGINT (Ctrl+C) must NOT be
+  // Only arm SIGTERM/SIGHUP/SIGUSR1 pre-spawn. SIGINT (Ctrl+C) must NOT be
   // masked before the child exists — otherwise a user pressing Ctrl+C
   // during startup would be silently ignored and the TUI would launch.
   // The SIGINT no-op handler is installed in bindChild after spawn.
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
+  process.on("SIGUSR1", onSigusr1);
 
   return {
     get terminated(): boolean {
@@ -141,12 +166,20 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
       if (pendingSignal) {
         forwardToChild(proc, pendingExitCode);
       }
+      if (pendingSigusr1) {
+        try {
+          proc.kill("SIGUSR1");
+        } catch {
+          // Child already exited before we could replay.
+        }
+      }
       // Clean up listeners when the child exits so a later re-exec child
       // in the same process starts from a clean state.
       void proc.exited.then(() => {
         process.removeListener("SIGINT", noopSigintHandler);
         process.removeListener("SIGTERM", onSigterm);
         process.removeListener("SIGHUP", onSighup);
+        process.removeListener("SIGUSR1", onSigusr1);
       });
     },
   };

@@ -4151,6 +4151,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const onProcessSigint = (): void => {
+    // Once any shutdown path (SIGUSR1, SIGTERM, SIGHUP, /quit) has flipped
+    // `shutdownStarted`, drop further SIGINTs. Without this, a Ctrl+C that
+    // lands during the 8 s cooperative shutdown window can re-enter the
+    // SIGINT state machine's `onForce`, kick a concurrent background-task
+    // teardown, and overwrite the in-flight shutdown's exit code. The
+    // SIGUSR1 handler relies on this invariant to preserve exit code 158
+    // (#1906).
+    if (shutdownStarted) return;
     sigintHandler.handleSignal();
   };
   // SIGTERM is a separate termination cause (supervisor/OOM/operator kill)
@@ -4226,7 +4234,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // restores the main buffer on exit, so the hint lands in the user's
   // scrollback and is visible from any other terminal session that runs
   // `ps` to recover the PID. See issue #1906.
-  process.stderr.write(generateTuiStartupHint(process.pid));
+  //
+  // Guarded: a stderr write failure (already-closed stream in an embedded
+  // caller or a detached test process) must not propagate, because the
+  // `try/finally` below is what removes the signal listeners installed
+  // above. Without this catch, a throw here would leak SIGINT/SIGTERM/
+  // SIGHUP/SIGUSR1 listeners into the host process.
+  try {
+    process.stderr.write(generateTuiStartupHint(process.pid));
+  } catch {
+    /* stderr unwritable — best-effort hint, never leak signal handlers */
+  }
 
   try {
     await result.value.start();
