@@ -394,6 +394,15 @@ function shellTokenize(s: string): readonly string[] {
       inBuf = true;
       continue;
     }
+    // Bash ANSI-C (`$'…'`) and locale (`$"…"`) quoting: skip the `$`
+    // and let the next iteration open the quote. We don't expand
+    // ANSI-C escape sequences (`\n`, `\t`, `\xNN`) inside, but the
+    // resulting literal is close enough for policy tokenization and,
+    // crucially, avoids a `$sudo` leakage where the `$` gets glued to
+    // the quoted content as a new token.
+    if (c === "$" && (s[i + 1] === "'" || s[i + 1] === '"')) {
+      continue;
+    }
     if (c === "\\" && i + 1 < len) {
       buf += s[i + 1] ?? "";
       i++;
@@ -688,10 +697,17 @@ export function prefix(tokens: readonly string[]): string {
   let optsEnd = 1;
   if (preSpec !== undefined) {
     const afterOpts = peelWrapperOptions(normalized, 1, preSpec);
-    // Unknown pre-option: don't peel (fail-closed at policy layer —
-    // the unknown flag becomes the prefix token, surfacing the weird
-    // form to operators who can add a specific rule).
-    if (afterOpts >= 0) optsEnd = afterOpts;
+    if (afterOpts < 0) {
+      // Unknown pre-option (e.g. `git --literal-pathspecs push`).
+      // Our per-command spec is hand-maintained and will always lag
+      // real-world CLIs; rather than emit a new attacker-controllable
+      // prefix (`git --literal-pathspecs`) that satisfies rules like
+      // `allow: bash:git *` without matching subcommand-specific
+      // denies, fail closed to the sentinel so the operator-controlled
+      // `!complex` rule fires.
+      return UNSAFE_PREFIX;
+    }
+    optsEnd = afterOpts;
   }
 
   // If pre-options consumed tokens, reconstruct a view with the

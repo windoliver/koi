@@ -135,6 +135,19 @@ describe("prefix", () => {
     expect(prefix(["npm", "--prefix", "/tmp/app", "run", "build"])).toBe("npm run build");
   });
 
+  test("unknown pre-subcommand flags fail closed to !complex (loop-3)", () => {
+    // `git --literal-pathspecs push` is a real, unmodeled git flag.
+    // Without fail-closed handling, `--literal-pathspecs` becomes the
+    // prefix token and rule `allow: bash:git *` leaks permission past
+    // a narrower `deny: bash:git push*` rule.
+    expect(prefix(["git", "--literal-pathspecs", "push", "origin", "main"])).toBe("!complex");
+    expect(prefix(["git", "--no-lazy-fetch", "pull"])).toBe("!complex");
+    expect(prefix(["docker", "--unknown-flag", "run", "alpine"])).toBe("!complex");
+    expect(prefix(["kubectl", "--undocumented", "apply", "-f", "x.yaml"])).toBe("!complex");
+    // Unknown flag in --long=val form also fails closed.
+    expect(prefix(["git", "--mystery=1", "push"])).toBe("!complex");
+  });
+
   // ------- stacked-wrapper regression tests (PR review round 3) -------
 
   test("stacked wrappers peel to a fixed point", () => {
@@ -536,6 +549,16 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`env -0 -i -u VAR -S 'sudo'`)).toBe("!complex");
     // Bundled short flag form with S — fail closed.
     expect(canonicalPrefix(`env -iS 'sudo rm'`)).toBe("!complex");
+  });
+
+  test("ANSI-C quoting `$'…'` in -c arg is recognized (loop-3)", () => {
+    // Bash ANSI-C quoting — `$'sudo rm'` parses as a single-quoted
+    // string with escape interpretation. Without this handling, the
+    // tokenizer produced `$sudo` as the prefix and bypassed deny rules.
+    expect(canonicalPrefix(`bash -c $'sudo rm'`)).toBe("sudo");
+    expect(canonicalPrefix(`bash -c $'git push'`)).toBe("git push");
+    // Locale quoting `$"..."` — treat as plain double-quoted.
+    expect(canonicalPrefix(`bash -c $"sudo rm"`)).toBe("sudo");
   });
 
   test("wrapper-hidden env -S still fails closed (round 7)", () => {
