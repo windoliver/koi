@@ -35,6 +35,7 @@ import { isIP } from "node:net";
  *     2002::/16       6to4 (embeds IPv4 in groups 2-3; re-check the embedded v4)
  *     fc00::/7        unique-local (incl. fd00:ec2::254 AWS IMDS)
  *     fe80::/10       link-local
+ *     fec0::/10       site-local (deprecated RFC3879; legacy-routed, block)
  *     ff00::/8        multicast
  */
 
@@ -210,6 +211,10 @@ function isBlockedV6(ip: string): boolean {
 
   // fe80::/10 link-local
   if ((g0 & 0xffc0) === 0xfe80) return true;
+
+  // fec0::/10 site-local (deprecated RFC3879 but legacy routers may still
+  // honour it — block to keep the SSRF boundary aligned with private v4).
+  if ((g0 & 0xffc0) === 0xfec0) return true;
 
   // ff00::/8 multicast
   if ((g0 & 0xff00) === 0xff00) return true;

@@ -41,5 +41,6 @@ export const BLOCKED_CIDR_RANGES: readonly string[] = Object.freeze([
   "2002::/16",
   "fc00::/7",
   "fe80::/10",
+  "fec0::/10",
   "ff00::/8",
 ]);

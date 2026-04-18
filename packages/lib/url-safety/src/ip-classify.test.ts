@@ -112,6 +112,11 @@ describe("isBlockedIp — IPv6", () => {
     expect(isBlockedIp("64:ff9b:1::808:808")).toBe(false);
   });
 
+  test("blocks deprecated IPv6 site-local (fec0::/10)", () => {
+    expect(isBlockedIp("fec0::1")).toBe(true);
+    expect(isBlockedIp("feff::1234")).toBe(true);
+  });
+
   test("blocks NAT64 (64:ff9b::/96) embedding private IPv4", () => {
     // 64:ff9b::c0a8:1 → embeds 192.168.0.1 (RFC1918)
     expect(isBlockedIp("64:ff9b::c0a8:1")).toBe(true);

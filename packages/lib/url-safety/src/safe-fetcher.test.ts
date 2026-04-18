@@ -98,6 +98,22 @@ describe("createSafeFetcher", () => {
     expect(await res.text()).toBe("done");
   });
 
+  test("303 redirect preserves HEAD (fetch spec: HEAD stays HEAD)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/start": new Response(null, {
+        status: 303,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+      "https://public.example.com/final": new Response(null, { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("https://public.example.com/start", { method: "HEAD" });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.method).toBe("HEAD");
+    // 303 + HEAD must NOT be rewritten to GET.
+    expect(calls[1]?.method).toBe("HEAD");
+  });
+
   test("303 redirect downgrades POST to GET and drops body", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/post": new Response(null, {

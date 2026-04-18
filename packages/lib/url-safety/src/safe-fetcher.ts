@@ -303,8 +303,12 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
 
   s.url = newUrl;
 
+  const upperMethod = s.method.toUpperCase();
   const downgrade =
-    status === 303 || ((status === 301 || status === 302) && s.method.toUpperCase() === "POST");
+    // 303 → GET for every method EXCEPT HEAD (fetch spec: HEAD stays HEAD).
+    (status === 303 && upperMethod !== "HEAD") ||
+    // 301/302 + POST → GET (browser-aligned).
+    ((status === 301 || status === 302) && upperMethod === "POST");
   if (downgrade) {
     s.method = "GET";
     s.body = undefined;

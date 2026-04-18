@@ -81,6 +81,7 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | `2002::/16` | 6to4 — embeds IPv4 in groups 2–3; private embeddings are blocked |
 | `fc00::/7` | Unique-local (RFC4193); covers `fd00:ec2::254` (AWS IPv6 IMDS) |
 | `fe80::/10` | Link-local |
+| `fec0::/10` | Site-local (deprecated RFC3879, still legacy-routed in some networks) |
 | `ff00::/8` | Multicast |
 
 The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.ts`. The classifier itself is implemented with bigint bitmask arithmetic (IPv4) and first-hextet prefix matching plus embedded-address extraction (IPv6) in `ip-classify.ts`.
