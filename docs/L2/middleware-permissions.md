@@ -227,16 +227,33 @@ This covers:
   into a misleading inner command.
 - **Deeply nested interpreter hops** beyond the 4-level unwrap budget.
 
-Operators who want to permit compound commands must opt in explicitly
-via wildcard (exact-match rules on `bash:!complex` will never fire
-because the resource always carries a hash suffix):
+Operators who want to permit compound commands can opt in via an
+exact `bash:!complex` rule or a wildcard. The POLICY key for
+complex forms is the stable string `bash:!complex` (denial-tracker
+escalation aggregates across distinct compound commands), while
+the GRANT key (for `always-allow` replay) carries a per-command
+hash so approvals stay argv-scoped. Both shapes are valid:
 
 ```typescript
-{ allow: ["bash:!complex*"] }   // accept any compound / unparseable form
-{ deny:  ["bash:!complex*"] }   // explicit deny for observability
+{ allow: ["bash:!complex"]  }   // exact match — opt-in to complex forms
+{ allow: ["bash:!complex*"] }   // wildcard — same semantics as exact
+{ deny:  ["bash:!complex"]  }   // explicit deny (observability)
 ```
 
-With no rule on `bash:!complex*`, default-deny applies (fail-safe).
+Under a broad wildcard like `allow: ["bash:*"]`, compound commands
+still match that rule — but the middleware's structural-complexity
+ratchet upgrades the allow to `ask` so a human reviews. Operators
+who want compound forms to run non-interactively MUST write an
+explicit `bash:!complex` (or `bash:!complex*`) rule; the ratchet
+distinguishes via a probe against a nonsense resource and honors
+explicit rules while still ratcheting wildcard-derived allows.
+
+Dangerous-pattern ratchet uses the same probe disambiguation for
+prefixes like `bash:sudo`, `bash:python`, `bash:chmod*`: explicit
+allows are honored (headless automation pre-authorizes known-risky
+commands), wildcard-derived allows still ratchet to ask.
+
+With no rule on `bash:!complex`, default-deny applies (fail-safe).
 
 ### Two-key model: policy vs. grant
 

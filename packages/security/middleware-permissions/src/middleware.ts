@@ -1550,22 +1550,37 @@ export function createPermissionsMiddleware(
       }
       // Dangerous-command ratchet: if the raw command matches ANY
       // DANGEROUS_PATTERN and the combined decision is "allow",
-      // upgrade to "ask" so a human reviews it. This includes
-      // medium-severity trust-boundary crossings like `sudo`, `su`,
-      // `chown root`, `bash -c`. Broad allow rules like
-      // `allow: bash:*` therefore cannot silently authorize
-      // structural-danger forms. Explicit deny still wins; existing
-      // "ask" is preserved.
+      // upgrade to "ask" so a human reviews it. Broad allow rules
+      // like `allow: bash:*` cannot silently authorize
+      // structural-danger forms.
+      //
+      // BUT: operators who explicitly allow a dangerous prefix
+      // (e.g. `allow: bash:sudo`, `allow: bash:python`) have opted
+      // in deliberately — typically for headless/non-interactive
+      // automation. Probe with a nonsense resource under the same
+      // prefix: if the probe also allows, the allow was from a
+      // wildcard and we ratchet; if the probe denies, the operator
+      // wrote an explicit rule and we honor it.
       if (decision.effect === "allow" && config.resolveBashCommand !== undefined) {
         const raw = config.resolveBashCommand(request.toolId, request.input);
         if (raw !== undefined && raw.trim().length > 0) {
           const danger = classifyCommand(raw.trim());
           if (danger.severity !== null) {
-            const categories = Array.from(new Set(danger.matchedPatterns.map((p) => p.category)));
-            decision = {
-              effect: "ask",
-              reason: `dangerous command pattern matched (${categories.join(", ")})`,
-            };
+            const probeQuery = queryForTool(
+              ctx,
+              `${enrichedResource}:__ratchet_probe__`,
+              request.metadata,
+              resolvedPath,
+            );
+            const probe = await resolveDecision(probeQuery, ctx.session.sessionId as string);
+            const fromWildcard = probe.effect === "allow";
+            if (fromWildcard) {
+              const categories = Array.from(new Set(danger.matchedPatterns.map((p) => p.category)));
+              decision = {
+                effect: "ask",
+                reason: `dangerous command pattern matched (${categories.join(", ")})`,
+              };
+            }
           }
         }
       }

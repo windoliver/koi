@@ -1166,43 +1166,57 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     );
   });
 
-  test("broad allow + dangerous command → ratcheted to ask (loop-3)", async () => {
-    // Operator has `allow: bash:python` — benign `python script.py`
-    // should execute. But `python -c "os.system(...)"` matches the
-    // module-load danger pattern and must force human review even
-    // though the prefix `bash:python` is explicitly allowed.
-    const backend = createPatternPermissionBackend({
-      rules: { allow: ["bash:python"], deny: [], ask: [] },
-    });
+  test("wildcard allow + dangerous command → ratcheted to ask; explicit allow honored (loop-3 + loop-12)", async () => {
+    // Two policy shapes, two different outcomes:
+    //  a) `allow: bash:python*` (wildcard) → `python -c "os.system"`
+    //     ratchets to ask (probe also matches wildcard).
+    //  b) `allow: bash:python` (exact) → operator explicitly opted
+    //     in to python as a whole; dangerous forms execute
+    //     non-interactively (honors explicit intent, loop-12 fix).
     const approvalCalls: string[] = [];
     const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
       approvalCalls.push(req.toolId);
       return { kind: "deny", reason: "dangerous, reviewing" };
     };
-    const mw = createPermissionsMiddleware({
-      backend,
+
+    // (a) Wildcard: dangerous form ratchets.
+    const wildcardBackend = createPatternPermissionBackend({
+      rules: { allow: ["bash:python*"], deny: [], ask: [] },
+    });
+    const mwWildcard = createPermissionsMiddleware({
+      backend: wildcardBackend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
     });
-    const ctx = makeTurnContext({ requestApproval: approvalHandler });
-
-    // Benign python form: allowed (no ratchet).
-    await mw.wrapToolCall?.(
-      ctx,
-      makeToolRequest("bash", { command: "python script.py" }),
-      noopHandler,
-    );
-    expect(approvalCalls).toHaveLength(0);
-
-    // Dangerous python -c form: ratcheted to ask → handler consulted.
+    const ctxWildcard = makeTurnContext({ requestApproval: approvalHandler });
     await expect(
-      mw.wrapToolCall?.(
-        ctx,
+      mwWildcard.wrapToolCall?.(
+        ctxWildcard,
         makeToolRequest("bash", { command: `python -c "import os; os.system('rm')"` }),
         noopHandler,
       ),
     ).rejects.toThrow("dangerous, reviewing");
     expect(approvalCalls).toHaveLength(1);
+
+    // (b) Exact: dangerous form runs without prompting (operator
+    // has explicitly authorized bash:python for headless
+    // automation).
+    const exactBackend = createPatternPermissionBackend({
+      rules: { allow: ["bash:python"], deny: [], ask: [] },
+    });
+    const mwExact = createPermissionsMiddleware({
+      backend: exactBackend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctxExact = makeTurnContext({ requestApproval: approvalHandler });
+    const r = await mwExact.wrapToolCall?.(
+      ctxExact,
+      makeToolRequest("bash", { command: `python -c "import os; os.system('rm')"` }),
+      noopHandler,
+    );
+    expect(r?.output).toBe("ok");
+    expect(approvalCalls).toHaveLength(1); // still 1 — not consulted again
   });
 
   test("plain-deny wins → tracking keys on plain tool id for escalation aggregation (loop-3)", async () => {
