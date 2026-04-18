@@ -447,19 +447,26 @@ export function createSafeFetcher(
     const req = input instanceof Request ? input : undefined;
     const effectiveRedirect: FetchInit["redirect"] = init?.redirect ?? req?.redirect ?? "follow";
 
-    const state = await buildState(input, init, maxBufferedBodyBytes);
-
-    // Any custom transport (undici dispatcher / older fetch agent) controls
-    // the actual connect path — it can route anywhere, ignoring the validated
-    // IP set. Fail closed for both http and https unless the caller has
-    // explicitly asserted the transport enforces an equivalent pin/allowlist.
-    if (!trustCustomTransport && hasCustomTransport(state.carry)) {
+    // Custom transport rejection must happen BEFORE body buffering. Otherwise
+    // a stream upload gets drained for a request that's going to throw — the
+    // stream is already disturbed, the caller can't retry without rebuilding
+    // the body, and we just wasted up to maxBufferedBodyBytes of memory.
+    const reqForTransport = input instanceof Request ? input : undefined;
+    const carrierDispatcher =
+      (init as Record<string, unknown> | undefined)?.["dispatcher"] ??
+      (reqForTransport as unknown as Record<string, unknown> | undefined)?.["dispatcher"];
+    const carrierAgent =
+      (init as Record<string, unknown> | undefined)?.["agent"] ??
+      (reqForTransport as unknown as Record<string, unknown> | undefined)?.["agent"];
+    if (!trustCustomTransport && (carrierDispatcher !== undefined || carrierAgent !== undefined)) {
       throw new Error(
         "url-safety: refused — a caller-supplied dispatcher/agent can bypass the validated address set; " +
           "drop the custom transport to use built-in IP pinning, or set trustCustomTransport: true to opt in explicitly " +
           "(only when the transport itself enforces an equivalent egress policy).",
       );
     }
+
+    const state = await buildState(input, init, maxBufferedBodyBytes);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       // Host header is per-hop derived state.

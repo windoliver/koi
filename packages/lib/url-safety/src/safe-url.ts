@@ -35,19 +35,21 @@ export interface UrlSafetyOptions {
   readonly allowedProtocols?: readonly string[];
   readonly dnsResolver?: DnsResolver;
   /**
-   * When `true`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
-   * A or AAAA is fatal — the full authoritative set must be observed.
-   * Closes the "attacker-hostname with public A + private AAAA where
-   * AAAA times out during validation but succeeds at connect time" vector
-   * at the cost of rejecting hostnames under flaky IPv6 DNS.
+   * DNS resolver-error policy. `true` (the default) is strict: any real
+   * resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER A or AAAA is fatal.
+   * This closes the "attacker-hostname with public A + private AAAA
+   * where AAAA times out during validation but succeeds at connect
+   * time" vector — at the cost of rejecting hostnames under flaky
+   * IPv6 DNS.
    *
-   * Default: `false` (availability-friendly). A single successful family
-   * is accepted; the other family's transient failure is treated as
-   * "no records of this family". Only the fully-failed case (both
-   * families error) fails closed.
+   * Set to `false` to opt into lenient single-family acceptance —
+   * useful in networks where IPv6 resolution is unreliable. That
+   * choice re-opens the partial-coverage SSRF window and is only
+   * safe when the transport pins to the validated IPs (e.g., http://
+   * pinning via createSafeFetcher on an IPv4-only destination).
    *
-   * Set to `true` for high-assurance deployments where SSRF is a higher
-   * priority than IPv6-DNS resilience.
+   * Only applies to the built-in resolver. A caller-supplied
+   * `dnsResolver` is responsible for its own policy.
    */
   readonly requireFullDnsCoverage?: boolean;
 }
@@ -157,9 +159,13 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
   }
 
+  // Strict is the default. Only explicit `false` opts into lenient mode —
+  // `undefined` means "not specified, pick the safer option".
   const resolver =
     options?.dnsResolver ??
-    (options?.requireFullDnsCoverage ? defaultDnsResolverStrict : defaultDnsResolverLenient);
+    (options?.requireFullDnsCoverage === false
+      ? defaultDnsResolverLenient
+      : defaultDnsResolverStrict);
   let addresses: readonly string[];
   try {
     addresses = await resolver(bareHost);

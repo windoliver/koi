@@ -388,6 +388,31 @@ describe("createSafeFetcher", () => {
     ).rejects.toThrow(/dispatcher|agent|bypass/i);
   });
 
+  test("custom-transport rejection does NOT consume stream body", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const dispatcher: unknown = { kind: "test-dispatcher" };
+    let pullCount = 0;
+    const stream = new ReadableStream({
+      pull(c) {
+        pullCount += 1;
+        c.enqueue(new TextEncoder().encode("x"));
+      },
+    });
+    await expect(
+      safeFetch("https://public.example.com/up", {
+        method: "POST",
+        body: stream,
+        dispatcher,
+      } as unknown as RequestInit),
+    ).rejects.toThrow(/dispatcher|agent|bypass/i);
+    // ReadableStream may prime one chunk. Our bufferBody would keep pulling;
+    // verify that didn't happen — rejection must come before body buffering.
+    expect(pullCount).toBeLessThanOrEqual(1);
+  });
+
   test("trustCustomTransport=true opts into caller-enforced egress policy", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
