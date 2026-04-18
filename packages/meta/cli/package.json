@@ -65,6 +65,7 @@
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
+    "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-report": "workspace:*",
