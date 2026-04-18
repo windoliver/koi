@@ -338,12 +338,19 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // this key from origin, piggyback on their request rather than
         // issuing our own. Both callers get the same body, which means
         // concurrent misses cannot return different representations
-        // from a skewed CDN. `noCache` deliberately bypasses this to
+        // from a skewed CDN. Each waiter still enforces its own
+        // `timeoutMs`/`signal` — we race the shared promise against
+        // the caller-local cancellation so followers can't inherit the
+        // primary's deadline. `noCache` deliberately bypasses this to
         // guarantee a live fetch.
         const pending = singleFlight.get(cacheKey);
         if (pending !== undefined) {
           releaseInFlightAndMaybePrune();
-          return pending;
+          return awaitCoalescedFetch(
+            pending,
+            options?.timeoutMs ?? defaultTimeout,
+            options?.signal,
+          );
         }
       }
 
@@ -811,6 +818,43 @@ function abortedError<T>(): Result<T, KoiError> {
     ok: false,
     error: { code: "TIMEOUT", message: "Request aborted", retryable: false },
   };
+}
+
+/**
+ * Wait on a coalesced single-flight fetch while honoring the follower's
+ * own cancellation budget. We race the shared promise against the
+ * caller-local timeout and abort signal so followers can't inherit the
+ * primary's deadline (either hanging past their own, or getting
+ * cancelled when the primary succeeds).
+ */
+async function awaitCoalescedFetch(
+  shared: Promise<Result<WebFetchResult, KoiError>>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+): Promise<Result<WebFetchResult, KoiError>> {
+  if (signal?.aborted) return abortedError();
+
+  const effective = Math.min(timeoutMs, MAX_TIMEOUT_MS);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+
+  const timeoutP = new Promise<Result<WebFetchResult, KoiError>>((resolve) => {
+    timeoutId = setTimeout(() => resolve(abortedError()), effective);
+  });
+  const abortP = new Promise<Result<WebFetchResult, KoiError>>((resolve) => {
+    if (signal === undefined) return;
+    abortListener = (): void => resolve(abortedError());
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+
+  try {
+    return await Promise.race([shared, timeoutP, abortP]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    if (abortListener !== undefined && signal !== undefined) {
+      signal.removeEventListener("abort", abortListener);
+    }
+  }
 }
 
 /** Safe (idempotent) HTTP methods that can be retried without side effects. */

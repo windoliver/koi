@@ -1297,6 +1297,75 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
+  test("single-flight waiter honors its own timeoutMs, not the primary's", async () => {
+    // Regression for #1903 post-merge review round 9: a second caller
+    // that joins an in-flight request must still time out on its own
+    // budget, not the primary's. Otherwise a short-deadline follower
+    // can hang behind a long-running primary.
+    let releaseOrigin: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseOrigin = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      await held;
+      return new Response("slow", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Primary fetch starts with a long default timeout.
+    const primary = executor.fetch("https://example.com");
+    await Promise.resolve();
+
+    // Follower with a 100 ms budget — must NOT wait for the primary.
+    const followerStart = Date.now();
+    const follower = await executor.fetch("https://example.com", { timeoutMs: 100 });
+    const elapsed = Date.now() - followerStart;
+
+    expect(elapsed).toBeLessThan(1000);
+    expect(follower.ok).toBe(false);
+    if (!follower.ok) expect(follower.error.code).toBe("TIMEOUT");
+
+    // Cleanup: let the primary complete.
+    releaseOrigin?.();
+    await primary;
+  });
+
+  test("single-flight waiter honors its own abort signal", async () => {
+    // Regression for #1903 post-merge review round 9: a waiter that
+    // aborts its own signal should return immediately, independent of
+    // the still-in-flight primary request.
+    let releaseOrigin: (() => void) | undefined;
+    const held = new Promise<void>((resolve) => {
+      releaseOrigin = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      await held;
+      return new Response("slow", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const primary = executor.fetch("https://example.com");
+    await Promise.resolve();
+
+    const followerController = new AbortController();
+    const followerP = executor.fetch("https://example.com", {
+      signal: followerController.signal,
+    });
+    // Yield once so the follower actually registers on the shared promise,
+    // then abort.
+    await Promise.resolve();
+    followerController.abort();
+
+    const follower = await followerP;
+    expect(follower.ok).toBe(false);
+    if (!follower.ok) expect(follower.error.code).toBe("TIMEOUT");
+
+    releaseOrigin?.();
+    await primary;
+  });
+
   test("single-flight: concurrent default misses share one origin fetch", async () => {
     // Regression for #1903 post-merge review round 8: the CDN-skew
     // concern where two concurrent misses return different
