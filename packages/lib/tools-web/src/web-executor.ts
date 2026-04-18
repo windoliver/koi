@@ -190,15 +190,22 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
     searchCacheTtlMs > 0
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, searchCacheTtlMs)
       : undefined;
-  // Single-flight token set: only the first concurrent miss for a given
-  // cache key is allowed to write the result back. Prevents arrival-order
-  // races where a late-returning response from a stale CDN edge would
-  // otherwise pin older content on top of a fresher response that already
-  // populated the cache (or vice versa — arrival order is not a reliable
-  // freshness signal under CDN/blue-green skew). Concurrent misses still
-  // each fetch from origin (we're not blocking readers on a shared
-  // promise), but at most one of them updates the LRU.
-  const inFlightWrites = new Set<string>();
+  // Two coordinated structures protect the cache from concurrency races.
+  //
+  // `keyGenerations`: per-key monotonic counter bumped every time `noCache`
+  // starts a refresh. In-flight requests capture the generation at start;
+  // write-back is refused if the current generation has moved since then.
+  // This invalidates any default writer that started before a noCache
+  // arrival so the refresh cannot be silently rolled back.
+  //
+  // `activeRefreshes`: per-key count of currently in-flight `noCache`
+  // refreshes. Default writers check it at write time and skip when
+  // non-zero, so concurrent default readers during a refresh fetch live
+  // (they still return useful data to their caller) but don't pollute
+  // the cache with a representation that might be older than the refresh.
+  // The noCache caller is the authoritative writer for its refresh cycle.
+  const keyGenerations = new Map<string, number>();
+  const activeRefreshes = new Map<string, number>();
 
   return {
     providerName: config.searchProvider?.name,
@@ -236,52 +243,52 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         !hasRequestBody &&
         (method === "GET" || method === "HEAD");
 
-      // `noCache` means "do not serve stale, period". We evict any prior
-      // entry at the bare `METHOD:URL` key up front so concurrent default
-      // readers during the refresh RTT miss cache and hit origin themselves.
-      // Eviction is decoupled from `keyCacheable` (which gates whether the
-      // *current* request could be written back): a `noCache` fetch with
-      // custom headers or a body is a representation we don't cache, but
-      // the caller still explicitly asked to invalidate any prior default
-      // entry for this URL. We never restore a snapshot on transport
-      // errors or policy rejections — that's the contract promised to the
-      // tool caller ("failed response leaves the key empty — no stale
-      // fallback"). Callers who want stale-on-error graceful degradation
-      // simply don't set `noCache`.
-      if (noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD")) {
-        fetchCache.delete(cacheKey);
+      // `noCache` bumps the per-key generation *before* any read or
+      // eviction and registers itself as an active refresh. The bump
+      // invalidates any default writer that started before us (their
+      // captured generation is now stale). The activeRefreshes entry
+      // blocks concurrent default readers from writing while we're
+      // still in flight — the noCache caller is the authoritative
+      // writer for this refresh cycle.
+      const actsAsRefresh =
+        noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD");
+      if (actsAsRefresh) {
+        keyGenerations.set(cacheKey, (keyGenerations.get(cacheKey) ?? 0) + 1);
+        activeRefreshes.set(cacheKey, (activeRefreshes.get(cacheKey) ?? 0) + 1);
+        if (fetchCache !== undefined) fetchCache.delete(cacheKey);
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
-      // Single-flight write token: only the first concurrent fetcher for
-      // this key is allowed to populate the cache. Later misses still
-      // fetch from origin (so they each get a live response and can't be
-      // held hostage to the first fetch's latency), but they won't write.
-      // A `noCache` GET/HEAD claims the token even when its own request
-      // is uncacheable (custom headers or body) — otherwise the upfront
-      // eviction could be undone by a concurrent default reader that
-      // repopulates the cache with stale content before the forced
-      // refresh resolves. Holding without the intent to write is
-      // fine: the `holdsWriteToken && keyCacheable` check at write
-      // time still gates whether our own response makes it to the LRU.
-      const wantsToken =
-        fetchCache !== undefined &&
-        (keyCacheable || (noCache && (method === "GET" || method === "HEAD")));
-      const holdsWriteToken = wantsToken && !inFlightWrites.has(cacheKey);
-      if (holdsWriteToken) inFlightWrites.add(cacheKey);
+      // Capture the generation AFTER any noCache bump. A default request
+      // started before us against an older generation will carry that
+      // older number to its write site and be denied. A default or
+      // noCache started after this point will capture the same (or a
+      // higher) generation; only the one whose capture still matches at
+      // write time wins — combined with the "first writer at each
+      // generation claims the slot" check below, this prevents arrival-
+      // order backwards-rollback in every race we can model without
+      // ETag/Last-Modified.
+      const capturedGeneration = keyGenerations.get(cacheKey) ?? 0;
+
+      const releaseRefreshSlot = (): void => {
+        if (!actsAsRefresh) return;
+        const remaining = (activeRefreshes.get(cacheKey) ?? 0) - 1;
+        if (remaining <= 0) activeRefreshes.delete(cacheKey);
+        else activeRefreshes.set(cacheKey, remaining);
+      };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeout);
 
       try {
+        if (options?.signal?.aborted) {
+          clearTimeout(timer);
+          return abortedError();
+        }
         if (options?.signal) {
-          if (options.signal.aborted) {
-            clearTimeout(timer);
-            return abortedError();
-          }
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
@@ -346,18 +353,32 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // so we do NOT restore `savedEntry` — it stays evicted. A transport
         // error/abort never reaches this block (handled by the restore-on-
         // failure paths above), so the prior entry survives as fallback.
-        if (
-          holdsWriteToken &&
-          keyCacheable &&
-          fetchCache !== undefined &&
-          isCacheableResponse(fetchResult)
-        ) {
-          // Cap to origin's declared freshness budget so a response that
-          // says `max-age=5` never lingers for the full cache-wide TTL.
-          const originTtlMs = extractOriginFreshnessMs(fetchResult);
-          const entryTtlMs =
-            originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
-          if (entryTtlMs > 0) fetchCache.set(cacheKey, fetchResult, entryTtlMs);
+        if (keyCacheable && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
+          // Write-fence — three independent conditions must all hold:
+          //   (1) Generation match: a newer noCache may have bumped
+          //       this key since we started, in which case our response
+          //       is stale-by-design and must not repopulate.
+          //   (2) No other noCache refresh is currently in flight for
+          //       this key (unless we ARE the refresh): default readers
+          //       shouldn't pollute the cache while an authoritative
+          //       refresh is still running.
+          //   (3) Empty slot: at a given generation, only the first
+          //       writer populates the key. Later arrivals skip, so
+          //       arrival order cannot pin either the stale-fast or
+          //       the fresh-slow response under same-gen concurrency.
+          const stillOurGeneration = (keyGenerations.get(cacheKey) ?? 0) === capturedGeneration;
+          const blockedByPeerRefresh = !actsAsRefresh && (activeRefreshes.get(cacheKey) ?? 0) > 0;
+          if (stillOurGeneration && !blockedByPeerRefresh) {
+            // Cap to origin's declared freshness budget so a response
+            // that says `max-age=5` never lingers for the full cache-
+            // wide TTL.
+            const originTtlMs = extractOriginFreshnessMs(fetchResult);
+            const entryTtlMs =
+              originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
+            if (entryTtlMs > 0 && fetchCache.getEntry(cacheKey) === undefined) {
+              fetchCache.set(cacheKey, fetchResult, entryTtlMs);
+            }
+          }
         }
 
         return { ok: true, value: fetchResult };
@@ -365,7 +386,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         clearTimeout(timer);
         return catchFetchError(url, method, e);
       } finally {
-        if (holdsWriteToken) inFlightWrites.delete(cacheKey);
+        releaseRefreshSlot();
       }
     },
 

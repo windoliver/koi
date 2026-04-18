@@ -1202,6 +1202,58 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
+  test("default miss starts before noCache: default's late write is superseded by refresh", async () => {
+    // Regression for #1903 post-merge review round 5: a default GET miss
+    // starts first and holds the write fence. A later `noCache` call
+    // arrives, evicts the cache, and bumps the per-key generation. When
+    // the earlier default finally returns, its captured generation is
+    // stale — its write-back MUST be refused, otherwise the forced
+    // refresh's invalidation would be silently rolled back to the
+    // older concurrent response and stay stale for the full TTL.
+    let callCount = 0;
+    let releaseDefault: (() => void) | undefined;
+    const defaultHeld = new Promise<void>((resolve) => {
+      releaseDefault = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        // Default miss — holds until we release.
+        await defaultHeld;
+        return new Response("v-default-stale", { status: 200 });
+      }
+      if (callCount === 2) {
+        // noCache refresh — responds promptly with fresh body.
+        return new Response("v-refresh-fresh", { status: 200 });
+      }
+      return new Response("v-followup", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Default miss starts first and stalls on `defaultHeld`.
+    const defaultP = executor.fetch("https://example.com");
+
+    // Brief yield so the default request is definitely in flight.
+    await Promise.resolve();
+
+    // noCache fires now, evicts cache, bumps generation, fetches fresh.
+    const refresh = await executor.fetch("https://example.com", { noCache: true });
+    expect(refresh.ok).toBe(true);
+
+    // Now release the default. Its write-back must be refused because
+    // the noCache bump invalidated its captured generation.
+    releaseDefault?.();
+    await defaultP;
+
+    // Cache holds the refresh's body, not the default's late arrival.
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("v-refresh-fresh");
+      expect(followUp.value.cached).toBe(true);
+    }
+  });
+
   test("stale-fast / fresh-slow race: only first-in-flight writes (no backwards rollback)", async () => {
     // Regression for #1903 review round 3 of post-merge loop: arrival
     // order is not a reliable freshness signal under CDN/blue-green
