@@ -1404,7 +1404,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     : undefined;
 
   // ---------------------------------------------------------------------------
-  // Interim SIGUSR1 handler (#1906 R1/R2) — covers the window from this
+  // Shutdown latch — declared here (hoisted from its original position at
+  // line ~2274) so the interim SIGUSR1 teardown below and the full
+  // `shutdown()` further down share ONE idempotence flag (#1906 R4 review).
+  // Without a shared latch, SIGUSR1 during bootstrap kicks off interim
+  // teardown but bootstrap continues forward; a subsequent SIGUSR1 or
+  // graceful path would race the interim teardown. Consolidating to a
+  // single sentinel means the first shutdown request wins and every later
+  // signal — interim, full, or /quit — is a no-op.
+  // ---------------------------------------------------------------------------
+  // let: justified — set once on first shutdown request, shared across
+  // interim teardown, full shutdown, and section 4b upgrade.
+  let shutdownStarted = false;
+
+  // ---------------------------------------------------------------------------
+  // Interim SIGUSR1 handler (#1906 R1/R2/R4) — covers the window from this
   // point through section 4b where the full `shutdown()` handler installs.
   // SIGUSR1 during runtime/MCP bootstrap runs an ASYNC, ordered teardown
   // (matching the normal shutdown sequencing: SIGTERM background tasks
@@ -1418,13 +1432,15 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const INTERIM_SHUTDOWN_HARD_EXIT_MS = 6_000;
   // let: justified — set once, then cleared when the full handler takes over.
   let interimSigusr1Handler: (() => void) | null = null;
-  // let: justified — prevents concurrent interim teardown if SIGUSR1 is
-  // delivered twice in quick succession before the first async step completes.
-  let interimTeardownStarted = false;
   if (SIGUSR1_SUPPORTED) {
     const interimTeardown = async (exitCode: number): Promise<void> => {
-      if (interimTeardownStarted) return;
-      interimTeardownStarted = true;
+      // Use the shared `shutdownStarted` latch so a second SIGUSR1 during
+      // interim teardown — or an accidental later call from the full
+      // shutdown path — is a no-op. Flipping it before the first async step
+      // also means bootstrap code that later checks `shutdownStarted` can
+      // short-circuit instead of racing the teardown.
+      if (shutdownStarted) return;
+      shutdownStarted = true;
       // Arm the hard-exit failsafe FIRST so even if an awaited step wedges
       // we are not stranded. Unref'd so natural completion still lets
       // the explicit process.exit below run when everything finishes.
@@ -2353,8 +2369,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // wedges. The failsafe is unref'd, so natural cleanup completion before
   // the timer fires still lets the process exit cleanly via `process.exit`.
   const SHUTDOWN_HARD_EXIT_MS = 8000;
-  // let: justified — set once on first shutdown call
-  let shutdownStarted = false;
+  // `shutdownStarted` is hoisted to the pre-createKoiRuntime block so
+  // interim SIGUSR1 teardown and this full shutdown share one latch
+  // (#1906 R4 review).
   const shutdown = async (exitCode = 0, reason?: string): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
@@ -2570,7 +2587,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.stderr.write(msg);
     },
   });
-  if (SIGUSR1_SUPPORTED) {
+  if (SIGUSR1_SUPPORTED && !shutdownStarted) {
+    // Skip the upgrade if the interim teardown is already in flight —
+    // installing the full handler now would let a fresh SIGUSR1 enter
+    // `shutdown()` concurrently with the interim teardown. The shared
+    // `shutdownStarted` latch makes `shutdown()` a no-op in that case,
+    // but there is no reason to wire up the listener at all.
     if (interimSigusr1Handler !== null) {
       process.removeListener("SIGUSR1", interimSigusr1Handler);
       interimSigusr1Handler = null;
