@@ -30,6 +30,18 @@ export {
   createReplayContext,
   loadCassette,
 } from "@koi/replay";
+// Activity-based stream timeouts (#1638)
+export type {
+  ActivityTerminationReason,
+  ActivityTimeoutConfig,
+  IdleWarningInfo,
+} from "./apply-activity-timeout.js";
+export {
+  ACTIVITY_IDLE_WARNING,
+  ACTIVITY_TERMINATED_IDLE,
+  ACTIVITY_TERMINATED_WALL_CLOCK,
+  applyActivityTimeout,
+} from "./apply-activity-timeout.js";
 export type { FileSystemTools } from "./create-filesystem-provider.js";
 // Filesystem dispatch + provider
 export {

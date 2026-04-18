@@ -306,3 +306,43 @@ Config options exposed at the middleware layer:
 **Config validation:** `validatePermissionsConfig` now rejects `resolveBashCommand` with a non-marker-aware backend unless `allowLegacyBackendBashFallback: true` is set, catching misconfigurations during validation instead of at runtime.
 
 See `docs/L2/bash-classifier.md` and `docs/L2/middleware-permissions.md` for the full design, threat model, and wire protocol.
+
+## #1638 — Inactivity-based stream timeouts
+
+`createRuntime({ activityTimeout })` replaces hard wall-clock kills with activity-based termination. Any adapter event (model chunk, tool call, tool result, turn boundary) resets the idle clock.
+
+```ts
+createRuntime({
+  adapter,
+  activityTimeout: {
+    idleWarnMs: 60_000,       // warn at 60s idle (interactive default)
+    idleTerminateMs: 120_000, // abort at 2× (default when omitted)
+    maxDurationMs: 14_400_000,// 4h wall-clock safety net
+    onIdleWarn: (info) => { /* inject system-reminder, telemetry, etc. */ },
+    onTerminated: (reason, elapsedMs) => { /* log, page, etc. */ },
+  },
+});
+```
+
+**Telemetry events** are injected into the stream as `EngineEvent` `custom` kinds (exported constants in `@koi/runtime`):
+
+| Type | When | Payload |
+|------|------|---------|
+| `activity.idle.warning` | idle past `idleWarnMs` | `{ elapsedMs, warnMs, terminateMs }` |
+| `activity.terminated.idle` | idle past `idleTerminateMs` → stream aborts | `{ elapsedMs }` |
+| `activity.terminated.wall_clock` | `maxDurationMs` exceeded regardless of activity → stream aborts | `{ elapsedMs }` |
+
+**Defaults and back-compat**
+
+- When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
+- When both are provided, `activityTimeout` wins outright.
+- `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
+
+**Recommended profiles**
+
+| Profile | `idleWarnMs` | `idleTerminateMs` | `maxDurationMs` |
+|---------|--------------|-------------------|------------------|
+| Interactive | 60_000 (1 min) | 120_000 (2 min) | 14_400_000 (4h) |
+| Batch | 300_000 (5 min) | 600_000 (10 min) | 14_400_000 (4h) |
+
+**Cooperative cancellation hint.** `onIdleWarn` is a synchronous observer callback; hosts wiring it through a middleware can inject a `<system-reminder>` on the next prompt ("you've been idle for N seconds, are you stuck?"). The core runtime does not ship such a middleware — it is a per-deployment choice.

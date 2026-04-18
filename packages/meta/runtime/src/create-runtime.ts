@@ -60,6 +60,7 @@ import { createOtelMiddleware, type OtelMiddlewareConfig } from "@koi/middleware
 import { createJsonlTranscript, createSessionTranscriptMiddleware } from "@koi/session";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
 import { createCredentialPathGuard, type FsToolOptions } from "@koi/tools-builtin";
+import { type ActivityTimeoutConfig, applyActivityTimeout } from "./apply-activity-timeout.js";
 import {
   createFileSystemProvider,
   createFileSystemTools,
@@ -256,7 +257,10 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
         ? [...afterExfiltration, config.modelRouterMiddleware]
         : afterExfiltration;
 
-    const timeoutMs = config.streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+    const activityTimeoutConfig = resolveActivityTimeoutConfig(
+      config.activityTimeout,
+      config.streamTimeoutMs,
+    );
     // Filesystem: strict host opt-in only.
     // config.filesystem === false is a kill switch; undefined means no filesystem.
     // Manifest.filesystem exists in L0 for the full createKoi() assembly path
@@ -405,7 +409,7 @@ export function createRuntime(config: RuntimeConfig = {}): RuntimeHandle {
       activeStreamFinalizations,
       otelConfig,
     );
-    const adapter = applyStreamTimeout(composedAdapter, timeoutMs);
+    const adapter = applyActivityTimeout(composedAdapter, activityTimeoutConfig);
 
     const debugInfo =
       config.debug === true
@@ -1952,25 +1956,17 @@ function resolveFilesystemInput(
   return resolveFileSystem(input, cwd ?? process.cwd());
 }
 
-function injectSignal(input: EngineInput, signal: AbortSignal): EngineInput {
-  switch (input.kind) {
-    case "text":
-      return { ...input, signal };
-    case "messages":
-      return { ...input, signal };
-    case "resume":
-      return { ...input, signal };
-  }
-}
-
-function applyStreamTimeout(adapter: EngineAdapter, timeoutMs: number): EngineAdapter {
-  return {
-    ...adapter,
-    stream(input: EngineInput): AsyncIterable<EngineEvent> {
-      const timeoutSignal = AbortSignal.timeout(timeoutMs);
-      const composedSignal =
-        input.signal !== undefined ? AbortSignal.any([input.signal, timeoutSignal]) : timeoutSignal;
-      return adapter.stream(injectSignal(input, composedSignal));
-    },
-  };
+/**
+ * Back-compat bridge for #1638: when the caller only supplies the legacy
+ * `streamTimeoutMs`, map it onto `activityTimeout.maxDurationMs` so existing
+ * behaviour (hard wall-clock kill) is preserved. When `activityTimeout` is
+ * provided, it wins outright and the deprecated field is ignored.
+ */
+function resolveActivityTimeoutConfig(
+  activityTimeout: ActivityTimeoutConfig | undefined,
+  streamTimeoutMs: number | undefined,
+): ActivityTimeoutConfig {
+  if (activityTimeout !== undefined) return activityTimeout;
+  const wallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+  return { maxDurationMs: wallClockMs };
 }

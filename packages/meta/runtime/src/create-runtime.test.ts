@@ -178,11 +178,13 @@ describe("createRuntime", () => {
 
   test("wraps adapter with stream timeout enforcement", async () => {
     let receivedSignal: AbortSignal | undefined;
+    let abortedAtInvocation: boolean | undefined;
 
     const spyAdapter: EngineAdapter = {
       ...createFakeAdapter("spy"),
       stream(input: EngineInput): AsyncIterable<EngineEvent> {
         receivedSignal = input.signal;
+        abortedAtInvocation = input.signal?.aborted;
         return createFakeAdapter("spy").stream(input);
       },
     };
@@ -195,8 +197,50 @@ describe("createRuntime", () => {
     }
 
     // The adapter should have received a composed signal (from timeout wrapper)
+    // that was not yet aborted at the point of invocation. After the consumer
+    // breaks, the wrapper cleans up by propagating abort — expected behaviour.
     expect(receivedSignal).toBeDefined();
-    expect(receivedSignal?.aborted).toBe(false);
+    expect(abortedAtInvocation).toBe(false);
+  });
+
+  test("activityTimeout replaces wall-clock with inactivity-based termination", async () => {
+    let terminated: { reason: string; elapsedMs: number } | undefined;
+    const hangingAdapter: EngineAdapter = {
+      engineId: "hanging",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "start" };
+        // Block until aborted
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: hangingAdapter,
+      activityTimeout: {
+        idleWarnMs: 20,
+        idleTerminateMs: 60,
+        onTerminated: (reason, elapsedMs) => {
+          terminated = { reason, elapsedMs };
+        },
+      },
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      events.push(ev);
+      if (events.length > 10) break;
+    }
+
+    expect(events.some((e) => e.kind === "custom" && e.type === "activity.idle.warning")).toBe(
+      true,
+    );
+    expect(events.some((e) => e.kind === "custom" && e.type === "activity.terminated.idle")).toBe(
+      true,
+    );
+    expect(terminated?.reason).toBe("idle");
   });
 
   test("stream timeout composes with caller signal", async () => {
