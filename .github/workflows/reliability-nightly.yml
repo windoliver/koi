@@ -1,0 +1,25 @@
+name: reliability-nightly
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  reliability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.x
+      - run: bun install --frozen-lockfile
+      - run: bun test --cwd packages/lib/agent-summary src/__tests__/reliability.live.test.ts
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          RELIABILITY_SAMPLES: "10"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reliability-report
+          path: packages/lib/agent-summary/test-output/reliability-report.json

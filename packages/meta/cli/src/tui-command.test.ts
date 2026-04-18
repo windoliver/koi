@@ -757,6 +757,7 @@ describe("onCommand dispatch coverage — #1752", () => {
     "agent:clear",
     "agent:compact",
     "agent:rewind",
+    "agent:summarize",
     "session:new",
     "session:export",
     "system:model",
