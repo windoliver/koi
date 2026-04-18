@@ -9,8 +9,20 @@ import type { SecureStorage } from "@koi/secure-storage";
 import type { McpAuthProvider } from "../auth.js";
 import { discoverAuthServer } from "./discovery.js";
 import { createPkceChallenge } from "./pkce.js";
-import { createTokenManager, type TokenManager } from "./tokens.js";
-import type { AuthServerMetadata, McpOAuthConfig, OAuthRuntime, OAuthTokens } from "./types.js";
+import { registerDynamicClient } from "./registration.js";
+import {
+  createTokenManager,
+  readClientInfo,
+  type TokenManager,
+  writeClientInfo,
+} from "./tokens.js";
+import type {
+  AuthServerMetadata,
+  McpOAuthConfig,
+  OAuthClientInfo,
+  OAuthRuntime,
+  OAuthTokens,
+} from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -52,8 +64,12 @@ const TOKEN_EXCHANGE_TIMEOUT_MS = 15_000;
 export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAuthProvider {
   const { serverName, serverUrl, oauthConfig, runtime, storage } = options;
 
-  // Mutable state — justified: caches metadata across token() calls
+  const callbackPort = oauthConfig.callbackPort ?? DEFAULT_CALLBACK_PORT;
+  const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
+
+  // Mutable state — justified: caches metadata + resolved client across token() calls
   let cachedMetadata: AuthServerMetadata | undefined;
+  let cachedClient: OAuthClientInfo | undefined;
   let tokenManager: TokenManager | undefined;
 
   async function getMetadata(): Promise<AuthServerMetadata | undefined> {
@@ -62,15 +78,52 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     return cachedMetadata;
   }
 
+  /**
+   * Resolve the effective OAuth client. Order:
+   * 1. Configured `clientId` (static, no persistence)
+   * 2. Persisted DCR result from a prior run
+   * 3. Fresh DCR against `registration_endpoint`, then persist
+   * Returns undefined when no client can be resolved — the caller fails closed.
+   */
+  async function getClient(): Promise<OAuthClientInfo | undefined> {
+    if (cachedClient !== undefined) return cachedClient;
+
+    if (oauthConfig.clientId !== undefined) {
+      cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0 };
+      return cachedClient;
+    }
+
+    const stored = await readClientInfo(storage, serverName, serverUrl);
+    if (stored !== undefined) {
+      cachedClient = stored;
+      return cachedClient;
+    }
+
+    const metadata = await getMetadata();
+    if (metadata?.registrationEndpoint === undefined) return undefined;
+
+    const registered = await registerDynamicClient({
+      registrationEndpoint: metadata.registrationEndpoint,
+      redirectUri,
+      clientName: serverName,
+    });
+    if (registered === undefined) return undefined;
+
+    await writeClientInfo(storage, serverName, serverUrl, registered);
+    cachedClient = registered;
+    return cachedClient;
+  }
+
   async function getTokenManager(): Promise<TokenManager> {
     if (tokenManager !== undefined) return tokenManager;
     const metadata = await getMetadata();
+    const client = await getClient();
     tokenManager = createTokenManager({
       serverName,
       serverUrl,
       storage,
       metadata,
-      clientId: oauthConfig.clientId,
+      clientId: client?.clientId,
     });
     return tokenManager;
   }
@@ -91,19 +144,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return false;
     }
 
-    const pkce = createPkceChallenge();
-    const callbackPort = oauthConfig.callbackPort ?? DEFAULT_CALLBACK_PORT;
-    const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
+    const client = await getClient();
+    if (client === undefined) {
+      // No configured clientId AND no registration_endpoint to DCR against —
+      // nothing we can do without operator intervention. Fail closed.
+      return false;
+    }
 
-    // Build authorization URL
+    const pkce = createPkceChallenge();
+
+    // Build authorization URL (RFC 6749 + RFC 7636 PKCE + RFC 8707 resource)
     const authUrl = new URL(metadata.authorizationEndpoint);
     authUrl.searchParams.set("response_type", "code");
-    if (oauthConfig.clientId !== undefined) {
-      authUrl.searchParams.set("client_id", oauthConfig.clientId);
-    }
+    authUrl.searchParams.set("client_id", client.clientId);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("code_challenge", pkce.challenge);
     authUrl.searchParams.set("code_challenge_method", pkce.method);
+    authUrl.searchParams.set("resource", serverUrl);
     // Generate a random state parameter for CSRF protection
     const state = crypto.randomUUID();
     authUrl.searchParams.set("state", state);
@@ -122,7 +179,8 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       pkce.verifier,
       redirectUri,
       metadata.tokenEndpoint,
-      oauthConfig.clientId,
+      client.clientId,
+      serverUrl,
     );
 
     if (tokens === undefined) return false;
@@ -166,7 +224,8 @@ async function exchangeCode(
   codeVerifier: string,
   redirectUri: string,
   tokenEndpoint: string,
-  clientId?: string,
+  clientId: string,
+  resource: string,
 ): Promise<OAuthTokens | undefined> {
   try {
     const body = new URLSearchParams({
@@ -174,10 +233,10 @@ async function exchangeCode(
       code,
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
+      client_id: clientId,
+      // RFC 8707: bind the issued token to the MCP server URL.
+      resource,
     });
-    if (clientId !== undefined) {
-      body.set("client_id", clientId);
-    }
 
     const response = await fetch(tokenEndpoint, {
       method: "POST",

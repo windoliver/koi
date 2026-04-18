@@ -560,6 +560,13 @@ interface TokenManagerOptions {
     readonly storage: SecureStorage;
     readonly metadata?: AuthServerMetadata | undefined;
     readonly clientId?: string | undefined;
+    /**
+     * RFC 8707 resource indicator. When set, sent alongside refresh requests
+     * so the authorization server can bind the rotated access token to the
+     * same MCP server URL used during initial authorization. Defaults to
+     * \`serverUrl\` via \`createTokenManager\`.
+     */
+    readonly resource?: string | undefined;
 }
 declare function createTokenManager(options: TokenManagerOptions): TokenManager;
 /**

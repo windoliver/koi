@@ -235,13 +235,10 @@ export function normalizeMcpServers(
       );
       continue;
     }
-    // clientId is required for OAuth — dynamic client registration not yet supported
-    if (config.oauth !== undefined && config.oauth.clientId === undefined) {
-      rejected.push(
-        `${name}: OAuth requires clientId (dynamic client registration not yet supported)`,
-      );
-      continue;
-    }
+    // `clientId` is optional. When omitted, the provider falls back to
+    // Dynamic Client Registration (RFC 7591) against the AS's
+    // `registration_endpoint` and persists the result. `startAuthFlow`
+    // still fails closed when neither is available.
 
     const result = normalizeOne(name, config);
     if (result === undefined) continue;

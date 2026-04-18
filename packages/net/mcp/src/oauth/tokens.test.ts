@@ -1,6 +1,13 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { SecureStorage } from "@koi/secure-storage";
-import { computeServerKey, createTokenManager } from "./tokens.js";
+import {
+  computeClientKey,
+  computeServerKey,
+  createTokenManager,
+  readClientInfo,
+  writeClientInfo,
+} from "./tokens.js";
+import type { AuthServerMetadata } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Mock storage
@@ -142,5 +149,255 @@ describe("createTokenManager", () => {
     });
     await tm.storeTokens({ accessToken: "locked" });
     expect(storage.withLock).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Client-info persistence (DCR)
+// ---------------------------------------------------------------------------
+
+describe("client info persistence", () => {
+  let storage: ReturnType<typeof createMockStorage>;
+
+  beforeEach(() => {
+    storage = createMockStorage();
+  });
+
+  test("computeClientKey format is distinct from token key", () => {
+    const clientKey = computeClientKey("my-server", "https://example.com");
+    const tokenKey = computeServerKey("my-server", "https://example.com");
+    expect(clientKey).toMatch(/^mcp-oauth-client\|my-server\|[a-f0-9]{16}$/);
+    expect(clientKey).not.toBe(tokenKey);
+  });
+
+  test("readClientInfo returns undefined when nothing stored", async () => {
+    expect(await readClientInfo(storage, "s", "https://x")).toBeUndefined();
+  });
+
+  test("writeClientInfo then readClientInfo round-trips", async () => {
+    await writeClientInfo(storage, "s", "https://x", {
+      clientId: "abc",
+      registeredAt: 123,
+    });
+    const back = await readClientInfo(storage, "s", "https://x");
+    expect(back?.clientId).toBe("abc");
+  });
+
+  test("readClientInfo returns undefined for corrupt JSON", async () => {
+    const key = computeClientKey("s", "https://x");
+    await storage.set(key, "{not json");
+    expect(await readClientInfo(storage, "s", "https://x")).toBeUndefined();
+  });
+
+  test("writeClientInfo preserves optional client_secret", async () => {
+    await writeClientInfo(storage, "s", "https://x", {
+      clientId: "public",
+      clientSecret: "shh",
+      registeredAt: 99,
+    });
+    const back = await readClientInfo(storage, "s", "https://x");
+    expect(back?.clientSecret).toBe("shh");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refresh path coverage
+// ---------------------------------------------------------------------------
+
+const originalFetch = globalThis.fetch;
+const METADATA: AuthServerMetadata = {
+  issuer: "https://auth.example.com",
+  authorizationEndpoint: "https://auth.example.com/authorize",
+  tokenEndpoint: "https://auth.example.com/token",
+};
+
+describe("createTokenManager — refresh flow", () => {
+  let storage: ReturnType<typeof createMockStorage>;
+
+  beforeEach(() => {
+    storage = createMockStorage();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("refreshes expired token via refresh_token grant", async () => {
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      const body = new URLSearchParams((init?.body as string) ?? "");
+      expect(body.get("grant_type")).toBe("refresh_token");
+      expect(body.get("refresh_token")).toBe("rt-original");
+      expect(body.get("client_id")).toBe("cid-1");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: "new-access",
+            refresh_token: "rt-rotated",
+            expires_in: 3600,
+          }),
+          { status: 200 },
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "cid-1",
+    });
+
+    await tm.storeTokens({
+      accessToken: "expired",
+      refreshToken: "rt-original",
+      expiresAt: Date.now() - 1000,
+    });
+
+    const token = await tm.getAccessToken();
+    expect(token).toBe("new-access");
+
+    // Rotated refresh token is persisted
+    const stored = await storage.get(computeServerKey("s", "https://mcp.example.com"));
+    const parsed = JSON.parse(stored ?? "{}");
+    expect(parsed.refreshToken).toBe("rt-rotated");
+  });
+
+  test("sends resource parameter per RFC 8707 on refresh", async () => {
+    let seenResource: string | undefined;
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      const body = new URLSearchParams((init?.body as string) ?? "");
+      seenResource = body.get("resource") ?? undefined;
+      return Promise.resolve(new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com/v1",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({
+      accessToken: "stale",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    await tm.getAccessToken();
+    expect(seenResource).toBe("https://mcp.example.com/v1");
+  });
+
+  test("clears tokens on terminal refresh failure (400)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("invalid_grant", { status: 400 })),
+    ) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt-bad",
+      expiresAt: Date.now() - 1,
+    });
+
+    const result = await tm.getAccessToken();
+    expect(result).toBeUndefined();
+    expect(await tm.hasTokens()).toBe(false);
+  });
+
+  test("preserves tokens on transient refresh failure (5xx)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("upstream unavailable", { status: 503 })),
+    ) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    const result = await tm.getAccessToken();
+    expect(result).toBeUndefined();
+    // Transient — tokens must NOT be cleared (operator-retryable)
+    expect(await tm.hasTokens()).toBe(true);
+  });
+
+  test("preserves tokens on network error (fetch throws)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.reject(new Error("ECONNRESET")),
+    ) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    const result = await tm.getAccessToken();
+    expect(result).toBeUndefined();
+    expect(await tm.hasTokens()).toBe(true);
+  });
+
+  test("clears tokens when expired with no refresh_token", async () => {
+    globalThis.fetch = mock(() => Promise.resolve(new Response(""))) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({ accessToken: "x", expiresAt: Date.now() - 1 });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    expect(await tm.hasTokens()).toBe(false);
+  });
+
+  test("keeps refresh_token when the response omits one (no rotation)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ access_token: "new", expires_in: 60 }), { status: 200 }),
+      ),
+    ) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt-keep",
+      expiresAt: Date.now() - 1,
+    });
+
+    await tm.getAccessToken();
+    const stored = JSON.parse(
+      (await storage.get(computeServerKey("s", "https://mcp.example.com"))) ?? "{}",
+    );
+    expect(stored.refreshToken).toBe("rt-keep");
   });
 });

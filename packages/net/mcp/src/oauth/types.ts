@@ -74,3 +74,15 @@ export interface AuthServerMetadata {
   readonly registrationEndpoint?: string | undefined;
   readonly codeChallengeMethodsSupported?: readonly string[] | undefined;
 }
+
+/**
+ * Persisted OAuth client info — produced by configured `clientId` or by
+ * Dynamic Client Registration (RFC 7591). Stored separately from tokens
+ * so `koi mcp logout` does not force re-registration.
+ */
+export interface OAuthClientInfo {
+  readonly clientId: string;
+  readonly clientSecret?: string | undefined;
+  /** Epoch ms when the client was persisted. 0 for configured static clients. */
+  readonly registeredAt: number;
+}

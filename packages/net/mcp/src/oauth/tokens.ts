@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import type { SecureStorage } from "@koi/secure-storage";
-import type { AuthServerMetadata, OAuthTokens } from "./types.js";
+import type { AuthServerMetadata, OAuthClientInfo, OAuthTokens } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,6 +30,13 @@ export interface TokenManagerOptions {
   readonly storage: SecureStorage;
   readonly metadata?: AuthServerMetadata | undefined;
   readonly clientId?: string | undefined;
+  /**
+   * RFC 8707 resource indicator. When set, sent alongside refresh requests
+   * so the authorization server can bind the rotated access token to the
+   * same MCP server URL used during initial authorization. Defaults to
+   * `serverUrl` via `createTokenManager`.
+   */
+  readonly resource?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -46,6 +53,9 @@ const REFRESH_TIMEOUT_MS = 15_000;
 
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
   const { serverName, serverUrl, storage, metadata, clientId } = options;
+  // RFC 8707 resource indicator defaults to the MCP server URL so the
+  // AS can bind the issued token to the correct protected resource.
+  const resource = options.resource ?? serverUrl;
   const storageKey = computeServerKey(serverName, serverUrl);
 
   const getTokens = async (): Promise<OAuthTokens | undefined> => {
@@ -99,6 +109,7 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       usedRefreshToken,
       metadata.tokenEndpoint,
       clientId,
+      resource,
     );
 
     // Compare-and-swap: under lock, check that the on-disk refresh token
@@ -147,6 +158,44 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
   return `mcp-oauth|${serverName}|${hash}`;
 }
 
+/**
+ * Storage key for dynamically-registered client info. Separate from the
+ * token key so clearing tokens does not invalidate the registered client.
+ * Format: `mcp-oauth-client|{name}|{sha256(url)[:16]}`
+ */
+export function computeClientKey(serverName: string, serverUrl: string): string {
+  const hash = createHash("sha256").update(serverUrl).digest("hex").substring(0, 16);
+  return `mcp-oauth-client|${serverName}|${hash}`;
+}
+
+/** Read persisted `OAuthClientInfo` for a server; undefined when absent or corrupt. */
+export async function readClientInfo(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+): Promise<OAuthClientInfo | undefined> {
+  const raw = await storage.get(computeClientKey(serverName, serverUrl));
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as OAuthClientInfo;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Persist `OAuthClientInfo` under the client-info storage key. */
+export async function writeClientInfo(
+  storage: SecureStorage,
+  serverName: string,
+  serverUrl: string,
+  info: OAuthClientInfo,
+): Promise<void> {
+  const key = computeClientKey(serverName, serverUrl);
+  await storage.withLock(key, async () => {
+    await storage.set(key, JSON.stringify(info));
+  });
+}
+
 function isExpired(tokens: OAuthTokens): boolean {
   if (tokens.expiresAt === undefined) return false;
   return Date.now() >= tokens.expiresAt - EXPIRY_BUFFER_MS;
@@ -160,7 +209,8 @@ type RefreshResult =
 async function refreshAccessToken(
   refreshToken: string,
   tokenEndpoint: string,
-  clientId?: string,
+  clientId: string | undefined,
+  resource: string | undefined,
 ): Promise<RefreshResult> {
   try {
     const body = new URLSearchParams({
@@ -169,6 +219,9 @@ async function refreshAccessToken(
     });
     if (clientId !== undefined) {
       body.set("client_id", clientId);
+    }
+    if (resource !== undefined) {
+      body.set("resource", resource);
     }
 
     const response = await fetch(tokenEndpoint, {
