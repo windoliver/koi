@@ -35,8 +35,21 @@ function matches(rule: PatternRule, request: PolicyRequest): boolean {
     readonly toolId?: unknown;
     readonly model?: unknown;
   };
-  if (match.toolId !== undefined && payload.toolId !== match.toolId) return false;
-  if (match.model !== undefined && payload.model !== match.model) return false;
+
+  // Selectors are kind-scoped: `toolId` only applies to `tool_call` requests
+  // with a string `toolId` payload, and `model` only applies to `model_call`
+  // requests with a string `model` payload. Applying these selectors
+  // unconditionally would mis-deny `custom:foo` kinds that happen to carry a
+  // `toolId` key and would silently let malformed payloads (e.g. `toolId: 42`)
+  // fall through with no match.
+  if (match.toolId !== undefined) {
+    if (request.kind !== "tool_call") return false;
+    if (typeof payload.toolId !== "string" || payload.toolId !== match.toolId) return false;
+  }
+  if (match.model !== undefined) {
+    if (request.kind !== "model_call") return false;
+    if (typeof payload.model !== "string" || payload.model !== match.model) return false;
+  }
   return true;
 }
 

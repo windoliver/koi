@@ -7,6 +7,7 @@ import type {
   SensorReading,
 } from "@koi/core/governance";
 import { GOVERNANCE_VARIABLES } from "@koi/core/governance";
+import { KoiRuntimeError } from "@koi/errors";
 
 export interface InMemoryControllerConfig {
   readonly tokenUsageLimit?: number | undefined;
@@ -72,7 +73,47 @@ function computeUtilization(current: number, limit: number): number {
   return Math.min(1, current / limit);
 }
 
+/**
+ * Validate a numeric config field. `undefined` is accepted (defaults apply),
+ * `+Infinity` is accepted (the "unenforced" sentinel), and `NaN` / negative
+ * values throw — these are almost always parse bugs (`parseInt("")`,
+ * `Number(undefined)`) that would silently disable enforcement if we let
+ * them through.
+ */
+function validateLimit(field: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (Number.isNaN(value) || value < 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `${field} must be a non-negative finite number or Infinity`,
+      { context: { field, value } },
+    );
+  }
+}
+
+function validateFallbackRate(field: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || value < 0) {
+    throw KoiRuntimeError.from("VALIDATION", `${field} must be a finite non-negative number`, {
+      context: { field, value },
+    });
+  }
+}
+
 export function createInMemoryController(config: InMemoryControllerConfig): InMemoryController {
+  validateLimit("tokenUsageLimit", config.tokenUsageLimit);
+  validateLimit("costUsdLimit", config.costUsdLimit);
+  validateLimit("turnCountLimit", config.turnCountLimit);
+  validateLimit("spawnDepthLimit", config.spawnDepthLimit);
+  validateLimit("spawnCountLimit", config.spawnCountLimit);
+  validateLimit("durationMsLimit", config.durationMsLimit);
+  validateLimit("forgeDepthLimit", config.forgeDepthLimit);
+  validateLimit("forgeBudgetLimit", config.forgeBudgetLimit);
+  validateLimit("errorRateLimit", config.errorRateLimit);
+  validateLimit("contextOccupancyLimit", config.contextOccupancyLimit);
+  validateFallbackRate("fallbackInputUsdPer1M", config.fallbackInputUsdPer1M);
+  validateFallbackRate("fallbackOutputUsdPer1M", config.fallbackOutputUsdPer1M);
+
   const now = config.now ?? Date.now;
   const errorRateWindow = config.errorRateWindow ?? DEFAULT_ERROR_RATE_WINDOW;
   const errorRateMinSamples = config.errorRateMinSamples ?? DEFAULT_ERROR_RATE_MIN_SAMPLES;

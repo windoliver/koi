@@ -26,6 +26,41 @@ describe("createInMemoryController", () => {
       }
       expect((await controller.checkAll()).ok).toBe(true);
     });
+  });
+
+  describe("config validation — NaN / negative / non-finite inputs", () => {
+    test("rejects NaN limits so one bad env/JSON value cannot silently disable enforcement", () => {
+      expect(() => createInMemoryController({ tokenUsageLimit: Number.NaN })).toThrow(
+        /tokenUsageLimit/,
+      );
+      expect(() => createInMemoryController({ costUsdLimit: Number.NaN })).toThrow(/costUsdLimit/);
+      expect(() => createInMemoryController({ errorRateLimit: Number.NaN })).toThrow(
+        /errorRateLimit/,
+      );
+    });
+
+    test("rejects negative limits", () => {
+      expect(() => createInMemoryController({ turnCountLimit: -1 })).toThrow(/turnCountLimit/);
+      expect(() => createInMemoryController({ spawnDepthLimit: -5 })).toThrow(/spawnDepthLimit/);
+    });
+
+    test("accepts Infinity as the explicit disable sentinel", () => {
+      expect(() =>
+        createInMemoryController({
+          tokenUsageLimit: Number.POSITIVE_INFINITY,
+          costUsdLimit: Number.POSITIVE_INFINITY,
+        }),
+      ).not.toThrow();
+    });
+
+    test("rejects NaN / negative fallback pricing rates", () => {
+      expect(() => createInMemoryController({ fallbackInputUsdPer1M: Number.NaN })).toThrow(
+        /fallbackInputUsdPer1M/,
+      );
+      expect(() => createInMemoryController({ fallbackOutputUsdPer1M: -1 })).toThrow(
+        /fallbackOutputUsdPer1M/,
+      );
+    });
 
     test("setpoints come from config", () => {
       const controller = createInMemoryController({

@@ -72,6 +72,59 @@ describe("createPatternBackend", () => {
       expect(allowed.ok).toBe(true);
     });
 
+    test("toolId selector only fires on tool_call kinds", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "deny" }],
+      });
+      // custom kind with same toolId in payload must NOT be denied by a
+      // tool-scoped selector.
+      const custom = await backend.evaluator.evaluate(
+        req({ kind: "custom:foo", payload: { toolId: "Bash" } }),
+      );
+      expect(custom.ok).toBe(true);
+
+      const spawn = await backend.evaluator.evaluate(
+        req({ kind: "spawn", payload: { toolId: "Bash" } }),
+      );
+      expect(spawn.ok).toBe(true);
+    });
+
+    test("model selector only fires on model_call kinds", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { model: "gpt-4o" }, decision: "deny" }],
+      });
+      const custom = await backend.evaluator.evaluate(
+        req({ kind: "custom:foo", payload: { model: "gpt-4o" } }),
+      );
+      expect(custom.ok).toBe(true);
+    });
+
+    test("malformed non-string toolId does not match (fail-closed on type, open on decision)", async () => {
+      const backend = createPatternBackend({
+        rules: [{ match: { toolId: "Bash" }, decision: "deny" }],
+      });
+      const result = await backend.evaluator.evaluate(
+        req({ kind: "tool_call", payload: { toolId: 42 } }),
+      );
+      // Non-string toolId fails the match, so no deny rule applies. Without
+      // defaultDeny, the request allows — but the selector does not silently
+      // succeed on a numeric toolId either.
+      expect(result.ok).toBe(true);
+    });
+
+    test("empty payload does not match tool-scoped or model-scoped rules", async () => {
+      const backend = createPatternBackend({
+        rules: [
+          { match: { toolId: "Bash" }, decision: "deny" },
+          { match: { model: "gpt-4o" }, decision: "deny" },
+        ],
+      });
+      const tool = await backend.evaluator.evaluate(req({ kind: "tool_call", payload: {} }));
+      const model = await backend.evaluator.evaluate(req({ kind: "model_call", payload: {} }));
+      expect(tool.ok).toBe(true);
+      expect(model.ok).toBe(true);
+    });
+
     test("last-match-wins precedence", async () => {
       const backend = createPatternBackend({
         rules: [

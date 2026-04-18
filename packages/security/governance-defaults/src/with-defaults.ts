@@ -57,13 +57,55 @@ export interface WithGovernanceDefaultsOverrides {
   readonly onAlert?: AlertCallback | undefined;
   readonly onViolation?: ViolationCallback | undefined;
   readonly onUsage?: UsageCallback | undefined;
+  /**
+   * Pricing entry used to seed the controller's per-token fallback when
+   * `cost.calculate()` throws (unknown model alias). Defaults to the pricing
+   * table's `claude-sonnet-4-6` entry — a conservative mid-range rate that
+   * keeps the spend cap advancing rather than fail-open. Set to `null` to
+   * disable fallback and let the spend cap stop advancing on pricing failure.
+   */
+  readonly fallbackPricing?: PricingEntry | null | undefined;
 }
+
+/**
+ * Default fallback pricing anchor — claude-sonnet-4-6 rates. Picked as a
+ * conservative mid-range default so unknown model aliases still advance the
+ * spend cap. Over-billing is safer than under-billing for a cap.
+ */
+const DEFAULT_FALLBACK_MODEL = "claude-sonnet-4-6";
 
 export function withGovernanceDefaults(
   overrides: WithGovernanceDefaultsOverrides = {},
 ): DefaultGovernanceConfig {
-  const controller =
-    overrides.controller ?? createInMemoryController(overrides.controllerConfig ?? {});
+  const pricing = overrides.pricing ?? DEFAULT_PRICING;
+
+  // Resolve the fallback pricing: caller override → pricing table's sonnet
+  // entry → no fallback. If the helper built the controller AND no explicit
+  // fallback config is set in `controllerConfig`, seed the fallback into the
+  // controller so the spend cap still advances when the cost calculator
+  // throws for an unknown model. A caller-supplied controller is not touched.
+  let fallbackEntry: PricingEntry | null;
+  if (overrides.fallbackPricing === null) {
+    fallbackEntry = null;
+  } else if (overrides.fallbackPricing !== undefined) {
+    fallbackEntry = overrides.fallbackPricing;
+  } else {
+    fallbackEntry = pricing[DEFAULT_FALLBACK_MODEL] ?? null;
+  }
+
+  const baseControllerConfig = overrides.controllerConfig ?? {};
+  const controllerConfig: InMemoryControllerConfig =
+    fallbackEntry !== null &&
+    baseControllerConfig.fallbackInputUsdPer1M === undefined &&
+    baseControllerConfig.fallbackOutputUsdPer1M === undefined
+      ? {
+          ...baseControllerConfig,
+          fallbackInputUsdPer1M: fallbackEntry.inputUsdPer1M,
+          fallbackOutputUsdPer1M: fallbackEntry.outputUsdPer1M,
+        }
+      : baseControllerConfig;
+
+  const controller = overrides.controller ?? createInMemoryController(controllerConfig);
 
   const backend =
     overrides.backend ??
@@ -72,7 +114,7 @@ export function withGovernanceDefaults(
       defaultDeny: overrides.defaultDeny ?? false,
     });
 
-  const cost = overrides.cost ?? createFlatRateCostCalculator(overrides.pricing ?? DEFAULT_PRICING);
+  const cost = overrides.cost ?? createFlatRateCostCalculator(pricing);
 
   const config: DefaultGovernanceConfig = {
     backend,

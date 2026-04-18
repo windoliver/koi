@@ -103,4 +103,27 @@ describe("createFlatRateCostCalculator validation (local)", () => {
   test("throws VALIDATION for negative output tokens", () => {
     expect(() => calc.calculate("gpt-4o-mini", 100, -1)).toThrow(/outputTokens/);
   });
+
+  test("rejects malformed pricing entries at construction time", () => {
+    expect(() => localCreate({ bad: { inputUsdPer1M: Number.NaN, outputUsdPer1M: 1 } })).toThrow(
+      /inputUsdPer1M/,
+    );
+    expect(() => localCreate({ bad: { inputUsdPer1M: 1, outputUsdPer1M: -5 } })).toThrow(
+      /outputUsdPer1M/,
+    );
+    expect(() =>
+      localCreate({
+        bad: { inputUsdPer1M: Number.POSITIVE_INFINITY, outputUsdPer1M: 1 },
+      }),
+    ).toThrow(/inputUsdPer1M/);
+  });
+
+  test("validates pricing when merged via object spread with DEFAULT_PRICING", () => {
+    expect(() =>
+      localCreate({
+        ...DEFAULT_PRICING,
+        "my-broken-model": { inputUsdPer1M: Number.NaN, outputUsdPer1M: 1 },
+      }),
+    ).toThrow(/my-broken-model/);
+  });
 });

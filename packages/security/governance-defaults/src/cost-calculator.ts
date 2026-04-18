@@ -22,9 +22,34 @@ export interface CostCalculator {
  * governance-core implementation so a config produced here drops straight
  * into `createGovernanceMiddleware`.
  */
+function assertValidPricingEntry(modelId: string, entry: PricingEntry): void {
+  if (!Number.isFinite(entry.inputUsdPer1M) || entry.inputUsdPer1M < 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `Invalid pricing for ${modelId}: inputUsdPer1M must be a finite non-negative number`,
+      { context: { modelId, inputUsdPer1M: entry.inputUsdPer1M } },
+    );
+  }
+  if (!Number.isFinite(entry.outputUsdPer1M) || entry.outputUsdPer1M < 0) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `Invalid pricing for ${modelId}: outputUsdPer1M must be a finite non-negative number`,
+      { context: { modelId, outputUsdPer1M: entry.outputUsdPer1M } },
+    );
+  }
+}
+
 export function createFlatRateCostCalculator(
   pricing: Readonly<Record<string, PricingEntry>>,
 ): CostCalculator {
+  // Validate every pricing entry at construction time so a typo in overrides
+  // (e.g. `{ inputUsdPer1M: NaN }`) fails loud rather than silently returning
+  // `NaN` from `calculate()`, which the middleware then drops and the spend
+  // cap never trips.
+  for (const [modelId, entry] of Object.entries(pricing)) {
+    assertValidPricingEntry(modelId, entry);
+  }
+
   return {
     calculate(modelId: string, inputTokens: number, outputTokens: number): number {
       if (!Object.hasOwn(pricing, modelId)) {

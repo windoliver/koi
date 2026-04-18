@@ -71,6 +71,65 @@ describe("withGovernanceDefaults", () => {
     expect(config.cost).toBe(cost);
   });
 
+  test("seeds fallback pricing from the pricing table so unknown models still advance cost_usd", async () => {
+    const { controller } = withGovernanceDefaults({ controllerConfig: { costUsdLimit: 100 } });
+    // Simulate middleware dropping costUsd after cost.calculate() throws on
+    // an unknown model alias.
+    await controller.record({
+      kind: "token_usage",
+      count: 1_500_000,
+      inputTokens: 1_000_000,
+      outputTokens: 500_000,
+    });
+    // sonnet-4-6 default fallback = $3/1M input + $15/1M output
+    //   = 1 * 3 + 0.5 * 15 = 10.5
+    expect(controller.reading("cost_usd")?.current).toBeCloseTo(10.5, 10);
+  });
+
+  test("explicit fallbackPricing: null disables the fallback path", async () => {
+    const { controller } = withGovernanceDefaults({
+      controllerConfig: { costUsdLimit: 100 },
+      fallbackPricing: null,
+    });
+    await controller.record({
+      kind: "token_usage",
+      count: 500_000,
+      inputTokens: 500_000,
+      outputTokens: 0,
+    });
+    expect(controller.reading("cost_usd")?.current).toBe(0);
+  });
+
+  test("caller-supplied fallbackPricing overrides the default sonnet anchor", async () => {
+    const { controller } = withGovernanceDefaults({
+      fallbackPricing: { inputUsdPer1M: 100, outputUsdPer1M: 200 },
+    });
+    await controller.record({
+      kind: "token_usage",
+      count: 1_000_000,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+    });
+    expect(controller.reading("cost_usd")?.current).toBeCloseTo(100, 10);
+  });
+
+  test("controllerConfig fallback rates take precedence over the helper's default seeding", async () => {
+    const { controller } = withGovernanceDefaults({
+      controllerConfig: {
+        costUsdLimit: 100,
+        fallbackInputUsdPer1M: 50,
+        fallbackOutputUsdPer1M: 200,
+      },
+    });
+    await controller.record({
+      kind: "token_usage",
+      count: 1_000_000,
+      inputTokens: 1_000_000,
+      outputTokens: 0,
+    });
+    expect(controller.reading("cost_usd")?.current).toBeCloseTo(50, 10);
+  });
+
   test("alertThresholds and callbacks are threaded through", () => {
     const onAlert = (): void => undefined;
     const onViolation = (): void => undefined;
