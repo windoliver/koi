@@ -481,6 +481,29 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`echo '\`sudo rm\`'`)).toBe("echo");
   });
 
+  // ------- loop-2 round 4: smarter brace handling -------
+
+  test("parameter expansion ${VAR} does NOT trigger !complex", () => {
+    expect(canonicalPrefix("echo ${HOME}")).toBe("echo");
+    expect(canonicalPrefix("git -C ${REPO} status")).toBe("git -C");
+    expect(canonicalPrefix("bash ${HOME}/script.sh")).toBe("bash");
+  });
+
+  test("brace expansion file{1,2} does NOT trigger !complex", () => {
+    expect(canonicalPrefix("cp file{a,b}.txt backup")).toBe("cp");
+    expect(canonicalPrefix("ls file{1,2}.txt")).toBe("ls");
+    expect(canonicalPrefix("touch file{1..5}.log")).toBe("touch");
+  });
+
+  test("parameter expansion with default ${var:-default} is still prefix-extractable", () => {
+    expect(canonicalPrefix("echo ${USER:-anonymous}")).toBe("echo");
+  });
+
+  test("group command `{ cmd; }` (with whitespace) still triggers !complex", () => {
+    expect(canonicalPrefix("{ sudo rm; }")).toBe("!complex");
+    expect(canonicalPrefix("{ echo hi; echo bye; }")).toBe("!complex");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that

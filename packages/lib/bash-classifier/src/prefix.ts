@@ -455,10 +455,26 @@ function hasShellControlOperators(s: string): boolean {
     // >(...). These can perform side effects or hidden command execution
     // under a benign-looking prefix; fail closed.
     if (c === ">" || c === "<") return true;
-    // Subshell / group grouping: `(sudo rm)`, `{ sudo rm; }`. The shell
-    // still executes the inner command even though our token split
-    // would attach the grouping char to the head.
-    if (c === "(" || c === ")" || c === "{" || c === "}") return true;
+    // Subshell: `(sudo rm)` — `(` always triggers (function-def and
+    // subshell are both compound-executing forms).
+    if (c === "(" || c === ")") return true;
+    // Group command `{ cmd; }` requires `{` as its own token (preceded
+    // and followed by whitespace). Bare braces inside a token belong to
+    // parameter expansion `${VAR}` or brace expansion `file{1,2}` — both
+    // remain single-command forms that should keep their prefix.
+    if (c === "{") {
+      const prev = i > 0 ? s[i - 1] : "";
+      const next = s[i + 1] ?? "";
+      const prevWs = i === 0 || prev === " " || prev === "\t" || prev === "\n";
+      const nextWs = next === " " || next === "\t" || next === "\n";
+      if (prevWs && nextWs) return true;
+      continue;
+    }
+    if (c === "}") {
+      const prev = i > 0 ? s[i - 1] : "";
+      // Group closer: `; }` or `\n}` or ` }`.
+      if (prev === " " || prev === "\t" || prev === ";" || prev === "\n") return true;
+    }
   }
   return false;
 }

@@ -1087,12 +1087,29 @@ export function createPermissionsMiddleware(
     // pre-conversion soft decision.
     const enforcedDecisionByIndex = new Map<number, PermissionDecision>();
 
+    // Tools whose per-command policy is enforced at wrapToolCall via
+    // bash prefix enrichment — always keep visible at model-time so the
+    // execution-time prefix rules are reachable. Without this, a
+    // default-deny backend with only `bash:<prefix>` rules would strip
+    // the tool entirely before the agent could ever invoke a specific
+    // command.
+    const bashVisibleSet = new Set(config.bashVisibleTools ?? []);
+    const bypassFilter = (toolName: string): boolean =>
+      config.resolveBashCommand !== undefined && bashVisibleSet.has(toolName);
+
     const filtered = tools.filter((tool, i) => {
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
       const decision = decisions[i]!;
       // biome-ignore lint/style/noNonNullAssertion: queries built from tools.map — same length as filter callback index
       const query = queries[i]!;
       const sid = ctx.session.sessionId as string;
+
+      if (bypassFilter(tool.name)) {
+        // Pass through. Record an allow decision for observability so
+        // reporting/audit still see the tool was offered to the model.
+        enforcedDecisionByIndex.set(i, { effect: "allow" });
+        return true;
+      }
 
       // #1650 loop round-4: audit/dispatch fire AFTER the hard-conversion
       // checks so observers see the FINAL decision shape, not the original

@@ -150,6 +150,23 @@ export interface PermissionsMiddlewareConfig {
     | ((toolId: string, input: JsonObject) => string | undefined)
     | undefined;
   /**
+   * Tool IDs that should stay visible to the model regardless of
+   * model-time tool filtering. When set alongside `resolveBashCommand`,
+   * prefix-based rules like `{ allow: ["bash:git push"] }` can be
+   * enforced at execution time even when the operator has not also
+   * written a plain-tool-id allow rule.
+   *
+   * Without this hint, the default-deny model-time filter would strip
+   * `bash` from the tool list (no rule matches the plain tool id),
+   * which makes the execution-time prefix rules unreachable. The
+   * common pattern: set `bashVisibleTools: ["bash"]` so the bash tool
+   * always passes filter, then rely on `resolveBashCommand` +
+   * prefix-based rules to gate specific commands at execution.
+   *
+   * No effect when `resolveBashCommand` is not configured.
+   */
+  readonly bashVisibleTools?: readonly string[];
+  /**
    * Max cumulative soft denies per `decisionCacheKey` per turn before hard-throw.
    * Counter is cumulative per turn — allow decisions do not reset it. Cleared at
    * turn boundary via `onBeforeTurn`. Default: 3. #1650.
@@ -316,6 +333,18 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // resolveBashCommand — function if set
   if (config.resolveBashCommand !== undefined && typeof config.resolveBashCommand !== "function") {
     return fail("config.resolveBashCommand must be a function");
+  }
+
+  // bashVisibleTools — array of non-empty strings if set
+  if (config.bashVisibleTools !== undefined) {
+    if (!Array.isArray(config.bashVisibleTools)) {
+      return fail("config.bashVisibleTools must be an array of strings");
+    }
+    for (const t of config.bashVisibleTools) {
+      if (typeof t !== "string" || t.length === 0) {
+        return fail("config.bashVisibleTools entries must be non-empty strings");
+      }
+    }
   }
 
   // softDenyPerTurnCap — positive number if set

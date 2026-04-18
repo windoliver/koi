@@ -193,6 +193,10 @@ createPermissionsMiddleware({
     toolId === "bash" && typeof input.command === "string"
       ? (input.command as string)
       : undefined,
+  // Keep `bash` visible at model-time so the prefix rules above are
+  // reachable. Without this, default-deny filters `bash` out because
+  // no rule matches the plain tool id.
+  bashVisibleTools: ["bash"],
 });
 ```
 

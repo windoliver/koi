@@ -624,6 +624,54 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     ).rejects.toThrow();
   });
 
+  test("bashVisibleTools keeps bash visible at model-time despite prefix-only deny/allow rules (round 4)", async () => {
+    // A default-deny backend with ONLY prefix-level rules — no plain
+    // `bash` allow. Without bashVisibleTools, model-time filter would
+    // strip `bash` from the tool list and the prefix rules would
+    // never be reached.
+    const backend = ruleBackend(["bash:git push"]);
+
+    // Enable the pass-through for the bash tool.
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+
+    // 1. Model-time: bash passes the filter.
+    const filterHandler = mock(
+      async (req: { readonly tools?: readonly { readonly name: string }[] }) => {
+        expect(req.tools?.map((t) => t.name)).toContain("bash");
+        return { content: "ok", model: "test" };
+      },
+    );
+    await mw.wrapModelCall?.(
+      makeTurnContext(),
+      {
+        messages: [],
+        tools: [{ name: "bash", description: "shell", inputSchema: {} }],
+      },
+      filterHandler as never,
+    );
+    expect(filterHandler).toHaveBeenCalledTimes(1);
+
+    // 2. Execution-time: prefix rules still gate specific commands.
+    // Allow for `git push`.
+    await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "git push origin main" }),
+      noopHandler,
+    );
+    // Deny for `rm`.
+    await expect(
+      mw.wrapToolCall?.(
+        makeTurnContext(),
+        makeToolRequest("bash", { command: "rm -rf /tmp" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow();
+  });
+
   test("benign env-prefixed command still allowed", async () => {
     const result = await mw.wrapToolCall?.(
       makeTurnContext(),
