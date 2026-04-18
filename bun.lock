@@ -903,6 +903,7 @@
         "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/security/permissions": {

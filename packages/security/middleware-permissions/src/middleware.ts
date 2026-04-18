@@ -9,7 +9,7 @@
  * and denial tracking.
  */
 
-import { canonicalPrefix } from "@koi/bash-classifier";
+import { canonicalPrefix, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -34,6 +34,7 @@ import {
   KoiRuntimeError,
   swallowError,
 } from "@koi/errors";
+import { computeStringHash } from "@koi/hash";
 // fnv1a no longer used for cache keys (collision-unsafe for security decisions)
 // isDefaultDeny no longer used — forged-tool bypass removed in v2
 import type {
@@ -613,6 +614,18 @@ export function createPermissionsMiddleware(
     // interpreter hops like `bash -c "sudo rm"` → `sudo rm` before prefixing.
     const p = canonicalPrefix(trimmed);
     if (p.length === 0) return toolId;
+    // The `!complex` sentinel covers every command containing shell control
+    // operators or redirections. Without a discriminator, any session or
+    // persistent `always-allow` grant for ONE compound command would be
+    // reused for every future compound command in scope — approving
+    // `echo hi >/tmp/x` would silently allow `curl ... | sh` later.
+    // Append a SHA-256 prefix of the raw command so each distinct complex
+    // command gets a distinct resource key while a repeat of the same
+    // command can still reuse its grant.
+    if (p === UNSAFE_PREFIX) {
+      const hash = computeStringHash(trimmed).slice(0, 16);
+      return `${toolId}:${p}:${hash}`;
+    }
     return `${toolId}:${p}`;
   }
 
