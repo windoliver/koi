@@ -1,0 +1,93 @@
+{
+  "name": "plan-persist-flow",
+  "model": "google/gemini-2.0-flash-001",
+  "recordedAt": 1776487778282,
+  "chunks": [
+    {
+      "kind": "tool_call_start",
+      "toolName": "koi_plan_write",
+      "callId": "tool_koi_plan_write_QyvCE1O30dqh0H2CVpgW"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_koi_plan_write_QyvCE1O30dqh0H2CVpgW",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_koi_plan_write_QyvCE1O30dqh0H2CVpgW",
+      "delta": "{\"plan\":[{\"status\":\"pending\",\"content\":\"Audit auth code\"},{\"content\":\"Design new session model\",\"status\":\"pending\"}]}"
+    },
+    {
+      "kind": "tool_call_start",
+      "toolName": "koi_plan_save",
+      "callId": "tool_koi_plan_save_Op0uFDuvbjGPjAjIVEZM"
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_koi_plan_save_Op0uFDuvbjGPjAjIVEZM",
+      "delta": ""
+    },
+    {
+      "kind": "tool_call_delta",
+      "callId": "tool_koi_plan_save_Op0uFDuvbjGPjAjIVEZM",
+      "delta": "{\"slug\":\"auth-refactor\"}"
+    },
+    {
+      "kind": "usage",
+      "inputTokens": 235,
+      "outputTokens": 29
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_koi_plan_write_QyvCE1O30dqh0H2CVpgW"
+    },
+    {
+      "kind": "tool_call_end",
+      "callId": "tool_koi_plan_save_Op0uFDuvbjGPjAjIVEZM"
+    },
+    {
+      "kind": "done",
+      "response": {
+        "content": "",
+        "model": "google/gemini-2.0-flash-001",
+        "stopReason": "tool_use",
+        "responseId": "gen-1776487777-XEyMLJHFlK86EWM3AcLX",
+        "richContent": [
+          {
+            "kind": "tool_call",
+            "id": "tool_koi_plan_write_QyvCE1O30dqh0H2CVpgW",
+            "name": "koi_plan_write",
+            "arguments": {
+              "plan": [
+                {
+                  "status": "pending",
+                  "content": "Audit auth code"
+                },
+                {
+                  "content": "Design new session model",
+                  "status": "pending"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "tool_call",
+            "id": "tool_koi_plan_save_Op0uFDuvbjGPjAjIVEZM",
+            "name": "koi_plan_save",
+            "arguments": {
+              "slug": "auth-refactor"
+            }
+          }
+        ],
+        "usage": {
+          "inputTokens": 235,
+          "outputTokens": 29
+        },
+        "metadata": {
+          "promptPrefixFingerprint": "c1154be75c3a8210873ac7f85dd4520ddaa6797b062d6c8456a14130413e36ad"
+        }
+      }
+    }
+  ]
+}
