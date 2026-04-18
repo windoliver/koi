@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 /**
  * IP-literal classification — returns true if the address falls into any
  * blocked range (private, loopback, link-local, CGNAT, multicast, reserved,
@@ -123,7 +125,7 @@ function isBlockedV6(ip: string): boolean {
     }
   }
 
-  return false;
+  return isIP(ip) === 6 ? false : true;
 }
 
 export function isBlockedIp(ip: string): boolean {
