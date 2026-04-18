@@ -1,10 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { constants as osConstants } from "node:os";
 import {
   createSigusr1Handler,
   generateTuiStartupHint,
-  installEarlySigusr1Handler,
-  removeEarlySigusr1Handler,
   SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
@@ -71,54 +69,6 @@ describe("generateTuiStartupHint", () => {
 
   test("is pure — same pid yields same output", () => {
     expect(generateTuiStartupHint(42)).toBe(generateTuiStartupHint(42));
-  });
-});
-
-describe("installEarlySigusr1Handler / removeEarlySigusr1Handler", () => {
-  // Defensive: never leave a SIGUSR1 listener installed in the test process.
-  afterEach(() => {
-    removeEarlySigusr1Handler();
-  });
-
-  test.skipIf(!SIGUSR1_SUPPORTED)("install adds exactly one SIGUSR1 listener", () => {
-    const before = process.listenerCount("SIGUSR1");
-    installEarlySigusr1Handler();
-    expect(process.listenerCount("SIGUSR1")).toBe(before + 1);
-  });
-
-  test.skipIf(!SIGUSR1_SUPPORTED)(
-    "install is idempotent — calling twice does not stack listeners",
-    () => {
-      installEarlySigusr1Handler();
-      const after1 = process.listenerCount("SIGUSR1");
-      installEarlySigusr1Handler();
-      expect(process.listenerCount("SIGUSR1")).toBe(after1);
-    },
-  );
-
-  test.skipIf(!SIGUSR1_SUPPORTED)("remove clears the listener added by install", () => {
-    const baseline = process.listenerCount("SIGUSR1");
-    installEarlySigusr1Handler();
-    removeEarlySigusr1Handler();
-    expect(process.listenerCount("SIGUSR1")).toBe(baseline);
-  });
-
-  test("remove without a prior install is a safe no-op", () => {
-    const baseline = process.listenerCount("SIGUSR1");
-    expect(() => removeEarlySigusr1Handler()).not.toThrow();
-    expect(process.listenerCount("SIGUSR1")).toBe(baseline);
-  });
-
-  test("install is a no-op on platforms where SIGUSR1 is unsupported", () => {
-    // On POSIX this asserts nothing beyond "install ran" (covered above).
-    // On Windows the install call must silently no-op — we cannot assert
-    // via listenerCount alone because process.on itself is what throws on
-    // unsupported signals on some runtimes. The invariant we rely on is
-    // "install returns without throwing regardless of platform."
-    expect(() => installEarlySigusr1Handler()).not.toThrow();
-    if (!SIGUSR1_SUPPORTED) {
-      expect(process.listenerCount("SIGUSR1")).toBe(0);
-    }
   });
 });
 

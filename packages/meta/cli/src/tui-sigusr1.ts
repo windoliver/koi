@@ -82,46 +82,17 @@ export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
   };
 }
 
-// Module-level reference so `installEarlySigusr1Handler` and
-// `removeEarlySigusr1Handler` share the same listener identity across call
-// sites (bin.ts installs, tui-command.ts removes) without globals.
-// let: justified — set by install, cleared by remove, never mutated mid-call.
-let earlyHandler: (() => void) | null = null;
-
-/**
- * Install a minimal `SIGUSR1` handler BEFORE the TUI bootstraps (#1906).
- *
- * Why: `runTuiCommand` installs the full graceful-shutdown handler only
- * after ~4000 lines of startup work. A `SIGUSR1` arriving during that
- * window would hit Bun/Node's default behavior (Node launches an
- * inspector; Bun's default is implementation-defined) instead of the
- * intended escape hatch. Installing a trivial exit-code handler first
- * both masks the default and exits cleanly if the user targets the
- * process during startup. `runTuiCommand` calls
- * `removeEarlySigusr1Handler()` before registering its full handler.
- *
- * Idempotent: repeated calls do not install multiple listeners.
+/*
+ * The "early" SIGUSR1 handler that covers the window between child spawn
+ * and `runTuiCommand`'s full handler install is inlined synchronously at
+ * the top of `bin.ts` rather than exported from here (#1906 round-5
+ * review). Any helper that wrapped `process.on("SIGUSR1", …)` in this
+ * module would need to be imported, which pushes the install behind an
+ * `await import(...)` — widening the race window by one module-resolution
+ * round-trip. `bin.ts` therefore re-states the minimal 4-line handler
+ * inline, and `runTuiCommand` uses `process.removeAllListeners("SIGUSR1")`
+ * to clear it before wiring the full graceful-shutdown handler.
  */
-export function installEarlySigusr1Handler(): void {
-  if (!SIGUSR1_SUPPORTED) return;
-  if (earlyHandler !== null) return;
-  const handler = (): void => {
-    process.exit(SIGUSR1_EXIT_CODE);
-  };
-  earlyHandler = handler;
-  process.on("SIGUSR1", handler);
-}
-
-/**
- * Remove the early handler installed by `installEarlySigusr1Handler`.
- * No-op if none was installed or if SIGUSR1 is unsupported on this
- * platform. Safe to call from cleanup paths.
- */
-export function removeEarlySigusr1Handler(): void {
-  if (earlyHandler === null) return;
-  process.removeListener("SIGUSR1", earlyHandler);
-  earlyHandler = null;
-}
 
 /**
  * One-line startup hint printed before the TUI takes over the terminal.

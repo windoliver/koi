@@ -83,18 +83,28 @@ if (!hasSubcommand) {
   }
 }
 
-// Early SIGUSR1 handler (#1906) — installed at the top of the browser-build
-// child so the re-exec wrapper's forwarded `SIGUSR1` cannot land on the
-// child before any handler is armed. The parent sets
-// `KOI_TUI_BROWSER_SOLID=1` when spawning the child, so gating on that env
-// marker confines the install to the TUI child process — `koi --version`,
-// `koi start`, `koi serve`, and other non-TUI invocations never install a
-// SIGUSR1 listener and keep their existing semantics. `runTuiCommand()`
-// swaps this minimal handler for the full graceful-shutdown handler once
-// bootstrap completes (see `removeEarlySigusr1Handler`).
-if (process.env.KOI_TUI_BROWSER_SOLID === "1") {
-  const { installEarlySigusr1Handler } = await import("./tui-sigusr1.js");
-  installEarlySigusr1Handler();
+// Early SIGUSR1 handler (#1906) — installed SYNCHRONOUSLY at the top of the
+// browser-build child so the re-exec wrapper's forwarded SIGUSR1 cannot land
+// on the child before any handler is armed. Must be inline (no imports):
+// the only awaits between child start and this block are V8/Bun runtime
+// init, which is unavoidable; any dynamic-import here would widen the race
+// by a module-resolution round-trip.
+//
+// Gated on KOI_TUI_BROWSER_SOLID=1 (set by the parent when spawning) so
+// non-TUI invocations (koi --version, koi start, koi serve) keep their
+// existing SIGUSR1 semantics. Also gated to non-Windows because Windows
+// does not deliver SIGUSR1 (#1906 review).
+//
+// Exit code inlined instead of imported to avoid pulling tui-sigusr1.js
+// into bin.ts's bootstrap path. Platform mapping mirrors
+// os.constants.signals.SIGUSR1: darwin=30 → 158; all other POSIX
+// platforms (linux, freebsd, netbsd, openbsd, aix, sunos)=10 → 138.
+// runTuiCommand() later calls process.removeAllListeners("SIGUSR1") to
+// swap this minimal handler for the full graceful-shutdown one.
+if (process.env.KOI_TUI_BROWSER_SOLID === "1" && process.platform !== "win32") {
+  process.on("SIGUSR1", () => {
+    process.exit(process.platform === "darwin" ? 158 : 138);
+  });
 }
 
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.
