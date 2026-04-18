@@ -202,11 +202,9 @@ describe("canonicalPrefix", () => {
     expect(canonicalPrefix(`bash -c "echo \\"hi\\" && sudo rm"`)).toBe("echo");
   });
 
-  test("falls through when a non-flag token appears before -c (can't parse confidently)", () => {
-    // `bash --rcfile /etc/bashrc -c "sudo rm"` → can't tell if --rcfile takes
-    // an arg. Fail closed in the sense of not unwrapping; operator's rule on
-    // `bash:bash*` still applies.
-    expect(canonicalPrefix(`bash --rcfile /etc/bashrc -c "sudo rm"`)).toBe("bash");
+  test("unwraps --rcfile/--init-file known arg-taking flags before -c (round 5)", () => {
+    expect(canonicalPrefix(`bash --rcfile /etc/bashrc -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash --init-file /tmp/init -c 'git push'`)).toBe("git push");
   });
 
   test("no -c flag at all: does not unwrap", () => {
@@ -217,5 +215,57 @@ describe("canonicalPrefix", () => {
     // `bash -c "sudo rm" arg0 arg1` — positional args go to the script as
     // $0/$1; the executed command is the -c arg.
     expect(canonicalPrefix(`bash -c "sudo rm" arg0 arg1`)).toBe("sudo");
+  });
+
+  // ------- option-arg parsing regression tests (PR review round 5) -------
+
+  test("unwraps bash --rcfile <path> -c <arg> form", () => {
+    expect(canonicalPrefix(`bash --rcfile /tmp/x -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash --init-file /etc/init -c 'git push'`)).toBe("git push");
+  });
+
+  test("unwraps bash with short -O shopt form", () => {
+    expect(canonicalPrefix(`bash -O extglob -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash -O globstar -c 'rm -rf /'`)).toBe("rm");
+  });
+
+  test("bails when a script path appears before -c (bash script.sh semantics)", () => {
+    // `bash script.sh -c arg` runs script.sh with positional argv; -c is
+    // not a bash option here. Must not misinterpret as interpreter hop.
+    expect(canonicalPrefix(`bash script.sh -c arg`)).toBe("bash");
+    expect(canonicalPrefix(`bash /usr/local/bin/install.sh`)).toBe("bash");
+  });
+
+  test("bails on -- end-of-options sentinel before -c", () => {
+    expect(canonicalPrefix(`bash -- -c payload`)).toBe("bash");
+  });
+});
+
+describe("prefix — wrapper option handling (PR review round 5)", () => {
+  test("nice -n <priority> peels the flag and its numeric arg", () => {
+    expect(prefix(["nice", "-n", "10", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["nice", "-n", "-19", "git", "push"])).toBe("git push");
+  });
+
+  test("ionice -c <class> -n <level> peels all flag+arg pairs", () => {
+    expect(prefix(["ionice", "-c", "3", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["ionice", "-c", "2", "-n", "7", "git", "push"])).toBe("git push");
+  });
+
+  test("timeout --signal=KILL <duration> <cmd> peels long-flag + duration", () => {
+    expect(prefix(["timeout", "--signal=KILL", "30", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["timeout", "--kill-after=5s", "30", "git", "push"])).toBe("git push");
+  });
+
+  test("timeout <duration> --preserve-status <cmd> peels duration + long-flag", () => {
+    expect(prefix(["timeout", "30", "--preserve-status", "sudo", "rm"])).toBe("sudo");
+  });
+
+  test("timeout -s KILL 30 <cmd> peels short-flag + arg + duration", () => {
+    expect(prefix(["timeout", "-s", "KILL", "30", "sudo", "rm"])).toBe("sudo");
+  });
+
+  test("stacked wrapper options: env FOO=1 nice -n 10 /usr/bin/sudo rm", () => {
+    expect(prefix(["env", "FOO=1", "nice", "-n", "10", "/usr/bin/sudo", "rm"])).toBe("sudo");
   });
 });

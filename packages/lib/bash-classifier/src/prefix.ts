@@ -48,6 +48,27 @@ function basename(t: string): string {
   return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
 }
 
+/**
+ * Consume leading option tokens, pairing each single-letter short flag
+ * (`-n`, `-c`, `-s`, `-k`, `-p`) with the following token as its arg.
+ * Conservative: over-consumes a benign extra token rather than leaving
+ * a raw flag as the new leading prefix, which would let an attacker
+ * fall back into the generic bash permission bucket.
+ */
+function consumeFlagsAndArgs(tokens: readonly string[], from: number): number {
+  let i = from;
+  while (i < tokens.length) {
+    const t = tokens[i] ?? "";
+    if (!t.startsWith("-")) break;
+    i++;
+    // Single-letter short flag (-n / -c / -k etc.) — assume it takes an
+    // arg and consume the next token too. --long=val is self-contained;
+    // --long or -xy (bundled short) we treat as flag-only.
+    if (/^-[a-zA-Z]$/.test(t) && i < tokens.length) i++;
+  }
+  return i;
+}
+
 /** Single peel: strip leading env assignments + one wrapper (if any). */
 function normalizeOnce(tokens: readonly string[]): readonly string[] {
   let i = 0;
@@ -63,13 +84,15 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
     i++;
     if (base === "env") {
       while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
-    }
-    if (base === "timeout" && i < tokens.length) {
-      const dur = tokens[i] ?? "";
-      if (/^\d/.test(dur)) i++;
-    }
-    if (base === "stdbuf") {
-      while (i < tokens.length && (tokens[i] ?? "").startsWith("-")) i++;
+    } else if (base === "nice" || base === "ionice" || base === "stdbuf") {
+      // nice -n <pri>, ionice -c <class> -n <level>, stdbuf -oL -eL …
+      i = consumeFlagsAndArgs(tokens, i);
+    } else if (base === "timeout") {
+      // `timeout` accepts flags before and/or after the duration, e.g.
+      // `timeout --signal=KILL 30 cmd` or `timeout 30 --preserve-status cmd`.
+      i = consumeFlagsAndArgs(tokens, i);
+      if (i < tokens.length && /^\d/.test(tokens[i] ?? "")) i++;
+      i = consumeFlagsAndArgs(tokens, i);
     }
     return tokens.slice(i);
   }
@@ -161,14 +184,32 @@ function shellTokenize(s: string): readonly string[] {
   return tokens;
 }
 
+/** Bash short flags that take a separate-token argument. */
+const BASH_SHORT_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
+  "-o", // `-o <option>` — set shopt-style long option
+  "-O", // `-O <shopt>` — enable shopt
+]);
+
+/** Bash long flags that take a separate-token argument. */
+const BASH_LONG_FLAGS_WITH_ARG: ReadonlySet<string> = new Set([
+  "--rcfile",
+  "--init-file",
+  "--file",
+]);
+
 /**
  * When `cmdLine` is a shell-interpreter invocation that uses `-c <arg>`,
- * returns the inner script string. Scans past an arbitrary number of
- * leading flag tokens (e.g. `bash -x -c …`, `bash --noprofile -c …`) and
- * stops on the first non-flag token (which would be a script path or
- * positional arg, not a bash option). Uses shell-aware tokenization so
- * quoted `-c "sudo rm"` is recognised as a single inner script argument.
- * Returns `null` if we can't confidently extract the inner command.
+ * returns the inner script string. Scans the full token list for a
+ * `-c`-family flag, handling the bash option grammar:
+ *   - `-c`, `-lc`, `-ic`, `-eic` etc. → found, next token is the script.
+ *   - `-o <opt>` and `-O <shopt>` consume a paired arg.
+ *   - `--rcfile PATH`, `--init-file PATH`, `--file PATH` consume a paired arg.
+ *   - `--long=value` is self-contained (one token).
+ *   - Other short/long flags are flag-only.
+ *   - `--` ends option parsing (anything after is script argv).
+ *   - A non-flag token without a prior paired flag = script path; bail.
+ *
+ * Returns `null` when `-c` is not found before script argv starts.
  */
 function extractShellDashCArg(cmdLine: string): string | null {
   const tokens = shellTokenize(cmdLine);
@@ -178,19 +219,35 @@ function extractShellDashCArg(cmdLine: string): string | null {
   if (first === undefined) return null;
   if (!SHELL_INTERP.test(basename(first))) return null;
 
-  for (let i = 1; i < tokens.length; i++) {
+  let i = 1;
+  while (i < tokens.length) {
     const t = tokens[i];
     if (t === undefined) return null;
-    // Composite short-flag form that includes `c`: -c, -lc, -ic, -eic …
+
+    // End-of-options: -- sentinel.
+    if (t === "--") return null;
+
+    // -c / composite short flag with c (-lc, -ic, -eic, …)
     if (/^-[a-zA-Z]*c$/.test(t)) {
       const arg = tokens[i + 1];
       return arg !== undefined && arg.length > 0 ? arg : null;
     }
-    // Any leading flag token — keep scanning.
-    if (t.startsWith("-")) continue;
-    // Non-flag, non-c token (script path, positional arg) before we
-    // found `-c`: bail rather than guess. The caller's rule on the
-    // shell interpreter itself (`bash:bash*`) still applies.
+
+    // Flag with a separate-token argument: consume flag + arg.
+    if (BASH_SHORT_FLAGS_WITH_ARG.has(t) || BASH_LONG_FLAGS_WITH_ARG.has(t)) {
+      i += 2;
+      continue;
+    }
+
+    // Flag-only (single-letter short, bundled short like -ex, long without =val,
+    // --long=value single-token).
+    if (t.startsWith("-")) {
+      i++;
+      continue;
+    }
+
+    // Non-flag token reached without a known flag-arg pairing: this is the
+    // script path (`bash script.sh …`), not an interpreter hop. Bail.
     return null;
   }
   return null;
