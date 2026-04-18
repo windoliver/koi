@@ -774,20 +774,37 @@ const DEFAULT_MAX_DURATION_MS = 1_800_000;
 // any realistic turn duration.
 const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
 
+// Strict unsigned-integer form. Rejects zero-equivalent aliases like
+// `"00"`, `"+0"`, `"-0"`, `"0.0"`, `"0e0"` — all of which Number()
+// coerces to 0 and would otherwise flip the cap off via the
+// `n === 0` branch.
+const UNSIGNED_INT_RE = /^(0|[1-9]\d*)$/;
+
 /** @internal — exported for unit tests only; not part of the public API. */
 export function resolveMaxDurationMs(): number {
   const raw = process.env.KOI_MAX_DURATION_MS;
   if (raw === undefined) return DEFAULT_MAX_DURATION_MS;
-  // Strict parse: `Number("")` and `Number(" ")` both return 0, so a
-  // blank env var would silently hit the disable-cap path and turn a
-  // documented 30-min posture into effectively uncapped. Reject
-  // empty/whitespace and only honor a literal `"0"` as the sentinel.
+  // Strict parse: `Number("")` returns 0 and Number("00") also returns 0,
+  // either of which would flip the cap off silently. Require the raw
+  // string to match an unsigned decimal integer before trusting it.
   const trimmed = raw.trim();
-  if (trimmed === "") return DEFAULT_MAX_DURATION_MS;
+  if (!UNSIGNED_INT_RE.test(trimmed)) return DEFAULT_MAX_DURATION_MS;
   if (trimmed === "0") return MAX_SETTIMEOUT_SAFE_MS;
   const n = Number(trimmed);
-  if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_DURATION_MS;
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
+}
+
+/**
+ * @internal — did the operator explicitly set KOI_MAX_DURATION_MS?
+ * Used to decide whether to broaden `maxInactivityMs` alongside the
+ * wall-clock cap. When true, the operator has opted into a non-default
+ * long-running posture and expects the inactivity window to match;
+ * when false, the engine's tighter default inactivity window is kept
+ * so non-interactive hosts don't silently broaden their hang budget.
+ */
+export function isMaxDurationMsExplicit(): boolean {
+  const raw = process.env.KOI_MAX_DURATION_MS;
+  return raw !== undefined && UNSIGNED_INT_RE.test(raw.trim());
 }
 
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
@@ -1826,6 +1843,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       governance: {
         iteration: (() => {
           const resolvedDuration = resolveMaxDurationMs();
+          // Only pin `maxInactivityMs` to the resolved duration when
+          // the operator explicitly set KOI_MAX_DURATION_MS. Without
+          // that signal, leave the engine's default inactivity window
+          // in place so non-interactive hosts (automation, CI) keep
+          // their tighter hang budget. Interactive TUI users who want
+          // long model-think windows opt in via the env var.
           return {
             maxTurns: 25,
             // Per-submit wall-clock cap. Default 30 min matches CC's "let it
@@ -1833,13 +1856,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
             // var (e.g. `KOI_MAX_DURATION_MS=3600000` for 1h, or `0` to
             // disable the cap entirely).
             maxDurationMs: resolvedDuration,
-            // Inactivity guard defaults to 5 min in the kernel, which
-            // would fire well before `maxDurationMs` on long idle model
-            // waits (deep thinking, slow-streaming providers). Pin it
-            // to the resolved duration so the wall-clock cap is the
-            // only kill path; callers that want a tighter inactivity
-            // cap can still override.
-            maxInactivityMs: resolvedDuration,
+            ...(isMaxDurationMsExplicit() ? { maxInactivityMs: resolvedDuration } : {}),
             maxTokens: 1_000_000,
           };
         })(),

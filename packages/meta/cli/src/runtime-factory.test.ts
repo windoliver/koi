@@ -17,7 +17,12 @@ import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
-import { createKoiRuntime, MAX_TRAJECTORY_STEPS, resolveMaxDurationMs } from "./runtime-factory.js";
+import {
+  createKoiRuntime,
+  isMaxDurationMsExplicit,
+  MAX_TRAJECTORY_STEPS,
+  resolveMaxDurationMs,
+} from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,6 +121,56 @@ describe("resolveMaxDurationMs — KOI_MAX_DURATION_MS coercion", () => {
   test("negative → default", () => {
     process.env.KOI_MAX_DURATION_MS = "-1000";
     expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("zero-equivalent aliases do NOT disable the cap", () => {
+    // `Number("00")`, `Number("+0")`, `Number("-0")`, `Number("0.0")`,
+    // `Number("0e0")` all return 0 — without strict integer matching
+    // every one would flip the cap off and force an immediate timeout.
+    for (const raw of ["00", "+0", "-0", "0.0", "0e0", "0x0"]) {
+      process.env.KOI_MAX_DURATION_MS = raw;
+      expect(resolveMaxDurationMs()).toBe(DEFAULT);
+    }
+  });
+
+  test("decimal / floating forms → default", () => {
+    for (const raw of ["1.5", "1e3", "+1000"]) {
+      process.env.KOI_MAX_DURATION_MS = raw;
+      expect(resolveMaxDurationMs()).toBe(DEFAULT);
+    }
+  });
+});
+
+describe("isMaxDurationMsExplicit — inactivity pinning trigger", () => {
+  const ORIGINAL = process.env.KOI_MAX_DURATION_MS;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.KOI_MAX_DURATION_MS;
+    else process.env.KOI_MAX_DURATION_MS = ORIGINAL;
+  });
+
+  test("unset → false (engine default inactivity kept)", () => {
+    delete process.env.KOI_MAX_DURATION_MS;
+    expect(isMaxDurationMsExplicit()).toBe(false);
+  });
+
+  test("empty string → false (not opted in)", () => {
+    process.env.KOI_MAX_DURATION_MS = "";
+    expect(isMaxDurationMsExplicit()).toBe(false);
+  });
+
+  test("invalid → false", () => {
+    process.env.KOI_MAX_DURATION_MS = "abc";
+    expect(isMaxDurationMsExplicit()).toBe(false);
+  });
+
+  test("valid unsigned int → true (caller opted in)", () => {
+    process.env.KOI_MAX_DURATION_MS = "3600000";
+    expect(isMaxDurationMsExplicit()).toBe(true);
+  });
+
+  test("'0' (disable sentinel) → true", () => {
+    process.env.KOI_MAX_DURATION_MS = "0";
+    expect(isMaxDurationMsExplicit()).toBe(true);
   });
 });
 
