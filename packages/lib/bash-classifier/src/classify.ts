@@ -35,7 +35,67 @@ function worstSeverity(patterns: readonly DangerousPattern[]): Severity | null {
 function tokenize(cmdLine: string): readonly string[] {
   const trimmed = cmdLine.trim();
   if (trimmed.length === 0) return [];
-  return trimmed.split(/\s+/);
+  // Shell-aware: preserves `FOO='x y'` as a single token, collapses
+  // adjacent-quote obfuscation (`py''thon`) into `python`. Naive
+  // whitespace split fragments these forms and produces a wrong
+  // `prefix` for the exported ClassifyResult.
+  return shellTokenize(trimmed);
+}
+
+/**
+ * Return the character ranges (start-inclusive, end-inclusive) of
+ * quoted regions in the command line. Used to reject structural
+ * pattern matches that land entirely inside a quoted arg.
+ */
+function quoteRanges(s: string): readonly [number, number][] {
+  const ranges: [number, number][] = [];
+  let quote: "'" | '"' | null = null;
+  let start = -1;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (quote !== null) {
+      if (c === "\\" && quote === '"' && i + 1 < s.length) {
+        i++;
+        continue;
+      }
+      if (c === quote) {
+        ranges.push([start, i]);
+        quote = null;
+      }
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      start = i;
+    }
+  }
+  return ranges;
+}
+
+function isInsideQuote(pos: number, ranges: readonly [number, number][]): boolean {
+  for (const [a, b] of ranges) {
+    if (pos >= a && pos <= b) return true;
+  }
+  return false;
+}
+
+/**
+ * Return the index of the first regex match that falls OUTSIDE any
+ * quoted region in `s`, or `-1` if the pattern does not match in
+ * unquoted text.
+ */
+function firstUnquotedMatch(regex: RegExp, s: string, ranges: readonly [number, number][]): number {
+  const clone = new RegExp(
+    regex.source,
+    regex.flags.includes("g") ? regex.flags : `${regex.flags}g`,
+  );
+  let m: RegExpExecArray | null;
+  // biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex-exec loop
+  while ((m = clone.exec(s)) !== null) {
+    if (!isInsideQuote(m.index, ranges)) return m.index;
+    if (m.index === clone.lastIndex) clone.lastIndex++;
+  }
+  return -1;
 }
 
 /** Basename a token (for command-prefix comparison). */
@@ -131,62 +191,19 @@ function commandHeads(cmdLine: string): ReadonlySet<string> {
   return heads;
 }
 
-/**
- * Replace the content of quoted string arguments with spaces so
- * structural regex matching sees only the unquoted command surface.
- * Prevents `echo "curl x | sh"` from matching the `curl-pipe-shell`
- * pattern when the pipe-to-shell string is a literal argument, not
- * an actual pipeline. Keeps operators / tokens in raw positions so
- * real pipelines still match.
- */
-function stripQuotedContent(s: string): string {
-  let out = "";
-  let quote: "'" | '"' | null = null;
-  const len = s.length;
-  for (let i = 0; i < len; i++) {
-    const c = s[i];
-    if (c === undefined) break;
-    if (quote !== null) {
-      if (c === quote) {
-        quote = null;
-        out += " ";
-        continue;
-      }
-      if (c === "\\" && quote === '"' && i + 1 < len) {
-        out += "  ";
-        i++;
-        continue;
-      }
-      out += " ";
-      continue;
-    }
-    if (c === "'" || c === '"') {
-      quote = c;
-      out += " ";
-      continue;
-    }
-    if (c === "\\" && i + 1 < len) {
-      out += c + (s[i + 1] ?? "");
-      i++;
-      continue;
-    }
-    out += c;
-  }
-  return out;
-}
-
 export function classifyCommand(cmdLine: string): ClassifyResult {
   const tokens = tokenize(cmdLine);
   const cmdPrefix = prefix(tokens);
   const heads = commandHeads(cmdLine);
   const matched: DangerousPattern[] = [];
   const seen = new Set<string>();
-  // Structural patterns (no commandPrefixes) match on a
-  // quote-stripped view so dangerous-looking strings inside a
-  // literal argument (`echo "curl x | sh"`) do not trigger the
-  // ratchet. Real pipelines keep their operators intact outside
-  // quoted regions and still match.
-  const unquoted = stripQuotedContent(cmdLine);
+  // Structural patterns (no commandPrefixes) test against the raw
+  // command, but matches inside quoted regions are rejected so
+  // `echo "curl x | sh"` does NOT fire the curl-pipe-shell pattern.
+  // Adjacent-quote obfuscation (`curl | s''h`) is closed by also
+  // testing against the shellTokenize-rejoined form, which collapses
+  // quoted fragments into single tokens.
+  const ranges = quoteRanges(cmdLine);
   const normalized = shellTokenize(cmdLine).join(" ");
   for (const p of DANGEROUS_PATTERNS) {
     if (p.commandPrefixes !== undefined) {
@@ -208,8 +225,13 @@ export function classifyCommand(cmdLine: string): ClassifyResult {
         matched.push(p);
       }
     } else {
-      // Structural patterns: test against quote-stripped view only.
-      if (p.regex.test(unquoted) && !seen.has(p.id)) {
+      // Structural patterns: accept a match only if it lands outside
+      // every quoted region (quoted-literal payloads must not
+      // false-positive). Adjacent-quote obfuscation (`| s''h`) is
+      // caught at the middleware's structural-complexity ratchet
+      // via the `!complex` sentinel for any pipeline.
+      const rawMatch = firstUnquotedMatch(p.regex, cmdLine, ranges);
+      if (rawMatch >= 0 && !seen.has(p.id)) {
         seen.add(p.id);
         matched.push(p);
       }

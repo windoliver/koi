@@ -173,6 +173,21 @@ describe("classifyCommand", () => {
     expect(classifyCommand(`dash -lc "sudo"`).severity).toBe("medium");
   });
 
+  test("classifyCommand().prefix uses shell-aware tokenization for quoted input (loop-9)", () => {
+    // Before the fix, raw whitespace split fragmented `FOO='x y'`
+    // into `FOO='x` and `y'`, producing prefix like `y'` while
+    // still flagging `sudo` via the regex. Public callers using
+    // `prefix` for UI/audit would mis-identify the command.
+    const r1 = classifyCommand(`FOO='x y' sudo rm`);
+    expect(r1.prefix).toBe("sudo");
+    const r2 = classifyCommand(`env FOO="x y" sudo rm`);
+    expect(r2.prefix).toBe("sudo");
+    const r3 = classifyCommand(`BAR='a b' git push`);
+    expect(r3.prefix).toBe("git push");
+    // Non-quoted input: behavior unchanged.
+    expect(classifyCommand("rm -rf /tmp").prefix).toBe("rm");
+  });
+
   test("pipe-to-shell matches wrapper-hidden and path-qualified RHS (loop-8)", () => {
     // The downloaded-code-exec surface is identical whether the
     // right side of the pipe is bare `sh`, `/bin/sh`, `env sh`,
