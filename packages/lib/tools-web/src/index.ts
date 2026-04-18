@@ -2,6 +2,15 @@
  * @koi/tools-web — Web fetch and search tools for Koi agents.
  */
 
+// SSRF primitives live in @koi/url-safety now — @koi/tools-web routes all
+// outbound HTTP through createSafeFetcher. `isBlockedIp` is re-exported
+// here so existing consumers (the repo's golden-replay tests, future
+// downstream) don't immediately break when upgrading from the
+// pre-migration url-policy.ts surface. The removed helpers
+// (isBlockedUrl / pinResolvedIp / resolveAndValidateUrl /
+// DnsValidationResult / PinnedUrl) have no direct equivalent — callers
+// should import isSafeUrl / createSafeFetcher from @koi/url-safety.
+export { isBlockedIp } from "@koi/url-safety";
 export type { WebOperation } from "./constants.js";
 export {
   DEFAULT_MAX_BODY_CHARS,
@@ -12,8 +21,6 @@ export {
 } from "./constants.js";
 export { htmlToMarkdown } from "./html-to-markdown.js";
 export { stripHtml } from "./strip-html.js";
-// SSRF primitives moved to @koi/url-safety — import from there directly.
-// @koi/tools-web now routes all outbound HTTP through createSafeFetcher.
 export type {
   DnsResolverFn,
   SearchProvider,

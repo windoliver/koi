@@ -28,6 +28,26 @@ describe("isSafeUrl", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("allowPrivate=true bypasses reserved-suffix check (dev/local use)", async () => {
+    // allowPrivate is the documented escape hatch for test/local setups
+    // that intentionally reach `.internal` / `.local` names; the suffix
+    // check must honour it so the contract matches the docs.
+    const result = await isSafeUrl("http://service.internal/api", {
+      allowPrivate: true,
+      dnsResolver: async () => ["127.0.0.1"],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
+  });
+
+  test("allowPrivate=true bypasses .local suffix", async () => {
+    const result = await isSafeUrl("http://printer.local/", {
+      allowPrivate: true,
+      dnsResolver: async () => ["192.168.1.5"],
+    });
+    expect(result.ok).toBe(true);
+  });
+
   test("canonicalises trailing-dot FQDN in blocklist/suffix/allowlist checks", async () => {
     // DNS allows a single trailing root dot. Without canonicalisation,
     // `service.internal.` would sidestep the .internal suffix match, and

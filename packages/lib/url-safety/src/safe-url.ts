@@ -206,10 +206,11 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
   }
 
   // Reserved-suffix block runs for hostnames (not IP literals — they'd
-  // already match the IP-literal branch below). Caller allowlist bypasses
-  // it; allowPrivate does not, because these suffixes name internal
-  // infrastructure, not merely private IP ranges.
-  if (!isAllowlisted && !isIpLiteral(bareHost)) {
+  // already match the IP-literal branch below). Both allowlistHosts AND
+  // allowPrivate bypass the suffix check — allowPrivate is the documented
+  // escape hatch for local/dev setups that intentionally reach `.internal`
+  // / `.local` names (matching the semantics of the BLOCKED_HOSTS bypass).
+  if (!isAllowlisted && !allowPrivate && !isIpLiteral(bareHost)) {
     for (const suffix of BLOCKED_HOST_SUFFIXES) {
       if (bareHost === suffix.slice(1) || bareHost.endsWith(suffix)) {
         return { ok: false, reason: `Blocked reserved suffix ${suffix} for host ${bareHost}` };
