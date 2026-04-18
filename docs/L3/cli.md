@@ -651,3 +651,13 @@ Bash AST-walker elicit bypass), host-scoped `defaultMaxDurationMs`
 and task-tools descriptor guidance for autonomous planning. L3
 wiring (integrated L2 set) is unchanged; see `docs/L2/task-tools.md`
 and `docs/L2/tui.md` for the underlying changes.
+
+## #1881 — Bash prefix enrichment (library only)
+
+This release ships the `@koi/bash-classifier` L0u library and prefix-aware evaluation in `@koi/middleware-permissions`, but the CLI (`koi tui`, `koi start`) does NOT wire `resolveBashCommand` into its permissions middleware yet. The feature is opt-in at the library layer:
+
+- CLI behavior is unchanged — existing `koi tui` plain-tool permission rules (e.g. `fs_read` out-of-workspace prompts) continue to work exactly as before.
+- The first-party `createPermissionBackend` used by the TUI is not marker-aware (by design; its fall-through is `ask`, not a marked default-deny). See `docs/L2/permissions.md` for the rationale.
+- A future activation PR is needed to wire `resolveBashCommand` + swap to `createPatternPermissionBackend` (or explicit `allowLegacyBackendBashFallback: true`) in `packages/meta/cli/src/runtime-factory.ts`.
+
+See `docs/L3/runtime.md` for the runtime-level wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design.
