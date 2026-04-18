@@ -20,6 +20,19 @@ export const BLOCKED_HOSTS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * Hostname suffixes reserved for internal / name-service use.
+ * `.internal` — informal but pervasive convention for private infrastructure
+ *   (also reserved by ICANN for internal-only use per IAB/ICANN advisories).
+ * `.local` — RFC6762 multicast DNS (mDNS), inherently network-local.
+ *
+ * Matched in `isSafeUrl` before DNS resolution, so a 302 redirect from a
+ * public site to `service.internal` / `printer.local` is blocked even if
+ * the caller's resolver could otherwise reach those names. Every callsite
+ * that uses the shared safe-fetcher / validator inherits this block.
+ */
+export const BLOCKED_HOST_SUFFIXES: readonly string[] = Object.freeze([".internal", ".local"]);
+
+/**
  * Ranges blocked wholesale — every address inside the CIDR is rejected.
  */
 export const BLOCKED_CIDR_RANGES: readonly string[] = Object.freeze([

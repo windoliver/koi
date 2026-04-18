@@ -14,6 +14,18 @@ exports[`@koi/url-safety API surface . has stable type surface 1`] = `
  */
 declare const BLOCKED_HOSTS: readonly string[];
 /**
+ * Hostname suffixes reserved for internal / name-service use.
+ * \`.internal\` — informal but pervasive convention for private infrastructure
+ *   (also reserved by ICANN for internal-only use per IAB/ICANN advisories).
+ * \`.local\` — RFC6762 multicast DNS (mDNS), inherently network-local.
+ *
+ * Matched in \`isSafeUrl\` before DNS resolution, so a 302 redirect from a
+ * public site to \`service.internal\` / \`printer.local\` is blocked even if
+ * the caller's resolver could otherwise reach those names. Every callsite
+ * that uses the shared safe-fetcher / validator inherits this block.
+ */
+declare const BLOCKED_HOST_SUFFIXES: readonly string[];
+/**
  * Ranges blocked wholesale — every address inside the CIDR is rejected.
  */
 declare const BLOCKED_CIDR_RANGES: readonly string[];
@@ -150,6 +162,6 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 
-export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, type DnsResolver, EMBEDDED_V4_IPV6_PREFIXES, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
+export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, BLOCKED_HOST_SUFFIXES, type DnsResolver, EMBEDDED_V4_IPV6_PREFIXES, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
 "
 `;

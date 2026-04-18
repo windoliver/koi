@@ -19,7 +19,8 @@
 | `isSafeUrl(url, options?)` | `async function` | Full URL validation pipeline: parse → protocol → allowlist → blocked-hosts → IP literal or DNS resolve + check every address. Returns `SafeUrlResult` discriminated union. Fail-closed: any error (parse failure, DNS failure, empty result) returns `ok: false`. |
 | `createSafeFetcher(base?, options?)` | factory | Returns a `fetch`-compatible function. Validates the origin URL, then follows redirects manually (`redirect: "manual"`), re-validating each `Location` hop via `isSafeUrl` before following it. Throws on block or when `maxRedirects` is exceeded. |
 | `isBlockedIp(ip)` | `sync function` | Low-level IP classifier. Accepts IPv4 dotted-decimal, bare IPv6, or bracket-enclosed IPv6. Fail-closed: malformed input returns `true`. Re-exported so governance layers can classify a resolved IP without re-running URL parsing. |
-| `BLOCKED_HOSTS` | frozen `readonly string[]` | Hostnames blocked by name: `localhost`, `0.0.0.0`, `metadata.google.internal`, `metadata`, `instance-data`, `instance-data.ec2.internal`. Extend by PR only — never mutate at runtime. |
+| `BLOCKED_HOSTS` | frozen `readonly string[]` | Hostnames blocked by exact name: `localhost`, `0.0.0.0`, `metadata.google.internal`, `metadata`, `instance-data`, `instance-data.ec2.internal`. Extend by PR only — never mutate at runtime. |
+| `BLOCKED_HOST_SUFFIXES` | frozen `readonly string[]` | Hostname suffixes reserved for internal / name-service use: `.internal` (ICANN reserved for internal-only use) and `.local` (RFC6762 mDNS). Any hostname ending in one of these suffixes is rejected before DNS resolution. Applied on every hop (pre-flight + redirect revalidation). |
 | `BLOCKED_CIDR_RANGES` | frozen `readonly string[]` | Human-readable list of every CIDR the classifier covers. The canonical source of truth for which ranges are blocked; exposed so policy layers and audit tooling can inspect coverage without parsing source. |
 
 ### Types

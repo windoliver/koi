@@ -24,7 +24,7 @@
  */
 import { promises as dns } from "node:dns";
 import { isIP } from "node:net";
-import { BLOCKED_HOSTS } from "./blocked.js";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS } from "./blocked.js";
 import { isBlockedIp } from "./ip-classify.js";
 
 export type DnsResolver = (hostname: string) => Promise<readonly string[]>;
@@ -185,6 +185,18 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
 
   if (!isAllowlisted && !allowPrivate && BLOCKED_HOSTS.includes(bareHost)) {
     return { ok: false, reason: `Blocked host ${bareHost}` };
+  }
+
+  // Reserved-suffix block runs for hostnames (not IP literals — they'd
+  // already match the IP-literal branch below). Caller allowlist bypasses
+  // it; allowPrivate does not, because these suffixes name internal
+  // infrastructure, not merely private IP ranges.
+  if (!isAllowlisted && !isIpLiteral(bareHost)) {
+    for (const suffix of BLOCKED_HOST_SUFFIXES) {
+      if (bareHost === suffix.slice(1) || bareHost.endsWith(suffix)) {
+        return { ok: false, reason: `Blocked reserved suffix ${suffix} for host ${bareHost}` };
+      }
+    }
   }
 
   if (isIpLiteral(bareHost)) {

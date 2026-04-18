@@ -152,22 +152,15 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, cacheTtlMs)
       : undefined;
 
-  // Wrap the resolver so .internal / .local suffix checks apply on every
-  // hop — isSafeUrl runs the resolver for each redirect URL, and a throw
-  // here surfaces as a blocking DNS failure. Without this wrapper the
-  // first-hop pre-flight check could be bypassed by a `302 Location:
-  // http://service.internal/` redirect from an attacker-controlled site.
-  const suffixAwareResolver: DnsResolverFn = async (hostname) => {
-    if (hostnameHasBlockedSuffix(hostname)) {
-      throw new Error(`reserved internal domain: ${hostname}`);
-    }
-    return (dnsResolver ?? defaultDnsResolver)(hostname);
-  };
-
+  // .internal / .local suffix blocking is enforced by @koi/url-safety's
+  // isSafeUrl directly (against BLOCKED_HOST_SUFFIXES) — no tool-side
+  // wrapper needed. Leaving strictAuthoritativeDns at its default (true)
+  // gives full A/AAAA coverage, which is what HTTPS rebinding defence
+  // requires since the wrapper can't pin the TLS connect. Callers that
+  // need OS-lookup parity for internal names can pass their own resolver.
   const safeFetchOptions = {
-    dnsResolver: suffixAwareResolver,
+    dnsResolver: dnsResolver ?? defaultDnsResolver,
     maxRedirects: MAX_REDIRECTS,
-    strictAuthoritativeDns: false,
   } as const;
 
   return {
@@ -201,14 +194,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       ) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
-      }
-
-      // Tool-scoped domain-suffix blocklist (pre-DNS). `.internal` / `.local`
-      // are reserved for internal/name-service use per RFC6762 / RFC2606 —
-      // blocking by suffix stops a malicious DNS record that points an
-      // internal hostname at a public IP from passing the safe-fetch gate.
-      if (hasBlockedSuffix(url)) {
-        return permissionError(`Access to reserved internal domain blocked: ${url}`);
       }
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -377,23 +362,6 @@ function normalizeUrl(url: string): string {
   } catch {
     return url;
   }
-}
-
-const BLOCKED_SUFFIXES: readonly string[] = [".internal", ".local"];
-
-function hostnameHasBlockedSuffix(host: string): boolean {
-  const lower = host.toLowerCase();
-  return BLOCKED_SUFFIXES.some((suffix) => lower === suffix.slice(1) || lower.endsWith(suffix));
-}
-
-function hasBlockedSuffix(url: string): boolean {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return false;
-  }
-  return hostnameHasBlockedSuffix(parsed.hostname);
 }
 
 const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {
