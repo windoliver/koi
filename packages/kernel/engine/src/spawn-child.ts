@@ -24,6 +24,7 @@ import type {
   DelegationId,
   EngineEvent,
   EngineInput,
+  GovernanceController,
   SpawnChannelPolicy,
   Tool,
 } from "@koi/core";
@@ -34,6 +35,7 @@ import {
   DEFAULT_UNSANDBOXED_POLICY,
   DELEGATION,
   ENV,
+  GOVERNANCE,
   isAttachResult,
   runId,
 } from "@koi/core";
@@ -344,6 +346,12 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   }
 
   const childPid = childRuntime.agent.pid;
+
+  // gov-8: resolve parent's GovernanceController (optional — engine works
+  // without one). Captured once here so both cleanup paths (terminated
+  // handler and dispose-override) read the same reference even if the
+  // parent is later disposed.
+  const _parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
 
   // 5. Register child in registry (if provided)
   if (options.registry !== undefined) {
