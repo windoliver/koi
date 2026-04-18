@@ -205,12 +205,14 @@ async function buildState(
   }
   const url = extractUrl(input);
 
-  const headers = new Headers(req?.headers);
-  if (init?.headers !== undefined) {
-    new Headers(init.headers).forEach((v, k) => {
-      headers.set(k, v);
-    });
-  }
+  // Native fetch(Request, init) REPLACES the Request's headers when
+  // init.headers is provided (Fetch spec: "set request's header list to a
+  // copy of init.headers"). A merge would leak the Request's original
+  // Authorization/Cookie/x-api-key back onto the wire even when the caller
+  // explicitly tried to scrub them — a real disclosure hazard in a wrapper
+  // whose job is to prevent that.
+  const headers =
+    init?.headers !== undefined ? new Headers(init.headers) : new Headers(req?.headers);
 
   const carry: FetchInit = {};
   const pick = <K extends keyof FetchInit>(key: K): void => {

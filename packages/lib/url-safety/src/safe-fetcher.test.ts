@@ -271,6 +271,50 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(2);
   });
 
+  test("init.headers replaces Request headers (native fetch semantics)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x", {
+      headers: {
+        Authorization: "Bearer stale",
+        "X-API-Key": "stale",
+      },
+    });
+    await safeFetch(req, { headers: { "X-New": "1" } });
+    expect(calls).toHaveLength(1);
+    // init.headers replaces — stale credentials on the Request must not leak.
+    expect(calls[0]?.headers["authorization"]).toBeUndefined();
+    expect(calls[0]?.headers["x-api-key"]).toBeUndefined();
+    expect(calls[0]?.headers["x-new"]).toBe("1");
+  });
+
+  test("init.headers={} clears Request headers", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x", {
+      headers: { Authorization: "Bearer stale" },
+    });
+    await safeFetch(req, { headers: {} });
+    // Caller explicitly cleared — no stale headers may survive.
+    expect(calls[0]?.headers["authorization"]).toBeUndefined();
+  });
+
+  test("omitting init.headers inherits from Request (no regression for common case)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x", {
+      headers: { "X-Trace": "abc" },
+    });
+    await safeFetch(req);
+    expect(calls[0]?.headers["x-trace"]).toBe("abc");
+  });
+
   test("rejects Request with bodyUsed=true (matches native fetch contract)", async () => {
     const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
