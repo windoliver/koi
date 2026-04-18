@@ -1869,27 +1869,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
       resetIterationBudgetPerRun: true,
-      governance: {
-        iteration: (() => {
-          const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
-          // Only pin `maxInactivityMs` to the resolved duration when
-          // the operator explicitly set KOI_MAX_DURATION_MS. Without
-          // that signal, leave the engine's default inactivity window
-          // in place so non-interactive hosts (automation, CI) keep
-          // their tighter hang budget. Interactive TUI users who want
-          // long model-think windows opt in via the env var.
-          return {
+      // The iteration guard (wired by the default guard extension) and
+      // the governance controller are separate enforcement paths. Both
+      // must see the same resolved duration or the tighter of the two
+      // wins — e.g. the guard's 5-min default would fire before the
+      // 30-min governance cap. Thread the resolved values into `limits`
+      // (guard) as well as `governance.iteration` (controller).
+      ...(() => {
+        const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
+        const explicitInactivity = isMaxDurationMsExplicit() ? resolvedDuration : undefined;
+        // Only pin `maxInactivityMs` to the resolved duration when the
+        // operator explicitly set KOI_MAX_DURATION_MS. Without that
+        // signal, leave the engine's default inactivity window in
+        // place so non-interactive hosts (automation, CI) keep their
+        // tighter hang budget.
+        const inactivityOverride =
+          explicitInactivity !== undefined ? { maxInactivityMs: explicitInactivity } : {};
+        return {
+          limits: {
             maxTurns: 25,
-            // Per-submit wall-clock cap. Default 30 min matches CC's "let it
-            // run, user Ctrl-C" model. Override with KOI_MAX_DURATION_MS env
-            // var (e.g. `KOI_MAX_DURATION_MS=3600000` for 1h, or `0` to
-            // disable the cap entirely).
             maxDurationMs: resolvedDuration,
-            ...(isMaxDurationMsExplicit() ? { maxInactivityMs: resolvedDuration } : {}),
             maxTokens: 1_000_000,
-          };
-        })(),
-      },
+            ...inactivityOverride,
+          },
+          governance: {
+            iteration: {
+              maxTurns: 25,
+              // Per-submit wall-clock cap. TUI default 30 min; `koi start`
+              // default 5 min (via `defaultMaxDurationMs`). Override with
+              // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
+              // for 1h, or `0` to disable the cap entirely).
+              maxDurationMs: resolvedDuration,
+              ...inactivityOverride,
+              maxTokens: 1_000_000,
+            },
+          },
+        };
+      })(),
     });
     // Hand the live runtime to the rotation closure above. The
     // engine never invokes `rotateSessionId` during construction
