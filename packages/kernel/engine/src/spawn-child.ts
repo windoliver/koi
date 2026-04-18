@@ -539,6 +539,19 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
+        // gov-8: pair spawn_release with the spawn record from Task 2 in
+        // the no-registry path. Same guard pattern as the registry-backed
+        // handler — runs once.
+        if (parentGovController !== undefined) {
+          try {
+            await parentGovController.record({ kind: "spawn_release" });
+          } catch (err: unknown) {
+            console.error(
+              `[spawn-child] governance spawn_release failed for child "${childPid.id}" (dispose path)`,
+              err,
+            );
+          }
+        }
       }
       await originalDispose();
     };
