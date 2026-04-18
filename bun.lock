@@ -74,6 +74,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/agent-summary": {
+      "name": "@koi/agent-summary",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -549,6 +558,7 @@
       },
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -635,6 +645,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -1182,6 +1193,8 @@
     "@koi-agent/cli": ["@koi-agent/cli@workspace:packages/meta/cli"],
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
+
+    "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 

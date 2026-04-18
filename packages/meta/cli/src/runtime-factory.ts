@@ -210,6 +210,23 @@ export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
 // ---------------------------------------------------------------------------
 
 export interface KoiRuntimeConfig {
+  /**
+   * When true, skip loading `~/.koi/hooks.json`. Per-invocation config
+   * instead of the global KOI_DISABLE_HOOKS env var so concurrent
+   * runtimes in the same process don't interfere with each other's hook
+   * policy. `koi start --headless` sets this true by default (issue
+   * #1648); interactive hosts leave it undefined.
+   */
+  readonly disableUserHooks?: boolean | undefined;
+  /**
+   * When true, build the default local filesystem backend with
+   * `allowExternalPaths: false` so whitelisted `fs_*` tools cannot
+   * escape the workspace via absolute paths or `..` segments. Only
+   * applies when `config.filesystem` is not explicitly provided.
+   * `koi start --headless` sets this true by default to prevent a
+   * `--allow-tool fs_read` from reading `/etc/passwd` on a CI runner.
+   */
+  readonly workspaceOnlyFs?: boolean | undefined;
   /** Model HTTP adapter — its complete/stream terminals are exposed to middleware. */
   readonly modelAdapter: ModelAdapter;
   /** Model name for ATIF metadata. */
@@ -1029,8 +1046,18 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // For the default local backend (`name === "local"`), the checkpoint
   // stack skips both — the restore protocol treats absent/local ops as
   // direct local I/O, which is the existing behavior.
+  // Headless runs lock the default local backend to workspace-only
+  // semantics: with allowExternalPaths=true, a whitelisted `fs_read`
+  // could resolve `/etc/passwd` or `../../secrets.env` and exfiltrate
+  // CI-runner secrets. Headless's --allow-tool whitelist is meant to
+  // contain tool ACCESS, not broaden filesystem scope. Interactive hosts
+  // keep the relaxed default so operators can still reference files
+  // outside the project during a REPL session.
   const filesystemBackend: FileSystemBackend =
-    config.filesystem ?? createLocalFileSystem(cwd, { allowExternalPaths: true });
+    config.filesystem ??
+    createLocalFileSystem(cwd, {
+      allowExternalPaths: config.workspaceOnlyFs !== true,
+    });
 
   const earlyContextHost: Record<string, unknown> = {
     ...(skillsRuntime !== undefined ? { skillsRuntime } : {}),
@@ -1084,19 +1111,27 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // present without one. Prompt hooks (kind: "prompt") are supported via a
   // lightweight PromptModelCaller that delegates to the TUI's model adapter
   // for single-shot verification.
-  const loadedHooks = await loadUserRegisteredHooks({
-    filterAgentHooks: true,
-    onAgentHooksFiltered: (names) => {
-      console.warn(
-        `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
-      );
-    },
-    onLoadError: (message) => {
-      // Per-entry loader errors: surface each so operators see which entry
-      // broke the file instead of silently losing every hook (issue #1781).
-      console.warn(`[koi tui] hooks.json: ${message}`);
-    },
-  });
+  // Hooks gate: per-invocation config.disableUserHooks takes precedence,
+  // falling back to the legacy KOI_DISABLE_HOOKS env var for callers that
+  // haven't migrated yet. Per-invocation scoping means two runtimes in the
+  // same process don't interfere — the env-mutation path was racy under
+  // concurrent invocations (issue #1648 round 8).
+  const hooksDisabled = config.disableUserHooks === true || process.env.KOI_DISABLE_HOOKS === "1";
+  const loadedHooks = hooksDisabled
+    ? []
+    : await loadUserRegisteredHooks({
+        filterAgentHooks: true,
+        onAgentHooksFiltered: (names) => {
+          console.warn(
+            `[koi tui] ${names.length} agent hook(s) skipped (not supported in TUI): ${names.join(", ")}`,
+          );
+        },
+        onLoadError: (message) => {
+          // Per-entry loader errors: surface each so operators see which entry
+          // broke the file instead of silently losing every hook (issue #1781).
+          console.warn(`[koi tui] hooks.json: ${message}`);
+        },
+      });
   // Merge plugin hooks (session tier) with user hooks (user tier).
   // Plugin hooks run first within their tier; user hooks in the next tier phase.
   const allHooks = mergeUserAndPluginHooks(loadedHooks, pluginComponents.hooks, {

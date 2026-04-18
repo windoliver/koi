@@ -31,6 +31,7 @@
  */
 
 import { createAgentResolver } from "@koi/agent-runtime";
+import { createAgentSummary } from "@koi/agent-summary";
 import type {
   Agent,
   AuditEntry,
@@ -1798,6 +1799,147 @@ const modelRouter = createModelRouter(
   ]),
 );
 const modelRouterMiddleware = createModelRouterMiddleware(modelRouter);
+
+// ---------------------------------------------------------------------------
+// @koi/agent-summary afterRecord helper
+//
+// Loads the freshly-recorded ATIF trajectory, extracts the single user turn +
+// model response into a 2-entry TranscriptLoadResult, calls summarizeSession
+// with a real OpenRouter modelCall, and writes the envelope as a sidecar at
+// <fixtures>/<name>.summary.json.
+//
+// Uses OpenAI's strict-JSON-schema response format for deterministic recording.
+// ---------------------------------------------------------------------------
+
+const AGENT_SUMMARY_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["goal", "status", "actions", "outcomes", "errors", "learnings"],
+  properties: {
+    goal: { type: "string" },
+    status: { type: "string", enum: ["succeeded", "partial", "failed"] },
+    actions: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "name", "paths", "detail"],
+        properties: {
+          kind: { type: "string", enum: ["tool_call", "edit", "decision"] },
+          name: { type: "string" },
+          paths: { type: ["array", "null"], items: { type: "string" } },
+          detail: { type: ["string", "null"] },
+        },
+      },
+    },
+    outcomes: { type: "array", items: { type: "string" } },
+    errors: { type: "array", items: { type: "string" } },
+    learnings: { type: "array", items: { type: "string" } },
+  },
+} as const;
+
+async function recordAgentSummarySidecar(fixtures: string, name: string): Promise<void> {
+  const trajPath = `${fixtures}/${name}.trajectory.json`;
+  const trajectory = (await Bun.file(trajPath).json()) as {
+    readonly session_id: string;
+    readonly steps: readonly {
+      readonly source: string;
+      readonly message?: string;
+      readonly observation?: {
+        readonly results?: readonly { readonly content: string }[];
+      };
+    }[];
+  };
+
+  const agentStep = trajectory.steps.find((s) => s.source === "agent");
+  if (!agentStep) {
+    throw new Error(`agent-summary afterRecord: no agent step in ${name}.trajectory.json`);
+  }
+  const userMsg = agentStep.message ?? "";
+  const assistantMsg = agentStep.observation?.results?.[0]?.content ?? "";
+
+  const entries = [
+    {
+      id: "u1",
+      role: "user" as const,
+      content: userMsg,
+      timestamp: 1,
+    },
+    {
+      id: "a1",
+      role: "assistant" as const,
+      content: assistantMsg,
+      timestamp: 2,
+    },
+  ];
+  const transcript = {
+    load: () => ({ ok: true, value: { entries, skipped: [] } }),
+    loadPage: () => ({
+      ok: true,
+      value: { entries: [], total: 0, hasMore: false },
+    }),
+    compact: () => ({ ok: true, value: { preserved: 0 } }),
+  };
+
+  const summarizer = createAgentSummary({
+    // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+    transcript: transcript as any,
+    modelCall: async (req) => {
+      const apiKey = Bun.env.OPENROUTER_API_KEY;
+      if (!apiKey) {
+        throw new Error("OPENROUTER_API_KEY required for agent-summary sidecar");
+      }
+      const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: "openai/gpt-4o-mini",
+          messages: req.messages,
+          max_tokens: req.maxTokens,
+          response_format: {
+            type: "json_schema",
+            json_schema: {
+              name: "session_summary",
+              strict: true,
+              schema: AGENT_SUMMARY_JSON_SCHEMA,
+            },
+          },
+        }),
+      });
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`openrouter ${resp.status}: ${body}`);
+      }
+      const json = (await resp.json()) as {
+        choices: { message: { content: string } }[];
+      };
+      return { text: json.choices[0]?.message?.content ?? "" };
+    },
+  });
+
+  // biome-ignore lint/suspicious/noExplicitAny: unsafe cast — recording-only script
+  const r = await summarizer.summarizeSession(trajectory.session_id as any, {
+    granularity: "medium",
+  });
+  if (!r.ok) {
+    throw new Error(`agent-summary afterRecord failed: ${r.error.code} ${r.error.message}`);
+  }
+  await Bun.write(
+    `${fixtures}/${name}.summary.json`,
+    JSON.stringify(
+      {
+        trajectorySessionId: trajectory.session_id,
+        recordedFrom: `${name}.trajectory.json`,
+        envelope: r.value,
+      },
+      null,
+      2,
+    ),
+  );
+}
 
 const queries: readonly QueryConfig[] = [
   // strict-agentic: exercises @koi/middleware-strict-agentic onBeforeStop gate.
@@ -3766,6 +3908,23 @@ const queries: readonly QueryConfig[] = [
         maxIterations: 3,
       }).middleware,
     ],
+  },
+
+  // @koi/agent-summary: records a real agent turn, then afterRecord runs
+  // summarizeSession() with a real OpenRouter call against the recorded
+  // user+assistant pair. Produces:
+  //   - agent-summary.trajectory.json — ATIF v1.6 agent-loop trajectory
+  //   - agent-summary.cassette.json — ModelChunk cassette (raw LLM response)
+  //   - agent-summary.summary.json — SummaryOk envelope from agent-summary
+  {
+    name: "agent-summary",
+    prompt: "List three advantages of using TypeScript over plain JavaScript, one sentence each.",
+    permissionMode: "bypass",
+    permissionRules: BYPASS_RULES,
+    permissionDescription: "bypass (allow all)",
+    hooks: [],
+    providers: [],
+    afterRecord: recordAgentSummarySidecar,
   },
 ];
 

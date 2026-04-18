@@ -10894,3 +10894,196 @@ describe("Golden: @koi/middleware-strict-agentic", () => {
     expect(result?.kind).toBe("continue");
   });
 });
+
+describe("Golden: @koi/agent-summary", () => {
+  test("createAgentSummary returns both session and range APIs", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "hello",
+              timestamp: 1,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "greet",
+          status: "succeeded",
+          actions: [],
+          outcomes: [],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    expect(typeof summary.summarizeSession).toBe("function");
+    expect(typeof summary.summarizeRange).toBe("function");
+  });
+
+  test("summarizeSession produces kind: clean envelope with correct identity", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "please",
+              timestamp: 1,
+            },
+            {
+              id: "a1" as never,
+              role: "assistant" as const,
+              content: "ok",
+              timestamp: 2,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "test",
+          status: "succeeded",
+          actions: [],
+          outcomes: ["done"],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    const r = await summary.summarizeSession("sess-golden" as never);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(`${r.value.summary.sessionId}`).toBe("sess-golden");
+      expect(r.value.summary.meta.rangeOrigin).toBe("raw");
+      expect(r.value.summary.meta.hasCompactionPrefix).toBe(false);
+    } else {
+      throw new Error("expected kind: clean");
+    }
+  });
+
+  test.each([
+    "high",
+    "medium",
+    "detailed",
+  ] as const)("replays recorded cassette (%s granularity) — real LLM output parses + validates", async (granularity) => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cassetteRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", `agent-summary-${granularity}.cassette.json`),
+      "utf8",
+    );
+    const cassette = JSON.parse(cassetteRaw) as {
+      readonly transcript: {
+        readonly entries: readonly {
+          readonly id: string;
+          readonly role: string;
+          readonly content: string;
+          readonly timestamp: number;
+        }[];
+        readonly skipped: readonly unknown[];
+      };
+      readonly modelResponse: { readonly text: string };
+      readonly summary: {
+        readonly goal: string;
+        readonly status: "succeeded" | "partial" | "failed";
+      };
+    };
+
+    const transcript = {
+      load: () => ({ ok: true, value: cassette.transcript }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({ text: cassette.modelResponse.text }),
+    });
+    const r = await summary.summarizeSession(`replay-${granularity}` as never, { granularity });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(r.value.summary.goal).toBeTruthy();
+      expect(r.value.summary.status).toBe(cassette.summary.status);
+      expect(r.value.summary.goal).toBe(cassette.summary.goal);
+    } else {
+      throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
+    }
+  });
+
+  test("ATIF trajectory + summary sidecar are well-formed (from record-cassettes.ts afterRecord)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const trajRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(trajRaw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly { readonly source: string }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("agent-summary");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    const sidecarRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.summary.json"),
+      "utf8",
+    );
+    const sidecar = JSON.parse(sidecarRaw) as {
+      readonly trajectorySessionId: string;
+      readonly recordedFrom: string;
+      readonly envelope: {
+        readonly kind: "clean" | "degraded" | "compacted";
+        readonly summary?: {
+          readonly sessionId: string;
+          readonly goal: string;
+          readonly status: "succeeded" | "partial" | "failed";
+        };
+      };
+    };
+    expect(sidecar.trajectorySessionId).toBe(trajectory.session_id);
+    expect(sidecar.recordedFrom).toBe("agent-summary.trajectory.json");
+    expect(sidecar.envelope.kind).toBe("clean");
+    if (sidecar.envelope.kind === "clean" && sidecar.envelope.summary) {
+      expect(sidecar.envelope.summary.sessionId).toBe(trajectory.session_id);
+      expect(sidecar.envelope.summary.goal).toBeTruthy();
+      expect(sidecar.envelope.summary.status).toBe("succeeded");
+    }
+  });
+});

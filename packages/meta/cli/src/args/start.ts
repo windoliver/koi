@@ -92,6 +92,12 @@ export interface StartFlags extends BaseFlags {
    * rather than a heuristic scanner.
    */
   readonly verifierInheritEnv: boolean;
+  /** CI/CD mode: NDJSON stdout, auto-deny ask perms, structured exit codes. Requires --prompt. */
+  readonly headless: boolean;
+  /** Whitelist of tool names to auto-allow in headless mode. Empty = deny all asks. */
+  readonly allowTools: readonly string[];
+  /** Hard timeout in ms. undefined = no timeout. Headless-only. */
+  readonly maxDurationMs: number | undefined;
 }
 
 export function parseStartFlags(rest: readonly string[]): StartFlags {
@@ -110,6 +116,9 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     readonly "allow-side-effects": boolean | undefined;
     readonly "verifier-inherit-env": boolean | undefined;
     readonly "allow-remote-fs": boolean | undefined;
+    readonly headless: boolean | undefined;
+    readonly "allow-tool": string[] | undefined;
+    readonly "max-duration-ms": string | undefined;
     readonly help: boolean | undefined;
     readonly version: boolean | undefined;
   };
@@ -131,6 +140,9 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
         "allow-side-effects": { type: "boolean", default: false },
         "verifier-inherit-env": { type: "boolean", default: false },
         "allow-remote-fs": { type: "boolean", default: false },
+        headless: { type: "boolean", default: false },
+        "allow-tool": { type: "string", multiple: true },
+        "max-duration-ms": { type: "string" },
         help: { type: "boolean", short: "h", default: false },
         version: { type: "boolean", short: "V", default: false },
       },
@@ -207,6 +219,76 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     }
   }
 
+  const headless = values.headless ?? false;
+  const allowTools = values["allow-tool"] ?? [];
+  const rawMaxDurationMs = values["max-duration-ms"];
+
+  if (!skipValidators) {
+    for (const tool of allowTools) {
+      // --allow-tool must name an exact tool ID. Reject wildcards, group
+      // expansions, and anything that could widen the whitelist via the
+      // pattern-permission backend's pattern syntax. The allow list feeds
+      // the backend directly, so `--allow-tool "*"` would restore full
+      // auto-allow, and `--allow-tool group:runtime` would authorize every
+      // tool in the runtime group. Either of those defeats the trust
+      // boundary headless mode is supposed to enforce.
+      if (!TOOL_ID_RE.test(tool)) {
+        throw new ParseError(
+          `--allow-tool values must be exact tool IDs (alphanumeric, '_', '-', '.', '/'). Got '${tool}'. Wildcards, 'group:' prefixes, and glob metacharacters are not allowed.`,
+        );
+      }
+    }
+  }
+
+  let maxDurationMs: number | undefined;
+  if (rawMaxDurationMs !== undefined) {
+    if (!skipValidators) {
+      if (!POSITIVE_INT_RE.test(rawMaxDurationMs)) {
+        throw new ParseError(
+          `--max-duration-ms must be a positive integer, got '${rawMaxDurationMs}'`,
+        );
+      }
+      const parsed = Number.parseInt(rawMaxDurationMs, 10);
+      // Node's setTimeout clamps values > 2^31 - 1 to 1ms and prints
+      // TimeoutOverflowWarning. Reject rather than silently run a ~1ms
+      // deadline that looks like a long one in the user's invocation.
+      if (parsed > MAX_DURATION_CEILING_MS) {
+        throw new ParseError(
+          `--max-duration-ms must be ≤ ${MAX_DURATION_CEILING_MS} (leaves ${SHUTDOWN_GRACE_MS}ms for the backstop timer that covers teardown); Node setTimeout cannot handle larger values. Got ${parsed}`,
+        );
+      }
+      maxDurationMs = parsed;
+    }
+  }
+
+  if (!skipValidators) {
+    if (headless && mode.kind !== "prompt") {
+      throw new ParseError(
+        "--headless requires --prompt: headless mode is one-shot and has no interactive REPL",
+      );
+    }
+    if (!headless && allowTools.length > 0) {
+      throw new ParseError(
+        "--allow-tool requires --headless: the interactive REPL prompts the user directly",
+      );
+    }
+    if (!headless && rawMaxDurationMs !== undefined) {
+      throw new ParseError(
+        "--max-duration-ms requires --headless: interactive sessions do not time out",
+      );
+    }
+    if (headless && untilPass.length > 0) {
+      throw new ParseError(
+        "--headless cannot be combined with --until-pass: loop mode writes non-NDJSON banners to stdout",
+      );
+    }
+    if (headless && values.resume !== undefined) {
+      throw new ParseError(
+        "--headless cannot be combined with --resume: resumed session history renders as human-readable banners on stdout, which would corrupt the NDJSON stream",
+      );
+    }
+  }
+
   return {
     command: "start" as const,
     version: versionRequested,
@@ -229,6 +311,9 @@ export function parseStartFlags(rest: readonly string[]): StartFlags {
     allowSideEffects,
     verifierInheritEnv: values["verifier-inherit-env"] ?? false,
     allowRemoteFs: values["allow-remote-fs"] ?? false,
+    headless,
+    allowTools,
+    maxDurationMs,
   };
 }
 
@@ -273,6 +358,28 @@ const DEFAULT_VERIFIER_TIMEOUT_MS = 120_000;
 // user fat-finger a safety-critical flag and get a different value
 // than they typed. Require the entire string to be digits.
 const POSITIVE_INT_RE = /^[1-9]\d*$/;
+
+/** Node's setTimeout max delay. Values above this silently clamp to 1ms. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Reserved grace window between the engine deadline and the backstop timer
+ * that covers shutdownRuntime(). The backstop uses
+ * `maxDurationMs + SHUTDOWN_GRACE_MS`, so the accepted parser ceiling must
+ * leave room for the grace without overflowing Node's setTimeout.
+ *
+ * Keep in sync with `SHUTDOWN_GRACE_MS` in commands/start.ts.
+ */
+const SHUTDOWN_GRACE_MS = 10_000;
+const MAX_DURATION_CEILING_MS = MAX_TIMER_MS - SHUTDOWN_GRACE_MS;
+
+/**
+ * Tool IDs are alphanumeric plus `_ - . /` (covers MCP namespaces like
+ * `mcp/server/tool` and builtins like `fs_read`, `web_fetch`). Explicitly
+ * excludes `*`, `?`, `:` (to block `group:*` expansion), and any other
+ * metacharacter the pattern backend treats specially.
+ */
+const TOOL_ID_RE = /^[A-Za-z0-9_./-]+$/;
 
 function resolveMaxIter(raw: string | undefined): number {
   if (raw === undefined) return DEFAULT_MAX_ITER;

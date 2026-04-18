@@ -8,6 +8,7 @@
 
 ## Recent additions
 
+- **`agent:summarize` command (#1645)**: new entry in `COMMAND_DEFINITIONS` under the Agent category. Palette label "Summarize", slash-command `/summarize`. Dispatched by the CLI host (`tui-command.ts`) which runs `@koi/agent-summary` over the in-memory transcript and emits the three-variant `SummaryOk` envelope as a `dispatchNotice`. The TUI side is purely the command registry + palette visibility; all summarization logic lives in the host. Command count is now 23.
 - **`/mcp` MCP server status view** (`McpView.tsx`): full-screen two-column interactive view, arrow-key navigation, Enter-to-authenticate. Status is sourced from Keychain check (instant) + live `getMcpStatus()` enrichment. Five status states: `connected`, `needs-auth`, `auth-pending-restart`, `error`, `pending`.
 - **`McpServerInfo`** state type and `set_mcp_status` reducer action for the new view.
 - **MCP tool display** (`tool-display.ts`): MCP-namespaced tools (`server__tool`) render as `Server ▸ subtitle` instead of falling through to suffix matching that mislabels them (e.g., previously `jira__jira_search` showed as "Web Search").

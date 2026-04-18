@@ -6,6 +6,7 @@ Command-line interface for running Koi agents locally. Provides interactive (`st
 
 ## Recent updates
 
+- **`/summarize` TUI command (#1645)**: new `agent:summarize` slash command + palette entry. Maps `runtimeHandle.transcript` (`InboundMessage[]`) to `TranscriptEntry[]` via `inferRole` + `flattenContentBlocks`, builds an in-memory `SessionTranscript` adapter, wraps the live `modelAdapter.complete()` as a `modelCall` for `@koi/agent-summary`, and renders the three-variant `SummaryOk` envelope (`clean` / `degraded` / `compacted`) as a `dispatchNotice`. Wires `@koi/agent-summary` as a CLI dep; no change to startup or runtime composition.
 - **`/mcp` TUI command**: full-screen interactive view of MCP server status (connected / needs-auth / error / pending / auth-pending-restart). Reads `.mcp.json` from `cwd` then `~/.koi/.mcp.json` (legacy `~/.claude/.mcp.json` still read with deprecation warning). Status comes from instant Keychain check + background `runtimeHandle.getMcpStatus()` enrichment.
 - **`nav:mcp-auth` handler**: triggers OAuth inline when user presses Enter on a needs-auth row. Per-server in-flight guard prevents double-Enter races. After success, status flips to `auth-pending-restart` since the live runtime requires a TUI restart to attach the newly-available tools.
 - **MCP auth pseudo-tools**: when the model sees `<server>__authenticate` in its tool list (emitted by `@koi/mcp`'s `AuthToolFactory`), it can trigger OAuth without leaving the conversation. The CLI provides the OAuth runtime via `mcp-auth-tools.ts` and `mcp-connection-factory.ts`.

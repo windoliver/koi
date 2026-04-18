@@ -1,0 +1,37 @@
+{
+  "trajectorySessionId": "agent-summary",
+  "recordedFrom": "agent-summary.trajectory.json",
+  "envelope": {
+    "kind": "clean",
+    "summary": {
+      "sessionId": "agent-summary",
+      "range": {
+        "fromTurn": 0,
+        "toTurn": 0,
+        "entryCount": 2
+      },
+      "goal": "List three advantages of using TypeScript over plain JavaScript.",
+      "status": "succeeded",
+      "actions": [
+        {
+          "kind": "tool_call",
+          "name": "list_advantages",
+          "paths": [],
+          "detail": "Listed advantages of TypeScript in response to user request."
+        }
+      ],
+      "outcomes": ["Identified three advantages of TypeScript."],
+      "errors": [],
+      "learnings": [],
+      "meta": {
+        "granularity": "medium",
+        "modelHint": "cheap",
+        "hash": "ad4fc26b81891ec4aa5ad46c585e6aae7563ae3f14238c0ddbeba303effcd0e9",
+        "generatedAt": 1776500051147,
+        "schemaVersion": 1,
+        "hasCompactionPrefix": false,
+        "rangeOrigin": "raw"
+      }
+    }
+  }
+}
