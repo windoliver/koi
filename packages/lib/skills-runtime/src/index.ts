@@ -1032,6 +1032,25 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // ---------------------------------------------------------------------------
 
   /**
+   * Uniform denial for any undeclared / revoked / un-discovered Tier 2 read
+   * (review #1896 round 7). Returning the declared allowlist in error
+   * context would be an enumeration oracle — a caller could probe any
+   * invalid path, read the returned list, and then issue valid reads.
+   * Keep the error shape identical for every denial reason.
+   */
+  function deniedReference(skillName: string, refPath: string): Result<string, KoiError> {
+    return {
+      ok: false,
+      error: {
+        code: "PERMISSION",
+        message: `Reference "${refPath}" is not available for skill "${skillName}".`,
+        retryable: false,
+        context: { name: skillName, refPath },
+      },
+    };
+  }
+
+  /**
    * Re-reads a skill's SKILL.md frontmatter and returns the current
    * `references:` allowlist. Runs on every Tier 2 call so policy revocation
    * via `invalidate(name)` takes effect immediately (review #1896 round 5).
@@ -1096,41 +1115,35 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       };
     }
 
-    // Frontmatter allowlist (review #1896 round 4). A Tier 2 read is a
-    // trust-boundary crossing: without this gate, the runtime would expose
-    // every in-tree file (e.g. .env, operator notes) to any caller that
-    // knows the skill name. Require the skill author to declare each
-    // surface-able path explicitly in SKILL.md's `references:` block.
+    // Tier 2 allowlist — intersection of two sources (review #1896 rounds 4–7):
     //
-    // Round 5: re-read SKILL.md on every call rather than trusting the
-    // cached discover-time metadata. If an operator edits `references:`
-    // to revoke a path and then calls `invalidate(name)` (which only
-    // clears the body cache for clean skills), the old allowlist would
-    // otherwise remain authoritative. Policy-revocation must take effect
-    // immediately, so the allowlist is read fresh from disk here.
-    const declared = await readDeclaredReferences(name, entry.dirPath);
-    if (!declared.ok) return declared;
-    if (declared.value.length === 0) {
-      return {
-        ok: false,
-        error: {
-          code: "PERMISSION",
-          message: `Skill "${name}" has no Tier 2 references declared. Add a 'references:' list to SKILL.md frontmatter to enable loadReference().`,
-          retryable: false,
-          context: { name, refPath },
-        },
-      };
+    // 1. The discovery-time snapshot (`entry.references`). This is the
+    //    upper bound: allowlist *expansions* made after discovery are
+    //    ignored until a rediscovery, so new paths go through the normal
+    //    discover pipeline (shadowing + security scan at load time)
+    //    instead of becoming live the instant SKILL.md is touched.
+    //
+    // 2. The current on-disk list. Re-read on every call so *revocations*
+    //    take effect immediately — an operator who removes a path from
+    //    SKILL.md followed by `invalidate(name)` (or even without it)
+    //    should lose access right away, without waiting for a full
+    //    re-discovery.
+    //
+    // A path is authorized only if it appears in BOTH sets.
+    const snapshot = entry.references;
+    if (snapshot === undefined || snapshot.length === 0) {
+      // Use a uniform message so failure shape does not distinguish
+      // "no declaration ever" from "declaration revoked" from "path not
+      // in the list" — every denied read looks identical to the caller.
+      return deniedReference(name, refPath);
     }
-    if (!declared.value.includes(refPath)) {
-      return {
-        ok: false,
-        error: {
-          code: "PERMISSION",
-          message: `Reference "${refPath}" is not in the declared references list for skill "${name}".`,
-          retryable: false,
-          context: { name, refPath, declared: declared.value },
-        },
-      };
+    if (!snapshot.includes(refPath)) {
+      return deniedReference(name, refPath);
+    }
+    const current = await readDeclaredReferences(name, entry.dirPath);
+    if (!current.ok) return current;
+    if (!current.value.includes(refPath)) {
+      return deniedReference(name, refPath);
     }
 
     return loadReference(name, entry.dirPath, refPath, {

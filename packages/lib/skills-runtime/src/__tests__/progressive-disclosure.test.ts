@@ -325,6 +325,53 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     if (!after.ok) expect(after.error.code).toBe("PERMISSION");
   });
 
+  test("PERMISSION errors do not leak the allowlist (review #1896 round 7)", async () => {
+    await writeSkillWithRefs(userRoot, "hidden", ["refs/secret.md", "refs/private.md"]);
+    await writeReference(userRoot, "hidden", "refs/secret.md", "s");
+    await writeReference(userRoot, "hidden", "refs/private.md", "p");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const result = await runtime.loadReference("hidden", "refs/does-not-exist.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      // No enumeration oracle: the error context must not contain the
+      // declared reference list (directly or under any key).
+      const flat = JSON.stringify(result.error);
+      expect(flat).not.toContain("refs/secret.md");
+      expect(flat).not.toContain("refs/private.md");
+    }
+  });
+
+  test("post-discovery allowlist expansions do not take effect until rediscovery (review #1896 round 7)", async () => {
+    // Skill discovered with a narrow allowlist.
+    await writeSkillWithRefs(userRoot, "growing", ["refs/a.md"]);
+    await writeReference(userRoot, "growing", "refs/a.md", "a");
+    await writeReference(userRoot, "growing", "refs/b.md", "b");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    // Operator edits SKILL.md to add `refs/b.md` AFTER discovery. Without
+    // a full rediscovery that path must remain unauthorized — additions
+    // have to go through the normal discover/scan flow.
+    await writeSkillWithRefs(userRoot, "growing", ["refs/a.md", "refs/b.md"]);
+
+    const original = await runtime.loadReference("growing", "refs/a.md");
+    expect(original.ok).toBe(true);
+
+    const added = await runtime.loadReference("growing", "refs/b.md");
+    expect(added.ok).toBe(false);
+    if (!added.ok) expect(added.error.code).toBe("PERMISSION");
+
+    // A full invalidation + rediscovery picks up the expansion.
+    runtime.invalidate();
+    await runtime.discover();
+    const rediscovered = await runtime.loadReference("growing", "refs/b.md");
+    expect(rediscovered.ok).toBe(true);
+  });
+
   test("rejects unsupported extensions (.sh, .py) outright (review #1896 round 5)", async () => {
     await writeSkillWithRefs(userRoot, "scripts", ["scripts/run.sh"]);
     // Skill declares run.sh but the runtime refuses to surface shell files
