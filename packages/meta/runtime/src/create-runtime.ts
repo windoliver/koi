@@ -79,7 +79,7 @@ import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
-import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
+import { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
 const DEFAULT_AGENT_NAME = "koi-runtime";
 
@@ -1960,13 +1960,21 @@ function resolveFilesystemInput(
  * Back-compat bridge for #1638: when the caller only supplies the legacy
  * `streamTimeoutMs`, map it onto `activityTimeout.maxDurationMs` so existing
  * behaviour (hard wall-clock kill) is preserved. When `activityTimeout` is
- * provided, it wins outright and the deprecated field is ignored.
+ * provided, the deprecated field is ignored — but we still fill in a default
+ * `maxDurationMs` (4h) if the caller omitted one, so no stream runs without a
+ * rollback-safe wall-clock backstop. Callers that want no wall-clock cap must
+ * set `maxDurationMs: Number.POSITIVE_INFINITY` (or a very large value) explicitly.
  */
 function resolveActivityTimeoutConfig(
   activityTimeout: ActivityTimeoutConfig | undefined,
   streamTimeoutMs: number | undefined,
 ): ActivityTimeoutConfig {
-  if (activityTimeout !== undefined) return activityTimeout;
-  const wallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
-  return { maxDurationMs: wallClockMs };
+  if (activityTimeout === undefined) {
+    const wallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
+    return { maxDurationMs: wallClockMs };
+  }
+  if (activityTimeout.maxDurationMs === undefined) {
+    return { ...activityTimeout, maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS };
+  }
+  return activityTimeout;
 }

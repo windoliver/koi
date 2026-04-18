@@ -243,6 +243,42 @@ describe("createRuntime", () => {
     expect(terminated?.reason).toBe("idle");
   });
 
+  test("empty activityTimeout still wraps with the default wall-clock backstop", async () => {
+    // An `activityTimeout: {}` with no fields set would, without the 4h default
+    // backstop, leave the wrapper as a no-op and drop the legacy
+    // `streamTimeoutMs` safety net. Prove the resolver fills in a default
+    // `maxDurationMs` so every activityTimeout path keeps a wall-clock cap.
+    let receivedSignal: AbortSignal | undefined;
+    const spyAdapter: EngineAdapter = {
+      engineId: "backstop-spy",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        receivedSignal = input.signal;
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: spyAdapter,
+      activityTimeout: {}, // caller opts in but leaves every knob unset
+    });
+
+    for await (const _ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      break;
+    }
+
+    // If the backstop were dropped, the wrapper would be a no-op and
+    // receivedSignal would be undefined (the adapter input has no signal here).
+    expect(receivedSignal).toBeDefined();
+  });
+
   test("stream timeout composes with caller signal", async () => {
     let receivedSignal: AbortSignal | undefined;
 

@@ -451,6 +451,15 @@ export interface RuntimeConfig {
 /** Default stream timeout: 2 minutes for live API calls. */
 export const DEFAULT_STREAM_TIMEOUT_MS = 120_000 as const;
 
+/**
+ * Default wall-clock fallback for `activityTimeout.maxDurationMs` (#1638).
+ * When a caller supplies `activityTimeout` without an explicit `maxDurationMs`,
+ * the runtime fills in this 4-hour cap so no stream is ever unbounded — idle
+ * timers do the bulk of termination, but a final wall-clock safety net stays
+ * in place as a rollback-safe backstop.
+ */
+export const DEFAULT_ACTIVITY_MAX_DURATION_MS = 14_400_000 as const;
+
 // ---------------------------------------------------------------------------
 // Debug introspection
 // ---------------------------------------------------------------------------

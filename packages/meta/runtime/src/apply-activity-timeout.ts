@@ -325,10 +325,23 @@ async function pumpInner(
 function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number): void {
   state.lastActivity = now();
   state.warnFired = false;
+  // Tool lifecycle (engine.ts contract):
+  //   tool_call_start → tool_call_delta → tool_call_end  (model streams the call)
+  //   [tool executes — can be many minutes of silence]
+  //   tool_result                                         (turn-runner emits after execution)
+  //
+  // The long silent gap is between tool_call_end and tool_result, so the
+  // pending-tools set must span tool_call_start..tool_result.
+  // tool_call_end is NOT a release signal — it only closes argument streaming.
   if (ev.kind === "tool_call_start") {
     state.pendingTools.add(ev.callId);
-  } else if (ev.kind === "tool_call_end") {
+  } else if (ev.kind === "tool_result") {
     state.pendingTools.delete(ev.callId);
+  } else if (ev.kind === "turn_end") {
+    // Belt-and-suspenders: a turn cannot end with in-flight tool calls. Drop
+    // any stragglers so an error path that swallowed tool_result cannot strand
+    // idle accounting forever.
+    state.pendingTools.clear();
   }
 }
 

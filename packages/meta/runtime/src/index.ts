@@ -105,4 +105,4 @@ export type {
   RuntimeHandle,
   ToolDebugEntry,
 } from "./types.js";
-export { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
+export { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";

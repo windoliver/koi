@@ -321,18 +321,22 @@ describe("applyActivityTimeout", () => {
     }
   });
 
-  test("long-running tool call is not classified as inactivity", async () => {
+  test("long-running tool execution (silent gap between tool_call_end and tool_result) is not idle", async () => {
     const callId = toolCallId("long-running-tool");
     let terminated = false;
     const adapter: EngineAdapter = {
       engineId: "tool-gap",
       capabilities: { text: true, images: false, files: false, audio: false },
+      // Event order matches the real engine flow: model streams the call first,
+      // turn-runner closes with tool_call_end, THEN executes the tool (silent
+      // gap), then emits tool_result once execution completes.
       async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
         yield { kind: "text_delta", delta: "thinking" };
         yield { kind: "tool_call_start", toolName: "slow_tool", callId };
-        // Tool runs for well over idleWarnMs + idleTerminateMs with no events:
+        yield { kind: "tool_call_delta", callId, delta: '{"arg":"x"}' };
+        yield { kind: "tool_call_end", callId, result: { name: "slow_tool", arguments: {} } };
+        // Tool executes here — no events for longer than idleWarnMs + idleTerminateMs.
         await sleep(150);
-        yield { kind: "tool_call_end", callId, result: "ok" };
         yield { kind: "tool_result", callId, output: "ok" };
         yield {
           kind: "done",

@@ -335,7 +335,8 @@ createRuntime({
 **Defaults and back-compat**
 
 - When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
-- When both are provided, `activityTimeout` wins outright.
+- When `activityTimeout` is provided but `maxDurationMs` is not, the runtime fills in a 4h default (`DEFAULT_ACTIVITY_MAX_DURATION_MS`) so no stream is ever unbounded. Callers that genuinely want no wall-clock cap must set `maxDurationMs: Number.POSITIVE_INFINITY` explicitly.
+- When both `streamTimeoutMs` and `activityTimeout` are provided, `activityTimeout` wins outright.
 - `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
 
 **Recommended profiles**
