@@ -173,20 +173,24 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
   const hostnameLower = parsed.hostname.toLowerCase();
   const bareHost = stripBrackets(hostnameLower);
 
-  // allowlistHosts and allowPrivate both skip the per-IP blocklist check,
-  // but they DO NOT skip DNS resolution — we still resolve so
-  // createSafeFetcher can pin to validated IPs. DNS failure remains fatal
-  // for hostname URLs regardless; pin-on-nothing would let the downstream
-  // socket connect to whatever the OS resolver returns later.
+  // allowlistHosts scope is per-host only — it bypasses the hostname
+  // (BLOCKED_HOSTS) and IP-literal checks ONLY when bareHost itself is the
+  // allowlisted entry. For hostname URLs, the per-IP blocklist STILL runs
+  // against the resolved A/AAAA set — allowlisting foo.com doesn't grant
+  // permission to reach 127.0.0.1 just because foo.com happens to resolve
+  // there. Callers who genuinely need to reach a private service by hostname
+  // must use `allowPrivate: true` (the wider, explicit opt-out).
   const isAllowlisted = options?.allowlistHosts?.includes(bareHost) === true;
-  const skipIpCheck = isAllowlisted || options?.allowPrivate === true;
+  const allowPrivate = options?.allowPrivate === true;
 
-  if (!skipIpCheck && BLOCKED_HOSTS.includes(bareHost)) {
+  if (!isAllowlisted && !allowPrivate && BLOCKED_HOSTS.includes(bareHost)) {
     return { ok: false, reason: `Blocked host ${bareHost}` };
   }
 
   if (isIpLiteral(bareHost)) {
-    if (!skipIpCheck && isBlockedIp(bareHost)) {
+    // IP literal: allowlisting the literal explicitly permits it; otherwise
+    // enforce the per-IP block (unless allowPrivate disables it).
+    if (!isAllowlisted && !allowPrivate && isBlockedIp(bareHost)) {
       return { ok: false, reason: `Blocked IP literal ${bareHost}` };
     }
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
@@ -207,7 +211,11 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
     return { ok: false, reason: `DNS returned no addresses for ${bareHost}` };
   }
 
-  if (!skipIpCheck) {
+  // Per-IP blocklist: only allowPrivate skips it. allowlistHosts does NOT
+  // — a trusted hostname resolving to 127.0.0.1 / metadata IPs / etc. is
+  // still rejected, because allowlist is about the HOSTNAME, not the
+  // address it happens to resolve to.
+  if (!allowPrivate) {
     for (const ip of addresses) {
       if (isBlockedIp(ip)) {
         return { ok: false, reason: `Host ${bareHost} resolves to blocked IP ${ip}` };

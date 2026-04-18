@@ -37,7 +37,7 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | Field | Default | Purpose |
 |-------|---------|---------|
 | `allowPrivate` | `false` | Skip private IP and blocked-host checks. For tests and local dev only. Protocol allowlist still applies; DNS resolution still runs and failure is still fatal. |
-| `allowlistHosts` | — | Per-hostname bypass of `BLOCKED_HOSTS` and `isBlockedIp`. DNS resolution still runs so `createSafeFetcher` can pin to validated IPs; the allowlist only skips the per-address blocklist gate. DNS failure for an allowlisted hostname is still fatal. |
+| `allowlistHosts` | — | Bypass the **hostname** blocklist for the listed entries. For IP-literal entries it also bypasses the per-IP check on that literal. For hostname entries it does NOT bypass the per-IP check on resolved A/AAAA — a trusted hostname that resolves to `127.0.0.1` / metadata IPs is still rejected (allowlist is about the host, not what it happens to resolve to). Callers who need to reach private addresses through a trusted hostname must set `allowPrivate: true`. DNS failure is always fatal. |
 | `allowedProtocols` | `["http:", "https:"]` | Protocol allowlist. Set to `["https:"]` for HTTPS-only clients. |
 | `dnsResolver` | strict `dns.resolve4` + `dns.resolve6` | Injectable resolver for tests. Defaults to the authoritative path (full A/AAAA enumeration, family-error fatal). Set `strictAuthoritativeDns: false` to fall back to `dns.lookup({ all: true })` for `/etc/hosts` / NSS / mDNS parity. |
 | `strictAuthoritativeDns` | `true` | Use authoritative `resolve4`/`resolve6` (strict rebinding invariant). `false` delegates to `dns.lookup` for OS-parity with the transport. |

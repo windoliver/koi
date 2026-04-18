@@ -123,15 +123,37 @@ describe("isSafeUrl", () => {
     if (!result.ok) expect(result.reason).toMatch(/DNS/i);
   });
 
-  test("allowlistHosts resolves DNS for hostnames and pins to IPs", async () => {
+  test("allowlistHosts does NOT grant access to private IPs via resolution", async () => {
+    // Trusting a hostname shouldn't grant reachability to 127.0.0.1
+    // just because the hostname happens to resolve there. The allowlist
+    // applies to the HOST, not the address it happens to resolve to.
+    // Callers that really need this must set allowPrivate: true.
     const result = await isSafeUrl("http://trusted.example.com/", {
       allowlistHosts: ["trusted.example.com"],
       dnsResolver: mapResolver({ "trusted.example.com": ["127.0.0.1"] }),
     });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/127\.0\.0\.1/);
+  });
+
+  test("allowlistHosts allows a hostname that resolves to a PUBLIC IP", async () => {
+    const result = await isSafeUrl("http://trusted.example.com/", {
+      allowlistHosts: ["trusted.example.com"],
+      dnsResolver: mapResolver({ "trusted.example.com": ["93.184.216.34"] }),
+    });
     expect(result.ok).toBe(true);
-    // Allowlist skips the IP blocklist but still surfaces resolved IPs so
-    // createSafeFetcher can pin and prevent rebinding.
-    if (result.ok) expect(result.resolvedIps).toEqual(["127.0.0.1"]);
+    if (result.ok) expect(result.resolvedIps).toEqual(["93.184.216.34"]);
+  });
+
+  test("allowPrivate=true DOES grant access to a private-resolving allowlisted hostname", async () => {
+    // When the caller explicitly opts out of private-IP gating, the
+    // hostname-resolves-to-127.0.0.1 path is allowed.
+    const result = await isSafeUrl("http://trusted.example.com/", {
+      allowlistHosts: ["trusted.example.com"],
+      allowPrivate: true,
+      dnsResolver: mapResolver({ "trusted.example.com": ["127.0.0.1"] }),
+    });
+    expect(result.ok).toBe(true);
   });
 
   test("allowlistHosts keeps DNS failure fatal even for allowlisted hostnames", async () => {
