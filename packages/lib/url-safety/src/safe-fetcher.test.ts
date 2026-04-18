@@ -366,6 +366,49 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["authorization"]).toBeUndefined();
   });
 
+  test("does NOT rewrite URL authority when dispatcher is supplied (proxy passthrough)", async () => {
+    const { fn, calls } = recordingFetch({
+      "http://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const dispatcher: unknown = { kind: "test-dispatcher" };
+    await safeFetch("http://public.example.com/x", { dispatcher } as unknown as RequestInit);
+    expect(calls).toHaveLength(1);
+    // Caller-supplied dispatcher wants hostname-based routing — do not pin.
+    expect(calls[0]?.url).toBe("http://public.example.com/x");
+    expect(calls[0]?.headers["host"]).toBeUndefined();
+  });
+
+  test("returns 304/300/305 with Location without following (non-redirect 3xx)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/notmod": new Response(null, {
+        status: 304,
+        headers: { Location: "https://evil.example.com/exfil" },
+      }),
+      "https://public.example.com/multi": new Response(null, {
+        status: 300,
+        headers: { Location: "https://evil.example.com/exfil" },
+      }),
+      "https://public.example.com/useproxy": new Response(null, {
+        status: 305,
+        headers: { Location: "https://evil.example.com/exfil" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+
+    const r1 = await safeFetch("https://public.example.com/notmod");
+    expect(r1.status).toBe(304);
+
+    const r2 = await safeFetch("https://public.example.com/multi");
+    expect(r2.status).toBe(300);
+
+    const r3 = await safeFetch("https://public.example.com/useproxy");
+    expect(r3.status).toBe(305);
+
+    // Only 3 requests total — none of the 3xx responses followed the Location.
+    expect(calls).toHaveLength(3);
+  });
+
   test("preserves dispatcher/agent init options (proxy/egress transport)", async () => {
     const capturedInits: RequestInit[] = [];
     const fn = (async (input: string | URL | Request, init?: RequestInit) => {

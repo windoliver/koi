@@ -355,9 +355,17 @@ function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
 // same ambiguous-failure reason.
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
-function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
+function shouldPinHttp(url: string, check: SafeUrlResult, carry: FetchInit): URL | undefined {
   if (!check.ok) return undefined;
   if (check.resolvedIps.length === 0) return undefined;
+  // If the caller supplied a custom transport (undici dispatcher / older
+  // fetch agent), they likely expect the request authority to reach the
+  // proxy / egress layer unchanged. Rewriting to the IP would break
+  // hostname-based routing / logging / policy. Let the transport handle
+  // resolution — the HTTPS-style sub-second TOCTOU window applies here too,
+  // but that trade-off is explicitly on the caller by supplying the transport.
+  const c = carry as Record<string, unknown>;
+  if (c["dispatcher"] !== undefined || c["agent"] !== undefined) return undefined;
   const parsed = new URL(url);
   if (parsed.protocol !== "http:") return undefined;
   // Already an IP literal — hostname matches one of the resolvedIps; no rewrite.
@@ -384,7 +392,7 @@ async function fetchWithPin(
   check: SafeUrlResult,
   state: HopState,
 ): Promise<Response> {
-  const parsed = shouldPinHttp(url, check);
+  const parsed = shouldPinHttp(url, check, state.carry);
   if (parsed === undefined) {
     state.headers.delete("host");
     return base(url, toInit(state));
@@ -450,11 +458,22 @@ export function createSafeFetcher(
 
       const response = await fetchWithPin(base, state.url, check, state);
 
-      if (response.status < 300 || response.status >= 400) {
+      // Only 301/302/303/307/308 are redirect statuses per the Fetch spec.
+      // 300 (Multiple Choices), 304 (Not Modified), 305 (Use Proxy, deprecated),
+      // and 306 (Reserved) are NOT redirects — returning them directly avoids
+      // duplicating requests / crossing origins on hostile 3xx responses that
+      // native fetch would surface to the caller untouched.
+      const isRedirectStatus =
+        response.status === 301 ||
+        response.status === 302 ||
+        response.status === 303 ||
+        response.status === 307 ||
+        response.status === 308;
+      if (!isRedirectStatus) {
         return response;
       }
 
-      // Honour the caller's redirect mode for 3xx responses.
+      // Honour the caller's redirect mode for real 3xx redirects.
       if (effectiveRedirect === "manual") return response;
       if (effectiveRedirect === "error") {
         await response.body?.cancel().catch(() => undefined);
