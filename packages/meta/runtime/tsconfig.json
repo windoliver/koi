@@ -29,6 +29,7 @@
     { "path": "../../lib/tools-builtin" },
     { "path": "../../lib/tools-core" },
     { "path": "../../lib/tools-web" },
+    { "path": "../../lib/url-safety" },
     { "path": "../../lib/tool-browser" },
     { "path": "../../lib/tool-notebook" },
     { "path": "../../lib/lsp" },

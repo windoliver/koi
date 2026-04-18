@@ -225,6 +225,9 @@ describe("createWebFetchTool", () => {
   });
 
   describe("SSRF protection", () => {
+    // The tool runs a DNS-free pre-flight using @koi/url-safety's static
+    // constants. Even if the injected executor is mocked / swapped / future-
+    // refactored, the tool still rejects obvious SSRF targets on its own.
     const tool = createWebFetchTool(
       mockExecutor(successResponse("ok", "text/plain")),
       "web",
@@ -239,10 +242,18 @@ describe("createWebFetchTool", () => {
       expect(result.code).toBe("PERMISSION");
     });
 
-    test("blocks AWS metadata endpoint", async () => {
+    test("blocks AWS metadata endpoint (IP literal)", async () => {
       const result = (await tool.execute({
         url: "http://169.254.169.254/latest/meta-data/",
       })) as { error: string; code: string };
+      expect(result.code).toBe("PERMISSION");
+    });
+
+    test("blocks .internal reserved suffix", async () => {
+      const result = (await tool.execute({ url: "http://service.internal/api" })) as {
+        error: string;
+        code: string;
+      };
       expect(result.code).toBe("PERMISSION");
     });
   });

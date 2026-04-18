@@ -3,11 +3,39 @@
  */
 
 import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
+import { BLOCKED_HOST_SUFFIXES, BLOCKED_HOSTS, isBlockedIp } from "@koi/url-safety";
 import { MAX_TIMEOUT_MS } from "./constants.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { stripHtml } from "./strip-html.js";
-import { isBlockedUrl } from "./url-policy.js";
 import type { WebExecutor } from "./web-executor.js";
+
+/**
+ * DNS-free pre-flight — catches obvious SSRF targets before any executor
+ * call using ONLY @koi/url-safety's static constants. Deliberately avoids
+ * DNS resolution so this decision can't disagree with the executor's
+ * configured resolver on transient lookups. If this returns a reason, the
+ * URL is definitively blocked regardless of DNS; if it returns undefined,
+ * the executor (with its full DNS-backed isSafeUrl) is the final decision.
+ */
+export function preflightBlockReason(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, "");
+  const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  if (BLOCKED_HOSTS.includes(bare)) return `Blocked host ${bare}`;
+  for (const suffix of BLOCKED_HOST_SUFFIXES) {
+    if (bare === suffix.slice(1) || bare.endsWith(suffix)) {
+      return `Blocked reserved suffix ${suffix} for host ${bare}`;
+    }
+  }
+  const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(bare) || bare.includes(":");
+  if (isIpLiteral && isBlockedIp(bare)) return `Blocked IP literal ${bare}`;
+  return undefined;
+}
 
 const ALLOWED_METHODS = ["GET", "HEAD"] as const;
 const ALLOWED_FORMATS = ["text", "markdown", "html"] as const;
@@ -70,8 +98,14 @@ export function createWebFetchTool(
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return { error: "url must start with http:// or https://", code: "VALIDATION" };
       }
-      if (isBlockedUrl(url)) {
-        return { error: "Access to private/internal URLs is blocked", code: "PERMISSION" };
+      // DNS-free pre-flight — rejects obvious SSRF targets (blocked hosts,
+      // reserved suffixes, private IP literals) before any executor call.
+      // Does NOT resolve DNS, so it cannot disagree with the executor's
+      // configured resolver on transient lookups. Defence-in-depth alongside
+      // the executor's full isSafeUrl check for hostnames.
+      const blockReason = preflightBlockReason(url);
+      if (blockReason !== undefined) {
+        return { error: `Access blocked: ${blockReason}`, code: "PERMISSION" };
       }
       const method = typeof args.method === "string" ? args.method.toUpperCase() : "GET";
       if (!(ALLOWED_METHODS as readonly string[]).includes(method)) {

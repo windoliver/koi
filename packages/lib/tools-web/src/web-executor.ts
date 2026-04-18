@@ -6,19 +6,19 @@
  */
 
 import type { KoiError, Result } from "@koi/core";
+import type { DnsResolver } from "@koi/url-safety";
+import { createSafeFetcher } from "@koi/url-safety";
 import {
-  CROSS_ORIGIN_SENSITIVE_HEADERS,
   DEFAULT_CACHE_TTL_MS,
   DEFAULT_MAX_BODY_CHARS,
   DEFAULT_MAX_CACHE_ENTRIES,
   DEFAULT_TIMEOUT_MS,
   MAX_REDIRECTS,
   MAX_TIMEOUT_MS,
-  REDIRECT_STATUS_CODES,
 } from "./constants.js";
 import { createLruCache } from "./lru-cache.js";
-import type { DnsResolverFn } from "./url-policy.js";
-import { isBlockedUrl, pinResolvedIp, resolveAndValidateUrl } from "./url-policy.js";
+
+export type DnsResolverFn = DnsResolver;
 
 // ---------------------------------------------------------------------------
 // Search provider types (defined locally to avoid L2→L2 dep)
@@ -224,6 +224,25 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   const inFlightCount = new Map<string, number>();
   const singleFlight = new Map<string, Promise<Result<WebFetchResult, KoiError>>>();
 
+  // Defer to @koi/url-safety's strict defaults (authoritative resolve4 +
+  // resolve6 with full-family coverage). HTTPS can't be IP-pinned (TLS
+  // SNI), so approving a URL only against what the local OS resolver
+  // returned would reopen rebinding when the OS filters one family.
+  // Callers needing OS-parity lookup (for /etc/hosts / NSS / mDNS) must
+  // pass their own resolver via config.dnsResolver — that's now an
+  // explicit security trade-off rather than a silent downgrade.
+  // Thread `allowHttps` into isSafeUrl's per-hop protocol check so the
+  // policy applies to redirect targets too. Without this, an `http://` URL
+  // that 302s to `https://...` would cross the policy boundary during
+  // redirect follow — the initial-URL scheme check (below) catches the
+  // first hop only.
+  const allowedProtocols: readonly string[] = allowHttps ? ["http:", "https:"] : ["http:"];
+  const safeFetchOptions = {
+    ...(dnsResolver !== undefined ? { dnsResolver } : {}),
+    allowedProtocols,
+    maxRedirects: MAX_REDIRECTS,
+  } as const;
+
   return {
     providerName: config.searchProvider?.name,
     fetch: async (
@@ -401,38 +420,40 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
         }
 
-        // SSRF first pass: fast string-based pattern match before DNS
-        if (isBlockedUrl(url)) {
-          clearTimeout(timer);
-          return publishFlight(permissionError(`Access to private/internal URL blocked: ${url}`));
-        }
+        // Wrap fetchFn per-call so we can observe the final URL the safe
+        // fetcher actually connects to (post-redirects, post-pin). Without
+        // this, createSafeFetcher's internal loop is opaque to the executor.
+        // Track the LOGICAL URL of the final hop — the one the caller /
+        // redirect chain intended, before createSafeFetcher rewrites it to
+        // a validated IP for HTTP pinning. When the wrapper injects a Host
+        // header (its synthetic marker), reconstruct the authority from
+        // that value so finalUrl retains the original hostname contract.
+        let lastRequestedUrl = url;
+        const trackingFetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+          const wireUrl =
+            typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const hostHdr = new Headers(init?.headers).get("host");
+          if (hostHdr !== null) {
+            try {
+              const logical = new URL(wireUrl);
+              logical.host = hostHdr;
+              lastRequestedUrl = logical.href;
+            } catch {
+              lastRequestedUrl = wireUrl;
+            }
+          } else {
+            lastRequestedUrl = wireUrl;
+          }
+          return (fetchFn as typeof fetch)(input, init);
+        }) as unknown as typeof fetch;
+        const safeFetch = createSafeFetcher(trackingFetchFn, safeFetchOptions);
 
-        // SSRF second pass: resolve and validate the IP to mitigate DNS rebinding
-        const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
-        if (dnsResult.blocked) {
-          clearTimeout(timer);
-          return publishFlight(permissionError(`DNS validation blocked: ${dnsResult.reason}`));
-        }
-
-        // Pin the resolved IP for HTTP to prevent DNS rebinding
-        const pinned = pinResolvedIp(url, dnsResult.ip);
-        const result = await executeRedirectLoop(
-          fetchFn,
-          dnsResolver ?? defaultDnsResolver,
-          pinned?.url ?? url,
-          url,
+        const response = await safeFetch(url, {
           method,
-          pinned?.hostHeader !== undefined
-            ? { ...options?.headers, Host: pinned.hostHeader }
-            : options?.headers,
-          options?.body,
-          controller.signal,
-        );
-
-        if (!result.ok) {
-          clearTimeout(timer);
-          return publishFlight(result);
-        }
+          headers: options?.headers,
+          body: options?.body,
+          signal: controller.signal,
+        });
 
         // Keep the request timer active across body consumption. If
         // `response.text()` hangs (slow stream, broken origin, body
@@ -441,22 +462,26 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // stalled body read can't leave the single-flight slot
         // suspended forever and blackhole every future caller for
         // this key.
-        const rawBody = await result.value.response.text();
+        const rawBody = await response.text();
         clearTimeout(timer);
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;
 
         const headers: Readonly<Record<string, string>> = Object.fromEntries([
-          ...result.value.response.headers.entries(),
+          ...response.headers.entries(),
         ]);
 
         const fetchResult: WebFetchResult = {
-          status: result.value.response.status,
-          statusText: result.value.response.statusText,
+          status: response.status,
+          statusText: response.statusText,
           headers,
           body,
           truncated,
-          finalUrl: result.value.finalUrl,
+          // lastRequestedUrl = URL of the final fetch hop, captured via the
+          // tracking fetchFn wrapper. Real Response.url would also carry this
+          // but mock fetches in tests don't bind URLs, so tracking the
+          // outbound call is more reliable across runtimes.
+          finalUrl: lastRequestedUrl,
           cached: false,
         };
 
@@ -502,6 +527,28 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return publishFlight({ ok: true, value: fetchResult });
       } catch (e: unknown) {
         clearTimeout(timer);
+        if (e instanceof Error && e.message.startsWith("url-safety:")) {
+          // @koi/url-safety uses the same error channel for policy blocks
+          // and resolver-layer failures. Distinguish three classes:
+          //   - Transient DNS (SERVFAIL / TIMEOUT / EAI_AGAIN) → EXTERNAL
+          //     + retryable, so the runtime/model can retry.
+          //   - Permanent DNS (ENOTFOUND / NXDOMAIN / "no addresses") →
+          //     EXTERNAL + NOT retryable; the hostname is bad input, no
+          //     amount of retrying will fix it.
+          //   - Everything else (policy blocks) → PERMISSION + not
+          //     retryable.
+          const isDnsFailure = /DNS resolution failed|DNS returned no addresses/i.test(e.message);
+          if (isDnsFailure) {
+            const hasPermanentMarker = /ENOTFOUND|NXDOMAIN|no addresses/i.test(e.message);
+            const hasTransientMarker = /SERVFAIL|TIMEOUT|EAI_AGAIN/i.test(e.message);
+            const retryable = hasTransientMarker || !hasPermanentMarker;
+            return publishFlight({
+              ok: false,
+              error: { code: "EXTERNAL", message: e.message, retryable },
+            });
+          }
+          return publishFlight(permissionError(e.message));
+        }
         return publishFlight(catchFetchError(url, method, e));
       } finally {
         releaseRefreshSlot();
@@ -570,117 +617,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       }
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Redirect loop (extracted to keep factory under size limit)
-// ---------------------------------------------------------------------------
-
-interface RedirectResult {
-  readonly response: Response;
-  readonly finalUrl: string;
-}
-
-async function executeRedirectLoop(
-  fetchFn: typeof globalThis.fetch,
-  dnsResolver: DnsResolverFn,
-  startUrl: string,
-  logicalUrl: string,
-  startMethod: string,
-  startHeaders: Readonly<Record<string, string>> | undefined,
-  startBody: string | undefined,
-  signal: AbortSignal,
-): Promise<Result<RedirectResult, KoiError>> {
-  let currentUrl = startUrl;
-  let currentLogicalUrl = logicalUrl;
-  let currentMethod = startMethod;
-  let currentHeaders = startHeaders;
-  let currentBody = startBody;
-  let response: Response | undefined;
-
-  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    response = await fetchFn(currentUrl, {
-      method: currentMethod,
-      headers: currentHeaders,
-      body: currentBody,
-      signal,
-      redirect: "manual",
-    });
-
-    if (!REDIRECT_STATUS_CODES.has(response.status)) break;
-
-    const location = response.headers.get("location");
-    if (location === null || location === "") break;
-
-    const nextUrl = new URL(location, currentLogicalUrl).href;
-
-    if (isBlockedUrl(nextUrl)) {
-      return permissionError(`Redirect to private/internal URL blocked: ${nextUrl}`);
-    }
-
-    const redirectDns = await resolveAndValidateUrl(nextUrl, dnsResolver);
-    if (redirectDns.blocked) {
-      return permissionError(`Redirect DNS validation blocked: ${redirectDns.reason}`);
-    }
-
-    // Strip sensitive headers on cross-origin redirects
-    if (currentHeaders !== undefined) {
-      const currentOrigin = new URL(currentLogicalUrl).origin;
-      const nextOrigin = new URL(nextUrl).origin;
-      if (currentOrigin !== nextOrigin) {
-        currentHeaders = Object.fromEntries(
-          Object.entries(currentHeaders).filter(
-            ([k]) => !CROSS_ORIGIN_SENSITIVE_HEADERS.has(k.toLowerCase()),
-          ),
-        );
-      }
-    }
-
-    const redirectPinned = pinResolvedIp(nextUrl, redirectDns.ip);
-    currentUrl = redirectPinned?.url ?? nextUrl;
-    currentLogicalUrl = nextUrl;
-    if (redirectPinned?.hostHeader !== undefined) {
-      currentHeaders = { ...currentHeaders, Host: redirectPinned.hostHeader };
-    } else if (currentHeaders !== undefined && "Host" in currentHeaders) {
-      const { Host: _, ...rest } = currentHeaders;
-      currentHeaders = rest;
-    }
-
-    // 303 always converts to GET; 301/302 convert for non-GET/HEAD
-    if (
-      response.status === 303 ||
-      ((response.status === 301 || response.status === 302) &&
-        currentMethod !== "GET" &&
-        currentMethod !== "HEAD")
-    ) {
-      currentMethod = "GET";
-      currentBody = undefined;
-    }
-  }
-
-  if (response === undefined) {
-    return {
-      ok: false,
-      error: {
-        code: "EXTERNAL",
-        message: `Fetch failed for ${logicalUrl}: no response received`,
-        retryable: true,
-      },
-    };
-  }
-
-  if (REDIRECT_STATUS_CODES.has(response.status)) {
-    return {
-      ok: false,
-      error: {
-        code: "EXTERNAL",
-        message: `Too many redirects (>${MAX_REDIRECTS}) for ${logicalUrl}`,
-        retryable: false,
-      },
-    };
-  }
-
-  return { ok: true, value: { response, finalUrl: currentLogicalUrl } };
 }
 
 // ---------------------------------------------------------------------------
@@ -809,11 +745,6 @@ function isCacheableResponse(result: WebFetchResult): boolean {
 
   return true;
 }
-
-const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {
-  const results = await Bun.dns.lookup(hostname, {});
-  return results.map((r) => r.address);
-};
 
 function permissionError<T>(message: string): Result<T, KoiError> {
   return {

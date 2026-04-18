@@ -3450,6 +3450,22 @@ export type { DeadLetterEntry, DeadLetterFilter, EventBackend, EventBackendConfi
 "
 `;
 
+exports[`@koi/core API surface ./governance has stable type surface 1`] = `
+"export { bj as ContextPressureTrend, cB as GOVERNANCE_VARIABLES, cD as GovernanceCheck, cE as GovernanceController, cF as GovernanceEvent, cG as GovernanceSnapshot, cH as GovernanceVariable, cI as GovernanceVariableContributor, ez as SensorReading, gw as governanceContributorToken } from './assembly-HASH.js';
+import './errors.js';
+import './common.js';
+import './message.js';
+import './channel.js';
+import './model-HASH.js';
+import './permission-HASH.js';
+import './hook.js';
+import './sandbox-HASH.js';
+import './webhook.js';
+import './zone.js';
+import './filesystem-HASH.js';
+"
+`;
+
 exports[`@koi/core API surface ./governance-backend has stable type surface 1`] = `
 "import './common.js';
 export { b2 as ComplianceRecord, b3 as ComplianceRecorder, bg as ConstraintChecker, bh as ConstraintQuery, bM as DEFAULT_VIOLATION_QUERY_LIMIT, cz as GOVERNANCE_ALLOW, cC as GovernanceBackend, cJ as GovernanceVerdict, dQ as PolicyEvaluator, dR as PolicyRequest, dS as PolicyRequestKind, g1 as VIOLATION_SEVERITY_ORDER, ga as Violation, gb as ViolationFilter, gc as ViolationPage, gd as ViolationSeverity, ge as ViolationStore } from './assembly-HASH.js';
@@ -4955,6 +4971,26 @@ interface PermissionBackend {
     readonly check: (query: PermissionQuery) => PermissionDecision | Promise<PermissionDecision>;
     readonly checkBatch?: (queries: readonly PermissionQuery[]) => readonly PermissionDecision[] | Promise<readonly PermissionDecision[]>;
     readonly dispose?: () => void | Promise<void>;
+    /**
+     * Signals that this backend marks fall-through denies distinctly from
+     * explicit denies. Required to opt into dual-key policy evaluation
+     * (e.g. bash prefix enrichment) where an unmarked deny on one key
+     * must NOT override an explicit allow/ask on another. Mark denies
+     * via either:
+     *   - the \`IS_DEFAULT_DENY\` symbol exported by \`@koi/middleware-permissions\`
+     *   - a public \`default: true\` (or \`defaultDeny: true\`) field on the
+     *     deny decision
+     *
+     * Callers that need dual-key semantics (e.g. \`resolveBashCommand\`-enabled
+     * permissions middleware) treat backends that leave this unset as
+     * legacy: construction is fail-closed by default to prevent silent
+     * policy downgrades. Operators can explicitly opt into single-key
+     * fallback via a caller-specific option (e.g.
+     * \`allowLegacyBackendBashFallback\` in \`@koi/middleware-permissions\`),
+     * in which case dual-key features (like bash prefix rules) are NOT
+     * enforced — only plain-tool rules apply.
+     */
+    readonly supportsDefaultDenyMarker?: boolean;
 }
 
 export type { PermissionBackend, PermissionDecision, PermissionQuery };
@@ -5865,21 +5901,5 @@ type MainToWorkerMessage = {
 };
 
 export type { MainToWorkerMessage, WorkerEngineInput, WorkerToMainMessage };
-"
-`;
-
-exports[`@koi/core API surface ./governance has stable type surface 1`] = `
-"export { bj as ContextPressureTrend, cB as GOVERNANCE_VARIABLES, cD as GovernanceCheck, cE as GovernanceController, cF as GovernanceEvent, cG as GovernanceSnapshot, cH as GovernanceVariable, cI as GovernanceVariableContributor, ez as SensorReading, gw as governanceContributorToken } from './assembly-HASH.js';
-import './errors.js';
-import './common.js';
-import './message.js';
-import './channel.js';
-import './model-HASH.js';
-import './permission-HASH.js';
-import './hook.js';
-import './sandbox-HASH.js';
-import './webhook.js';
-import './zone.js';
-import './filesystem-HASH.js';
 "
 `;

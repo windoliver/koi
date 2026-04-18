@@ -42,4 +42,25 @@ export interface PermissionBackend {
     queries: readonly PermissionQuery[],
   ) => readonly PermissionDecision[] | Promise<readonly PermissionDecision[]>;
   readonly dispose?: () => void | Promise<void>;
+
+  /**
+   * Signals that this backend marks fall-through denies distinctly from
+   * explicit denies. Required to opt into dual-key policy evaluation
+   * (e.g. bash prefix enrichment) where an unmarked deny on one key
+   * must NOT override an explicit allow/ask on another. Mark denies
+   * via either:
+   *   - the `IS_DEFAULT_DENY` symbol exported by `@koi/middleware-permissions`
+   *   - a public `default: true` (or `defaultDeny: true`) field on the
+   *     deny decision
+   *
+   * Callers that need dual-key semantics (e.g. `resolveBashCommand`-enabled
+   * permissions middleware) treat backends that leave this unset as
+   * legacy: construction is fail-closed by default to prevent silent
+   * policy downgrades. Operators can explicitly opt into single-key
+   * fallback via a caller-specific option (e.g.
+   * `allowLegacyBackendBashFallback` in `@koi/middleware-permissions`),
+   * in which case dual-key features (like bash prefix rules) are NOT
+   * enforced — only plain-tool rules apply.
+   */
+  readonly supportsDefaultDenyMarker?: boolean;
 }

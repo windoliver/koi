@@ -296,6 +296,24 @@ record(event) → switch on event.kind:
   "tool_success"  → totalToolCalls++
 ```
 
+### Event firing matrix
+
+`record()` is the dispatcher; the engine emits events from these locations:
+
+| Event | Emitter | Condition |
+|---|---|---|
+| `turn` | `engine-reconcile/governance-extension.ts` `onBeforeTurn` | every iteration |
+| `tool_success` / `tool_error` | `engine-reconcile/governance-extension.ts` `wrapToolCall` | per tool call (success / catch) |
+| `token_usage` | `engine-reconcile/governance-extension.ts` `wrapModelCall` + `wrapModelStream` | when adapter returns usage |
+| `spawn` | `engine/spawn-child.ts` after `createKoi()` | parent has `GOVERNANCE` component |
+| `spawn_release` | `engine/spawn-child.ts` terminated handler + dispose-override | paired with `spawn`, gated by ledger `released` flag |
+| `iteration_reset` | `engine/koi.ts` start of `runtime.run()` | `options.resetIterationBudgetPerRun === true` |
+| `session_reset` | `engine/koi.ts` `cycleSession()` | host-driven session boundary (TUI `/clear`) |
+| `forge` | _deferred_ | wired when v2 forge package lands |
+
+All emitters check that the relevant controller exists before recording —
+governance is optional per the L0 contract; the engine works without it.
+
 ### snapshot()
 
 Returns a frozen point-in-time view of all variables:
