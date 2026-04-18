@@ -4428,6 +4428,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     process.removeListener("SIGHUP", onProcessSighup);
     process.removeListener("SIGUSR1", onProcessSigusr1);
     process.stdin.removeListener("close", onStdinClose);
+    // If `done()` resolved because `shutdown()` called `appHandle.stop()`,
+    // shutdown() is still mid-flight — it has more awaits (runtime.dispose,
+    // otel flush, resume hint) before reaching its final
+    // `process.exit(exitCode)`. Returning here would let bin.ts's
+    // `process.exit(0)` fire first, clobbering the intended SIGUSR1/SIGTERM
+    // exit code. Await a never-resolving promise so bin.ts cannot reach
+    // its own `process.exit` until shutdown completes (or the hard-exit
+    // failsafe fires — 8 s for the full path, 6 s for the interim).
+    if (shutdownStarted) {
+      await new Promise<never>(() => {
+        /* never resolves — shutdown() or its hard-exit failsafe owns the exit */
+      });
+    }
   }
 }
 
