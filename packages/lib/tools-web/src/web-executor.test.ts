@@ -258,6 +258,40 @@ describe("createWebExecutor.fetch retryable", () => {
 // ---------------------------------------------------------------------------
 
 describe("createWebExecutor.fetch redirect SSRF", () => {
+  test("blocks redirect to .internal suffix BEFORE following", async () => {
+    const mutableCalls: string[] = [];
+    const fetchFn = mock(async (input: string | URL | Request) => {
+      const reqUrl =
+        typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      mutableCalls.push(reqUrl);
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://service.internal/leak" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://public.example.com/start");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+    // Redirect target was rejected — only the initial hop executed.
+    expect(mutableCalls).toHaveLength(1);
+  });
+
+  test("blocks redirect to .local suffix BEFORE following", async () => {
+    const fetchFn = mock(async () => {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "http://printer.local/admin" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const executor = createWebExecutor({ fetchFn, ...HTTPS_DEFAULTS });
+    const result = await executor.fetch("https://public.example.com/start");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
   test("blocks redirect to localhost BEFORE following", async () => {
     const mutableCalls: string[] = [];
     const fetchFn = mock(async (input: string | URL | Request) => {

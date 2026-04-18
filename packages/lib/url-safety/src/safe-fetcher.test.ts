@@ -479,23 +479,35 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(3);
   });
 
-  test("passes Request object through so internal transport state survives (hop 0)", async () => {
-    // Internal undici dispatcher / credentials-behaviour state on a Request
-    // sits on symbols that aren't introspectable from JS. Reconstructing a
-    // fresh fetch(url, init) would drop that state — we instead pass the
-    // Request object itself to base on hop 0 so those guarantees survive.
-    // This test verifies base() receives the Request reference when input
-    // was a Request and the caller didn't override init.headers.
-    const seen: Array<{ input: unknown; kind: string }> = [];
-    const fn = (async (input: string | URL | Request) => {
-      seen.push({ input, kind: input instanceof Request ? "Request" : "url" });
+  test("passes Request through only when trustCustomTransport: true (hop 0)", async () => {
+    // Internal transport state (undici dispatcher on symbols, credentials,
+    // cache, etc.) sits on a Request where JS can't introspect it.
+    // Reconstructing drops that state — but preserving it bypasses the
+    // trustCustomTransport guard. Default (false) is fail-closed:
+    // reconstruct + pass URL. Opt-in (true) preserves the Request.
+
+    // Default: fail-closed, base sees a URL string, not a Request.
+    const seenDefault: string[] = [];
+    const fnDefault = (async (input: string | URL | Request) => {
+      seenDefault.push(input instanceof Request ? "Request" : "url");
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
-    const req = new Request("https://public.example.com/x");
-    await safeFetch(req);
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.kind).toBe("Request");
+    const safeDefault = createSafeFetcher(fnDefault, { dnsResolver: publicResolver });
+    await safeDefault(new Request("https://public.example.com/x"));
+    expect(seenDefault).toEqual(["url"]);
+
+    // Opt-in: Request is passed through verbatim.
+    const seenTrust: string[] = [];
+    const fnTrust = (async (input: string | URL | Request) => {
+      seenTrust.push(input instanceof Request ? "Request" : "url");
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeTrust = createSafeFetcher(fnTrust, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
+    await safeTrust(new Request("https://public.example.com/x"));
+    expect(seenTrust).toEqual(["Request"]);
   });
 
   test("preserves dispatcher/agent init options (proxy/egress transport, opt-in)", async () => {

@@ -152,8 +152,20 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, cacheTtlMs)
       : undefined;
 
+  // Wrap the resolver so .internal / .local suffix checks apply on every
+  // hop — isSafeUrl runs the resolver for each redirect URL, and a throw
+  // here surfaces as a blocking DNS failure. Without this wrapper the
+  // first-hop pre-flight check could be bypassed by a `302 Location:
+  // http://service.internal/` redirect from an attacker-controlled site.
+  const suffixAwareResolver: DnsResolverFn = async (hostname) => {
+    if (hostnameHasBlockedSuffix(hostname)) {
+      throw new Error(`reserved internal domain: ${hostname}`);
+    }
+    return (dnsResolver ?? defaultDnsResolver)(hostname);
+  };
+
   const safeFetchOptions = {
-    dnsResolver: dnsResolver ?? defaultDnsResolver,
+    dnsResolver: suffixAwareResolver,
     maxRedirects: MAX_REDIRECTS,
     strictAuthoritativeDns: false,
   } as const;
@@ -352,6 +364,11 @@ function normalizeUrl(url: string): string {
 
 const BLOCKED_SUFFIXES: readonly string[] = [".internal", ".local"];
 
+function hostnameHasBlockedSuffix(host: string): boolean {
+  const lower = host.toLowerCase();
+  return BLOCKED_SUFFIXES.some((suffix) => lower === suffix.slice(1) || lower.endsWith(suffix));
+}
+
 function hasBlockedSuffix(url: string): boolean {
   let parsed: URL;
   try {
@@ -359,8 +376,7 @@ function hasBlockedSuffix(url: string): boolean {
   } catch {
     return false;
   }
-  const host = parsed.hostname.toLowerCase();
-  return BLOCKED_SUFFIXES.some((suffix) => host === suffix.slice(1) || host.endsWith(suffix));
+  return hostnameHasBlockedSuffix(parsed.hostname);
 }
 
 const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {

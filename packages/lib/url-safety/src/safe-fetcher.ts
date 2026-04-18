@@ -96,6 +96,9 @@ interface HopState {
   // semantics — if the caller did override, we can't rely on
   // `new Request(req, { headers })` to clear stale headers in all runtimes.
   readonly headersAreFromRequest: boolean;
+  // Snapshot of SafeFetcherOptions.trustCustomTransport threaded here so
+  // fetchWithPin can decide whether Request passthrough is safe.
+  readonly trustCustomTransport: boolean;
 }
 
 function extractUrl(input: Parameters<typeof fetch>[0]): string {
@@ -234,6 +237,7 @@ async function buildState(
   init: Parameters<typeof fetch>[1],
   maxBufferedBodyBytes: number,
   bufferStreamBodies: boolean,
+  trustCustomTransport: boolean,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
   // Match native fetch semantics: a consumed Request is only invalid if we'd
@@ -317,6 +321,7 @@ async function buildState(
     syntheticHost: false,
     originalRequest: req,
     headersAreFromRequest: req !== undefined && init?.headers === undefined,
+    trustCustomTransport,
   };
 }
 
@@ -482,14 +487,15 @@ async function fetchWithPin(
 ): Promise<Response> {
   const parsed = shouldPinHttp(url, check);
   if (parsed === undefined) {
-    // For hop 0 with an original Request, pass it through so internal
-    // transport state (undici dispatcher on symbols, etc.) survives. Only
-    // valid when the state's headers/body/method still match what the
-    // Request carried — if the caller overrode init.headers we have to
-    // reconstruct so replacement semantics are preserved.
+    // Request passthrough preserves internal transport state (undici
+    // dispatcher on symbols, agent, etc.) — BUT also smuggles that
+    // transport past trustCustomTransport because we can't introspect
+    // the internal symbols. Gate passthrough on explicit opt-in so the
+    // default path is fail-closed. When not trusted, always reconstruct
+    // from URL + init.
     const passthrough = state.originalRequest;
     state.originalRequest = undefined;
-    if (passthrough !== undefined && state.headersAreFromRequest) {
+    if (passthrough !== undefined && state.headersAreFromRequest && state.trustCustomTransport) {
       return base(passthrough, toInitWithoutHeaders(state));
     }
     return base(url, toInit(state));
@@ -581,7 +587,13 @@ export function createSafeFetcher(
     // Only pre-buffer streaming bodies when redirect-replay might happen.
     // redirect: "manual" / "error" never follows, so streams pass through.
     const bufferStreamBodies = effectiveRedirect === "follow" && maxRedirects > 0;
-    const state = await buildState(input, init, maxBufferedBodyBytes, bufferStreamBodies);
+    const state = await buildState(
+      input,
+      init,
+      maxBufferedBodyBytes,
+      bufferStreamBodies,
+      trustCustomTransport,
+    );
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       // Only clear Host if WE set it (pin-synthetic). A caller-supplied
