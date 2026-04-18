@@ -9,7 +9,7 @@
  * and denial tracking.
  */
 
-import { prefix as bashPrefix } from "@koi/bash-classifier";
+import { canonicalPrefix } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -609,8 +609,9 @@ export function createPermissionsMiddleware(
     if (raw === undefined) return toolId;
     const trimmed = raw.trim();
     if (trimmed.length === 0) return toolId;
-    const tokens = trimmed.split(/\s+/);
-    const p = bashPrefix(tokens);
+    // canonicalPrefix handles wrapper/env normalization AND unwraps
+    // interpreter hops like `bash -c "sudo rm"` → `sudo rm` before prefixing.
+    const p = canonicalPrefix(trimmed);
     if (p.length === 0) return toolId;
     return `${toolId}:${p}`;
   }

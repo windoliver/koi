@@ -419,6 +419,15 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     { label: "timeout wrapper with duration", command: "timeout 30 sudo rm" },
     { label: "stdbuf wrapper with options", command: "stdbuf -oL -eL sudo rm" },
     { label: "exec wrapper + abs path", command: "exec /usr/bin/sudo rm" },
+    // stacked wrappers (round 3)
+    { label: "stacked env + timeout", command: "env timeout 30 sudo rm" },
+    { label: "stacked command + env", command: "command env sudo rm" },
+    { label: "stacked nohup + env + abs path", command: "nohup env FOO=1 /usr/bin/sudo rm" },
+    // interpreter hops (round 3)
+    { label: 'bash -c "sudo rm"', command: `bash -c "sudo rm -rf /tmp"` },
+    { label: "sh -c 'sudo rm'", command: `sh -c 'sudo rm'` },
+    { label: "bash -lc with nested wrappers", command: `bash -lc "env FOO=1 sudo rm"` },
+    { label: "/bin/sh -c wrapping sudo", command: `/bin/sh -c "sudo rm"` },
   ];
 
   for (const { label, command } of bypasses) {

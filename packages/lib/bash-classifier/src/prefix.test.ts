@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ARITY } from "./arity.js";
-import { prefix } from "./prefix.js";
+import { canonicalPrefix, prefix } from "./prefix.js";
 
 describe("prefix", () => {
   test("returns empty string for empty tokens", () => {
@@ -110,5 +110,66 @@ describe("prefix", () => {
     // Callers who rule `bash:git push` must also rule `bash:git *` or similar
     // to catch this variant, OR rely on the structural DANGEROUS_PATTERNS.
     expect(prefix(["git", "-c", "protocol.version=2", "push"])).toBe("git -c");
+  });
+
+  // ------- stacked-wrapper regression tests (PR review round 3) -------
+
+  test("stacked wrappers peel to a fixed point", () => {
+    expect(prefix(["env", "timeout", "30", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["command", "env", "sudo", "rm"])).toBe("sudo");
+    expect(prefix(["nohup", "env", "FOO=1", "/usr/bin/sudo", "rm"])).toBe("sudo");
+    expect(prefix(["time", "nohup", "timeout", "5s", "git", "push"])).toBe("git push");
+  });
+
+  test("wrapper loop is bounded (adversarial deep stacking)", () => {
+    const deep = ["env", "env", "env", "env", "env", "env", "env", "env", "env", "sudo"];
+    // Bound is 8 peels; 9 wrappers + payload means the last wrapper (9th)
+    // may not peel — but the function must terminate and return *something*.
+    const r = prefix(deep);
+    expect(r.length).toBeGreaterThan(0);
+  });
+});
+
+describe("canonicalPrefix", () => {
+  test("delegates to prefix on plain commands", () => {
+    expect(canonicalPrefix("git push origin main")).toBe("git push");
+    expect(canonicalPrefix("npm run build")).toBe("npm run build");
+    expect(canonicalPrefix("")).toBe("");
+  });
+
+  test('unwraps `bash -c "…"` interpreter hops', () => {
+    expect(canonicalPrefix(`bash -c "sudo rm -rf /"`)).toBe("sudo");
+    expect(canonicalPrefix(`sh -c 'git push origin main'`)).toBe("git push");
+    expect(canonicalPrefix(`zsh -c "npm run build"`)).toBe("npm run build");
+  });
+
+  test("unwraps composite `-lc` / `-ic` flags", () => {
+    expect(canonicalPrefix(`bash -lc "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash -ic "git log"`)).toBe("git log");
+  });
+
+  test("unwraps absolute-path interpreters", () => {
+    expect(canonicalPrefix(`/bin/sh -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`/usr/bin/bash -c "git status"`)).toBe("git status");
+  });
+
+  test("recursion is bounded (nested interpreter hops)", () => {
+    // Deeply nested bash -c should still terminate and produce a prefix.
+    // Innermost is `rm foo`; after MAX_INTERP_DEPTH unwraps it falls back
+    // to the outer naive prefix. We only assert the function returns.
+    const nested = `bash -c "bash -c \\"bash -c \\\\\\"bash -c 'rm foo'\\\\\\"\\""`;
+    const r = canonicalPrefix(nested);
+    expect(typeof r).toBe("string");
+    expect(r.length).toBeGreaterThan(0);
+  });
+
+  test("combines interpreter unwrap with wrapper normalization", () => {
+    expect(canonicalPrefix(`bash -c "env FOO=1 /usr/bin/sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`/bin/sh -c "nohup timeout 30 git push"`)).toBe("git push");
+  });
+
+  test("non-interpreter invocations pass through unchanged", () => {
+    expect(canonicalPrefix("bash script.sh")).toBe("bash");
+    expect(canonicalPrefix("bash -v")).toBe("bash");
   });
 });

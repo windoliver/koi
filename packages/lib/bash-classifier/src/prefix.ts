@@ -48,45 +48,108 @@ function basename(t: string): string {
   return slash >= 0 && slash < t.length - 1 ? t.slice(slash + 1) : t;
 }
 
-function normalize(tokens: readonly string[]): readonly string[] {
+/** Single peel: strip leading env assignments + one wrapper (if any). */
+function normalizeOnce(tokens: readonly string[]): readonly string[] {
   let i = 0;
-  // Strip leading VAR=value assignments (shell-syntax inline env)
   while (i < tokens.length) {
     const t = tokens[i];
     if (t === undefined || !ENV_ASSIGN.test(t)) break;
     i++;
   }
-  // Peel one wrapper (basename-normalized). One level is enough in practice;
-  // avoids unbounded iteration on adversarial inputs like `env env env …`.
   const head = tokens[i];
-  if (head !== undefined) {
-    const base = basename(head);
-    if (WRAPPERS.has(base)) {
-      i++;
-      // env: consume any following VAR=value assignments
-      if (base === "env") {
-        while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
-      }
-      // timeout: consume one duration arg (digits + optional unit suffix)
-      if (base === "timeout" && i < tokens.length) {
-        const dur = tokens[i] ?? "";
-        if (/^\d/.test(dur)) i++;
-      }
-      // stdbuf: consume `-o…`/`-e…`/`-i…` option args (single token each)
-      if (base === "stdbuf") {
-        while (i < tokens.length && (tokens[i] ?? "").startsWith("-")) i++;
-      }
-      // Basename the new leading token if any
-      const next = tokens[i];
-      if (next !== undefined) {
-        return [basename(next), ...tokens.slice(i + 1)];
-      }
-      return [];
+  if (head === undefined) return tokens.slice(i);
+  const base = basename(head);
+  if (WRAPPERS.has(base)) {
+    i++;
+    if (base === "env") {
+      while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
     }
-    // Not a wrapper — basename the leading token and return
-    return [base, ...tokens.slice(i + 1)];
+    if (base === "timeout" && i < tokens.length) {
+      const dur = tokens[i] ?? "";
+      if (/^\d/.test(dur)) i++;
+    }
+    if (base === "stdbuf") {
+      while (i < tokens.length && (tokens[i] ?? "").startsWith("-")) i++;
+    }
+    return tokens.slice(i);
   }
-  return tokens.slice(i);
+  return [base, ...tokens.slice(i + 1)];
+}
+
+/**
+ * Iterate `normalizeOnce` to a fixed point with a bounded depth so stacked
+ * wrappers (`env timeout 30 sudo rm`, `command env sudo rm`) reduce to the
+ * underlying action, while adversarial inputs like `env env env …` cannot
+ * pin the loop.
+ */
+const MAX_PEEL_DEPTH = 8;
+
+function normalize(tokens: readonly string[]): readonly string[] {
+  let current = tokens;
+  for (let i = 0; i < MAX_PEEL_DEPTH; i++) {
+    const next = normalizeOnce(current);
+    if (next.length === current.length && next.every((t, idx) => t === current[idx])) {
+      break;
+    }
+    current = next;
+  }
+  return current;
+}
+
+/** Shell interpreter binaries whose `-c <arg>` form wraps a nested command. */
+const SHELL_INTERP = /^(?:ba|z|da|a)?sh$/;
+
+/**
+ * When `cmd` is a shell-interpreter invocation like `bash -c "<arg>"`,
+ * returns the inner script string with outer quotes stripped. Handles
+ * basename'd absolute paths (`/usr/bin/bash`), POSIX `-c` plus composite
+ * flags like `-lc`, `-ic`, `-eic`. Returns `null` for anything else.
+ */
+function extractShellDashCArg(cmdLine: string): string | null {
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) return null;
+
+  const firstSpace = trimmed.indexOf(" ");
+  if (firstSpace < 0) return null;
+
+  const firstToken = trimmed.slice(0, firstSpace);
+  const firstBase = basename(firstToken);
+  if (!SHELL_INTERP.test(firstBase)) return null;
+
+  const rest = trimmed.slice(firstSpace).trimStart();
+  // Match a -c or composite-c flag like -lc / -ic / -eic
+  const flagMatch = rest.match(/^-[a-zA-Z]*c(?:\s+|$)/);
+  if (flagMatch === null) return null;
+
+  let arg = rest.slice(flagMatch[0].length).trimStart();
+  if (arg.length === 0) return null;
+
+  // Strip outer matching quotes (single or double) when they span the arg.
+  const quote = arg[0];
+  if ((quote === '"' || quote === "'") && arg.endsWith(quote) && arg.length >= 2) {
+    arg = arg.slice(1, -1);
+  }
+  return arg.length > 0 ? arg : null;
+}
+
+const MAX_INTERP_DEPTH = 4;
+
+/**
+ * Canonical permission prefix from a raw command string, unwrapping
+ * shell-interpreter hops (`bash -c "sudo rm"` → prefix of `sudo rm`).
+ *
+ * Bounded recursion depth prevents adversarial nesting
+ * (`bash -c "sh -c 'bash -c ...'"`) from pinning the extractor. When the
+ * budget is exhausted, falls back to the outer prefix.
+ */
+export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
+  const trimmed = cmdLine.trim();
+  if (trimmed.length === 0) return "";
+  if (depth < MAX_INTERP_DEPTH) {
+    const inner = extractShellDashCArg(trimmed);
+    if (inner !== null) return canonicalPrefix(inner, depth + 1);
+  }
+  return prefix(trimmed.split(/\s+/));
 }
 
 export function prefix(tokens: readonly string[]): string {
