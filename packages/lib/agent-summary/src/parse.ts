@@ -1,10 +1,16 @@
 import { z } from "zod";
-import type { Action, Status } from "./types.js";
+
+export interface ParsedAction {
+  readonly kind: "tool_call" | "edit" | "decision";
+  readonly name: string;
+  readonly paths?: readonly string[] | undefined;
+  readonly detail?: string | undefined;
+}
 
 export interface ParsedContent {
   readonly goal: string;
-  readonly status: Status;
-  readonly actions: readonly Action[];
+  readonly status: "succeeded" | "partial" | "failed";
+  readonly actions: readonly ParsedAction[];
   readonly outcomes: readonly string[];
   readonly errors: readonly string[];
   readonly learnings: readonly string[];
