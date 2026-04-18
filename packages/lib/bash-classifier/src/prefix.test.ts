@@ -121,12 +121,18 @@ describe("prefix", () => {
     expect(prefix(["time", "nohup", "timeout", "5s", "git", "push"])).toBe("git push");
   });
 
-  test("wrapper loop is bounded (adversarial deep stacking)", () => {
-    const deep = ["env", "env", "env", "env", "env", "env", "env", "env", "env", "sudo"];
-    // Bound is 8 peels; 9 wrappers + payload means the last wrapper (9th)
-    // may not peel — but the function must terminate and return *something*.
-    const r = prefix(deep);
-    expect(r.length).toBeGreaterThan(0);
+  test("wrapper loop reaches a true fixed point regardless of stacking depth", () => {
+    // 20 `env` wrappers deep — sudo must still surface as the prefix.
+    // The old cap (8) allowed an attacker to hide `sudo` behind enough
+    // wrappers; the new implementation iterates to fixed point.
+    const deep = Array(20).fill("env").concat(["sudo", "rm"]);
+    expect(prefix(deep)).toBe("sudo");
+  });
+
+  test("mixed stacked wrappers peel fully", () => {
+    expect(
+      prefix(["env", "FOO=1", "nohup", "timeout", "30", "command", "/usr/bin/sudo", "rm"]),
+    ).toBe("sudo");
   });
 });
 
@@ -171,5 +177,45 @@ describe("canonicalPrefix", () => {
   test("non-interpreter invocations pass through unchanged", () => {
     expect(canonicalPrefix("bash script.sh")).toBe("bash");
     expect(canonicalPrefix("bash -v")).toBe("bash");
+  });
+
+  // ------- shell-aware parsing regression tests (PR review round 4) -------
+
+  test("skips leading short-flag options before -c", () => {
+    expect(canonicalPrefix(`bash -x -c "sudo rm -rf /"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash -i -c 'git push'`)).toBe("git push");
+    expect(canonicalPrefix(`sh -e -c "npm run build"`)).toBe("npm run build");
+  });
+
+  test("skips leading long-flag options before -c", () => {
+    expect(canonicalPrefix(`bash --noprofile -c "sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`bash --norc --noprofile -c 'rm -rf /'`)).toBe("rm");
+  });
+
+  test("shell-tokenizer handles quoted args with internal spaces", () => {
+    // Both quotes styles must preserve the internal spaces as one token.
+    expect(canonicalPrefix(`bash -c "env FOO=1 sudo rm"`)).toBe("sudo");
+    expect(canonicalPrefix(`sh -c 'nohup git push origin main'`)).toBe("git push");
+  });
+
+  test("shell-tokenizer handles escaped quotes inside double-quoted -c arg", () => {
+    expect(canonicalPrefix(`bash -c "echo \\"hi\\" && sudo rm"`)).toBe("echo");
+  });
+
+  test("falls through when a non-flag token appears before -c (can't parse confidently)", () => {
+    // `bash --rcfile /etc/bashrc -c "sudo rm"` → can't tell if --rcfile takes
+    // an arg. Fail closed in the sense of not unwrapping; operator's rule on
+    // `bash:bash*` still applies.
+    expect(canonicalPrefix(`bash --rcfile /etc/bashrc -c "sudo rm"`)).toBe("bash");
+  });
+
+  test("no -c flag at all: does not unwrap", () => {
+    expect(canonicalPrefix(`bash script.sh sudo`)).toBe("bash");
+  });
+
+  test("trailing positional args after -c arg are ignored", () => {
+    // `bash -c "sudo rm" arg0 arg1` — positional args go to the script as
+    // $0/$1; the executed command is the -c arg.
+    expect(canonicalPrefix(`bash -c "sudo rm" arg0 arg1`)).toBe("sudo");
   });
 });

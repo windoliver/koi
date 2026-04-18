@@ -77,19 +77,22 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
 }
 
 /**
- * Iterate `normalizeOnce` to a fixed point with a bounded depth so stacked
- * wrappers (`env timeout 30 sudo rm`, `command env sudo rm`) reduce to the
- * underlying action, while adversarial inputs like `env env env …` cannot
- * pin the loop.
+ * Iterate `normalizeOnce` to a true fixed point. Each peel consumes at
+ * least one token, so the loop terminates in at most `tokens.length`
+ * iterations regardless of stacking depth. No arbitrary cutoff — an
+ * attacker cannot silently retain a harmless-looking wrapper prefix by
+ * chaining more than N wrappers.
  */
-const MAX_PEEL_DEPTH = 8;
-
 function normalize(tokens: readonly string[]): readonly string[] {
   let current = tokens;
-  for (let i = 0; i < MAX_PEEL_DEPTH; i++) {
+  // Safety guard: each iteration strictly reduces or preserves length and
+  // returns a different array when it peels. `max` is an upper bound on
+  // possible peels (never reachable in practice).
+  const max = current.length + 1;
+  for (let i = 0; i < max; i++) {
     const next = normalizeOnce(current);
     if (next.length === current.length && next.every((t, idx) => t === current[idx])) {
-      break;
+      return current;
     }
     current = next;
   }
@@ -100,36 +103,97 @@ function normalize(tokens: readonly string[]): readonly string[] {
 const SHELL_INTERP = /^(?:ba|z|da|a)?sh$/;
 
 /**
- * When `cmd` is a shell-interpreter invocation like `bash -c "<arg>"`,
- * returns the inner script string with outer quotes stripped. Handles
- * basename'd absolute paths (`/usr/bin/bash`), POSIX `-c` plus composite
- * flags like `-lc`, `-ic`, `-eic`. Returns `null` for anything else.
+ * Minimal shell-aware tokenizer. Handles single and double quoted strings
+ * (preserving their contents as one token) and backslash escapes. Enough
+ * to correctly split `bash -c "sudo rm"` into three tokens with quotes
+ * stripped. Does NOT handle command substitution, variable expansion,
+ * heredocs, or other complex shell grammar — those caller-visible commands
+ * are caught by the structural `DANGEROUS_PATTERNS` regex set instead.
+ */
+function shellTokenize(s: string): readonly string[] {
+  const tokens: string[] = [];
+  let buf = "";
+  let inBuf = false;
+  let quote: "'" | '"' | null = null;
+  const len = s.length;
+  for (let i = 0; i < len; i++) {
+    const c = s[i];
+    if (c === undefined) break;
+    if (quote !== null) {
+      if (c === quote) {
+        quote = null;
+        // A closing quote adjacent to more chars still belongs to buf
+        continue;
+      }
+      if (c === "\\" && quote === '"' && i + 1 < len) {
+        buf += s[i + 1] ?? "";
+        i++;
+        inBuf = true;
+        continue;
+      }
+      buf += c;
+      inBuf = true;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      inBuf = true;
+      continue;
+    }
+    if (c === "\\" && i + 1 < len) {
+      buf += s[i + 1] ?? "";
+      i++;
+      inBuf = true;
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\n") {
+      if (inBuf) {
+        tokens.push(buf);
+        buf = "";
+        inBuf = false;
+      }
+      continue;
+    }
+    buf += c;
+    inBuf = true;
+  }
+  if (inBuf) tokens.push(buf);
+  return tokens;
+}
+
+/**
+ * When `cmdLine` is a shell-interpreter invocation that uses `-c <arg>`,
+ * returns the inner script string. Scans past an arbitrary number of
+ * leading flag tokens (e.g. `bash -x -c …`, `bash --noprofile -c …`) and
+ * stops on the first non-flag token (which would be a script path or
+ * positional arg, not a bash option). Uses shell-aware tokenization so
+ * quoted `-c "sudo rm"` is recognised as a single inner script argument.
+ * Returns `null` if we can't confidently extract the inner command.
  */
 function extractShellDashCArg(cmdLine: string): string | null {
-  const trimmed = cmdLine.trim();
-  if (trimmed.length === 0) return null;
+  const tokens = shellTokenize(cmdLine);
+  if (tokens.length < 2) return null;
 
-  const firstSpace = trimmed.indexOf(" ");
-  if (firstSpace < 0) return null;
+  const first = tokens[0];
+  if (first === undefined) return null;
+  if (!SHELL_INTERP.test(basename(first))) return null;
 
-  const firstToken = trimmed.slice(0, firstSpace);
-  const firstBase = basename(firstToken);
-  if (!SHELL_INTERP.test(firstBase)) return null;
-
-  const rest = trimmed.slice(firstSpace).trimStart();
-  // Match a -c or composite-c flag like -lc / -ic / -eic
-  const flagMatch = rest.match(/^-[a-zA-Z]*c(?:\s+|$)/);
-  if (flagMatch === null) return null;
-
-  let arg = rest.slice(flagMatch[0].length).trimStart();
-  if (arg.length === 0) return null;
-
-  // Strip outer matching quotes (single or double) when they span the arg.
-  const quote = arg[0];
-  if ((quote === '"' || quote === "'") && arg.endsWith(quote) && arg.length >= 2) {
-    arg = arg.slice(1, -1);
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === undefined) return null;
+    // Composite short-flag form that includes `c`: -c, -lc, -ic, -eic …
+    if (/^-[a-zA-Z]*c$/.test(t)) {
+      const arg = tokens[i + 1];
+      return arg !== undefined && arg.length > 0 ? arg : null;
+    }
+    // Any leading flag token — keep scanning.
+    if (t.startsWith("-")) continue;
+    // Non-flag, non-c token (script path, positional arg) before we
+    // found `-c`: bail rather than guess. The caller's rule on the
+    // shell interpreter itself (`bash:bash*`) still applies.
+    return null;
   }
-  return arg.length > 0 ? arg : null;
+  return null;
 }
 
 const MAX_INTERP_DEPTH = 4;
