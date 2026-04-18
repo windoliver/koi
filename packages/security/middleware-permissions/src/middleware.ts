@@ -1391,7 +1391,7 @@ export function createPermissionsMiddleware(
             // Unkeyable context — cannot scope the soft-deny counter safely → fail closed.
             const hardened = hardConvertedDecision("unkeyable context — failing closed");
             getTracker(sessionId).record({
-              toolId: request.toolId,
+              toolId: resource,
               reason: decision.reason,
               timestamp: clock(),
               principal: ctx.session.agentId,
@@ -1418,7 +1418,7 @@ export function createPermissionsMiddleware(
           if (counter.countAndCap(turnScopedKey, cap) === "over_cap") {
             const hardened = hardConvertedDecision(`soft-deny retry cap ${cap} exceeded this turn`);
             getTracker(sessionId).record({
-              toolId: request.toolId,
+              toolId: resource,
               reason: decision.reason,
               timestamp: clock(),
               principal: ctx.session.agentId,
@@ -1438,7 +1438,7 @@ export function createPermissionsMiddleware(
 
           // Soft path: record in isolated SoftDenyLog (NOT DenialTracker).
           getSoftDenyLog(sessionId).record({
-            toolId: request.toolId,
+            toolId: resource,
             reason: decision.reason,
             timestamp: clock(),
             principal: ctx.session.agentId,
@@ -1466,7 +1466,7 @@ export function createPermissionsMiddleware(
 
         // Native hard path: record with origin: "native", dispatch original decision, throw.
         getTracker(sessionId).record({
-          toolId: request.toolId,
+          toolId: resource,
           reason: decision.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
@@ -1487,7 +1487,7 @@ export function createPermissionsMiddleware(
       if (decision.effect === "ask") {
         // Pass a dispatch callback so each approval path fires the outcome
         // BEFORE calling next(request) — ensures recording even if the tool throws.
-        return handleAskDecision(ctx, request, next, decision, (d) => {
+        return handleAskDecision(ctx, request, resource, next, decision, (d) => {
           void ctx.dispatchPermissionDecision?.(query, d);
         });
       }
@@ -1554,6 +1554,7 @@ export function createPermissionsMiddleware(
   async function handleAskDecision(
     ctx: TurnContext,
     request: ToolRequest,
+    resource: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
@@ -1580,10 +1581,12 @@ export function createPermissionsMiddleware(
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
       try {
-        if (persistentStore.has(persistentUserId, persistentAid, request.toolId)) {
+        // Key persistent grants by the enriched resource so `always-allow` on
+        // `bash:git status` does not auto-approve unrelated `bash:rm`.
+        if (persistentStore.has(persistentUserId, persistentAid, resource)) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
-            toolId: request.toolId,
+            toolId: resource,
             reason: `auto-approved (persistent always-allow grant, agent: ${ctx.session.agentId})`,
             timestamp: persistentStartMs,
             principal: ctx.session.agentId,
@@ -1622,13 +1625,16 @@ export function createPermissionsMiddleware(
     // This is a per-tool session bypass — intentionally matches Claude Code's "a" key
     // behavior where pressing "a" approves ALL future calls to that tool in the session.
     // The user explicitly opted in by choosing "always-allow" over single "allow".
-    // Keyed by agentId+toolId so child/sub-agents cannot inherit a parent's approval.
-    const alwaysAllowKey = `${ctx.session.agentId}\0${request.toolId}`;
+    // Keyed by agentId+resource (enriched) so child/sub-agents cannot inherit
+    // a parent's approval and a grant for `bash:git status` does not leak to
+    // `bash:rm`. Falls through to the plain tool id when enrichment is off
+    // (resource === request.toolId).
+    const alwaysAllowKey = `${ctx.session.agentId}\0${resource}`;
     const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
     if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
       const alwaysAllowStartMs = clock();
       getTracker(ctx.session.sessionId as string).record({
-        toolId: request.toolId,
+        toolId: resource,
         reason: `auto-approved (always-allow session rule, agent: ${ctx.session.agentId})`,
         timestamp: alwaysAllowStartMs,
         principal: ctx.session.agentId,
@@ -1904,7 +1910,7 @@ export function createPermissionsMiddleware(
 
       if (approvalResult.kind === "deny") {
         getTracker(ctx.session.sessionId as string).record({
-          toolId: request.toolId,
+          toolId: resource,
           reason: approvalResult.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
@@ -1921,8 +1927,9 @@ export function createPermissionsMiddleware(
       }
 
       // Handle "always-allow" — add tool to session's always-allowed set.
-      // Keyed by agentId+toolId so sub-agents cannot inherit a parent's approval.
-      // For scope "always", also persist to durable storage (SQLite).
+      // Keyed by agentId+resource (enriched) so sub-agents cannot inherit a
+      // parent's approval and a grant for `bash:git status` does not leak to
+      // `bash:rm`. For scope "always", also persist to durable storage (SQLite).
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
         let allowed = alwaysAllowedBySession.get(sid);
@@ -1930,7 +1937,7 @@ export function createPermissionsMiddleware(
           allowed = new Set();
           alwaysAllowedBySession.set(sid, allowed);
         }
-        const grantKey = `${ctx.session.agentId}\0${request.toolId}`;
+        const grantKey = `${ctx.session.agentId}\0${resource}`;
         allowed.add(grantKey);
 
         // Persist to durable storage if scope is "always", store is configured,
@@ -1946,14 +1953,14 @@ export function createPermissionsMiddleware(
           grantUserId !== undefined
         ) {
           try {
-            persistentStore.grant(grantUserId, grantAgentId, request.toolId, clock());
+            persistentStore.grant(grantUserId, grantAgentId, resource, clock());
           } catch {
             // Approval was given — execute the tool. Permanence just wasn't recorded.
           }
         }
 
         getTracker(sid).record({
-          toolId: request.toolId,
+          toolId: resource,
           reason: `always-allow granted (scope: ${approvalResult.scope})`,
           timestamp: clock(),
           principal: ctx.session.agentId,

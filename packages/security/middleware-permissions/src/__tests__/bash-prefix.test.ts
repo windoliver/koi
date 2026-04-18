@@ -1,6 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { JsonObject } from "@koi/core/common";
-import type { ToolRequest, ToolResponse, TurnContext } from "@koi/core/middleware";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  ToolRequest,
+  ToolResponse,
+  TurnContext,
+} from "@koi/core/middleware";
 import type {
   PermissionBackend,
   PermissionDecision,
@@ -12,20 +18,28 @@ import { createPermissionsMiddleware } from "../middleware.js";
 // Test helpers (minimal — mirrors middleware.test.ts)
 // ---------------------------------------------------------------------------
 
-function makeTurnContext(): TurnContext {
-  return {
+function makeTurnContext(overrides?: {
+  readonly sessionId?: string;
+  readonly turnIndex?: number;
+  readonly requestApproval?: (req: ApprovalRequest) => Promise<ApprovalDecision>;
+}): TurnContext {
+  const base = {
     session: {
       agentId: "agent:test",
-      sessionId: "s-1" as never,
+      sessionId: (overrides?.sessionId ?? "s-1") as never,
       runId: "r-1" as never,
       userId: "user-1",
       metadata: {},
     },
-    turnIndex: 0,
+    turnIndex: overrides?.turnIndex ?? 0,
     turnId: "t-1" as never,
-    messages: [],
+    messages: [] as const,
     metadata: {},
   };
+  if (overrides?.requestApproval !== undefined) {
+    return { ...base, requestApproval: overrides.requestApproval };
+  }
+  return base;
 }
 
 function makeToolRequest(toolId: string, input: JsonObject = {}): ToolRequest {
@@ -195,5 +209,158 @@ describe("bash prefix resource enrichment", () => {
     });
     await mw.wrapToolCall?.(makeTurnContext(), makeToolRequest("bash", {}), noopHandler);
     expect(seen).toEqual(["bash"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression tests for approval + denial tracking scoping (PR review)
+// ---------------------------------------------------------------------------
+
+describe("bash prefix — denial + approval tracking is scoped per prefix", () => {
+  test("denial escalation triggers per-prefix, not across prefixes", async () => {
+    // Escalation: after 2 denies of the same resource, the tracker auto-denies
+    // even without backend consultation. We deny `bash:rm` twice, then check
+    // that `bash:ls` is still allowed (separate escalation bucket).
+    const backend: PermissionBackend = {
+      check(q: PermissionQuery): PermissionDecision {
+        if (q.resource === "bash:rm") return { effect: "deny", reason: "nope" };
+        return { effect: "allow" };
+      },
+    };
+    const mw = createPermissionsMiddleware({
+      backend,
+      denialEscalation: { threshold: 2, windowMs: 60_000 },
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+    const ctx = makeTurnContext({ sessionId: "s-escalation" });
+
+    // Two denied `bash:rm` calls
+    await expect(
+      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm foo" }), noopHandler),
+    ).rejects.toThrow();
+    await expect(
+      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm bar" }), noopHandler),
+    ).rejects.toThrow();
+
+    // `bash:ls` must still be allowed — escalation bucket is per resource.
+    // If escalation leaked across prefixes, this would throw.
+    const result = await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "ls -la" }),
+      noopHandler,
+    );
+    expect(result?.output).toBe("ok");
+  });
+
+  test("always-allow on one prefix does not auto-approve other prefixes", async () => {
+    // Backend returns ask for everything → forces the approval flow.
+    const backend: PermissionBackend = {
+      check: () => ({ effect: "ask", reason: "review" }),
+    };
+
+    // Approval handler grants always-allow for the FIRST call only. If the
+    // grant leaks across prefixes, the second call (different prefix) should
+    // bypass this handler. Track invocations to detect leakage.
+    const approvals: string[] = [];
+    const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+      approvals.push(req.toolId);
+      // First call: grant always-allow. Subsequent calls: deny.
+      if (approvals.length === 1) {
+        return { kind: "always-allow", scope: "session" };
+      }
+      return { kind: "deny", reason: "not approved" };
+    };
+
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+
+    const ctx = makeTurnContext({
+      sessionId: "s-grant",
+      requestApproval: approvalHandler,
+    });
+
+    // 1st call: approve `bash:git status` with always-allow session
+    const r1 = await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "git status" }),
+      noopHandler,
+    );
+    expect(r1?.output).toBe("ok");
+
+    // 2nd call: repeat `bash:git status` → session grant auto-approves (handler NOT called)
+    await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "git status --short" }),
+      noopHandler,
+    );
+    expect(approvals).toHaveLength(1); // still just the first
+
+    // 3rd call: DIFFERENT prefix `bash:rm` → handler must be consulted again.
+    // If the grant leaked, approvalHandler would not be called and the tool
+    // would auto-execute — bypassing human review for an unrelated command.
+    await expect(
+      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm -rf /tmp" }), noopHandler),
+    ).rejects.toThrow("not approved");
+    expect(approvals).toHaveLength(2); // handler WAS consulted for rm
+  });
+
+  test("persistent always-allow grant is keyed on enriched resource", async () => {
+    // Simulate a persistent store that only knows one grant: `bash:git status`
+    const grants = new Set<string>();
+    const persistentApprovals = {
+      has: mock((_u: string, _a: string, toolId: string) => grants.has(toolId)),
+      grant: mock((_u: string, _a: string, toolId: string, _t: number) => {
+        grants.add(toolId);
+      }),
+      revoke: mock(() => true),
+      revokeAll: mock(() => {
+        grants.clear();
+      }),
+      list: mock(() => []),
+      close: mock(() => {}),
+    };
+
+    // Pre-seed a grant for the enriched resource
+    grants.add("bash:git status");
+
+    const backend: PermissionBackend = {
+      check: () => ({ effect: "ask", reason: "review" }),
+    };
+
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "deny", reason: "x" }),
+    );
+
+    const mw = createPermissionsMiddleware({
+      backend,
+      persistentApprovals,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // `bash:git status` → persistent grant hit, auto-approved without prompting
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git status" }), noopHandler);
+    expect(approvalHandler).not.toHaveBeenCalled();
+
+    // `bash:rm` → NOT granted, must prompt (handler returns deny)
+    await expect(
+      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm foo" }), noopHandler),
+    ).rejects.toThrow();
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+
+    // Persistent store was queried with the enriched resource
+    expect(persistentApprovals.has).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "bash:git status",
+    );
+    expect(persistentApprovals.has).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "bash:rm",
+    );
   });
 });
