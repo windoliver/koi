@@ -1628,6 +1628,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       }
     },
   }).then((handle) => {
+    // If an interim SIGUSR1 teardown started while createKoiRuntime was
+    // in flight (#1906 R10), the teardown couldn't dispose `handle`
+    // because it wasn't assigned yet. Dispose it here directly and do
+    // NOT assign `runtimeHandle` — otherwise the rest of bootstrap
+    // (transcript priming, /mcp refresh) would run against an
+    // already-disposed runtime.
+    if (shutdownStarted) {
+      handle.shutdownBackgroundTasks();
+      void handle.runtime.dispose().catch(() => {
+        /* best effort — hard-exit failsafe will still fire */
+      });
+      return;
+    }
     runtimeHandle = handle;
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
