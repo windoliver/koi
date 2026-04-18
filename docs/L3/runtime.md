@@ -272,3 +272,11 @@ The runtime now exposes `createDecisionLedger()` on `TuiRuntimeHandle`, wrapping
 - When the middleware sees `disposition: "soft"` on a deny, it returns a synthetic `ToolResponse` (with `metadata.blockedByHook: true`, `metadata.permissionDenied: true`, `metadata.hookName: "permissions"`) instead of throwing — letting the agent loop continue and adapt. See `docs/L2/middleware-permissions.md` for per-turn retry cap, filter-time visibility rules, `SoftDenyLog`/`DenialRecord` additions, and the golden trajectory (`fixtures/permission-soft-deny.trajectory.json`).
 
 Runtime behavior is unchanged for any rule that does not set `on_deny: "soft"`. No downstream wiring changes are required in this package; observability middleware (`event-trace`, `middleware-report`, `session-transcript`) already treats `blockedByHook` responses as non-executions.
+
+### Phase-2 DX pass (task-tools)
+
+`@koi/task-tools` descriptors were updated with "use PROACTIVELY"
+guidance so the agent auto-plans multi-step work. The L3 wiring
+itself is unchanged — task tools continue to be contributed via
+`executionStack` when the spawn preset is active. See
+`docs/L2/task-tools.md` for the descriptor changes.
