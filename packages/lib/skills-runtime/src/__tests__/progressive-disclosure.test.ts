@@ -578,6 +578,43 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     await rmP(outside, { recursive: true, force: true });
   });
 
+  test("in-flight loadReference() loses authorization after invalidate(name) (review #1896 round 14)", async () => {
+    await writeSkillWithRefs(userRoot, "slow", ["refs/note.md"]);
+    await writeReference(userRoot, "slow", "refs/note.md", "private");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    // Start the Tier 2 read, immediately revoke by edit + invalidate.
+    const inflight = runtime.loadReference("slow", "refs/note.md");
+    await writeSkillWithRefs(userRoot, "slow", []);
+    runtime.invalidate("slow");
+
+    const result = await inflight;
+    // The fresh-read inside loadReferenceImpl sees the revoked list,
+    // OR the post-read epoch guard fires — either way, the caller
+    // must NOT receive "private" content.
+    if (result.ok) {
+      throw new Error(`expected revocation, got "${result.value}"`);
+    }
+    expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("rejects backslash-containing refPath regardless of platform (review #1896 round 14)", async () => {
+    await writeSkillWithRefs(userRoot, "winpath", ["refs/note.md"]);
+    await writeReference(userRoot, "winpath", "refs/note.md", "ok");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const result = await runtime.loadReference("winpath", "..\\escape.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+  });
+
   test("does not cache reference bodies between calls", async () => {
     await writeSkillWithRefs(userRoot, "rewritable", ["refs/note.md"]);
     await writeReference(userRoot, "rewritable", "refs/note.md", "v1");

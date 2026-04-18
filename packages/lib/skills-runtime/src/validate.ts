@@ -48,7 +48,9 @@ const frontmatterSchema = z
       })
       .optional(),
     // Tier 2 reference allowlist (issue #1642 round 4). Relative POSIX paths
-    // only; leading slashes, `..` segments, and empty strings are rejected.
+    // only; leading slashes, `..` segments, empty strings, and backslashes
+    // (round 14 — would be treated as separators on Windows runtimes) are
+    // all rejected at parse time.
     references: z
       .array(
         z
@@ -57,10 +59,11 @@ const frontmatterSchema = z
             (p) =>
               p.length > 0 &&
               !p.startsWith("/") &&
+              !p.includes("\\") &&
               !p.split("/").some((seg) => seg === "" || seg === "." || seg === ".."),
             {
               message:
-                "reference paths must be non-empty, relative POSIX paths without '..' segments",
+                "reference paths must be non-empty, relative POSIX paths without '..' segments or backslashes",
             },
           ),
       )

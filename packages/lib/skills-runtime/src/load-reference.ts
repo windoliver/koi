@@ -177,6 +177,19 @@ export function validateReferencePath(name: string, refPath: string): Result<und
       "INVALID_REF_PATH",
     );
   }
+  // Backslash rejection (review #1896 round 14). On Windows runtimes,
+  // path.resolve()/join() treat `\\` as a separator — `..\\x.md` would
+  // appear as a single segment to a POSIX-only split check but behave
+  // as traversal at resolve time. The contract is relative POSIX
+  // paths only, so fail closed on any backslash regardless of platform.
+  if (refPath.includes("\\")) {
+    return validationError(
+      name,
+      refPath,
+      `Reference path for skill "${name}" must not contain backslashes — use POSIX "/" separators`,
+      "PATH_TRAVERSAL",
+    );
+  }
   if (isAbsolute(refPath)) {
     return validationError(
       name,

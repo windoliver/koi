@@ -1131,11 +1131,24 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     name: string,
     refPath: string,
   ): Promise<Result<string, KoiError>> => {
+    // Epoch snapshot (review #1896 round 14). A Tier 2 read that starts
+    // just before an invalidate(name) / invalidate() / registerExternal()
+    // must not return content that policy has since revoked. Capture the
+    // generations now; every commit point below re-checks them and fails
+    // closed on mismatch, so the documented "immediate revocation"
+    // contract holds for in-flight reads too.
+    const startRuntimeGen = runtimeGeneration;
+    const startSkillGen = getSkillGeneration(name);
+    const stillAuthorized = (): boolean =>
+      runtimeGeneration === startRuntimeGen && getSkillGeneration(name) === startSkillGen;
+    const revoked = (): Result<string, KoiError> => deniedReference(name, refPath);
+
     // Ensure discovery has run so we can locate the skill's directory.
     // Internal variant — do not re-fire the onMetadataInjected hook from
     // routine Tier 2 reads (review #1896 round 3).
     const discoverResult = await discoverInternal();
     if (!discoverResult.ok) return discoverResult;
+    if (!stillAuthorized()) return revoked();
 
     // Syntactic hygiene first (review #1896 round 9). Malformed inputs
     // like `../x.md` or `/etc/passwd` must surface as VALIDATION /
@@ -1195,8 +1208,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     if (!current.value.includes(refPath)) {
       return deniedReference(name, refPath);
     }
+    // Post-await re-check: an invalidate() or invalidate(name) between
+    // the fresh-read above and the file open below must take effect.
+    if (!stillAuthorized()) return revoked();
 
-    return loadReference(name, entry.dirPath, refPath, {
+    const result = await loadReference(name, entry.dirPath, refPath, {
       scanner,
       blockOnSeverity: resolvedConfig.blockOnSeverity,
       skillsRoot: entry.skillsRoot,
@@ -1204,6 +1220,13 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
         ? { onSecurityFinding: resolvedConfig.onSecurityFinding }
         : {}),
     });
+
+    // Final guard before handing the content back. A revoke that happens
+    // while we were reading the file must still suppress the result —
+    // otherwise we'd hand the caller one last copy after policy was
+    // withdrawn. Drop the content and return the uniform denial shape.
+    if (!stillAuthorized()) return revoked();
+    return result;
   };
 
   return {
