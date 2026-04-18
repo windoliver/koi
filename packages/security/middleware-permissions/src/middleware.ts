@@ -9,7 +9,7 @@
  * and denial tracking.
  */
 
-import { canonicalPrefix, UNSAFE_PREFIX } from "@koi/bash-classifier";
+import { canonicalPrefix, classifyCommand, UNSAFE_PREFIX } from "@koi/bash-classifier";
 import type { AuditEntry, AuditSink } from "@koi/core";
 import type { JsonObject } from "@koi/core/common";
 import type {
@@ -36,7 +36,7 @@ import {
 } from "@koi/errors";
 import { computeStringHash } from "@koi/hash";
 // fnv1a no longer used for cache keys (collision-unsafe for security decisions)
-// isDefaultDeny no longer used — forged-tool bypass removed in v2
+import { isDefaultDeny } from "./classifier.js";
 import type {
   ApprovalCacheConfig,
   PermissionCacheConfig,
@@ -620,22 +620,53 @@ export function createPermissionsMiddleware(
    * the plain tool name otherwise.
    */
   /**
+   * Shared derivation for both policy and grant keys. Returns `null`
+   * when bash enrichment is not applicable (no resolver, empty
+   * command, or unresolvable prefix) so callers can fall back to the
+   * plain tool id — matches storage semantics for unenriched grants.
+   */
+  function deriveBashKeys(
+    toolId: string,
+    rawCommand: string,
+  ): { readonly policy: string; readonly grant: string } | null {
+    const trimmed = rawCommand.trim();
+    if (trimmed.length === 0) return null;
+    const p = canonicalPrefix(trimmed);
+    if (p.length === 0) return null;
+    // POLICY key: preserve the natural prefix so deny-first rules
+    // like `deny: bash:chmod*` still fire. Only structurally complex
+    // forms (compound operators, env -S, interpreter hops we can't
+    // unwrap, deep nesting) carry the `!complex` sentinel because
+    // `canonicalPrefix` itself returns UNSAFE_PREFIX for those.
+    // Dangerous-pattern detection is used ONLY to scope the grant key
+    // so approvals cannot generalize across distinct dangerous argv.
+    const danger = classifyCommand(trimmed);
+    const dangerous = danger.severity === "critical" || danger.severity === "high";
+    const hash = computeStringHash(trimmed).slice(0, 16);
+    const policy = p === UNSAFE_PREFIX ? `${toolId}:${UNSAFE_PREFIX}:${hash}` : `${toolId}:${p}`;
+    // GRANT key: always includes the hash, and escalates to `!complex`
+    // for dangerous forms so an approval for `python -c "print(1)"`
+    // does NOT cover a later `python -c "os.system('rm')"`. Same
+    // deterministic discriminator as policy for structurally complex
+    // commands.
+    const grantPrefix = p === UNSAFE_PREFIX || dangerous ? UNSAFE_PREFIX : p;
+    const grant = `${toolId}:${grantPrefix}:${hash}`;
+    return { policy, grant };
+  }
+
+  /**
    * Compute two distinct resource keys for a tool call:
    *
    *   `policy`  — `<toolId>:<prefix>` for non-`!complex` commands, or
-   *               `<toolId>:!complex:<hash>` for complex forms. Used for
-   *               backend rule matching and denial-tracker escalation so
-   *               policy rules like `allow: bash:git *` still work.
-   *   `grant`   — `<toolId>:<prefix>:<hash>` (always includes an
-   *               exact-command hash). Used for session and persistent
-   *               `always-allow` grants and for approval audit keys, so
-   *               approving `git status` does NOT auto-approve the
-   *               different argv `git status --short` or (worse)
-   *               `git push --force`.
+   *               `<toolId>:!complex:<hash>` for complex/dangerous forms.
+   *               Used for backend rule matching and denial-tracker
+   *               escalation.
+   *   `grant`   — `<toolId>:<effectivePrefix>:<hash>` (always includes
+   *               an exact-command hash). Used for session and
+   *               persistent `always-allow` grants and approval audit.
    *
    * When `resolveBashCommand` is unconfigured or returns nothing, both
-   * keys fall back to the plain tool id (no enrichment, no change in
-   * behavior for non-bash tools).
+   * keys fall back to the plain tool id.
    */
   function enrichResource(
     toolId: string,
@@ -646,18 +677,8 @@ export function createPermissionsMiddleware(
     }
     const raw = config.resolveBashCommand(toolId, input);
     if (raw === undefined) return { policy: toolId, grant: toolId };
-    const trimmed = raw.trim();
-    if (trimmed.length === 0) return { policy: toolId, grant: toolId };
-
-    const p = canonicalPrefix(trimmed);
-    if (p.length === 0) return { policy: toolId, grant: toolId };
-
-    const hash = computeStringHash(trimmed).slice(0, 16);
-    // Complex forms carry the hash in the policy key too — no single
-    // rule can accidentally cover every compound command.
-    const policy = p === UNSAFE_PREFIX ? `${toolId}:${p}:${hash}` : `${toolId}:${p}`;
-    const grant = `${toolId}:${p}:${hash}`;
-    return { policy, grant };
+    const derived = deriveBashKeys(toolId, raw);
+    return derived ?? { policy: toolId, grant: toolId };
   }
 
   function queryForTool(
@@ -1088,14 +1109,21 @@ export function createPermissionsMiddleware(
     const enforcedDecisionByIndex = new Map<number, PermissionDecision>();
 
     // Tools whose per-command policy is enforced at wrapToolCall via
-    // bash prefix enrichment — always keep visible at model-time so the
-    // execution-time prefix rules are reachable. Without this, a
-    // default-deny backend with only `bash:<prefix>` rules would strip
-    // the tool entirely before the agent could ever invoke a specific
-    // command.
+    // bash prefix enrichment — keep visible at model-time so the
+    // execution-time prefix rules are reachable UNLESS the operator
+    // has explicitly denied the plain tool id. An explicit deny
+    // (non-default-deny) on `bash` must still filter the tool out so
+    // operators can turn off bash wholesale via policy.
     const bashVisibleSet = new Set(config.bashVisibleTools ?? []);
-    const bypassFilter = (toolName: string): boolean =>
-      config.resolveBashCommand !== undefined && bashVisibleSet.has(toolName);
+    const bypassFilter = (toolName: string, decision: PermissionDecision): boolean => {
+      if (config.resolveBashCommand === undefined) return false;
+      if (!bashVisibleSet.has(toolName)) return false;
+      // Explicit deny overrides the visibility bypass. Default-deny
+      // (no rule matches) does NOT — that's exactly the case
+      // bashVisibleTools exists to accommodate.
+      if (decision.effect === "deny" && !isDefaultDeny(decision)) return false;
+      return true;
+    };
 
     const filtered = tools.filter((tool, i) => {
       // biome-ignore lint/style/noNonNullAssertion: decisions.length === tools.length (resolveBatch returns same length)
@@ -1104,7 +1132,7 @@ export function createPermissionsMiddleware(
       const query = queries[i]!;
       const sid = ctx.session.sessionId as string;
 
-      if (bypassFilter(tool.name)) {
+      if (bypassFilter(tool.name, decision)) {
         // Pass through. Record an allow decision for observability so
         // reporting/audit still see the tool was offered to the model.
         enforcedDecisionByIndex.set(i, { effect: "allow" });
@@ -1601,21 +1629,15 @@ export function createPermissionsMiddleware(
       return persistentStore.revoke(userId, agentId, grantKey);
     },
     computeBashGrantKey(toolId: string, rawCommand: string): string {
-      // Mirrors enrichResource's grant-key construction exactly so
-      // external callers (CLI revoke, TUI approvals panel) can
-      // reconstruct the stored key without reverse-engineering the
-      // hash format. When `resolveBashCommand` is NOT configured, the
-      // middleware stores grants under the plain tool id — honor that
-      // here too, or callers will compute a hashed key that never
-      // existed in persistent storage and revocation will silently
-      // miss the real grant.
+      // Shares the exact key-derivation helper with enrichResource so
+      // that dangerous-pattern escalation (python -c, node -e, etc.)
+      // and `!complex` remapping are applied identically. Without
+      // this, the helper would produce `bash:python:<hash>` while the
+      // middleware actually stored `bash:!complex:<hash>`, and
+      // revocation would silently miss the real grant.
       if (config.resolveBashCommand === undefined) return toolId;
-      const trimmed = rawCommand.trim();
-      if (trimmed.length === 0) return toolId;
-      const p = canonicalPrefix(trimmed);
-      if (p.length === 0) return toolId;
-      const hash = computeStringHash(trimmed).slice(0, 16);
-      return `${toolId}:${p}:${hash}`;
+      const derived = deriveBashKeys(toolId, rawCommand);
+      return derived?.grant ?? toolId;
     },
     revokeAllPersistentApprovals(): void {
       // Same rationale: only clear durable state. Session-scoped grants

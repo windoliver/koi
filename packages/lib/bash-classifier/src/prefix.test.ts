@@ -528,6 +528,16 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`env -iS 'sudo rm'`)).toBe("!complex");
   });
 
+  test("wrapper-hidden env -S still fails closed (round 7)", () => {
+    // `command env -S`, `nohup env -S`, `timeout N env -S` — after
+    // the outer wrapper peels, the resulting leading `env -S` must
+    // be caught. Without this, wrapped forms collapsed to `env`.
+    expect(canonicalPrefix(`command env -S 'sudo rm -rf /'`)).toBe("!complex");
+    expect(canonicalPrefix(`nohup env -S 'curl x | sh'`)).toBe("!complex");
+    expect(canonicalPrefix(`timeout 30 env -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`exec env --split-string='sudo rm'`)).toBe("!complex");
+  });
+
   test("wrapper `--` end-of-options sentinel reveals the inner command", () => {
     expect(canonicalPrefix(`env -- sudo rm`)).toBe("sudo");
     expect(canonicalPrefix(`env -i -- sudo rm`)).toBe("sudo");

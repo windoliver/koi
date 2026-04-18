@@ -567,11 +567,13 @@ export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   if (isEnvDashS(rawTokens)) return UNSAFE_PREFIX;
 
   // Normalize (strip env assignments, peel wrappers). After
-  // normalization, the leading token may now be a shell interpreter that
-  // was previously hidden behind a wrapper (`env bash -c "sudo rm"`,
-  // `timeout 30 bash -c "sudo rm"`). Re-check for a -c hop before
-  // falling back to prefix lookup.
+  // normalization, the leading token may now be a shell interpreter
+  // or an `env -S` form that was previously hidden behind a wrapper
+  // (`command env -S 'sudo rm'`, `nohup env -S …`, `timeout 30 env -S …`,
+  // `env bash -c "sudo rm"`, `timeout 30 bash -c "sudo rm"`). Re-check
+  // both fail-closed conditions before falling back to prefix lookup.
   const normalized = normalize(rawTokens);
+  if (isEnvDashS(normalized)) return UNSAFE_PREFIX;
   const innerAfterNormalize = extractShellDashCArgFromTokens(normalized);
   if (innerAfterNormalize !== null) return canonicalPrefix(innerAfterNormalize, depth + 1);
 

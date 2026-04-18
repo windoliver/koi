@@ -125,32 +125,54 @@ const CODE_EXEC: readonly DangerousPattern[] = [
 
 const MODULE_LOAD: readonly DangerousPattern[] = [
   {
-    id: "python-dunder-import",
-    regex: /\bpython[23]?\b[^#\n]*-c\b[^#\n]*__import__/,
+    // python -c / -cm inline string execution — the string can call
+    // any module (`import os; os.system`, `eval(…)`, `compile(…)`),
+    // so the flag itself is the arbitrary-code-exec primitive.
+    id: "python-dash-c",
+    regex: /\bpython[23]?\b[^#\n]*\s-[a-zA-Z]*c\b/,
     category: "module-load",
     severity: "high",
-    message: "python -c with __import__ loads modules dynamically for arbitrary code execution",
+    message: "python -c evaluates an arbitrary script string",
   },
   {
-    id: "node-require-exec",
-    regex: /\bnode\b[^#\n]*-e\b[^#\n]*\brequire\s*\(/,
+    // node / deno / bun -e inline string execution. The flag itself
+    // is the entry point to arbitrary code — match on the flag shape,
+    // not on a specific payload substring.
+    id: "node-dash-e",
+    regex: /\b(?:node|deno|bun)\b[^#\n]*\s-e\b/,
     category: "module-load",
     severity: "high",
-    message: "node -e with require() loads modules for arbitrary code execution",
+    message: "node/deno/bun -e evaluates an arbitrary script string",
   },
   {
     id: "perl-e",
-    regex: /\bperl\b\s+-[eE]\b/,
+    regex: /\bperl\b[^#\n]*\s-[eE]\b/,
     category: "module-load",
     severity: "high",
-    message: "perl -e executes an arbitrary script string",
+    message: "perl -e/-E executes an arbitrary script string",
   },
   {
     id: "ruby-e",
-    regex: /\bruby\b\s+-[eE]\b/,
+    regex: /\bruby\b[^#\n]*\s-[eE]\b/,
     category: "module-load",
     severity: "high",
-    message: "ruby -e executes an arbitrary script string",
+    message: "ruby -e/-E executes an arbitrary script string",
+  },
+  {
+    // php -r / --run — inline PHP execution.
+    id: "php-r",
+    regex: /\bphp\b[^#\n]*\s(?:-r|--run)\b/,
+    category: "module-load",
+    severity: "high",
+    message: "php -r evaluates an arbitrary PHP string",
+  },
+  {
+    // osascript -e — macOS AppleScript inline execution.
+    id: "osascript-e",
+    regex: /\bosascript\b[^#\n]*\s-e\b/,
+    category: "module-load",
+    severity: "high",
+    message: "osascript -e evaluates an arbitrary AppleScript",
   },
 ];
 
