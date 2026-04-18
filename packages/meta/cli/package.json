@@ -38,6 +38,7 @@
   ],
   "dependencies": {
     "@koi/agent-runtime": "workspace:*",
+    "@koi/agent-summary": "workspace:*",
     "@koi/audit-sink-ndjson": "workspace:*",
     "@koi/audit-sink-sqlite": "workspace:*",
     "@koi/channel-cli": "workspace:*",
@@ -66,6 +67,7 @@
     "@koi/middleware-goal": "workspace:*",
     "@koi/middleware-memory-recall": "workspace:*",
     "@koi/middleware-otel": "workspace:*",
+    "@koi/middleware-plan-persist": "workspace:*",
     "@koi/middleware-planning": "workspace:*",
     "@koi/middleware-permissions": "workspace:*",
     "@koi/middleware-report": "workspace:*",

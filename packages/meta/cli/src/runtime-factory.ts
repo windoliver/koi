@@ -58,6 +58,7 @@ import { createGoalMiddleware } from "@koi/middleware-goal";
 import type { OtelMiddlewareConfig } from "@koi/middleware-otel";
 import type { ApprovalStore } from "@koi/middleware-permissions";
 import { createPermissionsMiddleware } from "@koi/middleware-permissions";
+import { createPlanPersistMiddleware } from "@koi/middleware-plan-persist";
 import { createPlanMiddleware } from "@koi/middleware-planning";
 import { createReportMiddleware } from "@koi/middleware-report";
 import type { SourcedRule } from "@koi/permissions";
@@ -190,6 +191,19 @@ export const TUI_WRITE_PLAN_ALLOW_RULE: SourcedRule = {
   effect: "allow",
   source: "policy",
 };
+
+/**
+ * Auto-allow rules for `koi_plan_save` / `koi_plan_load` — installed
+ * alongside `TUI_WRITE_PLAN_ALLOW_RULE` only when planning is opted
+ * in. Both are no-side-effect-outside-baseDir by construction (the
+ * plan-persist adapter validates baseDir against cwd at construction
+ * and rejects path traversal at the tool boundary), so they are safe
+ * to auto-allow.
+ */
+export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
+  { pattern: "koi_plan_save", action: "invoke", effect: "allow", source: "policy" },
+  { pattern: "koi_plan_load", action: "invoke", effect: "allow", source: "policy" },
+];
 
 // ---------------------------------------------------------------------------
 // Config & return types
@@ -1131,7 +1145,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
   // a third-party same-named tool silently approved.
   const tuiAllowRules: readonly SourcedRule[] = [
     ...TUI_ALLOW_RULES,
-    ...(config.planningEnabled === true ? [TUI_WRITE_PLAN_ALLOW_RULE] : []),
+    ...(config.planningEnabled === true
+      ? [TUI_WRITE_PLAN_ALLOW_RULE, ...TUI_PLAN_PERSIST_ALLOW_RULES]
+      : []),
     {
       pattern: "fs_read",
       action: "invoke",
@@ -1220,14 +1236,32 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       ? createGoalMiddleware({ objectives: config.goals })
       : undefined;
 
-  // --- @koi/middleware-planning: write_plan tool for structured multi-step tracking ---
-  // Opt-in via `config.planningEnabled` — default off until durable
-  // plan persistence lands (#1842). Without persistence, plan state
-  // is ephemeral: `koi tui --resume` silently drops the committed
-  // plan while the rest of the conversation survives, which would
-  // make a multi-step task continue against stale state. Hosts that
-  // explicitly accept the limitation can opt in.
-  const planBundle = config.planningEnabled === true ? createPlanMiddleware() : undefined;
+  // --- @koi/middleware-planning + @koi/middleware-plan-persist ---
+  // Opt-in via `config.planningEnabled`. When on, both bundles are
+  // wired together: plan-persist's `onPlanUpdate` is plugged into
+  // planning's commit hook so every successful `koi_plan_write` is
+  // mirrored to `<cwd>/.koi/plans/_active/<sha256(sessionId)>.md` and
+  // `koi_plan_save` / `koi_plan_load` tools become available to the
+  // model. The journal makes plan checkpoints survive process
+  // restart; the model can also explicitly checkpoint with a slug for
+  // git-diffable / cross-session named plans (#1842).
+  //
+  // Note: plan-persist hydrates its own mirror but cannot reach
+  // planning's in-process `currentPlan` (no public setter), so a
+  // restart's prior plan is recoverable via the save/load tools but
+  // is NOT auto-injected into the model's prompt. Hosts that want
+  // that behavior can call `planPersist.restoreFromJournal(sessionId)`
+  // and inject the items into a system reminder.
+  const planPersistBundle =
+    config.planningEnabled === true ? createPlanPersistMiddleware({ cwd }) : undefined;
+  const planBundle =
+    config.planningEnabled === true
+      ? createPlanMiddleware({
+          ...(planPersistBundle !== undefined
+            ? { onPlanUpdate: planPersistBundle.onPlanUpdate }
+            : {}),
+        })
+      : undefined;
 
   // --- Engine adapter: drives model→tool→model loop via runTurn ---
   const transcript: InboundMessage[] = [];
@@ -1424,8 +1458,12 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // needs the middleware to intercept the tool call. Otherwise
       // the call falls through to the provider's throwing fallback.
       // The middleware is session-keyed, so sharing with children is
-      // safe — parent and child have distinct sessionIds.
+      // safe — parent and child have distinct sessionIds. The same
+      // logic applies to plan-persist: when planning is on, children
+      // inherit koi_plan_save/koi_plan_load and need the middleware
+      // to intercept those calls with the parent's backend.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
     });
     // Build the per-child manifest-middleware factory. Each call
     // re-runs `resolveManifestMiddleware` with a fresh context so
@@ -1786,6 +1824,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // gate — if permissions removes write_plan from request.tools,
       // planning must see the filtered list, not the pre-filter one.
       ...(planBundle !== undefined ? { plan: planBundle.middleware } : {}),
+      ...(planPersistBundle !== undefined ? { planPersist: planPersistBundle.middleware } : {}),
       // presetExtras includes the code-owned stack middleware and
       // main's env-var-gated audit preset extras (from
       // `auditNdjsonPath` / `KOI_AUDIT_NDJSON`). Zone B manifest
@@ -1887,6 +1926,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
         ...coreProviders,
         ...stackContribution.providers,
         ...(planBundle !== undefined ? planBundle.providers : []),
+        ...(planPersistBundle !== undefined ? planPersistBundle.providers : []),
       ],
       approvalHandler,
       userId: userInfo().username,

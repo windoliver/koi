@@ -823,6 +823,181 @@ describe("Golden: @koi/middleware-planning", () => {
 });
 
 // ---------------------------------------------------------------------------
+// L2 golden queries: @koi/middleware-plan-persist (2 standalone queries)
+// No-LLM tests that exercise the file-backed persistence surface from the
+// runtime consumer boundary. Catches re-export regressions and proves the
+// public bundle wiring matches what runtime hosts will see.
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/middleware-plan-persist", () => {
+  test("middleware bundle saves a mirrored plan to disk and loads it back", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME, PLAN_SAVE_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-golden-`);
+    try {
+      const bundle = createPlanPersistMiddleware({
+        cwd: tmpRoot,
+        baseDir: ".koi/plans",
+        now: () => Date.UTC(2026, 3, 17, 10, 0, 0),
+        rand: () => 0.5,
+      });
+      expect(bundle.middleware.name).toBe("plan-persist");
+      expect(bundle.providers).toHaveLength(2);
+
+      // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
+      await bundle.onPlanUpdate(
+        [
+          { content: "First", status: "pending" },
+          { content: "Second", status: "in_progress" },
+        ],
+        {
+          sessionId: "golden-sess",
+          epoch: 1,
+          turnIndex: 0,
+          signal: new AbortController().signal,
+        },
+      );
+
+      const session = {
+        agentId: "plan-persist-golden",
+        sessionId: sessionId("golden-sess"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+
+      const passthrough = async (req: {
+        readonly toolId: string;
+      }): Promise<{ readonly output: unknown }> => ({
+        output: { passthrough: req.toolId },
+      });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const saved = await wrap(
+        ctx,
+        { toolId: PLAN_SAVE_TOOL_NAME, input: { slug: "golden-flow" } },
+        passthrough,
+      );
+      const savedOut = saved.output as { readonly path: string };
+      expect(savedOut.path.endsWith("20260417-100000-golden-flow.md")).toBe(true);
+
+      const loaded = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: savedOut.path } },
+        passthrough,
+      );
+      const loadedOut = loaded.output as {
+        readonly items: readonly { readonly content: string; readonly status: string }[];
+      };
+      expect(loadedOut.items).toEqual([
+        { content: "First", status: "pending" },
+        { content: "Second", status: "in_progress" },
+      ]);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("middleware bundle rejects path traversal at the load tool boundary", async () => {
+    const { createPlanPersistMiddleware, PLAN_LOAD_TOOL_NAME } = await import(
+      "@koi/middleware-plan-persist"
+    );
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const tmpRoot = await mkdtemp(`${tmpdir()}/koi-plan-persist-traversal-`);
+    try {
+      const bundle = createPlanPersistMiddleware({ cwd: tmpRoot });
+      const session = {
+        agentId: "plan-persist-traversal",
+        sessionId: sessionId("trav"),
+        runId: runId("r1"),
+        metadata: {} as JsonObject,
+      };
+      const ctx: TurnContext = {
+        session,
+        turnIndex: 0,
+        turnId: `${runId("r1")}-0` as TurnContext["turnId"],
+        messages: [],
+        metadata: {},
+      };
+      const passthrough = async (): Promise<{ readonly output: unknown }> => ({ output: {} });
+      const wrap = bundle.middleware.wrapToolCall;
+      if (!wrap) throw new Error("wrapToolCall missing");
+
+      const res = await wrap(
+        ctx,
+        { toolId: PLAN_LOAD_TOOL_NAME, input: { path: "/etc/passwd" } },
+        passthrough,
+      );
+      const out = res.output as { readonly error?: string };
+      expect(out.error).toBe("path outside baseDir");
+      expect(res.metadata?.planPersistError).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("trajectory fixture proves plan + plan-persist composed end-to-end and the saved checkpoint reached the model", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/plan-persist-flow.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly {
+        readonly source?: string;
+        readonly observation?: {
+          readonly results?: readonly { readonly content?: string }[];
+        };
+        readonly extra?: Record<string, unknown>;
+      }[];
+    };
+
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.session_id).toBe("plan-persist-flow");
+
+    // Both middlewares wired and BOTH intercept their target tool (planning
+    // owns koi_plan_write, plan-persist owns koi_plan_save), so each must
+    // fire at least one wrapToolCall span where nextCalled is false — the
+    // signal that the middleware handled the call itself instead of
+    // delegating downstream. wrapModelStream spans pass through (nextCalled
+    // true) because neither MW short-circuits the model loop.
+    const planToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    const persistToolSpans = doc.steps.filter(
+      (s) =>
+        s.extra?.type === "middleware_span" &&
+        s.extra?.middlewareName === "plan-persist" &&
+        s.extra?.hook === "wrapToolCall",
+    );
+    expect(planToolSpans.length).toBeGreaterThan(0);
+    expect(persistToolSpans.length).toBeGreaterThan(0);
+    expect(planToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+    expect(persistToolSpans.some((s) => s.extra?.nextCalled === false)).toBe(true);
+
+    // The save tool's path response must reach the model. The trajectory's
+    // final agent observation contains the absolute path returned by
+    // koi_plan_save — proves: write_plan committed → onPlanUpdate fired →
+    // mirror populated → koi_plan_save read mirror → wrote checkpoint →
+    // path was surfaced back to the LLM in the next turn.
+    const agentSteps = doc.steps.filter((s) => s.source === "agent");
+    const finalResponse = agentSteps.at(-1)?.observation?.results?.[0]?.content ?? "";
+    expect(finalResponse).toMatch(/\.koi\/plans\/\d{8}-\d{6}-auth-refactor\.md/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Golden: @koi/middleware-goal callback-mode (detectCompletions via onAfterTurn)
 // ---------------------------------------------------------------------------
 
@@ -10717,5 +10892,198 @@ describe("Golden: @koi/middleware-strict-agentic", () => {
     }));
     const result = await middleware.onBeforeStop?.(turn);
     expect(result?.kind).toBe("continue");
+  });
+});
+
+describe("Golden: @koi/agent-summary", () => {
+  test("createAgentSummary returns both session and range APIs", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "hello",
+              timestamp: 1,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "greet",
+          status: "succeeded",
+          actions: [],
+          outcomes: [],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    expect(typeof summary.summarizeSession).toBe("function");
+    expect(typeof summary.summarizeRange).toBe("function");
+  });
+
+  test("summarizeSession produces kind: clean envelope with correct identity", async () => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const transcript = {
+      load: () => ({
+        ok: true,
+        value: {
+          entries: [
+            {
+              id: "u1" as never,
+              role: "user" as const,
+              content: "please",
+              timestamp: 1,
+            },
+            {
+              id: "a1" as never,
+              role: "assistant" as const,
+              content: "ok",
+              timestamp: 2,
+            },
+          ],
+          skipped: [],
+        },
+      }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({
+        text: JSON.stringify({
+          goal: "test",
+          status: "succeeded",
+          actions: [],
+          outcomes: ["done"],
+          errors: [],
+          learnings: [],
+        }),
+      }),
+    });
+    const r = await summary.summarizeSession("sess-golden" as never);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(`${r.value.summary.sessionId}`).toBe("sess-golden");
+      expect(r.value.summary.meta.rangeOrigin).toBe("raw");
+      expect(r.value.summary.meta.hasCompactionPrefix).toBe(false);
+    } else {
+      throw new Error("expected kind: clean");
+    }
+  });
+
+  test.each([
+    "high",
+    "medium",
+    "detailed",
+  ] as const)("replays recorded cassette (%s granularity) — real LLM output parses + validates", async (granularity) => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cassetteRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", `agent-summary-${granularity}.cassette.json`),
+      "utf8",
+    );
+    const cassette = JSON.parse(cassetteRaw) as {
+      readonly transcript: {
+        readonly entries: readonly {
+          readonly id: string;
+          readonly role: string;
+          readonly content: string;
+          readonly timestamp: number;
+        }[];
+        readonly skipped: readonly unknown[];
+      };
+      readonly modelResponse: { readonly text: string };
+      readonly summary: {
+        readonly goal: string;
+        readonly status: "succeeded" | "partial" | "failed";
+      };
+    };
+
+    const transcript = {
+      load: () => ({ ok: true, value: cassette.transcript }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({ text: cassette.modelResponse.text }),
+    });
+    const r = await summary.summarizeSession(`replay-${granularity}` as never, { granularity });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(r.value.summary.goal).toBeTruthy();
+      expect(r.value.summary.status).toBe(cassette.summary.status);
+      expect(r.value.summary.goal).toBe(cassette.summary.goal);
+    } else {
+      throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
+    }
+  });
+
+  test("ATIF trajectory + summary sidecar are well-formed (from record-cassettes.ts afterRecord)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const trajRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.trajectory.json"),
+      "utf8",
+    );
+    const trajectory = JSON.parse(trajRaw) as {
+      readonly schema_version: string;
+      readonly session_id: string;
+      readonly steps: readonly { readonly source: string }[];
+    };
+    expect(trajectory.schema_version).toBe("ATIF-v1.6");
+    expect(trajectory.session_id).toBe("agent-summary");
+    expect(trajectory.steps.length).toBeGreaterThan(0);
+    expect(trajectory.steps.some((s) => s.source === "agent")).toBe(true);
+
+    const sidecarRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", "agent-summary.summary.json"),
+      "utf8",
+    );
+    const sidecar = JSON.parse(sidecarRaw) as {
+      readonly trajectorySessionId: string;
+      readonly recordedFrom: string;
+      readonly envelope: {
+        readonly kind: "clean" | "degraded" | "compacted";
+        readonly summary?: {
+          readonly sessionId: string;
+          readonly goal: string;
+          readonly status: "succeeded" | "partial" | "failed";
+        };
+      };
+    };
+    expect(sidecar.trajectorySessionId).toBe(trajectory.session_id);
+    expect(sidecar.recordedFrom).toBe("agent-summary.trajectory.json");
+    expect(sidecar.envelope.kind).toBe("clean");
+    if (sidecar.envelope.kind === "clean" && sidecar.envelope.summary) {
+      expect(sidecar.envelope.summary.sessionId).toBe(trajectory.session_id);
+      expect(sidecar.envelope.summary.goal).toBeTruthy();
+      expect(sidecar.envelope.summary.status).toBe("succeeded");
+    }
   });
 });

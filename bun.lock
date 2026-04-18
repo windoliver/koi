@@ -74,6 +74,15 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/agent-summary": {
+      "name": "@koi/agent-summary",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/hash": "workspace:*",
+        "zod": "4.3.6",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -289,6 +298,14 @@
       },
       "peerDependencies": {
         "@opentelemetry/api": "^1.9.0",
+      },
+    },
+    "packages/lib/middleware-plan-persist": {
+      "name": "@koi/middleware-plan-persist",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
       },
     },
     "packages/lib/middleware-planning": {
@@ -541,6 +558,7 @@
       },
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/channel-cli": "workspace:*",
@@ -570,6 +588,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -627,6 +646,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/agent-runtime": "workspace:*",
+        "@koi/agent-summary": "workspace:*",
         "@koi/audit-sink-ndjson": "workspace:*",
         "@koi/audit-sink-sqlite": "workspace:*",
         "@koi/bash-ast": "workspace:*",
@@ -665,6 +685,7 @@
         "@koi/middleware-memory-recall": "workspace:*",
         "@koi/middleware-otel": "workspace:*",
         "@koi/middleware-permissions": "workspace:*",
+        "@koi/middleware-plan-persist": "workspace:*",
         "@koi/middleware-planning": "workspace:*",
         "@koi/middleware-report": "workspace:*",
         "@koi/middleware-semantic-retry": "workspace:*",
@@ -1174,6 +1195,8 @@
 
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
+    "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
+
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
@@ -1269,6 +1292,8 @@
     "@koi/middleware-otel": ["@koi/middleware-otel@workspace:packages/lib/middleware-otel"],
 
     "@koi/middleware-permissions": ["@koi/middleware-permissions@workspace:packages/security/middleware-permissions"],
+
+    "@koi/middleware-plan-persist": ["@koi/middleware-plan-persist@workspace:packages/lib/middleware-plan-persist"],
 
     "@koi/middleware-planning": ["@koi/middleware-planning@workspace:packages/lib/middleware-planning"],
 

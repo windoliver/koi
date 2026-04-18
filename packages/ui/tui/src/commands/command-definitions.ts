@@ -105,6 +105,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     category: "agent",
     destructive: true,
   },
+  {
+    id: "agent:summarize",
+    label: "Summarize",
+    description: "Summarize the current session (goal, status, actions, outcomes)",
+    category: "agent",
+  },
 
   // ---- Session ----
   {
