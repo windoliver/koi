@@ -32,15 +32,20 @@ import { writeSync } from "node:fs";
 import { readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import type { SummaryOk } from "@koi/agent-summary";
+import { createAgentSummary } from "@koi/agent-summary";
 import { microcompact } from "@koi/context-manager";
 import type {
   AuditEntry,
+  ContentBlock,
   EngineEvent,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
   SessionId,
   SessionTranscript,
+  TranscriptEntry,
+  TranscriptEntryId,
 } from "@koi/core";
 import { sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
@@ -136,6 +141,56 @@ const SESSION_PREVIEW_MAX = 80;
  */
 function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
+}
+
+// ---------------------------------------------------------------------------
+// /summarize helpers — map InboundMessage[] → TranscriptEntry[] + render envelope
+// ---------------------------------------------------------------------------
+
+function inferRole(senderId: string): TranscriptEntry["role"] {
+  if (senderId === "user") return "user";
+  if (senderId.startsWith("tool:")) return "tool_result";
+  if (senderId.startsWith("system")) return "system";
+  return "assistant";
+}
+
+function flattenContentBlocks(blocks: readonly ContentBlock[]): string {
+  const out: string[] = [];
+  for (const b of blocks) {
+    if (b.kind === "text") out.push(b.text);
+    else if (b.kind === "file") out.push(`[file: ${b.name ?? b.url}]`);
+    else if (b.kind === "image") out.push(`[image: ${b.alt ?? b.url}]`);
+    else if (b.kind === "button") out.push(`[button: ${b.label}]`);
+    else out.push(`[${b.kind}]`);
+  }
+  return out.join(" ");
+}
+
+function renderSummaryEnvelope(env: SummaryOk): string {
+  if (env.kind === "clean") {
+    const s = env.summary;
+    return [
+      `[Summary (${s.meta.granularity}) — ${s.status}]`,
+      `  Goal: ${s.goal}`,
+      ...(s.outcomes.length > 0 ? [`  Outcomes: ${s.outcomes.join("; ")}`] : []),
+      ...(s.errors.length > 0 ? [`  Errors: ${s.errors.join("; ")}`] : []),
+      ...(s.learnings.length > 0 ? [`  Learnings: ${s.learnings.join("; ")}`] : []),
+    ].join("\n");
+  }
+  if (env.kind === "degraded") {
+    const s = env.partial;
+    return [
+      `[Summary — DEGRADED (dropped ${env.droppedTailTurns} turn${env.droppedTailTurns === 1 ? "" : "s"}, ${env.skipped.length} skipped rows)]`,
+      `  Goal: ${s.goal}`,
+      `  Status: ${s.status}`,
+    ].join("\n");
+  }
+  const s = env.derived;
+  return [
+    `[Summary — COMPACTED (${env.compactionEntryCount} compaction prefix${env.compactionEntryCount === 1 ? "" : "es"}, range origin post-compaction)]`,
+    `  Goal: ${s.goal}`,
+    `  Status: ${s.status}`,
+  ].join("\n");
 }
 
 /** Render a displayable transcript as a Markdown document for /export. */
@@ -3354,6 +3409,71 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                 `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
                 `${partial ? " (partial — still above target)" : ""}]`,
             );
+          })();
+          break;
+        case "agent:summarize":
+          void (async (): Promise<void> => {
+            if (runtimeHandle === null) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SUMMARIZE_RUNTIME_NOT_READY",
+                message: "Runtime is still initializing — try again in a moment.",
+              });
+              return;
+            }
+            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+            if (snapshot.length === 0) {
+              dispatchNotice(store, "summarize-info", "[Summarize: conversation is empty]");
+              return;
+            }
+            const entries = snapshot.map((m, i) => ({
+              id: `t${i}` as TranscriptEntryId,
+              role: inferRole(m.senderId),
+              content: flattenContentBlocks(m.content),
+              timestamp: m.timestamp,
+            }));
+            const activeSessionId = sessionId(runtimeHandle.runtime.sessionId);
+            // Read-only adapter over the in-memory transcript. summarizeSession
+            // only calls load(); the other methods are stubs required by the
+            // SessionTranscript contract but never invoked on this path.
+            const transcript = {
+              load: () => ({ ok: true, value: { entries, skipped: [] } }),
+              loadPage: () => ({
+                ok: true,
+                value: { entries: [], total: 0, hasMore: false },
+              }),
+            } as unknown as SessionTranscript;
+            const summarizer = createAgentSummary({
+              transcript,
+              modelCall: async (req) => {
+                const resp = await modelAdapter.complete({
+                  messages: req.messages.map(
+                    (msg): InboundMessage => ({
+                      content: [{ kind: "text", text: msg.content }],
+                      senderId: msg.role === "system" ? "system:summarize" : "user",
+                      timestamp: Date.now(),
+                    }),
+                  ),
+                  model: modelName,
+                  maxTokens: req.maxTokens,
+                });
+                return { text: resp.content };
+              },
+            });
+            dispatchNotice(store, "summarize-info", "[Summarize: generating…]");
+            const r = await summarizer.summarizeSession(activeSessionId, {
+              granularity: "medium",
+              modelHint: "cheap",
+            });
+            if (!r.ok) {
+              store.dispatch({
+                kind: "add_error",
+                code: "SUMMARIZE_FAILED",
+                message: `Summarize failed: ${r.error.code} ${r.error.message}`,
+              });
+              return;
+            }
+            dispatchNotice(store, "summarize-info", renderSummaryEnvelope(r.value));
           })();
           break;
         case "session:export":
