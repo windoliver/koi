@@ -1209,12 +1209,36 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     });
   const FS_PATH_TOOLS: ReadonlySet<string> = new Set(["fs_read", "fs_write", "fs_edit"]);
 
+  // Bash prefix enrichment (#1881). Feeds the raw command to
+  // @koi/middleware-permissions so it can derive a stable
+  // `<toolId>:<prefix>` resource for policy evaluation. Enables the
+  // `!complex` structural ratchet and dangerous-command ratchet on
+  // the decision path regardless of the backend's prefix-rule
+  // support — those fire on any allow decision that resolves a
+  // compound or known-unsafe command.
+  //
+  // Tool id matches case-insensitively: the builtin bash tool
+  // registers as "Bash" (capital) while some adapters still use
+  // "bash". Resolver only kicks in when `input.command` is a string,
+  // so non-bash tools and malformed inputs fall through to the
+  // plain tool id.
+  //
+  // `allowLegacyBackendBashFallback: true` opts into single-key
+  // evaluation for the TUI's default `createPermissionBackend`,
+  // which is not marker-aware (see docs/L2/permissions.md). The
+  // pattern backend used by `koi start` advertises the marker and
+  // gets full dual-key enrichment automatically.
   const permMw = createPermissionsMiddleware({
     backend: permBackend,
     description: config.permissionsDescription ?? "koi tui — default permission mode",
     ...(config.approvalTimeoutMs !== undefined
       ? { approvalTimeoutMs: config.approvalTimeoutMs }
       : {}),
+    resolveBashCommand: (toolId, input) =>
+      toolId.toLowerCase() === "bash" && typeof input.command === "string"
+        ? input.command
+        : undefined,
+    allowLegacyBackendBashFallback: true,
     resolveToolPath: (
       toolId: string,
       input: import("@koi/core").JsonObject,

@@ -282,3 +282,25 @@ guidance so the agent auto-plans multi-step work. The L3 wiring
 itself is unchanged — task tools continue to be contributed via
 `executionStack` when the spawn preset is active. See
 `docs/L2/task-tools.md` for the descriptor changes.
+
+## #1881 — Bash prefix enrichment (opt-in)
+
+`@koi/middleware-permissions` now supports **prefix-aware permission evaluation** for bash-like tools via the `resolveBashCommand` config option, backed by the new `@koi/bash-classifier` L0u package:
+
+- **Prefix extraction** — ARITY table + wrapper peeling (env, command, exec, nohup, time, timeout, stdbuf, nice, ionice) + shell-aware tokenization derive a stable `<toolId>:<prefix>` key from the raw command. Operators write rules like `allow: Bash:git *` or `ask: Bash:npm run`.
+- **`!complex` structural ratchet** — compound commands (redirects, pipelines, subshells, command substitution, env -S) route to a `Bash:!complex` bucket that refuses to silently match broad wildcards, forcing fresh review.
+- **Dangerous-command ratchet** — curated pattern registry (privilege-escalation, code-exec, network-exfil, process-spawn, file-destructive, module-load) overrides allow decisions with ask, with an explicit-allow opt-out.
+- **Dual-key evaluation** — queries BOTH the enriched `Bash:<prefix>` and plain `Bash` resources; `strictestDecision` merges with default-deny-aware semantics so legacy plain-tool rules keep working.
+
+**Wiring status:** activated in `runtime-factory.ts`. Behavior depends on the backend:
+
+- **TUI (`koi tui`)** — default backend is `createPermissionBackend` (mode-based, not marker-aware). Runs single-key fallback via `allowLegacyBackendBashFallback: true`. Enrichment is wired but prefix rules are NOT enforced — existing TUI policy decisions are unchanged. Ratchets do not fire because the default backend returns `ask` for every bash call (no matching rule), which already requires approval.
+- **`koi start`** — uses `createPatternPermissionBackend` with `allow: ["*"]` (marker-aware). Dual-key evaluation engages automatically. Dangerous-command ratchet overrides allow decisions with ask on sudo, `curl | sh`, `python -c`, `node -e`, etc. `!complex` structural ratchet fires on compound forms (redirects, pipelines, subshells, command substitution) instead of silent auto-approve.
+
+Config options exposed at the middleware layer:
+- `allowLegacyBackendBashFallback: true` — single-key fallback for legacy backends (prefix rules not enforced).
+- `legacyBashGrantFallback: true` — preserve existing durable `bash` approvals during a migration window.
+
+**Config validation:** `validatePermissionsConfig` now rejects `resolveBashCommand` with a non-marker-aware backend unless `allowLegacyBackendBashFallback: true` is set, catching misconfigurations during validation instead of at runtime.
+
+See `docs/L2/bash-classifier.md` and `docs/L2/middleware-permissions.md` for the full design, threat model, and wire protocol.

@@ -19,6 +19,7 @@
   - changed-files:
     - any-glob-to-any-file:
       - "packages/**/bash-ast/**"
+      - "packages/**/bash-classifier/**"
       - "packages/**/bash-security/**"
       - "packages/**/channel-base/**"
       - "packages/**/config/**"
@@ -63,6 +64,7 @@
       - "packages/**"
       - "!packages/**/agent/cli/**"
       - "!packages/**/bash-ast/**"
+      - "!packages/**/bash-classifier/**"
       - "!packages/**/bash-security/**"
       - "!packages/**/channel-base/**"
       - "!packages/**/cli/**"
