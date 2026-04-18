@@ -355,17 +355,14 @@ function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
 // same ambiguous-failure reason.
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
-function shouldPinHttp(url: string, check: SafeUrlResult, carry: FetchInit): URL | undefined {
+function hasCustomTransport(carry: FetchInit): boolean {
+  const c = carry as Record<string, unknown>;
+  return c["dispatcher"] !== undefined || c["agent"] !== undefined;
+}
+
+function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
   if (!check.ok) return undefined;
   if (check.resolvedIps.length === 0) return undefined;
-  // If the caller supplied a custom transport (undici dispatcher / older
-  // fetch agent), they likely expect the request authority to reach the
-  // proxy / egress layer unchanged. Rewriting to the IP would break
-  // hostname-based routing / logging / policy. Let the transport handle
-  // resolution — the HTTPS-style sub-second TOCTOU window applies here too,
-  // but that trade-off is explicitly on the caller by supplying the transport.
-  const c = carry as Record<string, unknown>;
-  if (c["dispatcher"] !== undefined || c["agent"] !== undefined) return undefined;
   const parsed = new URL(url);
   if (parsed.protocol !== "http:") return undefined;
   // Already an IP literal — hostname matches one of the resolvedIps; no rewrite.
@@ -392,7 +389,20 @@ async function fetchWithPin(
   check: SafeUrlResult,
   state: HopState,
 ): Promise<Response> {
-  const parsed = shouldPinHttp(url, check, state.carry);
+  // http:// + custom transport is ambiguous: we can't rewrite the URL to an
+  // IP (that would break hostname-based proxy routing), but leaving the
+  // hostname gives the transport its own DNS resolution which reopens the
+  // rebind window this library exists to close. Fail closed by default —
+  // the caller should either use https:// (TLS cert narrows the attack)
+  // or drop the custom transport so we can pin to the validated IP.
+  const parsedForPin = new URL(url);
+  if (parsedForPin.protocol === "http:" && hasCustomTransport(state.carry)) {
+    throw new Error(
+      `url-safety: refused http:// request to ${url} with a custom dispatcher/agent — IP pinning would break proxy routing and skipping it reopens DNS rebinding. Use https:// or drop the custom transport.`,
+    );
+  }
+
+  const parsed = shouldPinHttp(url, check);
   if (parsed === undefined) {
     state.headers.delete("host");
     return base(url, toInit(state));

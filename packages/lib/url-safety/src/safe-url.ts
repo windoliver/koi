@@ -23,6 +23,7 @@
  * original hostname on the wire.
  */
 import { promises as dns } from "node:dns";
+import { isIP } from "node:net";
 import { BLOCKED_HOSTS } from "./blocked.js";
 import { isBlockedIp } from "./ip-classify.js";
 
@@ -41,9 +42,23 @@ export type SafeUrlResult =
 
 const DEFAULT_PROTOCOLS: readonly string[] = ["http:", "https:"];
 
+// dns.lookup goes through the OS resolver, which may filter or cache — that
+// undermines the "every A/AAAA" assumption the rebinding defence relies on.
+// Query both record types directly via dns.resolve4 / dns.resolve6 so the
+// classifier sees the full authoritative address set. ENOTFOUND on a single
+// family is non-fatal as long as the other family returned addresses.
 const defaultDnsResolver: DnsResolver = async (hostname) => {
-  const records = await dns.lookup(hostname, { all: true });
-  return records.map((r) => r.address);
+  // If the hostname is already an IP literal, short-circuit — resolve4/6
+  // reject literals with ENOTFOUND, even though lookup() accepts them.
+  if (isIP(hostname) !== 0) return [hostname];
+
+  const results = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
+  const addresses: string[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") addresses.push(...r.value);
+  }
+  // Dedupe while preserving first-seen order.
+  return [...new Set(addresses)];
 };
 
 function isIpLiteral(hostname: string): boolean {

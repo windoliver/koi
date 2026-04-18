@@ -366,17 +366,26 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["authorization"]).toBeUndefined();
   });
 
-  test("does NOT rewrite URL authority when dispatcher is supplied (proxy passthrough)", async () => {
-    const { fn, calls } = recordingFetch({
+  test("refuses http:// with custom dispatcher (ambiguous pin vs proxy)", async () => {
+    const { fn } = recordingFetch({
       "http://public.example.com/x": new Response("ok", { status: 200 }),
     });
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
     const dispatcher: unknown = { kind: "test-dispatcher" };
-    await safeFetch("http://public.example.com/x", { dispatcher } as unknown as RequestInit);
+    await expect(
+      safeFetch("http://public.example.com/x", { dispatcher } as unknown as RequestInit),
+    ).rejects.toThrow(/custom dispatcher|IP pinning would break/i);
+  });
+
+  test("allows https:// with custom dispatcher (TLS cert narrows rebind risk)", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const dispatcher: unknown = { kind: "test-dispatcher" };
+    await safeFetch("https://public.example.com/x", { dispatcher } as unknown as RequestInit);
     expect(calls).toHaveLength(1);
-    // Caller-supplied dispatcher wants hostname-based routing — do not pin.
-    expect(calls[0]?.url).toBe("http://public.example.com/x");
-    expect(calls[0]?.headers["host"]).toBeUndefined();
+    expect(calls[0]?.url).toBe("https://public.example.com/x");
   });
 
   test("returns 304/300/305 with Location without following (non-redirect 3xx)", async () => {
