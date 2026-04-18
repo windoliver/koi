@@ -18,6 +18,16 @@ async function writeSkill(root: string, name: string, body = ""): Promise<void> 
   await Bun.write(join(root, name, "SKILL.md"), content, { createPath: true });
 }
 
+async function writeSkillWithRefs(
+  root: string,
+  name: string,
+  references: readonly string[],
+): Promise<void> {
+  const refsBlock = `references:\n${references.map((r) => `  - ${r}`).join("\n")}\n`;
+  const content = `---\nname: ${name}\ndescription: Test ${name}.\n${refsBlock}---\n\n# ${name}\n`;
+  await Bun.write(join(root, name, "SKILL.md"), content, { createPath: true });
+}
+
 async function writeReference(
   root: string,
   skill: string,
@@ -204,8 +214,8 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     await rm(projectRoot, { recursive: true, force: true });
   });
 
-  test("returns file content for a valid reference path", async () => {
-    await writeSkill(userRoot, "with-refs");
+  test("returns file content for a declared reference path", async () => {
+    await writeSkillWithRefs(userRoot, "with-refs", ["references/rules.md"]);
     await writeReference(userRoot, "with-refs", "references/rules.md", "rule content");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
@@ -214,6 +224,36 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     const result = await runtime.loadReference("with-refs", "references/rules.md");
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toBe("rule content");
+  });
+
+  test("rejects skills with no declared references (review #1896 round 4)", async () => {
+    // Skill with SKILL.md but no `references:` block. Undeclared surfaces
+    // fail closed — the runtime must not hand out arbitrary in-tree files.
+    await writeSkill(userRoot, "no-refs");
+    await writeReference(userRoot, "no-refs", "secrets/.env", "KEY=abc");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const result = await runtime.loadReference("no-refs", "secrets/.env");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
+  });
+
+  test("rejects reference paths that are not in the declared allowlist (review #1896 round 4)", async () => {
+    await writeSkillWithRefs(userRoot, "narrow", ["public/ok.md"]);
+    await writeReference(userRoot, "narrow", "public/ok.md", "safe");
+    await writeReference(userRoot, "narrow", "private/.env", "KEY=abc");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+
+    const allowed = await runtime.loadReference("narrow", "public/ok.md");
+    expect(allowed.ok).toBe(true);
+
+    const denied = await runtime.loadReference("narrow", "private/.env");
+    expect(denied.ok).toBe(false);
+    if (!denied.ok) expect(denied.error.code).toBe("PERMISSION");
   });
 
   test("returns NOT_FOUND for an unknown skill", async () => {
@@ -225,9 +265,13 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     if (!result.ok) expect(result.error.code).toBe("NOT_FOUND");
   });
 
-  test("rejects path traversal with VALIDATION / PATH_TRAVERSAL", async () => {
-    await writeSkill(userRoot, "guarded");
-    // Write a sibling outside the skill dir so the "escape" target exists.
+  test("rejects path traversal even for declared references (defense in depth)", async () => {
+    // A declared path that itself contains `..` is rejected at the zod layer
+    // before it can reach the filesystem. This test exercises the alternative
+    // path: caller asks for a traversing path that is not declared, so the
+    // allowlist denies first.
+    await writeSkillWithRefs(userRoot, "guarded", ["references/ok.md"]);
+    await writeReference(userRoot, "guarded", "references/ok.md", "ok");
     await Bun.write(join(userRoot, "sibling.txt"), "outside");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
@@ -235,14 +279,11 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
 
     const result = await runtime.loadReference("guarded", "../sibling.txt");
     expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe("VALIDATION");
-      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
-    }
+    if (!result.ok) expect(result.error.code).toBe("PERMISSION");
   });
 
   test("does not cache reference bodies between calls", async () => {
-    await writeSkill(userRoot, "rewritable");
+    await writeSkillWithRefs(userRoot, "rewritable", ["refs/note.md"]);
     await writeReference(userRoot, "rewritable", "refs/note.md", "v1");
 
     const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });

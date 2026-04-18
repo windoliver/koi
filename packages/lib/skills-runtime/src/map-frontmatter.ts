@@ -32,6 +32,7 @@ export function mapFrontmatterToMetadata(
     ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
     ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
     ...(fm.executionMode !== undefined ? { executionMode: fm.executionMode } : {}),
+    ...(fm.references !== undefined ? { references: fm.references } : {}),
   };
 }
 

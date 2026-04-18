@@ -59,6 +59,29 @@ export const DEFAULT_MAX_REFERENCE_BYTES: number = 256 * 1024;
 /** Number of leading bytes inspected for NUL to classify a file as binary. */
 const BINARY_SNIFF_BYTES = 1024;
 
+/**
+ * Extensions that the skill-scanner's AST pass can meaningfully parse.
+ * Files with these suffixes are routed to `scanner.scan()` so the AST rules
+ * run on the whole file, not just fenced code blocks inside Markdown.
+ */
+const SOURCE_EXTENSIONS = new Set<string>([
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+]);
+
+function isSourceExtension(refPath: string): boolean {
+  const lastDot = refPath.lastIndexOf(".");
+  if (lastDot < 0) return false;
+  const ext = refPath.slice(lastDot).toLowerCase();
+  return SOURCE_EXTENSIONS.has(ext);
+}
+
 export interface LoadReferenceOptions {
   /** Upper bound on file size. Files larger than this return VALIDATION without being read. */
   readonly maxBytes?: number;
@@ -242,9 +265,10 @@ export async function loadReference(
 
   let content: string;
   try {
-    // fstat on the opened descriptor — the size is bound to the inode the
-    // fd points at, not to whatever a follow-up path-based call might
-    // resolve. This is what closes the TOCTOU gap.
+    // fstat on the opened descriptor. The `isFile()` and boundary checks
+    // below rely on the inode held open; the earlier `stat.size` is
+    // advisory only — the final size ceiling is enforced by the bounded
+    // read below (review #1896 round 4).
     const fst = await handle.stat();
     if (!fst.isFile()) {
       return validationError(
@@ -254,19 +278,11 @@ export async function loadReference(
         "REFERENCE_NOT_FILE",
       );
     }
-    if (fst.size > maxBytes) {
-      return validationError(
-        name,
-        refPath,
-        `Reference "${refPath}" for skill "${name}" exceeds size limit (${fst.size} > ${maxBytes} bytes)`,
-        "REFERENCE_SIZE_LIMIT",
-      );
-    }
 
-    // Realpath-based boundary check stays, using the in-tree path that the
-    // descriptor was opened against. Because we still hold the open fd, the
-    // inode the descriptor points at cannot change under us — a swap after
-    // this point hits the new inode, not the one we read.
+    // Realpath-based boundary check uses the in-tree path that the
+    // descriptor was opened against. Because we still hold the open fd,
+    // the inode the descriptor points at cannot change under us — a swap
+    // after this point hits the new inode, not the one we read.
     const realTarget = await realpath(joined);
     const rel = relative(realDir, realTarget);
     if (rel.startsWith("..") || isAbsolute(rel)) {
@@ -278,17 +294,34 @@ export async function loadReference(
       );
     }
 
-    const buf = await handle.readFile();
-    // Convert UTF-8 bytes; keep the raw buffer so the NUL sniff runs on the
-    // real byte stream rather than a decoder-normalized string.
-    content = buf.toString("utf8");
+    // Bounded read — allocate exactly `maxBytes + 1`. If the file grew in
+    // place between fstat and read (a racing writer appended) the extra
+    // byte surfaces the overflow and we fail closed. `handle.readFile()`
+    // offers no byte limit, so we use the low-level `handle.read()` to
+    // stop reading at the cap rather than trusting the earlier size.
+    const cap = maxBytes + 1;
+    const buf = new Uint8Array(cap);
+    let bytesRead = 0;
+    while (bytesRead < cap) {
+      const { bytesRead: chunk } = await handle.read(buf, bytesRead, cap - bytesRead, bytesRead);
+      if (chunk === 0) break;
+      bytesRead += chunk;
+    }
+    if (bytesRead > maxBytes) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" exceeds size limit (> ${maxBytes} bytes)`,
+        "REFERENCE_SIZE_LIMIT",
+      );
+    }
+    const slice = buf.subarray(0, bytesRead);
 
-    // Binary guard on the leading bytes of the BUFFER — sniff runs before
-    // we inspect content semantically (scanner), so obviously-binary
-    // payloads never feed the scanner or the model.
-    const sniffEnd = Math.min(buf.length, BINARY_SNIFF_BYTES);
+    // Binary guard on the leading bytes — runs before scanning so
+    // obviously-binary payloads never reach the scanner or the model.
+    const sniffEnd = Math.min(slice.length, BINARY_SNIFF_BYTES);
     for (let i = 0; i < sniffEnd; i++) {
-      if (buf[i] === 0x00) {
+      if (slice[i] === 0x00) {
         return validationError(
           name,
           refPath,
@@ -297,6 +330,8 @@ export async function loadReference(
         );
       }
     }
+
+    content = new TextDecoder("utf-8").decode(slice);
   } catch (cause: unknown) {
     return {
       ok: false,
@@ -319,10 +354,19 @@ export async function loadReference(
   // with clean frontmatter could otherwise hide dangerous prose in a
   // references/*.md file and surface it through this API, which is exactly
   // the attack Tier 2 must not enable. Fail closed on >= blockOnSeverity.
+  //
+  // Dispatch by extension (review #1896 round 4). `scanSkill()` only runs
+  // its AST pass on fenced Markdown code blocks, so a raw `scripts/run.sh`
+  // or `tool.ts` with no fences would slip through unscanned. Treat each
+  // recognized source extension as a code file and route to `.scan()`,
+  // which AST-parses the whole file. Markdown (and unknown extensions)
+  // stay on `.scanSkill()` so prose rules still apply.
   const scanner = options?.scanner;
   if (scanner !== undefined) {
     const threshold: Severity = options?.blockOnSeverity ?? "HIGH";
-    const report = scanner.scanSkill(content);
+    const report = isSourceExtension(refPath)
+      ? scanner.scan(content, refPath)
+      : scanner.scanSkill(content);
     const blocking = report.findings.filter((f) => severityAtOrAbove(f.severity, threshold));
     const subThreshold = report.findings.filter((f) => !severityAtOrAbove(f.severity, threshold));
     if (subThreshold.length > 0) {

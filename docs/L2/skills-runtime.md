@@ -31,14 +31,27 @@ Per-access tiers, not per-skill classification — every skill participates in a
 
 `load(name)` promotes a discovered skill to `SkillDefinition` by reading the full body, resolving includes, and running the security scanner. Results are cached in a bounded LRU (`cacheMaxBodies`, default `Infinity`). On eviction the runtime invokes `onSkillEvicted` so operators can observe cache pressure.
 
-`loadReference(name, refPath)` reads a single file inside the skill's own directory. `refPath` is a relative POSIX path (`scripts/run.sh`, `references/rules.md`). Four guardrails apply — identical in spirit to the Tier 1 gate so a benign SKILL.md cannot defer malicious content to a `references/*.md` file:
+`loadReference(name, refPath)` reads a single file inside the skill's own directory. `refPath` is a relative POSIX path (`scripts/run.sh`, `references/rules.md`). Five guardrails apply — identical in spirit to the Tier 1 gate so a benign SKILL.md cannot defer malicious content to a `references/*.md` file:
 
-1. **Path hygiene** — realpath-resolved; `..`, absolute paths, or escape-via-symlink return `VALIDATION` / `errorKind === "PATH_TRAVERSAL"`.
-2. **Size ceiling** — default 256 KB (`DEFAULT_MAX_REFERENCE_BYTES`). Oversized files return `VALIDATION` / `errorKind === "REFERENCE_SIZE_LIMIT"` without being read into memory.
-3. **Binary guard** — a NUL byte in the leading 1 KB flags the file as binary and returns `VALIDATION` / `errorKind === "REFERENCE_BINARY"`. Tier 2 is a text channel for the model.
-4. **Security scan** — the content is fed through `scanner.scanSkill()` with the runtime's `blockOnSeverity` threshold (default `"HIGH"`). Blocking findings return `PERMISSION`; sub-threshold findings route to `onSecurityFinding`.
+1. **Frontmatter allowlist** — every surface-able path must be declared in SKILL.md's `references:` list (see below). Skills without a declared list fail closed on every `loadReference()` call. This narrows Tier 2 from "any file in the skill subtree" to "the files the author explicitly surfaced."
+2. **Path hygiene** — realpath-resolved; `..`, absolute paths, or escape-via-symlink return `VALIDATION` / `errorKind === "PATH_TRAVERSAL"`. Parent-directory symlinks are rejected before `open()` so they cannot become existence/size/type oracles for out-of-tree files.
+3. **Bounded read** — `handle.read()` is capped at `maxBytes + 1` (default 256 KB via `DEFAULT_MAX_REFERENCE_BYTES`). Files that grow in place after `fstat` still hit the cap at read time and return `VALIDATION` / `errorKind === "REFERENCE_SIZE_LIMIT"`.
+4. **Binary guard** — a NUL byte in the leading 1 KB flags the file as binary and returns `VALIDATION` / `errorKind === "REFERENCE_BINARY"`. Tier 2 is a text channel for the model.
+5. **Security scan (extension-aware)** — `.ts`/`.tsx`/`.mts`/`.cts`/`.js`/`.jsx`/`.mjs`/`.cjs` files go through `scanner.scan()` so AST rules fire on whole-file source; everything else goes through `scanner.scanSkill()`. The runtime's `blockOnSeverity` threshold (default `"HIGH"`) decides; blocking findings return `PERMISSION`, sub-threshold findings route to `onSecurityFinding`.
 
 Tier 2 results are **not** cached: reference files are loaded lazily at the moment the agent asks for them and are expected to be one-shot.
+
+```yaml
+---
+name: my-skill
+description: Does a thing.
+references:
+  - references/rules.md
+  - scripts/run.sh
+---
+```
+
+Paths in `references` must be relative POSIX paths with no `..` segments (validated at parse time). Any undeclared path returned by `loadReference()` is a `PERMISSION` error.
 
 ### Concurrency Safety
 

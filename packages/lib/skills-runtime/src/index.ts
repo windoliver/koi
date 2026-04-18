@@ -1059,6 +1059,35 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       };
     }
 
+    // Frontmatter allowlist (review #1896 round 4). A Tier 2 read is a
+    // trust-boundary crossing: without this gate, the runtime would expose
+    // every in-tree file (e.g. .env, operator notes) to any caller that
+    // knows the skill name. Require the skill author to declare each
+    // surface-able path explicitly in SKILL.md's `references:` block.
+    const declared = entry.metadata.references;
+    if (declared === undefined || declared.length === 0) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Skill "${name}" has no Tier 2 references declared. Add a 'references:' list to SKILL.md frontmatter to enable loadReference().`,
+          retryable: false,
+          context: { name, refPath },
+        },
+      };
+    }
+    if (!declared.includes(refPath)) {
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Reference "${refPath}" is not in the declared references list for skill "${name}".`,
+          retryable: false,
+          context: { name, refPath, declared },
+        },
+      };
+    }
+
     return loadReference(name, entry.dirPath, refPath, {
       scanner,
       blockOnSeverity: resolvedConfig.blockOnSeverity,

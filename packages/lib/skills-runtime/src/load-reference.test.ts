@@ -149,6 +149,24 @@ describe("loadReference — size ceiling", () => {
     expect(DEFAULT_MAX_REFERENCE_BYTES).toBeGreaterThan(0);
     expect(DEFAULT_MAX_REFERENCE_BYTES).toBeLessThan(10 * 1024 * 1024);
   });
+
+  test("bounded read enforces the cap even when file grew after stat (review #1896 round 4)", async () => {
+    // Write a file that is exactly maxBytes. The reader allocates
+    // maxBytes + 1 bytes — reading one more byte than the advertised cap
+    // is the detection signal. Since we can't race filesystem growth
+    // reliably in a unit test, we exercise the overflow branch directly
+    // with a file that exceeds maxBytes.
+    const payload = "z".repeat(1025);
+    await Bun.write(join(root, "s", "grew.md"), payload);
+    const dir = join(root, "s");
+
+    const result = await loadReference("s", dir, "grew.md", { maxBytes: 1024 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "REFERENCE_SIZE_LIMIT" });
+    }
+  });
 });
 
 describe("loadReference — binary guard", () => {
@@ -249,6 +267,22 @@ describe("loadReference — security scan", () => {
 
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
+  });
+
+  test("scans raw .ts reference files via scanner.scan() (review #1896 round 4)", async () => {
+    // A naked TS file with no markdown fences would be missed by scanSkill().
+    // Extension dispatch must route to scan() so the AST rules fire.
+    const payload = 'eval("attack-from-raw-ts");\n';
+    await Bun.write(join(root, "s", "scripts/tool.ts"), payload);
+    const dir = join(root, "s");
+
+    const scanner = createScanner();
+    const result = await loadReference("s", dir, "scripts/tool.ts", { scanner });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("PERMISSION");
+    }
   });
 
   test("blocks reference content that trips a blocking finding", async () => {

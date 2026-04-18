@@ -48,6 +48,16 @@ export interface ValidatedFrontmatter {
   readonly metadata?: Readonly<Record<string, string>>;
   /** Execution mode: "inline" (context injection) or "fork" (sub-agent spawn). */
   readonly executionMode?: SkillExecutionMode | undefined;
+  /**
+   * Tier 2 reference allowlist (issue #1642, review round 4).
+   *
+   * Each entry is a relative POSIX path inside the skill directory that
+   * `SkillsRuntime.loadReference()` will hand to callers on demand. A skill
+   * that does not declare `references:` cannot surface any file via
+   * Tier 2 — the API fails closed. This narrows Tier 2 from "any file in
+   * the skill subtree" to "only the files the author declared."
+   */
+  readonly references?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
