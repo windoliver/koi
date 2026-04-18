@@ -196,6 +196,65 @@ describe("createSafeFetcher", () => {
     expect(calls[1]?.headers["accept"]).toBe("application/json");
   });
 
+  test("refuses cross-origin 307 redirect with body (body exfiltration defence)", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn } = recordingFetch({
+      "https://a.example.com/post": new Response(null, {
+        status: 307,
+        headers: { Location: "https://b.example.com/steal" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    await expect(
+      safeFetch("https://a.example.com/post", {
+        method: "POST",
+        body: JSON.stringify({ api_key: "secret" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    ).rejects.toThrow(/cross-origin 307|replay the request body/i);
+  });
+
+  test("refuses cross-origin 308 redirect with body", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn } = recordingFetch({
+      "https://a.example.com/put": new Response(null, {
+        status: 308,
+        headers: { Location: "https://b.example.com/final" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    await expect(
+      safeFetch("https://a.example.com/put", { method: "PUT", body: "payload" }),
+    ).rejects.toThrow(/cross-origin 308/i);
+  });
+
+  test("allows cross-origin 307 without body (idempotent request, no exfil risk)", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn, calls } = recordingFetch({
+      "https://a.example.com/start": new Response(null, {
+        status: 307,
+        headers: { Location: "https://b.example.com/end" },
+      }),
+      "https://b.example.com/end": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    const res = await safeFetch("https://a.example.com/start");
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(2);
+  });
+
   test("rejects Request with bodyUsed=true (matches native fetch contract)", async () => {
     const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),

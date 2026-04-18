@@ -111,6 +111,8 @@ For high-stakes deployments that need bit-for-bit guarantees on HTTPS targets, r
 
 Redirects: each hop is re-validated via `isSafeUrl` before it is followed, so the protection applies to the entire redirect chain, not just the first URL. On cross-origin redirects the wrapper applies an **allowlist** for headers — anything other than a small set of content-negotiation headers (`accept`, `accept-encoding`, `accept-language`, `user-agent`, `content-type`, `content-language`, `cache-control`, `pragma`) is redacted. A denylist (`authorization`, `cookie`, …) is too narrow for a server-side fetcher because custom auth headers (`x-api-key`, `x-amz-security-token`, vendor-specific bearer headers) are common and impossible to enumerate safely.
 
+**Cross-origin 307/308 with a body is refused.** Method-preserving redirects replay the original POST/PUT/PATCH body — bodies often carry the same secrets the header allowlist redacts (API keys in JSON, signed payloads), and there's no safe generic way to sanitise them. The wrapper throws; if the caller genuinely needs the replay they can re-issue the request manually against the validated redirect target.
+
 ### Request bodies
 
 Stream-backed bodies (`ReadableStream`, `Request.body`) are consumed into a `Uint8Array` once at the start of `createSafeFetcher`, so 307/308 redirects that preserve method + body can safely replay. This also avoids Node 22's `RequestInit` `duplex: "half"` requirement. Callers that need genuine streaming uploads should use the underlying `fetch` directly — this wrapper optimises for correctness over streaming throughput.

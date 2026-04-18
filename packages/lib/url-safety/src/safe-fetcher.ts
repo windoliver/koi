@@ -288,6 +288,19 @@ function redactCrossOriginHeaders(headers: Headers): void {
 
 function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
   const crossOrigin = new URL(s.url).origin !== new URL(newUrl).origin;
+  const methodPreserving = status === 307 || status === 308;
+
+  // Refuse cross-origin method-preserving redirects by default: 307/308
+  // replay the original method AND body to a new origin. Headers we can
+  // redact; bodies often carry the same secrets in JSON (API keys, signed
+  // payloads, credentials) and there's no safe generic way to sanitise
+  // them. Force the caller to handle this explicitly.
+  if (crossOrigin && methodPreserving && s.body !== undefined && s.body !== null) {
+    throw new Error(
+      `url-safety: refused cross-origin ${status} redirect — method-preserving redirects to ${newUrl} would replay the request body to a different origin; if this is intentional, re-issue the request manually against the redirect target`,
+    );
+  }
+
   s.url = newUrl;
 
   const downgrade =
