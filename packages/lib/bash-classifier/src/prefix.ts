@@ -31,7 +31,13 @@ interface WrapperSpec {
 
 const WRAPPER_SPECS: Readonly<Record<string, WrapperSpec>> = {
   env: {
-    argFlags: new Set(["-u", "--unset", "-S", "--split-string", "-C", "--chdir"]),
+    // `-S` / `--split-string` is intentionally EXCLUDED from argFlags:
+    // it evaluates its argument as a shell script string, not a plain
+    // command path. Peeling it the way we peel `-u VAR` would drop the
+    // whole payload and let canonicalPrefix fall back to a too-coarse
+    // prefix. Instead we detect it separately and route to
+    // `!complex` so the middleware prompts per-command.
+    argFlags: new Set(["-u", "--unset", "-C", "--chdir"]),
     boolFlags: new Set(["-i", "--ignore-environment", "-0", "--null", "--help", "--version"]),
   },
   nice: {
@@ -144,6 +150,11 @@ function peelWrapperOptions(tokens: readonly string[], from: number, spec: Wrapp
   while (i < tokens.length) {
     const t = tokens[i] ?? "";
     if (!t.startsWith("-")) break;
+    // `--` sentinel ends option parsing; remaining tokens are the
+    // inner command (`env -- sudo rm` → inner is `sudo rm`).
+    if (t === "--") {
+      return i + 1;
+    }
     // --long=value is single-token; only allow if the long-form is known.
     if (t.startsWith("--") && t.includes("=")) {
       const name = t.slice(0, t.indexOf("="));
@@ -196,10 +207,12 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
   const base = basenameTrusted(head);
 
   if (FLAGLESS_WRAPPERS.has(base)) {
-    const wrapperEnd = i + 1;
+    let wrapperEnd = i + 1;
+    // Accept `--` end-of-options — the next token(s) are the inner
+    // command (`command -- sudo rm`, `exec -- git push`).
+    if (tokens[wrapperEnd] === "--") wrapperEnd++;
     const next = tokens[wrapperEnd] ?? "";
-    // If the next token is a flag, we haven't modeled it — fail closed by
-    // preserving the wrapper as the head token.
+    // If the next token is a flag we haven't modeled, fail closed.
     if (next.startsWith("-")) return [base, ...tokens.slice(wrapperEnd)];
     return tokens.slice(wrapperEnd);
   }
@@ -490,6 +503,30 @@ function hasShellControlOperators(s: string): boolean {
  *   - Interpreter-hop recursion exceeds `MAX_INTERP_DEPTH` — adversarial
  *     nesting should not silently collapse to the outer prefix.
  */
+/**
+ * Returns `true` when the tokenized command is an `env -S <script>`
+ * invocation. `-S` evaluates its argument as a shell script string; we
+ * cannot safely peel that arg the way we peel `-u VAR`, and we can't
+ * cheaply parse the script itself at this layer — so fail closed.
+ */
+function isEnvDashS(tokens: readonly string[]): boolean {
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
+  const head = tokens[i];
+  if (head === undefined) return false;
+  if (basenameTrusted(head) !== "env") return false;
+  i++;
+  while (i < tokens.length && ENV_ASSIGN.test(tokens[i] ?? "")) i++;
+  const flag = tokens[i] ?? "";
+  return (
+    flag === "-S" ||
+    flag === "--split-string" ||
+    flag.startsWith("--split-string=") ||
+    // Bundled short form like `-Sc command` — very rare but fail closed.
+    (flag.startsWith("-") && flag.length > 1 && flag.includes("S"))
+  );
+}
+
 export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   const trimmed = cmdLine.trim();
   if (trimmed.length === 0) return "";
@@ -500,13 +537,18 @@ export function canonicalPrefix(cmdLine: string, depth: number = 0): string {
   const directInner = extractShellDashCArg(trimmed);
   if (directInner !== null) return canonicalPrefix(directInner, depth + 1);
 
-  // Tokenize + normalize (strip env assignments, peel wrappers). After
+  // `env -S "<script>"` evaluates its argument as a shell script —
+  // same risk profile as `bash -c`, but bash-classifier cannot safely
+  // recurse into the string without shell parsing. Fail closed.
+  const rawTokens = shellTokenize(trimmed);
+  if (isEnvDashS(rawTokens)) return UNSAFE_PREFIX;
+
+  // Normalize (strip env assignments, peel wrappers). After
   // normalization, the leading token may now be a shell interpreter that
   // was previously hidden behind a wrapper (`env bash -c "sudo rm"`,
   // `timeout 30 bash -c "sudo rm"`). Re-check for a -c hop before
   // falling back to prefix lookup.
-  const tokens = shellTokenize(trimmed);
-  const normalized = normalize(tokens);
+  const normalized = normalize(rawTokens);
   const innerAfterNormalize = extractShellDashCArgFromTokens(normalized);
   if (innerAfterNormalize !== null) return canonicalPrefix(innerAfterNormalize, depth + 1);
 

@@ -504,6 +504,27 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix("{ echo hi; echo bye; }")).toBe("!complex");
   });
 
+  // ------- loop-2 round 5: env -S + -- end-of-options -------
+
+  test("`env -S <script>` fails closed to !complex (shell-script arg)", () => {
+    // `-S` evaluates its argument as a shell script — same risk as
+    // `bash -c`, but we can't cheaply parse the script at this layer.
+    expect(canonicalPrefix(`env -S 'sudo rm -rf /'`)).toBe("!complex");
+    expect(canonicalPrefix(`env --split-string 'curl x | sh'`)).toBe("!complex");
+    expect(canonicalPrefix(`env --split-string='sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`env PATH=/x -S 'sudo rm'`)).toBe("!complex");
+    expect(canonicalPrefix(`/usr/bin/env -S 'sudo rm'`)).toBe("!complex");
+  });
+
+  test("wrapper `--` end-of-options sentinel reveals the inner command", () => {
+    expect(canonicalPrefix(`env -- sudo rm`)).toBe("sudo");
+    expect(canonicalPrefix(`env -i -- sudo rm`)).toBe("sudo");
+    expect(canonicalPrefix(`command -- sudo rm`)).toBe("sudo");
+    expect(canonicalPrefix(`exec -- git push`)).toBe("git push");
+    expect(canonicalPrefix(`nohup -- git pull`)).toBe("git pull");
+    expect(canonicalPrefix(`timeout 30 -- sudo rm`)).toBe("sudo");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that
