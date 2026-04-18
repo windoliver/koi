@@ -2463,6 +2463,34 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   };
 
   // ---------------------------------------------------------------------------
+  // 4b. Install the full SIGUSR1 graceful-shutdown handler EARLY (#1906 R10)
+  // ---------------------------------------------------------------------------
+  //
+  // The bin.ts inline early handler covers the window from process start
+  // to this point with a bare `process.exit()`. From here onwards `shutdown`
+  // is defined and tolerant of null component references
+  // (runtimeHandle/appHandle are null-safe), so swapping to the graceful
+  // handler now means a SIGUSR1 arriving during runtime/TUI bootstrap
+  // (between createKoiRuntime at line 1405 and start() far below) triggers
+  // full teardown: abortActiveStream, shutdownBackgroundTasks,
+  // runtime.dispose, and any already-built resources are cleaned up.
+  // Reviewer-flagged: installing only after bootstrap left an 8+ second
+  // window where SIGUSR1 would process.exit without running shutdown,
+  // orphaning subprocesses and MCP transports.
+  const onProcessSigusr1 = createSigusr1Handler({
+    shutdown: (code, reason) => {
+      void shutdown(code, reason);
+    },
+    write: (msg) => {
+      process.stderr.write(msg);
+    },
+  });
+  if (SIGUSR1_SUPPORTED) {
+    removeStoredEarlySigusr1Handler();
+    process.on("SIGUSR1", onProcessSigusr1);
+  }
+
+  // ---------------------------------------------------------------------------
   // 5. Initialize tree-sitter for markdown rendering
   // ---------------------------------------------------------------------------
 
@@ -4178,19 +4206,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const onProcessSighup = (): void => {
     void shutdown(129, "SIGHUP received (terminal hangup)");
   };
-  // SIGUSR1 (#1906): out-of-band escape hatch when OpenTUI's native input
-  // thread deadlocks on __ulock_wait2 — raw mode stops Ctrl+C from reaching
-  // us as SIGINT, but the JS signal layer still delivers SIGUSR1 because it
-  // bypasses the TTY reader entirely. User runs `kill -USR1 <pid>` from
-  // another terminal; handler routes into the same shutdown path as SIGINT.
-  const onProcessSigusr1 = createSigusr1Handler({
-    shutdown: (code, reason) => {
-      void shutdown(code, reason);
-    },
-    write: (msg) => {
-      process.stderr.write(msg);
-    },
-  });
+  // SIGUSR1 (#1906): the full handler was already installed in section 4b
+  // so a signal during bootstrap (before this section runs) goes through
+  // `shutdown` instead of a bare process.exit. See 4b for the rationale.
   // Stdin close (#1750): belt-and-suspenders — when the PTY master closes,
   // the fd fires 'close'. Does NOT require resume() (avoids perturbing
   // OpenTUI's raw terminal input). Only installed when stdin is a TTY to
@@ -4220,23 +4238,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
-  // Swap the early SIGUSR1 handler (installed inline at the top of bin.ts
-  // to cover the bootstrap window — #1906) for the full graceful-shutdown
-  // handler. Remove the specific early listener by reference (via the
-  // Symbol.for stash bin.ts wrote to globalThis) rather than nuking all
-  // SIGUSR1 listeners — an embedding host may have installed its own
-  // SIGUSR1 handler on the same process, and runTuiCommand must not
-  // trample it.
-  // SIGUSR1 doesn't exist on Windows — gate both operations so the
-  // process.on call cannot throw on unsupported platforms.
-  if (SIGUSR1_SUPPORTED) {
-    removeStoredEarlySigusr1Handler();
-    // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
-    // handler has flipped idempotent still has a listener installed —
-    // unhandled SIGUSR1 otherwise defaults to inspector-launch / non-graceful
-    // exit depending on runtime, which confuses supervisors probing liveness.
-    process.on("SIGUSR1", onProcessSigusr1);
-  }
+  // SIGUSR1 is already armed from section 4b (#1906) — no install here.
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
