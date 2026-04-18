@@ -1304,6 +1304,59 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
+  test("noCache with custom headers fences concurrent default writers during the refresh", async () => {
+    // Regression for #1903 review round 4 of post-merge loop: when a
+    // forced-refresh carries custom headers (auth, Accept, Range, etc.)
+    // its OWN request is uncacheable, but it still needs to claim the
+    // per-key write fence. Otherwise a concurrent default GET could
+    // miss cache during the refresh RTT, fetch origin, and repopulate
+    // the default key with a stale representation — undoing the
+    // invalidation the forced-refresh caller just performed.
+    let callCount = 0;
+    let signalRefreshStarted: (() => void) | undefined;
+    let releaseRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    const refreshHeld = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("v1-stale", { status: 200 });
+      if (callCount === 2) {
+        // The authenticated noCache refresh.
+        signalRefreshStarted?.();
+        await refreshHeld;
+        return new Response("v2-authed-live", { status: 200 });
+      }
+      // Concurrent default reader during the refresh.
+      return new Response("v-concurrent-stale", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // primes "v1-stale"
+
+    const refreshP = executor.fetch("https://example.com", {
+      headers: { Authorization: "Bearer abc" },
+      noCache: true,
+    });
+    await refreshStarted;
+
+    // Default reader during the refresh — must not repopulate the cache.
+    await executor.fetch("https://example.com");
+
+    releaseRefresh?.();
+    await refreshP;
+
+    // Refresh was uncacheable (custom headers) + concurrent reader was
+    // fenced out. Cache remains empty so the next default fetch hits
+    // origin rather than replaying the stale body the refresh invalidated.
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) expect(followUp.value.cached).toBe(false);
+  });
+
   test("noCache with custom headers still evicts the prior default cached entry", async () => {
     // Regression for #1903 review round 11: `noCache` must invalidate
     // any pre-existing default cache entry at the `METHOD:URL` key even

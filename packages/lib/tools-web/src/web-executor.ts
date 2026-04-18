@@ -255,15 +255,21 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
-      // Single-flight write token: only the first concurrent miss for
+      // Single-flight write token: only the first concurrent fetcher for
       // this key is allowed to populate the cache. Later misses still
       // fetch from origin (so they each get a live response and can't be
       // held hostage to the first fetch's latency), but they won't write.
-      // This is strictly safer than arrival-order fencing — which could
-      // pin either the stale-fast or the fresh-slow response depending
-      // on which happens to return first.
-      const holdsWriteToken =
-        keyCacheable && fetchCache !== undefined && !inFlightWrites.has(cacheKey);
+      // A `noCache` GET/HEAD claims the token even when its own request
+      // is uncacheable (custom headers or body) — otherwise the upfront
+      // eviction could be undone by a concurrent default reader that
+      // repopulates the cache with stale content before the forced
+      // refresh resolves. Holding without the intent to write is
+      // fine: the `holdsWriteToken && keyCacheable` check at write
+      // time still gates whether our own response makes it to the LRU.
+      const wantsToken =
+        fetchCache !== undefined &&
+        (keyCacheable || (noCache && (method === "GET" || method === "HEAD")));
+      const holdsWriteToken = wantsToken && !inFlightWrites.has(cacheKey);
       if (holdsWriteToken) inFlightWrites.add(cacheKey);
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
