@@ -57,15 +57,20 @@ function resolveSigusr1Number(): number {
 export const SIGUSR1_EXIT_CODE: number = 128 + resolveSigusr1Number();
 
 /**
- * True when the runtime and platform both support `SIGUSR1` delivery.
- * Windows never supports it — `process.on("SIGUSR1", …)` is a no-op there
- * and the surrounding feature (force-escape for a wedged TTY) makes no
- * sense either. Callers install handlers and emit the startup hint only
- * when this is true, so Windows users see no extra output and no
- * non-functional listeners.
+ * True when the runtime and platform support `SIGUSR1` delivery.
+ * Windows is the only platform where `SIGUSR1` is outright unavailable;
+ * every POSIX runtime delivers it, even on the rare host where
+ * `os.constants.signals.SIGUSR1` is absent (`resolveSigusr1Number`
+ * provides a fallback). Callers install handlers and emit the startup
+ * hint only when this is true so Windows users see no extra output
+ * and no non-functional listeners. Using a platform-only predicate
+ * (not a signal-constant probe) keeps the gates consistent across
+ * `bin.ts`, `tui-command.ts`, and `tui-reexec-signals.ts` — otherwise
+ * a missing-constant edge case would leave the child with only the
+ * early hard-exit handler while the parent no longer forwarded
+ * `SIGUSR1` at all (#1906 round-7 review).
  */
-export const SIGUSR1_SUPPORTED: boolean =
-  process.platform !== "win32" && typeof osConstants.signals.SIGUSR1 === "number";
+export const SIGUSR1_SUPPORTED: boolean = process.platform !== "win32";
 
 export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
   // let: justified — set once on first signal to make subsequent signals no-ops.
