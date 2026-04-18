@@ -106,14 +106,21 @@ function repairInterrupts(
     const curr = messages[i];
     if (curr === undefined) continue;
     const prev = result[result.length - 1];
-    // Only non-pinned pairs — pinned user messages are system-injected
-    // context (manifest goals, etc.) and stacking them is by design.
+    // Only non-pinned, non-synthetic pairs. Pinned user messages are
+    // system-injected context (manifest goals, etc.). Synthetic user
+    // messages are compaction summaries from `resumeFromTranscript`
+    // (metadata.synthetic=true, metadata.compacted=true) — adjacent to
+    // the first real user prompt they look like user/user but are NOT
+    // an interrupted turn; injecting the "fresh request" steer there
+    // would tell the model to ignore the summary it was given.
     if (
       prev !== undefined &&
       prev.senderId === "user" &&
       curr.senderId === "user" &&
       prev.pinned !== true &&
-      curr.pinned !== true
+      curr.pinned !== true &&
+      prev.metadata?.synthetic !== true &&
+      curr.metadata?.synthetic !== true
     ) {
       const synthetic: InboundMessage = {
         senderId: "assistant",
@@ -162,7 +169,14 @@ function dedup(
     const curr = messages[i];
     if (prev === undefined || curr === undefined) continue;
 
-    if (prev.senderId === curr.senderId) {
+    // User messages are never deduplicated. Two consecutive identical
+    // user submits ("continue" → ESC → "continue") are a real retry
+    // pattern, not a replay artifact; collapsing them silently loses
+    // the second turn and leaves interrupted sessions unrecoverable
+    // on the exact-same-input path. Phase 4 (repairInterrupts) handles
+    // the interrupt case by inserting a synthetic assistant between
+    // them instead.
+    if (prev.senderId === curr.senderId && curr.senderId !== "user") {
       // Lazy hashing: only hash when same-senderId adjacency found
       if (lastHash === undefined) {
         lastHash = computeContentHash(prev.content);

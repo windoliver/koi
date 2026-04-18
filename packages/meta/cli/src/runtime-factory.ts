@@ -767,13 +767,20 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  * the chosen posture.
  */
 const DEFAULT_MAX_DURATION_MS = 1_800_000;
+// Node's setTimeout clamps delays above 2^31-1 to 1ms (emits
+// TimeoutOverflowWarning). The iteration guard passes `maxDurationMs`
+// directly into setTimeout, so any "effectively unlimited" sentinel
+// must stay within int32 range. 2^31-1 ms ≈ 24.8 days — well beyond
+// any realistic turn duration.
+const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
 
 function resolveMaxDurationMs(): number {
   const raw = process.env.KOI_MAX_DURATION_MS;
   if (raw === undefined) return DEFAULT_MAX_DURATION_MS;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_DURATION_MS;
-  return n === 0 ? Number.MAX_SAFE_INTEGER : n;
+  if (n === 0) return MAX_SETTIMEOUT_SAFE_MS;
+  return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {

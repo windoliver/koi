@@ -40,23 +40,32 @@ export function needsRepair(messages: readonly InboundMessage[]): boolean {
       // O(1) merge check first — avoids unnecessary hashing
       if (isMergeable(prev) && isMergeable(curr)) return true;
 
-      // Dedup check: hash comparison (only for non-mergeable same-sender pairs)
-      const prevHash = computeContentHash(prev.content);
-      const currHash = computeContentHash(curr.content);
-      if (prevHash === currHash) return true;
+      // Dedup check: hash comparison. Identical user submits are a real
+      // retry pattern and must not be deduped — see `dedup` in
+      // repair-session.ts for rationale.
+      if (curr.senderId !== "user") {
+        const prevHash = computeContentHash(prev.content);
+        const currHash = computeContentHash(curr.content);
+        if (prevHash === currHash) return true;
+      }
     }
 
-    // Two consecutive non-pinned user messages with different content →
-    // interrupt repair needed (identical ones already caught by dedup above).
+    // Two consecutive non-pinned, non-synthetic user messages →
+    // interrupt repair needed, regardless of content. Identical
+    // user retries ("continue" + "continue" after ESC) also need
+    // the synthetic-assistant separator — dedup no longer collapses
+    // them. Synthetic user messages (compaction summaries from
+    // resume) must not trigger interrupt repair; see
+    // `repairInterrupts` for the rationale.
     if (
       prev.senderId === "user" &&
       curr.senderId === "user" &&
       prev.pinned !== true &&
-      curr.pinned !== true
+      curr.pinned !== true &&
+      prev.metadata?.synthetic !== true &&
+      curr.metadata?.synthetic !== true
     ) {
-      const prevHash = computeContentHash(prev.content);
-      const currHash = computeContentHash(curr.content);
-      if (prevHash !== currHash) return true;
+      return true;
     }
   }
 

@@ -142,8 +142,13 @@ describe("repairSession — orphan repair", () => {
 // ---------------------------------------------------------------------------
 
 describe("repairSession — dedup", () => {
-  test("removes consecutive duplicate messages", () => {
-    const messages = [msg("user", "hello"), msg("user", "hello"), msg("assistant", "hi")];
+  test("removes consecutive duplicate tool messages", () => {
+    const messages = [
+      msg("user", "q"),
+      msg("assistant", "call", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+    ];
     const result = repairSession(messages);
 
     const dedupIssues = result.issues.filter((i) => i.phase === "dedup");
@@ -151,18 +156,20 @@ describe("repairSession — dedup", () => {
     expect(dedupIssues[0]?.action).toBe("removed");
   });
 
-  test("keeps first of consecutive duplicates", () => {
+  test("keeps first of consecutive tool duplicates", () => {
     const messages = [
-      msg("user", "hello", { ts: 1 }),
-      msg("user", "hello", { ts: 2 }),
-      msg("assistant", "hi"),
+      msg("user", "q"),
+      msg("assistant", "call", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1", ts: 1 }),
+      msg("tool", "result", { callId: "c1", ts: 2 }),
     ];
     const result = repairSession(messages);
-    expect(result.messages[0]?.timestamp).toBe(1);
+    // tool at index 2 kept, tool at index 3 (ts:2) removed
+    expect(result.messages[2]?.timestamp).toBe(1);
   });
 
   test("does not dedup different content with same senderId", () => {
-    const messages = [msg("user", "hello"), msg("user", "world"), msg("assistant", "hi")];
+    const messages = [msg("user", "q"), msg("assistant", "hello"), msg("assistant", "world")];
     const result = repairSession(messages);
 
     // Different content should trigger merge, not dedup
@@ -176,12 +183,26 @@ describe("repairSession — dedup", () => {
     expect(result.messages).toBe(messages);
   });
 
-  test("removes multiple consecutive duplicates", () => {
+  test("does NOT dedup consecutive identical user messages (retry case)", () => {
+    // User resubmits the same prompt after ESC/timeout. Both turns are
+    // real submissions and must survive; collapsing them silently loses
+    // the second submit. Phase 4 (interrupt repair) handles the
+    // separating synthetic-assistant injection.
+    const messages = [msg("user", "continue"), msg("user", "continue"), msg("assistant", "ok")];
+    const result = repairSession(messages);
+    const dedupIssues = result.issues.filter((i) => i.phase === "dedup");
+    expect(dedupIssues.length).toBe(0);
+    const userCount = result.messages.filter((m) => m.senderId === "user").length;
+    expect(userCount).toBe(2);
+  });
+
+  test("removes multiple consecutive tool duplicates", () => {
     const messages = [
-      msg("user", "hello"),
-      msg("user", "hello"),
-      msg("user", "hello"),
-      msg("assistant", "hi"),
+      msg("user", "q"),
+      msg("assistant", "call", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
     ];
     const result = repairSession(messages);
 
@@ -319,6 +340,23 @@ describe("repairSession — interrupt repair", () => {
     expect(result.messages).toBe(messages);
     expect(result.issues.length).toBe(0);
   });
+
+  test("does NOT fire between a resumed compaction summary and the first user turn", () => {
+    // `resumeFromTranscript` injects compaction summaries as synthetic
+    // user messages ({synthetic:true, compacted:true}). These look
+    // user/user adjacent to the first real prompt but are NOT an
+    // interrupted turn — injecting the "fresh request" steer would
+    // tell the model to ignore the summary it was given.
+    const messages = [
+      msg("user", "[Summary] earlier conversation context", { synthetic: true }),
+      msg("user", "what did we decide?"),
+      msg("assistant", "we decided X"),
+    ];
+    const result = repairSession(messages);
+    const interruptIssues = result.issues.filter((i) => i.description.includes("consecutive user"));
+    expect(interruptIssues.length).toBe(0);
+    expect(result.messages).toBe(messages);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -359,26 +397,31 @@ describe("repairSession — phase interactions", () => {
     expect(result.issues).toEqual([]);
   });
 
-  test("dedup before interrupt-repair: duplicates removed before sender-pair check", () => {
+  test("interrupt-repair preserves all consecutive user submits (including identical retries)", () => {
+    // Dedup no longer collapses consecutive user messages — retries are
+    // real submissions. Interrupt-repair inserts a synthetic assistant
+    // between every pair, regardless of content equality.
     const messages = [
       msg("user", "hello"),
-      msg("user", "hello"), // duplicate — removed in dedup
-      msg("user", "world"), // different — interrupt-repair inserts synthetic assistant before it
+      msg("user", "hello"), // identical retry — preserved
+      msg("user", "world"),
       msg("assistant", "hi"),
     ];
     const result = repairSession(messages);
 
     const dedupIssues = result.issues.filter((i) => i.phase === "dedup");
     const orphanIssues = result.issues.filter((i) => i.phase === "orphan-tool");
-    expect(dedupIssues.length).toBe(1);
-    // Interrupt-repair is tagged with phase="orphan-tool" and adds 1 synthetic
-    // assistant between the remaining user→user pair.
-    expect(orphanIssues.length).toBe(1);
-    // User messages stay distinct (no merge); synthetic assistant between
-    expect(result.messages[0]?.senderId).toBe("user");
-    expect(result.messages[1]?.senderId).toBe("assistant");
-    expect(result.messages[1]?.metadata?.synthetic).toBe(true);
-    expect(result.messages[2]?.senderId).toBe("user");
+    expect(dedupIssues.length).toBe(0);
+    // Two user→user gaps → two synthetic assistants inserted.
+    expect(orphanIssues.length).toBe(2);
+    expect(result.messages.map((m) => m.senderId)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
   });
 });
 
@@ -404,13 +447,21 @@ describe("needsRepair mirrors repairSession", () => {
     expect(repairSession(messages).issues.length).toBeGreaterThan(0);
   });
 
-  test("needsRepair returns true for duplicates", () => {
-    const messages = [msg("user", "hello"), msg("user", "hello"), msg("assistant", "hi")];
+  test("needsRepair returns true for duplicates (non-user)", () => {
+    const messages = [
+      msg("user", "q"),
+      msg("assistant", "call", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+      msg("tool", "result", { callId: "c1" }),
+    ];
     expect(needsRepair(messages)).toBe(true);
     expect(repairSession(messages).issues.length).toBeGreaterThan(0);
   });
 
-  test("needsRepair returns true for mergeable adjacent messages", () => {
+  test("needsRepair returns true for consecutive user messages (interrupt repair)", () => {
+    // Different content → interrupt-repair case. Identical user retries
+    // also need repair, but `needsRepair` detects that via the same
+    // interrupt-repair path below (only non-synthetic user pairs).
     const messages = [msg("user", "hello"), msg("user", "world"), msg("assistant", "hi")];
     expect(needsRepair(messages)).toBe(true);
     expect(repairSession(messages).issues.length).toBeGreaterThan(0);
