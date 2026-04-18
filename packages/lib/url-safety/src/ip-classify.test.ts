@@ -97,19 +97,29 @@ describe("isBlockedIp — IPv6", () => {
     expect(isBlockedIp("::8.8.8.8")).toBe(false);
   });
 
-  test("blocks NAT64 local-use prefix (64:ff9b:1::/48) embedding private IPv4", () => {
-    // 64:ff9b:1::c0a8:1 → 192.168.0.1
-    expect(isBlockedIp("64:ff9b:1::c0a8:1")).toBe(true);
-    // 64:ff9b:1::7f00:1 → 127.0.0.1
-    expect(isBlockedIp("64:ff9b:1::7f00:1")).toBe(true);
-    // Dotted-decimal form — 64:ff9b:1::169.254.169.254
-    expect(isBlockedIp("64:ff9b:1::169.254.169.254")).toBe(true);
+  test("blocks NAT64 local-use prefix (64:ff9b:1::/48) embedding private IPv4 per RFC6052 §2.2", () => {
+    // For /48 NAT64, v4 bits straddle the u octet:
+    //   g3 = first 16 bits, g4 = (u=0)<<8 | byte2, g5 = byte3 << 8 | (suffix)
+    // 127.0.0.1 → g3=0x7f00, g4=0x0000, g5=0x0100
+    expect(isBlockedIp("64:ff9b:1:7f00:0:100::")).toBe(true);
+    // 192.168.0.1 → g3=0xc0a8, g4=0x0000, g5=0x0100
+    expect(isBlockedIp("64:ff9b:1:c0a8:0:100::")).toBe(true);
+    // 169.254.169.254 → g3=0xa9fe, g4=0x00a9 (u=0, byte2=169), g5=0xfe00
+    expect(isBlockedIp("64:ff9b:1:a9fe:a9:fe00::")).toBe(true);
   });
 
-  test("allows NAT64 local-use prefix embedding public IPv4", () => {
-    // 64:ff9b:1::1:1 → 0.1.0.1 — oh wait, that's 0.0.0.0/8, blocked. Use 8.8.8.8:
-    // 64:ff9b:1::808:808 → 8.8.8.8
-    expect(isBlockedIp("64:ff9b:1::808:808")).toBe(false);
+  test("allows NAT64 local-use prefix embedding public IPv4 (RFC6052 /48 layout)", () => {
+    // 8.8.8.8 → g3=0x0808, g4=0x0008, g5=0x0800
+    expect(isBlockedIp("64:ff9b:1:808:8:800::")).toBe(false);
+  });
+
+  test("does not false-allow /48 with suffix that looks like public v4", () => {
+    // Round 8 bypass: attacker puts private v4 in the actual /48 slot and
+    // a public-looking value in the suffix. With the buggy /96 decoder the
+    // suffix was read as "the v4"; now the /48 decoder reads g3/g4/g5 and
+    // this is blocked.
+    // g3=0xc0a8, g4=0x0000, g5=0x0100 (→ 192.168.0.1), suffix g6=0x0808, g7=0x0808
+    expect(isBlockedIp("64:ff9b:1:c0a8:0:100:808:808")).toBe(true);
   });
 
   test("blocks deprecated IPv6 site-local (fec0::/10)", () => {

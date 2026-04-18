@@ -124,6 +124,28 @@ function v4FromGroups(hi: number, lo: number): string {
   return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
 }
 
+/**
+ * Decode an IPv4 address embedded in a NAT64 /48 prefix per RFC6052 §2.2.
+ * For /48, the 32 bits of IPv4 straddle the reserved "u" octet:
+ *
+ *   bits  |  field
+ *   48-63 |  v4[0..1]        (g3)
+ *   64-71 |  u (must be 0)   (high byte of g4)
+ *   72-79 |  v4[2]           (low byte of g4)
+ *   80-87 |  v4[3]           (high byte of g5)
+ *   88-127|  suffix (ignored)
+ *
+ * Returns undefined if the u octet is non-zero (not a valid /48 encoding).
+ */
+function v4FromNAT64_48(g3: number, g4: number, g5: number): string | undefined {
+  if (g4 >> 8 !== 0) return undefined; // u octet must be 0
+  const b0 = (g3 >> 8) & 0xff;
+  const b1 = g3 & 0xff;
+  const b2 = g4 & 0xff;
+  const b3 = (g5 >> 8) & 0xff;
+  return `${b0}.${b1}.${b2}.${b3}`;
+}
+
 function isBlockedV6(ip: string): boolean {
   if (isIP(ip) !== 6) return true; // fail-closed on malformed
   const g = expandV6(ip.toLowerCase());
@@ -185,11 +207,15 @@ function isBlockedV6(ip: string): boolean {
     if (isBlockedV4(v4FromGroups(g6, g7))) return true;
   }
 
-  // 64:ff9b:1::/48 NAT64 local-use prefix (RFC8215) — v4 still in g6/g7.
-  // Network-Specific Prefix, lets sites deploy their own translator; any
-  // embedded private v4 is equally a rebind vector, so re-check the same way.
+  // 64:ff9b:1::/48 NAT64 local-use prefix (RFC8215) — per RFC6052 §2.2, /48
+  // NAT64 splits the IPv4 bits around the reserved "u" octet. g6/g7 are the
+  // suffix (not the v4), so the /96 extraction would be WRONG here. Use the
+  // /48-specific decoder; if it returns undefined, the u octet is non-zero
+  // and this isn't a valid NAT64 encoding — fall through (still classified
+  // below as a public 64:ff9b::/32-adjacent address).
   if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0x0001) {
-    if (isBlockedV4(v4FromGroups(g6, g7))) return true;
+    const embedded = v4FromNAT64_48(g3, g4, g5);
+    if (embedded !== undefined && isBlockedV4(embedded)) return true;
   }
 
   // 100::/64 RFC6666 discard-only
