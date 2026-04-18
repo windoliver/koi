@@ -1059,6 +1059,82 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(1);
     if (second.ok) expect(second.value.cached).toBe(true);
   });
+
+  // -------------------------------------------------------------------------
+  // Per-entry TTL — origin freshness caps the cache lifetime (#1903 round 5)
+  // -------------------------------------------------------------------------
+
+  test("caps entry lifetime to Cache-Control: max-age when shorter than default TTL", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("short-lived", {
+        status: 200,
+        headers: { "cache-control": "public, max-age=1" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(1); // still within 1s — cache hit
+
+    // Wait past origin's 1s freshness budget. Entry must expire even
+    // though the global TTL is 60s.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("s-maxage takes precedence over max-age when capping the entry TTL", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("shared-cache-hint", {
+        status: 200,
+        headers: { "cache-control": "public, max-age=3600, s-maxage=1" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("failed noCache restore preserves original expiry (no TTL extension loop)", async () => {
+    // Regression for #1903 review round 5: a nearly-expired entry must
+    // not be kept alive by repeated failed refresh attempts. Restore the
+    // snapshot with its *remaining* lifetime, never a fresh full TTL.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      if (callCount === 1) return new Response("almost-stale", { status: 200 });
+      throw new Error("network down");
+    }) as unknown as typeof globalThis.fetch;
+
+    // Short TTL so we can watch the entry expire in real wall-clock time.
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 500, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // primes, 500ms TTL
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // Forced refresh fails. With the bug, the snapshot would be restored
+    // with a fresh 500ms TTL — effectively extending total lifetime to
+    // ~800ms. Correct behavior restores only the ~200ms remaining.
+    const forced = await executor.fetch("https://example.com", { noCache: true });
+    expect(forced.ok).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    // >500ms after the original prime, before any bug-induced extension —
+    // the entry must already be gone so this call hits origin again.
+    await executor.fetch("https://example.com");
+    expect(callCount).toBeGreaterThanOrEqual(3);
+  });
 });
 
 // ---------------------------------------------------------------------------

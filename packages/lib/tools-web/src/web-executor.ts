@@ -201,23 +201,32 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
       // `noCache` also hides the entry from concurrent default callers
       // while the refresh is in flight. We snapshot the pre-existing entry
-      // and evict it so any reader arriving during the network RTT misses
-      // cache (and hits origin themselves) rather than being handed the
-      // known-to-be-revalidating value. On transport failure the snapshot
-      // is restored so one hiccup doesn't wipe the last-known-good response.
-      let savedEntry: WebFetchResult | undefined;
+      // (value + its original expiry) and evict it so any reader arriving
+      // during the network RTT misses cache (and hits origin themselves)
+      // rather than being handed the known-to-be-revalidating value. On
+      // transport failure the snapshot is restored with its *remaining*
+      // lifetime — never a fresh full TTL — so repeated failed refreshes
+      // cannot keep a nearly-expired entry alive indefinitely.
+      let savedValue: WebFetchResult | undefined;
+      let savedExpiresAt = 0;
       if (noCache && keyCacheable && fetchCache !== undefined) {
-        savedEntry = fetchCache.get(cacheKey);
-        if (savedEntry !== undefined) fetchCache.delete(cacheKey);
+        const snapshot = fetchCache.getEntry(cacheKey);
+        if (snapshot !== undefined) {
+          savedValue = snapshot.value;
+          savedExpiresAt = snapshot.expiresAt;
+          fetchCache.delete(cacheKey);
+        }
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
       const restoreSavedOnFailure = (): void => {
-        if (savedEntry !== undefined && fetchCache !== undefined) {
-          fetchCache.set(cacheKey, savedEntry);
-        }
+        if (savedValue === undefined || fetchCache === undefined) return;
+        const remaining = savedExpiresAt - Date.now();
+        // Negative remaining = entry expired while the refresh was in
+        // flight. Do not resurrect it; leave the key empty.
+        if (remaining > 0) fetchCache.set(cacheKey, savedValue, remaining);
       };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -300,10 +309,13 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // so we do NOT restore `savedEntry` — it stays evicted. A transport
         // error/abort never reaches this block (handled by the restore-on-
         // failure paths above), so the prior entry survives as fallback.
-        if (keyCacheable && fetchCache !== undefined) {
-          if (isCacheableResponse(fetchResult)) {
-            fetchCache.set(cacheKey, fetchResult);
-          }
+        if (keyCacheable && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
+          // Cap to origin's declared freshness budget so a response that
+          // says `max-age=5` never lingers for the full cache-wide TTL.
+          const originTtlMs = extractOriginFreshnessMs(fetchResult);
+          const entryTtlMs =
+            originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
+          if (entryTtlMs > 0) fetchCache.set(cacheKey, fetchResult, entryTtlMs);
         }
 
         return { ok: true, value: fetchResult };
@@ -498,6 +510,40 @@ function normalizeUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+/**
+ * Parse origin's declared freshness budget (ms) from Cache-Control / Expires.
+ *
+ * Preference order matches RFC 7234: `s-maxage` beats `max-age` beats
+ * `Expires`. Returns `undefined` when origin did not declare a concrete
+ * freshness lifetime — callers then fall back to the cache-wide TTL.
+ */
+function extractOriginFreshnessMs(result: WebFetchResult): number | undefined {
+  const cc = result.headers["cache-control"]?.toLowerCase();
+  if (cc !== undefined) {
+    const sMaxAge = matchCacheDirectiveSeconds(cc, "s-maxage");
+    if (sMaxAge !== undefined) return sMaxAge * 1000;
+    const maxAge = matchCacheDirectiveSeconds(cc, "max-age");
+    if (maxAge !== undefined) return maxAge * 1000;
+  }
+  const expires = result.headers.expires;
+  if (expires !== undefined) {
+    const parsed = Date.parse(expires);
+    if (!Number.isNaN(parsed)) {
+      const delta = parsed - Date.now();
+      if (delta > 0) return delta;
+    }
+  }
+  return undefined;
+}
+
+function matchCacheDirectiveSeconds(cc: string, name: string): number | undefined {
+  const regex = new RegExp(`(?:^|[,\\s])${name}\\s*=\\s*(\\d+)`);
+  const match = regex.exec(cc);
+  if (match === null) return undefined;
+  const parsed = Number.parseInt(match[1] ?? "", 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
