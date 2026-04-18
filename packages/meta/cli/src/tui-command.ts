@@ -98,6 +98,7 @@ import {
   createSigusr1Handler,
   generateTuiStartupHint,
   removeStoredEarlySigusr1Handler,
+  SIGUSR1_EXIT_CODE,
   SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
 
@@ -2773,6 +2774,19 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
     store.dispatch({ kind: "set_at_results", results }),
   );
+
+  // If an interim SIGUSR1 teardown already flipped the shutdown latch
+  // during bootstrap, do not create the TUI app or start the renderer
+  // (#1906 R5). The interim teardown + hard-exit failsafe will terminate
+  // the process shortly; creating the TUI would just allocate more state
+  // for the teardown to race.
+  if (shutdownStarted) {
+    // Wait for the interim teardown's hard-exit failsafe (6s) to fire.
+    await new Promise<void>((resolve) => setTimeout(resolve, INTERIM_SHUTDOWN_HARD_EXIT_MS + 500));
+    // If for some reason we're still alive (teardown wedged, failsafe
+    // didn't fire), fall through to process.exit as a last resort.
+    process.exit(SIGUSR1_EXIT_CODE);
+  }
 
   const result = createTuiApp({
     store,
