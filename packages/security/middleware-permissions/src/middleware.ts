@@ -401,16 +401,31 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
    */
   readonly clearSessionApprovals: (sessionId: string) => void;
   /**
-   * Revoke a persistent always-allow grant. Returns true if a grant existed.
-   * No-op if no persistent store is configured.
+   * Revoke a persistent always-allow grant by its exact stored key.
+   * Returns true if a grant existed. No-op if no persistent store is
+   * configured.
    *
-   * The `resource` argument must match the key the grant was stored under.
-   * When the middleware was configured with `resolveBashCommand`, grants are
-   * keyed by the enriched resource (e.g. `bash:git status`), not by the raw
-   * tool id — so revocation must pass the same enriched string. Use
-   * `listPersistentApprovals()` to discover the exact keys to revoke.
+   * `grantKey` must match the key the grant was stored under. For bash
+   * tools with `resolveBashCommand` configured, grants are stored under
+   * `<toolId>:<prefix>:<16hex>` (exact-command hash). Callers can obtain
+   * the correct key in two ways:
+   *   1. `listPersistentApprovals()` — iterate stored grants.
+   *   2. `computeBashGrantKey(toolId, command)` — derive the key from
+   *      the raw command string, matching how the middleware stored it.
+   *
+   * For non-bash tools, `grantKey` is the plain tool id.
    */
-  readonly revokePersistentApproval: (userId: string, agentId: string, resource: string) => boolean;
+  readonly revokePersistentApproval: (userId: string, agentId: string, grantKey: string) => boolean;
+  /**
+   * Derive the persistent grant key for a given bash tool invocation.
+   * Mirrors the internal hashing used when the middleware records a
+   * grant so callers can reliably construct the key that
+   * `revokePersistentApproval` expects.
+   *
+   * Returns the plain `toolId` when `resolveBashCommand` is not
+   * configured, or when the raw command is empty.
+   */
+  readonly computeBashGrantKey: (toolId: string, rawCommand: string) => string;
   /**
    * Revoke all persistent always-allow grants.
    * No-op if no persistent store is configured.
@@ -1557,16 +1572,28 @@ export function createPermissionsMiddleware(
       };
     },
     clearSessionApprovals,
-    revokePersistentApproval(userId: string, agentId: string, resource: string): boolean {
+    revokePersistentApproval(userId: string, agentId: string, grantKey: string): boolean {
       if (persistentStore === undefined) return false;
-      // `resource` must match the key the grant was stored under — when
-      // `resolveBashCommand` is configured, that is the enriched form
-      // (e.g. `bash:git status`), not the plain tool id.
+      // `grantKey` must match the exact-command key that was stored
+      // (`<toolId>:<prefix>:<16hex>` when bash enrichment is on). Use
+      // `computeBashGrantKey` or `listPersistentApprovals` to derive it.
       // Removes the durable row only. Active sessions retain their own
-      // session-scoped bypass until session end — the in-memory set does not
-      // encode user identity or grant source, so clearing it would break
-      // unrelated session-only approvals. New sessions will prompt again.
-      return persistentStore.revoke(userId, agentId, resource);
+      // session-scoped bypass until session end — the in-memory set does
+      // not encode user identity or grant source, so clearing it would
+      // break unrelated session-only approvals.
+      return persistentStore.revoke(userId, agentId, grantKey);
+    },
+    computeBashGrantKey(toolId: string, rawCommand: string): string {
+      // Mirrors enrichResource's grant-key construction so external
+      // callers (CLI revoke, TUI approvals panel) can reliably
+      // reconstruct the stored key without reverse-engineering the
+      // hash format.
+      const trimmed = rawCommand.trim();
+      if (trimmed.length === 0) return toolId;
+      const p = canonicalPrefix(trimmed);
+      if (p.length === 0) return toolId;
+      const hash = computeStringHash(trimmed).slice(0, 16);
+      return `${toolId}:${p}:${hash}`;
     },
     revokeAllPersistentApprovals(): void {
       // Same rationale: only clear durable state. Session-scoped grants

@@ -418,12 +418,26 @@ function hasShellControlOperators(s: string): boolean {
   for (let i = 0; i < len; i++) {
     const c = s[i];
     if (c === undefined) break;
-    if (quote !== null) {
-      if (c === quote) {
+    if (quote === "'") {
+      // Single-quoted region is fully opaque — no expansions inside.
+      if (c === "'") quote = null;
+      continue;
+    }
+    if (quote === '"') {
+      // Double-quoted region: the shell STILL expands `$(...)` and
+      // backticks inside, so those remain executable command-
+      // substitution vectors. Keep scanning for them. Only suppress
+      // the ordinary separators (`;`, `|`, `&`, newline, redirect).
+      if (c === '"') {
         quote = null;
-      } else if (c === "\\" && quote === '"' && i + 1 < len) {
-        i++;
+        continue;
       }
+      if (c === "\\" && i + 1 < len) {
+        i++;
+        continue;
+      }
+      if (c === "`") return true;
+      if (c === "$" && s[i + 1] === "(") return true;
       continue;
     }
     if (c === "'" || c === '"') {

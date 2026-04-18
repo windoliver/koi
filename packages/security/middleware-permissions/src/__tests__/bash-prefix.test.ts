@@ -375,29 +375,66 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     }
   });
 
-  test("revokePersistentApproval removes enriched-resource grants", () => {
-    const grants = new Set<string>(["bash:git status"]);
+  test("computeBashGrantKey mirrors internal grant-key hashing", () => {
+    const mw = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "allow" }) },
+    });
+    const k1 = mw.computeBashGrantKey("bash", "git status");
+    const k2 = mw.computeBashGrantKey("bash", "git status");
+    const k3 = mw.computeBashGrantKey("bash", "git status --short");
+
+    // Deterministic: same input → same key.
+    expect(k1).toBe(k2);
+    // Shape: <toolId>:<prefix>:<16hex>. The prefix bucket is the
+    // policy prefix (e.g. `git status`), NOT the full raw command.
+    expect(k1).toMatch(/^bash:git status:[a-f0-9]{16}$/);
+    expect(k3).toMatch(/^bash:git status:[a-f0-9]{16}$/);
+    // Same prefix bucket, but different argv → different hash.
+    expect(k1).not.toBe(k3);
+
+    // Empty command falls back to plain tool id.
+    expect(mw.computeBashGrantKey("bash", "")).toBe("bash");
+    expect(mw.computeBashGrantKey("bash", "   ")).toBe("bash");
+  });
+
+  test("revokePersistentApproval uses the exact-command grant key", () => {
+    // End-to-end: store a grant via an approval flow, then revoke it
+    // using computeBashGrantKey to derive the stored key.
+    const grants = new Set<string>();
     const persistentApprovals = {
-      has: mock((_u: string, _a: string, r: string) => grants.has(r)),
-      grant: mock(() => {}),
-      revoke: mock((_u: string, _a: string, r: string) => grants.delete(r)),
+      has: mock((_u: string, _a: string, k: string) => grants.has(k)),
+      grant: mock((_u: string, _a: string, k: string, _t: number) => {
+        grants.add(k);
+      }),
+      revoke: mock((_u: string, _a: string, k: string) => grants.delete(k)),
       revokeAll: mock(() => grants.clear()),
       list: mock(() => []),
       close: mock(() => {}),
     };
 
-    const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
-      persistentApprovals,
+    const approvalHandler = async (): Promise<ApprovalDecision> => ({
+      kind: "always-allow",
+      scope: "always",
     });
 
-    expect(mw.revokePersistentApproval("user-1", "agent:test", "bash:git status")).toBe(true);
-    expect(persistentApprovals.revoke).toHaveBeenCalledWith(
-      "user-1",
-      "agent:test",
-      "bash:git status",
-    );
-    expect(grants.has("bash:git status")).toBe(false);
+    const mw = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "ask", reason: "review" }) },
+      persistentApprovals,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // Approve `git push` once → grant is stored.
+    return (async () => {
+      await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+      expect(grants.size).toBe(1);
+
+      // Derive the stored key and revoke.
+      const key = mw.computeBashGrantKey("bash", "git push");
+      expect(mw.revokePersistentApproval("user-1", "agent:test", key)).toBe(true);
+      expect(grants.size).toBe(0);
+    })();
   });
 });
 
