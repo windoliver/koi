@@ -848,7 +848,7 @@ describe("Golden: @koi/middleware-plan-persist", () => {
       expect(bundle.providers).toHaveLength(2);
 
       // Mirror a plan via the OnPlanUpdate hook (the path the planning MW uses).
-      bundle.onPlanUpdate(
+      await bundle.onPlanUpdate(
         [
           { content: "First", status: "pending" },
           { content: "Second", status: "in_progress" },

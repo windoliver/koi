@@ -3,9 +3,11 @@
  */
 
 export {
+  type ClearJournalResult,
   createPlanPersistBackend,
   type LoadPlanResult,
   type PlanPersistBackend,
+  type RestoreJournalResult,
   type SavePlanResult,
 } from "./adapter.js";
 export {

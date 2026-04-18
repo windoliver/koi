@@ -28,8 +28,44 @@ describe("validatePlanPersistConfig", () => {
     expect(r.ok).toBe(false);
   });
 
-  test("accepts an fs object literal", () => {
-    const r = validatePlanPersistConfig({ fs: { mkdir: () => Promise.resolve() } });
+  test("accepts an fs with all required methods", () => {
+    const noop = (): Promise<void> => Promise.resolve();
+    const noopAny = (): Promise<unknown> => Promise.resolve(undefined);
+    const noopStr = (): Promise<string> => Promise.resolve("");
+    const r = validatePlanPersistConfig({
+      fs: {
+        mkdir: noopAny,
+        writeFile: noop,
+        readFile: noopStr,
+        rename: noop,
+        stat: noopAny,
+        realpath: noopStr,
+        unlink: noop,
+        link: noop,
+      },
+    });
     expect(r.ok).toBe(true);
+  });
+
+  test("rejects an fs missing required methods (e.g. link added in a later revision)", () => {
+    const noop = (): Promise<void> => Promise.resolve();
+    const noopAny = (): Promise<unknown> => Promise.resolve(undefined);
+    const noopStr = (): Promise<string> => Promise.resolve("");
+    const r = validatePlanPersistConfig({
+      fs: {
+        mkdir: noopAny,
+        writeFile: noop,
+        readFile: noopStr,
+        rename: noop,
+        stat: noopAny,
+        realpath: noopStr,
+        unlink: noop,
+        // link intentionally omitted — used to crash on first savePlan
+      },
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.message).toContain("fs.link must be a function");
+    }
   });
 });

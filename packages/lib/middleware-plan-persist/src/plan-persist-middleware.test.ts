@@ -38,7 +38,11 @@ function memFs(): PlanPersistFs {
     },
     readFile: async (p, _e): Promise<string> => {
       const data = files.get(p);
-      if (data === undefined) throw new Error("ENOENT");
+      if (data === undefined) {
+        const err = new Error("ENOENT") as Error & { code?: string };
+        err.code = "ENOENT";
+        throw err;
+      }
       return data;
     },
     rename: async (a, b): Promise<void> => {
@@ -57,6 +61,16 @@ function memFs(): PlanPersistFs {
     },
     unlink: async (p): Promise<void> => {
       files.delete(p);
+    },
+    link: async (a, b): Promise<void> => {
+      const data = files.get(a);
+      if (data === undefined) throw new Error("ENOENT");
+      if (files.has(b)) {
+        const err = new Error("EEXIST") as Error & { code?: string };
+        err.code = "EEXIST";
+        throw err;
+      }
+      files.set(b, data);
     },
   };
 }
@@ -113,7 +127,7 @@ describe("wrapToolCall — koi_plan_save", () => {
       rand: () => 0.5,
     });
     const sess = sessCtx(sessionId("sess-X"));
-    bundle.onPlanUpdate(SAMPLE, {
+    await bundle.onPlanUpdate(SAMPLE, {
       sessionId: "sess-X",
       epoch: 1,
       turnIndex: 0,
@@ -147,7 +161,7 @@ describe("wrapToolCall — koi_plan_save", () => {
 
   test("rejects a non-string slug with a clear error", async () => {
     const bundle = createPlanPersistMiddleware({ cwd: CWD, fs: memFs() });
-    bundle.onPlanUpdate(SAMPLE, {
+    await bundle.onPlanUpdate(SAMPLE, {
       sessionId: "sess-1",
       epoch: 1,
       turnIndex: 0,
@@ -200,7 +214,7 @@ describe("wrapToolCall — koi_plan_load", () => {
       rand: () => 0.5,
     });
     const sess = sessCtx(sessionId("sess-rt"));
-    bundle.onPlanUpdate(SAMPLE, {
+    await bundle.onPlanUpdate(SAMPLE, {
       sessionId: "sess-rt",
       epoch: 1,
       turnIndex: 0,
@@ -244,7 +258,7 @@ describe("wrapToolCall — passthrough", () => {
 describe("onSessionEnd", () => {
   test("drops the mirror entry for the closed session", async () => {
     const bundle = createPlanPersistMiddleware({ cwd: CWD, fs: memFs() });
-    bundle.onPlanUpdate(SAMPLE, {
+    await bundle.onPlanUpdate(SAMPLE, {
       sessionId: "sess-end",
       epoch: 1,
       turnIndex: 0,
@@ -261,5 +275,62 @@ describe("onSessionEnd", () => {
       metadata: {},
     });
     expect(bundle.getActivePlan("sess-end")).toBeUndefined();
+  });
+});
+
+describe("onSessionStart does NOT auto-restore (planning state cannot be seeded externally)", () => {
+  test("a fresh bundle's onSessionStart leaves the mirror empty even when a journal exists", async () => {
+    // Auto-restore was removed because hydrating only plan-persist's
+    // mirror gives the false impression that the model's prompt-replay
+    // path also recovers — but planning owns `currentPlan` and has no
+    // public setter. Hosts call `restoreFromJournal` explicitly when
+    // they need the recovered items.
+    const fs = memFs();
+    const writer = createPlanPersistMiddleware({ cwd: CWD, fs });
+    await writer.onPlanUpdate(SAMPLE, {
+      sessionId: "sess-no-auto",
+      epoch: 1,
+      turnIndex: 0,
+      signal: new AbortController().signal,
+    });
+
+    const fresh = createPlanPersistMiddleware({ cwd: CWD, fs });
+    const start = fresh.middleware.onSessionStart;
+    // The middleware must NOT define onSessionStart any more, so the
+    // bundle reports it as undefined.
+    expect(start).toBeUndefined();
+    expect(fresh.getActivePlan("sess-no-auto")).toBeUndefined();
+  });
+});
+
+describe("restoreFromJournal — bundle exposes the recovery API", () => {
+  test("a fresh bundle backed by the same fs recovers a previously written plan", async () => {
+    // One shared in-memory fs simulates one disk surviving a process
+    // restart. Two bundles instantiated against the same fs prove the
+    // public surface (not just the backend) supports recovery.
+    const fs = memFs();
+    const writer = createPlanPersistMiddleware({ cwd: CWD, fs });
+    await writer.onPlanUpdate(SAMPLE, {
+      sessionId: "sess-restart",
+      epoch: 7,
+      turnIndex: 13,
+      signal: new AbortController().signal,
+    });
+
+    const reader = createPlanPersistMiddleware({ cwd: CWD, fs });
+    expect(reader.getActivePlan("sess-restart")).toBeUndefined();
+
+    const restored = await reader.restoreFromJournal("sess-restart");
+    expect(restored.ok).toBe(true);
+    if (restored.ok) {
+      expect(restored.items).toEqual(SAMPLE);
+    }
+    expect(reader.getActivePlan("sess-restart")).toEqual(SAMPLE);
+  });
+
+  test("returns not-found when no journal exists yet", async () => {
+    const bundle = createPlanPersistMiddleware({ cwd: CWD, fs: memFs() });
+    const restored = await bundle.restoreFromJournal("never-seen");
+    expect(restored).toEqual({ ok: false, reason: "not-found" });
   });
 });

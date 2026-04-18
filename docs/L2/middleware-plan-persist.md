@@ -79,12 +79,51 @@ read .koi/plans/<ts>-<slug>.md → parse markdown → { items }
    (model is then prompted to call write_plan to hydrate session state)
 ```
 
-**Why two tools and a hook, not a single auto-save:** the hook captures
-*every* commit so no plan is silently lost. `plan_save` lets the model
-or user mark a checkpoint with a meaningful slug; `plan_load` is the
-inverse. The active journal at `.koi/plans/_active/<sessionId>.md` is a
-recovery cache — overwritten on each commit, never garbage-collected
-implicitly.
+**Why a hook plus two tools, not just one auto-save:** the hook captures
+*every* commit so no plan is silently lost on disk. The model never has
+to remember to call save. `plan_save` then lets the model or user mark
+a human-meaningful checkpoint with a slug; `plan_load` is the inverse.
+
+The journal lives at `<baseDir>/_active/<sha256-prefix(sessionId)>.md`
+— the sessionId is hashed because Koi accepts opaque session ids whose
+character set is not constrained by this package, and a 24-character
+hex prefix gives a collision-resistant filesystem-safe key without
+leaking the raw sessionId. `restoreFromJournal(sessionId)` and the
+opt-in `restoreOnStart` config flag rehydrate the in-process mirror
+from this file at session start.
+
+### Restart vs reset — host responsibility
+
+v2 planning's contract allows the same `sessionId` to be reused across
+`cycleSession` / `/clear` with a fresh epoch. From a middleware's
+perspective those reset paths are indistinguishable from a process
+restart of the SAME logical session. Recovery is therefore an explicit
+host-driven step, not an implicit middleware behavior:
+
+| API | Use when |
+|-----|----------|
+| `bundle.restoreFromJournal(sessionId)` | The host wants to recover the prior plan after a process restart. Returns a structured result distinguishing `not-found` / `io-error` / `corrupt`. Hydrates plan-persist's mirror so `koi_plan_save` works on the recovered items. |
+| `bundle.clearJournal(sessionId)` | **Required** on every reset path (`/clear`, `cycleSession`, etc.) before the next run starts. Otherwise the next `restoreFromJournal` call would resurrect the cleared plan. |
+
+**The recovered items do NOT auto-flow into `@koi/middleware-planning`'s
+in-process state.** Planning owns `currentPlan` and exposes no public
+setter, so a recovered plan is not visible to the model's prompt-replay
+path. To make the model see it, the host has two choices after a
+successful `restoreFromJournal`:
+
+1. **Inject as a system reminder** — render the items into a system
+   message (similar to the planning middleware's own format) and
+   prepend it to the next turn. The model decides whether to continue
+   the plan or write a new one.
+2. **Replay through `write_plan`** — script a single tool-call sequence
+   that has the model re-issue `write_plan` with the recovered items.
+   This re-enters planning's hook-then-commit flow and re-establishes
+   `currentPlan` through the canonical commit path.
+
+`dropSession` (called by the middleware's `onSessionEnd`) only removes
+the in-memory mirror, not the journal file. The journal is the
+restart-safety surface; deleting it on every session end would defeat
+the package's purpose.
 
 ## API
 
@@ -179,13 +218,16 @@ markers (` ``` ` → `'''`) and embedded line breaks (collapsed to
 spaces) — same escaping middleware-planning applies before injecting
 into the next prompt.
 
-## Atomic write
+## Atomic + race-safe write
 
-Every write goes through `<path>.tmp.<pid>.<rand>` then `fs.rename` to
-the final path. A crash mid-write leaves the temp file behind but
-never a partial real plan file. On restart the temp file is ignored
-(no recovery — the journal at `.koi/plans/_active/<sessionId>.md`
-still holds the last committed state).
+| Surface | Scheme | Reason |
+|---------|--------|--------|
+| Named checkpoint (`plan_save`) | temp file → `link()` to final, then `unlink(tmp)` | `link` is atomic and fails with `EEXIST` on collision. Two concurrent saves with the same `<timestamp>-<slug>` cannot silently overwrite — the loser bumps the suffix and retries. (`rename` would have replaced the existing file silently.) |
+| Active journal | temp file → `rename()` to journal path | Overwrite of the prior journal for the same session is the intended semantic; the planning middleware serializes `onPlanUpdate` per session so concurrent writers for the same journal path are not expected. |
+
+Either way, a crash mid-write leaves a `.tmp.<pid>.<rand>` orphan but
+never a partial real plan file. Best-effort `unlink` cleans up the
+temp on commit success or on exception.
 
 ## Path safety
 

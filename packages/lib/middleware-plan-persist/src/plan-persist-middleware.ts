@@ -17,7 +17,12 @@ import type {
   ToolRequest,
   ToolResponse,
 } from "@koi/core";
-import { createPlanPersistBackend, type PlanPersistBackend } from "./adapter.js";
+import {
+  type ClearJournalResult,
+  createPlanPersistBackend,
+  type PlanPersistBackend,
+  type RestoreJournalResult,
+} from "./adapter.js";
 import type { PlanPersistConfig } from "./config.js";
 import {
   createPlanLoadProvider,
@@ -38,8 +43,27 @@ export interface PlanPersistBundle extends MiddlewareBundle {
   readonly onPlanUpdate: OnPlanUpdate;
   /** Diagnostic accessor for the in-process plan mirror. */
   readonly getActivePlan: (sessionId: string) => readonly PlanItem[] | undefined;
+  /**
+   * Restore the active journal for `sessionId` into the in-process
+   * mirror. Call at session-start (typically right after the host
+   * decides which sessionId to use for the new run) to recover plans
+   * across process restarts. Returns a structured result so the host
+   * can distinguish "no journal" (safe fresh start) from "I/O failure"
+   * or "corrupt journal" (data-loss conditions worth surfacing).
+   */
+  readonly restoreFromJournal: (sessionId: string) => Promise<RestoreJournalResult>;
+  /**
+   * Delete the active journal for `sessionId`. Hosts implementing
+   * `/clear` or session cycling MUST call this before reusing the same
+   * `sessionId` for a logically fresh run, otherwise the previous
+   * plan can be silently resurrected by `getActivePlan`, `savePlan`,
+   * or (when enabled) auto-restore on session start.
+   */
+  readonly clearJournal: (sessionId: string) => Promise<ClearJournalResult>;
   /** Absolute path to the resolved plans directory. */
   readonly baseDir: string;
+  /** Absolute path to the active-journal directory under baseDir. */
+  readonly journalDir: string;
 }
 
 export interface PlanPersistMiddlewareConfig extends PlanPersistConfig {
@@ -60,6 +84,20 @@ export function createPlanPersistMiddleware(
   const middleware: KoiMiddleware = {
     name: "plan-persist",
     priority,
+    // No auto-restore on session start. The journal can repopulate
+    // plan-persist's mirror (so `savePlan` works on a recovered plan),
+    // but it cannot reach `@koi/middleware-planning`'s in-process
+    // `currentPlan` — planning has no public setter, and the model's
+    // prompt replay reads from planning's state. Auto-restoring here
+    // would silently promise restart-survival of the model's *context*
+    // when really only the savePlan path is recovered.
+    //
+    // Hosts choose how to surface a recovered plan: call
+    // `bundle.restoreFromJournal(sessionId)` at startup, then either
+    // (a) inject a system message describing the prior plan and
+    // letting the model decide what to do, or (b) prompt the model to
+    // call `write_plan` with the recovered items so planning's state
+    // is reseeded through its own commit path.
     async onSessionEnd(ctx) {
       backend.dropSession(ctx.sessionId as unknown as string);
     },
@@ -82,7 +120,10 @@ export function createPlanPersistMiddleware(
     providers,
     onPlanUpdate: backend.onPlanUpdate,
     getActivePlan: backend.getActivePlan,
+    restoreFromJournal: backend.restoreFromJournal,
+    clearJournal: backend.clearJournal,
     baseDir: backend.baseDir,
+    journalDir: backend.journalDir,
   };
 }
 
