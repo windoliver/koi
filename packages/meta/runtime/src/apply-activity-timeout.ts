@@ -9,11 +9,17 @@
  * - A separate `maxDurationMs` acts as a final wall-clock safety bound, firing
  *   `custom: activity.terminated.wall_clock`
  *
- * Observers can hook `onIdleWarn` / `onTerminated` for telemetry or cooperative
- * cancellation (e.g. inject a system-reminder on the next turn).
+ * Tool execution is treated as activity: between `tool_call_start` and
+ * `tool_call_end` the idle clock is suspended so legitimately long tools
+ * (builds, test runs, HTTP calls) do not trigger an idle timeout despite
+ * producing no intermediate adapter events.
+ *
+ * Observers (`onIdleWarn` / `onTerminated`) are invoked defensively — a host
+ * callback that throws is logged and swallowed so telemetry misbehaviour cannot
+ * crash the runtime or strand cleanup.
  */
 
-import type { EngineAdapter, EngineEvent, EngineInput } from "@koi/core";
+import type { EngineAdapter, EngineEvent, EngineInput, ToolCallId } from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -34,9 +40,9 @@ export interface ActivityTimeoutConfig {
   readonly idleTerminateMs?: number;
   /** Absolute wall-clock cap regardless of activity. Omit to disable. */
   readonly maxDurationMs?: number;
-  /** Observer invoked when the idle warning fires. */
+  /** Observer invoked when the idle warning fires. Exceptions are swallowed. */
   readonly onIdleWarn?: (info: IdleWarningInfo) => void;
-  /** Observer invoked when the stream is terminated by the wrapper. */
+  /** Observer invoked when the stream is terminated by the wrapper. Exceptions are swallowed. */
   readonly onTerminated?: (reason: ActivityTerminationReason, elapsedMs: number) => void;
   /** Injectable clock for tests. */
   readonly now?: () => number;
@@ -95,6 +101,8 @@ async function* wrapStream(
   const startedAt = now();
   const state: WrapperState = {
     lastActivity: startedAt,
+    warnFired: false,
+    pendingTools: new Set<ToolCallId>(),
     terminated: null,
     pumpDone: false,
     pumpError: undefined,
@@ -105,7 +113,8 @@ async function* wrapStream(
   const ctl = new AbortController();
   const signal = composeSignal(input.signal, ctl.signal);
 
-  const timers = armTimers({ state, config, now, warnMs, terminateMs, maxMs, startedAt, ctl });
+  const deps: TimerDeps = { state, config, now, warnMs, terminateMs, maxMs, startedAt, ctl };
+  const timers = armTimers(deps);
   const pump = pumpInner(adapter, { ...input, signal }, state, now);
 
   try {
@@ -139,6 +148,10 @@ async function* wrapStream(
 interface WrapperState {
   // let: all fields mutated by timer callbacks and pump loop
   lastActivity: number;
+  /** True while the current idle stretch has already emitted its warning. Reset on any activity. */
+  warnFired: boolean;
+  /** Tool call IDs that have started (tool_call_start) but not yet ended (tool_call_end). */
+  readonly pendingTools: Set<ToolCallId>;
   terminated: { readonly reason: ActivityTerminationReason; readonly elapsedMs: number } | null;
   pumpDone: boolean;
   pumpError: unknown;
@@ -157,7 +170,7 @@ interface Timers {
 // Timer wiring
 // ---------------------------------------------------------------------------
 
-interface ArmTimersDeps {
+interface TimerDeps {
   readonly state: WrapperState;
   readonly config: ActivityTimeoutConfig;
   readonly now: () => number;
@@ -168,97 +181,117 @@ interface ArmTimersDeps {
   readonly ctl: AbortController;
 }
 
-function armTimers(deps: ArmTimersDeps): Timers {
+function armTimers(deps: TimerDeps): Timers {
   const timers: Timers = { warnTimer: null, termTimer: null, wallTimer: null };
-
-  if (deps.warnMs !== undefined) {
-    scheduleWarn(timers, deps);
-  }
-  if (deps.maxMs !== undefined) {
-    scheduleWall(timers, deps);
-  }
+  if (deps.warnMs !== undefined) scheduleWarn(timers, deps);
+  if (deps.maxMs !== undefined) scheduleWall(timers, deps);
   return timers;
 }
 
-function scheduleWarn(timers: Timers, deps: ArmTimersDeps): void {
-  const warnMs = deps.warnMs;
-  if (warnMs === undefined) return;
-  const elapsed = deps.now() - deps.state.lastActivity;
-  const delay = Math.max(warnMs - elapsed, 0);
+/**
+ * Idle time effectively elapsed. Tool calls in flight freeze the idle clock
+ * — a long-running tool is NOT classified as inactivity.
+ */
+function idleElapsed(state: WrapperState, now: () => number): number {
+  if (state.pendingTools.size > 0) return 0;
+  return now() - state.lastActivity;
+}
+
+function scheduleWarn(timers: Timers, deps: TimerDeps): void {
+  if (deps.warnMs === undefined) return;
+  const remaining = deps.warnMs - idleElapsed(deps.state, deps.now);
+  const delay = Math.max(remaining, 0);
   timers.warnTimer = setTimeout(() => checkWarn(timers, deps), delay);
 }
 
-function checkWarn(timers: Timers, deps: ArmTimersDeps): void {
-  const { state, now } = deps;
-  const warnMs = deps.warnMs;
-  if (warnMs === undefined) return;
-  if (state.terminated !== null) return;
+function checkWarn(timers: Timers, deps: TimerDeps): void {
+  timers.warnTimer = null;
+  if (deps.warnMs === undefined) return;
+  if (deps.state.terminated !== null) return;
 
-  const elapsed = now() - state.lastActivity;
-  if (elapsed < warnMs) {
+  const elapsed = idleElapsed(deps.state, deps.now);
+  if (elapsed < deps.warnMs) {
     scheduleWarn(timers, deps);
     return;
   }
-  // Fire warning (idempotent — only enqueue once per idle stretch)
-  const termMs = deps.terminateMs ?? warnMs * 2;
-  const info: IdleWarningInfo = { elapsedMs: elapsed, warnMs, terminateMs: termMs };
-  enqueue(state, { kind: "custom", type: ACTIVITY_IDLE_WARNING, data: info });
-  deps.config.onIdleWarn?.(info);
 
-  if (timers.termTimer === null) {
-    scheduleTerm(timers, deps);
+  if (!deps.state.warnFired) {
+    deps.state.warnFired = true;
+    const termMs = deps.terminateMs ?? deps.warnMs * 2;
+    const info: IdleWarningInfo = { elapsedMs: elapsed, warnMs: deps.warnMs, terminateMs: termMs };
+    enqueue(deps.state, { kind: "custom", type: ACTIVITY_IDLE_WARNING, data: info });
+    safeObserver("onIdleWarn", () => deps.config.onIdleWarn?.(info));
+    if (timers.termTimer === null) scheduleTerm(timers, deps);
   }
+
+  // Re-arm so subsequent idle stretches (after recovery) get a fresh warning cycle.
+  scheduleWarn(timers, deps);
 }
 
-function scheduleTerm(timers: Timers, deps: ArmTimersDeps): void {
-  const termMs = deps.terminateMs;
-  if (termMs === undefined) return;
-  const elapsed = deps.now() - deps.state.lastActivity;
-  const delay = Math.max(termMs - elapsed, 0);
+function scheduleTerm(timers: Timers, deps: TimerDeps): void {
+  if (deps.terminateMs === undefined) return;
+  const remaining = deps.terminateMs - idleElapsed(deps.state, deps.now);
+  const delay = Math.max(remaining, 0);
   timers.termTimer = setTimeout(() => checkTerm(timers, deps), delay);
 }
 
-function checkTerm(timers: Timers, deps: ArmTimersDeps): void {
-  const { state, now, ctl } = deps;
-  const termMs = deps.terminateMs;
-  if (termMs === undefined) return;
-  if (state.terminated !== null) return;
+function checkTerm(timers: Timers, deps: TimerDeps): void {
+  timers.termTimer = null;
+  if (deps.terminateMs === undefined) return;
+  if (deps.state.terminated !== null) return;
 
-  const elapsed = now() - state.lastActivity;
-  if (elapsed < termMs) {
-    // Activity reset since warning — re-arm and leave warning-fired state untouched.
-    // If activity continues, the warn timer will catch any new idle stretch.
-    timers.termTimer = null;
+  const elapsed = idleElapsed(deps.state, deps.now);
+  if (elapsed < deps.terminateMs) {
+    // Activity (or a tool call) reset the idle clock — leave term disarmed;
+    // the warn timer will re-arm termination if a future idle stretch fires.
     return;
   }
-  state.terminated = { reason: "idle", elapsedMs: elapsed };
-  enqueue(state, { kind: "custom", type: ACTIVITY_TERMINATED_IDLE, data: { elapsedMs: elapsed } });
-  deps.config.onTerminated?.("idle", elapsed);
-  ctl.abort();
+  deps.state.terminated = { reason: "idle", elapsedMs: elapsed };
+  enqueue(deps.state, {
+    kind: "custom",
+    type: ACTIVITY_TERMINATED_IDLE,
+    data: { elapsedMs: elapsed },
+  });
+  safeObserver("onTerminated:idle", () => deps.config.onTerminated?.("idle", elapsed));
+  deps.ctl.abort();
 }
 
-function scheduleWall(timers: Timers, deps: ArmTimersDeps): void {
-  const maxMs = deps.maxMs;
-  if (maxMs === undefined) return;
+function scheduleWall(timers: Timers, deps: TimerDeps): void {
+  if (deps.maxMs === undefined) return;
   timers.wallTimer = setTimeout(() => {
-    const { state, now, ctl } = deps;
-    if (state.terminated !== null) return;
-    const elapsed = now() - deps.startedAt;
-    state.terminated = { reason: "wall_clock", elapsedMs: elapsed };
-    enqueue(state, {
+    timers.wallTimer = null;
+    if (deps.state.terminated !== null) return;
+    const elapsed = deps.now() - deps.startedAt;
+    deps.state.terminated = { reason: "wall_clock", elapsedMs: elapsed };
+    enqueue(deps.state, {
       kind: "custom",
       type: ACTIVITY_TERMINATED_WALL_CLOCK,
       data: { elapsedMs: elapsed },
     });
-    deps.config.onTerminated?.("wall_clock", elapsed);
-    ctl.abort();
-  }, maxMs);
+    safeObserver("onTerminated:wall_clock", () =>
+      deps.config.onTerminated?.("wall_clock", elapsed),
+    );
+    deps.ctl.abort();
+  }, deps.maxMs);
 }
 
 function clearAll(timers: Timers): void {
   if (timers.warnTimer !== null) clearTimeout(timers.warnTimer);
   if (timers.termTimer !== null) clearTimeout(timers.termTimer);
   if (timers.wallTimer !== null) clearTimeout(timers.wallTimer);
+}
+
+/**
+ * Invoke a host observer callback. Exceptions are caught and logged so a
+ * misbehaving callback cannot escape a `setTimeout` frame and crash the
+ * process or skip the wrapper's own cleanup / abort propagation.
+ */
+function safeObserver(label: string, run: () => void): void {
+  try {
+    run();
+  } catch (err: unknown) {
+    console.error(`[apply-activity-timeout] ${label} observer threw:`, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +307,7 @@ async function pumpInner(
   try {
     for await (const ev of adapter.stream(input)) {
       if (state.terminated !== null) break;
-      state.lastActivity = now();
+      recordActivity(state, ev, now);
       enqueue(state, ev);
       if (ev.kind === "done") break;
     }
@@ -286,6 +319,16 @@ async function pumpInner(
   } finally {
     state.pumpDone = true;
     wake(state);
+  }
+}
+
+function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number): void {
+  state.lastActivity = now();
+  state.warnFired = false;
+  if (ev.kind === "tool_call_start") {
+    state.pendingTools.add(ev.callId);
+  } else if (ev.kind === "tool_call_end") {
+    state.pendingTools.delete(ev.callId);
   }
 }
 

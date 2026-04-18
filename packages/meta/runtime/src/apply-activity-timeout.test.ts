@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { EngineAdapter, EngineEvent, EngineInput } from "@koi/core";
+import { toolCallId } from "@koi/core";
 import { applyActivityTimeout } from "./apply-activity-timeout.js";
 
 // ---------------------------------------------------------------------------
@@ -250,6 +251,111 @@ describe("applyActivityTimeout", () => {
     const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
 
     expect(out.some((e) => isCustom(e, "activity.idle.warning"))).toBe(true);
+    expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
+    expect(out.some((e) => e.kind === "done")).toBe(true);
+  });
+
+  test("second idle stretch after recovery still fires warning + termination (re-arm regression)", async () => {
+    let warnCount = 0;
+    const adapter: EngineAdapter = {
+      engineId: "resume-then-idle",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "a" };
+        await sleep(60); // first warn fires (> idleWarnMs=25), before terminate (50ms)
+        yield { kind: "text_delta", delta: "b" }; // recovery — resets warnFired
+        // Hang until aborted — second idle stretch must be detected.
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: 25,
+      idleTerminateMs: 60,
+      onIdleWarn: () => {
+        warnCount += 1;
+      },
+    });
+
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    expect(warnCount).toBeGreaterThanOrEqual(2);
+    expect(out.filter((e) => isCustom(e, "activity.idle.warning")).length).toBeGreaterThanOrEqual(
+      2,
+    );
+    expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(true);
+  });
+
+  test("observer exceptions are caught and do not crash the stream", async () => {
+    const originalError = console.error;
+    const swallowed: unknown[] = [];
+    console.error = (...args: unknown[]) => {
+      swallowed.push(args);
+    };
+    try {
+      const wrapped = applyActivityTimeout(
+        idleAfterAdapter([{ kind: "text_delta", delta: "start" }]),
+        {
+          idleWarnMs: 20,
+          idleTerminateMs: 50,
+          onIdleWarn: () => {
+            throw new Error("warn observer boom");
+          },
+          onTerminated: () => {
+            throw new Error("terminated observer boom");
+          },
+        },
+      );
+
+      const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+      // Both telemetry events still emitted despite observer throws.
+      expect(out.some((e) => isCustom(e, "activity.idle.warning"))).toBe(true);
+      expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(true);
+      // Both observer throws were logged rather than propagated.
+      expect(swallowed.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      console.error = originalError;
+    }
+  });
+
+  test("long-running tool call is not classified as inactivity", async () => {
+    const callId = toolCallId("long-running-tool");
+    let terminated = false;
+    const adapter: EngineAdapter = {
+      engineId: "tool-gap",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "thinking" };
+        yield { kind: "tool_call_start", toolName: "slow_tool", callId };
+        // Tool runs for well over idleWarnMs + idleTerminateMs with no events:
+        await sleep(150);
+        yield { kind: "tool_call_end", callId, result: "ok" };
+        yield { kind: "tool_result", callId, output: "ok" };
+        yield {
+          kind: "done",
+          output: {
+            content: [{ kind: "text", text: "fin" }],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: 30,
+      idleTerminateMs: 60,
+      onTerminated: () => {
+        terminated = true;
+      },
+    });
+    const out = await collect(wrapped.stream({ kind: "text", text: "tool please" }));
+
+    expect(terminated).toBe(false);
+    expect(out.some((e) => isCustom(e, "activity.idle.warning"))).toBe(false);
     expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
     expect(out.some((e) => e.kind === "done")).toBe(true);
   });
