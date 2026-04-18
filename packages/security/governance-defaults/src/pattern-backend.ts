@@ -40,8 +40,9 @@ function matches(rule: PatternRule, request: PolicyRequest): boolean {
   // with a string `toolId` payload, and `model` only applies to `model_call`
   // requests with a string `model` payload. Applying these selectors
   // unconditionally would mis-deny `custom:foo` kinds that happen to carry a
-  // `toolId` key and would silently let malformed payloads (e.g. `toolId: 42`)
-  // fall through with no match.
+  // `toolId` key. Non-string payload fields on the right kind are handled by
+  // the separate schema check below (fail-closed) so they don't silently
+  // bypass deny rules.
   if (match.toolId !== undefined) {
     if (request.kind !== "tool_call") return false;
     if (typeof payload.toolId !== "string" || payload.toolId !== match.toolId) return false;
@@ -51,6 +52,45 @@ function matches(rule: PatternRule, request: PolicyRequest): boolean {
     if (typeof payload.model !== "string" || payload.model !== match.model) return false;
   }
   return true;
+}
+
+/**
+ * Detect malformed payloads for kinds with required string fields. `tool_call`
+ * must carry a string `toolId`, `model_call` must carry a string `model`.
+ * Falling through on a missing/wrongly-typed field would silently bypass any
+ * tool- or model-scoped deny rule; we fail closed with a `schema.invalid`
+ * violation instead.
+ */
+function findSchemaViolation(request: PolicyRequest): GovernanceVerdict | undefined {
+  const payload = request.payload as {
+    readonly toolId?: unknown;
+    readonly model?: unknown;
+  };
+  if (request.kind === "tool_call" && typeof payload.toolId !== "string") {
+    return {
+      ok: false,
+      violations: [
+        {
+          rule: "schema.invalid",
+          severity: "critical",
+          message: "tool_call payload.toolId must be a string",
+        },
+      ],
+    };
+  }
+  if (request.kind === "model_call" && typeof payload.model !== "string") {
+    return {
+      ok: false,
+      violations: [
+        {
+          rule: "schema.invalid",
+          severity: "critical",
+          message: "model_call payload.model must be a string",
+        },
+      ],
+    };
+  }
+  return undefined;
 }
 
 function violationFromRule(rule: PatternRule, idx: number): Violation {
@@ -65,6 +105,12 @@ export function createPatternBackend(config: PatternBackendConfig): GovernanceBa
   const { rules, defaultDeny = false } = config;
 
   function evaluate(request: PolicyRequest): GovernanceVerdict {
+    // Fail-closed on malformed payloads BEFORE rule evaluation so a missing
+    // or wrongly-typed toolId/model cannot slip past tool- or model-scoped
+    // deny rules when `defaultDeny` is off.
+    const schemaViolation = findSchemaViolation(request);
+    if (schemaViolation !== undefined) return schemaViolation;
+
     let decision: { rule: PatternRule; index: number } | undefined;
     for (let i = 0; i < rules.length; i += 1) {
       const rule = rules[i];

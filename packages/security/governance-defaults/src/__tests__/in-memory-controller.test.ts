@@ -62,6 +62,25 @@ describe("createInMemoryController", () => {
       );
     });
 
+    test("rejects non-number limits (e.g. string '100' from env/JSON wiring)", () => {
+      expect(() =>
+        createInMemoryController({ tokenUsageLimit: "100" as unknown as number }),
+      ).toThrow(/tokenUsageLimit/);
+      expect(() => createInMemoryController({ costUsdLimit: null as unknown as number })).toThrow(
+        /costUsdLimit/,
+      );
+    });
+
+    test("rejects invalid errorRateWindow / errorRateMinSamples / agentDepth", () => {
+      expect(() => createInMemoryController({ errorRateWindow: 0 })).toThrow(/errorRateWindow/);
+      expect(() => createInMemoryController({ errorRateWindow: 1.5 })).toThrow(/errorRateWindow/);
+      expect(() => createInMemoryController({ errorRateMinSamples: -1 })).toThrow(
+        /errorRateMinSamples/,
+      );
+      expect(() => createInMemoryController({ agentDepth: -1 })).toThrow(/agentDepth/);
+      expect(() => createInMemoryController({ agentDepth: 1.5 })).toThrow(/agentDepth/);
+    });
+
     test("setpoints come from config", () => {
       const controller = createInMemoryController({
         tokenUsageLimit: 1000,
@@ -205,6 +224,54 @@ describe("createInMemoryController", () => {
         costUsd: Number.POSITIVE_INFINITY,
       });
       expect(controller.reading("cost_usd")?.current).toBe(0);
+    });
+
+    test("sanitizes NaN token fields so the token cap cannot be silently disabled", async () => {
+      const controller = createInMemoryController({ tokenUsageLimit: 100 });
+      await controller.record({
+        kind: "token_usage",
+        count: Number.NaN,
+        inputTokens: Number.NaN,
+        outputTokens: Number.NaN,
+      });
+      expect(controller.reading("token_usage")?.current).toBe(0);
+      expect((await controller.check("token_usage")).ok).toBe(true);
+      // And the cap still enforces after a valid event.
+      await controller.record({
+        kind: "token_usage",
+        count: 150,
+        inputTokens: 100,
+        outputTokens: 50,
+      });
+      expect((await controller.check("token_usage")).ok).toBe(false);
+    });
+
+    test("sanitizes negative token fields so usage cannot roll backward", async () => {
+      const controller = createInMemoryController({});
+      await controller.record({
+        kind: "token_usage",
+        count: 100,
+        inputTokens: 100,
+        outputTokens: 0,
+      });
+      await controller.record({
+        kind: "token_usage",
+        count: -50,
+        inputTokens: -500,
+        outputTokens: -500,
+      });
+      // Negative values are dropped — the malformed event is a no-op, not a reversal.
+      expect(controller.reading("token_usage")?.current).toBe(100);
+    });
+
+    test("sanitizes +Infinity token fields", async () => {
+      const controller = createInMemoryController({ tokenUsageLimit: 1_000_000 });
+      await controller.record({
+        kind: "token_usage",
+        count: Number.POSITIVE_INFINITY,
+        inputTokens: Number.POSITIVE_INFINITY,
+      });
+      expect(controller.reading("token_usage")?.current).toBe(0);
     });
 
     test("falls back to per-token pricing when costUsd is omitted (pricing-failure path)", async () => {

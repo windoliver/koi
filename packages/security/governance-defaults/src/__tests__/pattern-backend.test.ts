@@ -9,10 +9,20 @@ function req(
     readonly payload?: PolicyRequest["payload"];
   } = {},
 ): PolicyRequest {
+  const kind = overrides.kind ?? "tool_call";
+  // Provide a well-formed default payload for kinds with required string
+  // fields so tests that don't specifically exercise schema-fail-closed aren't
+  // tripped by the schema check.
+  const defaultPayload: PolicyRequest["payload"] =
+    kind === "tool_call"
+      ? { toolId: "default-tool" }
+      : kind === "model_call"
+        ? { model: "default-model" }
+        : {};
   return {
-    kind: overrides.kind ?? "tool_call",
+    kind,
     agentId: toAgentId("a1"),
-    payload: overrides.payload ?? {},
+    payload: overrides.payload ?? defaultPayload,
     timestamp: 1000,
   };
 }
@@ -99,30 +109,44 @@ describe("createPatternBackend", () => {
       expect(custom.ok).toBe(true);
     });
 
-    test("malformed non-string toolId does not match (fail-closed on type, open on decision)", async () => {
+    test("tool_call with non-string toolId fails closed with schema.invalid", async () => {
       const backend = createPatternBackend({
         rules: [{ match: { toolId: "Bash" }, decision: "deny" }],
       });
       const result = await backend.evaluator.evaluate(
         req({ kind: "tool_call", payload: { toolId: 42 } }),
       );
-      // Non-string toolId fails the match, so no deny rule applies. Without
-      // defaultDeny, the request allows — but the selector does not silently
-      // succeed on a numeric toolId either.
-      expect(result.ok).toBe(true);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.violations[0]?.rule).toBe("schema.invalid");
+      }
     });
 
-    test("empty payload does not match tool-scoped or model-scoped rules", async () => {
+    test("tool_call with missing toolId fails closed", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      const result = await backend.evaluator.evaluate(req({ kind: "tool_call", payload: {} }));
+      expect(result.ok).toBe(false);
+    });
+
+    test("model_call with non-string model fails closed", async () => {
       const backend = createPatternBackend({
-        rules: [
-          { match: { toolId: "Bash" }, decision: "deny" },
-          { match: { model: "gpt-4o" }, decision: "deny" },
-        ],
+        rules: [{ match: { model: "gpt-4o" }, decision: "deny" }],
       });
-      const tool = await backend.evaluator.evaluate(req({ kind: "tool_call", payload: {} }));
-      const model = await backend.evaluator.evaluate(req({ kind: "model_call", payload: {} }));
-      expect(tool.ok).toBe(true);
-      expect(model.ok).toBe(true);
+      const result = await backend.evaluator.evaluate(
+        req({ kind: "model_call", payload: { model: null } }),
+      );
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.violations[0]?.rule).toBe("schema.invalid");
+    });
+
+    test("schema check does not gate kinds without required selector fields", async () => {
+      const backend = createPatternBackend({ rules: [] });
+      // spawn / forge / custom:* have no required string selector.
+      expect((await backend.evaluator.evaluate(req({ kind: "spawn", payload: {} }))).ok).toBe(true);
+      expect((await backend.evaluator.evaluate(req({ kind: "forge", payload: {} }))).ok).toBe(true);
+      expect((await backend.evaluator.evaluate(req({ kind: "custom:foo", payload: {} }))).ok).toBe(
+        true,
+      );
     });
 
     test("last-match-wins precedence", async () => {

@@ -75,27 +75,43 @@ function computeUtilization(current: number, limit: number): number {
 
 /**
  * Validate a numeric config field. `undefined` is accepted (defaults apply),
- * `+Infinity` is accepted (the "unenforced" sentinel), and `NaN` / negative
- * values throw — these are almost always parse bugs (`parseInt("")`,
- * `Number(undefined)`) that would silently disable enforcement if we let
- * them through.
+ * `+Infinity` is accepted (the "unenforced" sentinel). Non-number values
+ * (e.g. the string `"100"` that slipped through from env/JSON wiring),
+ * `NaN`, and negatives throw — these would otherwise be treated as
+ * non-finite by `Number.isFinite(limit)` and silently disable enforcement.
  */
-function validateLimit(field: string, value: number | undefined): void {
+function validateLimit(field: string, value: unknown): void {
   if (value === undefined) return;
-  if (Number.isNaN(value) || value < 0) {
-    throw KoiRuntimeError.from(
-      "VALIDATION",
-      `${field} must be a non-negative finite number or Infinity`,
-      { context: { field, value } },
-    );
+  if (typeof value !== "number" || Number.isNaN(value) || value < 0) {
+    throw KoiRuntimeError.from("VALIDATION", `${field} must be a non-negative number or Infinity`, {
+      context: { field, value: value as never },
+    });
   }
 }
 
-function validateFallbackRate(field: string, value: number | undefined): void {
+function validateFallbackRate(field: string, value: unknown): void {
   if (value === undefined) return;
-  if (!Number.isFinite(value) || value < 0) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
     throw KoiRuntimeError.from("VALIDATION", `${field} must be a finite non-negative number`, {
-      context: { field, value },
+      context: { field, value: value as never },
+    });
+  }
+}
+
+function validatePositiveInt(field: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw KoiRuntimeError.from("VALIDATION", `${field} must be a positive integer`, {
+      context: { field, value: value as never },
+    });
+  }
+}
+
+function validateNonNegativeInt(field: string, value: unknown): void {
+  if (value === undefined) return;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw KoiRuntimeError.from("VALIDATION", `${field} must be a non-negative integer`, {
+      context: { field, value: value as never },
     });
   }
 }
@@ -113,6 +129,9 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
   validateLimit("contextOccupancyLimit", config.contextOccupancyLimit);
   validateFallbackRate("fallbackInputUsdPer1M", config.fallbackInputUsdPer1M);
   validateFallbackRate("fallbackOutputUsdPer1M", config.fallbackOutputUsdPer1M);
+  validatePositiveInt("errorRateWindow", config.errorRateWindow);
+  validatePositiveInt("errorRateMinSamples", config.errorRateMinSamples);
+  validateNonNegativeInt("agentDepth", config.agentDepth);
 
   const now = config.now ?? Date.now;
   const errorRateWindow = config.errorRateWindow ?? DEFAULT_ERROR_RATE_WINDOW;
@@ -367,34 +386,48 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
     [contextOccupancyVar.name, contextOccupancyVar],
   ]);
 
+  /**
+   * Sanitize an optional token count from a `token_usage` event. Accepts only
+   * finite non-negative numbers. Invalid inputs (NaN, Infinity, negative,
+   * non-number) return `undefined` so the caller can fall through to another
+   * field. Writing a poisoned value into the counter would permanently
+   * disable the cap (NaN >= limit is always false; negatives offset later
+   * usage).
+   */
+  function sanitizeTokens(value: unknown): number | undefined {
+    if (typeof value !== "number") return undefined;
+    if (!Number.isFinite(value) || value < 0) return undefined;
+    return value;
+  }
+
   function record(event: GovernanceEvent): void {
     switch (event.kind) {
       case "token_usage": {
+        const input = sanitizeTokens(event.inputTokens);
+        const output = sanitizeTokens(event.outputTokens);
+        const count = sanitizeTokens(event.count);
+        // Prefer the summed input+output pair when either side is present;
+        // otherwise fall back to `count`. A wholly invalid event (no finite
+        // non-negative token field) is dropped rather than writing NaN /
+        // negative values that would disable the cap.
         const tokens =
-          event.inputTokens !== undefined || event.outputTokens !== undefined
-            ? (event.inputTokens ?? 0) + (event.outputTokens ?? 0)
-            : event.count;
-        state.tokenUsed += tokens;
+          input !== undefined || output !== undefined ? (input ?? 0) + (output ?? 0) : count;
+        if (tokens !== undefined) state.tokenUsed += tokens;
         // Trust boundary: `event.costUsd` is pre-computed by a CostCalculator
         // the host supplied. Reject NaN / negative / Infinity so a buggy
         // calculator cannot poison `costUsed` (NaN comparisons always return
         // false; negatives would offset later spend). When costUsd is absent
         // or invalid, fall back to per-token pricing if the host configured
-        // non-zero fallback rates — otherwise the spend cap stops advancing
-        // for this event, matching governance-core's current behaviour and
-        // leaving it to the middleware's `onUsage` hook or audit sink to
-        // surface the gap.
+        // non-zero fallback rates and at least one token field was valid.
         if (event.costUsd !== undefined && Number.isFinite(event.costUsd) && event.costUsd >= 0) {
           state.costUsed += event.costUsd;
         } else if (
-          (event.inputTokens !== undefined || event.outputTokens !== undefined) &&
+          (input !== undefined || output !== undefined) &&
           (fallbackInputUsdPer1M > 0 || fallbackOutputUsdPer1M > 0)
         ) {
-          const input = event.inputTokens ?? 0;
-          const output = event.outputTokens ?? 0;
           state.costUsed +=
-            (input / 1_000_000) * fallbackInputUsdPer1M +
-            (output / 1_000_000) * fallbackOutputUsdPer1M;
+            ((input ?? 0) / 1_000_000) * fallbackInputUsdPer1M +
+            ((output ?? 0) / 1_000_000) * fallbackOutputUsdPer1M;
         }
         return;
       }
