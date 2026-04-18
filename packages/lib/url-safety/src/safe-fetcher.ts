@@ -203,6 +203,7 @@ async function buildState(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
   maxBufferedBodyBytes: number,
+  bufferStreamBodies: boolean,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
   // Match native fetch semantics: a consumed Request is only invalid if we'd
@@ -253,7 +254,14 @@ async function buildState(
 
   const signal = init?.signal ?? req?.signal;
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
-  const body = await bufferBody(rawBody, maxBufferedBodyBytes, signal);
+  // Buffer only when redirect-replay could actually be needed. For
+  // redirect: "manual"/"error" (or maxRedirects=0) we'll never follow a
+  // redirect, so streaming bodies pass through untouched — preserving
+  // backpressure for large uploads and avoiding the maxBufferedBodyBytes
+  // cap on requests that don't need it.
+  const body = bufferStreamBodies
+    ? await bufferBody(rawBody, maxBufferedBodyBytes, signal)
+    : rawBody;
 
   return {
     url,
@@ -466,7 +474,10 @@ export function createSafeFetcher(
       );
     }
 
-    const state = await buildState(input, init, maxBufferedBodyBytes);
+    // Only pre-buffer streaming bodies when redirect-replay might happen.
+    // redirect: "manual" / "error" never follows, so streams pass through.
+    const bufferStreamBodies = effectiveRedirect === "follow" && maxRedirects > 0;
+    const state = await buildState(input, init, maxBufferedBodyBytes, bufferStreamBodies);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
       // Host header is per-hop derived state.

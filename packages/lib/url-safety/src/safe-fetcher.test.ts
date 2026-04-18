@@ -813,6 +813,32 @@ describe("createSafeFetcher", () => {
     expect(cancelCalled).toBe(true);
   });
 
+  test("redirect: 'manual' passes stream body through without buffering", async () => {
+    // Caller doesn't need redirect replay → no preflight buffering. Large
+    // streams pass through with their backpressure intact.
+    const capturedInits: RequestInit[] = [];
+    const fn = (async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedInits.push(init ?? {});
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("streamed"));
+        c.close();
+      },
+    });
+    await safeFetch("https://public.example.com/up", {
+      method: "POST",
+      body: stream,
+      redirect: "manual",
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    // The body should still be the ReadableStream, not a buffered Uint8Array.
+    const first = capturedInits[0] as Record<string, unknown>;
+    expect(first["body"]).toBeInstanceOf(ReadableStream);
+  });
+
   test("honours redirect: 'manual' — returns 3xx without following", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/r": new Response(null, {

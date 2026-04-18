@@ -35,21 +35,30 @@ export interface UrlSafetyOptions {
   readonly allowedProtocols?: readonly string[];
   readonly dnsResolver?: DnsResolver;
   /**
-   * DNS resolver-error policy. `true` (the default) is strict: any real
-   * resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER A or AAAA is fatal.
-   * This closes the "attacker-hostname with public A + private AAAA
-   * where AAAA times out during validation but succeeds at connect
-   * time" vector — at the cost of rejecting hostnames under flaky
-   * IPv6 DNS.
+   * When `true`, use `dns.resolve4` / `dns.resolve6` directly for the
+   * built-in resolver. This queries authoritative DNS and returns the
+   * complete A/AAAA set — good for the rebinding-defence invariant,
+   * but bypasses `/etc/hosts`, NSS, mDNS, search domains, and other
+   * OS-level resolution rules that `fetch` otherwise honours.
    *
-   * Set to `false` to opt into lenient single-family acceptance —
-   * useful in networks where IPv6 resolution is unreliable. That
-   * choice re-opens the partial-coverage SSRF window and is only
-   * safe when the transport pins to the validated IPs (e.g., http://
-   * pinning via createSafeFetcher on an IPv4-only destination).
+   * Default: `false`. The built-in resolver uses `dns.lookup({ all: true })`
+   * so validation follows the same resolution path the transport takes
+   * at connect time. That avoids hard-to-diagnose "reachable but rejected"
+   * outages for internal names, at the cost of trusting whatever OS
+   * filtering applies to `lookup`.
    *
    * Only applies to the built-in resolver. A caller-supplied
    * `dnsResolver` is responsible for its own policy.
+   */
+  readonly strictAuthoritativeDns?: boolean;
+
+  /**
+   * When `true`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
+   * A or AAAA family is fatal. When `false` (default), a single-family
+   * success is trusted and the other family's transient failure is
+   * treated as "no records of this family". Only applies when
+   * `strictAuthoritativeDns` is also `true` (per-family granularity
+   * requires the authoritative resolver).
    */
   readonly requireFullDnsCoverage?: boolean;
 }
@@ -109,8 +118,25 @@ function buildDefaultResolver(strict: boolean): DnsResolver {
   };
 }
 
-const defaultDnsResolverLenient = buildDefaultResolver(false);
-const defaultDnsResolverStrict = buildDefaultResolver(true);
+const defaultAuthoritativeResolverLenient = buildDefaultResolver(false);
+const defaultAuthoritativeResolverStrict = buildDefaultResolver(true);
+
+// OS-parity resolver: delegates to dns.lookup (the same path fetch uses at
+// connect time), so /etc/hosts, NSS, mDNS, and search domains all apply.
+// Default for the built-in resolver so validation matches the transport.
+const defaultLookupResolver: DnsResolver = async (hostname) => {
+  if (isIP(hostname) !== 0) return [hostname];
+  const records = await dns.lookup(hostname, { all: true });
+  return [...new Set(records.map((r) => r.address))];
+};
+
+function pickResolver(options: UrlSafetyOptions | undefined): DnsResolver {
+  if (options?.dnsResolver !== undefined) return options.dnsResolver;
+  if (options?.strictAuthoritativeDns !== true) return defaultLookupResolver;
+  return options.requireFullDnsCoverage === true
+    ? defaultAuthoritativeResolverStrict
+    : defaultAuthoritativeResolverLenient;
+}
 
 function isIpLiteral(hostname: string): boolean {
   if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return true;
@@ -159,13 +185,9 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
     return { ok: true, hostname: bareHost, resolvedIps: [bareHost] };
   }
 
-  // Strict is the default. Only explicit `false` opts into lenient mode —
-  // `undefined` means "not specified, pick the safer option".
-  const resolver =
-    options?.dnsResolver ??
-    (options?.requireFullDnsCoverage === false
-      ? defaultDnsResolverLenient
-      : defaultDnsResolverStrict);
+  // Resolver selection: caller-supplied wins. Otherwise default to OS-parity
+  // (dns.lookup); opt into authoritative A/AAAA via strictAuthoritativeDns.
+  const resolver = pickResolver(options);
   let addresses: readonly string[];
   try {
     addresses = await resolver(bareHost);

@@ -39,21 +39,29 @@ interface UrlSafetyOptions {
     readonly allowedProtocols?: readonly string[];
     readonly dnsResolver?: DnsResolver;
     /**
-     * DNS resolver-error policy. \`true\` (the default) is strict: any real
-     * resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER A or AAAA is fatal.
-     * This closes the "attacker-hostname with public A + private AAAA
-     * where AAAA times out during validation but succeeds at connect
-     * time" vector — at the cost of rejecting hostnames under flaky
-     * IPv6 DNS.
+     * When \`true\`, use \`dns.resolve4\` / \`dns.resolve6\` directly for the
+     * built-in resolver. This queries authoritative DNS and returns the
+     * complete A/AAAA set — good for the rebinding-defence invariant,
+     * but bypasses \`/etc/hosts\`, NSS, mDNS, search domains, and other
+     * OS-level resolution rules that \`fetch\` otherwise honours.
      *
-     * Set to \`false\` to opt into lenient single-family acceptance —
-     * useful in networks where IPv6 resolution is unreliable. That
-     * choice re-opens the partial-coverage SSRF window and is only
-     * safe when the transport pins to the validated IPs (e.g., http://
-     * pinning via createSafeFetcher on an IPv4-only destination).
+     * Default: \`false\`. The built-in resolver uses \`dns.lookup({ all: true })\`
+     * so validation follows the same resolution path the transport takes
+     * at connect time. That avoids hard-to-diagnose "reachable but rejected"
+     * outages for internal names, at the cost of trusting whatever OS
+     * filtering applies to \`lookup\`.
      *
      * Only applies to the built-in resolver. A caller-supplied
      * \`dnsResolver\` is responsible for its own policy.
+     */
+    readonly strictAuthoritativeDns?: boolean;
+    /**
+     * When \`true\`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
+     * A or AAAA family is fatal. When \`false\` (default), a single-family
+     * success is trusted and the other family's transient failure is
+     * treated as "no records of this family". Only applies when
+     * \`strictAuthoritativeDns\` is also \`true\` (per-family granularity
+     * requires the authoritative resolver).
      */
     readonly requireFullDnsCoverage?: boolean;
 }
