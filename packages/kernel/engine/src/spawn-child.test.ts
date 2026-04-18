@@ -861,8 +861,9 @@ describe("spawnChildAgent governance event wiring", () => {
   test("spawn record failure does not strand ledger or delegation", async () => {
     // Mock controller whose record({kind:"spawn"}) throws. The spawn must
     // still succeed (governance is optional per L0 contract), and no leak
-    // must occur — ledger gets released on termination, no orphaned spawn_release
-    // is fired against an unrecorded spawn.
+    // must occur — ledger gets released on termination. spawn_release fires
+    // unconditionally on cleanup; the controller's clamp-to-0 semantics
+    // make an unpaired release safe.
     const recorded: GovernanceEvent[] = [];
     const controller: GovernanceController = {
       check: () => ({ ok: true }),
@@ -888,15 +889,16 @@ describe("spawnChildAgent governance event wiring", () => {
     expect(result.runtime).toBeDefined();
     expect(ledger.activeCount()).toBe(1);
 
-    // Termination releases the ledger and does NOT fire an orphaned spawn_release
-    // (no paired spawn was recorded). Asserts the `governanceRecorded` flag is
-    // honoured.
+    // Termination releases the ledger. spawn_release fires unconditionally —
+    // the controller's clamp-to-0 makes this safe even though spawn was never
+    // recorded. This is the more robust pairing strategy under partial
+    // failures (where record(spawn) may apply its side effect before throwing).
     registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
     registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
     await new Promise((r) => setTimeout(r, 20));
 
     expect(ledger.activeCount()).toBe(0);
-    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(0);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
   });
 
   test("slow record() does not block runtime.dispose() (no-registry path)", async () => {
