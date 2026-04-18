@@ -254,6 +254,21 @@ async function buildState(
 
   const signal = init?.signal ?? req?.signal;
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
+
+  // Native fetch rejects GET / HEAD with a body as TypeError. Match that
+  // contract instead of silently dropping the payload — otherwise a signed
+  // or stateful request could be transformed into an empty GET on the wire,
+  // hitting different cache/auth paths than intended.
+  const effectiveMethod = (init?.method ?? req?.method ?? "GET").toUpperCase();
+  if (
+    (effectiveMethod === "GET" || effectiveMethod === "HEAD") &&
+    rawBody !== undefined &&
+    rawBody !== null
+  ) {
+    throw new TypeError(
+      `url-safety: ${effectiveMethod} request cannot have a body (matches native fetch semantics)`,
+    );
+  }
   // Buffer only when redirect-replay could actually be needed. For
   // redirect: "manual"/"error" (or maxRedirects=0) we'll never follow a
   // redirect, so streaming bodies pass through untouched — preserving

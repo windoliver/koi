@@ -98,6 +98,20 @@ describe("createSafeFetcher", () => {
     expect(await res.text()).toBe("done");
   });
 
+  test("rejects GET with body (matches native fetch TypeError contract)", async () => {
+    const safeFetch = createSafeFetcher(mockFetch({}), { dnsResolver: publicResolver });
+    await expect(
+      safeFetch("https://public.example.com/x", { method: "GET", body: "nope" }),
+    ).rejects.toThrow(/GET request cannot have a body/i);
+  });
+
+  test("rejects HEAD with body", async () => {
+    const safeFetch = createSafeFetcher(mockFetch({}), { dnsResolver: publicResolver });
+    await expect(
+      safeFetch("https://public.example.com/x", { method: "HEAD", body: "nope" }),
+    ).rejects.toThrow(/HEAD request cannot have a body/i);
+  });
+
   test("303 redirect preserves HEAD (fetch spec: HEAD stays HEAD)", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/start": new Response(null, {
