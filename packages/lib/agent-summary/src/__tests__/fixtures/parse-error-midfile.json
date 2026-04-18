@@ -1,0 +1,9 @@
+{
+  "entries": [
+    { "id": "u1", "role": "user", "content": "ask", "timestamp": 1 },
+    { "id": "a1", "role": "assistant", "content": "answer", "timestamp": 2 }
+  ],
+  "skipped": [
+    { "lineNumber": 3, "raw": "garbage", "error": "invalid json", "reason": "parse_error" }
+  ]
+}
