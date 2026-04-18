@@ -182,18 +182,23 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const noCache = options?.noCache === true;
       const normalizedUrl = normalizeUrl(url);
       const cacheKey = `${method}:${normalizedUrl}`;
-      const cacheEligible =
-        fetchCache !== undefined &&
-        !hasCustomHeaders &&
-        !noCache &&
-        (method === "GET" || method === "HEAD");
+      // Key is eligible for caching if it's a GET/HEAD without custom headers
+      // (headers like Accept, Range, or auth tokens change representation).
+      // Eligibility is independent of `noCache` — a forced-fresh call still
+      // invalidates the key, and a cacheable fresh response still overwrites
+      // it, so later default callers cannot read stale content behind us.
+      const keyCacheable =
+        fetchCache !== undefined && !hasCustomHeaders && (method === "GET" || method === "HEAD");
 
-      // Check cache (GET/HEAD only, never when custom headers are present —
-      // headers like Accept, Range, or auth tokens change representation/semantics
-      // — and never when the caller explicitly opted out via noCache).
-      if (cacheEligible && fetchCache !== undefined) {
-        const cached = fetchCache.get(cacheKey);
-        if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
+      if (keyCacheable && fetchCache !== undefined) {
+        if (noCache) {
+          // Proactive eviction: if the fresh fetch then fails, the next
+          // default caller must not be handed the now-known-stale entry.
+          fetchCache.delete(cacheKey);
+        } else {
+          const cached = fetchCache.get(cacheKey);
+          if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
+        }
       }
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -263,7 +268,9 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // failures (4xx/5xx), partial content (206), and any response marked
         // `Cache-Control: no-store|no-cache|private` would otherwise become
         // sticky for the TTL and mask recovery from every subsequent caller.
-        if (cacheEligible && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
+        // A successful `noCache` fetch still writes through so subsequent
+        // default callers see the refreshed value instead of missing the key.
+        if (keyCacheable && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
           fetchCache.set(cacheKey, fetchResult);
         }
 

@@ -10,6 +10,8 @@ interface CacheEntry<T> {
 export interface LruCache<T> {
   readonly get: (key: string) => T | undefined;
   readonly set: (key: string, value: T) => void;
+  /** Drop an entry by key. No-op when the key is absent. */
+  readonly delete: (key: string) => void;
 }
 
 export function createLruCache<T>(maxEntries: number, ttlMs: number): LruCache<T> {
@@ -33,6 +35,9 @@ export function createLruCache<T>(maxEntries: number, ttlMs: number): LruCache<T
         if (!oldest.done) map.delete(oldest.value);
       }
       map.set(key, { value, expiresAt: Date.now() + ttlMs });
+    },
+    delete: (key: string): void => {
+      map.delete(key);
     },
   };
 }

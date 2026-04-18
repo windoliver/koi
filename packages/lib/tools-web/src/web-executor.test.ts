@@ -839,7 +839,7 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(2);
   });
 
-  test("noCache=true bypasses both read and write", async () => {
+  test("noCache=true forces a live fetch (read bypass)", async () => {
     let callCount = 0;
     const fetchFn = mock(async () => {
       callCount++;
@@ -848,15 +848,66 @@ describe("createWebExecutor.fetch caching", () => {
 
     const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
 
-    // Prime the cache.
     await executor.fetch("https://example.com");
-    // Forced-fresh: must hit network.
     const bypassed = await executor.fetch("https://example.com", { noCache: true });
-    // Write was skipped, so a third default call must also hit network.
-    const afterBypass = await executor.fetch("https://example.com", { noCache: true });
-    expect(callCount).toBe(3);
+    expect(callCount).toBe(2);
     if (bypassed.ok) expect(bypassed.value.cached).toBe(false);
-    if (afterBypass.ok) expect(afterBypass.value.cached).toBe(false);
+  });
+
+  test("successful noCache fetch refreshes the cached entry (no stale replay)", async () => {
+    // Regression for #1903 review round 2: a `noCache` fetch must not
+    // leave a pre-existing stale entry live for subsequent default callers.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      const body = callCount === 1 ? "old" : "new";
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // prime: "old"
+    const forced = await executor.fetch("https://example.com", { noCache: true }); // "new"
+    const followUp = await executor.fetch("https://example.com"); // must see "new"
+
+    expect(callCount).toBe(2);
+    if (forced.ok) {
+      expect(forced.value.body).toBe("new");
+      expect(forced.value.cached).toBe(false);
+    }
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("new");
+      expect(followUp.value.cached).toBe(true);
+    }
+  });
+
+  test("failed noCache fetch evicts the prior entry (no stale fallback)", async () => {
+    // If the caller forces a live fetch and the origin fails, handing back
+    // the known-stale cached value would defeat the whole point. The prior
+    // entry must be gone so the next default caller hits the origin again.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      // First call: 200 (primes cache). noCache call: 500 (not cacheable).
+      // Follow-up default call: 200 (fresh). Cache must have been evicted
+      // so follow-up is a miss, not a replay of the original "old".
+      const primed = callCount === 1;
+      return new Response(primed ? "old" : callCount === 2 ? "err" : "new", {
+        status: callCount === 2 ? 500 : 200,
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // prime "old"
+    await executor.fetch("https://example.com", { noCache: true }); // 500 — evicts
+    const followUp = await executor.fetch("https://example.com"); // must hit origin
+
+    expect(callCount).toBe(3);
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("new");
+      expect(followUp.value.cached).toBe(false);
+    }
   });
 });
 

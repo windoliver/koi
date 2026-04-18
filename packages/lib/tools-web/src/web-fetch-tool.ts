@@ -54,7 +54,7 @@ export function createWebFetchTool(
           noCache: {
             type: "boolean",
             description:
-              "Bypass the response cache for this call: do not return a cached entry and do not store the fresh response. Use when the caller needs live state (e.g. verifying a just-changed page, refreshing after a known update). Default: false.",
+              "Force a live fetch: evict any pre-existing cached response for this URL before issuing the request. A successful response refreshes the cache so later default callers see the new content; a failed/non-cacheable response leaves the key empty (no stale fallback). Use when verifying a just-changed page or refreshing after a known update. Default: false.",
           },
         },
         required: ["url"],
