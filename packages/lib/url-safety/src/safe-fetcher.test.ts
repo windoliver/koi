@@ -156,6 +156,74 @@ describe("createSafeFetcher", () => {
     expect(calls[1]?.headers["content-type"]).toBe("text/plain");
   });
 
+  test("strips Authorization/Cookie on cross-origin redirect", async () => {
+    const resolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "a.example.com") return ["93.184.216.34"];
+      if (hostname === "b.example.com") return ["93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const { fn, calls } = recordingFetch({
+      "https://a.example.com/start": new Response(null, {
+        status: 302,
+        headers: { Location: "https://b.example.com/end" },
+      }),
+      "https://b.example.com/end": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: resolver });
+    await safeFetch("https://a.example.com/start", {
+      headers: {
+        Authorization: "Bearer secret",
+        Cookie: "session=abc",
+        "X-Trace": "keep",
+      },
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.headers["authorization"]).toBe("Bearer secret");
+    expect(calls[0]?.headers["cookie"]).toBe("session=abc");
+    expect(calls[1]?.headers["authorization"]).toBeUndefined();
+    expect(calls[1]?.headers["cookie"]).toBeUndefined();
+    // Non-credential headers preserved.
+    expect(calls[1]?.headers["x-trace"]).toBe("keep");
+  });
+
+  test("keeps Authorization on same-origin redirect", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/start": new Response(null, {
+        status: 302,
+        headers: { Location: "https://public.example.com/end" },
+      }),
+      "https://public.example.com/end": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("https://public.example.com/start", {
+      headers: { Authorization: "Bearer secret" },
+    });
+    expect(calls[1]?.headers["authorization"]).toBe("Bearer secret");
+  });
+
+  test("rejects 307 redirect with ReadableStream body (non-replayable)", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/upload": new Response(null, {
+        status: 307,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+      "https://public.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("payload"));
+        controller.close();
+      },
+    });
+    await expect(
+      safeFetch("https://public.example.com/upload", {
+        method: "POST",
+        body: stream,
+      }),
+    ).rejects.toThrow(/ReadableStream/);
+  });
+
   test("Request input preserves method, headers, body", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/echo": new Response("ok", { status: 200 }),

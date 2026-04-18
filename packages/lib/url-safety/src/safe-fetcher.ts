@@ -82,8 +82,25 @@ function toInit(s: HopState): FetchInit {
   };
 }
 
+const CROSS_ORIGIN_STRIPPED_HEADERS: readonly string[] = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "proxy-authenticate",
+];
+
+function stripCrossOriginHeaders(headers: Headers): void {
+  for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) headers.delete(name);
+}
+
+function isStreamBody(body: unknown): body is ReadableStream {
+  return body instanceof ReadableStream;
+}
+
 function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
+  const crossOrigin = new URL(s.url).origin !== new URL(newUrl).origin;
   s.url = newUrl;
+
   // 303: always GET, drop body (Fetch spec).
   // 301/302 + POST: browser-aligned — most UAs downgrade to GET.
   // 307/308: preserve method + body verbatim.
@@ -98,6 +115,19 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
     s.headers.delete("content-language");
     s.headers.delete("content-location");
   }
+
+  // Non-replayable body on method-preserving redirect: the first fetch already
+  // consumed the stream, so resending is either a truncated/empty upload or a
+  // runtime error — fail closed rather than silently send a broken request.
+  if (!downgrade && isStreamBody(s.body)) {
+    throw new Error(
+      `url-safety: cannot follow ${status} redirect with a ReadableStream body (non-replayable); buffer the body before calling safeFetch`,
+    );
+  }
+
+  // Strip credentials on cross-origin redirects — the original caller
+  // authenticated to the first origin, not the redirect target.
+  if (crossOrigin) stripCrossOriginHeaders(s.headers);
 }
 
 export function createSafeFetcher(
