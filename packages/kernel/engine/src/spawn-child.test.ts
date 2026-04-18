@@ -779,4 +779,38 @@ describe("spawnChildAgent governance event wiring", () => {
     await new Promise((r) => setTimeout(r, 10));
     // No assertion needed — absence of thrown error is the contract.
   });
+
+  test("integrates with real GovernanceController — spawn_count increments and decrements", async () => {
+    const { createGovernanceController } = await import("@koi/engine-reconcile");
+    const { GOVERNANCE_VARIABLES } = await import("@koi/core");
+
+    const controller = createGovernanceController(
+      { spawn: { maxDepth: 5, maxFanOut: 10 } },
+      { agentDepth: 0 },
+    );
+    controller.seal();
+
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    // Baseline: spawn_count = 0
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    // After spawn record fires, spawn_count = 1
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
+
+    // Terminate the child.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // spawn_release fires, spawn_count back to 0
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+  });
 });
