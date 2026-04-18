@@ -35,20 +35,21 @@ export interface UrlSafetyOptions {
   readonly allowedProtocols?: readonly string[];
   readonly dnsResolver?: DnsResolver;
   /**
-   * When `true`, use `dns.resolve4` / `dns.resolve6` directly for the
-   * built-in resolver. This queries authoritative DNS and returns the
-   * complete A/AAAA set — good for the rebinding-defence invariant,
-   * but bypasses `/etc/hosts`, NSS, mDNS, search domains, and other
-   * OS-level resolution rules that `fetch` otherwise honours.
+   * Resolver selection for the built-in resolver. Default `true` uses
+   * `dns.resolve4` / `dns.resolve6` to query authoritative DNS and
+   * enumerate the full A/AAAA set — the strict rebinding-defence
+   * invariant. HTTPS requests rely on this: because `createSafeFetcher`
+   * cannot pin HTTPS to a specific IP, validating against the complete
+   * authoritative set is the only way to avoid approving a partial
+   * answer that later expands to include a blocked address.
    *
-   * Default: `false`. The built-in resolver uses `dns.lookup({ all: true })`
-   * so validation follows the same resolution path the transport takes
-   * at connect time. That avoids hard-to-diagnose "reachable but rejected"
-   * outages for internal names, at the cost of trusting whatever OS
-   * filtering applies to `lookup`.
+   * Set to `false` to delegate to `dns.lookup({ all: true })` — the same
+   * path `fetch` uses at connect time (honours `/etc/hosts`, NSS, mDNS,
+   * search domains). Useful for internal-name deployments where
+   * authoritative lookup would over-reject, at the cost of weaker
+   * rebinding defence.
    *
-   * Only applies to the built-in resolver. A caller-supplied
-   * `dnsResolver` is responsible for its own policy.
+   * A caller-supplied `dnsResolver` overrides both paths.
    */
   readonly strictAuthoritativeDns?: boolean;
 
@@ -56,9 +57,8 @@ export interface UrlSafetyOptions {
    * When `true`, a real resolver error (TIMEOUT/SERVFAIL/etc.) on EITHER
    * A or AAAA family is fatal. When `false` (default), a single-family
    * success is trusted and the other family's transient failure is
-   * treated as "no records of this family". Only applies when
-   * `strictAuthoritativeDns` is also `true` (per-family granularity
-   * requires the authoritative resolver).
+   * treated as "no records of this family". Only applies when the
+   * authoritative resolver is in use (the OS-lookup path is single-call).
    */
   readonly requireFullDnsCoverage?: boolean;
 }
@@ -132,8 +132,10 @@ const defaultLookupResolver: DnsResolver = async (hostname) => {
 
 function pickResolver(options: UrlSafetyOptions | undefined): DnsResolver {
   if (options?.dnsResolver !== undefined) return options.dnsResolver;
-  if (options?.strictAuthoritativeDns !== true) return defaultLookupResolver;
-  return options.requireFullDnsCoverage === true
+  // Default: authoritative resolver. Only explicit `false` opts into
+  // OS-lookup parity — `undefined` picks the security-first default.
+  if (options?.strictAuthoritativeDns === false) return defaultLookupResolver;
+  return options?.requireFullDnsCoverage === true
     ? defaultAuthoritativeResolverStrict
     : defaultAuthoritativeResolverLenient;
 }

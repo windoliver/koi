@@ -834,9 +834,39 @@ describe("createSafeFetcher", () => {
       redirect: "manual",
       duplex: "half",
     } as RequestInit & { duplex: "half" });
-    // The body should still be the ReadableStream, not a buffered Uint8Array.
     const first = capturedInits[0] as Record<string, unknown>;
+    // Body passes through as ReadableStream (not buffered).
     expect(first["body"]).toBeInstanceOf(ReadableStream);
+    // Duplex MUST survive when body is stream-backed — Node 22 fetch would
+    // throw without it. Regression for the Round 10 bug where toInit stripped
+    // duplex unconditionally.
+    expect(first["duplex"]).toBe("half");
+  });
+
+  test("buffered body strips duplex (no longer a stream after bufferBody)", async () => {
+    // Opposite side of the duplex rule: when we buffer the stream to a
+    // Uint8Array (redirect: "follow" default path), duplex is moot and we
+    // strip it so the outgoing init accurately describes the payload.
+    const capturedInits: RequestInit[] = [];
+    const fn = (async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedInits.push(init ?? {});
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("hi"));
+        c.close();
+      },
+    });
+    await safeFetch("https://public.example.com/up", {
+      method: "POST",
+      body: stream,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    const first = capturedInits[0] as Record<string, unknown>;
+    expect(first["body"]).toBeInstanceOf(Uint8Array);
+    expect(first["duplex"]).toBeUndefined();
   });
 
   test("honours redirect: 'manual' — returns 3xx without following", async () => {

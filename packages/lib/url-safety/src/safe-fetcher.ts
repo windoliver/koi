@@ -274,14 +274,19 @@ async function buildState(
 
 function toInit(s: HopState): FetchInit {
   const omitBody = s.method === "GET" || s.method === "HEAD";
-  // Body has been buffered to a Uint8Array (non-stream), so we can safely
-  // drop any caller-provided `duplex` — Node 22 fetch only needs it for
-  // streaming bodies, and carrying "half" forward with a buffered body
-  // is benign but misleading about the outgoing request.
-  const carryWithoutDuplex = { ...s.carry };
-  delete (carryWithoutDuplex as Record<string, unknown>).duplex;
+  // When the body is still stream-backed (redirect-skip path preserves
+  // backpressure), Node 22 fetch REQUIRES duplex: "half" — stripping it
+  // would make a valid streaming upload throw before any I/O. When the
+  // body has been buffered into Uint8Array/etc., duplex is moot and we
+  // strip it so the outgoing init accurately describes the payload.
+  const bodyIsStream =
+    !omitBody && (s.body instanceof ReadableStream || asyncIteratorOf(s.body) !== undefined);
+  const carryInit: FetchInit = { ...s.carry };
+  if (!bodyIsStream) {
+    delete (carryInit as Record<string, unknown>).duplex;
+  }
   return {
-    ...carryWithoutDuplex,
+    ...carryInit,
     method: s.method,
     headers: s.headers,
     ...(omitBody ? {} : { body: s.body }),
