@@ -1434,29 +1434,42 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
         (hardExit as { unref: () => void }).unref();
       }
-      // Kick background-task SIGTERM synchronously so stubborn subprocesses
-      // start dying before we begin the async dispose chain.
+      // Ref'd keepalive — mirror the full `shutdown()` pattern (line ~2326).
+      // Bun drops pending microtasks once the last real handle disappears,
+      // so without this interval the first `await runtime.dispose()` can
+      // let the event loop exit before the continuation resumes, skipping
+      // every subsequent cleanup step and the final `process.exit`. The
+      // hard-exit failsafe still guards against a wedged await.
+      const keepAlive = setInterval(() => {
+        /* ref'd keepalive only */
+      }, 1000);
       try {
-        runtimeHandle?.shutdownBackgroundTasks();
-      } catch {}
-      try {
-        if (runtimeHandle !== null) {
-          await runtimeHandle.runtime.dispose();
-        }
-      } catch {}
-      try {
-        await resolvedFilesystemBackend?.dispose?.();
-      } catch {}
-      try {
-        await otelHandle?.shutdown();
-      } catch {}
-      try {
-        approvalStore?.close();
-      } catch {}
-      try {
-        batcher.dispose();
-      } catch {}
-      process.exit(exitCode);
+        // Kick background-task SIGTERM synchronously so stubborn subprocesses
+        // start dying before we begin the async dispose chain.
+        try {
+          runtimeHandle?.shutdownBackgroundTasks();
+        } catch {}
+        try {
+          if (runtimeHandle !== null) {
+            await runtimeHandle.runtime.dispose();
+          }
+        } catch {}
+        try {
+          await resolvedFilesystemBackend?.dispose?.();
+        } catch {}
+        try {
+          await otelHandle?.shutdown();
+        } catch {}
+        try {
+          approvalStore?.close();
+        } catch {}
+        try {
+          batcher.dispose();
+        } catch {}
+      } finally {
+        clearInterval(keepAlive);
+        process.exit(exitCode);
+      }
     };
     interimSigusr1Handler = createSigusr1Handler({
       shutdown: (code) => {
