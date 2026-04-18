@@ -99,6 +99,11 @@ interface HopState {
   // Snapshot of SafeFetcherOptions.trustCustomTransport threaded here so
   // fetchWithPin can decide whether Request passthrough is safe.
   readonly trustCustomTransport: boolean;
+  // True once hop 0 consumed the original Request for passthrough. After
+  // that, redirect hops would reconstruct from URL+init and lose any
+  // internal transport the caller was relying on — so redirects are
+  // refused when this flag is true AND trustCustomTransport was asserted.
+  requestTransportConsumed: boolean;
 }
 
 function extractUrl(input: Parameters<typeof fetch>[0]): string {
@@ -322,6 +327,7 @@ async function buildState(
     originalRequest: req,
     headersAreFromRequest: req !== undefined && init?.headers === undefined,
     trustCustomTransport,
+    requestTransportConsumed: false,
   };
 }
 
@@ -496,6 +502,7 @@ async function fetchWithPin(
     const passthrough = state.originalRequest;
     state.originalRequest = undefined;
     if (passthrough !== undefined && state.headersAreFromRequest && state.trustCustomTransport) {
+      state.requestTransportConsumed = true;
       return base(passthrough, toInitWithoutHeaders(state));
     }
     return base(url, toInit(state));
@@ -647,6 +654,18 @@ export function createSafeFetcher(
         await response.body?.cancel().catch(() => undefined);
         throw new TypeError(
           `url-safety: unexpected redirect (${response.status}) with redirect: "error"`,
+        );
+      }
+
+      // Refuse to follow redirects when hop 0 consumed a passthrough Request
+      // with caller-trusted transport — subsequent hops would reconstruct
+      // from URL+init and drop dispatcher/agent state the caller explicitly
+      // opted into. Force the caller to handle redirects manually in that
+      // case so their transport contract isn't silently broken.
+      if (state.requestTransportConsumed) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(
+          `url-safety: refused to follow ${response.status} redirect for Request input with trustCustomTransport — the caller's custom transport can't be preserved across redirect hops; use redirect: "manual" and re-issue the next hop yourself with a fresh Request`,
         );
       }
 

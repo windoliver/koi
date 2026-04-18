@@ -138,24 +138,33 @@ describe("createWebFetchTool", () => {
   });
 
   describe("SSRF protection", () => {
-    const tool = createWebFetchTool(
-      mockExecutor(successResponse("ok", "text/plain")),
-      "web",
-      POLICY,
-    );
-
-    test("blocks localhost", async () => {
+    // SSRF enforcement moved to the executor layer (createWebExecutor uses
+    // @koi/url-safety's createSafeFetcher which applies isSafeUrl on every
+    // hop). The tool no longer runs a duplicate pre-flight — that avoided
+    // a policy-disagreement class between tool and executor. SSRF coverage
+    // for blocked hosts/IPs lives in web-executor.test.ts.
+    test("forwards blocked URLs to the executor, which denies", async () => {
+      // Use a mock executor that propagates a PERMISSION error as the real
+      // executor would for a blocked URL.
+      const denyingExecutor: WebExecutor = {
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "no provider", retryable: false },
+        }),
+        fetch: async () => ({
+          ok: false,
+          error: {
+            code: "PERMISSION",
+            message: "url-safety: Blocked host localhost",
+            retryable: false,
+          },
+        }),
+      };
+      const tool = createWebFetchTool(denyingExecutor, "web", POLICY);
       const result = (await tool.execute({ url: "http://localhost/admin" })) as {
         error: string;
         code: string;
       };
-      expect(result.code).toBe("PERMISSION");
-    });
-
-    test("blocks AWS metadata endpoint", async () => {
-      const result = (await tool.execute({
-        url: "http://169.254.169.254/latest/meta-data/",
-      })) as { error: string; code: string };
       expect(result.code).toBe("PERMISSION");
     });
   });

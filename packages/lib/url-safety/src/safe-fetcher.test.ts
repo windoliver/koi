@@ -627,7 +627,7 @@ describe("createSafeFetcher", () => {
   });
 
   test("Request POST with body can follow 307 after buffering", async () => {
-    const { fn, calls } = recordingFetch({
+    const { fn } = recordingFetch({
       "https://public.example.com/upload": new Response(null, {
         status: 307,
         headers: { Location: "https://public.example.com/final" },
@@ -643,10 +643,14 @@ describe("createSafeFetcher", () => {
       body: "hello",
       headers: { "Content-Type": "text/plain" },
     });
-    const res = await safeFetch(req);
-    expect(res.status).toBe(200);
-    expect(calls[1]?.method).toBe("POST");
-    expect(calls[1]?.body).toBe("hello");
+    // With trustCustomTransport=true + Request, hop 0 consumes the Request
+    // object to preserve internal transport. Hops 1+ would have to
+    // reconstruct from URL+init, losing that transport — so the wrapper
+    // refuses to follow redirects in this case. Caller must use
+    // redirect: "manual" and re-issue.
+    await expect(safeFetch(req)).rejects.toThrow(
+      /refused to follow.*Request input with trustCustomTransport/i,
+    );
   });
 
   test("pins HTTP URL to resolved IP and sets Host header", async () => {

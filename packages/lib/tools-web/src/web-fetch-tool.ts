@@ -3,7 +3,6 @@
  */
 
 import type { JsonObject, Tool, ToolPolicy } from "@koi/core";
-import { isSafeUrl } from "@koi/url-safety";
 import { MAX_TIMEOUT_MS } from "./constants.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { stripHtml } from "./strip-html.js";
@@ -65,15 +64,10 @@ export function createWebFetchTool(
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return { error: "url must start with http:// or https://", code: "VALIDATION" };
       }
-      // Pre-flight SSRF check so obvious denies return PERMISSION before
-      // any executor call. Uses the same @koi/url-safety defaults the
-      // executor applies (strict authoritative DNS + suffix block), so a
-      // URL can't pass preflight and then fail inside the executor — the
-      // two agree on the decision.
-      const safety = await isSafeUrl(url);
-      if (!safety.ok) {
-        return { error: `Access blocked: ${safety.reason}`, code: "PERMISSION" };
-      }
+      // No duplicate SSRF preflight here — the executor (createWebExecutor)
+      // is the single decision point. It runs @koi/url-safety with the
+      // caller's configured resolver / options; the same URL can't be both
+      // approved by a local preflight and rejected by the executor.
       const method = typeof args.method === "string" ? args.method.toUpperCase() : "GET";
       if (!(ALLOWED_METHODS as readonly string[]).includes(method)) {
         return {
