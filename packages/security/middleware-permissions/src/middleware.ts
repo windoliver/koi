@@ -1455,20 +1455,33 @@ export function createPermissionsMiddleware(
       // the in-flight dedup key. (#1759 review round 6)
       // Resolve file path for fs tools so permission rules can match on context.path.
       const resolvedPath = config.resolveToolPath?.(request.toolId, request.input);
-      const { policy: resource, grant: grantKey } = enrichResource(request.toolId, request.input);
-      const query = queryForTool(ctx, resource, request.metadata, resolvedPath);
+      const { policy: enrichedResource, grant: grantKey } = enrichResource(
+        request.toolId,
+        request.input,
+      );
+      const enrichedQuery = queryForTool(ctx, enrichedResource, request.metadata, resolvedPath);
       const startMs = clock();
       // Dual-key evaluation: when the enriched resource differs from
       // the plain tool id, consult the backend for BOTH and take the
-      // stricter decision. Without this, existing rules written
-      // against plain `bash` / `group:runtime` stop applying once
-      // prefix enrichment is enabled — a policy-compatibility hazard.
-      // Deny on either wins; ask on either wins over allow.
+      // stricter decision. The "effective" resource/query carries
+      // forward whichever side won so denial tracking, soft-deny
+      // caps, and audit records aggregate under the right bucket —
+      // a plain `deny: bash` must aggregate across all subcommand
+      // variants, not fragment into per-prefix buckets.
+      let resource = enrichedResource;
+      let query = enrichedQuery;
       let decision = await resolveDecision(query, ctx.session.sessionId as string);
-      if (resource !== request.toolId) {
+      if (enrichedResource !== request.toolId) {
         const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
         const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
-        decision = strictestDecision(plain, decision);
+        const combined = strictestDecision(plain, decision);
+        // If the plain decision won, key tracking on the plain tool id
+        // so an agent rotating subcommands hits the same denial bucket.
+        if (combined === plain) {
+          resource = request.toolId;
+          query = plainQuery;
+        }
+        decision = combined;
       }
       const durationMs = clock() - startMs;
 

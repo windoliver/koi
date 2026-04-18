@@ -23,6 +23,14 @@
 
 import { ARITY } from "./arity.js";
 
+/**
+ * Internal sentinel emitted by `normalize` when a fail-closed
+ * condition is detected (e.g. flagged `command`/`exec`/`nohup`
+ * wrappers we cannot safely peel). `prefix` remaps it to
+ * `UNSAFE_PREFIX` before returning.
+ */
+const UNSAFE_SENTINEL_TOKEN = "\0!complex";
+
 /** Per-wrapper option grammar. Unknown flags fail closed. */
 interface WrapperSpec {
   readonly argFlags: ReadonlySet<string>; // flag + next token
@@ -297,8 +305,12 @@ function normalizeOnce(tokens: readonly string[]): readonly string[] {
     // command (`command -- sudo rm`, `exec -- git push`).
     if (tokens[wrapperEnd] === "--") wrapperEnd++;
     const next = tokens[wrapperEnd] ?? "";
-    // If the next token is a flag we haven't modeled, fail closed.
-    if (next.startsWith("-")) return [base, ...tokens.slice(wrapperEnd)];
+    // Flagged forms we haven't modeled (`command -p`, `exec -a fake`,
+    // `nohup -x …`) must NOT collapse to the wrapper name — that
+    // would let an inner denied command hide behind a broadly-
+    // allowed wrapper prefix. Signal fail-closed via the sentinel so
+    // prefix() propagates UNSAFE_PREFIX.
+    if (next.startsWith("-")) return [UNSAFE_SENTINEL_TOKEN];
     return tokens.slice(wrapperEnd);
   }
 
@@ -682,6 +694,8 @@ export function prefix(tokens: readonly string[]): string {
 
   const first = normalized[0];
   if (first === undefined) return "";
+  // Fail-closed sentinel from normalize (e.g. flagged `command -p`).
+  if (first === UNSAFE_SENTINEL_TOKEN) return UNSAFE_PREFIX;
   // ARITY lookup uses the loose basename so untrusted path-qualified
   // binaries (`./git`, `/tmp/git`) still pick up the correct arity and
   // produce `./git push` / `/tmp/git push` as the permission key. The

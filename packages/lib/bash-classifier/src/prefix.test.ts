@@ -341,10 +341,15 @@ describe("prefix — wrapper option handling (PR review round 5)", () => {
     expect(prefix(["stdbuf", "-oL", "-eL", "git", "log"])).toBe("git log");
   });
 
-  test("command/builtin/exec/nohup fail closed when followed by an unknown flag", () => {
-    // `command -X sudo rm` — -X is not a known `command` option. Fail
-    // closed rather than peel into a confusing prefix.
-    expect(prefix(["command", "-X", "sudo", "rm"])).toBe("command");
+  test("flagged command/builtin/exec/nohup forms fail closed to !complex (loop-3)", () => {
+    // `command -p sudo rm`, `exec -a fake sudo rm` — we do not model
+    // these wrappers' option grammars, so any flagged form must not
+    // collapse to the wrapper prefix (that would let denied inner
+    // commands hide behind an allowed `bash:command*` rule).
+    expect(prefix(["command", "-p", "sudo", "rm"])).toBe("!complex");
+    expect(prefix(["exec", "-a", "fake", "sudo", "rm"])).toBe("!complex");
+    expect(prefix(["nohup", "-x", "sudo", "rm"])).toBe("!complex");
+    expect(prefix(["builtin", "-f", "sudo", "rm"])).toBe("!complex");
   });
 });
 
