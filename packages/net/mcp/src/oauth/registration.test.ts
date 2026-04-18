@@ -46,7 +46,12 @@ describe("registerDynamicClient", () => {
     expect(info?.clientId).toBe("ok-200");
   });
 
-  test("captures client_secret for confidential clients", async () => {
+  test("rejects confidential clients (server returned a client_secret)", async () => {
+    // We request public-client PKCE (token_endpoint_auth_method=none).
+    // If the AS returns a confidential registration anyway, token
+    // exchange/refresh would later fail with invalid_client because we
+    // only send client_id. Fail fast here rather than persist unusable
+    // credentials.
     globalThis.fetch = mock(() =>
       Promise.resolve(
         new Response(JSON.stringify({ client_id: "confidential", client_secret: "shh" }), {
@@ -60,8 +65,43 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info?.clientId).toBe("confidential");
-    expect(info?.clientSecret).toBe("shh");
+    expect(info).toBeUndefined();
+  });
+
+  test("rejects confidential auth methods (e.g. client_secret_basic)", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            client_id: "pub",
+            token_endpoint_auth_method: "client_secret_basic",
+          }),
+          { status: 201 },
+        ),
+      ),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info).toBeUndefined();
+  });
+
+  test("records issuer + registration endpoint on successful registration", async () => {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ client_id: "pub" }), { status: 201 })),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+      issuer: "https://auth.example.com",
+    });
+
+    expect(info?.issuer).toBe("https://auth.example.com");
+    expect(info?.registrationEndpoint).toBe("https://auth.example.com/register");
   });
 
   test("rejects non-HTTPS registration endpoints", async () => {

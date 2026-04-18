@@ -223,6 +223,8 @@ File-based locking (`~/.koi/locks/`) ensures safe concurrent access across agent
 
 Every authorization request, token exchange, and refresh carries `resource={serverUrl}` so the authorization server can bind the issued access token to the specific MCP server. Required by the 2025-03-26 MCP spec for servers that enforce per-resource scoping.
 
+Set `oauth.includeResourceParameter: false` for legacy authorization servers that reject the `resource` parameter with `invalid_target`/`invalid_request`. The default is `true` (spec-compliant); the opt-out exists only as a per-server compatibility escape hatch.
+
 ### CLI Commands
 
 | Command | Description |

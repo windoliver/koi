@@ -27,6 +27,7 @@ function buildExternalSchemas() {
     clientId: z.string().optional(),
     callbackPort: z.number().int().positive().optional(),
     authServerMetadataUrl: z.string().url().optional(),
+    includeResourceParameter: z.boolean().optional(),
     xaa: z.boolean().optional(),
   });
 
@@ -109,6 +110,7 @@ export interface ExternalServerConfig {
     readonly clientId?: string;
     readonly callbackPort?: number;
     readonly authServerMetadataUrl?: string;
+    readonly includeResourceParameter?: boolean;
     readonly xaa?: boolean;
   };
   readonly name?: string;
@@ -152,6 +154,7 @@ export interface McpOAuthExternalConfig {
   readonly clientId?: string | undefined;
   readonly callbackPort?: number | undefined;
   readonly authServerMetadataUrl?: string | undefined;
+  readonly includeResourceParameter?: boolean | undefined;
 }
 
 export interface HttpServerConfig {
@@ -296,7 +299,12 @@ function normalizeOne(
       const c = config as {
         url: string;
         headers?: Record<string, string>;
-        oauth?: { clientId?: string; callbackPort?: number; authServerMetadataUrl?: string };
+        oauth?: {
+          clientId?: string;
+          callbackPort?: number;
+          authServerMetadataUrl?: string;
+          includeResourceParameter?: boolean;
+        };
       };
       const headers = c.headers !== undefined ? expandRecord(c.headers) : undefined;
       const oauth: McpOAuthExternalConfig | undefined =
@@ -305,6 +313,7 @@ function normalizeOne(
               clientId: c.oauth.clientId,
               callbackPort: c.oauth.callbackPort,
               authServerMetadataUrl: c.oauth.authServerMetadataUrl,
+              includeResourceParameter: c.oauth.includeResourceParameter,
             }
           : undefined;
       const server: McpServerConfig = {

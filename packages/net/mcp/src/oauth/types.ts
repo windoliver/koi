@@ -15,6 +15,14 @@ export interface McpOAuthConfig {
   readonly clientId?: string | undefined;
   readonly callbackPort?: number | undefined;
   readonly authServerMetadataUrl?: string | undefined;
+  /**
+   * RFC 8707 `resource` parameter. Defaults to `true` (spec-compliant MCP
+   * 2025-03-26). Set `false` for legacy authorization servers that reject
+   * the `resource` parameter with `invalid_target`/`invalid_request` —
+   * operators can then opt out on a per-server basis rather than hitting
+   * an unrecoverable auth failure.
+   */
+  readonly includeResourceParameter?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,10 +87,18 @@ export interface AuthServerMetadata {
  * Persisted OAuth client info — produced by configured `clientId` or by
  * Dynamic Client Registration (RFC 7591). Stored separately from tokens
  * so `koi mcp logout` does not force re-registration.
+ *
+ * Registered records carry the `issuer` and `registrationEndpoint` they
+ * were created under so a later change to discovery (different auth
+ * server) invalidates the cached client instead of silently using a
+ * client id against the wrong issuer.
  */
 export interface OAuthClientInfo {
   readonly clientId: string;
-  readonly clientSecret?: string | undefined;
   /** Epoch ms when the client was persisted. 0 for configured static clients. */
   readonly registeredAt: number;
+  /** Issuer the client was registered with (DCR only). Absent for configured static clients. */
+  readonly issuer?: string | undefined;
+  /** Registration endpoint used (DCR only). Absent for configured static clients. */
+  readonly registrationEndpoint?: string | undefined;
 }

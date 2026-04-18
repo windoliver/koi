@@ -189,14 +189,16 @@ describe("client info persistence", () => {
     expect(await readClientInfo(storage, "s", "https://x")).toBeUndefined();
   });
 
-  test("writeClientInfo preserves optional client_secret", async () => {
+  test("writeClientInfo persists issuer + registration_endpoint binding", async () => {
     await writeClientInfo(storage, "s", "https://x", {
       clientId: "public",
-      clientSecret: "shh",
       registeredAt: 99,
+      issuer: "https://auth.example.com",
+      registrationEndpoint: "https://auth.example.com/register",
     });
     const back = await readClientInfo(storage, "s", "https://x");
-    expect(back?.clientSecret).toBe("shh");
+    expect(back?.issuer).toBe("https://auth.example.com");
+    expect(back?.registrationEndpoint).toBe("https://auth.example.com/register");
   });
 });
 

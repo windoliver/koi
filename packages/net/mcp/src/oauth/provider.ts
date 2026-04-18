@@ -11,10 +11,10 @@ import { discoverAuthServer } from "./discovery.js";
 import { createPkceChallenge } from "./pkce.js";
 import { registerDynamicClient } from "./registration.js";
 import {
+  computeClientKey,
   createTokenManager,
   readClientInfo,
   type TokenManager,
-  writeClientInfo,
 } from "./tokens.js";
 import type {
   AuthServerMetadata,
@@ -66,6 +66,8 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   const callbackPort = oauthConfig.callbackPort ?? DEFAULT_CALLBACK_PORT;
   const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
+  const resourceIndicator: string | undefined =
+    oauthConfig.includeResourceParameter === false ? undefined : serverUrl;
 
   // Mutable state — justified: caches metadata + resolved client across token() calls
   let cachedMetadata: AuthServerMetadata | undefined;
@@ -81,9 +83,15 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   /**
    * Resolve the effective OAuth client. Order:
    * 1. Configured `clientId` (static, no persistence)
-   * 2. Persisted DCR result from a prior run
-   * 3. Fresh DCR against `registration_endpoint`, then persist
+   * 2. Persisted DCR result whose issuer + registration_endpoint still
+   *    match the currently-discovered auth server
+   * 3. Fresh DCR against the discovered `registration_endpoint`, persisted
    * Returns undefined when no client can be resolved — the caller fails closed.
+   *
+   * Steps 2/3 run under a single `withLock` on the client-info storage key
+   * so concurrent flows cannot register two different clients and
+   * overwrite each other — the token manager would otherwise refresh
+   * against a different client than authorization used.
    */
   async function getClient(): Promise<OAuthClientInfo | undefined> {
     if (cachedClient !== undefined) return cachedClient;
@@ -93,24 +101,33 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return cachedClient;
     }
 
-    const stored = await readClientInfo(storage, serverName, serverUrl);
-    if (stored !== undefined) {
-      cachedClient = stored;
-      return cachedClient;
-    }
-
     const metadata = await getMetadata();
-    if (metadata?.registrationEndpoint === undefined) return undefined;
+    const lockKey = computeClientKey(serverName, serverUrl);
 
-    const registered = await registerDynamicClient({
-      registrationEndpoint: metadata.registrationEndpoint,
-      redirectUri,
-      clientName: serverName,
+    const resolved = await storage.withLock(lockKey, async () => {
+      const stored = await readClientInfo(storage, serverName, serverUrl);
+      if (stored !== undefined && isClientFresh(stored, metadata)) {
+        return stored;
+      }
+
+      if (metadata?.registrationEndpoint === undefined) return undefined;
+
+      const registered = await registerDynamicClient({
+        registrationEndpoint: metadata.registrationEndpoint,
+        redirectUri,
+        clientName: serverName,
+        issuer: metadata.issuer,
+      });
+      if (registered === undefined) return undefined;
+
+      // writeClientInfo would re-enter withLock on the same key — we
+      // already own it, so persist directly to avoid a self-deadlock.
+      await storage.set(lockKey, JSON.stringify(registered));
+      return registered;
     });
-    if (registered === undefined) return undefined;
 
-    await writeClientInfo(storage, serverName, serverUrl, registered);
-    cachedClient = registered;
+    if (resolved === undefined) return undefined;
+    cachedClient = resolved;
     return cachedClient;
   }
 
@@ -124,6 +141,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       storage,
       metadata,
       clientId: client?.clientId,
+      resource: resourceIndicator,
     });
     return tokenManager;
   }
@@ -160,7 +178,9 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("code_challenge", pkce.challenge);
     authUrl.searchParams.set("code_challenge_method", pkce.method);
-    authUrl.searchParams.set("resource", serverUrl);
+    if (resourceIndicator !== undefined) {
+      authUrl.searchParams.set("resource", resourceIndicator);
+    }
     // Generate a random state parameter for CSRF protection
     const state = crypto.randomUUID();
     authUrl.searchParams.set("state", state);
@@ -180,7 +200,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       redirectUri,
       metadata.tokenEndpoint,
       client.clientId,
-      serverUrl,
+      resourceIndicator,
     );
 
     if (tokens === undefined) return false;
@@ -216,6 +236,34 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 }
 
 // ---------------------------------------------------------------------------
+// Client freshness
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when a persisted DCR client is still valid against the
+ * currently-discovered auth server. A stored record with no issuer /
+ * registration_endpoint (shape predates this check, or static config
+ * was persisted by mistake) is treated as fresh so we do not force
+ * operators to re-auth on upgrade. Once an issuer is recorded, any
+ * mismatch is a migration event — re-register rather than send a stale
+ * client id to a different authorization server.
+ */
+function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | undefined): boolean {
+  if (stored.issuer === undefined && stored.registrationEndpoint === undefined) {
+    return true;
+  }
+  if (metadata === undefined) return false;
+  if (stored.issuer !== undefined && stored.issuer !== metadata.issuer) return false;
+  if (
+    stored.registrationEndpoint !== undefined &&
+    stored.registrationEndpoint !== metadata.registrationEndpoint
+  ) {
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Token exchange
 // ---------------------------------------------------------------------------
 
@@ -225,7 +273,7 @@ async function exchangeCode(
   redirectUri: string,
   tokenEndpoint: string,
   clientId: string,
-  resource: string,
+  resource: string | undefined,
 ): Promise<OAuthTokens | undefined> {
   try {
     const body = new URLSearchParams({
@@ -234,9 +282,13 @@ async function exchangeCode(
       redirect_uri: redirectUri,
       code_verifier: codeVerifier,
       client_id: clientId,
-      // RFC 8707: bind the issued token to the MCP server URL.
-      resource,
     });
+    // RFC 8707: bind the issued token to the MCP server URL when enabled.
+    // Operators can opt out via `oauth.includeResourceParameter: false` for
+    // legacy authorization servers that reject `resource`.
+    if (resource !== undefined) {
+      body.set("resource", resource);
+    }
 
     const response = await fetch(tokenEndpoint, {
       method: "POST",
