@@ -369,6 +369,13 @@ export async function run(flags: StartFlags): Promise<ExitCode> {
         rules: { allow: ["*"], deny: [], ask: [] },
       }),
       permissionsDescription: "koi start — auto-allow",
+      // `koi start` is non-interactive and auto-allows every tool, so
+      // a runaway active loop has no approval gate. Keep the wall-clock
+      // cap tight (5 min) to match main's pre-refactor posture; the
+      // interactive TUI uses the 30-min factory default because users
+      // watch its output and can Ctrl-C a stuck turn. Operators can
+      // still override via KOI_MAX_DURATION_MS.
+      defaultMaxDurationMs: 300_000,
       // `koi start` runs without `bash_background` because main's
       // pre-refactor `koi start` never exposed that tool. The shared
       // execution stack wires it by default for TUI, so we explicitly

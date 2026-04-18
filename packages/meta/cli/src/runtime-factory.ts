@@ -209,6 +209,17 @@ export interface KoiRuntimeConfig {
    */
   readonly bashElicitAutoApprove?: boolean | undefined;
   /**
+   * Default per-submit wall-clock cap in ms. When omitted the factory
+   * uses 1_800_000 (30 min) — matches the interactive TUI posture.
+   * Non-interactive hosts (`koi start`) pass a tighter value (300_000
+   * / 5 min) so a runaway active loop has a smaller blast radius.
+   *
+   * Always overridable via `KOI_MAX_DURATION_MS` env var. Use `0` in
+   * the env var to disable the cap entirely (clamped to setTimeout's
+   * int32 max, ~24.8 days).
+   */
+  readonly defaultMaxDurationMs?: number | undefined;
+  /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
    * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
@@ -767,6 +778,10 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  * the chosen posture.
  */
 const DEFAULT_MAX_DURATION_MS = 1_800_000;
+/** Track the last invalid KOI_MAX_DURATION_MS we warned about so we
+ * don't spam the console across hot-reload / repeated factory calls. */
+// let justified: module-scoped memo for the diagnostic emitter.
+let lastWarnedInvalidEnv: string | undefined;
 // Node's setTimeout clamps delays above 2^31-1 to 1ms (emits
 // TimeoutOverflowWarning). The iteration guard passes `maxDurationMs`
 // directly into setTimeout, so any "effectively unlimited" sentinel
@@ -781,14 +796,28 @@ const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
 const UNSIGNED_INT_RE = /^(0|[1-9]\d*)$/;
 
 /** @internal — exported for unit tests only; not part of the public API. */
-export function resolveMaxDurationMs(): number {
+export function resolveMaxDurationMs(hostDefault?: number): number {
+  const fallback = hostDefault ?? DEFAULT_MAX_DURATION_MS;
   const raw = process.env.KOI_MAX_DURATION_MS;
-  if (raw === undefined) return DEFAULT_MAX_DURATION_MS;
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
   // Strict parse: `Number("")` returns 0 and Number("00") also returns 0,
   // either of which would flip the cap off silently. Require the raw
   // string to match an unsigned decimal integer before trusting it.
-  const trimmed = raw.trim();
-  if (!UNSIGNED_INT_RE.test(trimmed)) return DEFAULT_MAX_DURATION_MS;
+  if (!UNSIGNED_INT_RE.test(trimmed)) {
+    // Diagnostic: operator-supplied but unparseable. Warn once per
+    // distinct raw value so mistakes are visible without log spam.
+    if (lastWarnedInvalidEnv !== raw) {
+      lastWarnedInvalidEnv = raw;
+      // biome-ignore lint/suspicious/noConsole: operator-visible startup diagnostic.
+      console.warn(
+        `[koi] ignoring KOI_MAX_DURATION_MS=${JSON.stringify(raw)}: ` +
+          "expected an unsigned decimal integer (ms) or '0' to disable. " +
+          `Using default ${fallback}ms.`,
+      );
+    }
+    return fallback;
+  }
   if (trimmed === "0") return MAX_SETTIMEOUT_SAFE_MS;
   const n = Number(trimmed);
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
@@ -1842,7 +1871,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       resetIterationBudgetPerRun: true,
       governance: {
         iteration: (() => {
-          const resolvedDuration = resolveMaxDurationMs();
+          const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
           // Only pin `maxInactivityMs` to the resolved duration when
           // the operator explicitly set KOI_MAX_DURATION_MS. Without
           // that signal, leave the engine's default inactivity window

@@ -123,6 +123,23 @@ describe("resolveMaxDurationMs — KOI_MAX_DURATION_MS coercion", () => {
     expect(resolveMaxDurationMs()).toBe(DEFAULT);
   });
 
+  test("host default passed in overrides the built-in fallback", () => {
+    // `koi start` passes 300_000 so automation gets a tighter cap
+    // than the interactive TUI default.
+    delete process.env.KOI_MAX_DURATION_MS;
+    expect(resolveMaxDurationMs(300_000)).toBe(300_000);
+  });
+
+  test("env var still wins over host default when valid", () => {
+    process.env.KOI_MAX_DURATION_MS = "60000";
+    expect(resolveMaxDurationMs(300_000)).toBe(60_000);
+  });
+
+  test("env var falling back uses host default, not built-in fallback", () => {
+    process.env.KOI_MAX_DURATION_MS = "abc";
+    expect(resolveMaxDurationMs(300_000)).toBe(300_000);
+  });
+
   test("zero-equivalent aliases do NOT disable the cap", () => {
     // `Number("00")`, `Number("+0")`, `Number("-0")`, `Number("0.0")`,
     // `Number("0e0")` all return 0 — without strict integer matching
