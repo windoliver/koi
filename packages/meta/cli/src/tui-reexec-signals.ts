@@ -23,6 +23,16 @@ import { SIGUSR1_SUPPORTED } from "./tui-sigusr1.js";
 // from hanging forever on `proc.exited` when the child wedges.
 const PARENT_SIGTERM_ESCALATION_MS = 10_000;
 
+// Delay (ms) before replaying a pre-bind SIGUSR1 to a freshly spawned
+// child. Covers the Bun/V8 runtime-init window (~50-300ms typical,
+// 500ms worst case under load) during which delivering SIGUSR1 to the
+// child panics the runtime with SIGTRAP instead of running the JS
+// handler (#1906 R1 review; confirmed experimentally in bin.test.ts).
+// Once this timer fires, the child's inline early handler from bin.ts
+// is guaranteed to be installed, so the forwarded SIGUSR1 hits the JS
+// signal layer as intended.
+const CHILD_READY_FOR_SIGUSR1_MS = 500;
+
 /**
  * Arm SIGINT, SIGTERM, SIGHUP, and SIGUSR1 handlers on the re-exec parent
  * process BEFORE spawning the child. Returns a function to bind the child
@@ -174,10 +184,19 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
         forwardToChild(proc, pendingExitCode);
       }
       if (pendingSigusr1) {
-        try {
-          proc.kill("SIGUSR1");
-        } catch {
-          // Child already exited before we could replay.
+        // Delay replay so the child can finish runtime init and arm its
+        // inline SIGUSR1 handler. Without this, a pre-bind SIGUSR1 can
+        // land during Bun module loading and SIGTRAP-panic the child
+        // before bin.ts reaches the handler install.
+        const replay = setTimeout(() => {
+          try {
+            proc.kill("SIGUSR1");
+          } catch {
+            // Child already exited before we could replay.
+          }
+        }, CHILD_READY_FOR_SIGUSR1_MS);
+        if (typeof replay === "object" && replay !== null && "unref" in replay) {
+          (replay as { unref: () => void }).unref();
         }
       }
       // Clean up listeners when the child exits so a later re-exec child

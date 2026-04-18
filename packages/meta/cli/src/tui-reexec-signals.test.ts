@@ -58,7 +58,7 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     await fake.exited;
   });
 
-  test("replays a pre-bind SIGUSR1 once the child ref is bound", async () => {
+  test("replays a pre-bind SIGUSR1 once the child ref is bound (after readiness delay)", async () => {
     const guard = armTuiReexecSignalHandlers();
     // Signal arrives before bindChild — handler records the pending flag.
     process.emit("SIGUSR1", "SIGUSR1");
@@ -66,6 +66,11 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     const fake = makeFakeSubprocess();
     guard.bindChild(fake.proc);
 
+    // Replay is now delayed (CHILD_READY_FOR_SIGUSR1_MS = 500) so the
+    // child has time to arm its own handler before the signal lands.
+    // Verify nothing fired immediately, then wait past the delay.
+    expect(fake.kills).toEqual([]);
+    await new Promise((r) => setTimeout(r, 550));
     expect(fake.kills).toEqual(["SIGUSR1"]);
 
     fake.resolveExit(0);

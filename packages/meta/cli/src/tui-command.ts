@@ -1402,6 +1402,54 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const yoloPermissionBackend = flags.yolo
     ? createPatternPermissionBackend({ rules: { allow: ["*"], deny: [], ask: [] } })
     : undefined;
+
+  // ---------------------------------------------------------------------------
+  // Interim SIGUSR1 handler (#1906 R1) — covers the window from this point
+  // through section 4b where the full `shutdown()` handler installs. A
+  // SIGUSR1 during runtime/MCP bootstrap now tears down whatever has been
+  // built so far (runtime background tasks, runtime dispose, filesystem
+  // backend, otel, approvals, batcher) instead of bare process.exit.
+  // Upgraded to the full handler at section 4b once `shutdown` is defined.
+  // ---------------------------------------------------------------------------
+  // let: justified — set once, then cleared when the full handler takes over.
+  let interimSigusr1Handler: (() => void) | null = null;
+  if (SIGUSR1_SUPPORTED) {
+    const interimTeardown = (exitCode: number): void => {
+      // Best-effort teardown of components that exist at this point.
+      // Each step is try/catch'd so a failure in one does not skip the
+      // rest — we are headed to process.exit regardless.
+      try {
+        runtimeHandle?.shutdownBackgroundTasks();
+      } catch {}
+      try {
+        void runtimeHandle?.runtime?.dispose?.();
+      } catch {}
+      try {
+        void resolvedFilesystemBackend?.dispose?.();
+      } catch {}
+      try {
+        void otelHandle?.shutdown();
+      } catch {}
+      try {
+        approvalStore?.close();
+      } catch {}
+      try {
+        batcher.dispose();
+      } catch {}
+      process.exit(exitCode);
+    };
+    interimSigusr1Handler = createSigusr1Handler({
+      shutdown: (code) => interimTeardown(code),
+      write: (msg) => {
+        try {
+          process.stderr.write(msg);
+        } catch {}
+      },
+    });
+    removeStoredEarlySigusr1Handler();
+    process.on("SIGUSR1", interimSigusr1Handler);
+  }
+
   const runtimeReady = createKoiRuntime({
     modelAdapter,
     modelName,
@@ -2463,20 +2511,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   };
 
   // ---------------------------------------------------------------------------
-  // 4b. Install the full SIGUSR1 graceful-shutdown handler EARLY (#1906 R10)
+  // 4b. Upgrade SIGUSR1 to the FULL graceful-shutdown handler (#1906 R10/R11)
   // ---------------------------------------------------------------------------
   //
-  // The bin.ts inline early handler covers the window from process start
-  // to this point with a bare `process.exit()`. From here onwards `shutdown`
-  // is defined and tolerant of null component references
-  // (runtimeHandle/appHandle are null-safe), so swapping to the graceful
-  // handler now means a SIGUSR1 arriving during runtime/TUI bootstrap
-  // (between createKoiRuntime at line 1405 and start() far below) triggers
-  // full teardown: abortActiveStream, shutdownBackgroundTasks,
-  // runtime.dispose, and any already-built resources are cleaned up.
-  // Reviewer-flagged: installing only after bootstrap left an 8+ second
-  // window where SIGUSR1 would process.exit without running shutdown,
-  // orphaning subprocesses and MCP transports.
+  // Progressive handler upgrade:
+  //   1. bin.ts inline early handler: bare `process.exit()` (process-start → runTuiCommand entry).
+  //   2. interim teardown handler: tears down what exists so far — runtime,
+  //      filesystem backend, otel, approvals, batcher — but cannot touch
+  //      appHandle, resetBarrier, abortActiveStream because they are not
+  //      declared yet. Installed right before createKoiRuntime.
+  //   3. Full handler (THIS section): routes into `shutdown()` which adds
+  //      abortActiveStream, resetBarrier wait, appHandle.stop, run-report,
+  //      resume hint, SIGKILL-escalation wait.
+  //
+  // Swap the interim handler out by reference so an embedding host's own
+  // SIGUSR1 listeners (if any) are not trampled. The interim teardown is
+  // no-longer reachable from here; the full handler supersedes it.
   const onProcessSigusr1 = createSigusr1Handler({
     shutdown: (code, reason) => {
       void shutdown(code, reason);
@@ -2486,7 +2536,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
   });
   if (SIGUSR1_SUPPORTED) {
-    removeStoredEarlySigusr1Handler();
+    if (interimSigusr1Handler !== null) {
+      process.removeListener("SIGUSR1", interimSigusr1Handler);
+      interimSigusr1Handler = null;
+    }
     process.on("SIGUSR1", onProcessSigusr1);
   }
 
