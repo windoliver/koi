@@ -154,6 +154,22 @@ function stripBrackets(host: string): string {
   return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
 }
 
+/**
+ * Canonical form for blocklist / suffix / allowlist comparisons. DNS allows
+ * a single trailing root dot on a fully-qualified name (`localhost.`,
+ * `service.internal.`), and the URL parser preserves it. Without this strip
+ * the suffix check `bareHost.endsWith(".internal")` would miss
+ * `service.internal.` and the exact check `BLOCKED_HOSTS.includes("localhost")`
+ * would miss `localhost.`.
+ */
+function canonicalHost(host: string): string {
+  const len = host.length;
+  if (len > 1 && host.charCodeAt(len - 1) === 46 /* '.' */) {
+    return host.slice(0, -1);
+  }
+  return host;
+}
+
 export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<SafeUrlResult> {
   let parsed: URL;
   try {
@@ -171,7 +187,9 @@ export async function isSafeUrl(url: string, options?: UrlSafetyOptions): Promis
   }
 
   const hostnameLower = parsed.hostname.toLowerCase();
-  const bareHost = stripBrackets(hostnameLower);
+  // Strip IPv6 brackets AND any trailing root dot — both are legal URL forms
+  // that would otherwise sidestep the blocklist string comparisons.
+  const bareHost = canonicalHost(stripBrackets(hostnameLower));
 
   // allowlistHosts scope is per-host only — it bypasses the hostname
   // (BLOCKED_HOSTS) and IP-literal checks ONLY when bareHost itself is the

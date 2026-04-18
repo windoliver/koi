@@ -65,10 +65,12 @@ export function createWebFetchTool(
       if (!url.startsWith("http://") && !url.startsWith("https://")) {
         return { error: "url must start with http:// or https://", code: "VALIDATION" };
       }
-      // Pre-flight SSRF check so we return PERMISSION before any executor
-      // call. Uses the tool's own lookup path (default dns.lookup) so the
-      // decision reflects what the transport would actually resolve to.
-      const safety = await isSafeUrl(url, { strictAuthoritativeDns: false });
+      // Pre-flight SSRF check so obvious denies return PERMISSION before
+      // any executor call. Uses the same @koi/url-safety defaults the
+      // executor applies (strict authoritative DNS + suffix block), so a
+      // URL can't pass preflight and then fail inside the executor — the
+      // two agree on the decision.
+      const safety = await isSafeUrl(url);
       if (!safety.ok) {
         return { error: `Access blocked: ${safety.reason}`, code: "PERMISSION" };
       }

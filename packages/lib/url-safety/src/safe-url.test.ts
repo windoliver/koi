@@ -28,6 +28,28 @@ describe("isSafeUrl", () => {
     expect(result.ok).toBe(false);
   });
 
+  test("canonicalises trailing-dot FQDN in blocklist/suffix/allowlist checks", async () => {
+    // DNS allows a single trailing root dot. Without canonicalisation,
+    // `service.internal.` would sidestep the .internal suffix match, and
+    // `localhost.` would miss the BLOCKED_HOSTS exact match.
+    const r1 = await isSafeUrl("http://service.internal./x");
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.reason).toMatch(/\.internal/);
+
+    const r2 = await isSafeUrl("http://printer.local./admin");
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toMatch(/\.local/);
+
+    const r3 = await isSafeUrl("http://localhost./", {
+      dnsResolver: async () => ["93.184.216.34"],
+    });
+    expect(r3.ok).toBe(false);
+    if (!r3.ok) expect(r3.reason).toMatch(/localhost/);
+
+    const r4 = await isSafeUrl("http://metadata.google.internal./x");
+    expect(r4.ok).toBe(false);
+  });
+
   test("blocks BLOCKED_HOSTS entry", async () => {
     const result = await isSafeUrl("http://metadata.google.internal/computeMetadata/v1/");
     expect(result.ok).toBe(false);
