@@ -251,7 +251,7 @@ async function buildState(
   // logging / signing / transforming the payload) — fetch accepts that, so
   // must we. Only throw when the outgoing body would truly come from the
   // disturbed Request stream.
-  if (req !== undefined && req.bodyUsed && init?.body === undefined) {
+  if (req?.bodyUsed && init?.body === undefined) {
     throw new TypeError(
       "url-safety: Request body is already consumed (bodyUsed=true) and no init.body was provided; clone or re-create the Request before passing to safeFetch",
     );
@@ -450,11 +450,6 @@ function rewriteToIp(originalUrl: URL, ip: string, state: HopState): string {
 // same ambiguous-failure reason.
 const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
-function hasCustomTransport(carry: FetchInit): boolean {
-  const c = carry as Record<string, unknown>;
-  return c["dispatcher"] !== undefined || c["agent"] !== undefined;
-}
-
 function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
   if (!check.ok) return undefined;
   if (check.resolvedIps.length === 0) return undefined;
@@ -572,8 +567,8 @@ export function createSafeFetcher(
     // a stream upload gets drained for a request that's going to throw — the
     // stream is already disturbed, the caller can't retry without rebuilding
     // the body, and we just wasted up to maxBufferedBodyBytes of memory.
-    const carrierDispatcher = (init as Record<string, unknown> | undefined)?.["dispatcher"];
-    const carrierAgent = (init as Record<string, unknown> | undefined)?.["agent"];
+    const carrierDispatcher = (init as Record<string, unknown> | undefined)?.dispatcher;
+    const carrierAgent = (init as Record<string, unknown> | undefined)?.agent;
     if (!trustCustomTransport && (carrierDispatcher !== undefined || carrierAgent !== undefined)) {
       throw new Error(
         "url-safety: refused — a caller-supplied dispatcher/agent can bypass the validated address set; " +

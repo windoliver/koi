@@ -220,18 +220,18 @@ describe("createSafeFetcher", () => {
     });
     expect(calls).toHaveLength(2);
     // First hop: caller-set headers all survive.
-    expect(calls[0]?.headers["authorization"]).toBe("Bearer secret");
+    expect(calls[0]?.headers.authorization).toBe("Bearer secret");
     expect(calls[0]?.headers["x-api-key"]).toBe("k");
     // Second hop: everything except the safelist is redacted — denylist
     // was too narrow; custom auth headers like x-api-key/x-amz-security-token
     // are exactly what hostile redirects try to exfiltrate.
-    expect(calls[1]?.headers["authorization"]).toBeUndefined();
-    expect(calls[1]?.headers["cookie"]).toBeUndefined();
+    expect(calls[1]?.headers.authorization).toBeUndefined();
+    expect(calls[1]?.headers.cookie).toBeUndefined();
     expect(calls[1]?.headers["x-api-key"]).toBeUndefined();
     expect(calls[1]?.headers["x-amz-security-token"]).toBeUndefined();
     expect(calls[1]?.headers["x-trace"]).toBeUndefined();
     // Safelist headers do survive (content-negotiation only).
-    expect(calls[1]?.headers["accept"]).toBe("application/json");
+    expect(calls[1]?.headers.accept).toBe("application/json");
   });
 
   test("refuses cross-origin 307 redirect with body (body exfiltration defence)", async () => {
@@ -373,7 +373,7 @@ describe("createSafeFetcher", () => {
     await safeFetch(req, { headers: { "X-New": "1" } });
     expect(calls).toHaveLength(1);
     // init.headers replaces — stale credentials on the Request must not leak.
-    expect(calls[0]?.headers["authorization"]).toBeUndefined();
+    expect(calls[0]?.headers.authorization).toBeUndefined();
     expect(calls[0]?.headers["x-api-key"]).toBeUndefined();
     expect(calls[0]?.headers["x-new"]).toBe("1");
   });
@@ -391,7 +391,7 @@ describe("createSafeFetcher", () => {
     });
     await safeFetch(req, { headers: {} });
     // Caller explicitly cleared — no stale headers may survive.
-    expect(calls[0]?.headers["authorization"]).toBeUndefined();
+    expect(calls[0]?.headers.authorization).toBeUndefined();
   });
 
   test("refuses http:// with custom dispatcher by default", async () => {
@@ -520,7 +520,7 @@ describe("createSafeFetcher", () => {
 
   test("preserves dispatcher/agent init options (proxy/egress transport, opt-in)", async () => {
     const capturedInits: RequestInit[] = [];
-    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fn = (async (_input: string | URL | Request, init?: RequestInit) => {
       capturedInits.push(init ?? {});
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
@@ -533,8 +533,8 @@ describe("createSafeFetcher", () => {
     const initArg = { dispatcher, agent } as unknown as RequestInit;
     await safeFetch("https://public.example.com/x", initArg);
     const first = capturedInits[0] as Record<string, unknown>;
-    expect(first["dispatcher"]).toBe(dispatcher);
-    expect(first["agent"]).toBe(agent);
+    expect(first.dispatcher).toBe(dispatcher);
+    expect(first.agent).toBe(agent);
   });
 
   test("omitting init.headers inherits from Request (no regression for common case)", async () => {
@@ -613,7 +613,7 @@ describe("createSafeFetcher", () => {
     await safeFetch("https://public.example.com/start", {
       headers: { Authorization: "Bearer secret" },
     });
-    expect(calls[1]?.headers["authorization"]).toBe("Bearer secret");
+    expect(calls[1]?.headers.authorization).toBe("Bearer secret");
   });
 
   test("buffers ReadableStream body so 307 can replay", async () => {
@@ -678,7 +678,7 @@ describe("createSafeFetcher", () => {
     await safeFetch("http://public.example.com/x");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://93.184.216.34/x");
-    expect(calls[0]?.headers["host"]).toBe("public.example.com");
+    expect(calls[0]?.headers.host).toBe("public.example.com");
   });
 
   test("does not pin HTTPS URLs (TLS SNI constraint)", async () => {
@@ -688,7 +688,7 @@ describe("createSafeFetcher", () => {
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
     await safeFetch("https://public.example.com/x");
     expect(calls[0]?.url).toBe("https://public.example.com/x");
-    expect(calls[0]?.headers["host"]).toBeUndefined();
+    expect(calls[0]?.headers.host).toBeUndefined();
   });
 
   test("clears pinned Host header on http→https redirect", async () => {
@@ -704,10 +704,10 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(2);
     // Hop 0 pinned http → IP + host header.
     expect(calls[0]?.url).toBe("http://93.184.216.34/start");
-    expect(calls[0]?.headers["host"]).toBe("public.example.com");
+    expect(calls[0]?.headers.host).toBe("public.example.com");
     // Hop 1 https: URL must not carry the stale synthetic host.
     expect(calls[1]?.url).toBe("https://public.example.com/final");
-    expect(calls[1]?.headers["host"]).toBeUndefined();
+    expect(calls[1]?.headers.host).toBeUndefined();
   });
 
   test("rejects request body exceeding maxBufferedBodyBytes", async () => {
@@ -791,7 +791,7 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(1);
     // URL is rewritten to first IP; Host header carries the original hostname.
     expect(calls[0]?.url).toBe("http://93.184.216.34/x");
-    expect(calls[0]?.headers["host"]).toBe("dual.example.com");
+    expect(calls[0]?.headers.host).toBe("dual.example.com");
   });
 
   test("DELETE is NOT auto-retried across IPs (ambiguous destructive failure)", async () => {
@@ -922,11 +922,11 @@ describe("createSafeFetcher", () => {
     } as RequestInit & { duplex: "half" });
     const first = capturedInits[0] as Record<string, unknown>;
     // Body passes through as ReadableStream (not buffered).
-    expect(first["body"]).toBeInstanceOf(ReadableStream);
+    expect(first.body).toBeInstanceOf(ReadableStream);
     // Duplex MUST survive when body is stream-backed — Node 22 fetch would
     // throw without it. Regression for the Round 10 bug where toInit stripped
     // duplex unconditionally.
-    expect(first["duplex"]).toBe("half");
+    expect(first.duplex).toBe("half");
   });
 
   test("buffered body strips duplex (no longer a stream after bufferBody)", async () => {
@@ -951,8 +951,8 @@ describe("createSafeFetcher", () => {
       duplex: "half",
     } as RequestInit & { duplex: "half" });
     const first = capturedInits[0] as Record<string, unknown>;
-    expect(first["body"]).toBeInstanceOf(Uint8Array);
-    expect(first["duplex"]).toBeUndefined();
+    expect(first.body).toBeInstanceOf(Uint8Array);
+    expect(first.duplex).toBeUndefined();
   });
 
   test("honours redirect: 'manual' — returns 3xx without following", async () => {
@@ -1033,7 +1033,7 @@ describe("createSafeFetcher", () => {
     // no longer needed on the outgoing request. The wrapper strips it so
     // the downstream init accurately describes a non-streaming body.
     const capturedInits: RequestInit[] = [];
-    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fn = (async (_input: string | URL | Request, init?: RequestInit) => {
       capturedInits.push(init ?? {});
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
@@ -1100,7 +1100,7 @@ describe("createSafeFetcher", () => {
       headers: { Host: "explicit-virtual-host.example.com" },
     });
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.headers["host"]).toBe("explicit-virtual-host.example.com");
+    expect(calls[0]?.headers.host).toBe("explicit-virtual-host.example.com");
   });
 
   test("allowCustomHost: true preserves caller Host across same-origin redirect", async () => {
@@ -1119,8 +1119,8 @@ describe("createSafeFetcher", () => {
       headers: { Host: "virtual.example.com" },
     });
     expect(calls).toHaveLength(2);
-    expect(calls[0]?.headers["host"]).toBe("virtual.example.com");
-    expect(calls[1]?.headers["host"]).toBe("virtual.example.com");
+    expect(calls[0]?.headers.host).toBe("virtual.example.com");
+    expect(calls[1]?.headers.host).toBe("virtual.example.com");
   });
 
   test("does not pin HTTP IPv6-literal URLs (bracket normalization)", async () => {
@@ -1135,7 +1135,7 @@ describe("createSafeFetcher", () => {
     await safeFetch("http://[2001:4860:4860::8888]/x");
     expect(calls).toHaveLength(1);
     expect(calls[0]?.url).toBe("http://[2001:4860:4860::8888]/x");
-    expect(calls[0]?.headers["host"]).toBeUndefined();
+    expect(calls[0]?.headers.host).toBeUndefined();
   });
 
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
