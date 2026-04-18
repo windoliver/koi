@@ -458,6 +458,60 @@ describe("createSafeFetcher", () => {
     expect(cancelCalled).toBe(true);
   });
 
+  test("honours redirect: 'manual' — returns 3xx without following", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/r": new Response(null, {
+        status: 302,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const res = await safeFetch("https://public.example.com/r", { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://public.example.com/final");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("honours redirect: 'error' — throws on 3xx", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/r": new Response(null, {
+        status: 302,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await expect(safeFetch("https://public.example.com/r", { redirect: "error" })).rejects.toThrow(
+      /unexpected redirect/,
+    );
+  });
+
+  test("preserves duplex when caller passes it with an AsyncIterable-like body", async () => {
+    const capturedInits: RequestInit[] = [];
+    const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+      capturedInits.push(init ?? {});
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    // Pass a duplex-needing body via the init. The recording mock won't
+    // actually iterate it; we only verify the duplex option survives.
+    const body = {
+      async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {
+        yield new TextEncoder().encode("hi");
+      },
+    };
+    await safeFetch("https://public.example.com/up", {
+      method: "POST",
+      body: body as unknown as NonNullable<Parameters<typeof fetch>[1]>["body"],
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+    expect(capturedInits).toHaveLength(1);
+    const first = capturedInits[0];
+    expect(first).toBeDefined();
+    if (first !== undefined) {
+      expect((first as RequestInit & { duplex?: string }).duplex).toBe("half");
+    }
+  });
+
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
     const { fn, calls } = recordingFetch({
       "http://93.184.216.34/x": new Response("ok", { status: 200 }),

@@ -165,6 +165,10 @@ async function buildState(
   pick("integrity");
   pick("keepalive");
   pick("cache");
+  // Duplex must survive into the outgoing init: Node 22 fetch requires
+  // duplex: "half" whenever a streaming (AsyncIterable) body is passed
+  // through and we don't buffer it.
+  pick("duplex" as keyof FetchInit);
 
   const signal = init?.signal ?? req?.signal;
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
@@ -311,6 +315,9 @@ export function createSafeFetcher(
       throw new Error(`url-safety: ${check.reason}`);
     }
 
+    const req = input instanceof Request ? input : undefined;
+    const effectiveRedirect: FetchInit["redirect"] = init?.redirect ?? req?.redirect ?? "follow";
+
     const state = await buildState(input, init, maxBufferedBodyBytes);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
@@ -328,6 +335,15 @@ export function createSafeFetcher(
 
       if (response.status < 300 || response.status >= 400) {
         return response;
+      }
+
+      // Honour the caller's redirect mode for 3xx responses.
+      if (effectiveRedirect === "manual") return response;
+      if (effectiveRedirect === "error") {
+        await response.body?.cancel().catch(() => undefined);
+        throw new TypeError(
+          `url-safety: unexpected redirect (${response.status}) with redirect: "error"`,
+        );
       }
 
       const location = response.headers.get("location");
