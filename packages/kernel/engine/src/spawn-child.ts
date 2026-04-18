@@ -476,16 +476,21 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //
   // POLICY: governance bookkeeping fails OPEN. Governance is optional per
   // the L0 contract (engine works without a controller); a buggy or slow
-  // controller MUST NOT break agent operation. On record() failure we log
-  // and continue.
+  // controller MUST NOT break agent operation. Both record(spawn) and
+  // record(spawn_release) log on failure and continue.
   //
-  // Tradeoff: a transient/persistent controller fault means spawn_count
-  // can underrepresent live children, weakening configured spawn limits.
-  // Operators who need fail-closed semantics or stronger consistency
-  // (e.g. distributed/remote backends) should use an in-process,
-  // synchronous controller (the default `createGovernanceController` from
-  // @koi/engine-reconcile is sync and ordered) — OR introduce an idempotent
-  // event protocol with durable IDs at the L0 layer (out of scope for gov-8).
+  // Tradeoffs (deliberate, deferred to L0/distributed-backend follow-up):
+  //   - record(spawn) fault → spawn_count under-represents live children,
+  //     weakening configured spawn limits.
+  //   - record(spawn_release) fault → spawn_count over-represents live
+  //     children, can produce false RATE_LIMIT until counter is reset
+  //     (e.g. iteration_reset / session_reset, or runtime restart).
+  //
+  // The default in-process controller (`createGovernanceController` from
+  // @koi/engine-reconcile) is sync and never fails on record(), so the
+  // in-tree path is unaffected by either tradeoff. Distributed/remote
+  // backends that need stronger guarantees should add an idempotent event
+  // protocol with durable IDs at L0 — out of scope for gov-8.
   // See follow-ups: #1876 (TUI surface), #1877 (CLI flags), gov-14 (apportionment).
   //
   // The cleanup paths (terminated handler + dispose-override) ALWAYS attempt
