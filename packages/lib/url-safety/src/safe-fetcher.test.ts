@@ -38,13 +38,21 @@ function recordingFetch(responses: Readonly<Record<string, Response>>): {
 } {
   const calls: RecordedCall[] = [];
   const fn = (async (input: string | URL | Request, init?: RequestInit) => {
+    // When input is a Request, its properties combine with any init overrides
+    // (native fetch semantics). Read the effective method/headers/body so
+    // the recording works for both `fetch(url, init)` and `fetch(request)`
+    // call shapes.
+    const reqInput = input instanceof Request ? input : undefined;
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const headers: Record<string, string> = {};
-    new Headers(init?.headers).forEach((v, k) => {
+    const effectiveHeaders = new Headers(init?.headers ?? reqInput?.headers);
+    effectiveHeaders.forEach((v, k) => {
       headers[k] = v;
     });
-    const body = await readBody(init?.body);
-    calls.push({ url, method: init?.method ?? "GET", body, headers });
+    const rawBody = init?.body ?? (reqInput !== undefined ? reqInput.body : undefined);
+    const body = await readBody(rawBody);
+    const method = init?.method ?? reqInput?.method ?? "GET";
+    calls.push({ url, method, body, headers });
     const res = responses[url];
     if (res === undefined) throw new Error(`no mock for ${url}`);
     return res;
@@ -469,6 +477,25 @@ describe("createSafeFetcher", () => {
 
     // Only 3 requests total — none of the 3xx responses followed the Location.
     expect(calls).toHaveLength(3);
+  });
+
+  test("passes Request object through so internal transport state survives (hop 0)", async () => {
+    // Internal undici dispatcher / credentials-behaviour state on a Request
+    // sits on symbols that aren't introspectable from JS. Reconstructing a
+    // fresh fetch(url, init) would drop that state — we instead pass the
+    // Request object itself to base on hop 0 so those guarantees survive.
+    // This test verifies base() receives the Request reference when input
+    // was a Request and the caller didn't override init.headers.
+    const seen: Array<{ input: unknown; kind: string }> = [];
+    const fn = (async (input: string | URL | Request) => {
+      seen.push({ input, kind: input instanceof Request ? "Request" : "url" });
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x");
+    await safeFetch(req);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.kind).toBe("Request");
   });
 
   test("preserves dispatcher/agent init options (proxy/egress transport, opt-in)", async () => {
@@ -1000,15 +1027,30 @@ describe("createSafeFetcher", () => {
     expect(res.headers.get("X-Seen")).toBe("http://93.184.216.34/x");
   });
 
-  test("preserves caller-supplied Host header on non-pinned (HTTPS) request", async () => {
-    // HTTPS skips pinning entirely; an explicit Host from the caller (for
-    // virtual-host routing / signed-request / proxy dispatch) must reach the
-    // transport. Prior bug: wrapper unconditionally deleted Host at the top
-    // of every hop, silently dropping it.
-    const { fn, calls } = recordingFetch({
+  test("rejects caller-supplied Host by default (authority-spoof guard)", async () => {
+    const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    // Without opt-in, a caller-supplied Host can steer HTTPS past the
+    // hostname validator — reverse proxies route on Host after TLS.
+    await expect(
+      safeFetch("https://public.example.com/x", {
+        headers: { Host: "internal.example" },
+      }),
+    ).rejects.toThrow(/Host header/i);
+  });
+
+  test("allowCustomHost: true preserves caller Host across non-pinned requests", async () => {
+    // With explicit opt-in, caller Host survives all the way to the wire so
+    // virtual-host routing / signed-request flows still work.
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      allowCustomHost: true,
+    });
     await safeFetch("https://public.example.com/x", {
       headers: { Host: "explicit-virtual-host.example.com" },
     });
@@ -1016,7 +1058,7 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["host"]).toBe("explicit-virtual-host.example.com");
   });
 
-  test("preserves caller-supplied Host across same-origin redirect", async () => {
+  test("allowCustomHost: true preserves caller Host across same-origin redirect", async () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/r": new Response(null, {
         status: 302,
@@ -1024,12 +1066,14 @@ describe("createSafeFetcher", () => {
       }),
       "https://public.example.com/final": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      allowCustomHost: true,
+    });
     await safeFetch("https://public.example.com/r", {
       headers: { Host: "virtual.example.com" },
     });
     expect(calls).toHaveLength(2);
-    // Both hops see the caller's Host; neither gets it silently stripped.
     expect(calls[0]?.headers["host"]).toBe("virtual.example.com");
     expect(calls[1]?.headers["host"]).toBe("virtual.example.com");
   });

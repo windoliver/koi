@@ -131,8 +131,22 @@ interface SafeFetcherOptions extends UrlSafetyOptions {
      * only if the transport itself applies equivalent destination-pinning
      * (e.g., a locked-resolver egress proxy that enforces its own
      * allowlist).
+     *
+     * Note: \`Request\` objects store internal dispatcher/agent state on
+     * symbols, which the wrapper cannot introspect. For Request inputs,
+     * always set \`trustCustomTransport: true\` (or attach transport via
+     * \`init\` instead of the Request) to make the trust decision explicit.
      */
     readonly trustCustomTransport?: boolean;
+    /**
+     * Opt-in for a caller-supplied \`Host\` header. Default \`false\` rejects
+     * any request that sets \`Host\` explicitly: on HTTPS the wrapper cannot
+     * pin to the validated IP, so a mismatched Host lets reverse proxies
+     * route the request to a different vhost/tenant than \`isSafeUrl\`
+     * approved. Only set \`true\` for trusted internal paths where the
+     * effective authority is validated elsewhere.
+     */
+    readonly allowCustomHost?: boolean;
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 

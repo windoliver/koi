@@ -51,8 +51,22 @@ export interface SafeFetcherOptions extends UrlSafetyOptions {
    * only if the transport itself applies equivalent destination-pinning
    * (e.g., a locked-resolver egress proxy that enforces its own
    * allowlist).
+   *
+   * Note: `Request` objects store internal dispatcher/agent state on
+   * symbols, which the wrapper cannot introspect. For Request inputs,
+   * always set `trustCustomTransport: true` (or attach transport via
+   * `init` instead of the Request) to make the trust decision explicit.
    */
   readonly trustCustomTransport?: boolean;
+  /**
+   * Opt-in for a caller-supplied `Host` header. Default `false` rejects
+   * any request that sets `Host` explicitly: on HTTPS the wrapper cannot
+   * pin to the validated IP, so a mismatched Host lets reverse proxies
+   * route the request to a different vhost/tenant than `isSafeUrl`
+   * approved. Only set `true` for trusted internal paths where the
+   * effective authority is validated elsewhere.
+   */
+  readonly allowCustomHost?: boolean;
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
@@ -71,6 +85,17 @@ interface HopState {
   // values are cleared between hops — a caller-supplied Host for
   // virtual-host routing / request signing / proxy dispatch must survive.
   syntheticHost: boolean;
+  // Preserved for hop 0 only so internal Request state (dispatcher on
+  // undici symbols, cache, credentials behaviour, etc.) reaches the
+  // transport untouched. Cleared after the first hop — redirects always
+  // reconstruct from URL.
+  originalRequest: Request | undefined;
+  // True when state.headers came from the original Request verbatim
+  // (no init.headers override). Required to safely passthrough the
+  // Request without losing "init.headers replaces Request headers"
+  // semantics — if the caller did override, we can't rely on
+  // `new Request(req, { headers })` to clear stale headers in all runtimes.
+  readonly headersAreFromRequest: boolean;
 }
 
 function extractUrl(input: Parameters<typeof fetch>[0]): string {
@@ -290,7 +315,19 @@ async function buildState(
     headers,
     carry,
     syntheticHost: false,
+    originalRequest: req,
+    headersAreFromRequest: req !== undefined && init?.headers === undefined,
   };
+}
+
+function toInitWithoutHeaders(s: HopState): FetchInit {
+  // Variant used on the Request-passthrough path. The passed Request
+  // already carries its headers; overriding via init.headers would be
+  // redundant and (in some runtimes) fails to replace Request headers
+  // when we intended to preserve them.
+  const init = toInit(s);
+  delete (init as Record<string, unknown>).headers;
+  return init;
 }
 
 function toInit(s: HopState): FetchInit {
@@ -445,10 +482,21 @@ async function fetchWithPin(
 ): Promise<Response> {
   const parsed = shouldPinHttp(url, check);
   if (parsed === undefined) {
-    // No pin — don't touch Host. A caller-supplied Host must pass through
-    // unchanged so virtual-host routing and signed requests still work.
+    // For hop 0 with an original Request, pass it through so internal
+    // transport state (undici dispatcher on symbols, etc.) survives. Only
+    // valid when the state's headers/body/method still match what the
+    // Request carried — if the caller overrode init.headers we have to
+    // reconstruct so replacement semantics are preserved.
+    const passthrough = state.originalRequest;
+    state.originalRequest = undefined;
+    if (passthrough !== undefined && state.headersAreFromRequest) {
+      return base(passthrough, toInitWithoutHeaders(state));
+    }
     return base(url, toInit(state));
   }
+  // Pinned path: URL is rewritten to an IP, so we can't preserve the
+  // original Request object.
+  state.originalRequest = undefined;
 
   const canRetry = IDEMPOTENT_METHODS.has(state.method.toUpperCase());
   let lastError: unknown;
@@ -476,6 +524,7 @@ export function createSafeFetcher(
   const maxRedirects = options?.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const maxBufferedBodyBytes = options?.maxBufferedBodyBytes ?? DEFAULT_MAX_BUFFERED_BODY_BYTES;
   const trustCustomTransport = options?.trustCustomTransport === true;
+  const allowCustomHost = options?.allowCustomHost === true;
 
   const safeFetchImpl = async (
     input: Parameters<typeof fetch>[0],
@@ -496,19 +545,37 @@ export function createSafeFetcher(
     // a stream upload gets drained for a request that's going to throw — the
     // stream is already disturbed, the caller can't retry without rebuilding
     // the body, and we just wasted up to maxBufferedBodyBytes of memory.
-    const reqForTransport = input instanceof Request ? input : undefined;
-    const carrierDispatcher =
-      (init as Record<string, unknown> | undefined)?.["dispatcher"] ??
-      (reqForTransport as unknown as Record<string, unknown> | undefined)?.["dispatcher"];
-    const carrierAgent =
-      (init as Record<string, unknown> | undefined)?.["agent"] ??
-      (reqForTransport as unknown as Record<string, unknown> | undefined)?.["agent"];
+    //
+    // NOTE: Request objects store dispatcher/agent on internal symbols that
+    // can't be introspected from JS. We can only detect init-level transport
+    // here. Request-scoped transport state (if any) is preserved by passing
+    // the Request through to base on hop 0, documented on
+    // SafeFetcherOptions.trustCustomTransport.
+    const carrierDispatcher = (init as Record<string, unknown> | undefined)?.["dispatcher"];
+    const carrierAgent = (init as Record<string, unknown> | undefined)?.["agent"];
     if (!trustCustomTransport && (carrierDispatcher !== undefined || carrierAgent !== undefined)) {
       throw new Error(
         "url-safety: refused — a caller-supplied dispatcher/agent can bypass the validated address set; " +
           "drop the custom transport to use built-in IP pinning, or set trustCustomTransport: true to opt in explicitly " +
           "(only when the transport itself enforces an equivalent egress policy).",
       );
+    }
+
+    // Host authority check. On HTTPS the wrapper can't pin to the validated
+    // IP, so a mismatched Host lets reverse proxies route the request to a
+    // different vhost/tenant than isSafeUrl approved. Reject by default;
+    // callers who need custom Host (internal signed-request flows) must
+    // opt in with allowCustomHost and validate authority themselves.
+    if (!allowCustomHost) {
+      const callerHeaders = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
+      if (callerHeaders.has("host")) {
+        throw new Error(
+          "url-safety: refused — caller-supplied Host header can steer HTTPS to a different vhost than isSafeUrl validated. " +
+            "Remove the Host header or set allowCustomHost: true (and validate the effective authority yourself).",
+        );
+      }
     }
 
     // Only pre-buffer streaming bodies when redirect-replay might happen.
