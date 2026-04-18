@@ -66,6 +66,33 @@ describe("reduce — add_user_message", () => {
   });
 });
 
+describe("reduce — submit queue", () => {
+  test("enqueue_submit appends in FIFO order", () => {
+    let state = createInitialState();
+    state = reduce(state, { kind: "enqueue_submit", text: "first" });
+    state = reduce(state, { kind: "enqueue_submit", text: "second" });
+    expect(state.queuedSubmits).toEqual(["first", "second"]);
+  });
+
+  test("dequeue_submit removes the head entry", () => {
+    const state = {
+      ...createInitialState(),
+      queuedSubmits: ["first", "second"] as readonly string[],
+    };
+    const next = reduce(state, { kind: "dequeue_submit" });
+    expect(next.queuedSubmits).toEqual(["second"]);
+  });
+
+  test("clear_submit_queue empties all queued submits", () => {
+    const state = {
+      ...createInitialState(),
+      queuedSubmits: ["first"] as readonly string[],
+    };
+    const next = reduce(state, { kind: "clear_submit_queue" });
+    expect(next.queuedSubmits).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // engine_event — turn_start / turn_end / done
 // ---------------------------------------------------------------------------
@@ -1657,6 +1684,7 @@ describe("reduce — clear_messages", () => {
   test("preserves all other state fields", () => {
     const state = stateWith({
       messages: [userMsg("a")],
+      queuedSubmits: ["queued"],
       activeView: "sessions",
       modal: { kind: "command-palette", query: "x" },
       connectionStatus: "connected",
@@ -1669,6 +1697,7 @@ describe("reduce — clear_messages", () => {
     expect(next.connectionStatus).toBe("connected");
     expect(next.layoutTier).toBe("wide");
     expect(next.zoomLevel).toBe(2);
+    expect(next.queuedSubmits).toEqual([]);
   });
 
   test("clear on already empty returns same reference", () => {

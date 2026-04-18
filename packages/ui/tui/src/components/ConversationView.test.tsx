@@ -90,6 +90,29 @@ describe("ConversationView — rendering", () => {
     expect(frame).toContain("hello from test");
     renderer.destroy();
   });
+
+  test("renders queued submit chip when queued submits exist", async () => {
+    const store = createStore({
+      ...createInitialState(),
+      queuedSubmits: ["first", "second"],
+    });
+    const { renderOnce, captureCharFrame, renderer } = await testRender(
+      () => (
+        <StoreProviders store={store}>
+          <ConversationView
+            onSubmit={() => {}}
+            onSlashDetected={() => {}}
+            focused={true}
+          />
+        </StoreProviders>
+      ),
+      OPTS,
+    );
+    await renderOnce();
+    const frame = captureCharFrame();
+    expect(frame).toContain("queued: 2");
+    renderer.destroy();
+  });
 });
 
 // ---------------------------------------------------------------------------

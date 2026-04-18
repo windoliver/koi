@@ -42,6 +42,7 @@ export interface ConversationViewProps {
 export function ConversationView(props: ConversationViewProps): JSX.Element {
   const slashQuery = useTuiStore((s) => s.slashQuery);
   const atQuery = useTuiStore((s) => s.atQuery);
+  const queuedSubmits = useTuiStore((s) => s.queuedSubmits);
   const storeCtx = useContext(StoreContext);
   // Incremented on every slash-command selection to clear the textarea text
   const [clearTrigger, setClearTrigger] = createSignal(0);
@@ -210,6 +211,11 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
       <Show when={hasCapturedTurn()}>
         <box paddingLeft={1} flexShrink={0}>
           <text fg={COLORS.textMuted}>↶ /rewind [n] to roll back previous turn(s)</text>
+        </box>
+      </Show>
+      <Show when={queuedSubmits().length > 0}>
+        <box paddingLeft={1} flexShrink={0}>
+          <text fg={COLORS.amber}>{`queued: ${queuedSubmits().length}`}</text>
         </box>
       </Show>
       <InputArea

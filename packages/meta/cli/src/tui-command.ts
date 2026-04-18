@@ -86,6 +86,7 @@ import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
+import { createForegroundSubmitQueue } from "./foreground-submit-queue.js";
 import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
@@ -1799,6 +1800,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Shared entry point: in-app Ctrl+C (via createTuiApp's `onInterrupt`
   // prop) and the `agent:interrupt` command both route through here.
   const onInterrupt = (): void => {
+    if (activeController !== null || store.getState().queuedSubmits.length > 0) {
+      submitQueue.clear();
+    }
     sigintHandler.handleSignal();
   };
 
@@ -2629,6 +2633,333 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   const handleAtQuery = createFileCompletionHandler(process.cwd(), (results) =>
     store.dispatch({ kind: "set_at_results", results }),
   );
+
+  const processSubmit = async (text: string): Promise<void> => {
+    // Fail closed after a durable clear failure. If the last
+    // `/clear` or `/new` could not truncate the JSONL, the
+    // file still contains pre-clear content the user asked to
+    // drop. Accepting new turns would mix them into that
+    // unwanted history and a later `--resume` would replay the
+    // combined conversation. Block submits until the user
+    // resolves the underlying I/O issue and quits/relaunches.
+    if (clearPersistFailed) {
+      store.dispatch({
+        kind: "add_error",
+        code: "SUBMIT_AFTER_FAILED_CLEAR",
+        message:
+          "Submit is disabled because the most recent /clear or /new could not " +
+          "durably truncate this session's transcript. New turns would append to " +
+          "the pre-clear content and a later `--resume` would resurrect it. " +
+          "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+      });
+      return;
+    }
+    // Picker-loaded sessions are read-only: the runtime is still
+    // bound to the startup session id, so submitting would mix
+    // the picked conversation into the startup archive. See
+    // `isInPickerMode` above. The moment the user switches back
+    // to the startup session via the picker this check fails
+    // and submit re-enables.
+    if (isInPickerMode()) {
+      store.dispatch({
+        kind: "add_error",
+        code: "SUBMIT_AFTER_PICKER_LOAD",
+        message:
+          "This TUI process loaded a saved session via the picker, which is read-only. " +
+          "Quit and relaunch with `koi tui --resume <id>` to durably continue the loaded session.",
+      });
+      return;
+    }
+    // P2-A: block on runtime assembly if not yet ready.
+    // First submit waits for createKoiRuntime to complete; subsequent
+    // submits use the cached runtimeHandle (already resolved).
+    if (runtimeHandle === null) {
+      try {
+        await runtimeReady;
+      } catch (e: unknown) {
+        store.dispatch({
+          kind: "add_error",
+          code: "RUNTIME_INIT_ERROR",
+          message: `Runtime failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
+        });
+        return;
+      }
+    }
+
+    // runtimeHandle is guaranteed non-null after runtimeReady resolves.
+    // The await above sets runtimeHandle; if it threw, we returned early.
+    if (runtimeHandle === null) return;
+    const handle = runtimeHandle;
+
+    // Wait for any pending session reset to complete before submitting.
+    // Prevents hitting stale task board or trajectory state.
+    await resetBarrier;
+
+    // Re-check `clearPersistFailed` after the barrier settles.
+    // The early guard above could pass even though a `/clear`
+    // was in flight: the reset IIFE only flips the flag INSIDE
+    // the async truncate path, so a submit dispatched before
+    // `onCommand: agent:clear` scheduled its truncate would
+    // see `clearPersistFailed === false`, await the barrier,
+    // and then (without this second check) proceed to append
+    // new turns onto an un-truncated transcript. Re-reading
+    // the flag here is cheap and closes the race cleanly.
+    if (clearPersistFailed) {
+      store.dispatch({
+        kind: "add_error",
+        code: "SUBMIT_AFTER_FAILED_CLEAR",
+        message:
+          "Submit is disabled because the most recent /clear or /new could not " +
+          "durably truncate this session's transcript. New turns would append to " +
+          "the pre-clear content and a later `--resume` would resurrect it. " +
+          "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
+      });
+      return;
+    }
+    // Also re-check `lastResetFailed` — the in-memory reset
+    // (resetSessionState, transcript splice, batcher rotate)
+    // can fail independently of the durable truncate. If it
+    // threw before `runtimeHandle.transcript.splice(0)` ran,
+    // the UI has been cleared but the runtime transcript still
+    // contains pre-clear messages, and the next submit would
+    // run against stale history while the operator believes
+    // the session was wiped. Mirror the picker / rewind block
+    // logic and refuse here.
+    if (lastResetFailed) {
+      store.dispatch({
+        kind: "add_error",
+        code: "SUBMIT_AFTER_FAILED_RESET",
+        message:
+          "Submit is disabled because the most recent session reset failed. " +
+          "The runtime may still hold stale conversation context. " +
+          "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
+          "clean state.",
+      });
+      return;
+    }
+
+    // #11: include any pending clipboard images as image ContentBlocks
+    // alongside the text. Bridge clears pendingImages after dispatch so the
+    // next submit starts with an empty list.
+    const imageBlocks = pendingImages.map((img) => ({
+      kind: "image" as const,
+      url: img.url,
+    }));
+
+    const controller = new AbortController();
+    activeController = controller;
+
+    // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
+    // review r2). If the user tapped Ctrl+C while idle with background
+    // work running, the handler was left armed for the duration of
+    // the double-tap window — if they then submit a new prompt inside
+    // that window, a single Ctrl+C to cancel the new turn would be
+    // treated as the second tap of the stale sequence and force-exit
+    // the TUI. `complete()` is a no-op when the handler is idle, so
+    // this is safe to call unconditionally at every turn start.
+    sigintHandler.complete();
+
+    // Inject a synthetic turn-boundary step so /trajectory can group steps
+    // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
+    // so we maintain our own counter here at the TUI session level.
+    const thisTurnIndex = tuiTurnCounter++;
+    await runtimeHandle.appendTrajectoryStep({
+      stepIndex: 0,
+      timestamp: Date.now(),
+      source: "system",
+      kind: "tool_call",
+      identifier: "koi:tui_turn_start",
+      outcome: "success",
+      durationMs: 0,
+      metadata: {
+        type: "tui_turn_start",
+        tuiTurnIndex: thisTurnIndex,
+      } as import("@koi/core").JsonObject,
+    });
+
+    try {
+      // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
+      // middleware composition, tool dispatch, and transcript management.
+      //
+      // Loop mode: each user turn becomes a runUntilPass invocation that
+      // iterates the agent against --until-pass until convergence. The
+      // multiplexing stream below surfaces all iterations' EngineEvents
+      // into drainEngineStream so the TUI renders each iteration's model
+      // output naturally.
+      // Task 11: check OAuth redirect URL interceptor before passing to engine.
+      // When a nexus local-bridge transport is wired and the user pastes a
+      // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
+      // the interceptor routes it to `transport.submitAuthCode(...)` and
+      // returns `{ intercepted: true }` so the text never reaches the model.
+      if (tuiAuthInterceptor !== undefined) {
+        const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
+        if (interceptResult.intercepted) {
+          // Show a brief notice so the user knows the URL was consumed.
+          store.dispatch({
+            kind: "add_user_message",
+            id: `auth-redirect-${Date.now()}`,
+            blocks: [
+              {
+                kind: "text",
+                text: "_OAuth redirect URL received — submitting to auth bridge..._",
+              },
+            ],
+          });
+          activeController = null;
+          return;
+        }
+      }
+
+      // #10: resolve @-mention file references before sending to the engine.
+      // Parses @path and @path#L10-20, reads files, injects content so the
+      // model sees the file directly without needing to call Glob/fs_read.
+      const resolved = resolveAtReferences(text, process.cwd());
+      const modelText =
+        resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
+
+      let stream: AsyncIterable<EngineEvent>;
+      try {
+        stream = isLoopMode
+          ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
+          : handle.runtime.run({
+              kind: "text",
+              text: modelText,
+              signal: controller.signal,
+            });
+      } catch (err) {
+        store.dispatch({
+          kind: "add_error",
+          code: "RUNTIME_REJECTED",
+          message: err instanceof Error ? err.message : String(err),
+        });
+        pendingImages = [];
+        return;
+      }
+      pendingImages = [];
+      store.dispatch({
+        kind: "add_user_message",
+        id: `user-${Date.now()}`,
+        blocks: [{ kind: "text", text }, ...imageBlocks],
+      });
+      // Snapshot cumulative metrics BEFORE the drain — must copy values since
+      // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
+      const cm = store.getState().cumulativeMetrics;
+      const inputBefore = cm.inputTokens;
+      const outputBefore = cm.outputTokens;
+      const costBefore = cm.costUsd;
+      const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
+      activeRunPromise = drainPromise;
+      const drainOutcome = await drainPromise;
+
+      // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
+      // layered. `abandoned` and `failed` drains cannot advance any
+      // session state, so they return early. `engine_error` is a
+      // coherent terminal state — the error is already in the store
+      // and trace data was captured up to the failure — so cost
+      // delta + trajectory refresh must still run so operators can
+      // diagnose the failure, but the rewind budget must NOT be
+      // advanced (no rewindable checkpoint was produced).
+      if (drainOutcome === "abandoned" || drainOutcome === "failed") {
+        return;
+      }
+
+      // Count the turn for rewind boundary enforcement, but ONLY
+      // when the turn completed uninterrupted AND produced a
+      // real checkpoint. Aborted turns are filtered by the signal
+      // guard; engine-errored turns are filtered by `drainOutcome
+      // === "settled"` because ENGINE_ERRORs return `"engine_error"`
+      // (#1753 review round 9).
+      if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
+        postClearTurnCount += 1;
+      }
+      // #1884: unconditional "this process wrote something" marker.
+      // Set on every settled, uninterrupted turn — not gated on the
+      // rewind boundary — so the post-quit hint suppression knows
+      // whether a JSONL transcript was actually produced.
+      if (drainOutcome === "settled" && !controller.signal.aborted) {
+        anyTurnPersistedThisProcess = true;
+      }
+
+      // Feed the cost bridge with this turn's token delta.
+      const cmAfter = store.getState().cumulativeMetrics;
+      const deltaInput = cmAfter.inputTokens - inputBefore;
+      const deltaOutput = cmAfter.outputTokens - outputBefore;
+      if (deltaInput > 0 || deltaOutput > 0) {
+        // Compute per-turn cost delta from engine-reported costUsd.
+        // Handle null→number transition (first turn): costBefore is null,
+        // costAfter is the full cumulative — use it directly as the delta.
+        let deltaCost: number | undefined;
+        if (cmAfter.costUsd !== null) {
+          deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
+          if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
+        }
+        costBridge.recordEngineDone({
+          inputTokens: deltaInput,
+          outputTokens: deltaOutput,
+          costUsd: deltaCost,
+        });
+      }
+
+      // Refresh trajectory + decision ledger data after each turn.
+      // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
+      // wrapMiddlewareWithTrace records MW spans asynchronously via
+      // void store.append(...). Without the delay, getLedger() reads
+      // before all spans are written.
+      //
+      // Capture trajectoryRefreshGen at scheduling time so a session
+      // reset that runs in the 500 ms window invalidates this refresh
+      // before it dispatches. Otherwise the post-reset store would be
+      // repopulated with this turn's stale trajectory. (#1764)
+      const submitGen = trajectoryRefreshGen;
+      void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
+        refreshTrajectoryData(
+          handle,
+          store,
+          handle.runtime.sessionId,
+          () => trajectoryRefreshGen === submitGen,
+        ),
+      );
+    } finally {
+      // Guard against cross-run races: only clear activeController and
+      // reset the SIGINT handler if THIS run is still the active one.
+      // If resetConversation() or a new submit replaced the controller
+      // mid-drain, this finally is stale and must not disarm the
+      // SIGINT state that now belongs to the newer run.
+      const isStillActive = activeController === controller;
+      if (isStillActive) {
+        activeController = null;
+        activeRunPromise = null;
+      }
+      // The active run has settled. Reset the double-tap window so a
+      // later Ctrl+C is treated as a fresh first tap rather than a
+      // late-arriving second tap of a cancellation that already
+      // completed. Only safe when this run is still the active one —
+      // a stale finally from a reset-and-replaced run must not
+      // disarm SIGINT state that now belongs to a newer turn.
+      if (isStillActive) {
+        sigintHandler.complete();
+      }
+    }
+  };
+
+  const submitQueue = createForegroundSubmitQueue(
+    { run: processSubmit },
+    {
+      onEnqueue: (text) => {
+        store.dispatch({ kind: "enqueue_submit", text });
+      },
+      onDequeue: () => {
+        store.dispatch({ kind: "dequeue_submit" });
+      },
+      onClear: () => {
+        store.dispatch({ kind: "clear_submit_queue" });
+      },
+    },
+  );
+
+  const submitText = async (text: string): Promise<void> => {
+    await submitQueue.submit(text);
+  };
 
   const result = createTuiApp({
     store,
@@ -3807,324 +4138,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
     syntaxStyle: SyntaxStyle.create(),
     treeSitterClient,
-    onSubmit: async (text: string): Promise<void> => {
-      // Fail closed after a durable clear failure. If the last
-      // `/clear` or `/new` could not truncate the JSONL, the
-      // file still contains pre-clear content the user asked to
-      // drop. Accepting new turns would mix them into that
-      // unwanted history and a later `--resume` would replay the
-      // combined conversation. Block submits until the user
-      // resolves the underlying I/O issue and quits/relaunches.
-      if (clearPersistFailed) {
-        store.dispatch({
-          kind: "add_error",
-          code: "SUBMIT_AFTER_FAILED_CLEAR",
-          message:
-            "Submit is disabled because the most recent /clear or /new could not " +
-            "durably truncate this session's transcript. New turns would append to " +
-            "the pre-clear content and a later `--resume` would resurrect it. " +
-            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
-        });
-        return;
-      }
-      // Picker-loaded sessions are read-only: the runtime is still
-      // bound to the startup session id, so submitting would mix
-      // the picked conversation into the startup archive. See
-      // `isInPickerMode` above. The moment the user switches back
-      // to the startup session via the picker this check fails
-      // and submit re-enables.
-      if (isInPickerMode()) {
-        store.dispatch({
-          kind: "add_error",
-          code: "SUBMIT_AFTER_PICKER_LOAD",
-          message:
-            "This TUI process loaded a saved session via the picker, which is read-only. " +
-            "Quit and relaunch with `koi tui --resume <id>` to durably continue the loaded session.",
-        });
-        return;
-      }
-      // Guard against overlapping submits: reject while a stream is in flight.
-      // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
-      if (activeController !== null) {
-        store.dispatch({
-          kind: "add_error",
-          code: "SUBMIT_IN_PROGRESS",
-          message: "A response is already streaming. Press Ctrl+C to interrupt it first.",
-        });
-        return;
-      }
-
-      // P2-A: block on runtime assembly if not yet ready.
-      // First submit waits for createKoiRuntime to complete; subsequent
-      // submits use the cached runtimeHandle (already resolved).
-      if (runtimeHandle === null) {
-        try {
-          await runtimeReady;
-        } catch (e: unknown) {
-          store.dispatch({
-            kind: "add_error",
-            code: "RUNTIME_INIT_ERROR",
-            message: `Runtime failed to initialize: ${e instanceof Error ? e.message : String(e)}`,
-          });
-          return;
-        }
-      }
-
-      // runtimeHandle is guaranteed non-null after runtimeReady resolves.
-      // The await above sets runtimeHandle; if it threw, we returned early.
-      if (runtimeHandle === null) return;
-      const handle = runtimeHandle;
-
-      // Wait for any pending session reset to complete before submitting.
-      // Prevents hitting stale task board or trajectory state.
-      await resetBarrier;
-
-      // Re-check `clearPersistFailed` after the barrier settles.
-      // The early guard above could pass even though a `/clear`
-      // was in flight: the reset IIFE only flips the flag INSIDE
-      // the async truncate path, so a submit dispatched before
-      // `onCommand: agent:clear` scheduled its truncate would
-      // see `clearPersistFailed === false`, await the barrier,
-      // and then (without this second check) proceed to append
-      // new turns onto an un-truncated transcript. Re-reading
-      // the flag here is cheap and closes the race cleanly.
-      if (clearPersistFailed) {
-        store.dispatch({
-          kind: "add_error",
-          code: "SUBMIT_AFTER_FAILED_CLEAR",
-          message:
-            "Submit is disabled because the most recent /clear or /new could not " +
-            "durably truncate this session's transcript. New turns would append to " +
-            "the pre-clear content and a later `--resume` would resurrect it. " +
-            "Quit and relaunch, or resolve the underlying I/O issue and retry /clear.",
-        });
-        return;
-      }
-      // Also re-check `lastResetFailed` — the in-memory reset
-      // (resetSessionState, transcript splice, batcher rotate)
-      // can fail independently of the durable truncate. If it
-      // threw before `runtimeHandle.transcript.splice(0)` ran,
-      // the UI has been cleared but the runtime transcript still
-      // contains pre-clear messages, and the next submit would
-      // run against stale history while the operator believes
-      // the session was wiped. Mirror the picker / rewind block
-      // logic and refuse here.
-      if (lastResetFailed) {
-        store.dispatch({
-          kind: "add_error",
-          code: "SUBMIT_AFTER_FAILED_RESET",
-          message:
-            "Submit is disabled because the most recent session reset failed. " +
-            "The runtime may still hold stale conversation context. " +
-            "Quit and relaunch with `koi tui --resume <id>` to recover from a " +
-            "clean state.",
-        });
-        return;
-      }
-
-      // #11: include any pending clipboard images as image ContentBlocks
-      // alongside the text. Bridge clears pendingImages after dispatch so the
-      // next submit starts with an empty list.
-      const imageBlocks = pendingImages.map((img) => ({
-        kind: "image" as const,
-        url: img.url,
-      }));
-
-      const controller = new AbortController();
-      activeController = controller;
-
-      // Clear any stale SIGINT arm from a previous bg-wait hint (#1772
-      // review r2). If the user tapped Ctrl+C while idle with background
-      // work running, the handler was left armed for the duration of
-      // the double-tap window — if they then submit a new prompt inside
-      // that window, a single Ctrl+C to cancel the new turn would be
-      // treated as the second tap of the stale sequence and force-exit
-      // the TUI. `complete()` is a no-op when the handler is idle, so
-      // this is safe to call unconditionally at every turn start.
-      sigintHandler.complete();
-
-      // Inject a synthetic turn-boundary step so /trajectory can group steps
-      // by user turn. The engine resets ctx.turnIndex to 0 on each run() call,
-      // so we maintain our own counter here at the TUI session level.
-      const thisTurnIndex = tuiTurnCounter++;
-      await runtimeHandle.appendTrajectoryStep({
-        stepIndex: 0,
-        timestamp: Date.now(),
-        source: "system",
-        kind: "tool_call",
-        identifier: "koi:tui_turn_start",
-        outcome: "success",
-        durationMs: 0,
-        metadata: {
-          type: "tui_turn_start",
-          tuiTurnIndex: thisTurnIndex,
-        } as import("@koi/core").JsonObject,
-      });
-
-      try {
-        // A2-A: drive conversation via runtime.run() — the KoiRuntime handles
-        // middleware composition, tool dispatch, and transcript management.
-        //
-        // Loop mode: each user turn becomes a runUntilPass invocation that
-        // iterates the agent against --until-pass until convergence. The
-        // multiplexing stream below surfaces all iterations' EngineEvents
-        // into drainEngineStream so the TUI renders each iteration's model
-        // output naturally.
-        // Task 11: check OAuth redirect URL interceptor before passing to engine.
-        // When a nexus local-bridge transport is wired and the user pastes a
-        // localhost redirect URL (e.g. http://localhost:8080/callback?code=...),
-        // the interceptor routes it to `transport.submitAuthCode(...)` and
-        // returns `{ intercepted: true }` so the text never reaches the model.
-        if (tuiAuthInterceptor !== undefined) {
-          const interceptResult = tuiAuthInterceptor(text, tuiAuthCorrelationId);
-          if (interceptResult.intercepted) {
-            // Show a brief notice so the user knows the URL was consumed.
-            store.dispatch({
-              kind: "add_user_message",
-              id: `auth-redirect-${Date.now()}`,
-              blocks: [
-                {
-                  kind: "text",
-                  text: "_OAuth redirect URL received — submitting to auth bridge..._",
-                },
-              ],
-            });
-            activeController = null;
-            return;
-          }
-        }
-
-        // #10: resolve @-mention file references before sending to the engine.
-        // Parses @path and @path#L10-20, reads files, injects content so the
-        // model sees the file directly without needing to call Glob/fs_read.
-        const resolved = resolveAtReferences(text, process.cwd());
-        const modelText =
-          resolved.injections.length > 0 ? formatAtReferencesForModel(resolved) : text;
-
-        let stream: AsyncIterable<EngineEvent>;
-        try {
-          stream = isLoopMode
-            ? runTuiLoopTurn(handle.runtime, modelText, controller.signal, flags, store)
-            : handle.runtime.run({
-                kind: "text",
-                text: modelText,
-                signal: controller.signal,
-              });
-        } catch (err) {
-          store.dispatch({
-            kind: "add_error",
-            code: "RUNTIME_REJECTED",
-            message: err instanceof Error ? err.message : String(err),
-          });
-          pendingImages = [];
-          return;
-        }
-        pendingImages = [];
-        store.dispatch({
-          kind: "add_user_message",
-          id: `user-${Date.now()}`,
-          blocks: [{ kind: "text", text }, ...imageBlocks],
-        });
-        // Snapshot cumulative metrics BEFORE the drain — must copy values since
-        // store.getState() returns a SolidJS reactive proxy (reads reflect live state).
-        const cm = store.getState().cumulativeMetrics;
-        const inputBefore = cm.inputTokens;
-        const outputBefore = cm.outputTokens;
-        const costBefore = cm.costUsd;
-        const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
-        activeRunPromise = drainPromise;
-        const drainOutcome = await drainPromise;
-
-        // #1753 review rounds 4 + 7 + 9: post-turn bookkeeping is
-        // layered. `abandoned` and `failed` drains cannot advance any
-        // session state, so they return early. `engine_error` is a
-        // coherent terminal state — the error is already in the store
-        // and trace data was captured up to the failure — so cost
-        // delta + trajectory refresh must still run so operators can
-        // diagnose the failure, but the rewind budget must NOT be
-        // advanced (no rewindable checkpoint was produced).
-        if (drainOutcome === "abandoned" || drainOutcome === "failed") {
-          return;
-        }
-
-        // Count the turn for rewind boundary enforcement, but ONLY
-        // when the turn completed uninterrupted AND produced a
-        // real checkpoint. Aborted turns are filtered by the signal
-        // guard; engine-errored turns are filtered by `drainOutcome
-        // === "settled"` because ENGINE_ERRORs return `"engine_error"`
-        // (#1753 review round 9).
-        if (drainOutcome === "settled" && rewindBoundaryActive && !controller.signal.aborted) {
-          postClearTurnCount += 1;
-        }
-        // #1884: unconditional "this process wrote something" marker.
-        // Set on every settled, uninterrupted turn — not gated on the
-        // rewind boundary — so the post-quit hint suppression knows
-        // whether a JSONL transcript was actually produced.
-        if (drainOutcome === "settled" && !controller.signal.aborted) {
-          anyTurnPersistedThisProcess = true;
-        }
-
-        // Feed the cost bridge with this turn's token delta.
-        const cmAfter = store.getState().cumulativeMetrics;
-        const deltaInput = cmAfter.inputTokens - inputBefore;
-        const deltaOutput = cmAfter.outputTokens - outputBefore;
-        if (deltaInput > 0 || deltaOutput > 0) {
-          // Compute per-turn cost delta from engine-reported costUsd.
-          // Handle null→number transition (first turn): costBefore is null,
-          // costAfter is the full cumulative — use it directly as the delta.
-          let deltaCost: number | undefined;
-          if (cmAfter.costUsd !== null) {
-            deltaCost = costBefore !== null ? cmAfter.costUsd - costBefore : cmAfter.costUsd;
-            if (deltaCost <= 0) deltaCost = undefined; // negative = correction, skip
-          }
-          costBridge.recordEngineDone({
-            inputTokens: deltaInput,
-            outputTokens: deltaOutput,
-            costUsd: deltaCost,
-          });
-        }
-
-        // Refresh trajectory + decision ledger data after each turn.
-        // Delay 500ms to let fire-and-forget trace-wrapper appends settle —
-        // wrapMiddlewareWithTrace records MW spans asynchronously via
-        // void store.append(...). Without the delay, getLedger() reads
-        // before all spans are written.
-        //
-        // Capture trajectoryRefreshGen at scheduling time so a session
-        // reset that runs in the 500 ms window invalidates this refresh
-        // before it dispatches. Otherwise the post-reset store would be
-        // repopulated with this turn's stale trajectory. (#1764)
-        const submitGen = trajectoryRefreshGen;
-        void new Promise<void>((resolve) => setTimeout(resolve, 500)).then(() =>
-          refreshTrajectoryData(
-            handle,
-            store,
-            handle.runtime.sessionId,
-            () => trajectoryRefreshGen === submitGen,
-          ),
-        );
-      } finally {
-        // Guard against cross-run races: only clear activeController and
-        // reset the SIGINT handler if THIS run is still the active one.
-        // If resetConversation() or a new submit replaced the controller
-        // mid-drain, this finally is stale and must not disarm the
-        // SIGINT state that now belongs to the newer run.
-        const isStillActive = activeController === controller;
-        if (isStillActive) {
-          activeController = null;
-          activeRunPromise = null;
-        }
-        // The active run has settled. Reset the double-tap window so a
-        // later Ctrl+C is treated as a fresh first tap rather than a
-        // late-arriving second tap of a cancellation that already
-        // completed. Only safe when this run is still the active one —
-        // a stale finally from a reset-and-replaced run must not
-        // disarm SIGINT state that now belongs to a newer turn.
-        if (isStillActive) {
-          sigintHandler.complete();
-        }
-      }
-    },
+    onSubmit: submitText,
     onInterrupt,
     // #13: session fork — called from command palette "Fork session"
     onFork: handleFork,

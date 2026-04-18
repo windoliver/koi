@@ -17,6 +17,7 @@ const INITIAL_METRICS: CumulativeMetrics = {
 export function createInitialState(): TuiState {
   return {
     messages: [],
+    queuedSubmits: [],
     activeView: "conversation",
     modal: null,
     connectionStatus: "disconnected",
