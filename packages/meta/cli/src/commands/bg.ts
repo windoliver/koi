@@ -439,6 +439,7 @@ async function runKill(
     expectedVersion: claimedVersion,
     expectedPid: record.pid,
   });
+  let finalized = false;
   if (!updated.ok) {
     if (updated.error.code === "CONFLICT") {
       const postFinal = await registry.get(workerId(id));
@@ -446,19 +447,46 @@ async function runKill(
         process.stdout.write(
           `Session ${id}: bridge recorded ${postFinal.status} during shutdown; leaving registry intact.\n`,
         );
-        return ExitCode.OK;
+        finalized = true;
+      } else {
+        process.stderr.write(
+          `Session ${id}: identity drifted during kill; refusing to overwrite (${updated.error.message}).\n`,
+        );
+        return ExitCode.FAILURE;
       }
+    } else {
       process.stderr.write(
-        `Session ${id}: identity drifted during kill; refusing to overwrite (${updated.error.message}).\n`,
+        `Session ${id}: terminated but registry update failed (${updated.error.code}): ${updated.error.message}\n`,
       );
       return ExitCode.FAILURE;
     }
-    process.stderr.write(
-      `Session ${id}: terminated but registry update failed (${updated.error.code}): ${updated.error.message}\n`,
-    );
-    return ExitCode.FAILURE;
+  } else {
+    process.stdout.write(`Session ${id} (pid ${record.pid}) terminated.\n`);
+    finalized = true;
   }
-  process.stdout.write(`Session ${id} (pid ${record.pid}) terminated.\n`);
+  if (!finalized) return ExitCode.FAILURE;
+  // Restart-policy warning. Fires whenever we successfully terminated
+  // the original process — both on the happy path (we wrote exited)
+  // AND on the CAS-conflict branch (bridge beat us to a terminal
+  // state). The CLI has no IPC to the supervisor and can't prevent
+  // transient/permanent respawn, but it CAN detect the symptom and
+  // tell the operator so they don't walk away thinking the session
+  // is dead. Brief poll — enough to catch a typical backoff window
+  // without meaningfully slowing the common single-process case.
+  await Bun.sleep(500);
+  const afterRestartCheck = await registry.get(workerId(id));
+  if (
+    afterRestartCheck !== undefined &&
+    (afterRestartCheck.status === "running" || afterRestartCheck.status === "starting") &&
+    afterRestartCheck.pid !== record.pid
+  ) {
+    process.stderr.write(
+      `Note: session ${id} was respawned by the supervisor's restart policy ` +
+        `(new pid ${afterRestartCheck.pid}). \`koi bg kill\` signals a single process; ` +
+        `to prevent respawn, configure the supervisor with a 'temporary' restart policy ` +
+        `or stop the supervisor itself.\n`,
+    );
+  }
   return ExitCode.OK;
 }
 

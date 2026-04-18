@@ -167,6 +167,61 @@ describe("attachRegistry", () => {
     await bridge.close();
   });
 
+  it("downgrades crashed→exited when CLI pre-claimed terminating", async () => {
+    // Simulates `koi bg kill`: external process writes status=terminating
+    // under CAS, worker then dies via SIGTERM, supervisor sees an
+    // unsolicited non-zero exit and publishes `crashed`. The bridge must
+    // recognize the pre-claimed intent and record the terminal state as
+    // `exited` instead of a misleading `crashed`.
+    const { backend, crash } = createFakeBackend();
+    const supResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 1000,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 1000,
+        backoffBaseMs: 10,
+        backoffCeilingMs: 100,
+      },
+    });
+    if (!supResult.ok) return;
+    const supervisor = supResult.value;
+
+    const registry = createFileSessionRegistry({ dir });
+    const bridge = attachRegistry({ supervisor, registry });
+
+    const id = workerId("w-op-kill");
+    await registry.register({
+      workerId: id,
+      agentId: agentId("a"),
+      pid: 999,
+      status: "starting",
+      startedAt: Date.now(),
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+
+    await supervisor.start({
+      workerId: id,
+      agentId: agentId("a"),
+      command: ["noop"],
+    });
+    await waitForStatus(registry, id, "running");
+
+    // Simulate CLI bg kill claim: write "terminating" before the crash.
+    const claim = await registry.update(id, { status: "terminating" });
+    expect(claim.ok).toBe(true);
+
+    crash(id);
+    await waitForStatus(registry, id, "exited");
+
+    await supervisor.shutdown("test-done");
+    await bridge.close();
+  });
+
   it("surfaces errors for unregistered workers without throwing", async () => {
     const { backend, exit } = createFakeBackend();
     const supResult = createSupervisor({

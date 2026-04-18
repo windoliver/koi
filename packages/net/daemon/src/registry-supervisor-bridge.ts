@@ -68,7 +68,23 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
   const handle = async (event: WorkerEvent): Promise<void> => {
     const mapped = mapEvent(event);
     if (mapped === undefined) return;
-    const { id, status, endedAt, exitCode, pid, startedAt, clearTerminal } = mapped;
+    let { status } = mapped;
+    const { id, endedAt, exitCode, pid, startedAt, clearTerminal } = mapped;
+    // Bridge-layer operator-intent correction. The subprocess backend
+    // classifies any non-zero exit it didn't initiate itself as
+    // `crashed` — which is correct from the supervisor's POV but
+    // wrong when an off-path killer (`koi bg kill` in another
+    // process) triggered the exit. The CLI marks its intent by
+    // CAS-writing `status: "terminating"` before it signals; if we
+    // see `crashed` for a record currently in that state, treat it
+    // as the expected end of an operator-initiated termination and
+    // record `exited` instead. Eventually-consistent only: a bridge
+    // that hasn't observed the CLI's claim yet still writes `crashed`,
+    // which is the conservative fallback.
+    if (event.kind === "crashed") {
+      const current = await registry.get(id);
+      if (current?.status === "terminating") status = "exited";
+    }
     const result = await registry.update(id, {
       status,
       ...(endedAt !== undefined && { endedAt }),
