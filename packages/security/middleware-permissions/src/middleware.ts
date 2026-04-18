@@ -323,14 +323,18 @@ function computeApprovalCacheKey(
   context: string | undefined,
   requestMeta: unknown,
   approvalReason: string,
+  // For bash-like tools, includes the derived bash grant key so a
+  // cached one-off allow in one execution context cannot replay in
+  // another. For non-bash tools, `grantKey === toolId` and this has
+  // no effect on cache key identity.
+  grantKey: string,
 ): string | undefined {
   if (context === undefined) return undefined;
   const sorted = safeSerializeInput(input);
   if (sorted === undefined) return undefined;
   const reqMeta = requestMeta !== undefined ? safeStringify(requestMeta) : "";
   if (reqMeta === undefined) return undefined;
-  // Include approval reason so policy/risk changes invalidate cached approvals
-  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${sorted}\0${context}\0${reqMeta}\0${approvalReason}`;
+  return `${backendFingerprint}\0${sessionId}\0${userId}\0${agentId}\0${toolId}\0${grantKey}\0${sorted}\0${context}\0${reqMeta}\0${approvalReason}`;
 }
 
 /** Serialize turn-scoped context for inclusion in approval cache keys. */
@@ -636,12 +640,27 @@ export function createPermissionsMiddleware(
    * rules when the plain side is silent. When both are explicit,
    * deny > ask > allow.
    */
+  /**
+   * Backend-tolerant default-deny check. Recognizes both the
+   * built-in pattern backend's internal symbol marker and a public
+   * `default: true` field that custom backends can set on their
+   * fall-through denies. Custom backends that set neither are
+   * treated as explicit deny (backward compat with backends that
+   * have no notion of default-deny — their denies ARE authoritative).
+   */
+  function isDefaultDenyLike(d: PermissionDecision): boolean {
+    if (d.effect !== "deny") return false;
+    if (isDefaultDeny(d)) return true;
+    const withFlag = d as Record<string, unknown>;
+    return withFlag.default === true || withFlag.defaultDeny === true;
+  }
+
   function strictestDecision(
     plain: PermissionDecision,
     enriched: PermissionDecision,
   ): PermissionDecision {
-    const plainOpinion = !(plain.effect === "deny" && isDefaultDeny(plain));
-    const enrichedOpinion = !(enriched.effect === "deny" && isDefaultDeny(enriched));
+    const plainOpinion = !(plain.effect === "deny" && isDefaultDenyLike(plain));
+    const enrichedOpinion = !(enriched.effect === "deny" && isDefaultDenyLike(enriched));
 
     // Neither side opined — fall-through deny from either is fine.
     if (!plainOpinion && !enrichedOpinion) return plain;
@@ -1161,7 +1180,7 @@ export function createPermissionsMiddleware(
       // Explicit deny overrides the visibility bypass. Default-deny
       // (no rule matches) does NOT — that's exactly the case
       // bashVisibleTools exists to accommodate.
-      if (decision.effect === "deny" && !isDefaultDeny(decision)) return false;
+      if (decision.effect === "deny" && !isDefaultDenyLike(decision)) return false;
       return true;
     };
 
@@ -1500,18 +1519,34 @@ export function createPermissionsMiddleware(
       // commands, redirections, subshells, command substitution, env
       // -S, and anything canonicalPrefix could not safely reduce. A
       // broad `allow: bash:*` must NOT silently authorize these —
-      // they can hide side effects or nested dangerous payloads. If
-      // the policy was allow, upgrade to ask for human review.
-      // Explicit deny still wins.
+      // they can hide side effects or nested dangerous payloads.
+      //
+      // But operators who INTENTIONALLY whitelist compound forms
+      // (`allow: ["bash:!complex*"]`) should be honored. Disambiguate
+      // by probing with a nonsense resource that a wildcard would
+      // still match but an explicit `bash:!complex*` rule would not.
+      // If the probe also allows, the original allow came from a
+      // wildcard — ratchet to ask. If the probe denies, the operator
+      // has an explicit `!complex` rule — honor it.
       if (
         decision.effect === "allow" &&
         enrichedResource !== request.toolId &&
         enrichedResource === `${request.toolId}:${UNSAFE_PREFIX}`
       ) {
-        decision = {
-          effect: "ask",
-          reason: "complex/unparseable shell form requires review",
-        };
+        const probeQuery = queryForTool(
+          ctx,
+          `${request.toolId}:__ratchet_probe__`,
+          request.metadata,
+          resolvedPath,
+        );
+        const probe = await resolveDecision(probeQuery, ctx.session.sessionId as string);
+        const fromWildcard = probe.effect === "allow";
+        if (fromWildcard) {
+          decision = {
+            effect: "ask",
+            reason: "complex/unparseable shell form requires review",
+          };
+        }
       }
       // Dangerous-command ratchet: if the raw command matches ANY
       // DANGEROUS_PATTERN and the combined decision is "allow",
@@ -1920,6 +1955,7 @@ export function createPermissionsMiddleware(
         ctxStr,
         request.metadata,
         decision.reason,
+        grantKey,
       );
 
       if (cacheKey !== undefined && approvalCache.has(cacheKey)) {
@@ -1943,6 +1979,7 @@ export function createPermissionsMiddleware(
       dedupCtx,
       request.metadata,
       decision.reason,
+      grantKey,
     );
 
     // Coalesce concurrent identical asks onto a single pending approval
@@ -2250,6 +2287,7 @@ export function createPermissionsMiddleware(
           ctxStr,
           request.metadata,
           decision.reason,
+          grantKey,
         );
         if (cacheKey !== undefined) approvalCache.set(cacheKey);
       }

