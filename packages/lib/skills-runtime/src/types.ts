@@ -101,6 +101,25 @@ export interface SkillQuery {
 }
 
 // ---------------------------------------------------------------------------
+// Progressive disclosure telemetry (issue #1642)
+// ---------------------------------------------------------------------------
+
+/** Fired by SkillsRuntime.load() on every successful resolution. */
+export interface SkillLoadedEvent {
+  readonly name: string;
+  readonly source: SkillSource;
+  readonly bodyBytes: number;
+  /** True if the body came from the LRU cache; false on first load or reload. */
+  readonly cacheHit: boolean;
+}
+
+/** Fired when a cached body is evicted. */
+export interface SkillEvictedEvent {
+  readonly name: string;
+  readonly reason: "lru" | "invalidate" | "external-refresh";
+}
+
+// ---------------------------------------------------------------------------
 // Runtime config
 // ---------------------------------------------------------------------------
 
@@ -135,6 +154,19 @@ export interface SkillsRuntimeConfig {
    * Use this for logging or telemetry.
    */
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+  /**
+   * Maximum number of loaded skill bodies to retain in the LRU cache (issue #1642).
+   * When the cache exceeds this bound, the least-recently-used entry is evicted
+   * and `onSkillEvicted` fires with `reason: "lru"`.
+   * Default: `Infinity` (unbounded; preserves legacy behavior).
+   */
+  readonly cacheMaxBodies?: number;
+  /** Called after discover() with the count of skills admitted to the Tier 0 listing. */
+  readonly onMetadataInjected?: (count: number) => void;
+  /** Called on every successful load() — distinguishes first-load from cache hits. */
+  readonly onSkillLoaded?: (event: SkillLoadedEvent) => void;
+  /** Called when a cached body is evicted (LRU, invalidate, or external refresh). */
+  readonly onSkillEvicted?: (event: SkillEvictedEvent) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +211,20 @@ export interface SkillsRuntime {
    * Multi-tag filter uses AND semantics (skill must have ALL specified tags).
    */
   readonly query: (filter?: SkillQuery) => Promise<Result<readonly SkillMetadata[], KoiError>>;
+
+  /**
+   * Tier 2 — reads a file inside the skill directory on demand (issue #1642).
+   *
+   * `refPath` is a relative path resolved against the skill's directory. The
+   * realpath of the result must stay inside the skill directory or the call
+   * returns `VALIDATION` with `context.errorKind === "PATH_TRAVERSAL"`. Not
+   * cached — reference fetches are one-shot.
+   *
+   * Error codes:
+   * - NOT_FOUND  — skill not in discovered set, or reference file missing
+   * - VALIDATION — empty / absolute / traversing / null-byte path
+   */
+  readonly loadReference: (name: string, refPath: string) => Promise<Result<string, KoiError>>;
 
   /**
    * Invalidates cached skill data.

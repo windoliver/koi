@@ -18,13 +18,17 @@ import { createScanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
 import type { DiscoverConfig, DiscoveredSkillEntry } from "./discover.js";
 import { discoverSkills, resolveSingleSkill } from "./discover.js";
+import { loadReference } from "./load-reference.js";
 import type { LoaderContext } from "./loader.js";
 import { loadSkill } from "./loader.js";
+import { createBodyCache } from "./lru-cache.js";
 import { parseSkillMd } from "./parse.js";
 import type { ResolvedInclude } from "./resolve-includes.js";
 import { resolveIncludes } from "./resolve-includes.js";
 import type {
   SkillDefinition,
+  SkillEvictedEvent,
+  SkillLoadedEvent,
   SkillMetadata,
   SkillQuery,
   SkillSource,
@@ -38,7 +42,12 @@ export { mapFrontmatterToDefinition, mapFrontmatterToMetadata } from "./map-fron
 export type { SkillInjectorConfig } from "./middleware.js";
 export { createSkillInjectorMiddleware } from "./middleware.js";
 export { createSkillProvider, skillDefinitionToComponent } from "./provider.js";
-export type { ValidatedFrontmatter, ValidatedSkillRequires } from "./types.js";
+export type {
+  SkillEvictedEvent,
+  SkillLoadedEvent,
+  ValidatedFrontmatter,
+  ValidatedSkillRequires,
+} from "./types.js";
 export type {
   SkillDefinition,
   SkillMetadata,
@@ -374,8 +383,37 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // Decision 13A: instance-scoped scanner (no module-level global)
   const scanner = createScanner();
 
-  // Decision 2A: instance-scoped body cache
-  const cache = new Map<string, Result<SkillDefinition, KoiError>>();
+  // Issue #1642: instance-scoped LRU body cache. `cacheMaxBodies` of
+  // Infinity / 0 / negative preserves legacy unbounded behavior.
+  const onSkillEvicted = config?.onSkillEvicted;
+  const cache = createBodyCache<Result<SkillDefinition, KoiError>>({
+    max: config?.cacheMaxBodies ?? Number.POSITIVE_INFINITY,
+    ...(onSkillEvicted !== undefined
+      ? {
+          onEvict: (e) => {
+            onSkillEvicted({ name: e.key, reason: e.reason } satisfies SkillEvictedEvent);
+          },
+        }
+      : {}),
+  });
+
+  const onSkillLoaded = config?.onSkillLoaded;
+  const onMetadataInjected = config?.onMetadataInjected;
+  const emitLoaded = (
+    name: string,
+    result: Result<SkillDefinition, KoiError>,
+    cacheHit: boolean,
+  ): void => {
+    if (onSkillLoaded === undefined) return;
+    if (!result.ok) return;
+    const event: SkillLoadedEvent = {
+      name,
+      source: result.value.source,
+      bodyBytes: result.value.body.length,
+      cacheHit,
+    };
+    onSkillLoaded(event);
+  };
 
   // Issue 4A: single merged map (source + dirPath + skillsRoot + metadata)
   // replaces the previous two separate Maps (discoveredSkills + discoveredDirPaths).
@@ -480,7 +518,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // When registerExternal() replaces the map, this goes stale and triggers a rebuild.
   let lastExternalRef: ReadonlyMap<string, SkillMetadata> = externalSkills;
 
-  const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
+  const discoverInternal = async (): Promise<
+    Result<ReadonlyMap<string, SkillMetadata>, KoiError>
+  > => {
     // Issue #1722 round 10: a generation mismatch (invalidate() racing
     // with an in-flight rescan/discover) must not surface as INTERNAL.
     // Instead we loop and restart against the fresh state. There is no
@@ -716,7 +756,10 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const load = async (name: string): Promise<Result<SkillDefinition, KoiError>> => {
     // 1. Body cache hit
     const cached = cache.get(name);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) {
+      emitLoaded(name, cached, true);
+      return cached;
+    }
 
     // 2. Inflight dedup: join if this skill is already loading.
     // Both checks below are synchronous — no interleave between check and registration.
@@ -750,6 +793,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
           scanner,
           skillsRoot: entry.skillsRoot,
           config: resolvedConfig,
+          onLoad: emitLoaded,
         };
         return loadSkill(name, entry.dirPath, entry.source, ctx);
       }
@@ -757,6 +801,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // Check external entries (MCP-derived skills)
       const extSkill = externalSkills.get(name);
       if (extSkill !== undefined) {
+        const extCached = cache.get(name);
+        if (extCached !== undefined) {
+          emitLoaded(name, extCached, true);
+          return extCached;
+        }
         // External skills have no filesystem body — generate a minimal SkillDefinition.
         // Body is the description (MCP tools don't have SKILL.md files).
         const definition: SkillDefinition = {
@@ -765,6 +814,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
         };
         const result: Result<SkillDefinition, KoiError> = { ok: true, value: definition };
         cache.set(name, result);
+        emitLoaded(name, result, false);
         return result;
       }
 
@@ -945,14 +995,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     // Without this, load() returns stale definitions after MCP reconnect.
     for (const [name] of oldExternal) {
       if (!newExternal.has(name) || newExternal.get(name) !== oldExternal.get(name)) {
-        cache.delete(name);
+        cache.delete(name, "external-refresh");
         loadInflight.delete(name);
       }
     }
     // Also evict newly added names in case they shadow a previously-loaded filesystem skill
     for (const [name] of newExternal) {
       if (!oldExternal.has(name)) {
-        cache.delete(name);
+        cache.delete(name, "external-refresh");
         loadInflight.delete(name);
       }
     }
@@ -962,5 +1012,59 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     discoveredMetaMap = undefined;
   };
 
-  return { discover, load, loadAll, query, invalidate, registerExternal };
+  // ---------------------------------------------------------------------------
+  // discover() — public wrapper emitting onMetadataInjected (issue #1642)
+  // ---------------------------------------------------------------------------
+
+  const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
+    const result = await discoverInternal();
+    if (result.ok && onMetadataInjected !== undefined) {
+      onMetadataInjected(result.value.size);
+    }
+    return result;
+  };
+
+  // ---------------------------------------------------------------------------
+  // loadReference() — Tier 2 (issue #1642)
+  // ---------------------------------------------------------------------------
+
+  const loadReferenceImpl = async (
+    name: string,
+    refPath: string,
+  ): Promise<Result<string, KoiError>> => {
+    // Ensure discovery has run so we can locate the skill's directory.
+    const discoverResult = await discover();
+    if (!discoverResult.ok) return discoverResult;
+
+    // Prefer the filesystem entry (has the resolved dir). External (MCP)
+    // skills have no filesystem body, so Tier 2 references are only valid
+    // for filesystem-sourced skills — fail closed.
+    const entry = discoveredEntry?.get(name);
+    if (entry === undefined) {
+      // Blocked-at-discovery names must behave like NOT_FOUND for Tier 2 —
+      // we never hand out files inside a skill that was rejected by the
+      // security scanner.
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Skill "${name}" not found. Tier 2 references are only available for discovered filesystem skills.`,
+          retryable: false,
+          context: { name, refPath },
+        },
+      };
+    }
+
+    return loadReference(name, entry.dirPath, refPath);
+  };
+
+  return {
+    discover,
+    load,
+    loadAll,
+    query,
+    loadReference: loadReferenceImpl,
+    invalidate,
+    registerExternal,
+  };
 }
