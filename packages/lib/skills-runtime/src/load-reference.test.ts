@@ -177,6 +177,50 @@ describe("loadReference — binary guard", () => {
   });
 });
 
+describe("loadReference — TOCTOU race (review #1896 round 2)", () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "skill-ref-race-"));
+    await Bun.write(join(root, "s", "SKILL.md"), "---\nname: s\n---\n");
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("a final-segment symlink pointing out of the skill dir is rejected, not followed", async () => {
+    // Create an in-tree legitimate file, then replace it with a symlink to
+    // an out-of-tree secret. The rejection must come from O_NOFOLLOW at
+    // open time (ELOOP), not from a post-read path check.
+    const dir = join(root, "s");
+    const outside = join(root, "outside-secret");
+    await Bun.write(outside, "SECRET");
+    // Ensure the refs/ directory exists — symlink() does not create parents.
+    await Bun.write(join(dir, "refs", ".keep"), "");
+    await symlink(outside, join(dir, "refs/swap.md"));
+
+    const result = await loadReference("s", dir, "refs/swap.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+  });
+
+  test("rejects a non-regular-file target (directory) with REFERENCE_NOT_FILE", async () => {
+    const dir = join(root, "s");
+    // Create an empty sub-directory with the same name as the requested ref.
+    await Bun.write(join(dir, "refs", ".keep"), "");
+    const result = await loadReference("s", dir, "refs");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "REFERENCE_NOT_FILE" });
+    }
+  });
+});
+
 describe("loadReference — security scan", () => {
   let root: string;
 

@@ -16,9 +16,12 @@
  *    - The realpath of the joined path must remain within the realpath of
  *      the skill directory. `..` components or escape-via-symlink are
  *      rejected as VALIDATION / PATH_TRAVERSAL.
- * 2. Size ceiling (`maxBytes`, default 256 KB). Oversized files are rejected
- *    up-front via stat — we never read them. Prevents a reference file
- *    from exhausting context or memory, and bounds latency of retries.
+ * 2. Size ceiling (`maxBytes`, default 256 KB). The file is opened **once**
+ *    with `O_NOFOLLOW` on the final segment, then `fstat` is performed on
+ *    the same descriptor and the content is read from that descriptor. This
+ *    closes the TOCTOU window where a racing writer could swap a
+ *    validated file for an oversized payload or an out-of-tree symlink
+ *    between a path-based stat and a path-based read (review #1896 round 2).
  * 3. Binary guard. If the first 1 KB of the file contains a NUL byte the
  *    content is treated as binary and rejected. Tier 2 is a text-context
  *    channel for the model; binary payloads are out of scope.
@@ -33,7 +36,8 @@
  * and complicate invalidation without saving meaningful I/O.
  */
 
-import { realpath, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
@@ -161,13 +165,28 @@ export async function loadReference(
     };
   }
 
-  // Realpath of the target. If it does not yet exist, node throws ENOENT —
-  // surface that as NOT_FOUND. Any other failure is treated the same way so
-  // the caller receives a consistent error shape.
-  let realTarget: string;
+  // Open the target once, with O_NOFOLLOW on the final segment. All
+  // subsequent checks (size, content) run against this same descriptor so a
+  // concurrent writer cannot swap files between checks (review #1896 round 2).
+  // O_NOFOLLOW only protects the final path component; the caller is
+  // responsible for ensuring parent directories are trusted, which is the
+  // case here because dirPath is the skill's own directory.
+  const flags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    realTarget = await realpath(joined);
+    handle = await open(joined, flags);
   } catch (cause: unknown) {
+    // ELOOP: the final segment is a symlink — refuse, since Tier 2 must not
+    // follow links out of the skill directory.
+    const err = cause as NodeJS.ErrnoException;
+    if (err?.code === "ELOOP" || err?.code === "EMLINK") {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" is a symlink`,
+        "PATH_TRAVERSAL",
+      );
+    }
     return {
       ok: false,
       error: {
@@ -180,45 +199,63 @@ export async function loadReference(
     };
   }
 
-  const rel = relative(realDir, realTarget);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    return validationError(
-      name,
-      refPath,
-      `Reference "${refPath}" for skill "${name}" escapes the skill directory`,
-      "PATH_TRAVERSAL",
-    );
-  }
-
-  // Size ceiling — stat first so an oversized payload is never read into memory.
-  let size: number;
-  try {
-    const st = await stat(realTarget);
-    size = st.size;
-  } catch (cause: unknown) {
-    return {
-      ok: false,
-      error: {
-        code: "NOT_FOUND",
-        message: `Could not stat reference "${refPath}" for skill "${name}"`,
-        retryable: false,
-        cause,
-        context: { name, refPath, resolvedPath: realTarget },
-      },
-    };
-  }
-  if (size > maxBytes) {
-    return validationError(
-      name,
-      refPath,
-      `Reference "${refPath}" for skill "${name}" exceeds size limit (${size} > ${maxBytes} bytes)`,
-      "REFERENCE_SIZE_LIMIT",
-    );
-  }
-
   let content: string;
   try {
-    content = await Bun.file(realTarget).text();
+    // fstat on the opened descriptor — the size is bound to the inode the
+    // fd points at, not to whatever a follow-up path-based call might
+    // resolve. This is what closes the TOCTOU gap.
+    const fst = await handle.stat();
+    if (!fst.isFile()) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" is not a regular file`,
+        "REFERENCE_NOT_FILE",
+      );
+    }
+    if (fst.size > maxBytes) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" exceeds size limit (${fst.size} > ${maxBytes} bytes)`,
+        "REFERENCE_SIZE_LIMIT",
+      );
+    }
+
+    // Realpath-based boundary check stays, using the in-tree path that the
+    // descriptor was opened against. Because we still hold the open fd, the
+    // inode the descriptor points at cannot change under us — a swap after
+    // this point hits the new inode, not the one we read.
+    const realTarget = await realpath(joined);
+    const rel = relative(realDir, realTarget);
+    if (rel.startsWith("..") || isAbsolute(rel)) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" escapes the skill directory`,
+        "PATH_TRAVERSAL",
+      );
+    }
+
+    const buf = await handle.readFile();
+    // Convert UTF-8 bytes; keep the raw buffer so the NUL sniff runs on the
+    // real byte stream rather than a decoder-normalized string.
+    content = buf.toString("utf8");
+
+    // Binary guard on the leading bytes of the BUFFER — sniff runs before
+    // we inspect content semantically (scanner), so obviously-binary
+    // payloads never feed the scanner or the model.
+    const sniffEnd = Math.min(buf.length, BINARY_SNIFF_BYTES);
+    for (let i = 0; i < sniffEnd; i++) {
+      if (buf[i] === 0x00) {
+        return validationError(
+          name,
+          refPath,
+          `Reference "${refPath}" for skill "${name}" appears to be binary`,
+          "REFERENCE_BINARY",
+        );
+      }
+    }
   } catch (cause: unknown) {
     return {
       ok: false,
@@ -227,22 +264,14 @@ export async function loadReference(
         message: `Could not read reference "${refPath}" for skill "${name}"`,
         retryable: false,
         cause,
-        context: { name, refPath, resolvedPath: realTarget },
+        context: { name, refPath, resolvedPath: joined },
       },
     };
-  }
-
-  // Binary guard — NUL byte in the leading window means the file is not
-  // text, so handing it to the model is at best useless and at worst a
-  // data-exfiltration or crash vector.
-  const prefix = content.slice(0, BINARY_SNIFF_BYTES);
-  if (prefix.includes("\u0000")) {
-    return validationError(
-      name,
-      refPath,
-      `Reference "${refPath}" for skill "${name}" appears to be binary`,
-      "REFERENCE_BINARY",
-    );
+  } finally {
+    await handle.close().catch(() => {
+      // Close-failure is non-fatal — the fd goes away when the process exits.
+      // Logging here would leak the refPath to stderr unconditionally.
+    });
   }
 
   // Security scan — Tier 1 applies the same gate to SKILL.md bodies. A skill
