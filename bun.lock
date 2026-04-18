@@ -645,6 +645,7 @@
         "@koi/fs-nexus": "workspace:*",
         "@koi/fs-scoped": "workspace:*",
         "@koi/governance-core": "workspace:*",
+        "@koi/governance-defaults": "workspace:*",
         "@koi/harness": "workspace:*",
         "@koi/hook-prompt": "workspace:*",
         "@koi/hooks": "workspace:*",
@@ -839,6 +840,17 @@
       "dependencies": {
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+      },
+    },
+    "packages/security/governance-defaults": {
+      "name": "@koi/governance-defaults",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/errors": "workspace:*",
+      },
+      "devDependencies": {
+        "@koi/governance-core": "workspace:*",
       },
     },
     "packages/security/middleware-audit": {
@@ -1216,6 +1228,8 @@
     "@koi/git-utils": ["@koi/git-utils@workspace:packages/lib/git-utils"],
 
     "@koi/governance-core": ["@koi/governance-core@workspace:packages/security/governance-core"],
+
+    "@koi/governance-defaults": ["@koi/governance-defaults@workspace:packages/security/governance-defaults"],
 
     "@koi/harness": ["@koi/harness@workspace:packages/lib/harness"],
 
