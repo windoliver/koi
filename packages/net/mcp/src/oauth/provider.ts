@@ -142,6 +142,12 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       metadata,
       clientId: client?.clientId,
       resource: resourceIndicator,
+      // Forward invalid_client signals from the refresh path to the DCR
+      // invalidator so a revoked client_id does not survive the next
+      // re-auth cycle. Configured static clients are guarded inside
+      // invalidateRegisteredClient via the registeredAt check.
+      onInvalidClient:
+        client !== undefined && client.registeredAt > 0 ? invalidateRegisteredClient : undefined,
     });
     return tokenManager;
   }
@@ -207,7 +213,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     }
 
     // Exchange authorization code for tokens
-    const tokens = await exchangeCode(
+    const exchange = await exchangeCode(
       callbackResult.code,
       pkce.verifier,
       redirectUri,
@@ -216,14 +222,14 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       resourceIndicator,
     );
 
-    if (tokens === undefined) {
-      // Token exchange failed. If we used a dynamically-registered client
-      // (registeredAt > 0), the AS may have revoked or lost it — there is
-      // no normal recovery path because logout deliberately keeps the
-      // client-info key. Drop the cached/persisted DCR client so the next
-      // `koi mcp auth` re-registers from scratch instead of repeating the
-      // failure with the same dead client_id.
-      if (client.registeredAt > 0) {
+    if (!exchange.ok) {
+      // Only invalidate the persisted DCR client on an explicit
+      // `invalid_client` signal — transient 5xx, timeouts, malformed
+      // responses, or non-client errors must not destroy a healthy
+      // registration. logout deliberately keeps client-info, so over-
+      // aggressive deletion here would leak orphaned DCR clients on
+      // every transient outage.
+      if (exchange.invalidClient && client.registeredAt > 0) {
         await invalidateRegisteredClient();
       }
       return false;
@@ -231,7 +237,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
     // Store tokens
     const tm = await getTokenManager();
-    await tm.storeTokens(tokens);
+    await tm.storeTokens(exchange.tokens);
     return true;
   };
 
@@ -303,6 +309,17 @@ function isClientFresh(
 // Token exchange
 // ---------------------------------------------------------------------------
 
+/**
+ * Typed result for the authorization-code → token exchange. The
+ * `invalidClient` flag distinguishes a server-side client revocation
+ * from any other failure (transient 5xx, timeout, malformed response,
+ * resource rejection) so the provider can self-heal a revoked DCR
+ * client without churning healthy registrations on unrelated outages.
+ */
+type ExchangeResult =
+  | { readonly ok: true; readonly tokens: OAuthTokens }
+  | { readonly ok: false; readonly invalidClient: boolean };
+
 async function exchangeCode(
   code: string,
   codeVerifier: string,
@@ -310,7 +327,7 @@ async function exchangeCode(
   tokenEndpoint: string,
   clientId: string,
   resource: string | undefined,
-): Promise<OAuthTokens | undefined> {
+): Promise<ExchangeResult> {
   try {
     const body = new URLSearchParams({
       grant_type: "authorization_code",
@@ -333,7 +350,10 @@ async function exchangeCode(
       signal: AbortSignal.timeout(TOKEN_EXCHANGE_TIMEOUT_MS),
     });
 
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      const invalidClient = await isInvalidClientResponse(response);
+      return { ok: false, invalidClient };
+    }
 
     const data = (await response.json()) as {
       readonly access_token?: string;
@@ -343,17 +363,38 @@ async function exchangeCode(
       readonly scope?: string;
     };
 
-    if (typeof data.access_token !== "string") return undefined;
+    if (typeof data.access_token !== "string") {
+      return { ok: false, invalidClient: false };
+    }
 
     return {
-      accessToken: data.access_token,
-      refreshToken: data.refresh_token,
-      expiresAt:
-        typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined,
-      tokenType: data.token_type,
-      scope: data.scope,
+      ok: true,
+      tokens: {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token,
+        expiresAt:
+          typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined,
+        tokenType: data.token_type,
+        scope: data.scope,
+      },
     };
   } catch {
-    return undefined;
+    return { ok: false, invalidClient: false };
+  }
+}
+
+/**
+ * RFC 6749 §5.2 token-error responses always carry an `error` field. If
+ * the body is unparseable or the field is absent, default to "not
+ * invalid_client" so transient framing problems do not destroy the
+ * persisted DCR client. invalid_client is the only value that
+ * unambiguously signals the client identity has been rejected.
+ */
+async function isInvalidClientResponse(response: Response): Promise<boolean> {
+  try {
+    const body = (await response.clone().json()) as { readonly error?: unknown };
+    return body.error === "invalid_client";
+  } catch {
+    return false;
   }
 }

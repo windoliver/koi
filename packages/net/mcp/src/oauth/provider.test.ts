@@ -660,25 +660,32 @@ describe("createOAuthAuthProvider", () => {
     expect(parsed.redirectUri).toBe("http://127.0.0.1:9999/callback");
   });
 
-  test("invalidates persisted DCR client when token exchange fails", async () => {
-    // Recovery from a server-side client revocation: if exchangeCode
-    // returns no tokens, the DCR record could still be wired to a
-    // dead client_id. logout deliberately keeps client-info, so the
-    // bad registration would otherwise survive across `koi mcp auth`
-    // attempts. The provider must drop it on terminal exchange failure.
-    const storage = createMockStorage();
-    const { computeClientKey } = await import("./tokens.js");
-    const clientKey = computeClientKey("revoked", "https://mcp.example.com");
-    await storage.set(
-      clientKey,
-      JSON.stringify({
-        clientId: "dead-client",
-        registeredAt: 1700000000,
-        issuer: "https://auth.example.com",
-        registrationEndpoint: "https://auth.example.com/register",
-        redirectUri: "http://127.0.0.1:8912/callback",
-      }),
-    );
+  test("invalidates persisted DCR client only on explicit invalid_client (not transient errors)", async () => {
+    // Self-heal a server-side client revocation, but only when the AS
+    // explicitly says invalid_client. Other failure modes — 5xx, timeouts,
+    // malformed responses, resource-rejected configs — must NOT destroy
+    // the persisted registration. Otherwise a transient outage would leak
+    // a fresh DCR client on every retry.
+    const seedClient = (storage: ReturnType<typeof createMockStorage>): Promise<void> =>
+      storage
+        .set(
+          "mcp-oauth-client|revoked|" + "0".repeat(16), // hash placeholder, real one written by code
+          "ignored",
+        )
+        .then(async () => {
+          const { computeClientKey } = await import("./tokens.js");
+          const clientKey = computeClientKey("revoked", "https://mcp.example.com");
+          await storage.set(
+            clientKey,
+            JSON.stringify({
+              clientId: "live-client",
+              registeredAt: 1700000000,
+              issuer: "https://auth.example.com",
+              registrationEndpoint: "https://auth.example.com/register",
+              redirectUri: "http://127.0.0.1:8912/callback",
+            }),
+          );
+        });
 
     const metadata = {
       issuer: "https://auth.example.com",
@@ -687,33 +694,71 @@ describe("createOAuthAuthProvider", () => {
       registration_endpoint: "https://auth.example.com/register",
     };
 
-    globalThis.fetch = mock((url: string | URL | Request) => {
-      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-      if (urlStr.includes("well-known")) {
-        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
-      }
-      if (urlStr.includes("/token")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 }),
-        );
-      }
-      return Promise.resolve(new Response(null, { status: 404 }));
-    }) as unknown as typeof fetch;
-
-    const provider = createOAuthAuthProvider({
-      serverName: "revoked",
-      serverUrl: "https://mcp.example.com",
-      oauthConfig: {
-        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+    const cases: Array<{
+      readonly name: string;
+      readonly tokenStatus: number;
+      readonly tokenBody: unknown;
+      readonly shouldClearClient: boolean;
+    }> = [
+      {
+        name: "invalid_client → invalidate",
+        tokenStatus: 401,
+        tokenBody: { error: "invalid_client" },
+        shouldClearClient: true,
       },
-      runtime: createMockRuntime(),
-      storage,
-    });
+      {
+        name: "invalid_grant → preserve",
+        tokenStatus: 400,
+        tokenBody: { error: "invalid_grant" },
+        shouldClearClient: false,
+      },
+      {
+        name: "transient 503 → preserve",
+        tokenStatus: 503,
+        tokenBody: "upstream down",
+        shouldClearClient: false,
+      },
+    ];
 
-    const ok = await provider.startAuthFlow();
-    expect(ok).toBe(false);
-    // DCR record should be cleared so the next attempt re-registers.
-    expect(await storage.get(clientKey)).toBeUndefined();
+    for (const c of cases) {
+      const storage = createMockStorage();
+      await seedClient(storage);
+
+      globalThis.fetch = mock((url: string | URL | Request) => {
+        const urlStr =
+          typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+        if (urlStr.includes("well-known")) {
+          return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+        }
+        if (urlStr.includes("/token")) {
+          const body = typeof c.tokenBody === "string" ? c.tokenBody : JSON.stringify(c.tokenBody);
+          return Promise.resolve(new Response(body, { status: c.tokenStatus }));
+        }
+        return Promise.resolve(new Response(null, { status: 404 }));
+      }) as unknown as typeof fetch;
+
+      const provider = createOAuthAuthProvider({
+        serverName: "revoked",
+        serverUrl: "https://mcp.example.com",
+        oauthConfig: {
+          authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+        },
+        runtime: createMockRuntime(),
+        storage,
+      });
+
+      const ok = await provider.startAuthFlow();
+      expect(ok, `${c.name}: startAuthFlow result`).toBe(false);
+
+      const { computeClientKey } = await import("./tokens.js");
+      const clientKey = computeClientKey("revoked", "https://mcp.example.com");
+      const stored = await storage.get(clientKey);
+      if (c.shouldClearClient) {
+        expect(stored, `${c.name}: client should be cleared`).toBeUndefined();
+      } else {
+        expect(stored, `${c.name}: client should be preserved`).toBeDefined();
+      }
+    }
   });
 
   test("preserves configured (non-DCR) clientId on token exchange failure", async () => {

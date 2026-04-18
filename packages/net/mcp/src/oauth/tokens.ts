@@ -37,6 +37,14 @@ export interface TokenManagerOptions {
    * `serverUrl` via `createTokenManager`.
    */
   readonly resource?: string | undefined;
+  /**
+   * Fired when the refresh endpoint responds with `error: "invalid_client"`.
+   * The provider uses this to drop a revoked DCR client_id before the
+   * next interactive auth attempt — without it, the first re-auth would
+   * reuse the dead client and fail again before the registration was
+   * finally cleared in the code-exchange path.
+   */
+  readonly onInvalidClient?: (() => Promise<void> | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,7 +60,7 @@ const REFRESH_TIMEOUT_MS = 15_000;
 // ---------------------------------------------------------------------------
 
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
-  const { serverName, serverUrl, storage, metadata, clientId } = options;
+  const { serverName, serverUrl, storage, metadata, clientId, onInvalidClient } = options;
   // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
   // callers — provider in particular — set `resource` to the effective
   // value chosen for initial authorization. The refresh body MUST mirror
@@ -114,6 +122,18 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       clientId,
       resource,
     );
+
+    // Surface invalid_client to the provider so it can drop the persisted
+    // DCR client BEFORE the next interactive auth — without this, the
+    // first re-auth would reuse the dead client_id and fail again before
+    // the registration was finally cleared in the code-exchange path.
+    if (!refreshResult.ok && refreshResult.invalidClient && onInvalidClient !== undefined) {
+      try {
+        await onInvalidClient();
+      } catch {
+        // Callback failures must not mask the underlying refresh error.
+      }
+    }
 
     // Compare-and-swap: under lock, check that the on-disk refresh token
     // still matches what we used. If another process already refreshed and
@@ -204,10 +224,16 @@ function isExpired(tokens: OAuthTokens): boolean {
   return Date.now() >= tokens.expiresAt - EXPIRY_BUFFER_MS;
 }
 
-/** Terminal: token is invalid, must re-auth. Transient: temporary failure, keep tokens. */
+/**
+ * Terminal: token is invalid, must re-auth. Transient: temporary failure,
+ * keep tokens. `invalidClient` is set when the AS specifically returned
+ * `error: "invalid_client"`, distinguishing client-revocation from
+ * `invalid_grant` and other terminal failures so the provider can drop
+ * the persisted DCR client_id before the next interactive auth.
+ */
 type RefreshResult =
   | { readonly ok: true; readonly tokens: OAuthTokens }
-  | { readonly ok: false; readonly terminal: boolean };
+  | { readonly ok: false; readonly terminal: boolean; readonly invalidClient: boolean };
 
 async function refreshAccessToken(
   refreshToken: string,
@@ -236,8 +262,12 @@ async function refreshAccessToken(
 
     if (!response.ok) {
       // 400/401 = terminal (invalid_grant, revoked token). 5xx = transient.
+      // RFC 6749 §5.2 token-error responses always carry an `error` field;
+      // parse it so we can surface invalid_client distinctly without
+      // losing the terminal-vs-transient classification.
       const terminal = response.status < 500;
-      return { ok: false, terminal };
+      const invalidClient = terminal ? await isInvalidClientError(response) : false;
+      return { ok: false, terminal, invalidClient };
     }
 
     const data = (await response.json()) as {
@@ -249,7 +279,7 @@ async function refreshAccessToken(
     };
 
     if (typeof data.access_token !== "string") {
-      return { ok: false, terminal: true };
+      return { ok: false, terminal: true, invalidClient: false };
     }
 
     return {
@@ -265,6 +295,21 @@ async function refreshAccessToken(
     };
   } catch {
     // Network error, timeout — transient, preserve tokens
-    return { ok: false, terminal: false };
+    return { ok: false, terminal: false, invalidClient: false };
+  }
+}
+
+/**
+ * Cheap content-sniff: is the failed token-endpoint response an explicit
+ * `error: "invalid_client"`? Bodies that fail to parse (or omit `error`)
+ * default to `false` so transient framing problems do not be classified
+ * as client revocation.
+ */
+async function isInvalidClientError(response: Response): Promise<boolean> {
+  try {
+    const body = (await response.clone().json()) as { readonly error?: unknown };
+    return body.error === "invalid_client";
+  } catch {
+    return false;
   }
 }

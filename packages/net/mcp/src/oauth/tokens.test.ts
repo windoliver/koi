@@ -406,6 +406,86 @@ describe("createTokenManager — refresh flow", () => {
     expect(await tm.hasTokens()).toBe(false);
   });
 
+  test("fires onInvalidClient callback when refresh returns invalid_client", async () => {
+    // Refresh-time client revocation must surface to the provider so it
+    // can drop the persisted DCR client BEFORE the next interactive
+    // auth — without this, the first re-auth would reuse the dead
+    // client_id and fail again before the registration was finally
+    // cleared in the code-exchange path.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 })),
+    ) as unknown as typeof fetch;
+
+    let callbackFired = 0;
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      onInvalidClient: () => {
+        callbackFired += 1;
+      },
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    expect(callbackFired).toBe(1);
+  });
+
+  test("does NOT fire onInvalidClient on invalid_grant or transient 5xx", async () => {
+    let callbackFired = 0;
+    const onInvalidClient = (): void => {
+      callbackFired += 1;
+    };
+
+    // invalid_grant: refresh token expired, NOT a client problem
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 })),
+    ) as unknown as typeof fetch;
+
+    let tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      onInvalidClient,
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+    await tm.getAccessToken();
+    expect(callbackFired).toBe(0);
+
+    // 5xx transient
+    storage = createMockStorage();
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response("upstream", { status: 503 })),
+    ) as unknown as typeof fetch;
+    tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      onInvalidClient,
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+    await tm.getAccessToken();
+    expect(callbackFired).toBe(0);
+  });
+
   test("keeps refresh_token when the response omits one (no rotation)", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(
