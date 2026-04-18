@@ -27,24 +27,41 @@ export interface Sigusr1HandlerDeps {
 
 /**
  * Platform-specific fallback signal numbers for SIGUSR1. Used only when
- * `os.constants.signals.SIGUSR1` is unavailable (Windows, or an unusual
- * libc). Matches macOS (30) and Linux (10) POSIX conventions so supervisors
- * and incident tooling see `128 + sigNum` on every platform.
+ * `os.constants.signals.SIGUSR1` is unavailable (Windows or an unusual
+ * libc where the constant is missing). Each entry matches the platform's
+ * system header value so supervisors keying on `128 + signum` see the
+ * canonical exit code even through the fallback path:
+ *
+ *   darwin/*bsd: 30 → 158
+ *   linux/aix:   10 → 138
+ *
+ * SunOS/Solaris uses 16 but koi does not target it; if a user encounters
+ * it, `resolveSigusr1Number` falls through to the final 10 default.
  */
 const FALLBACK_SIGUSR1 = {
   darwin: 30,
+  freebsd: 30,
+  netbsd: 30,
+  openbsd: 30,
   linux: 10,
+  aix: 10,
 } as const satisfies Record<string, number>;
+
+type FallbackPlatform = keyof typeof FALLBACK_SIGUSR1;
+
+function isFallbackPlatform(p: string): p is FallbackPlatform {
+  return p in FALLBACK_SIGUSR1;
+}
 
 function resolveSigusr1Number(): number {
   const fromOs = osConstants.signals.SIGUSR1;
   if (typeof fromOs === "number" && fromOs > 0) return fromOs;
-  if (process.platform === "darwin") return FALLBACK_SIGUSR1.darwin;
-  // Linux-convention default covers every other POSIX platform (freebsd,
-  // netbsd, openbsd) that also assigns SIGUSR1 = 10. Windows lacks SIGUSR1
-  // entirely, but the handler can never fire there — the signal is simply
-  // not delivered — so any sentinel value is moot.
-  return FALLBACK_SIGUSR1.linux;
+  if (isFallbackPlatform(process.platform)) return FALLBACK_SIGUSR1[process.platform];
+  // Last-ditch default for unknown POSIX runtimes. SUSv3 does not pin
+  // SIGUSR1 to a specific number; 10 matches the Linux/AIX convention and
+  // is the most common value. Windows never reaches here because
+  // SIGUSR1_SUPPORTED gates every install site.
+  return 10;
 }
 
 /**
