@@ -1,0 +1,49 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/url-safety API surface . has stable type surface 1`] = `
+"/**
+ * Frozen blocklists consumed by ip-classify.ts (for matching) and exported
+ * as public data so governance / tools-browser can extend policy.
+ *
+ * Why these specific ranges: see the header comment in ip-classify.ts.
+ */
+declare const BLOCKED_HOSTS: readonly string[];
+declare const BLOCKED_CIDR_RANGES: readonly string[];
+
+declare function isBlockedIp(ip: string): boolean;
+
+type DnsResolver = (hostname: string) => Promise<readonly string[]>;
+interface UrlSafetyOptions {
+    readonly allowPrivate?: boolean;
+    readonly allowlistHosts?: readonly string[];
+    readonly allowedProtocols?: readonly string[];
+    readonly dnsResolver?: DnsResolver;
+}
+type SafeUrlResult = {
+    readonly ok: true;
+    readonly hostname: string;
+    readonly resolvedIps: readonly string[];
+} | {
+    readonly ok: false;
+    readonly reason: string;
+};
+declare function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<SafeUrlResult>;
+
+/**
+ * createSafeFetcher — returns a fetch-compatible function that:
+ *   1. validates the initial URL via isSafeUrl
+ *   2. manually follows redirects (redirect: "manual") so each hop is
+ *      re-validated against isSafeUrl before being followed
+ *   3. throws (rejects) with a descriptive Error if any URL fails the check
+ *
+ * Default base is global fetch. Callers pass their own to inject for testing.
+ */
+
+interface SafeFetcherOptions extends UrlSafetyOptions {
+    readonly maxRedirects?: number;
+}
+declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
+
+export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, type DnsResolver, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
+"
+`;
