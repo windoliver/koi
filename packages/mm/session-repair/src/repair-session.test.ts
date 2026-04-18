@@ -341,12 +341,12 @@ describe("repairSession — interrupt repair", () => {
     expect(result.issues.length).toBe(0);
   });
 
-  test("does NOT fire between a resumed compaction summary and the first user turn", () => {
-    // `resumeFromTranscript` injects compaction summaries as synthetic
-    // user messages ({synthetic:true, compacted:true}). These look
-    // user/user adjacent to the first real prompt but are NOT an
-    // interrupted turn — injecting the "fresh request" steer would
-    // tell the model to ignore the summary it was given.
+  test("between a resumed compaction summary and first user turn: neutral separator, NO 'fresh request' steer", () => {
+    // Compaction summaries come back from `resumeFromTranscript` as
+    // senderId:"user", metadata.synthetic=true. Provider alternation
+    // still requires a separator (Anthropic rejects user/user; OpenAI
+    // merges them). Insert a neutral marker so role order is safe
+    // without telling the model to ignore the restored summary.
     const messages = [
       msg("user", "[Summary] earlier conversation context", { synthetic: true }),
       msg("user", "what did we decide?"),
@@ -354,15 +354,21 @@ describe("repairSession — interrupt repair", () => {
     ];
     const result = repairSession(messages);
     const interruptIssues = result.issues.filter((i) => i.phase === "interrupt");
-    expect(interruptIssues.length).toBe(0);
-    expect(result.messages).toBe(messages);
+    expect(interruptIssues.length).toBe(1);
+    expect(result.messages.map((m) => m.senderId)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    // Inserted separator must be the neutral marker, not the steer.
+    const inserted = result.messages[1];
+    const text = inserted?.content[0]?.kind === "text" ? inserted.content[0].text : "";
+    expect(text).toBe("[Continuing.]");
+    expect(text).not.toContain("fresh request");
   });
 
-  test("does NOT fire between a resumed system-role entry and a real user turn", () => {
-    // Resumed system-role entries come through as senderId:"user" with
-    // metadata.resumedSystemRole=true (engine-injected context from a
-    // prior session, e.g. system:capabilities). They must not be
-    // rewritten as an interrupt.
+  test("between resumed system-role entry and real user turn: neutral separator, NO 'fresh request' steer", () => {
     const messages: readonly InboundMessage[] = [
       {
         senderId: "user",
@@ -375,8 +381,11 @@ describe("repairSession — interrupt repair", () => {
     ];
     const result = repairSession(messages);
     const interruptIssues = result.issues.filter((i) => i.phase === "interrupt");
-    expect(interruptIssues.length).toBe(0);
-    expect(result.messages).toBe(messages);
+    expect(interruptIssues.length).toBe(1);
+    const inserted = result.messages[1];
+    const text = inserted?.content[0]?.kind === "text" ? inserted.content[0].text : "";
+    expect(text).toBe("[Continuing.]");
+    expect(text).not.toContain("fresh request");
   });
 });
 

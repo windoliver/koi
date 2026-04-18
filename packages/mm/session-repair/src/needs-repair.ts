@@ -50,22 +50,19 @@ export function needsRepair(messages: readonly InboundMessage[]): boolean {
       }
     }
 
-    // Two consecutive non-pinned, non-synthetic, non-resumed-system
-    // user messages → interrupt repair needed, regardless of content.
-    // Identical user retries ("continue" + "continue" after ESC) also
-    // need the synthetic-assistant separator — dedup no longer
-    // collapses them. Synthetic and resumed-system user messages
-    // (compaction summaries / restored system entries) must not
-    // trigger interrupt repair; see `repairInterrupts` for rationale.
+    // Two consecutive non-pinned user messages → interrupt-repair
+    // phase needs to insert a separator for role alternation. Pinned
+    // pairs are intentional context stacking (manifest goals) and
+    // stay untouched. For real user→user pairs the separator carries
+    // the "fresh request" steer; for restored-context pairs (compaction
+    // summaries, resumedSystemRole entries) it's a neutral marker that
+    // only exists to keep strict-alternation providers (Anthropic)
+    // happy without telling the model to ignore restored context.
     if (
       prev.senderId === "user" &&
       curr.senderId === "user" &&
       prev.pinned !== true &&
-      curr.pinned !== true &&
-      prev.metadata?.synthetic !== true &&
-      curr.metadata?.synthetic !== true &&
-      prev.metadata?.resumedSystemRole !== true &&
-      curr.metadata?.resumedSystemRole !== true
+      curr.pinned !== true
     ) {
       return true;
     }

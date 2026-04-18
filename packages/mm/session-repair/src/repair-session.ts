@@ -106,34 +106,36 @@ function repairInterrupts(
     const curr = messages[i];
     if (curr === undefined) continue;
     const prev = result[result.length - 1];
-    // Only non-pinned, non-synthetic, non-resumed-system pairs. Pinned
-    // user messages are system-injected context (manifest goals, etc.).
-    // Synthetic user messages are compaction summaries from
-    // `resumeFromTranscript` ({synthetic:true, compacted:true}). Resumed
-    // system-role entries come through as `senderId: "user"` with
-    // `metadata.resumedSystemRole === true` — they're engine-injected
-    // context from a prior session (system:capabilities, etc.), not
-    // user submits, and the "fresh request" steer would tell the model
-    // to ignore restored context it legitimately needs.
-    if (
+    // Pinned user messages are system-injected context (manifest goals)
+    // and stacking them is by design — skip them entirely.
+    const pairable =
       prev !== undefined &&
       prev.senderId === "user" &&
       curr.senderId === "user" &&
       prev.pinned !== true &&
-      curr.pinned !== true &&
-      prev.metadata?.synthetic !== true &&
-      curr.metadata?.synthetic !== true &&
-      prev.metadata?.resumedSystemRole !== true &&
-      curr.metadata?.resumedSystemRole !== true
-    ) {
+      curr.pinned !== true;
+    if (pairable) {
+      // Classify the gap:
+      // - "restored-context": either side is engine-restored on resume
+      //   (compaction summary or resumedSystemRole entry). Role
+      //   alternation still needs fixing for providers that enforce it
+      //   (Anthropic), but we MUST NOT tell the model to ignore the
+      //   restored context.
+      // - "interrupt": both sides are real user submits → the prior
+      //   turn was aborted before any reply and the next submit lands
+      //   immediately after. Steer the model to treat the new message
+      //   as a fresh request.
+      const restoredContext =
+        prev.metadata?.synthetic === true ||
+        curr.metadata?.synthetic === true ||
+        prev.metadata?.resumedSystemRole === true ||
+        curr.metadata?.resumedSystemRole === true;
+      const syntheticText = restoredContext
+        ? "[Continuing.]"
+        : "[Previous turn was interrupted before any reply. Respond to the next user message as a fresh request — do not search for hidden context. If the new message is a follow-up referring back to the interrupted turn, you may acknowledge and resume; otherwise just answer it directly.]";
       const synthetic: InboundMessage = {
         senderId: "assistant",
-        content: [
-          {
-            kind: "text",
-            text: "[Previous turn was interrupted before any reply. Respond to the next user message as a fresh request — do not search for hidden context. If the new message is a follow-up referring back to the interrupted turn, you may acknowledge and resume; otherwise just answer it directly.]",
-          },
-        ],
+        content: [{ kind: "text", text: syntheticText }],
         metadata: { synthetic: true, repairPhase: "interrupt" },
         timestamp: curr.timestamp,
         ...(curr.threadId !== undefined ? { threadId: curr.threadId } : {}),
@@ -142,7 +144,9 @@ function repairInterrupts(
       insertedCount++;
       issues.push({
         phase: "interrupt",
-        description: `Inserted synthetic assistant between consecutive user messages at index ${String(i)} (likely interrupted turn)`,
+        description: restoredContext
+          ? `Inserted neutral separator between restored-context and user message at index ${String(i)} (role alternation)`
+          : `Inserted synthetic assistant between consecutive user messages at index ${String(i)} (likely interrupted turn)`,
         index: i,
         action: "inserted",
       });
