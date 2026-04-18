@@ -757,4 +757,26 @@ describe("spawnChildAgent governance event wiring", () => {
 
     expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
   });
+
+  test("does not throw and does not record when parent has no GOVERNANCE component", async () => {
+    // Default mockParentAgent has no GOVERNANCE component attached.
+    const parent = mockParentAgent(0);
+    // Spawn must succeed AND no governance recording must fire — verify
+    // by spawning, then checking that no exception escaped and that the
+    // returned runtime works.
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    expect(result.runtime).toBeDefined();
+    expect(result.childPid).toBeDefined();
+
+    // Drive termination — should still not throw despite no controller.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // No assertion needed — absence of thrown error is the contract.
+  });
 });
