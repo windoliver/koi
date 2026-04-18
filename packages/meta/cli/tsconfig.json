@@ -8,6 +8,7 @@
   "references": [
     { "path": "../../kernel/core" },
     { "path": "../../kernel/engine" },
+    { "path": "../../lib/agent-summary" },
     { "path": "../../lib/decision-ledger" },
     { "path": "../../lib/channel-cli" },
     { "path": "../../lib/harness" },

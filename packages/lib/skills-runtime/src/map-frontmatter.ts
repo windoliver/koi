@@ -32,6 +32,8 @@ export function mapFrontmatterToMetadata(
     ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
     ...(fm.metadata !== undefined ? { metadata: fm.metadata } : {}),
     ...(fm.executionMode !== undefined ? { executionMode: fm.executionMode } : {}),
+    // `references` is deliberately not copied here — see SkillMetadata
+    // in types.ts for the Tier 2 rationale (review #1896 round 6).
   };
 }
 

@@ -18,6 +18,7 @@ import { join, relative } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
+import type { BodyCache } from "./lru-cache.js";
 import { mapFrontmatterToDefinition } from "./map-frontmatter.js";
 import type { ParsedSkillMd } from "./parse.js";
 import { parseSkillMd } from "./parse.js";
@@ -71,8 +72,12 @@ function makeFindingCallback(
 // ---------------------------------------------------------------------------
 
 export interface LoaderContext {
-  /** Instance-scoped skill cache (Decision 2A). */
-  readonly cache: Map<string, Result<SkillDefinition, KoiError>>;
+  /**
+   * Instance-scoped skill cache. Bounded LRU when `cacheMaxBodies` is finite;
+   * otherwise unbounded (legacy behavior). Drives `onSkillLoaded` via cacheHit
+   * detection inside loadSkill().
+   */
+  readonly cache: BodyCache<Result<SkillDefinition, KoiError>>;
   /** Instance-scoped scanner (Decision 13A). */
   readonly scanner: Scanner;
   /**
@@ -85,6 +90,24 @@ export interface LoaderContext {
     readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
     readonly onShadowedSkill?: (name: string, shadowedBy: SkillSource) => void;
   };
+  /**
+   * Telemetry hook fired on every resolved load — issue #1642.
+   * `cacheHit` is true when the body came from the LRU cache, false when a
+   * fresh read + scan + cache-insert just occurred.
+   */
+  readonly onLoad?: (
+    name: string,
+    result: Result<SkillDefinition, KoiError>,
+    cacheHit: boolean,
+  ) => void;
+  /**
+   * Epoch guard against stale cache writes (review #1896 round 11). Called
+   * right before the cache insert completes; if it returns `false` the
+   * loader MUST NOT write to the cache. Used by the runtime to suppress
+   * results from load() calls whose async work finished after a
+   * concurrent `invalidate()` or `registerExternal()` reset the cache.
+   */
+  readonly shouldCommit?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -169,12 +192,22 @@ export async function loadSkill(
 ): Promise<Result<SkillDefinition, KoiError>> {
   // 1. Check cache (Decision 2A)
   const cached = ctx.cache.get(name);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    ctx.onLoad?.(name, cached, true);
+    return cached;
+  }
 
   const result = await loadSkillUncached(name, dirPath, source, ctx);
 
-  // Cache both successes and failures (to avoid re-scanning known-bad skills)
-  ctx.cache.set(name, result);
+  // Cache both successes and failures (to avoid re-scanning known-bad
+  // skills), but only when the runtime epoch has not advanced underneath
+  // us (review #1896 round 11). A stale-insert after an invalidate() or
+  // registerExternal() would resurrect obsolete data; the shouldCommit
+  // guard suppresses that.
+  if (ctx.shouldCommit === undefined || ctx.shouldCommit()) {
+    ctx.cache.set(name, result);
+  }
+  ctx.onLoad?.(name, result, false);
   return result;
 }
 

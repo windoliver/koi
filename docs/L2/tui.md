@@ -8,6 +8,7 @@
 
 ## Recent additions
 
+- **`agent:summarize` command (#1645)**: new entry in `COMMAND_DEFINITIONS` under the Agent category. Palette label "Summarize", slash-command `/summarize`. Dispatched by the CLI host (`tui-command.ts`) which runs `@koi/agent-summary` over the in-memory transcript and emits the three-variant `SummaryOk` envelope as a `dispatchNotice`. The TUI side is purely the command registry + palette visibility; all summarization logic lives in the host. Command count is now 23.
 - **`/mcp` MCP server status view** (`McpView.tsx`): full-screen two-column interactive view, arrow-key navigation, Enter-to-authenticate. Status is sourced from Keychain check (instant) + live `getMcpStatus()` enrichment. Five status states: `connected`, `needs-auth`, `auth-pending-restart`, `error`, `pending`.
 - **`McpServerInfo`** state type and `set_mcp_status` reducer action for the new view.
 - **MCP tool display** (`tool-display.ts`): MCP-namespaced tools (`server__tool`) render as `Server ▸ subtitle` instead of falling through to suffix matching that mislabels them (e.g., previously `jira__jira_search` showed as "Web Search").
@@ -635,6 +636,8 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
 
 > **Spawn crash guard + record synthesis (#1855):** `set_spawn_terminal` no longer no-ops when no prior `spawn_requested` was recorded — it synthesizes a `finishedSpawns` record from fallback `agentName`/`description` metadata carried on the action. This recovers UI visibility for child agents whose `spawn_requested` dispatch was lost (e.g., `store.dispatch` threw). The `TuiAction` type gains optional `agentName` and `description` fields on `set_spawn_terminal`. Both reducer implementations (immutable `reduce.ts` and mutable `mutations.ts`) handle the synthesis path. The `onSpawnEvent` host callback in `tui-command.ts` is wrapped in try-catch as defense-in-depth.
+
+> **Overlay Enter preventDefault (#1898):** `SelectOverlay` / `SlashOverlay` now route their consumed keys through a new `consumeSelectOverlayKey` helper that calls `key.preventDefault()` whenever the underlying `handleSelectOverlayKey` returns `true` (Enter / Esc / Tab / Up / Down / Ctrl+P / Ctrl+N). Without preventDefault, a focused modal's Enter also reached InputArea's OpenTUI `<textarea>` and inserted `"\n"` into its buffer; after the modal closed, typing `/sessions` produced `"\n/sessions"` which `detectSlashPrefix` rejects (position-0 match only), so the text was submitted to the LLM instead of reopening the picker. Covered by `consume-select-overlay-key.test.ts`.
 
 ### Phase-2 DX polish
 

@@ -1,0 +1,101 @@
+{
+  "generatedAt": "2026-04-18T07:53:49.188Z",
+  "model": "openai/gpt-4o-mini",
+  "granularity": "high",
+  "transcript": {
+    "entries": [
+      {
+        "id": "u1",
+        "role": "user",
+        "content": "list files in this directory",
+        "timestamp": 1
+      },
+      {
+        "id": "a1",
+        "role": "assistant",
+        "content": "I'll list the files.",
+        "timestamp": 2
+      },
+      {
+        "id": "tc1",
+        "role": "tool_call",
+        "content": "list({})",
+        "timestamp": 3
+      },
+      {
+        "id": "tr1",
+        "role": "tool_result",
+        "content": "[README.md, src/, package.json]",
+        "timestamp": 4
+      },
+      {
+        "id": "u2",
+        "role": "user",
+        "content": "any errors?",
+        "timestamp": 5
+      },
+      {
+        "id": "a2",
+        "role": "assistant",
+        "content": "No errors — the listing succeeded.",
+        "timestamp": 6
+      }
+    ],
+    "skipped": []
+  },
+  "modelRequest": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "You summarize a Koi agent session. Output ONLY a single JSON object matching the schema below — no top-level fields other than the six listed. Schema: {\"goal\":string,\"status\":\"succeeded\"|\"partial\"|\"failed\",\"actions\":[{\"kind\":\"tool_call\"|\"edit\"|\"decision\",\"name\":string,\"paths\"?:string[],\"detail\"?:string}],\"outcomes\":string[],\"errors\":string[],\"learnings\":string[]}. All string arrays may be empty. No other top-level fields allowed. Emphasize these topics in your summary content: user goals, tool invocations, errors encountered, files created or edited, decisions the agent made. Be terse. Output goal + status + top 3 outcomes only. Stay under ~300 tokens. Return a single JSON object. Scratchpad reasoning may go inside <analysis>…</analysis> and will be stripped."
+      },
+      {
+        "role": "user",
+        "content": "Transcript:\n[user] list files in this directory\n[assistant] I'll list the files.\n[tool_call] list({})\n[tool_result] [README.md, src/, package.json]\n[user] any errors?\n[assistant] No errors — the listing succeeded."
+      }
+    ],
+    "maxTokens": 300,
+    "responseFormat": "json",
+    "metadata": {
+      "summaryMode": "high",
+      "modelHint": "cheap"
+    }
+  },
+  "modelResponse": {
+    "text": "{\"goal\":\"list files in this directory\",\"status\":\"succeeded\",\"actions\":[{\"kind\":\"tool_call\",\"name\":\"list\",\"paths\":[],\"detail\":\"\"}],\"outcomes\":[\"Files listed successfully: README.md, src/, package.json\",\"No errors encountered during the listing\",\"User's goal was achieved without issues\"],\"errors\":[],\"learnings\":[]}"
+  },
+  "summary": {
+    "sessionId": "record-agent-summary-high",
+    "range": {
+      "fromTurn": 0,
+      "toTurn": 1,
+      "entryCount": 6
+    },
+    "goal": "list files in this directory",
+    "status": "succeeded",
+    "actions": [
+      {
+        "kind": "tool_call",
+        "name": "list",
+        "paths": [],
+        "detail": ""
+      }
+    ],
+    "outcomes": [
+      "Files listed successfully: README.md, src/, package.json",
+      "No errors encountered during the listing",
+      "User's goal was achieved without issues"
+    ],
+    "errors": [],
+    "learnings": [],
+    "meta": {
+      "granularity": "high",
+      "modelHint": "cheap",
+      "hash": "96811de1fdc34bd00f4dc02ee4df51562dcbea6cd83665b93450bc3581d247a0",
+      "generatedAt": 1776498829188,
+      "schemaVersion": 1,
+      "hasCompactionPrefix": false,
+      "rangeOrigin": "raw"
+    }
+  }
+}

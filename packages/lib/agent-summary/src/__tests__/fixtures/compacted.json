@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "id": "c1",
+      "role": "compaction",
+      "content": "earlier turns summarized: user asked for listings, agent listed files",
+      "timestamp": 0
+    },
+    { "id": "u1", "role": "user", "content": "ok now read b.txt", "timestamp": 1 },
+    { "id": "a1", "role": "assistant", "content": "calling read", "timestamp": 2 }
+  ],
+  "skipped": []
+}
