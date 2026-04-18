@@ -16,7 +16,7 @@
 
 import type { Subprocess } from "bun";
 
-import { SIGUSR1_SUPPORTED } from "./tui-sigusr1.js";
+import { SIGUSR1_EXIT_CODE, SIGUSR1_SUPPORTED } from "./tui-sigusr1.js";
 
 // After the first SIGTERM, escalate to SIGKILL and hard-exit after this
 // many milliseconds if the child refuses to exit. Prevents the wrapper
@@ -142,6 +142,13 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // hard-exit) and we want the child's exit code to flow back naturally.
   // Installing this handler also masks Node's default SIGUSR1 behavior
   // (inspector launch), which would otherwise orphan the child.
+  //
+  // Pre-bind SIGUSR1 (#1906 R7): a SIGUSR1 arriving AFTER arm but BEFORE
+  // Bun.spawn completes is an explicit startup-abort request. Flip the
+  // termination latch so bin.ts sees `guard.terminated === true` and
+  // exits with the SIGUSR1 exit code INSTEAD of spawning the child. This
+  // means user-requested escape-before-spawn never launches the TUI at
+  // all, avoiding the inherent runtime-init-race on a fresh child.
   const onSigusr1 = (): void => {
     if (child !== null) {
       try {
@@ -151,6 +158,14 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
       }
     } else {
       pendingSigusr1 = true;
+      // Mark the guard terminated so bin.ts aborts the spawn flow. Does
+      // not enter the SIGTERM escalation path because `forward()` is never
+      // called — the escalation logic is scoped to child-directed
+      // termination, not pre-spawn aborts.
+      if (!forwardingStarted) {
+        forwardingStarted = true;
+        pendingExitCode = SIGUSR1_EXIT_CODE;
+      }
     }
   };
 

@@ -77,6 +77,21 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     await fake.exited;
   });
 
+  test("pre-bind SIGUSR1 flips the termination latch so bin.ts aborts spawn (#1906 R7)", () => {
+    const guard = armTuiReexecSignalHandlers();
+    // Baseline — guard starts un-terminated.
+    expect(guard.terminated).toBe(false);
+
+    // Pre-bind SIGUSR1: user wants to escape before the child exists.
+    process.emit("SIGUSR1", "SIGUSR1");
+
+    // Now bin.ts will observe `terminated === true` and exit with the
+    // SIGUSR1 exit code instead of spawning the browser-build child.
+    expect(guard.terminated).toBe(true);
+    // 158 (macOS) / 138 (Linux) — platform-canonical 128+SIGUSR1.
+    expect([138, 158]).toContain(guard.terminatedExitCode);
+  });
+
   test("removes the SIGUSR1 listener after the child exits", async () => {
     const fake = makeFakeSubprocess();
     const guard = armTuiReexecSignalHandlers();
