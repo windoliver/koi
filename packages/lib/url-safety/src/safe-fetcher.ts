@@ -32,9 +32,17 @@ import { isSafeUrl } from "./safe-url.js";
 
 export interface SafeFetcherOptions extends UrlSafetyOptions {
   readonly maxRedirects?: number;
+  /**
+   * Maximum bytes to buffer from a stream-backed request body so that
+   * method-preserving redirects (307/308) can replay. Default: 10 MB.
+   * Set to `0` to disable buffering — stream bodies will then be rejected
+   * up front, matching strict-streaming semantics.
+   */
+  readonly maxBufferedBodyBytes?: number;
 }
 
 const DEFAULT_MAX_REDIRECTS = 5;
+const DEFAULT_MAX_BUFFERED_BODY_BYTES = 10 * 1024 * 1024;
 
 type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
 
@@ -46,18 +54,46 @@ interface HopState {
   readonly carry: FetchInit;
 }
 
-async function bufferBody(body: FetchInit["body"]): Promise<FetchInit["body"]> {
+async function bufferBody(body: FetchInit["body"], maxBytes: number): Promise<FetchInit["body"]> {
   if (body === null || body === undefined) return body;
-  if (body instanceof ReadableStream) {
-    const buf = await new Response(body).arrayBuffer();
-    return new Uint8Array(buf);
+  if (!(body instanceof ReadableStream)) return body;
+
+  if (maxBytes <= 0) {
+    throw new Error(
+      "url-safety: stream-backed request bodies are not supported when maxBufferedBodyBytes=0",
+    );
   }
-  return body;
+
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = body.getReader();
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new Error(
+        `url-safety: request body exceeds maxBufferedBodyBytes (${maxBytes}); use a smaller payload or route streaming uploads around this wrapper`,
+      );
+    }
+    chunks.push(value);
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 async function initialState(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
+  maxBufferedBodyBytes: number,
 ): Promise<HopState> {
   const req = input instanceof Request ? input : undefined;
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -86,7 +122,7 @@ async function initialState(
   pick("cache");
 
   const rawBody = init?.body ?? (req !== undefined ? req.body : undefined);
-  const body = await bufferBody(rawBody);
+  const body = await bufferBody(rawBody, maxBufferedBodyBytes);
 
   return {
     url,
@@ -166,14 +202,19 @@ export function createSafeFetcher(
   options?: SafeFetcherOptions,
 ): typeof fetch {
   const maxRedirects = options?.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+  const maxBufferedBodyBytes = options?.maxBufferedBodyBytes ?? DEFAULT_MAX_BUFFERED_BODY_BYTES;
 
   const safeFetchImpl = async (
     input: Parameters<typeof fetch>[0],
     init: Parameters<typeof fetch>[1],
   ): Promise<Response> => {
-    const state = await initialState(input, init);
+    const state = await initialState(input, init, maxBufferedBodyBytes);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
+      // Host header is per-hop derived state. Clear any from a previous hop so
+      // a stale value can't leak from a pinned http:// to a subsequent https://.
+      state.headers.delete("host");
+
       const check = await isSafeUrl(state.url, options);
       if (!check.ok) {
         throw new Error(`url-safety: ${check.reason}`);

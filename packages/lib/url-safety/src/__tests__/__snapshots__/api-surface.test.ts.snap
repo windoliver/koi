@@ -61,6 +61,13 @@ declare function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<Saf
 
 interface SafeFetcherOptions extends UrlSafetyOptions {
     readonly maxRedirects?: number;
+    /**
+     * Maximum bytes to buffer from a stream-backed request body so that
+     * method-preserving redirects (307/308) can replay. Default: 10 MB.
+     * Set to \`0\` to disable buffering — stream bodies will then be rejected
+     * up front, matching strict-streaming semantics.
+     */
+    readonly maxBufferedBodyBytes?: number;
 }
 declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
 

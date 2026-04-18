@@ -269,6 +269,69 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["host"]).toBeUndefined();
   });
 
+  test("clears pinned Host header on http→https redirect", async () => {
+    const { fn, calls } = recordingFetch({
+      "http://93.184.216.34/start": new Response(null, {
+        status: 307,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+      "https://public.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("http://public.example.com/start");
+    expect(calls).toHaveLength(2);
+    // Hop 0 pinned http → IP + host header.
+    expect(calls[0]?.url).toBe("http://93.184.216.34/start");
+    expect(calls[0]?.headers["host"]).toBe("public.example.com");
+    // Hop 1 https: URL must not carry the stale synthetic host.
+    expect(calls[1]?.url).toBe("https://public.example.com/final");
+    expect(calls[1]?.headers["host"]).toBeUndefined();
+  });
+
+  test("rejects request body exceeding maxBufferedBodyBytes", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      maxBufferedBodyBytes: 4,
+    });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("12345"));
+        controller.close();
+      },
+    });
+    await expect(
+      safeFetch("https://public.example.com/up", {
+        method: "POST",
+        body: stream,
+      }),
+    ).rejects.toThrow(/maxBufferedBodyBytes/);
+  });
+
+  test("rejects stream body when maxBufferedBodyBytes=0 (strict streaming mode)", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/up": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      maxBufferedBodyBytes: 0,
+    });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("x"));
+        controller.close();
+      },
+    });
+    await expect(
+      safeFetch("https://public.example.com/up", {
+        method: "POST",
+        body: stream,
+      }),
+    ).rejects.toThrow(/not supported/);
+  });
+
   test("does not pin HTTP IP-literal URLs (already an IP)", async () => {
     const { fn, calls } = recordingFetch({
       "http://93.184.216.34/x": new Response("ok", { status: 200 }),
