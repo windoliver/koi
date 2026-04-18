@@ -44,6 +44,66 @@ describe("createInMemoryController", () => {
       expect(vars.get("error_rate")?.limit).toBe(0.5);
       expect(vars.get("context_occupancy")?.limit).toBe(0.9);
     });
+
+    test("retryable flag follows governance-core semantics per variable", () => {
+      const vars = createInMemoryController({}).variables();
+      expect(vars.get(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.retryable).toBe(true);
+      expect(vars.get(GOVERNANCE_VARIABLES.ERROR_RATE)?.retryable).toBe(true);
+      expect(vars.get(GOVERNANCE_VARIABLES.CONTEXT_OCCUPANCY)?.retryable).toBe(true);
+      expect(vars.get(GOVERNANCE_VARIABLES.SPAWN_DEPTH)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.TURN_COUNT)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.COST_USD)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.DURATION_MS)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.FORGE_DEPTH)?.retryable).toBe(false);
+      expect(vars.get(GOVERNANCE_VARIABLES.FORGE_BUDGET)?.retryable).toBe(false);
+    });
+  });
+
+  describe("threshold semantics (>= for bounded counters, > for spawn_depth)", () => {
+    test("token_usage fails at the limit, not only above", async () => {
+      const controller = createInMemoryController({ tokenUsageLimit: 100 });
+      await controller.record({ kind: "token_usage", count: 100 });
+      const result = await controller.check("token_usage");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(false);
+    });
+
+    test("cost_usd fails at the limit, not only above", async () => {
+      const controller = createInMemoryController({ costUsdLimit: 1 });
+      await controller.record({
+        kind: "token_usage",
+        count: 0,
+        costUsd: 1,
+      });
+      const result = await controller.check("cost_usd");
+      expect(result.ok).toBe(false);
+    });
+
+    test("turn_count fails at the limit", async () => {
+      const controller = createInMemoryController({ turnCountLimit: 2 });
+      await controller.record({ kind: "turn" });
+      await controller.record({ kind: "turn" });
+      const result = await controller.check("turn_count");
+      expect(result.ok).toBe(false);
+    });
+
+    test("spawn_count fails at the limit AND is retryable", async () => {
+      const controller = createInMemoryController({ spawnCountLimit: 1 });
+      await controller.record({ kind: "spawn", depth: 1 });
+      const result = await controller.check("spawn_count");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(true);
+    });
+
+    test("spawn_depth fails only strictly above the limit", async () => {
+      const exact = createInMemoryController({ spawnDepthLimit: 3, agentDepth: 3 });
+      expect((await exact.check("spawn_depth")).ok).toBe(true);
+      const over = createInMemoryController({ spawnDepthLimit: 3, agentDepth: 4 });
+      const result = await over.check("spawn_depth");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(false);
+    });
   });
 
   describe("record(token_usage)", () => {
@@ -73,8 +133,35 @@ describe("createInMemoryController", () => {
     test("uses count when inputTokens/outputTokens are absent", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "token_usage", count: 777 });
-      const reading = controller.reading("token_usage");
-      expect(reading?.current).toBe(777);
+      expect(controller.reading("token_usage")?.current).toBe(777);
+    });
+
+    test("rejects NaN costUsd so the spend cap cannot be silently disabled", async () => {
+      const controller = createInMemoryController({ costUsdLimit: 10 });
+      await controller.record({
+        kind: "token_usage",
+        count: 10,
+        costUsd: Number.NaN,
+      });
+      expect(controller.reading("cost_usd")?.current).toBe(0);
+      expect((await controller.check("cost_usd")).ok).toBe(true);
+    });
+
+    test("rejects negative costUsd so later real spend cannot be offset", async () => {
+      const controller = createInMemoryController({ costUsdLimit: 10 });
+      await controller.record({ kind: "token_usage", count: 10, costUsd: -50 });
+      await controller.record({ kind: "token_usage", count: 10, costUsd: 3 });
+      expect(controller.reading("cost_usd")?.current).toBeCloseTo(3, 10);
+    });
+
+    test("rejects +Infinity costUsd", async () => {
+      const controller = createInMemoryController({ costUsdLimit: 10 });
+      await controller.record({
+        kind: "token_usage",
+        count: 10,
+        costUsd: Number.POSITIVE_INFINITY,
+      });
+      expect(controller.reading("cost_usd")?.current).toBe(0);
     });
   });
 
@@ -87,28 +174,45 @@ describe("createInMemoryController", () => {
     });
   });
 
-  describe("record(spawn) / record(spawn_release)", () => {
-    test("spawn_depth tracks depth from event; spawn_count is cumulative", async () => {
+  describe("record(spawn) / record(spawn_release) — concurrent children semantics", () => {
+    test("spawn_count tracks concurrent live children", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "spawn", depth: 1 });
       await controller.record({ kind: "spawn", depth: 2 });
-      expect(controller.reading("spawn_depth")?.current).toBe(2);
       expect(controller.reading("spawn_count")?.current).toBe(2);
 
       await controller.record({ kind: "spawn_release" });
-      expect(controller.reading("spawn_depth")?.current).toBe(1);
-      expect(controller.reading("spawn_count")?.current).toBe(2);
+      expect(controller.reading("spawn_count")?.current).toBe(1);
+
+      await controller.record({ kind: "spawn_release" });
+      expect(controller.reading("spawn_count")?.current).toBe(0);
     });
 
-    test("spawn_depth never goes below zero", async () => {
+    test("spawn_release restores capacity so a full controller becomes healthy again", async () => {
+      const controller = createInMemoryController({ spawnCountLimit: 1 });
+      await controller.record({ kind: "spawn", depth: 1 });
+      expect((await controller.check("spawn_count")).ok).toBe(false);
+      await controller.record({ kind: "spawn_release" });
+      expect((await controller.check("spawn_count")).ok).toBe(true);
+    });
+
+    test("spawn_release on an empty counter clamps to zero, not negative", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "spawn_release" });
-      expect(controller.reading("spawn_depth")?.current).toBe(0);
+      expect(controller.reading("spawn_count")?.current).toBe(0);
+    });
+
+    test("spawn_depth reflects THIS controller's agentDepth, not child events", async () => {
+      const controller = createInMemoryController({ agentDepth: 2 });
+      expect(controller.reading("spawn_depth")?.current).toBe(2);
+      await controller.record({ kind: "spawn", depth: 99 });
+      await controller.record({ kind: "spawn", depth: 7 });
+      expect(controller.reading("spawn_depth")?.current).toBe(2);
     });
   });
 
   describe("record(forge)", () => {
-    test("forge_depth and forge_budget both increment on each forge event", async () => {
+    test("forge_depth and forge_budget both increment per event", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "forge" });
       await controller.record({ kind: "forge", toolName: "build_tool" });
@@ -118,6 +222,20 @@ describe("createInMemoryController", () => {
   });
 
   describe("record(tool_error / tool_success) — rolling error_rate", () => {
+    test("error_rate gate waits for the minimum sample size before firing", async () => {
+      const controller = createInMemoryController({
+        errorRateLimit: 0.5,
+        errorRateMinSamples: 3,
+      });
+      await controller.record({ kind: "tool_error", toolName: "t" });
+      await controller.record({ kind: "tool_error", toolName: "t" });
+      expect((await controller.check("error_rate")).ok).toBe(true);
+      await controller.record({ kind: "tool_error", toolName: "t" });
+      const result = await controller.check("error_rate");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(true);
+    });
+
     test("error_rate = errors / window when window filled", async () => {
       const controller = createInMemoryController({ errorRateWindow: 4 });
       await controller.record({ kind: "tool_error", toolName: "t" });
@@ -152,6 +270,18 @@ describe("createInMemoryController", () => {
       t = 1_500;
       expect(controller.reading("duration_ms")?.current).toBe(500);
     });
+
+    test("fails at limit and is non-retryable", async () => {
+      let t = 0;
+      const controller = createInMemoryController({
+        durationMsLimit: 500,
+        now: () => t,
+      });
+      t = 500;
+      const result = await controller.check("duration_ms");
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.retryable).toBe(false);
+    });
   });
 
   describe("checkAll", () => {
@@ -162,14 +292,13 @@ describe("createInMemoryController", () => {
       expect(result).toEqual({ ok: true });
     });
 
-    test("returns first violation with retryable=false", async () => {
+    test("returns first violation", async () => {
       const controller = createInMemoryController({ tokenUsageLimit: 100 });
       await controller.record({ kind: "token_usage", count: 200 });
       const result = await controller.checkAll();
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.variable).toBe("token_usage");
-        expect(result.retryable).toBe(false);
       }
     });
   });
@@ -206,12 +335,17 @@ describe("createInMemoryController", () => {
       expect(snap.violations).not.toContain("cost_usd");
     });
 
-    test("utilization = current / limit (finite limits only)", async () => {
+    test("utilization = current / limit, clamped to 1", async () => {
       const controller = createInMemoryController({ tokenUsageLimit: 1000 });
       await controller.record({ kind: "token_usage", count: 250 });
       const snap = await controller.snapshot();
       const token = snap.readings.find((r) => r.name === "token_usage");
       expect(token?.utilization).toBeCloseTo(0.25, 10);
+
+      await controller.record({ kind: "token_usage", count: 2000 });
+      const over = await controller.snapshot();
+      const after = over.readings.find((r) => r.name === "token_usage");
+      expect(after?.utilization).toBe(1);
     });
 
     test("utilization is 0 when limit is Infinity", async () => {
@@ -241,13 +375,14 @@ describe("createInMemoryController", () => {
       });
       await controller.record({ kind: "spawn", depth: 2 });
       await controller.record({ kind: "tool_error", toolName: "t" });
+      await controller.record({ kind: "tool_error", toolName: "t" });
+      await controller.record({ kind: "tool_error", toolName: "t" });
 
       await controller.record({ kind: "iteration_reset" });
 
       expect(controller.reading("turn_count")?.current).toBe(0);
       expect(controller.reading("token_usage")?.current).toBe(500);
       expect(controller.reading("cost_usd")?.current).toBeCloseTo(0.01, 10);
-      expect(controller.reading("spawn_depth")?.current).toBe(2);
       expect(controller.reading("spawn_count")?.current).toBe(1);
       expect(controller.reading("error_rate")?.current).toBeGreaterThan(0);
     });
@@ -267,7 +402,7 @@ describe("createInMemoryController", () => {
       expect(controller.reading("error_rate")?.current).toBe(0);
       expect(controller.reading("token_usage")?.current).toBe(500);
       expect(controller.reading("cost_usd")?.current).toBeCloseTo(0.01, 10);
-      expect(controller.reading("spawn_depth")?.current).toBe(1);
+      expect(controller.reading("spawn_count")?.current).toBe(1);
     });
   });
 });
