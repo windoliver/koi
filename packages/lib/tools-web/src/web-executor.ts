@@ -210,15 +210,18 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         (method === "GET" || method === "HEAD");
 
       // `noCache` means "do not serve stale, period". We evict any prior
-      // entry up front so concurrent default readers during the refresh
-      // RTT miss cache and hit origin themselves, and — unlike earlier
-      // rounds of this patch — we never restore the snapshot on transport
-      // errors or policy rejections. That's the contract promised to the
-      // tool caller (`web_fetch` doc: "failed response leaves the key
-      // empty — no stale fallback") and the right default for interactive
-      // CLI verification. Callers who want stale-on-error graceful
-      // degradation can simply not set `noCache`.
-      if (noCache && keyCacheable && fetchCache !== undefined) {
+      // entry at the bare `METHOD:URL` key up front so concurrent default
+      // readers during the refresh RTT miss cache and hit origin themselves.
+      // Eviction is decoupled from `keyCacheable` (which gates whether the
+      // *current* request could be written back): a `noCache` fetch with
+      // custom headers or a body is a representation we don't cache, but
+      // the caller still explicitly asked to invalidate any prior default
+      // entry for this URL. We never restore a snapshot on transport
+      // errors or policy rejections — that's the contract promised to the
+      // tool caller ("failed response leaves the key empty — no stale
+      // fallback"). Callers who want stale-on-error graceful degradation
+      // simply don't set `noCache`.
+      if (noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD")) {
         fetchCache.delete(cacheKey);
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
@@ -306,14 +309,17 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           const entryTtlMs =
             originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
           if (entryTtlMs > 0) {
-            // Write-back fence for `noCache`: if a concurrent writer
-            // (default reader or peer `noCache`) repopulated the key
-            // while our refresh was in flight, keep their entry. We
-            // evicted up front, so any occupancy now is strictly newer
-            // than us — overwriting it could roll the cache backwards
-            // to an older response that origin briefly served us due
-            // to CDN skew or deploy rollout.
-            if (!(noCache && fetchCache.getEntry(cacheKey) !== undefined)) {
+            // Write-back fence: both `noCache` refreshes and ordinary
+            // cache-miss writes are vulnerable to the same ordering race.
+            // Two concurrent default GETs can both miss cache, fetch from
+            // different edges, and complete out-of-order — the slower
+            // response (potentially from a stale edge or older deploy
+            // replica) would otherwise overwrite the faster one. Since
+            // our key is just `METHOD:URL` and we have no ETag/Last-
+            // Modified compare, the safest invariant is "first writer
+            // after an empty key wins": any occupancy at write time is
+            // strictly newer than us and we keep it.
+            if (fetchCache.getEntry(cacheKey) === undefined) {
               fetchCache.set(cacheKey, fetchResult, entryTtlMs);
             }
           }

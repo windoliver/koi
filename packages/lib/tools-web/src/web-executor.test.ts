@@ -1202,6 +1202,97 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
+  test("slower default fetch does not overwrite a faster peer's cache write", async () => {
+    // Regression for #1903 review round 11: two concurrent default GETs
+    // both miss an empty cache and fetch from origin. If they complete
+    // out of order, the slower response must NOT overwrite the faster
+    // one — without an ETag/Last-Modified compare we cannot tell which
+    // edge's response is actually "newer", so first-writer-wins is the
+    // safe invariant. Otherwise a stale CDN edge can roll the cache
+    // backwards for the full TTL after a fresher edge already populated
+    // it.
+    let callCount = 0;
+    let releaseFast: (() => void) | undefined;
+    let releaseSlow: (() => void) | undefined;
+    const fastReady = new Promise<void>((resolve) => {
+      releaseFast = resolve;
+    });
+    const slowReady = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        // Fast (fresh-edge) request — resolves first once we release it.
+        await fastReady;
+        return new Response("fresh-edge-v2", { status: 200 });
+      }
+      // Slow (stale-edge) request — resolves after the fast one.
+      await slowReady;
+      return new Response("stale-edge-v1", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Kick off both fetches concurrently. Both miss cache.
+    const fastP = executor.fetch("https://example.com");
+    const slowP = executor.fetch("https://example.com");
+
+    // Release the fast request first. Its response lands and populates
+    // the cache before the slow one even begins to return.
+    releaseFast?.();
+    await fastP;
+
+    // Now release the slow one. Under the buggy "last-writer-wins"
+    // default, it would overwrite the cache with "stale-edge-v1".
+    releaseSlow?.();
+    await slowP;
+
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("fresh-edge-v2");
+      expect(followUp.value.cached).toBe(true);
+    }
+  });
+
+  test("noCache with custom headers still evicts the prior default cached entry", async () => {
+    // Regression for #1903 review round 11: `noCache` must invalidate
+    // any pre-existing default cache entry at the `METHOD:URL` key even
+    // when the forced-fresh request itself is uncacheable (custom
+    // headers, request body). Otherwise a caller does a forced refresh
+    // with auth headers, sees new content, and the very next default
+    // fetch still serves the stale pre-refresh body.
+    let callCount = 0;
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("v1-stale", { status: 200 });
+      if (callCount === 2) return new Response("v2-live-with-headers", { status: 200 });
+      return new Response("v3-from-origin", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Prime with a default GET — caches "v1-stale" at GET:url.
+    await executor.fetch("https://example.com");
+
+    // Forced refresh with custom headers. The request itself is not
+    // cacheable (headers rewrite the representation), but the caller
+    // explicitly set `noCache`, so the old entry at GET:url must go.
+    const forced = await executor.fetch("https://example.com", {
+      headers: { Authorization: "Bearer abc" },
+      noCache: true,
+    });
+    expect(forced.ok).toBe(true);
+
+    // Default fetch must now hit origin, not replay the stale "v1".
+    const followUp = await executor.fetch("https://example.com");
+    expect(callCount).toBe(3);
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("v3-from-origin");
+      expect(followUp.value.cached).toBe(false);
+    }
+  });
+
   test("successful noCache refresh does not overwrite a newer concurrent write", async () => {
     // Regression for #1903 review round 10: while a `noCache` refresh
     // is in flight, a concurrent default reader can miss cache, fetch
