@@ -83,6 +83,20 @@ if (!hasSubcommand) {
   }
 }
 
+// Early SIGUSR1 handler (#1906) — installed at the top of the browser-build
+// child so the re-exec wrapper's forwarded `SIGUSR1` cannot land on the
+// child before any handler is armed. The parent sets
+// `KOI_TUI_BROWSER_SOLID=1` when spawning the child, so gating on that env
+// marker confines the install to the TUI child process — `koi --version`,
+// `koi start`, `koi serve`, and other non-TUI invocations never install a
+// SIGUSR1 listener and keep their existing semantics. `runTuiCommand()`
+// swaps this minimal handler for the full graceful-shutdown handler once
+// bootstrap completes (see `removeEarlySigusr1Handler`).
+if (process.env.KOI_TUI_BROWSER_SOLID === "1") {
+  const { installEarlySigusr1Handler } = await import("./tui-sigusr1.js");
+  installEarlySigusr1Handler();
+}
+
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.
 // Shared with bench-entry.ts so startup measurement cannot drift from
 // the real CLI dispatch path.
@@ -140,14 +154,9 @@ switch (result.kind) {
     break;
   }
   case "tui": {
-    // Early SIGUSR1 handler (#1906) — installed BEFORE runTuiCommand's
-    // ~4000-line bootstrap so a `kill -USR1 <pid>` that lands during
-    // child startup exits cleanly instead of hitting the runtime default
-    // (Node opens an inspector on SIGUSR1; Bun's default is also not
-    // graceful shutdown). runTuiCommand calls removeEarlySigusr1Handler()
-    // before installing its full graceful-shutdown handler.
-    const { installEarlySigusr1Handler } = await import("./tui-sigusr1.js");
-    installEarlySigusr1Handler();
+    // Early SIGUSR1 handler is already armed at the top of this file
+    // for the browser-build child (#1906). runTuiCommand swaps it for
+    // the full graceful-shutdown handler during bootstrap.
     const { runTuiCommand } = await import("./tui-command.js");
     await runTuiCommand(result.flags);
     process.exit(0);

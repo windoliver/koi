@@ -98,6 +98,7 @@ import {
   createSigusr1Handler,
   generateTuiStartupHint,
   removeEarlySigusr1Handler,
+  SIGUSR1_SUPPORTED,
 } from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
@@ -4224,12 +4225,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // Doing this as remove-then-install instead of leaving both attached
   // matters: the early handler calls `process.exit()` directly, so if it
   // fired first it would kill the process before graceful shutdown runs.
-  removeEarlySigusr1Handler();
-  // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
-  // handler has flipped idempotent still has a listener installed —
-  // unhandled SIGUSR1 otherwise defaults to inspector-launch / non-graceful
-  // exit depending on runtime, which confuses supervisors probing liveness.
-  process.on("SIGUSR1", onProcessSigusr1);
+  // SIGUSR1 doesn't exist on Windows — gate both operations so the
+  // process.on call cannot throw on unsupported platforms.
+  if (SIGUSR1_SUPPORTED) {
+    removeEarlySigusr1Handler();
+    // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
+    // handler has flipped idempotent still has a listener installed —
+    // unhandled SIGUSR1 otherwise defaults to inspector-launch / non-graceful
+    // exit depending on runtime, which confuses supervisors probing liveness.
+    process.on("SIGUSR1", onProcessSigusr1);
+  }
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
   // PTY teardown during startup is not missed. tuiRunning is cleared in
@@ -4243,17 +4248,21 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // terminal. OpenTUI enters the alternate screen buffer on start and
   // restores the main buffer on exit, so the hint lands in the user's
   // scrollback and is visible from any other terminal session that runs
-  // `ps` to recover the PID. See issue #1906.
+  // `ps` to recover the PID. See issue #1906. Skipped on Windows where
+  // SIGUSR1 does not exist (the hint would advertise a non-functional
+  // escape mechanism).
   //
   // Guarded: a stderr write failure (already-closed stream in an embedded
   // caller or a detached test process) must not propagate, because the
   // `try/finally` below is what removes the signal listeners installed
   // above. Without this catch, a throw here would leak SIGINT/SIGTERM/
   // SIGHUP/SIGUSR1 listeners into the host process.
-  try {
-    process.stderr.write(generateTuiStartupHint(process.pid));
-  } catch {
-    /* stderr unwritable — best-effort hint, never leak signal handlers */
+  if (SIGUSR1_SUPPORTED) {
+    try {
+      process.stderr.write(generateTuiStartupHint(process.pid));
+    } catch {
+      /* stderr unwritable — best-effort hint, never leak signal handlers */
+    }
   }
 
   try {

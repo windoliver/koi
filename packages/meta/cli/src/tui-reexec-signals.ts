@@ -16,6 +16,8 @@
 
 import type { Subprocess } from "bun";
 
+import { SIGUSR1_SUPPORTED } from "./tui-sigusr1.js";
+
 // After the first SIGTERM, escalate to SIGKILL and hard-exit after this
 // many milliseconds if the child refuses to exit. Prevents the wrapper
 // from hanging forever on `proc.exited` when the child wedges.
@@ -148,7 +150,12 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // The SIGINT no-op handler is installed in bindChild after spawn.
   process.on("SIGTERM", onSigterm);
   process.on("SIGHUP", onSighup);
-  process.on("SIGUSR1", onSigusr1);
+  // SIGUSR1 only exists on POSIX. Skip the listener on Windows so the
+  // call cannot throw, and so users on unsupported platforms see zero
+  // side effects from the #1906 escape-hatch machinery.
+  if (SIGUSR1_SUPPORTED) {
+    process.on("SIGUSR1", onSigusr1);
+  }
 
   return {
     get terminated(): boolean {

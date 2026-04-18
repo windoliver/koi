@@ -56,6 +56,17 @@ function resolveSigusr1Number(): number {
  */
 export const SIGUSR1_EXIT_CODE: number = 128 + resolveSigusr1Number();
 
+/**
+ * True when the runtime and platform both support `SIGUSR1` delivery.
+ * Windows never supports it — `process.on("SIGUSR1", …)` is a no-op there
+ * and the surrounding feature (force-escape for a wedged TTY) makes no
+ * sense either. Callers install handlers and emit the startup hint only
+ * when this is true, so Windows users see no extra output and no
+ * non-functional listeners.
+ */
+export const SIGUSR1_SUPPORTED: boolean =
+  process.platform !== "win32" && typeof osConstants.signals.SIGUSR1 === "number";
+
 export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
   // let: justified — set once on first signal to make subsequent signals no-ops.
   let triggered = false;
@@ -92,6 +103,7 @@ let earlyHandler: (() => void) | null = null;
  * Idempotent: repeated calls do not install multiple listeners.
  */
 export function installEarlySigusr1Handler(): void {
+  if (!SIGUSR1_SUPPORTED) return;
   if (earlyHandler !== null) return;
   const handler = (): void => {
     process.exit(SIGUSR1_EXIT_CODE);
@@ -102,7 +114,8 @@ export function installEarlySigusr1Handler(): void {
 
 /**
  * Remove the early handler installed by `installEarlySigusr1Handler`.
- * No-op if none was installed. Safe to call from cleanup paths.
+ * No-op if none was installed or if SIGUSR1 is unsupported on this
+ * platform. Safe to call from cleanup paths.
  */
 export function removeEarlySigusr1Handler(): void {
   if (earlyHandler === null) return;
