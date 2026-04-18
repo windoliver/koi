@@ -474,10 +474,19 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   //   2. Synchronous throws inside record() are caught by .catch() — the
   //      `Promise.resolve().then(...)` form catches BOTH sync and async errors.
   //
-  // Governance is optional per the L0 contract (engine works without a
-  // controller). On record() failure we log and continue — the alternative
-  // (failing closed with full rollback) would make a buggy/distributed
-  // governance backend break agent operation entirely.
+  // POLICY: governance bookkeeping fails OPEN. Governance is optional per
+  // the L0 contract (engine works without a controller); a buggy or slow
+  // controller MUST NOT break agent operation. On record() failure we log
+  // and continue.
+  //
+  // Tradeoff: a transient/persistent controller fault means spawn_count
+  // can underrepresent live children, weakening configured spawn limits.
+  // Operators who need fail-closed semantics or stronger consistency
+  // (e.g. distributed/remote backends) should use an in-process,
+  // synchronous controller (the default `createGovernanceController` from
+  // @koi/engine-reconcile is sync and ordered) — OR introduce an idempotent
+  // event protocol with durable IDs at the L0 layer (out of scope for gov-8).
+  // See follow-ups: #1876 (TUI surface), #1877 (CLI flags), gov-14 (apportionment).
   //
   // The cleanup paths (terminated handler + dispose-override) ALWAYS attempt
   // spawn_release regardless of whether spawn was actually recorded. The
