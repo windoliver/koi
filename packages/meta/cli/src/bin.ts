@@ -173,13 +173,17 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
-    // Re-check terminated AFTER spawn but BEFORE bind (#1906 R8): a
+    // Re-check terminated AFTER spawn but BEFORE bind (#1906 R8/R9): a
     // SIGUSR1 landing between the pre-spawn check and this point would
     // otherwise let the child start the TUI bootstrap and hit the exact
     // runtime-init race the pre-spawn-abort was meant to avoid. SIGKILL
-    // the child synchronously instead of replaying SIGUSR1 — the child
-    // is newborn, nothing to tear down gracefully.
-    if (guard.terminated) {
+    // the newborn child synchronously — nothing to tear down gracefully.
+    //
+    // SIGUSR1 only: SIGTERM/SIGHUP MUST flow through bindChild →
+    // forwardToChild so the graceful SIGTERM-with-SIGKILL-escalation
+    // path runs; skipping it would turn an ordinary supervisor shutdown
+    // into an abrupt kill.
+    if (guard.terminated && guard.shouldKillNewbornChild) {
       try {
         proc.kill("SIGKILL");
       } catch {

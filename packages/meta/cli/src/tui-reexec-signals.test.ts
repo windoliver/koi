@@ -81,6 +81,7 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     const guard = armTuiReexecSignalHandlers();
     // Baseline — guard starts un-terminated.
     expect(guard.terminated).toBe(false);
+    expect(guard.shouldKillNewbornChild).toBe(false);
 
     // Pre-bind SIGUSR1: user wants to escape before the child exists.
     process.emit("SIGUSR1", "SIGUSR1");
@@ -90,6 +91,29 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     expect(guard.terminated).toBe(true);
     // 158 (macOS) / 138 (Linux) — platform-canonical 128+SIGUSR1.
     expect([138, 158]).toContain(guard.terminatedExitCode);
+    // SIGUSR1 pre-bind is the only case where bin.ts should SIGKILL a
+    // newborn child instead of graceful-forwarding (#1906 R9).
+    expect(guard.shouldKillNewbornChild).toBe(true);
+  });
+
+  test("pre-bind SIGTERM does NOT trigger the newborn-SIGKILL path (#1906 R9)", () => {
+    const guard = armTuiReexecSignalHandlers();
+    process.emit("SIGTERM", "SIGTERM");
+
+    // terminated flips (graceful forwarding path) but shouldKillNewbornChild
+    // stays false so bin.ts takes the regular bindChild+forward path.
+    expect(guard.terminated).toBe(true);
+    expect(guard.terminatedExitCode).toBe(143);
+    expect(guard.shouldKillNewbornChild).toBe(false);
+  });
+
+  test("pre-bind SIGHUP does NOT trigger the newborn-SIGKILL path (#1906 R9)", () => {
+    const guard = armTuiReexecSignalHandlers();
+    process.emit("SIGHUP", "SIGHUP");
+
+    expect(guard.terminated).toBe(true);
+    expect(guard.terminatedExitCode).toBe(129);
+    expect(guard.shouldKillNewbornChild).toBe(false);
   });
 
   test("removes the SIGUSR1 listener after the child exits", async () => {

@@ -76,6 +76,13 @@ export interface TuiReexecSignalGuard {
   readonly terminated: boolean;
   /** Exit code for the pending signal (143 for SIGTERM, 129 for SIGHUP). */
   readonly terminatedExitCode: number;
+  /**
+   * True only when the pre-bind terminating signal was SIGUSR1 (#1906).
+   * bin.ts uses this to decide whether a newborn child should be
+   * SIGKILL'd (SIGUSR1 — nothing to tear down gracefully) or bound and
+   * graceful-forwarded (SIGTERM/SIGHUP — normal shutdown path).
+   */
+  readonly shouldKillNewbornChild: boolean;
   /** Bind the child process. Replays any pending signal immediately. */
   readonly bindChild: (proc: Subprocess) => void;
 }
@@ -96,6 +103,10 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // of `pendingSignal` because SIGUSR1 does not start the SIGTERM/SIGHUP
   // escalation path; it is a cooperative escape delivered to the child.
   let pendingSigusr1 = false;
+  // let: justified — identifies the signal kind that flipped
+  // `forwardingStarted` so bin.ts can distinguish between the newborn-
+  // SIGKILL path (SIGUSR1) and the graceful-forward path (SIGTERM/SIGHUP).
+  let pendingTerminatorKind: "sigterm-or-sighup" | "sigusr1" = "sigterm-or-sighup";
 
   const forwardToChild = (proc: Subprocess, exitCode: number): void => {
     try {
@@ -162,9 +173,13 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
       // not enter the SIGTERM escalation path because `forward()` is never
       // called — the escalation logic is scoped to child-directed
       // termination, not pre-spawn aborts.
+      // Tag the terminator as SIGUSR1 (#1906 R9) so bin.ts's post-spawn
+      // check can SIGKILL the newborn child for this signal kind only,
+      // without stomping on SIGTERM/SIGHUP's graceful forwarding.
       if (!forwardingStarted) {
         forwardingStarted = true;
         pendingExitCode = SIGUSR1_EXIT_CODE;
+        pendingTerminatorKind = "sigusr1";
       }
     }
   };
@@ -188,6 +203,9 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     },
     get terminatedExitCode(): number {
       return pendingExitCode;
+    },
+    get shouldKillNewbornChild(): boolean {
+      return pendingTerminatorKind === "sigusr1";
     },
     bindChild(proc: Subprocess): void {
       child = proc;
