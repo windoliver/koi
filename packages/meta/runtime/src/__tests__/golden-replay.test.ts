@@ -2509,7 +2509,9 @@ describe("Golden: @koi/channel-cli", () => {
 
 describe("Golden: @koi/tools-web", () => {
   test("SSRF protection blocks private IPs", async () => {
-    const { isBlockedIp } = await import("@koi/tools-web");
+    // isBlockedIp moved from @koi/tools-web to the shared @koi/url-safety
+    // L0u package during the url-policy migration.
+    const { isBlockedIp } = await import("@koi/url-safety");
 
     expect(isBlockedIp("127.0.0.1")).toBe(true);
     expect(isBlockedIp("10.0.0.1")).toBe(true);

@@ -80,6 +80,7 @@
     "@koi/tool-notebook": "workspace:*",
     "@koi/lsp": "workspace:*",
     "@koi/tools-web": "workspace:*",
+    "@koi/url-safety": "workspace:*",
     "@koi/validation": "workspace:*",
     "zod": "4.3.6"
   },
