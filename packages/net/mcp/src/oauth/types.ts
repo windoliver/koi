@@ -101,4 +101,10 @@ export interface OAuthClientInfo {
   readonly issuer?: string | undefined;
   /** Registration endpoint used (DCR only). Absent for configured static clients. */
   readonly registrationEndpoint?: string | undefined;
+  /**
+   * Redirect URI the client was registered with (DCR only). Persisted so
+   * `oauth.callbackPort` changes invalidate the cached client — many ASes
+   * require an exact-match redirect URI against the registered value.
+   */
+  readonly redirectUri?: string | undefined;
 }

@@ -266,10 +266,10 @@ describe("createTokenManager — refresh flow", () => {
   });
 
   test("sends resource parameter per RFC 8707 on refresh", async () => {
-    let seenResource: string | undefined;
+    let seenResource: string | null = "sentinel";
     globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
       const body = new URLSearchParams((init?.body as string) ?? "");
-      seenResource = body.get("resource") ?? undefined;
+      seenResource = body.get("resource");
       return Promise.resolve(new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }));
     }) as unknown as typeof fetch;
 
@@ -279,6 +279,7 @@ describe("createTokenManager — refresh flow", () => {
       storage,
       metadata: METADATA,
       clientId: "c",
+      resource: "https://mcp.example.com/v1",
     });
     await tm.storeTokens({
       accessToken: "stale",
@@ -288,6 +289,35 @@ describe("createTokenManager — refresh flow", () => {
 
     await tm.getAccessToken();
     expect(seenResource).toBe("https://mcp.example.com/v1");
+  });
+
+  test("omits resource on refresh when caller did not opt in", async () => {
+    // The refresh body MUST mirror the initial-auth decision exactly,
+    // otherwise an `includeResourceParameter: false` server would accept
+    // the original token then reject every refresh with invalid_target.
+    let seenResource: string | null = "sentinel";
+    globalThis.fetch = mock((_url: string | URL | Request, init?: RequestInit) => {
+      const body = new URLSearchParams((init?.body as string) ?? "");
+      seenResource = body.get("resource");
+      return Promise.resolve(new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com/v1",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      // no `resource` — caller (provider) opted out via includeResourceParameter: false
+    });
+    await tm.storeTokens({
+      accessToken: "stale",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    await tm.getAccessToken();
+    expect(seenResource).toBeNull();
   });
 
   test("clears tokens on terminal refresh failure (400)", async () => {

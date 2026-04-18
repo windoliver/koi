@@ -581,6 +581,85 @@ describe("createOAuthAuthProvider", () => {
     expect(parsed.issuer).toBe("https://new-auth.example.com");
   });
 
+  test("invalidates persisted DCR client when callbackPort (redirectUri) changes", async () => {
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    // Persist a client registered against the OLD callback port.
+    await storage.set(
+      computeClientKey("port-flip", "https://mcp.example.com"),
+      JSON.stringify({
+        clientId: "stale-port",
+        registeredAt: 1,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+        redirectUri: "http://127.0.0.1:8912/callback",
+      }),
+    );
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    let registerCalls = 0;
+    let authUrlClientId: string | undefined;
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        authUrlClientId = url.searchParams.get("client_id") ?? undefined;
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ client_id: "fresh-port" }), { status: 201 }),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "port-flip",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        // Operator changed the callback port — stored DCR client was
+        // registered against :8912 but the new redirectUri is :9999, so
+        // most ASes will reject the next code exchange with
+        // invalid_grant. The provider must re-register instead of
+        // reusing a stale registration.
+        callbackPort: 9999,
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    await provider.startAuthFlow();
+    expect(registerCalls).toBe(1);
+    expect(authUrlClientId).toBe("fresh-port");
+
+    const stored = await storage.get(computeClientKey("port-flip", "https://mcp.example.com"));
+    const parsed = JSON.parse(stored ?? "{}");
+    expect(parsed.clientId).toBe("fresh-port");
+    expect(parsed.redirectUri).toBe("http://127.0.0.1:9999/callback");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

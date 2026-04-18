@@ -53,9 +53,12 @@ const REFRESH_TIMEOUT_MS = 15_000;
 
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
   const { serverName, serverUrl, storage, metadata, clientId } = options;
-  // RFC 8707 resource indicator defaults to the MCP server URL so the
-  // AS can bind the issued token to the correct protected resource.
-  const resource = options.resource ?? serverUrl;
+  // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
+  // callers — provider in particular — set `resource` to the effective
+  // value chosen for initial authorization. The refresh body MUST mirror
+  // that decision exactly, otherwise an `includeResourceParameter: false`
+  // server would accept the initial token and reject the refresh.
+  const resource = options.resource;
   const storageKey = computeServerKey(serverName, serverUrl);
 
   const getTokens = async (): Promise<OAuthTokens | undefined> => {

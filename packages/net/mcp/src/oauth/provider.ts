@@ -106,7 +106,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
     const resolved = await storage.withLock(lockKey, async () => {
       const stored = await readClientInfo(storage, serverName, serverUrl);
-      if (stored !== undefined && isClientFresh(stored, metadata)) {
+      if (stored !== undefined && isClientFresh(stored, metadata, redirectUri)) {
         return stored;
       }
 
@@ -241,15 +241,24 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
 /**
  * Returns true when a persisted DCR client is still valid against the
- * currently-discovered auth server. A stored record with no issuer /
- * registration_endpoint (shape predates this check, or static config
- * was persisted by mistake) is treated as fresh so we do not force
- * operators to re-auth on upgrade. Once an issuer is recorded, any
- * mismatch is a migration event — re-register rather than send a stale
- * client id to a different authorization server.
+ * currently-discovered auth server AND the provider's current
+ * `redirectUri`. A stored record with no issuer / registration_endpoint /
+ * redirectUri (shape predates this check, or static config was persisted
+ * by mistake) is treated as fresh so upgrades do not force re-auth. Once
+ * any binding is recorded, a mismatch is a migration event — re-register
+ * rather than send a stale client_id to a different authorization server
+ * or under a different redirect URI contract.
  */
-function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | undefined): boolean {
-  if (stored.issuer === undefined && stored.registrationEndpoint === undefined) {
+function isClientFresh(
+  stored: OAuthClientInfo,
+  metadata: AuthServerMetadata | undefined,
+  currentRedirectUri: string,
+): boolean {
+  if (
+    stored.issuer === undefined &&
+    stored.registrationEndpoint === undefined &&
+    stored.redirectUri === undefined
+  ) {
     return true;
   }
   if (metadata === undefined) return false;
@@ -258,6 +267,9 @@ function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | u
     stored.registrationEndpoint !== undefined &&
     stored.registrationEndpoint !== metadata.registrationEndpoint
   ) {
+    return false;
+  }
+  if (stored.redirectUri !== undefined && stored.redirectUri !== currentRedirectUri) {
     return false;
   }
   return true;
