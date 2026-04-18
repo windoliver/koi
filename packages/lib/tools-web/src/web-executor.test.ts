@@ -1297,6 +1297,54 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
+  test("stuck body read aborts on timeout — singleFlight does not blackhole the key", async () => {
+    // Regression for #1903 post-merge review round 10: if the primary
+    // fetch returns headers but the body stream never resolves, the
+    // request timeout MUST still fire and release the single-flight
+    // slot. Otherwise later callers would each join the zombie entry,
+    // time out locally, and the poisoned slot would persist for the
+    // process lifetime — a process-long DoS on the key.
+    let callCount = 0;
+    const fetchFn = mock(async (_url: string, init?: RequestInit): Promise<Response> => {
+      callCount++;
+      // Wrap the body in a stream that never resolves unless aborted.
+      const stream = new ReadableStream({
+        start(controller) {
+          const signal = init?.signal;
+          if (signal !== null && signal !== undefined) {
+            signal.addEventListener(
+              "abort",
+              () => {
+                controller.error(new DOMException("Aborted", "AbortError"));
+              },
+              { once: true },
+            );
+          }
+          // Otherwise: never enqueue, never close.
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({
+      fetchFn,
+      cacheTtlMs: 60_000,
+      defaultTimeoutMs: 150,
+      ...HTTPS_DEFAULTS,
+    });
+
+    const first = await executor.fetch("https://example.com");
+    expect(first.ok).toBe(false);
+    if (!first.ok) expect(first.error.code).toBe("TIMEOUT");
+
+    // The single-flight slot for the first request must have been
+    // released. A second fetch should start a fresh origin request,
+    // not join a zombie entry.
+    const second = await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+    expect(second.ok).toBe(false);
+  });
+
   test("single-flight waiter honors its own timeoutMs, not the primary's", async () => {
     // Regression for #1903 post-merge review round 9: a second caller
     // that joins an in-flight request must still time out on its own

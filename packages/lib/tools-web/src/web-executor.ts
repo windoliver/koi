@@ -429,11 +429,20 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           controller.signal,
         );
 
-        clearTimeout(timer);
+        if (!result.ok) {
+          clearTimeout(timer);
+          return publishFlight(result);
+        }
 
-        if (!result.ok) return publishFlight(result);
-
+        // Keep the request timer active across body consumption. If
+        // `response.text()` hangs (slow stream, broken origin, body
+        // that never finishes), the same `controller.abort` that
+        // protects header/redirect resolution fires here too — so a
+        // stalled body read can't leave the single-flight slot
+        // suspended forever and blackhole every future caller for
+        // this key.
         const rawBody = await result.value.response.text();
+        clearTimeout(timer);
         const truncated = rawBody.length > maxBodyChars;
         const body = truncated ? rawBody.slice(0, maxBodyChars) : rawBody;
 
@@ -862,7 +871,10 @@ const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 function catchFetchError<T>(url: string, method: string, e: unknown): Result<T, KoiError> {
   const message = e instanceof Error ? e.message : String(e);
-  const isTimeout = message.includes("abort") || message.includes("timeout");
+  // Case-insensitive — DOMException "Aborted" and undici "AbortError"
+  // both mean the same thing as lowercase "abort".
+  const lower = message.toLowerCase();
+  const isTimeout = lower.includes("abort") || lower.includes("timeout");
   // Only retry safe/idempotent methods — retrying POST/PUT/DELETE after a
   // timeout risks duplicating mutations the server already committed.
   const retryable = !isTimeout && SAFE_METHODS.has(method);
