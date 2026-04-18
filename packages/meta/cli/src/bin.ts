@@ -173,6 +173,20 @@ switch (result.kind) {
         env: { ...baseEnv, KOI_TUI_BROWSER_SOLID: "1" },
       },
     );
+    // Re-check terminated AFTER spawn but BEFORE bind (#1906 R8): a
+    // SIGUSR1 landing between the pre-spawn check and this point would
+    // otherwise let the child start the TUI bootstrap and hit the exact
+    // runtime-init race the pre-spawn-abort was meant to avoid. SIGKILL
+    // the child synchronously instead of replaying SIGUSR1 — the child
+    // is newborn, nothing to tear down gracefully.
+    if (guard.terminated) {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        // Child may already be exiting.
+      }
+      process.exit(guard.terminatedExitCode);
+    }
     guard.bindChild(proc);
     const childExit = await proc.exited;
     // If the parent handled a SIGHUP, preserve that exit code instead
