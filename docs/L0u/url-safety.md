@@ -84,6 +84,7 @@ Every address inside these prefixes is rejected.
 | `fe80::/10` | Link-local |
 | `fec0::/10` | Site-local (deprecated RFC3879, still legacy-routed in some networks) |
 | `ff00::/8` | Multicast |
+| `64:ff9b:1::/48` | NAT64 local-use prefix (RFC8215) — site-operator translator infrastructure, blocked wholesale (the /48 is not a public routing range, so public-embedded v4 would still go through operator-internal infra) |
 
 ### IPv6 prefixes with embedded-v4 re-check
 
@@ -94,7 +95,6 @@ These prefixes wrap an IPv4 address. The classifier decodes the embedded v4 and 
 | `::ffff:0:0/96` | IPv4-mapped (RFC4291) |
 | `::/96` | IPv4-compatible (deprecated RFC4291) — URL parser canonicalises `[::127.0.0.1]` to `[::7f00:1]` |
 | `64:ff9b::/96` | NAT64 well-known prefix (RFC6052) |
-| `64:ff9b:1::/48` | NAT64 local-use prefix (RFC8215) |
 | `2002::/16` | 6to4 — embeds IPv4 in groups 2–3 |
 
 The two classes are exported separately so a policy consumer can inspect them distinctly: `BLOCKED_CIDR_RANGES` for full-block ranges, `EMBEDDED_V4_IPV6_PREFIXES` for embedded-v4 re-check prefixes. The classifier itself is implemented with bigint bitmask arithmetic (IPv4) and first-hextet prefix matching plus embedded-address extraction (IPv6) in `ip-classify.ts`.

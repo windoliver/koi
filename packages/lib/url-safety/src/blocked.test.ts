@@ -26,12 +26,18 @@ describe("BLOCKED_CIDR_RANGES", () => {
     expect(BLOCKED_CIDR_RANGES).toContain("fe80::/10");
   });
 
+  test("64:ff9b:1::/48 is full-block (site-operator translator)", () => {
+    // Unlike the /96 well-known which allows public embedded v4 through,
+    // the /48 local-use prefix is operator-internal infrastructure and
+    // blocked wholesale.
+    expect(BLOCKED_CIDR_RANGES).toContain("64:ff9b:1::/48");
+  });
+
   test("does NOT contain embedded-v4 IPv6 prefixes (those are a separate class)", () => {
     // These prefixes allow public embedded v4 through — they belong to
     // EMBEDDED_V4_IPV6_PREFIXES, not the full-block list.
     expect(BLOCKED_CIDR_RANGES).not.toContain("::ffff:0:0/96");
     expect(BLOCKED_CIDR_RANGES).not.toContain("64:ff9b::/96");
-    expect(BLOCKED_CIDR_RANGES).not.toContain("64:ff9b:1::/48");
     expect(BLOCKED_CIDR_RANGES).not.toContain("2002::/16");
   });
 
@@ -45,8 +51,11 @@ describe("EMBEDDED_V4_IPV6_PREFIXES", () => {
     expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("::ffff:0:0/96");
     expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("::/96");
     expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("64:ff9b::/96");
-    expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("64:ff9b:1::/48");
     expect(EMBEDDED_V4_IPV6_PREFIXES).toContain("2002::/16");
+  });
+
+  test("does NOT contain 64:ff9b:1::/48 (promoted to full-block)", () => {
+    expect(EMBEDDED_V4_IPV6_PREFIXES).not.toContain("64:ff9b:1::/48");
   });
 
   test("is frozen", () => {

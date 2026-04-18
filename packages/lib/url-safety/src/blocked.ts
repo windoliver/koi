@@ -46,6 +46,7 @@ export const BLOCKED_CIDR_RANGES: readonly string[] = Object.freeze([
   "fe80::/10",
   "fec0::/10",
   "ff00::/8",
+  "64:ff9b:1::/48",
 ]);
 
 /**
@@ -63,6 +64,5 @@ export const EMBEDDED_V4_IPV6_PREFIXES: readonly string[] = Object.freeze([
   "::ffff:0:0/96", // IPv4-mapped (RFC4291)
   "::/96", // IPv4-compatible (deprecated RFC4291)
   "64:ff9b::/96", // NAT64 well-known prefix (RFC6052)
-  "64:ff9b:1::/48", // NAT64 local-use prefix (RFC8215)
   "2002::/16", // 6to4 (RFC3056)
 ]);
