@@ -494,6 +494,20 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
+        // gov-8: pair spawn_release with the spawn record from Task 2.
+        // Sits inside the `released` guard so a double-terminated event
+        // cannot double-decrement spawn_count. Errors are logged but do
+        // not abort the rest of the cleanup.
+        if (parentGovController !== undefined) {
+          void Promise.resolve(parentGovController.record({ kind: "spawn_release" })).catch(
+            (err: unknown) => {
+              console.error(
+                `[spawn-child] governance spawn_release failed for child "${childPid.id}"`,
+                err,
+              );
+            },
+          );
+        }
         void Promise.resolve(childRuntime.dispose()).catch((err: unknown) => {
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
         });
