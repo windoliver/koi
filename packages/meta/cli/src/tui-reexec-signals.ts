@@ -173,10 +173,18 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // means user-requested escape-before-spawn never launches the TUI at
   // all, avoiding the inherent runtime-init-race on a fresh child.
   const forwardSigusr1 = (target: Subprocess): void => {
-    try {
-      target.kill("SIGUSR1");
-    } catch {
-      // Child already exited — nothing to forward.
+    // Use process.kill(pid, signal) instead of target.kill("SIGUSR1"):
+    // Bun's `Subprocess.kill(string)` does not reliably deliver SIGUSR1
+    // as a real POSIX signal to a Bun child — empirically results in the
+    // child exiting 0 with no JS handler invocation. process.kill uses
+    // the kernel kill(2) syscall which delivers SIGUSR1 correctly.
+    const pid = target.pid;
+    if (typeof pid === "number" && pid > 0) {
+      try {
+        process.kill(pid, "SIGUSR1");
+      } catch {
+        // Child already exited — nothing to forward.
+      }
     }
   };
 

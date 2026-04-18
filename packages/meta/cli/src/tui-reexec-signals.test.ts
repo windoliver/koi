@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import { armTuiReexecSignalHandlers } from "./tui-reexec-signals.js";
 
@@ -7,16 +7,29 @@ interface FakeProc {
   readonly exited: Promise<number>;
   readonly resolveExit: (code: number) => void;
   readonly proc: Subprocess;
+  readonly pid: number;
 }
+
+// Shared mock for process.kill so forwardSigusr1's
+// `process.kill(target.pid, "SIGUSR1")` is observable in tests without
+// killing a real process. Populated at test start, restored in afterEach.
+const FAKE_PID_BASE = 900_000; // well above any realistic OS pid
+// let: justified — mutable registry shared between fakes and the mock.
+let fakeKillSink: Map<number, string[]> = new Map();
+// let: justified — snapshotted once per file, restored after every test.
+let realProcessKill: typeof process.kill | null = null;
 
 function makeFakeSubprocess(): FakeProc {
   const kills: string[] = [];
+  const pid = FAKE_PID_BASE + fakeKillSink.size + 1;
+  fakeKillSink.set(pid, kills);
   // let: justified — populated synchronously below by Promise constructor.
   let resolveExit: (code: number) => void = () => {};
   const exited = new Promise<number>((resolve) => {
     resolveExit = resolve;
   });
   const fake = {
+    pid,
     kill: (signal?: string) => {
       kills.push(signal ?? "SIGTERM");
       return true;
@@ -27,13 +40,31 @@ function makeFakeSubprocess(): FakeProc {
     kills,
     exited,
     resolveExit,
+    pid,
     proc: fake as unknown as Subprocess,
   };
 }
 
+beforeEach(() => {
+  fakeKillSink = new Map();
+  realProcessKill = process.kill;
+  // Cast justified: the override routes only fake-pid calls to the sink
+  // and forwards everything else (including our SIGUSR2 handshake to
+  // process.ppid during tests) to the real kill.
+  process.kill = ((pid: number, signal?: string | number): true => {
+    const sink = fakeKillSink.get(pid);
+    if (sink !== undefined) {
+      sink.push(typeof signal === "string" ? signal : `signum=${signal ?? 15}`);
+      return true;
+    }
+    return (realProcessKill as typeof process.kill)(pid, signal);
+  }) as typeof process.kill;
+});
+
 // Defensive cleanup — every test here emits on the real process, and a
 // leaked listener contaminates subsequent tests in the same file.
 afterEach(() => {
+  if (realProcessKill !== null) process.kill = realProcessKill;
   process.removeAllListeners("SIGUSR1");
   process.removeAllListeners("SIGUSR2");
   process.removeAllListeners("SIGTERM");
