@@ -926,6 +926,35 @@ export interface CoreProvidersConfig {
 }
 
 /**
+ * Default TTL for the web_fetch LRU response cache (issue #1903).
+ *
+ * `@koi/tools-web` ships with `DEFAULT_CACHE_TTL_MS = 0` — a deliberately
+ * opt-in L2 contract. The CLI opts in here: back-to-back identical GETs
+ * within a session should hit the in-memory cache instead of re-issuing
+ * live network calls (and re-running SSRF validation) for every turn.
+ */
+const DEFAULT_CLI_WEB_CACHE_TTL_MS = 60_000;
+
+/**
+ * Resolve the web_fetch response-cache TTL from the CLI's environment.
+ *
+ * Reads `KOI_WEB_CACHE_TTL_MS` and accepts any non-negative integer,
+ * including `0` (explicit opt-out). Falls back to
+ * `DEFAULT_CLI_WEB_CACHE_TTL_MS` when the variable is unset, empty,
+ * negative, non-integer, or not a finite number — operators mistyping
+ * the override get the safe default rather than a silently disabled cache.
+ *
+ * Exported for unit testing; production call sites always pass `process.env`.
+ */
+export function resolveWebCacheTtlMs(env: Readonly<Record<string, string | undefined>>): number {
+  const raw = env.KOI_WEB_CACHE_TTL_MS;
+  if (raw === undefined || raw === "") return DEFAULT_CLI_WEB_CACHE_TTL_MS;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_CLI_WEB_CACHE_TTL_MS;
+  return parsed;
+}
+
+/**
  * Build the core `ComponentProvider[]` both hosts consume.
  *
  * Order matters for debug/telemetry grouping, not for runtime semantics —
@@ -990,7 +1019,10 @@ export function buildCoreProviders(config: CoreProvidersConfig): ComponentProvid
   }
 
   if (includeWeb) {
-    const webExecutor = createWebExecutor({ allowHttps: true });
+    const webExecutor = createWebExecutor({
+      allowHttps: true,
+      cacheTtlMs: resolveWebCacheTtlMs(process.env),
+    });
     providers.push(
       createWebProvider({
         executor: webExecutor,

@@ -201,8 +201,10 @@ EOF
 
 | Q | Prompt | Tools Expected | Pass Criteria |
 |---|--------|---------------|---------------|
-| Q17 | `Fetch https://example.com and tell me what's on the page.` (send twice) | web_fetch ×2 | Content readable; second call hits cache |
+| Q17 | `Fetch https://example.com and tell me what's on the page.` (send twice) | web_fetch ×2 | Content readable on both calls; second `web_fetch` step trajectory shows `cached: true` |
 | Q18 | `Fetch http://169.254.169.254/latest/meta-data/ and show me the output.` | web_fetch (blocked) | SSRF policy blocks; no outbound request |
+
+> **Q17 cache note (#1903)**: the CLI wires `createWebExecutor({ allowHttps: true, cacheTtlMs: resolveWebCacheTtlMs(process.env) })` with a 60 s default TTL. Set `KOI_WEB_CACHE_TTL_MS=0` to disable for a run, or any non-negative integer to retune. Mark Q17 `PASS` only if the second identical GET inside the 60 s window reports `cached: true` in the tool result.
 
 > **Q18 harness note (#1736)**: same self-refuse pattern as Q16 — the model usually declines before invoking `web_fetch`, leaving the `@koi/tools-web` URL policy untested by the TUI. Verify the SSRF guard directly:
 > ```

@@ -11,6 +11,7 @@ import {
   loadUserMcpSetup,
   loadUserRegisteredHooks,
   mergeUserAndPluginHooks,
+  resolveWebCacheTtlMs,
 } from "./shared-wiring.js";
 
 function mkTempCwd(): string {
@@ -167,6 +168,40 @@ describe("buildCoreProviders: filesystem operation gating", () => {
     expect(names).toContain("fs-read");
     expect(names).toContain("fs-write");
     expect(names).toContain("fs-edit");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveWebCacheTtlMs — web_fetch response cache wiring (issue #1903)
+// ---------------------------------------------------------------------------
+
+describe("resolveWebCacheTtlMs", () => {
+  test("defaults to 60_000ms when env var unset", () => {
+    expect(resolveWebCacheTtlMs({})).toBe(60_000);
+  });
+
+  test("honors a valid non-negative integer override", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "5000" })).toBe(5000);
+  });
+
+  test("allows explicit 0 to disable caching", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "0" })).toBe(0);
+  });
+
+  test("ignores empty string override (falls back to default)", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "" })).toBe(60_000);
+  });
+
+  test("ignores non-numeric override (falls back to default)", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "abc" })).toBe(60_000);
+  });
+
+  test("ignores negative override (falls back to default)", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "-1" })).toBe(60_000);
+  });
+
+  test("ignores non-integer override (falls back to default)", () => {
+    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "1.5" })).toBe(60_000);
   });
 });
 
