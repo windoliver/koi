@@ -1019,9 +1019,20 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // discover() — public wrapper emitting onMetadataInjected (issue #1642)
   // ---------------------------------------------------------------------------
 
+  // Tracks the last Tier 0 map we fired `onMetadataInjected` for, so
+  // cached `discover()` calls (fast path: same merged map, no rescan) do
+  // not replay the injection hook. Review #1896 round 10: integrators use
+  // this callback to inject the full listing into a model turn; a replay
+  // on every cached call silently duplicates the listing into prompt
+  // context. Identity comparison is enough — `discoverInternal` replaces
+  // the map reference whenever the filesystem / external / blocked sets
+  // actually change.
+  let lastInjectedMapRef: ReadonlyMap<string, SkillMetadata> | undefined;
+
   const discover = async (): Promise<Result<ReadonlyMap<string, SkillMetadata>, KoiError>> => {
     const result = await discoverInternal();
-    if (result.ok && onMetadataInjected !== undefined) {
+    if (result.ok && onMetadataInjected !== undefined && result.value !== lastInjectedMapRef) {
+      lastInjectedMapRef = result.value;
       onMetadataInjected(result.value.size);
     }
     return result;

@@ -37,7 +37,7 @@
  */
 
 import { constants as fsConstants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { open, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
@@ -305,7 +305,15 @@ export async function loadReference(
   // symlink and expose existence/size/type oracles for files outside the
   // skill directory. Realpath the target's parent directory and require it
   // to stay inside the skill's realpath.
+  //
+  // Round 10 also captures the parent's dev/inode here so a post-open
+  // re-stat can detect if an attacker swapped the parent for a symlink
+  // between this check and the final open(). That narrows the TOCTOU
+  // window for ancestor-symlink races — the residual race is bounded by
+  // the (very short) window between this stat() and the open() below.
   const parentDir = dirname(joined);
+  let parentDev: number;
+  let parentIno: bigint;
   try {
     const realParent = await realpath(parentDir);
     const parentRel = relative(realDir, realParent);
@@ -317,6 +325,9 @@ export async function loadReference(
         "PATH_TRAVERSAL",
       );
     }
+    const parentStat = await stat(realParent, { bigint: true });
+    parentDev = Number(parentStat.dev);
+    parentIno = parentStat.ino;
   } catch (cause: unknown) {
     // Missing parent directory is a genuine NOT_FOUND, not a security issue.
     const err = cause as NodeJS.ErrnoException;
@@ -404,6 +415,32 @@ export async function loadReference(
         refPath,
         `Reference "${refPath}" for skill "${name}" has multiple hardlinks (nlink=${fst.nlink})`,
         "REFERENCE_HARDLINKED",
+      );
+    }
+
+    // Ancestor-inode pin (review #1896 round 10). If an attacker raced an
+    // atomic rename to swap parentDir with a symlink between our
+    // realpath() check above and the open() below, the opened fd would
+    // point at content inside a different directory. Re-stat the parent
+    // via its resolved path and require the dev/inode to match the
+    // snapshot taken during the pre-open boundary check. A mismatch
+    // means the tree mutated under us — fail closed.
+    try {
+      const postStat = await stat(dirname(joined), { bigint: true });
+      if (Number(postStat.dev) !== parentDev || postStat.ino !== parentIno) {
+        return validationError(
+          name,
+          refPath,
+          `Reference "${refPath}" for skill "${name}" parent directory was swapped during read`,
+          "PATH_TRAVERSAL",
+        );
+      }
+    } catch {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" parent directory became unverifiable`,
+        "PATH_TRAVERSAL",
       );
     }
 

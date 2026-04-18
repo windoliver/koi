@@ -71,6 +71,27 @@ describe("progressive disclosure — telemetry", () => {
     expect((meta as unknown as Record<string, unknown>).references).toBeUndefined();
   });
 
+  test("onMetadataInjected does NOT replay on cached discover() calls (review #1896 round 10)", async () => {
+    await writeSkill(userRoot, "cached");
+
+    const counts: number[] = [];
+    const runtime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot,
+      projectRoot,
+      onMetadataInjected: (n) => counts.push(n),
+    });
+
+    await runtime.discover();
+    await runtime.discover(); // fast path — same merged map, no rescan
+    await runtime.discover(); // fast path — same merged map, no rescan
+
+    // Firing once per unique snapshot rather than per call avoids
+    // duplicating the full skill listing into model context across
+    // routine re-discovery calls.
+    expect(counts).toEqual([1]);
+  });
+
   test("onMetadataInjected fires with the Tier 0 count on discover()", async () => {
     await writeSkill(userRoot, "alpha");
     await writeSkill(userRoot, "bravo");
