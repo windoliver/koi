@@ -756,6 +756,108 @@ describe("createWebExecutor.fetch caching", () => {
     await executor.fetch("https://example.com/b");
     expect(callCount).toBe(2);
   });
+
+  // -------------------------------------------------------------------------
+  // Cache safety: only replayable success responses are stored (#1903 review)
+  // -------------------------------------------------------------------------
+
+  test("does not cache 5xx responses (transient failures must not stick)", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      // First call errors out, second would recover if the cache did NOT
+      // replay the failure.
+      return new Response("maintenance", { status: 500 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache 429 rate-limit responses", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("slow down", { status: 429 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache 206 partial-content responses", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("half", { status: 206 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with Cache-Control: no-store", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("volatile", {
+        status: 200,
+        headers: { "cache-control": "no-store, max-age=0" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with Cache-Control: private", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("user-specific", {
+        status: 200,
+        headers: { "cache-control": "private, max-age=300" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("noCache=true bypasses both read and write", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("fresh", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Prime the cache.
+    await executor.fetch("https://example.com");
+    // Forced-fresh: must hit network.
+    const bypassed = await executor.fetch("https://example.com", { noCache: true });
+    // Write was skipped, so a third default call must also hit network.
+    const afterBypass = await executor.fetch("https://example.com", { noCache: true });
+    expect(callCount).toBe(3);
+    if (bypassed.ok) expect(bypassed.value.cached).toBe(false);
+    if (afterBypass.ok) expect(afterBypass.value.cached).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

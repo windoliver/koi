@@ -59,6 +59,14 @@ export interface WebFetchOptions {
   readonly body?: string | undefined;
   readonly timeoutMs?: number | undefined;
   readonly signal?: AbortSignal | undefined;
+  /**
+   * When `true`, bypass the response LRU for both read and write on this
+   * call: the executor will not return a cached entry and will not insert
+   * the fresh response into the cache. Use this to force a revalidation
+   * when the caller needs live state (tool-surface equivalent of
+   * `Cache-Control: no-store`).
+   */
+  readonly noCache?: boolean | undefined;
 }
 
 export interface WebFetchResult {
@@ -171,16 +179,19 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const method = options?.method ?? "GET";
       const hasCustomHeaders =
         options?.headers !== undefined && Object.keys(options.headers).length > 0;
+      const noCache = options?.noCache === true;
       const normalizedUrl = normalizeUrl(url);
       const cacheKey = `${method}:${normalizedUrl}`;
-
-      // Check cache (GET/HEAD only, never when custom headers are present —
-      // headers like Accept, Range, or auth tokens change representation/semantics)
-      if (
+      const cacheEligible =
         fetchCache !== undefined &&
         !hasCustomHeaders &&
-        (method === "GET" || method === "HEAD")
-      ) {
+        !noCache &&
+        (method === "GET" || method === "HEAD");
+
+      // Check cache (GET/HEAD only, never when custom headers are present —
+      // headers like Accept, Range, or auth tokens change representation/semantics
+      // — and never when the caller explicitly opted out via noCache).
+      if (cacheEligible && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
@@ -248,11 +259,11 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           cached: false,
         };
 
-        if (
-          fetchCache !== undefined &&
-          !hasCustomHeaders &&
-          (method === "GET" || method === "HEAD")
-        ) {
+        // Cache only demonstrably-replayable success responses. Transient
+        // failures (4xx/5xx), partial content (206), and any response marked
+        // `Cache-Control: no-store|no-cache|private` would otherwise become
+        // sticky for the TTL and mask recovery from every subsequent caller.
+        if (cacheEligible && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
           fetchCache.set(cacheKey, fetchResult);
         }
 
@@ -447,6 +458,22 @@ function normalizeUrl(url: string): string {
   } catch {
     return url;
   }
+}
+
+/**
+ * True when a fetched response is safe to store in the LRU and replay.
+ *
+ * Restricted to HTTP 200 (full-body success) — 206 partials would leak
+ * range-specific bytes across callers, and 4xx/5xx responses would make
+ * transient failures sticky for the TTL. Responses that ask us not to
+ * cache (`Cache-Control: no-store|no-cache|private`) are also skipped so
+ * origins can opt their own resources out of memoization.
+ */
+function isCacheableResponse(result: WebFetchResult): boolean {
+  if (result.status !== 200) return false;
+  const cc = result.headers["cache-control"]?.toLowerCase();
+  if (cc === undefined) return true;
+  return !(cc.includes("no-store") || cc.includes("no-cache") || cc.includes("private"));
 }
 
 const defaultDnsResolver: DnsResolverFn = async (hostname: string): Promise<readonly string[]> => {

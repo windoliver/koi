@@ -51,6 +51,11 @@ export function createWebFetchTool(
             description:
               "Output format for HTML: 'text' (plain text), 'markdown' (preserve structure), 'html' (raw). Default: 'text'",
           },
+          noCache: {
+            type: "boolean",
+            description:
+              "Bypass the response cache for this call: do not return a cached entry and do not store the fresh response. Use when the caller needs live state (e.g. verifying a just-changed page, refreshing after a known update). Default: false.",
+          },
         },
         required: ["url"],
       } satisfies JsonObject,
@@ -90,8 +95,12 @@ export function createWebFetchTool(
           code: "VALIDATION",
         };
       }
+      if (args.noCache !== undefined && typeof args.noCache !== "boolean") {
+        return { error: "noCache must be a boolean", code: "VALIDATION" };
+      }
+      const noCache = args.noCache === true;
 
-      const result = await executor.fetch(url, { method, headers, timeoutMs: timeout });
+      const result = await executor.fetch(url, { method, headers, timeoutMs: timeout, noCache });
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }

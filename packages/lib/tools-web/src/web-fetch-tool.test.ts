@@ -135,6 +135,64 @@ describe("createWebFetchTool", () => {
       expect(result.code).toBe("VALIDATION");
       expect(result.error).toContain("format");
     });
+
+    test("rejects non-boolean noCache", async () => {
+      const result = (await tool.execute({
+        url: "https://example.com",
+        noCache: "yes",
+      })) as { error: string; code: string };
+      expect(result.code).toBe("VALIDATION");
+      expect(result.error).toContain("noCache");
+    });
+  });
+
+  describe("noCache flag", () => {
+    test("forwards noCache=true to the executor", async () => {
+      let captured: { noCache?: boolean } | undefined;
+      const executor: WebExecutor = {
+        fetch: async (_url, options) => {
+          captured = { noCache: options?.noCache };
+          return successResponse("ok", "text/plain");
+        },
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "n/a", retryable: false },
+        }),
+      };
+      const tool = createWebFetchTool(executor, "web", POLICY);
+      await tool.execute({ url: "https://example.com", noCache: true });
+      expect(captured?.noCache).toBe(true);
+    });
+
+    test("omits noCache when caller does not set it (executor default applies)", async () => {
+      let captured: { noCache?: boolean } | undefined;
+      const executor: WebExecutor = {
+        fetch: async (_url, options) => {
+          captured = { noCache: options?.noCache };
+          return successResponse("ok", "text/plain");
+        },
+        search: async () => ({
+          ok: false,
+          error: { code: "VALIDATION", message: "n/a", retryable: false },
+        }),
+      };
+      const tool = createWebFetchTool(executor, "web", POLICY);
+      await tool.execute({ url: "https://example.com" });
+      expect(captured?.noCache).toBe(false);
+    });
+
+    test("descriptor advertises noCache property", () => {
+      const tool = createWebFetchTool(
+        mockExecutor(successResponse("ok", "text/plain")),
+        "web",
+        POLICY,
+      );
+      const schema = tool.descriptor.inputSchema as {
+        properties: Record<string, { type: string }>;
+      };
+      expect(schema.properties.noCache).toBeDefined();
+      expect(schema.properties.noCache?.type).toBe("boolean");
+    });
   });
 
   describe("SSRF protection", () => {
