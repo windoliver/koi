@@ -1000,6 +1000,40 @@ describe("createSafeFetcher", () => {
     expect(res.headers.get("X-Seen")).toBe("http://93.184.216.34/x");
   });
 
+  test("preserves caller-supplied Host header on non-pinned (HTTPS) request", async () => {
+    // HTTPS skips pinning entirely; an explicit Host from the caller (for
+    // virtual-host routing / signed-request / proxy dispatch) must reach the
+    // transport. Prior bug: wrapper unconditionally deleted Host at the top
+    // of every hop, silently dropping it.
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("https://public.example.com/x", {
+      headers: { Host: "explicit-virtual-host.example.com" },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.headers["host"]).toBe("explicit-virtual-host.example.com");
+  });
+
+  test("preserves caller-supplied Host across same-origin redirect", async () => {
+    const { fn, calls } = recordingFetch({
+      "https://public.example.com/r": new Response(null, {
+        status: 302,
+        headers: { Location: "https://public.example.com/final" },
+      }),
+      "https://public.example.com/final": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    await safeFetch("https://public.example.com/r", {
+      headers: { Host: "virtual.example.com" },
+    });
+    expect(calls).toHaveLength(2);
+    // Both hops see the caller's Host; neither gets it silently stripped.
+    expect(calls[0]?.headers["host"]).toBe("virtual.example.com");
+    expect(calls[1]?.headers["host"]).toBe("virtual.example.com");
+  });
+
   test("does not pin HTTP IPv6-literal URLs (bracket normalization)", async () => {
     // URL.hostname returns `[2001:4860:4860::8888]` with brackets for an IPv6
     // literal; isSafeUrl stores `2001:4860:4860::8888` without. The pin check

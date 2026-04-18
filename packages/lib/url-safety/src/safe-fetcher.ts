@@ -66,6 +66,11 @@ interface HopState {
   body: FetchInit["body"];
   readonly headers: Headers;
   readonly carry: FetchInit;
+  // Tracks whether the current `host` header was set by the wrapper's
+  // HTTP pinning (synthetic) or came from the caller. Only synthetic
+  // values are cleared between hops — a caller-supplied Host for
+  // virtual-host routing / request signing / proxy dispatch must survive.
+  syntheticHost: boolean;
 }
 
 function extractUrl(input: Parameters<typeof fetch>[0]): string {
@@ -284,6 +289,7 @@ async function buildState(
     body,
     headers,
     carry,
+    syntheticHost: false,
   };
 }
 
@@ -375,10 +381,13 @@ function rewriteForRedirect(s: HopState, status: number, newUrl: string): void {
 
 /**
  * Build a pinned URL for a single IP. `parsed` is the already-parsed
- * original URL so the caller can reuse it. Mutates `headers` to set Host.
+ * original URL so the caller can reuse it. Mutates `state.headers` to
+ * set Host and flips `state.syntheticHost` so subsequent hops know the
+ * value was wrapper-injected (as opposed to a caller-supplied Host).
  */
-function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
-  headers.set("host", originalUrl.host);
+function rewriteToIp(originalUrl: URL, ip: string, state: HopState): string {
+  state.headers.set("host", originalUrl.host);
+  state.syntheticHost = true;
   const p = new URL(originalUrl.href);
   p.hostname = ip.includes(":") ? `[${ip}]` : ip;
   return p.href;
@@ -436,14 +445,15 @@ async function fetchWithPin(
 ): Promise<Response> {
   const parsed = shouldPinHttp(url, check);
   if (parsed === undefined) {
-    state.headers.delete("host");
+    // No pin — don't touch Host. A caller-supplied Host must pass through
+    // unchanged so virtual-host routing and signed requests still work.
     return base(url, toInit(state));
   }
 
   const canRetry = IDEMPOTENT_METHODS.has(state.method.toUpperCase());
   let lastError: unknown;
   for (const ip of check.ok ? check.resolvedIps : []) {
-    const pinnedUrl = rewriteToIp(parsed, ip, state.headers);
+    const pinnedUrl = rewriteToIp(parsed, ip, state);
     try {
       return await base(pinnedUrl, toInit(state));
     } catch (e: unknown) {
@@ -507,8 +517,13 @@ export function createSafeFetcher(
     const state = await buildState(input, init, maxBufferedBodyBytes, bufferStreamBodies);
 
     for (let hop = 0; hop <= maxRedirects; hop += 1) {
-      // Host header is per-hop derived state.
-      state.headers.delete("host");
+      // Only clear Host if WE set it (pin-synthetic). A caller-supplied
+      // Host (for virtual-host routing, request signing, proxy dispatch,
+      // etc.) must survive non-pinned hops and across redirects.
+      if (state.syntheticHost) {
+        state.headers.delete("host");
+        state.syntheticHost = false;
+      }
 
       // Re-validate at the TOP of every iteration — including hop 0 after
       // buildState. A slow body-buffer stretches the TOCTOU window between
