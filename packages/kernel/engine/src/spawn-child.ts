@@ -351,7 +351,15 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // without one). Captured once here so both cleanup paths (terminated
   // handler and dispose-override) read the same reference even if the
   // parent is later disposed.
-  const _parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
+  const parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
+
+  // gov-8: record spawn event against the parent's controller. The depth
+  // payload is the child's depth (parent depth + 1), matching the natural
+  // reading "a child was spawned at depth N". record() returns void | Promise<void>;
+  // await it to handle async controllers (e.g., distributed in future).
+  if (parentGovController !== undefined) {
+    await parentGovController.record({ kind: "spawn", depth: childPid.depth });
+  }
 
   // 5. Register child in registry (if provided)
   if (options.registry !== undefined) {
