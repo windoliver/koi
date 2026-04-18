@@ -95,6 +95,10 @@
         "fast-check": "4.3.0",
       },
     },
+    "packages/lib/bash-classifier": {
+      "name": "@koi/bash-classifier",
+      "version": "0.0.0",
+    },
     "packages/lib/bash-security": {
       "name": "@koi/bash-security",
       "version": "0.0.0",
@@ -1201,6 +1205,8 @@
     "@koi/audit-sink-sqlite": ["@koi/audit-sink-sqlite@workspace:packages/security/audit-sink-sqlite"],
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
+
+    "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
 

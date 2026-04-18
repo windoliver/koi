@@ -17,6 +17,7 @@ export const L0_PACKAGES: ReadonlySet<string> = new Set(["@koi/core"]);
  */
 export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/bash-ast",
+  "@koi/bash-classifier",
   "@koi/bash-security",
   "@koi/channel-base",
   "@koi/config",
