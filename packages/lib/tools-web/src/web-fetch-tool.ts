@@ -79,6 +79,11 @@ export function createWebFetchTool(
             description:
               "Output format for HTML: 'text' (plain text), 'markdown' (preserve structure), 'html' (raw). Default: 'text'",
           },
+          noCache: {
+            type: "boolean",
+            description:
+              "Force a live fetch with no stale fallback. Scope is cache-only: this flag does NOT rewrite HTTP error statuses into errors — a 500/429/404 response still returns normally so you can inspect status/body. What it guarantees: the pre-existing cached response for this URL is evicted before the request, a cacheable 200 refreshes the cache, and anything else (non-cacheable response, HTTP error, transport failure) leaves the key empty so the next default fetch also hits origin. Transport errors (network, timeout, SSRF block) still surface via the usual error object. Use when verifying a just-changed page: stale data is worse than no data. Default: false.",
+          },
         },
         required: ["url"],
       } satisfies JsonObject,
@@ -124,8 +129,12 @@ export function createWebFetchTool(
           code: "VALIDATION",
         };
       }
+      if (args.noCache !== undefined && typeof args.noCache !== "boolean") {
+        return { error: "noCache must be a boolean", code: "VALIDATION" };
+      }
+      const noCache = args.noCache === true;
 
-      const result = await executor.fetch(url, { method, headers, timeoutMs: timeout });
+      const result = await executor.fetch(url, { method, headers, timeoutMs: timeout, noCache });
       if (!result.ok) {
         return { error: result.error.message, code: result.error.code };
       }
