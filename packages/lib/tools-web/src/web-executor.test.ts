@@ -1202,6 +1202,59 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
+  test("successful noCache refresh does not overwrite a newer concurrent write", async () => {
+    // Regression for #1903 review round 10: while a `noCache` refresh
+    // is in flight, a concurrent default reader can miss cache, fetch
+    // origin, and populate the key with a newer representation. When
+    // the slower `noCache` response finally arrives, it must NOT
+    // overwrite that newer entry — doing so would roll the cache
+    // backwards to a potentially older response for the full TTL,
+    // defeating the whole point of `noCache`.
+    let callCount = 0;
+    let signalRefreshStarted: (() => void) | undefined;
+    let releaseRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      signalRefreshStarted = resolve;
+    });
+    const refreshHeld = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("v1-prime", { status: 200 });
+      if (callCount === 2) {
+        // `noCache` refresh — responds with a possibly-skewed body.
+        signalRefreshStarted?.();
+        await refreshHeld;
+        return new Response("v1-from-stale-edge", { status: 200 });
+      }
+      // Concurrent default reader picks up a newer representation.
+      return new Response("v2-from-fresh-edge", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // prime v1
+    const refreshP = executor.fetch("https://example.com", { noCache: true });
+    await refreshStarted;
+    // Concurrent default reader — misses cache (noCache evicted), hits
+    // origin, writes "v2-from-fresh-edge".
+    const concurrent = await executor.fetch("https://example.com");
+    if (concurrent.ok) expect(concurrent.value.body).toBe("v2-from-fresh-edge");
+
+    releaseRefresh?.();
+    const forced = await refreshP;
+    expect(forced.ok).toBe(true);
+
+    // Cache must still hold "v2-from-fresh-edge", not the
+    // "v1-from-stale-edge" that the slower noCache response returned.
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("v2-from-fresh-edge");
+      expect(followUp.value.cached).toBe(true);
+    }
+  });
+
   test("concurrent default writer during noCache refresh is not overwritten on failure", async () => {
     // If a concurrent default reader fills the cache while the `noCache`
     // refresh is in flight, and the refresh then fails, the failed

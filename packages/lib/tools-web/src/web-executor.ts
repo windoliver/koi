@@ -305,7 +305,18 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
           const originTtlMs = extractOriginFreshnessMs(fetchResult);
           const entryTtlMs =
             originTtlMs !== undefined ? Math.min(cacheTtlMs, originTtlMs) : cacheTtlMs;
-          if (entryTtlMs > 0) fetchCache.set(cacheKey, fetchResult, entryTtlMs);
+          if (entryTtlMs > 0) {
+            // Write-back fence for `noCache`: if a concurrent writer
+            // (default reader or peer `noCache`) repopulated the key
+            // while our refresh was in flight, keep their entry. We
+            // evicted up front, so any occupancy now is strictly newer
+            // than us — overwriting it could roll the cache backwards
+            // to an older response that origin briefly served us due
+            // to CDN skew or deploy rollout.
+            if (!(noCache && fetchCache.getEntry(cacheKey) !== undefined)) {
+              fetchCache.set(cacheKey, fetchResult, entryTtlMs);
+            }
+          }
         }
 
         return { ok: true, value: fetchResult };
