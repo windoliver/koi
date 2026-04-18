@@ -1409,6 +1409,38 @@ describe("createWebExecutor.fetch caching", () => {
     if (followUp.ok) expect(followUp.value.cached).toBe(false);
   });
 
+  test("noCache HEAD invalidates the cached GET body for the same URL", async () => {
+    // Regression for #1903 review round 6 of post-merge loop: GET and
+    // HEAD describe the same resource state for caching (HEAD = GET
+    // headers minus body), so a forced-fresh HEAD must invalidate the
+    // cached GET body, and vice versa. A caller that HEADs to verify
+    // freshness and then GETs to read the content should not be
+    // served the pre-refresh stale body.
+    let callCount = 0;
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) return new Response("v1-stale", { status: 200 });
+      if (callCount === 2) return new Response("", { status: 200 });
+      return new Response("v2-fresh", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    // Prime with a default GET — caches v1-stale at GET:url.
+    await executor.fetch("https://example.com");
+
+    // Forced-fresh HEAD. Invalidates the peer GET cache entry.
+    await executor.fetch("https://example.com", { method: "HEAD", noCache: true });
+
+    // Default GET must now hit origin, not replay v1-stale.
+    const followUp = await executor.fetch("https://example.com");
+    expect(callCount).toBe(3);
+    if (followUp.ok) {
+      expect(followUp.value.body).toBe("v2-fresh");
+      expect(followUp.value.cached).toBe(false);
+    }
+  });
+
   test("noCache with custom headers still evicts the prior default cached entry", async () => {
     // Regression for #1903 review round 11: `noCache` must invalidate
     // any pre-existing default cache entry at the `METHOD:URL` key even

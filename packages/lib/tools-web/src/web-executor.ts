@@ -230,6 +230,15 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const noCache = options?.noCache === true;
       const normalizedUrl = normalizeUrl(url);
       const cacheKey = `${method}:${normalizedUrl}`;
+      // GET and HEAD describe the same resource state for caching: a
+      // HEAD response's headers are the same as GET minus the body,
+      // so a forced refresh of one must invalidate and fence the
+      // other. Callers that `HEAD` to re-validate freshness and then
+      // `GET` to read content would otherwise read a stale body.
+      const peerMethod = method === "GET" ? "HEAD" : method === "HEAD" ? "GET" : undefined;
+      const peerKey = peerMethod !== undefined ? `${peerMethod}:${normalizedUrl}` : undefined;
+      const invalidationKeys =
+        peerKey !== undefined ? ([cacheKey, peerKey] as const) : ([cacheKey] as const);
       // Key is eligible for caching if it's a GET/HEAD without custom headers
       // (headers like Accept, Range, or auth tokens change representation) and
       // without a request body (unusual for GET/HEAD but permitted by the
@@ -249,13 +258,16 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       // captured generation is now stale). The activeRefreshes entry
       // blocks concurrent default readers from writing while we're
       // still in flight — the noCache caller is the authoritative
-      // writer for this refresh cycle.
+      // writer for this refresh cycle. Both the requested method and
+      // its GET/HEAD peer are invalidated+fenced together.
       const actsAsRefresh =
         noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD");
-      if (actsAsRefresh) {
-        keyGenerations.set(cacheKey, (keyGenerations.get(cacheKey) ?? 0) + 1);
-        activeRefreshes.set(cacheKey, (activeRefreshes.get(cacheKey) ?? 0) + 1);
-        if (fetchCache !== undefined) fetchCache.delete(cacheKey);
+      if (actsAsRefresh && fetchCache !== undefined) {
+        for (const k of invalidationKeys) {
+          keyGenerations.set(k, (keyGenerations.get(k) ?? 0) + 1);
+          activeRefreshes.set(k, (activeRefreshes.get(k) ?? 0) + 1);
+          fetchCache.delete(k);
+        }
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
@@ -274,9 +286,27 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
       const releaseRefreshSlot = (): void => {
         if (!actsAsRefresh) return;
-        const remaining = (activeRefreshes.get(cacheKey) ?? 0) - 1;
-        if (remaining <= 0) activeRefreshes.delete(cacheKey);
-        else activeRefreshes.set(cacheKey, remaining);
+        for (const k of invalidationKeys) {
+          const remaining = (activeRefreshes.get(k) ?? 0) - 1;
+          if (remaining <= 0) activeRefreshes.delete(k);
+          else activeRefreshes.set(k, remaining);
+        }
+      };
+
+      // Prune the generation counter once this request has released its
+      // refresh slot (if any) and nothing else needs it for this key.
+      // Without this, a long-lived process using `noCache` across many
+      // unique URLs would accumulate unbounded entries in `keyGenerations`
+      // even though the actual response LRU stays capped at
+      // `maxCacheEntries`. Safe to drop when no refresh is in flight
+      // AND the key has no live cache entry — later writers that arrive
+      // start fresh from generation 0.
+      const pruneGenerationIfIdle = (): void => {
+        for (const k of invalidationKeys) {
+          if (activeRefreshes.has(k)) continue;
+          if (fetchCache !== undefined && fetchCache.getEntry(k) !== undefined) continue;
+          keyGenerations.delete(k);
+        }
       };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -387,6 +417,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return catchFetchError(url, method, e);
       } finally {
         releaseRefreshSlot();
+        pruneGenerationIfIdle();
       }
     },
 
