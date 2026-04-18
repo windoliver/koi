@@ -74,19 +74,20 @@ const FILE_DESTRUCTIVE: readonly DangerousPattern[] = [
 
 const NETWORK_EXFIL: readonly DangerousPattern[] = [
   {
-    // Structural: curl anywhere in a pipeline to sh. Command prefix
-    // would be `curl`, but this pattern targets the pipeline shape;
-    // keep raw-string matching so it also fires for wrapper-prefixed
-    // forms like `env curl ... | sh`.
+    // Pipe-to-shell: curl to any shell interpreter on the right side,
+    // possibly behind a wrapper (env / sudo / command / exec / nohup)
+    // and/or path-qualified (/bin/sh, /usr/bin/bash).
     id: "curl-pipe-shell",
-    regex: /\bcurl\b[^|#\n]*\|\s*(?:ba|z)?sh\b/,
+    regex:
+      /\bcurl\b[^|#\n]*\|\s*(?:(?:\/[^\s|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s|&;]*\/)?(?:ba|z|da|a)?sh\b/,
     category: "network-exfil",
     severity: "high",
     message: "curl-pipe-shell executes remotely fetched code",
   },
   {
     id: "wget-pipe-shell",
-    regex: /\bwget\b[^|#\n]*\|\s*(?:ba|z)?sh\b/,
+    regex:
+      /\bwget\b[^|#\n]*\|\s*(?:(?:\/[^\s|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s|&;]*\/)?(?:ba|z|da|a)?sh\b/,
     category: "network-exfil",
     severity: "high",
     message: "wget-pipe-shell executes remotely fetched code",
@@ -106,7 +107,8 @@ const CODE_EXEC: readonly DangerousPattern[] = [
     // Same pipeline shape as curl-pipe-shell but with the code-exec
     // category. No commandPrefixes — structural.
     id: "curl-pipe-shell-exec",
-    regex: /\bcurl\b[^|#\n]*\|\s*(?:ba|z)?sh\b/,
+    regex:
+      /\bcurl\b[^|#\n]*\|\s*(?:(?:\/[^\s|&;]*\/)?(?:env|sudo|command|exec|nohup)\s+)?(?:\/[^\s|&;]*\/)?(?:ba|z|da|a)?sh\b/,
     category: "code-exec",
     severity: "high",
     message: "Piping curl output to a shell interpreter executes downloaded code",

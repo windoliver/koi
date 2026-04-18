@@ -131,16 +131,64 @@ function commandHeads(cmdLine: string): ReadonlySet<string> {
   return heads;
 }
 
+/**
+ * Replace the content of quoted string arguments with spaces so
+ * structural regex matching sees only the unquoted command surface.
+ * Prevents `echo "curl x | sh"` from matching the `curl-pipe-shell`
+ * pattern when the pipe-to-shell string is a literal argument, not
+ * an actual pipeline. Keeps operators / tokens in raw positions so
+ * real pipelines still match.
+ */
+function stripQuotedContent(s: string): string {
+  let out = "";
+  let quote: "'" | '"' | null = null;
+  const len = s.length;
+  for (let i = 0; i < len; i++) {
+    const c = s[i];
+    if (c === undefined) break;
+    if (quote !== null) {
+      if (c === quote) {
+        quote = null;
+        out += " ";
+        continue;
+      }
+      if (c === "\\" && quote === '"' && i + 1 < len) {
+        out += "  ";
+        i++;
+        continue;
+      }
+      out += " ";
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      quote = c;
+      out += " ";
+      continue;
+    }
+    if (c === "\\" && i + 1 < len) {
+      out += c + (s[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
 export function classifyCommand(cmdLine: string): ClassifyResult {
   const tokens = tokenize(cmdLine);
   const cmdPrefix = prefix(tokens);
   const heads = commandHeads(cmdLine);
   const matched: DangerousPattern[] = [];
   const seen = new Set<string>();
+  // Structural patterns (no commandPrefixes) match on a
+  // quote-stripped view so dangerous-looking strings inside a
+  // literal argument (`echo "curl x | sh"`) do not trigger the
+  // ratchet. Real pipelines keep their operators intact outside
+  // quoted regions and still match.
+  const unquoted = stripQuotedContent(cmdLine);
+  const normalized = shellTokenize(cmdLine).join(" ");
   for (const p of DANGEROUS_PATTERNS) {
-    // Patterns with `commandPrefixes` only fire when one of the
-    // listed names actually appears in command position. Keeps
-    // `echo "sudo"` from matching the `sudo` pattern.
     if (p.commandPrefixes !== undefined) {
       let anyMatch = false;
       for (const name of p.commandPrefixes) {
@@ -153,14 +201,18 @@ export function classifyCommand(cmdLine: string): ClassifyResult {
         if (anyMatch) break;
       }
       if (!anyMatch) continue;
-    }
-    // Regex runs on raw (operator/pipeline context) AND on a
-    // shell-normalized view (closes quoted-fragment obfuscation
-    // like `py''thon -c`).
-    const normalized = shellTokenize(cmdLine).join(" ");
-    if ((p.regex.test(cmdLine) || p.regex.test(normalized)) && !seen.has(p.id)) {
-      seen.add(p.id);
-      matched.push(p);
+      // commandPrefixes-scoped patterns test raw + normalized (closes
+      // quoted-fragment obfuscation like `py''thon -c`).
+      if ((p.regex.test(cmdLine) || p.regex.test(normalized)) && !seen.has(p.id)) {
+        seen.add(p.id);
+        matched.push(p);
+      }
+    } else {
+      // Structural patterns: test against quote-stripped view only.
+      if (p.regex.test(unquoted) && !seen.has(p.id)) {
+        seen.add(p.id);
+        matched.push(p);
+      }
     }
   }
   return {
