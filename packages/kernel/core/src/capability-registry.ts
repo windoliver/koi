@@ -86,6 +86,9 @@ export function isToolCallPayload(value: unknown): value is ToolCallPayload {
   return (
     typeof obj.toolName === "string" &&
     obj.toolName.length > 0 &&
-    typeof obj.callerAgentId === "string"
+    typeof obj.callerAgentId === "string" &&
+    obj.args !== null &&
+    typeof obj.args === "object" &&
+    !Array.isArray(obj.args)
   );
 }
