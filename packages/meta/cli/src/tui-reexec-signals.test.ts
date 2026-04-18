@@ -35,42 +35,86 @@ function makeFakeSubprocess(): FakeProc {
 // leaked listener contaminates subsequent tests in the same file.
 afterEach(() => {
   process.removeAllListeners("SIGUSR1");
+  process.removeAllListeners("SIGUSR2");
   process.removeAllListeners("SIGTERM");
   process.removeAllListeners("SIGHUP");
   process.removeAllListeners("SIGINT");
 });
 
 describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
-  test("forwards SIGUSR1 to the child without starting the SIGTERM escalation", async () => {
+  test("forwards post-bind SIGUSR1 immediately once child is ready (SIGUSR2 ack received)", async () => {
     const fake = makeFakeSubprocess();
     const guard = armTuiReexecSignalHandlers();
     guard.bindChild(fake.proc);
 
+    // Simulate the child's ready ack (bin.ts sends SIGUSR2 to parent
+    // after installing its inline SIGUSR1 handler).
+    process.emit("SIGUSR2", "SIGUSR2");
+
+    // Now SIGUSR1 is forwarded immediately with no handshake delay.
     process.emit("SIGUSR1", "SIGUSR1");
 
     expect(fake.kills).toEqual(["SIGUSR1"]);
-    // SIGUSR1 must NOT flip the termination latch — that latch gates the
-    // SIGTERM-style SIGKILL escalation and is only appropriate for
-    // non-cooperative parent-initiated termination.
     expect(guard.terminated).toBe(false);
 
     fake.resolveExit(0);
     await fake.exited;
   });
 
-  test("replays a pre-bind SIGUSR1 once the child ref is bound (after readiness delay)", async () => {
+  test("queues post-bind SIGUSR1 until child sends SIGUSR2 ack (#1906 residual)", async () => {
+    const fake = makeFakeSubprocess();
     const guard = armTuiReexecSignalHandlers();
-    // Signal arrives before bindChild — handler records the pending flag.
+    guard.bindChild(fake.proc);
+
+    // SIGUSR1 arrives BEFORE child readiness — must be queued, not
+    // forwarded (forwarding now would risk SIGTRAP-ing the child mid-
+    // runtime-init).
+    process.emit("SIGUSR1", "SIGUSR1");
+    expect(fake.kills).toEqual([]);
+
+    // Child arms handler and sends SIGUSR2 ack. Queue drains
+    // synchronously.
+    process.emit("SIGUSR2", "SIGUSR2");
+    expect(fake.kills).toEqual(["SIGUSR1"]);
+
+    fake.resolveExit(0);
+    await fake.exited;
+  });
+
+  test("pre-bind SIGUSR1 is queued and drained by child readiness ack", async () => {
+    const guard = armTuiReexecSignalHandlers();
+    // Pre-bind SIGUSR1 sets pendingSigusr1 (and flips terminated). bin.ts
+    // would normally exit at this point; this test simulates the path
+    // where bin.ts does NOT early-exit (direct unit test of bindChild).
+    process.emit("SIGUSR1", "SIGUSR1");
+    expect(guard.terminated).toBe(true);
+
+    const fake = makeFakeSubprocess();
+    guard.bindChild(fake.proc);
+
+    // Still queued — waiting for child ack.
+    expect(fake.kills).toEqual([]);
+
+    // Child ack drains the queue.
+    process.emit("SIGUSR2", "SIGUSR2");
+    expect(fake.kills).toEqual(["SIGUSR1"]);
+
+    fake.resolveExit(0);
+    await fake.exited;
+  });
+
+  test("readiness backstop drains queue if SIGUSR2 ack never arrives", async () => {
+    const guard = armTuiReexecSignalHandlers();
     process.emit("SIGUSR1", "SIGUSR1");
 
     const fake = makeFakeSubprocess();
     guard.bindChild(fake.proc);
 
-    // Replay is now delayed (CHILD_READY_FOR_SIGUSR1_MS = 500) so the
-    // child has time to arm its own handler before the signal lands.
-    // Verify nothing fired immediately, then wait past the delay.
+    // Ack never arrives. After CHILD_READY_FOR_SIGUSR1_MS (500ms), the
+    // backstop promotes to ready and drains the queue — degrades to
+    // pre-handshake behavior rather than silently losing the signal.
     expect(fake.kills).toEqual([]);
-    await new Promise((r) => setTimeout(r, 550));
+    await new Promise((r) => setTimeout(r, 600));
     expect(fake.kills).toEqual(["SIGUSR1"]);
 
     fake.resolveExit(0);
@@ -116,12 +160,13 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     expect(guard.shouldKillNewbornChild).toBe(false);
   });
 
-  test("removes the SIGUSR1 listener after the child exits", async () => {
+  test("removes the SIGUSR1 and SIGUSR2 listeners after the child exits", async () => {
     const fake = makeFakeSubprocess();
     const guard = armTuiReexecSignalHandlers();
     guard.bindChild(fake.proc);
 
     expect(process.listenerCount("SIGUSR1")).toBe(1);
+    expect(process.listenerCount("SIGUSR2")).toBe(1);
 
     fake.resolveExit(0);
     await fake.exited;
@@ -130,5 +175,6 @@ describe("armTuiReexecSignalHandlers — SIGUSR1 forwarding (#1906)", () => {
     await Promise.resolve();
 
     expect(process.listenerCount("SIGUSR1")).toBe(0);
+    expect(process.listenerCount("SIGUSR2")).toBe(0);
   });
 });

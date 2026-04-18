@@ -107,6 +107,18 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // `forwardingStarted` so bin.ts can distinguish between the newborn-
   // SIGKILL path (SIGUSR1) and the graceful-forward path (SIGTERM/SIGHUP).
   let pendingTerminatorKind: "sigterm-or-sighup" | "sigusr1" = "sigterm-or-sighup";
+  // Child-ready handshake (#1906 residual) — flipped to true when the
+  // browser-build child sends SIGUSR2 to this parent after installing
+  // its own SIGUSR1 handler. SIGUSR1 forwards are queued here until
+  // readiness; once flipped, the queue drains and further SIGUSR1s
+  // forward immediately. Closes the Bun-runtime-init race where a
+  // forwarded SIGUSR1 could land mid-module-loading and SIGTRAP the
+  // child instead of running its JS handler.
+  let childReady = false;
+  // Queue of deferred SIGUSR1 forwards waiting for the readiness ack.
+  // Drained synchronously in onChildReady. Plain array — no Set because
+  // each queued forward has its own identity (even if redundant).
+  const queuedSigusr1Forwards: (() => void)[] = [];
 
   const forwardToChild = (proc: Subprocess, exitCode: number): void => {
     try {
@@ -160,12 +172,27 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // exits with the SIGUSR1 exit code INSTEAD of spawning the child. This
   // means user-requested escape-before-spawn never launches the TUI at
   // all, avoiding the inherent runtime-init-race on a fresh child.
+  const forwardSigusr1 = (target: Subprocess): void => {
+    try {
+      target.kill("SIGUSR1");
+    } catch {
+      // Child already exited — nothing to forward.
+    }
+  };
+
   const onSigusr1 = (): void => {
     if (child !== null) {
-      try {
-        child.kill("SIGUSR1");
-      } catch {
-        // Child already exited — nothing to forward.
+      if (childReady) {
+        forwardSigusr1(child);
+      } else {
+        // Child exists but hasn't confirmed its SIGUSR1 handler is armed.
+        // Queue the forward; onChildReady drains once the child sends
+        // SIGUSR2. bindChild's backstop timer (CHILD_READY_FOR_SIGUSR1_MS)
+        // also drains this queue so a child that never sends the ack
+        // still eventually gets the signal — degrades to pre-handshake
+        // behavior rather than silently losing the escape.
+        const pinned = child;
+        queuedSigusr1Forwards.push(() => forwardSigusr1(pinned));
       }
     } else {
       pendingSigusr1 = true;
@@ -184,6 +211,22 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
     }
   };
 
+  // SIGUSR2 ack (#1906 residual) — the child sends this after arming its
+  // inline SIGUSR1 handler. Flips `childReady` and drains any queued
+  // SIGUSR1 forwards that arrived during the bootstrap window. Masking
+  // the default SIGUSR2 disposition ("terminate") is itself load-bearing:
+  // without a handler installed here, the child's ack would kill the
+  // wrapper instead of unlocking forwarding.
+  const onChildReady = (): void => {
+    if (childReady) return;
+    childReady = true;
+    // Drain FIFO so a single user-visible SIGUSR1 does not end up
+    // forwarded twice if both the queue and a fresh signal race.
+    while (queuedSigusr1Forwards.length > 0) {
+      const fn = queuedSigusr1Forwards.shift();
+      fn?.();
+    }
+  };
   // Only arm SIGTERM/SIGHUP/SIGUSR1 pre-spawn. SIGINT (Ctrl+C) must NOT be
   // masked before the child exists — otherwise a user pressing Ctrl+C
   // during startup would be silently ignored and the TUI would launch.
@@ -195,6 +238,9 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
   // side effects from the #1906 escape-hatch machinery.
   if (SIGUSR1_SUPPORTED) {
     process.on("SIGUSR1", onSigusr1);
+    // SIGUSR2 is the child-ready ack. Arm BEFORE Bun.spawn returns so
+    // the ack cannot arrive before our handler exists.
+    process.on("SIGUSR2", onChildReady);
   }
 
   return {
@@ -217,28 +263,47 @@ export function armTuiReexecSignalHandlers(): TuiReexecSignalGuard {
         forwardToChild(proc, pendingExitCode);
       }
       if (pendingSigusr1) {
-        // Delay replay so the child can finish runtime init and arm its
-        // inline SIGUSR1 handler. Without this, a pre-bind SIGUSR1 can
-        // land during Bun module loading and SIGTRAP-panic the child
-        // before bin.ts reaches the handler install.
-        const replay = setTimeout(() => {
+        // Queue the pre-bind SIGUSR1 for forwarding. It will be drained
+        // by onChildReady (when the child sends its SIGUSR2 ack) OR by
+        // the readiness-timeout backstop below — whichever fires first.
+        queuedSigusr1Forwards.push(() => {
           try {
             proc.kill("SIGUSR1");
           } catch {
             // Child already exited before we could replay.
           }
-        }, CHILD_READY_FOR_SIGUSR1_MS);
-        if (typeof replay === "object" && replay !== null && "unref" in replay) {
-          (replay as { unref: () => void }).unref();
+        });
+      }
+      // Readiness-timeout backstop: if the child's SIGUSR2 ack never
+      // arrives (e.g. the child crashed during bootstrap, or was launched
+      // via a path that doesn't send the ack), drain the queue after
+      // CHILD_READY_FOR_SIGUSR1_MS so a queued SIGUSR1 is not silently
+      // lost. Sending after this timeout degrades to the pre-handshake
+      // behavior; the child had empirically-enough time to finish Bun
+      // runtime init even without confirming readiness.
+      const readinessBackstop = setTimeout(() => {
+        if (!childReady) {
+          // Promote to ready so any NEW onSigusr1 calls forward
+          // immediately and so a late ack is a harmless no-op.
+          onChildReady();
         }
+      }, CHILD_READY_FOR_SIGUSR1_MS);
+      if (
+        typeof readinessBackstop === "object" &&
+        readinessBackstop !== null &&
+        "unref" in readinessBackstop
+      ) {
+        (readinessBackstop as { unref: () => void }).unref();
       }
       // Clean up listeners when the child exits so a later re-exec child
       // in the same process starts from a clean state.
       void proc.exited.then(() => {
+        clearTimeout(readinessBackstop);
         process.removeListener("SIGINT", noopSigintHandler);
         process.removeListener("SIGTERM", onSigterm);
         process.removeListener("SIGHUP", onSighup);
         process.removeListener("SIGUSR1", onSigusr1);
+        process.removeListener("SIGUSR2", onChildReady);
       });
     },
   };

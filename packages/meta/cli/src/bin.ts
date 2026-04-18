@@ -123,6 +123,26 @@ if (
   const holder = globalThis as Record<symbol, unknown>;
   holder[Symbol.for("koi:tui:sigusr1:early-handler")] = earlyHandler;
   process.on("SIGUSR1", earlyHandler);
+  // Child-ready ack (#1906 residual) — notify the re-exec parent via
+  // SIGUSR2 that our SIGUSR1 handler is armed. The parent queues any
+  // pending SIGUSR1 forwards and drains them on receipt of this ack,
+  // closing the Bun-runtime-init race where a forwarded SIGUSR1 could
+  // otherwise land mid-module-loading and SIGTRAP-panic the child.
+  //
+  // Best-effort: wrapped in try/catch so a missing/exited parent (e.g.
+  // child spawned outside the wrapper path) doesn't abort startup.
+  // SIGUSR2 default disposition is "terminate" on POSIX, so the parent
+  // MUST have its own SIGUSR2 handler installed — tui-reexec-signals.ts
+  // arms one BEFORE Bun.spawn returns, so by the time this code runs
+  // (necessarily after spawn) the handler is guaranteed to be present.
+  try {
+    if (typeof process.ppid === "number" && process.ppid > 0) {
+      process.kill(process.ppid, "SIGUSR2");
+    }
+  } catch {
+    // Parent already gone or doesn't accept SIGUSR2 — ignore; the parent
+    // falls back to its 500ms delayed-replay heuristic.
+  }
 }
 
 // Lazy-load dispatch helper now that the raw-argv fast-path is cleared.
