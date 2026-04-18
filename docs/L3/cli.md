@@ -652,12 +652,11 @@ and task-tools descriptor guidance for autonomous planning. L3
 wiring (integrated L2 set) is unchanged; see `docs/L2/task-tools.md`
 and `docs/L2/tui.md` for the underlying changes.
 
-## #1881 — Bash prefix enrichment (library only)
+## #1881 — Bash prefix enrichment
 
-This release ships the `@koi/bash-classifier` L0u library and prefix-aware evaluation in `@koi/middleware-permissions`, but the CLI (`koi tui`, `koi start`) does NOT wire `resolveBashCommand` into its permissions middleware yet. The feature is opt-in at the library layer:
+`runtime-factory.ts` passes `resolveBashCommand` + `allowLegacyBackendBashFallback: true` to `createPermissionsMiddleware`. Behavior differs by host:
 
-- CLI behavior is unchanged — existing `koi tui` plain-tool permission rules (e.g. `fs_read` out-of-workspace prompts) continue to work exactly as before.
-- The first-party `createPermissionBackend` used by the TUI is not marker-aware (by design; its fall-through is `ask`, not a marked default-deny). See `docs/L2/permissions.md` for the rationale.
-- A future activation PR is needed to wire `resolveBashCommand` + swap to `createPatternPermissionBackend` (or explicit `allowLegacyBackendBashFallback: true`) in `packages/meta/cli/src/runtime-factory.ts`.
+- **`koi tui`** — uses the first-party `createPermissionBackend` (mode-based, not marker-aware). Middleware runs single-key fallback so prefix rules aren't enforced, but the enrichment is wired end-to-end for observability. Policy decisions are unchanged from pre-#1881; the TUI continues to prompt for every unmatched bash call.
+- **`koi start`** — uses `createPatternPermissionBackend` with the blanket `allow: ["*"]` rule (marker-aware). Dual-key evaluation engages automatically: the dangerous-command ratchet overrides allow with ask on sudo, `curl | sh`, `python -c`, `node -e`, etc., and the `!complex` structural ratchet fires on compound forms (redirects, pipelines, subshells, command substitution). This is a real hardening of `koi start` under the auto-allow policy.
 
-See `docs/L3/runtime.md` for the runtime-level wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design.
+The resolver matches tool ids case-insensitively (`"Bash"` or `"bash"`). Non-bash tools and malformed inputs fall through to plain-tool evaluation. See `docs/L3/runtime.md` for the runtime wiring contract and `docs/L2/bash-classifier.md` / `docs/L2/middleware-permissions.md` for the library design and threat model.

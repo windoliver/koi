@@ -292,13 +292,14 @@ itself is unchanged — task tools continue to be contributed via
 - **Dangerous-command ratchet** — curated pattern registry (privilege-escalation, code-exec, network-exfil, process-spawn, file-destructive, module-load) overrides allow decisions with ask, with an explicit-allow opt-out.
 - **Dual-key evaluation** — queries BOTH the enriched `Bash:<prefix>` and plain `Bash` resources; `strictestDecision` merges with default-deny-aware semantics so legacy plain-tool rules keep working.
 
-**Wiring status:** not yet activated in `@koi/runtime`'s TUI or `koi start` presets. Opt-in requires:
+**Wiring status:** activated in `runtime-factory.ts`. Behavior depends on the backend:
 
-1. A marker-aware backend (`createPatternPermissionBackend` sets `supportsDefaultDenyMarker: true`; the legacy `@koi/permissions#createPermissionBackend` does NOT — see `docs/L2/permissions.md`).
-2. `createPermissionsMiddleware({ resolveBashCommand, ... })` passed at wire time.
-3. Optional opt-ins:
-   - `allowLegacyBackendBashFallback: true` — single-key fallback for legacy backends (prefix rules not enforced).
-   - `legacyBashGrantFallback: true` — preserve existing durable `bash` approvals during a migration window.
+- **TUI (`koi tui`)** — default backend is `createPermissionBackend` (mode-based, not marker-aware). Runs single-key fallback via `allowLegacyBackendBashFallback: true`. Enrichment is wired but prefix rules are NOT enforced — existing TUI policy decisions are unchanged. Ratchets do not fire because the default backend returns `ask` for every bash call (no matching rule), which already requires approval.
+- **`koi start`** — uses `createPatternPermissionBackend` with `allow: ["*"]` (marker-aware). Dual-key evaluation engages automatically. Dangerous-command ratchet overrides allow decisions with ask on sudo, `curl | sh`, `python -c`, `node -e`, etc. `!complex` structural ratchet fires on compound forms (redirects, pipelines, subshells, command substitution) instead of silent auto-approve.
+
+Config options exposed at the middleware layer:
+- `allowLegacyBackendBashFallback: true` — single-key fallback for legacy backends (prefix rules not enforced).
+- `legacyBashGrantFallback: true` — preserve existing durable `bash` approvals during a migration window.
 
 **Config validation:** `validatePermissionsConfig` now rejects `resolveBashCommand` with a non-marker-aware backend unless `allowLegacyBackendBashFallback: true` is set, catching misconfigurations during validation instead of at runtime.
 
