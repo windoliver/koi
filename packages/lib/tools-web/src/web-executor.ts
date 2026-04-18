@@ -519,29 +519,62 @@ function normalizeUrl(url: string): string {
 }
 
 /**
- * Parse origin's declared freshness budget (ms) from Cache-Control / Expires.
+ * Remaining freshness (ms) per RFC 7234 §4.2, simplified for an end-cache:
  *
- * Preference order matches RFC 7234: `s-maxage` beats `max-age` beats
- * `Expires`. Returns `undefined` when origin did not declare a concrete
- * freshness lifetime — callers then fall back to the cache-wide TTL.
+ *   freshness_lifetime = s-maxage ?? max-age ?? (Expires - Date)
+ *   current_age        = max(Age, now - Date)
+ *   remaining          = freshness_lifetime - current_age
+ *
+ * Returns `undefined` when origin declared no concrete lifetime (caller
+ * falls back to the cache-wide TTL) and `0` when the response was already
+ * stale at receive time (caller skips the cache write).
  */
 function extractOriginFreshnessMs(result: WebFetchResult): number | undefined {
   const cc = result.headers["cache-control"]?.toLowerCase();
+  const now = Date.now();
+  const dateMs = parseHttpDateMs(result.headers.date);
+  const apparentAgeMs = dateMs !== undefined ? Math.max(0, now - dateMs) : 0;
+  const ageHeaderMs = (matchNonNegInteger(result.headers.age) ?? 0) * 1000;
+  const currentAgeMs = Math.max(apparentAgeMs, ageHeaderMs);
+
+  let lifetimeMs: number | undefined;
   if (cc !== undefined) {
     const sMaxAge = matchCacheDirectiveSeconds(cc, "s-maxage");
-    if (sMaxAge !== undefined) return sMaxAge * 1000;
-    const maxAge = matchCacheDirectiveSeconds(cc, "max-age");
-    if (maxAge !== undefined) return maxAge * 1000;
-  }
-  const expires = result.headers.expires;
-  if (expires !== undefined) {
-    const parsed = Date.parse(expires);
-    if (!Number.isNaN(parsed)) {
-      const delta = parsed - Date.now();
-      if (delta > 0) return delta;
+    if (sMaxAge !== undefined) lifetimeMs = sMaxAge * 1000;
+    else {
+      const maxAge = matchCacheDirectiveSeconds(cc, "max-age");
+      if (maxAge !== undefined) lifetimeMs = maxAge * 1000;
     }
   }
-  return undefined;
+  if (lifetimeMs === undefined) {
+    const expiresMs = parseHttpDateMs(result.headers.expires);
+    if (expiresMs !== undefined) {
+      // Prefer the origin's own clock (`Date` header) to compute how much
+      // of the Expires window was actually available. Fall back to local
+      // clock when `Date` is missing.
+      const basisMs = dateMs ?? now;
+      const window = expiresMs - basisMs;
+      if (window > 0) lifetimeMs = window;
+    }
+  }
+  if (lifetimeMs === undefined) return undefined;
+
+  const remaining = lifetimeMs - currentAgeMs;
+  return remaining > 0 ? remaining : 0;
+}
+
+function parseHttpDateMs(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+function matchNonNegInteger(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function matchCacheDirectiveSeconds(cc: string, name: string): number | undefined {
@@ -586,6 +619,15 @@ function isCacheableResponse(result: WebFetchResult): boolean {
     const t = Date.parse(expires);
     if (!Number.isNaN(t) && t <= Date.now()) return false;
   }
+
+  // `Vary` names request-header dimensions that would have produced a
+  // different representation. Our cache key is just `METHOD:URL`, so we
+  // cannot honor `Vary` correctly without widening the key. Skip the
+  // cache entirely when `Vary` is present — the explicit `*` case is
+  // mandatory ("nothing is reusable"), and every other form is unsafe
+  // under the current key model.
+  const vary = result.headers.vary?.trim();
+  if (vary !== undefined && vary !== "") return false;
 
   return true;
 }

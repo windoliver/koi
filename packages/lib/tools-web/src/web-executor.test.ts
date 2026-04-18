@@ -1087,6 +1087,78 @@ describe("createWebExecutor.fetch caching", () => {
     expect(callCount).toBe(2);
   });
 
+  test("subtracts Age header from max-age when capping the entry TTL", async () => {
+    // Regression for #1903 review round 7: TTL capping must use remaining
+    // freshness (max-age - Age), not nominal freshness. A response with
+    // max-age=10 and Age=9 has one second of life left, not ten.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("almost-stale-upstream", {
+        status: 200,
+        headers: { "cache-control": "public, max-age=10", age: "9" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("refuses to cache responses that arrive already stale (Age >= max-age)", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("already-stale", {
+        status: 200,
+        headers: { "cache-control": "public, max-age=5", age: "6" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with Vary: * (representation not reusable)", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("body", {
+        status: 200,
+        headers: { vary: "*" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
+  test("does not cache responses with any non-empty Vary (conservative key bypass)", async () => {
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      return new Response("encoded", {
+        status: 200,
+        headers: { vary: "Accept-Encoding" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com");
+    expect(callCount).toBe(2);
+  });
+
   test("s-maxage takes precedence over max-age when capping the entry TTL", async () => {
     let callCount = 0;
     const fetchFn = mock(async () => {
