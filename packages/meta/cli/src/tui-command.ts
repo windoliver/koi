@@ -1404,31 +1404,51 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     : undefined;
 
   // ---------------------------------------------------------------------------
-  // Interim SIGUSR1 handler (#1906 R1) — covers the window from this point
-  // through section 4b where the full `shutdown()` handler installs. A
-  // SIGUSR1 during runtime/MCP bootstrap now tears down whatever has been
-  // built so far (runtime background tasks, runtime dispose, filesystem
-  // backend, otel, approvals, batcher) instead of bare process.exit.
-  // Upgraded to the full handler at section 4b once `shutdown` is defined.
+  // Interim SIGUSR1 handler (#1906 R1/R2) — covers the window from this
+  // point through section 4b where the full `shutdown()` handler installs.
+  // SIGUSR1 during runtime/MCP bootstrap runs an ASYNC, ordered teardown
+  // (matching the normal shutdown sequencing: SIGTERM background tasks
+  // → await runtime.dispose → dispose filesystem backend → flush OTel →
+  // close approvals → dispose batcher → process.exit) with a 6s hard-exit
+  // failsafe so a wedged dispose cannot strand the user. Upgraded to the
+  // full handler at section 4b once `shutdown` is defined.
   // ---------------------------------------------------------------------------
+  // Interim hard-exit failsafe: shorter than the full shutdown's 8s because
+  // there is strictly less to tear down this early in bootstrap.
+  const INTERIM_SHUTDOWN_HARD_EXIT_MS = 6_000;
   // let: justified — set once, then cleared when the full handler takes over.
   let interimSigusr1Handler: (() => void) | null = null;
+  // let: justified — prevents concurrent interim teardown if SIGUSR1 is
+  // delivered twice in quick succession before the first async step completes.
+  let interimTeardownStarted = false;
   if (SIGUSR1_SUPPORTED) {
-    const interimTeardown = (exitCode: number): void => {
-      // Best-effort teardown of components that exist at this point.
-      // Each step is try/catch'd so a failure in one does not skip the
-      // rest — we are headed to process.exit regardless.
+    const interimTeardown = async (exitCode: number): Promise<void> => {
+      if (interimTeardownStarted) return;
+      interimTeardownStarted = true;
+      // Arm the hard-exit failsafe FIRST so even if an awaited step wedges
+      // we are not stranded. Unref'd so natural completion still lets
+      // the explicit process.exit below run when everything finishes.
+      const hardExit = setTimeout(() => {
+        process.exit(exitCode);
+      }, INTERIM_SHUTDOWN_HARD_EXIT_MS);
+      if (typeof hardExit === "object" && hardExit !== null && "unref" in hardExit) {
+        (hardExit as { unref: () => void }).unref();
+      }
+      // Kick background-task SIGTERM synchronously so stubborn subprocesses
+      // start dying before we begin the async dispose chain.
       try {
         runtimeHandle?.shutdownBackgroundTasks();
       } catch {}
       try {
-        void runtimeHandle?.runtime?.dispose?.();
+        if (runtimeHandle !== null) {
+          await runtimeHandle.runtime.dispose();
+        }
       } catch {}
       try {
-        void resolvedFilesystemBackend?.dispose?.();
+        await resolvedFilesystemBackend?.dispose?.();
       } catch {}
       try {
-        void otelHandle?.shutdown();
+        await otelHandle?.shutdown();
       } catch {}
       try {
         approvalStore?.close();
@@ -1439,7 +1459,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       process.exit(exitCode);
     };
     interimSigusr1Handler = createSigusr1Handler({
-      shutdown: (code) => interimTeardown(code),
+      shutdown: (code) => {
+        void interimTeardown(code);
+      },
       write: (msg) => {
         try {
           process.stderr.write(msg);
