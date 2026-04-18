@@ -813,4 +813,73 @@ describe("spawnChildAgent governance event wiring", () => {
     // spawn_release fires, spawn_count back to 0
     expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
   });
+
+  test("synchronous throw from record() does not abort cleanup (terminated handler)", async () => {
+    // Mock controller whose record() throws synchronously on spawn_release.
+    // Without the Promise.resolve().then(...) wrapper, this would skip
+    // childRuntime.dispose() entirely.
+    const recorded: GovernanceEvent[] = [];
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: (event) => {
+        recorded.push(event);
+        if (event.kind === "spawn_release") {
+          throw new Error("simulated sync throw on spawn_release");
+        }
+      },
+      snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    let disposeCalled = false;
+    const adapterWithDispose: EngineAdapter = {
+      ...mockAdapter(),
+      dispose: async () => {
+        disposeCalled = true;
+      },
+    };
+
+    const result = await spawnChildAgent(
+      baseOptions({ adapter: adapterWithDispose, parentAgent: parent, registry }),
+    );
+
+    registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
+    registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Adapter dispose still ran — sync throw inside record() did not abort cleanup
+    expect(disposeCalled).toBe(true);
+    // spawn_release was attempted exactly once
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("slow record() does not block runtime.dispose() (no-registry path)", async () => {
+    // Mock controller whose record() returns a promise that takes 2s to settle.
+    // dispose() must return promptly (fire-and-forget) — without that, dispose()
+    // would block until record() resolves (or forever for a hung backend).
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: () => new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    // No registry → dispose-override path
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    // dispose() must return well before the 2s record() settle time.
+    const start = Date.now();
+    await result.runtime.dispose();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
+  });
 });

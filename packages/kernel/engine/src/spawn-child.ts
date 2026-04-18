@@ -353,14 +353,6 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
   // parent is later disposed.
   const parentGovController = options.parentAgent.component<GovernanceController>(GOVERNANCE);
 
-  // gov-8: record spawn event against the parent's controller. The depth
-  // payload is the child's depth (parent depth + 1), matching the natural
-  // reading "a child was spawned at depth N". record() returns void | Promise<void>;
-  // await it to handle async controllers (e.g., distributed in future).
-  if (parentGovController !== undefined) {
-    await parentGovController.record({ kind: "spawn", depth: childPid.depth });
-  }
-
   // 5. Register child in registry (if provided)
   if (options.registry !== undefined) {
     const childAgentType = childPid.type;
@@ -469,6 +461,16 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
     }
   }
 
+  // gov-8: record spawn event against the parent's controller AFTER all
+  // throw-prone setup (createKoi, registry.register, delegation grant) has
+  // succeeded. This guarantees that if any earlier step throws, spawn_count
+  // is never incremented — preserving the spawn / spawn_release pairing
+  // invariant without requiring rollback on every failure path.
+  // Depth payload is the child's depth, matching "a child was spawned at depth N".
+  if (parentGovController !== undefined) {
+    await parentGovController.record({ kind: "spawn", depth: childPid.depth });
+  }
+
   // 8. Create child handle for lifecycle monitoring + determine dispose override
   let handle: ChildHandle;
   let disposeOverride: (() => Promise<void>) | undefined;
@@ -494,19 +496,22 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
-        // gov-8: pair spawn_release with the spawn record from Task 2.
-        // Sits inside the `released` guard so a double-terminated event
-        // cannot double-decrement spawn_count. Errors are logged but do
-        // not abort the rest of the cleanup.
+        // gov-8: pair spawn_release with the spawn record. Sits inside the
+        // `released` guard so a double-terminated event cannot double-decrement
+        // spawn_count. The `Promise.resolve().then(...)` form (rather than
+        // `Promise.resolve(record(...))`) catches BOTH synchronous throws and
+        // rejected promises from record() — without it, a sync throw inside
+        // record() would skip the .catch() and abort the rest of the cleanup
+        // (dispose, delegation revoke).
         if (parentGovController !== undefined) {
-          void Promise.resolve(parentGovController.record({ kind: "spawn_release" })).catch(
-            (err: unknown) => {
+          void Promise.resolve()
+            .then(() => parentGovController.record({ kind: "spawn_release" }))
+            .catch((err: unknown) => {
               console.error(
                 `[spawn-child] governance spawn_release failed for child "${childPid.id}"`,
                 err,
               );
-            },
-          );
+            });
         }
         void Promise.resolve(childRuntime.dispose()).catch((err: unknown) => {
           console.error(`[spawn-child] dispose failed for child "${childPid.id}"`, err);
@@ -539,18 +544,21 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
         released = true;
         const release = options.spawnLedger.release();
         void (release instanceof Promise ? release : undefined);
-        // gov-8: pair spawn_release with the spawn record from Task 2 in
-        // the no-registry path. Same guard pattern as the registry-backed
-        // handler — runs once.
+        // gov-8: pair spawn_release with the spawn record in the no-registry
+        // path. Fire-and-forget (matching the registry handler) so a slow or
+        // hung governance backend cannot block originalDispose() — disposal
+        // must always run regardless of bookkeeping outcome. The
+        // `Promise.resolve().then(...)` form also catches synchronous throws
+        // inside record().
         if (parentGovController !== undefined) {
-          try {
-            await parentGovController.record({ kind: "spawn_release" });
-          } catch (err: unknown) {
-            console.error(
-              `[spawn-child] governance spawn_release failed for child "${childPid.id}" (dispose path)`,
-              err,
-            );
-          }
+          void Promise.resolve()
+            .then(() => parentGovController.record({ kind: "spawn_release" }))
+            .catch((err: unknown) => {
+              console.error(
+                `[spawn-child] governance spawn_release failed for child "${childPid.id}" (dispose path)`,
+                err,
+              );
+            });
         }
       }
       await originalDispose();
