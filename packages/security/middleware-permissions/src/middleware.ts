@@ -1501,19 +1501,43 @@ export function createPermissionsMiddleware(
       // variants under the plain id so retry caps and escalation
       // fire consistently. When the enriched decision wins it uses
       // the enriched resource for per-prefix fidelity.
+      // Dual-key merge requires the backend to disambiguate
+      // default-deny from explicit deny via the public marker (either
+      // the internal IS_DEFAULT_DENY symbol or a public
+      // `default: true` field). Custom backends without either
+      // signal would have their unmarked denies treated as
+      // authoritative, silently hard-denying every enriched bash
+      // call and breaking legacy plain-tool allow/ask rules.
+      //
+      // When the backend doesn't signal support, skip the enriched
+      // query entirely and use only the plain tool id. Operators
+      // opt into dual-key enrichment by setting
+      // `supportsDefaultDenyMarker: true` on their backend.
+      const backendSupportsDualKey =
+        (config.backend as unknown as { readonly supportsDefaultDenyMarker?: boolean })
+          .supportsDefaultDenyMarker === true;
+
       const resource = enrichedResource;
       let trackingResource = enrichedResource;
       let query = enrichedQuery;
-      let decision = await resolveDecision(query, ctx.session.sessionId as string);
-      if (enrichedResource !== request.toolId) {
+      let decision: PermissionDecision;
+      if (!backendSupportsDualKey && enrichedResource !== request.toolId) {
         const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
-        const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
-        const combined = strictestDecision(plain, decision);
-        if (combined === plain) {
-          trackingResource = request.toolId;
-          query = plainQuery;
+        query = plainQuery;
+        trackingResource = request.toolId;
+        decision = await resolveDecision(query, ctx.session.sessionId as string);
+      } else {
+        decision = await resolveDecision(query, ctx.session.sessionId as string);
+        if (enrichedResource !== request.toolId) {
+          const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
+          const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
+          const combined = strictestDecision(plain, decision);
+          if (combined === plain) {
+            trackingResource = request.toolId;
+            query = plainQuery;
+          }
+          decision = combined;
         }
-        decision = combined;
       }
       // Structural-complexity ratchet: `!complex` covers compound
       // commands, redirections, subshells, command substitution, env
@@ -1533,9 +1557,14 @@ export function createPermissionsMiddleware(
         enrichedResource !== request.toolId &&
         enrichedResource === `${request.toolId}:${UNSAFE_PREFIX}`
       ) {
+        // Probe under the PLAIN tool id so ONLY truly broad
+        // wildcards like `bash:*` match it. Narrower rules
+        // (`bash:!complex*`, `bash:sudo*`, `bash:python*`) do not
+        // match this probe shape, so operators who explicitly
+        // whitelist specific prefixes are honored.
         const probeQuery = queryForTool(
           ctx,
-          `${request.toolId}:__ratchet_probe__`,
+          `${request.toolId}:__broad_wildcard_probe__`,
           request.metadata,
           resolvedPath,
         );
@@ -1555,12 +1584,10 @@ export function createPermissionsMiddleware(
       // structural-danger forms.
       //
       // BUT: operators who explicitly allow a dangerous prefix
-      // (e.g. `allow: bash:sudo`, `allow: bash:python`) have opted
-      // in deliberately — typically for headless/non-interactive
-      // automation. Probe with a nonsense resource under the same
-      // prefix: if the probe also allows, the allow was from a
-      // wildcard and we ratchet; if the probe denies, the operator
-      // wrote an explicit rule and we honor it.
+      // (e.g. `allow: bash:sudo`, `allow: bash:python*`,
+      // `allow: bash:chmod*`) have opted in deliberately — typically
+      // for headless/non-interactive automation. Probe under the
+      // plain tool id so ONLY truly broad wildcards match the probe.
       if (decision.effect === "allow" && config.resolveBashCommand !== undefined) {
         const raw = config.resolveBashCommand(request.toolId, request.input);
         if (raw !== undefined && raw.trim().length > 0) {
@@ -1568,7 +1595,7 @@ export function createPermissionsMiddleware(
           if (danger.severity !== null) {
             const probeQuery = queryForTool(
               ctx,
-              `${enrichedResource}:__ratchet_probe__`,
+              `${request.toolId}:__broad_wildcard_probe__`,
               request.metadata,
               resolvedPath,
             );

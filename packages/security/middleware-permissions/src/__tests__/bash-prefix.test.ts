@@ -51,7 +51,8 @@ const noopHandler = async (_req: ToolRequest): Promise<ToolResponse> => ({ outpu
 
 function recordingBackend(): { backend: PermissionBackend; seen: string[] } {
   const seen: string[] = [];
-  const backend: PermissionBackend = {
+  const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+    supportsDefaultDenyMarker: true,
     check(q: PermissionQuery): PermissionDecision {
       seen.push(q.resource);
       return { effect: "allow" };
@@ -62,6 +63,7 @@ function recordingBackend(): { backend: PermissionBackend; seen: string[] } {
 
 function ruleBackend(allow: readonly string[]): PermissionBackend {
   return {
+    supportsDefaultDenyMarker: true,
     check(q: PermissionQuery): PermissionDecision {
       for (const pattern of allow) {
         if (pattern === "*") return { effect: "allow" };
@@ -81,7 +83,7 @@ function ruleBackend(allow: readonly string[]): PermissionBackend {
       };
       return decision;
     },
-  };
+  } as PermissionBackend;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,7 +235,8 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     // Escalation: after 2 denies of the same resource, the tracker auto-denies
     // even without backend consultation. We deny `bash:rm` twice, then check
     // that `bash:ls` is still allowed (separate escalation bucket).
-    const backend: PermissionBackend = {
+    const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+      supportsDefaultDenyMarker: true,
       check(q: PermissionQuery): PermissionDecision {
         if (q.resource === "bash:rm") return { effect: "deny", reason: "nope" };
         return { effect: "allow" };
@@ -266,7 +269,8 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
 
   test("always-allow on one prefix does not auto-approve other prefixes", async () => {
     // Backend returns ask for everything → forces the approval flow.
-    const backend: PermissionBackend = {
+    const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+      supportsDefaultDenyMarker: true,
       check: () => ({ effect: "ask", reason: "review" }),
     };
 
@@ -443,7 +447,8 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       close: mock(() => {}),
     };
 
-    const backend: PermissionBackend = {
+    const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+      supportsDefaultDenyMarker: true,
       check: () => ({ effect: "ask", reason: "review" }),
     };
 
@@ -575,6 +580,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
 
 describe("bash prefix — wrapper and path bypass hardening", () => {
   const backend = {
+    supportsDefaultDenyMarker: true,
     check(q: PermissionQuery): PermissionDecision {
       // Deny any resource that resolves to bash:sudo*
       if (q.resource.startsWith("bash:sudo")) {
@@ -680,7 +686,8 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
   });
 
   test("session always-allow on one complex command does NOT auto-approve a different one", async () => {
-    const backend: PermissionBackend = {
+    const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+      supportsDefaultDenyMarker: true,
       check: () => ({ effect: "ask", reason: "review" }),
     };
 
@@ -928,7 +935,8 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     // returning `{ effect: "deny", default: true }` on unmatched
     // resources. The merge treats those as "no opinion" so legacy
     // plain-tool allow rules keep working without private API.
-    const backend: PermissionBackend = {
+    const backend: PermissionBackend & { readonly supportsDefaultDenyMarker: true } = {
+      supportsDefaultDenyMarker: true,
       check(q: PermissionQuery): PermissionDecision {
         if (q.resource === "bash") return { effect: "allow" };
         // Unmatched → public default-deny marker.
@@ -1166,41 +1174,60 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     );
   });
 
-  test("wildcard allow + dangerous command → ratcheted to ask; explicit allow honored (loop-3 + loop-12)", async () => {
-    // Two policy shapes, two different outcomes:
-    //  a) `allow: bash:python*` (wildcard) → `python -c "os.system"`
-    //     ratchets to ask (probe also matches wildcard).
-    //  b) `allow: bash:python` (exact) → operator explicitly opted
-    //     in to python as a whole; dangerous forms execute
-    //     non-interactively (honors explicit intent, loop-12 fix).
+  test("broad wildcard ratchets; narrow/explicit allow honored on dangerous command (loop-3 + loop-12 + loop-final)", async () => {
+    // Probe-based disambiguation between truly broad and narrow wildcards:
+    //  a) `allow: bash:*` (broad) → `python -c "os.system"` ratchets to
+    //     ask. The probe `bash:__broad_wildcard_probe__` also matches,
+    //     so the original allow came from a broad wildcard.
+    //  b) `allow: bash:python*` (narrow wildcard) → honored. Operator
+    //     explicitly scoped the allow to python — dangerous forms
+    //     execute non-interactively. Probe does NOT match, so the
+    //     allow is attributed to explicit intent (loop-final fix).
+    //  c) `allow: bash:python` (exact) → honored (loop-12 fix).
     const approvalCalls: string[] = [];
     const approvalHandler = async (req: ApprovalRequest): Promise<ApprovalDecision> => {
       approvalCalls.push(req.toolId);
       return { kind: "deny", reason: "dangerous, reviewing" };
     };
 
-    // (a) Wildcard: dangerous form ratchets.
-    const wildcardBackend = createPatternPermissionBackend({
-      rules: { allow: ["bash:python*"], deny: [], ask: [] },
+    // (a) Broad wildcard: dangerous form ratchets.
+    const broadBackend = createPatternPermissionBackend({
+      rules: { allow: ["bash:*"], deny: [], ask: [] },
     });
-    const mwWildcard = createPermissionsMiddleware({
-      backend: wildcardBackend,
+    const mwBroad = createPermissionsMiddleware({
+      backend: broadBackend,
       resolveBashCommand: (_toolId, input) => input.command as string,
       bashVisibleTools: ["bash"],
     });
-    const ctxWildcard = makeTurnContext({ requestApproval: approvalHandler });
+    const ctxBroad = makeTurnContext({ requestApproval: approvalHandler });
     await expect(
-      mwWildcard.wrapToolCall?.(
-        ctxWildcard,
+      mwBroad.wrapToolCall?.(
+        ctxBroad,
         makeToolRequest("bash", { command: `python -c "import os; os.system('rm')"` }),
         noopHandler,
       ),
     ).rejects.toThrow("dangerous, reviewing");
     expect(approvalCalls).toHaveLength(1);
 
-    // (b) Exact: dangerous form runs without prompting (operator
-    // has explicitly authorized bash:python for headless
-    // automation).
+    // (b) Narrow wildcard: operator scoped allow to python; honored.
+    const narrowBackend = createPatternPermissionBackend({
+      rules: { allow: ["bash:python*"], deny: [], ask: [] },
+    });
+    const mwNarrow = createPermissionsMiddleware({
+      backend: narrowBackend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctxNarrow = makeTurnContext({ requestApproval: approvalHandler });
+    const rNarrow = await mwNarrow.wrapToolCall?.(
+      ctxNarrow,
+      makeToolRequest("bash", { command: `python -c "import os; os.system('rm')"` }),
+      noopHandler,
+    );
+    expect(rNarrow?.output).toBe("ok");
+    expect(approvalCalls).toHaveLength(1); // still 1 — handler not called
+
+    // (c) Exact: dangerous form runs without prompting.
     const exactBackend = createPatternPermissionBackend({
       rules: { allow: ["bash:python"], deny: [], ask: [] },
     });

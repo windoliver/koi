@@ -121,7 +121,9 @@ function expandGroups(
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend {
+export function createPatternPermissionBackend(
+  config: PatternBackendConfig,
+): PermissionBackend & { readonly supportsDefaultDenyMarker: true } {
   // Merge DEFAULT_GROUPS as base, then layer caller overrides on top.
   // This ensures group:runtime etc. work without requiring explicit groups config.
   const groups = { ...DEFAULT_GROUPS, ...config.groups };
@@ -133,6 +135,11 @@ export function createPatternPermissionBackend(config: PatternBackendConfig): Pe
   const allowPatterns = expandGroups(config.rules.allow, groups);
 
   return {
+    // Signals to the middleware that this backend's deny decisions
+    // carry the IS_DEFAULT_DENY symbol on fall-through denies.
+    // Used to opt this backend into dual-key bash enrichment without
+    // impacting custom backends that don't carry the marker.
+    supportsDefaultDenyMarker: true,
     check(query) {
       const toolId = query.resource;
 
