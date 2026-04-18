@@ -3,8 +3,8 @@ import { z } from "zod";
 export interface ParsedAction {
   readonly kind: "tool_call" | "edit" | "decision";
   readonly name: string;
-  readonly paths?: readonly string[] | undefined;
-  readonly detail?: string | undefined;
+  readonly paths?: readonly string[] | null | undefined;
+  readonly detail?: string | null | undefined;
 }
 
 export interface ParsedContent {
