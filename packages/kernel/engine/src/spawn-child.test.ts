@@ -6,10 +6,12 @@ import type {
   EngineAdapter,
   EngineEvent,
   EngineOutput,
+  GovernanceController,
+  GovernanceEvent,
   SubsystemToken,
   Tool,
 } from "@koi/core";
-import { agentId, DEFAULT_SANDBOXED_POLICY, toolToken } from "@koi/core";
+import { agentId, DEFAULT_SANDBOXED_POLICY, GOVERNANCE, toolToken } from "@koi/core";
 import { DEFAULT_SPAWN_POLICY } from "@koi/engine-compose";
 import type { CascadingTermination, InMemoryRegistry, ProcessTree } from "@koi/engine-reconcile";
 import {
@@ -85,11 +87,12 @@ function mockTool(name: string): Tool {
 }
 
 /**
- * Build a mock parent Agent entity with optional tools.
+ * Build a mock parent Agent entity with optional components map.
  * Tools must be keyed as `tool:<name>` to match the SubsystemToken convention.
+ * Pass a GovernanceController keyed by `GOVERNANCE` for gov-8 tests.
  */
-function mockParentAgent(depth = 0, tools?: ReadonlyMap<string, unknown>): Agent {
-  const components = tools ?? new Map<string, unknown>();
+function mockParentAgent(depth = 0, components?: ReadonlyMap<string, unknown>): Agent {
+  const comps = components ?? new Map<string, unknown>();
   return {
     pid: {
       id: agentId("parent-1"),
@@ -99,20 +102,55 @@ function mockParentAgent(depth = 0, tools?: ReadonlyMap<string, unknown>): Agent
     },
     manifest: { name: "parent", version: "0.1.0", model: { name: "test" } },
     state: "running",
-    component: <T>(tok: SubsystemToken<T>) => components.get(tok as string) as T | undefined,
-    has: (tok) => components.has(tok as string),
-    hasAll: (...tokens) => tokens.every((t) => components.has(t as string)),
+    component: <T>(tok: SubsystemToken<T>) => comps.get(tok as string) as T | undefined,
+    has: (tok) => comps.has(tok as string),
+    hasAll: (...tokens) => tokens.every((t) => comps.has(t as string)),
     query: <T>(prefix: string): ReadonlyMap<SubsystemToken<T>, T> => {
       const result = new Map<SubsystemToken<T>, T>();
-      for (const [key, value] of components) {
+      for (const [key, value] of comps) {
         if (key.startsWith(prefix)) {
           result.set(key as SubsystemToken<T>, value as T);
         }
       }
       return result;
     },
-    components: () => components as ReadonlyMap<string, unknown>,
+    components: () => comps as ReadonlyMap<string, unknown>,
   };
+}
+
+/**
+ * Mock GovernanceController exposing only the methods spawn-child reads
+ * (record + minimal stubs for the rest of the interface). The spy array
+ * captures every event passed to record() in order.
+ */
+function mockGovernanceController(): {
+  controller: GovernanceController;
+  recorded: GovernanceEvent[];
+} {
+  const recorded: GovernanceEvent[] = [];
+  const controller: GovernanceController = {
+    check: (_variable: string) => ({ ok: true }),
+    checkAll: () => ({ ok: true }),
+    record: (event) => {
+      recorded.push(event);
+    },
+    snapshot: () => ({
+      timestamp: Date.now(),
+      readings: [],
+      healthy: true,
+      violations: [],
+    }),
+    variables: () => new Map(),
+    reading: (_variable: string) => undefined,
+  };
+  return { controller, recorded };
+}
+
+/** Build a parent agent with a GovernanceController attached. */
+function mockParentAgentWithGovernance(depth = 0): { parent: Agent; recorded: GovernanceEvent[] } {
+  const { controller, recorded } = mockGovernanceController();
+  const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+  return { parent: mockParentAgent(depth, components), recorded };
 }
 
 /** Build minimal SpawnChildOptions with sensible defaults. */
@@ -629,5 +667,262 @@ describe("spawnChildAgent error handling", () => {
       // Ledger was released before re-throw
       expect(ledger.activeCount()).toBe(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gov-8: GovernanceController spawn / spawn_release wiring
+// ---------------------------------------------------------------------------
+
+describe("spawnChildAgent governance event wiring", () => {
+  let registry: InMemoryRegistry;
+
+  beforeEach(() => {
+    registry = createInMemoryRegistry();
+  });
+
+  afterEach(async () => {
+    await registry[Symbol.asyncDispose]();
+  });
+
+  test("records spawn event with child depth on parent's controller", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    const spawnEvents = recorded.filter((e) => e.kind === "spawn");
+    expect(spawnEvents).toHaveLength(1);
+    const [event] = spawnEvents;
+    expect(event).toEqual({ kind: "spawn", depth: result.childPid.depth });
+  });
+
+  test("records spawn event with depth = parent.depth + 1 for nested spawn", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(2);
+    await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    const spawnEvents = recorded.filter((e) => e.kind === "spawn");
+    expect(spawnEvents).toHaveLength(1);
+    expect(spawnEvents[0]).toEqual({ kind: "spawn", depth: 3 });
+  });
+
+  test("records spawn_release when child transitions to terminated", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    // Spawn fired during assembly; assert the baseline.
+    expect(recorded.filter((e) => e.kind === "spawn")).toHaveLength(1);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(0);
+
+    // Drive the child to terminated.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+
+    // Allow the async record() in the void Promise.resolve(...) chain to settle.
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("spawn_release fires only once on double-terminated transition", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The registry won't accept a second terminated transition, but the
+    // 'released' guard inside spawn-child should prevent a double record
+    // even if it did. Assert exactly one release event.
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("records spawn_release via dispose-override when no registry provided", async () => {
+    const { parent, recorded } = mockParentAgentWithGovernance(0);
+    // No `registry` option → spawn-child wires cleanup through dispose()
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    expect(recorded.filter((e) => e.kind === "spawn")).toHaveLength(1);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(0);
+
+    await result.runtime.dispose();
+
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("does not throw and does not record when parent has no GOVERNANCE component", async () => {
+    // Default mockParentAgent has no GOVERNANCE component attached.
+    const parent = mockParentAgent(0);
+    // Spawn must succeed AND no governance recording must fire — verify
+    // by spawning, then checking that no exception escaped and that the
+    // returned runtime works.
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    expect(result.runtime).toBeDefined();
+    expect(result.childPid).toBeDefined();
+
+    // Drive termination — should still not throw despite no controller.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    // No assertion needed — absence of thrown error is the contract.
+  });
+
+  test("integrates with real GovernanceController — spawn_count increments and decrements", async () => {
+    const { createGovernanceController } = await import("@koi/engine-reconcile");
+    const { GOVERNANCE_VARIABLES } = await import("@koi/core");
+
+    const controller = createGovernanceController(
+      { spawn: { maxDepth: 5, maxFanOut: 10 } },
+      { agentDepth: 0 },
+    );
+    controller.seal();
+
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    // Baseline: spawn_count = 0
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent, registry }));
+
+    // After spawn record fires, spawn_count = 1
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(1);
+
+    // Terminate the child.
+    registry.transition(result.childPid.id, "running", 0, {
+      kind: "assembly_complete",
+    });
+    registry.transition(result.childPid.id, "terminated", 1, {
+      kind: "completed",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    // spawn_release fires, spawn_count back to 0
+    expect(controller.reading(GOVERNANCE_VARIABLES.SPAWN_COUNT)?.current).toBe(0);
+  });
+
+  test("synchronous throw from record() does not abort cleanup (terminated handler)", async () => {
+    // Mock controller whose record() throws synchronously on spawn_release.
+    // Without the Promise.resolve().then(...) wrapper, this would skip
+    // childRuntime.dispose() entirely.
+    const recorded: GovernanceEvent[] = [];
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: (event) => {
+        recorded.push(event);
+        if (event.kind === "spawn_release") {
+          throw new Error("simulated sync throw on spawn_release");
+        }
+      },
+      snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    let disposeCalled = false;
+    const adapterWithDispose: EngineAdapter = {
+      ...mockAdapter(),
+      dispose: async () => {
+        disposeCalled = true;
+      },
+    };
+
+    const result = await spawnChildAgent(
+      baseOptions({ adapter: adapterWithDispose, parentAgent: parent, registry }),
+    );
+
+    registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
+    registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Adapter dispose still ran — sync throw inside record() did not abort cleanup
+    expect(disposeCalled).toBe(true);
+    // spawn_release was attempted exactly once
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("spawn record failure does not strand ledger or delegation", async () => {
+    // Mock controller whose record({kind:"spawn"}) throws. The spawn must
+    // still succeed (governance is optional per L0 contract), and no leak
+    // must occur — ledger gets released on termination. spawn_release fires
+    // unconditionally on cleanup; the controller's clamp-to-0 semantics
+    // make an unpaired release safe.
+    const recorded: GovernanceEvent[] = [];
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: (event) => {
+        if (event.kind === "spawn") {
+          throw new Error("simulated sync throw on spawn");
+        }
+        recorded.push(event);
+      },
+      snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+    const ledger = createInMemorySpawnLedger(10);
+
+    // Spawn must succeed despite the throwing record()
+    const result = await spawnChildAgent(
+      baseOptions({ parentAgent: parent, registry, spawnLedger: ledger }),
+    );
+    expect(result.runtime).toBeDefined();
+    expect(ledger.activeCount()).toBe(1);
+
+    // Termination releases the ledger. spawn_release fires unconditionally —
+    // the controller's clamp-to-0 makes this safe even though spawn was never
+    // recorded. This is the more robust pairing strategy under partial
+    // failures (where record(spawn) may apply its side effect before throwing).
+    registry.transition(result.childPid.id, "running", 0, { kind: "assembly_complete" });
+    registry.transition(result.childPid.id, "terminated", 1, { kind: "completed" });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(ledger.activeCount()).toBe(0);
+    expect(recorded.filter((e) => e.kind === "spawn_release")).toHaveLength(1);
+  });
+
+  test("slow record() does not block runtime.dispose() (no-registry path)", async () => {
+    // Mock controller whose record() returns a promise that takes 2s to settle.
+    // dispose() must return promptly (fire-and-forget) — without that, dispose()
+    // would block until record() resolves (or forever for a hung backend).
+    const controller: GovernanceController = {
+      check: () => ({ ok: true }),
+      checkAll: () => ({ ok: true }),
+      record: () => new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      snapshot: () => ({ timestamp: Date.now(), readings: [], healthy: true, violations: [] }),
+      variables: () => new Map(),
+      reading: () => undefined,
+    };
+    const components = new Map<string, unknown>([[GOVERNANCE as string, controller]]);
+    const parent = mockParentAgent(0, components);
+
+    // No registry → dispose-override path
+    const result = await spawnChildAgent(baseOptions({ parentAgent: parent }));
+
+    // dispose() must return well before the 2s record() settle time.
+    const start = Date.now();
+    await result.runtime.dispose();
+    const elapsed = Date.now() - start;
+    expect(elapsed).toBeLessThan(500);
   });
 });
