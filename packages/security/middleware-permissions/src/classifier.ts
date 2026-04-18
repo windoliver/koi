@@ -121,9 +121,7 @@ function expandGroups(
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createPatternPermissionBackend(
-  config: PatternBackendConfig,
-): PermissionBackend & { readonly supportsDefaultDenyMarker: true } {
+export function createPatternPermissionBackend(config: PatternBackendConfig): PermissionBackend {
   // Merge DEFAULT_GROUPS as base, then layer caller overrides on top.
   // This ensures group:runtime etc. work without requiring explicit groups config.
   const groups = { ...DEFAULT_GROUPS, ...config.groups };

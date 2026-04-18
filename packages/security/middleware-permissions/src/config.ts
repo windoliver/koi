@@ -184,6 +184,49 @@ export interface PermissionsMiddlewareConfig {
    */
   readonly bashVisibleTools?: readonly string[];
   /**
+   * Migration aid for deployments that enabled `resolveBashCommand`
+   * after already persisting plain-tool-id `bash` approvals under the
+   * old (pre-enrichment) keying. When `true`, the persistent-approval
+   * lookup falls back to the legacy plain-tool grant key for commands
+   * that are not classified as `!complex` (structural) or dangerous
+   * (known-unsafe pattern). Complex/dangerous forms always require a
+   * fresh approval regardless of this flag.
+   *
+   * Default: `false` (strict). New deployments keep the secure
+   * default; operators rotating in prefix policy flip this to `true`
+   * during the migration window, then back to `false` once users have
+   * rekeyed their durable grants.
+   *
+   * Security note: enabling this trades some policy freshness for
+   * continuity. Prefer a scheduled migration (one-time script that
+   * rekeys or expires old grants) over leaving this permanently on.
+   */
+  readonly legacyBashGrantFallback?: boolean;
+  /**
+   * Opt-in compatibility flag for legacy `PermissionBackend`
+   * implementations that do not set `supportsDefaultDenyMarker: true`.
+   *
+   * When `resolveBashCommand` is configured, dual-key evaluation
+   * requires the backend to distinguish default-deny from explicit
+   * deny. Backends without the marker cannot participate in the
+   * merge, so the middleware has three options:
+   *   1. Throw at construction (strict; rollout-hostile).
+   *   2. Silently fall back to plain-tool-only evaluation (downgrades
+   *      policy without the operator knowing; this is a security
+   *      regression).
+   *   3. Require explicit opt-in via this flag.
+   *
+   * We pick (3). Setting this to `true` acknowledges that prefix
+   * rules like `ask: bash:git push` will NOT be enforced against
+   * this backend — only plain-tool-id rules (e.g. `allow: bash`)
+   * apply. The middleware still emits a warning.
+   *
+   * Default: `false`. Configuring `resolveBashCommand` with a
+   * non-marker backend without setting this flag is a fail-closed
+   * construction error.
+   */
+  readonly allowLegacyBackendBashFallback?: boolean;
+  /**
    * Max cumulative soft denies per `decisionCacheKey` per turn before hard-throw.
    * Counter is cumulative per turn — allow decisions do not reset it. Cleared at
    * turn boundary via `onBeforeTurn`. Default: 3. #1650.
@@ -367,6 +410,40 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
         return fail("config.bashVisibleTools entries must be non-empty strings");
       }
     }
+  }
+
+  // legacyBashGrantFallback — boolean if set
+  if (
+    config.legacyBashGrantFallback !== undefined &&
+    typeof config.legacyBashGrantFallback !== "boolean"
+  ) {
+    return fail("config.legacyBashGrantFallback must be a boolean");
+  }
+
+  // allowLegacyBackendBashFallback — boolean if set
+  if (
+    config.allowLegacyBackendBashFallback !== undefined &&
+    typeof config.allowLegacyBackendBashFallback !== "boolean"
+  ) {
+    return fail("config.allowLegacyBackendBashFallback must be a boolean");
+  }
+
+  // Cross-field invariant: `resolveBashCommand` requires a marker-aware
+  // backend unless the operator explicitly opts into single-key
+  // fallback. Mirror the constructor check here so validation catches
+  // the misconfiguration up front instead of at runtime.
+  if (
+    config.resolveBashCommand !== undefined &&
+    backend.supportsDefaultDenyMarker !== true &&
+    config.allowLegacyBackendBashFallback !== true
+  ) {
+    return fail(
+      "config.resolveBashCommand requires a PermissionBackend with " +
+        "`supportsDefaultDenyMarker: true` (mark fall-through denies with the " +
+        "IS_DEFAULT_DENY symbol or a public `default: true` field), or explicit " +
+        "opt-in via `allowLegacyBackendBashFallback: true` (prefix rules will " +
+        "NOT be enforced under that opt-in).",
+    );
   }
 
   // softDenyPerTurnCap — positive number if set

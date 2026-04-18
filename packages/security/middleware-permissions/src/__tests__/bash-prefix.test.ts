@@ -227,6 +227,128 @@ describe("bash prefix resource enrichment", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Backward-compat and migration regressions (loop-2 round)
+// ---------------------------------------------------------------------------
+
+describe("bash prefix — backward compatibility", () => {
+  test("legacy backend + resolveBashCommand WITHOUT opt-in → throws at construction (fail-closed)", () => {
+    const legacyBackend: PermissionBackend = {
+      check: () => ({ effect: "allow" }),
+    };
+    expect(() =>
+      createPermissionsMiddleware({
+        backend: legacyBackend,
+        resolveBashCommand: (_toolId, input) => input.command as string,
+        bashVisibleTools: ["bash"],
+      }),
+    ).toThrow(/supportsDefaultDenyMarker/);
+  });
+
+  test("legacy backend + explicit `allowLegacyBackendBashFallback` opt-in → single-key fallback", async () => {
+    // With explicit opt-in, the middleware constructs and evaluates
+    // enriched resources as the plain tool id. Prefix rules are not
+    // enforced (by design); plain-tool rules still apply.
+    const legacyBackend: PermissionBackend = {
+      check(q: PermissionQuery): PermissionDecision {
+        if (q.resource === "bash") return { effect: "allow" };
+        // Unmatched plain deny (no markers) — would hard-deny dual-key.
+        return { effect: "deny", reason: "no rule" };
+      },
+    };
+    const mw = createPermissionsMiddleware({
+      backend: legacyBackend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+      allowLegacyBackendBashFallback: true,
+    });
+    const result = await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "git push" }),
+      noopHandler,
+    );
+    expect(result?.output).toBe("ok");
+  });
+
+  test("legacyBashGrantFallback: false (default) — legacy plain-bash grants do not auto-approve", async () => {
+    const grants = new Set<string>(["bash"]);
+    const persistentApprovals = {
+      has: mock((_u: string, _a: string, k: string) => grants.has(k)),
+      grant: mock(() => {}),
+      revoke: mock(() => true),
+      revokeAll: mock(() => grants.clear()),
+      list: mock(() => []),
+      close: mock(() => {}),
+    };
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "fresh review required",
+      }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend: {
+        supportsDefaultDenyMarker: true,
+        check: () => ({ effect: "ask", reason: "review" }),
+      },
+      persistentApprovals,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+    await expect(
+      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git status" }), noopHandler),
+    ).rejects.toThrow("fresh review required");
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+  });
+
+  test("legacyBashGrantFallback: true — benign commands use legacy grant; dangerous still prompts", async () => {
+    const grants = new Set<string>(["bash"]);
+    const persistentApprovals = {
+      has: mock((_u: string, _a: string, k: string) => grants.has(k)),
+      grant: mock(() => {}),
+      revoke: mock(() => true),
+      revokeAll: mock(() => grants.clear()),
+      list: mock(() => []),
+      close: mock(() => {}),
+    };
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "dangerous blocked",
+      }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend: {
+        supportsDefaultDenyMarker: true,
+        check: () => ({ effect: "ask", reason: "review" }),
+      },
+      persistentApprovals,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      legacyBashGrantFallback: true,
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // Benign: legacy grant covers it — no prompt.
+    const r = await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "git status" }),
+      noopHandler,
+    );
+    expect(r?.output).toBe("ok");
+    expect(approvalHandler).not.toHaveBeenCalled();
+
+    // Dangerous: fresh prompt despite legacy grant.
+    await expect(
+      mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("bash", { command: "sudo apt install git" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow("dangerous blocked");
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Regression tests for approval + denial tracking scoping (PR review)
 // ---------------------------------------------------------------------------
 
@@ -350,7 +472,10 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       }),
     );
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "ask", reason: "review" }) },
+      backend: {
+        supportsDefaultDenyMarker: true,
+        check: () => ({ effect: "ask", reason: "review" }),
+      },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
@@ -374,7 +499,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
 
   test("grant keys are scoped to execution context — approvals don't replay across repos (loop-10)", () => {
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
+      backend: { supportsDefaultDenyMarker: true, check: () => ({ effect: "allow" }) },
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
     // Same command text + different context → different grant keys.
@@ -392,12 +517,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     expect(keyNoCtx1).not.toBe(keyRepoA);
   });
 
-  test("legacy plain-toolId persistent grants still authorize after enabling resolveBashCommand (loop-9)", async () => {
-    // Simulates a deployment that persisted an approval for plain
-    // `bash` before bash enrichment was enabled. Enabling
-    // resolveBashCommand must not silently invalidate that grant —
-    // the middleware falls back to the legacy plain-tool lookup if
-    // the new exact-command lookup misses.
+  test("legacy plain-toolId grants do NOT auto-approve enriched bash calls (loop-final)", async () => {
+    // Operators who tighten policy (e.g. enable `resolveBashCommand`
+    // and add `ask: bash:git push`) must see those asks fire even
+    // for users with a pre-existing blanket plain-`bash` grant.
+    // Silently replaying old grants against stricter policy is a
+    // regression — legacy blanket approval must not survive policy
+    // tightening. Operators who want durable approvals under the
+    // new policy re-grant per exact-command hash.
     const grants = new Set<string>(["bash"]); // pre-existing legacy grant
     const persistentApprovals = {
       has: mock((_u: string, _a: string, k: string) => grants.has(k)),
@@ -410,24 +537,28 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     const approvalHandler = mock(
       async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
         kind: "deny",
-        reason: "should not prompt",
+        reason: "fresh review required",
       }),
     );
 
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "ask", reason: "review" }) },
+      backend: {
+        supportsDefaultDenyMarker: true,
+        check: () => ({ effect: "ask", reason: "review" }),
+      },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
 
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
-    // Any bash command should hit the legacy plain-`bash` grant.
+    // Every bash command must re-prompt — legacy grant is ignored.
     for (const cmd of ["git status", "npm run build", "ls -la"]) {
-      await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: cmd }), noopHandler);
+      await expect(
+        mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: cmd }), noopHandler),
+      ).rejects.toThrow("fresh review required");
     }
-    // Handler never consulted — legacy grant covered all three.
-    expect(approvalHandler).not.toHaveBeenCalled();
+    expect(approvalHandler).toHaveBeenCalledTimes(3);
   });
 
   test("persistent always-allow grant is keyed on exact-command hash (round 2 redesign)", async () => {
@@ -487,19 +618,19 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     );
     expect(approvalHandler).toHaveBeenCalledTimes(2);
 
-    // has() is called with BOTH the enriched grantKey and the plain
-    // toolId (loop-9 backward-compat lookup). Either exact-command
-    // grants OR legacy plain-tool grants authorize the call.
+    // has() is only queried with the enriched exact-command grantKey.
+    // Legacy plain-tool lookup was removed (loop-final) so policy
+    // tightening actually re-prompts users with old blanket grants.
     const storedKeys = persistentApprovals.has.mock.calls.map((c) => c[2]);
     const hashedKeys = storedKeys.filter((k) => /^bash:[^:]+:[a-f0-9]{16}$/.test(k));
     const plainKeys = storedKeys.filter((k) => k === "bash");
     expect(hashedKeys.length).toBeGreaterThan(0);
-    expect(plainKeys.length).toBeGreaterThan(0);
+    expect(plainKeys.length).toBe(0);
   });
 
   test("computeBashGrantKey mirrors internal grant-key hashing", () => {
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
+      backend: { supportsDefaultDenyMarker: true, check: () => ({ effect: "allow" }) },
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
     const k1 = mw.computeBashGrantKey("bash", "git status");
@@ -526,7 +657,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     // callers compute a hashed key that never existed and revocation
     // silently misses the real grant.
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
+      backend: { supportsDefaultDenyMarker: true, check: () => ({ effect: "allow" }) },
       // resolveBashCommand intentionally unset
     });
     expect(mw.computeBashGrantKey("bash", "git push")).toBe("bash");
@@ -554,7 +685,10 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     });
 
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "ask", reason: "review" }) },
+      backend: {
+        supportsDefaultDenyMarker: true,
+        check: () => ({ effect: "ask", reason: "review" }),
+      },
       persistentApprovals,
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
@@ -668,7 +802,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     // GRANT key (computeBashGrantKey) carries the per-command hash
     // so approvals still cannot generalize across argv.
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
+      backend: { supportsDefaultDenyMarker: true, check: () => ({ effect: "allow" }) },
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
 
@@ -793,7 +927,7 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
 
   test("computeBashGrantKey applies the same danger remapping as enrichResource (round 8)", () => {
     const mw = createPermissionsMiddleware({
-      backend: { check: () => ({ effect: "allow" }) },
+      backend: { supportsDefaultDenyMarker: true, check: () => ({ effect: "allow" }) },
       resolveBashCommand: (_toolId, input) => input.command as string,
     });
 

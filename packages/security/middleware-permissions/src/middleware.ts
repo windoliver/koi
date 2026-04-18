@@ -452,6 +452,48 @@ export function createPermissionsMiddleware(
     persistentApprovals: persistentStore,
     persistentAgentId,
   } = config;
+
+  // Bash enrichment requires a backend that can distinguish default-deny
+  // from explicit deny so the dual-key merge doesn't silently hard-deny
+  // enriched bash calls via unmarked fall-through denies. The capability
+  // is part of the public `PermissionBackend` contract
+  // (`supportsDefaultDenyMarker`).
+  //
+  // Policy:
+  //  - Marker-aware backend → dual-key evaluation, prefix rules enforced.
+  //  - Legacy backend + no opt-in → fail closed at construction.
+  //    Preserves policy integrity; operator gets an immediate, clear
+  //    error instead of a silent downgrade or runtime surprise.
+  //  - Legacy backend + `allowLegacyBackendBashFallback: true` →
+  //    explicit opt-in to single-key evaluation. Operator has
+  //    acknowledged that prefix rules will not apply; middleware
+  //    still logs a warning so the weaker enforcement is visible.
+  const backendSupportsDualKey = config.backend.supportsDefaultDenyMarker === true;
+  if (config.resolveBashCommand !== undefined && !backendSupportsDualKey) {
+    if (config.allowLegacyBackendBashFallback !== true) {
+      throw new Error(
+        "createPermissionsMiddleware: `resolveBashCommand` requires a " +
+          "PermissionBackend with `supportsDefaultDenyMarker: true`. Without " +
+          "the marker, prefix rules like `allow: bash:git push` cannot be " +
+          "enforced — enabling dual-key evaluation anyway would silently " +
+          "hard-deny via unmarked fall-through denies. To mark your backend, " +
+          "set fall-through denies with the `IS_DEFAULT_DENY` symbol " +
+          "(exported from @koi/middleware-permissions) or a public " +
+          "`default: true` field, then set `supportsDefaultDenyMarker: true` " +
+          "on the backend object. To opt into single-key evaluation anyway " +
+          "(prefix rules will NOT be enforced), set " +
+          "`allowLegacyBackendBashFallback: true`.",
+      );
+    }
+    console.warn(
+      "[@koi/middleware-permissions] `resolveBashCommand` is configured but " +
+        "the backend does not set `supportsDefaultDenyMarker: true`. Running " +
+        "in single-key fallback mode (allowLegacyBackendBashFallback=true). " +
+        "Prefix rules like `allow: bash:git push` WILL NOT be enforced — only " +
+        "plain-tool-id rules apply. Mark your backend to enable full dual-key " +
+        "enrichment.",
+    );
+  }
   const originalSink = config.onApprovalStep;
   // Additive runtime sinks — each createRuntime registers its own dispatch relay.
   // Using an array allows a single permissions handle to be shared across runtimes.
@@ -1501,22 +1543,16 @@ export function createPermissionsMiddleware(
       // variants under the plain id so retry caps and escalation
       // fire consistently. When the enriched decision wins it uses
       // the enriched resource for per-prefix fidelity.
-      // Dual-key merge requires the backend to disambiguate
-      // default-deny from explicit deny via the public marker (either
-      // the internal IS_DEFAULT_DENY symbol or a public
-      // `default: true` field). Custom backends without either
-      // signal would have their unmarked denies treated as
-      // authoritative, silently hard-denying every enriched bash
-      // call and breaking legacy plain-tool allow/ask rules.
+      // Dual-key merge (marker-aware backends): issue both enriched and
+      // plain queries, merge via `strictestDecision`. Unmarked
+      // fall-through denies on one key yield to an explicit allow/ask
+      // on the other, preserving legacy plain-tool rules while
+      // honoring per-prefix policy.
       //
-      // When the backend doesn't signal support, skip the enriched
-      // query entirely and use only the plain tool id. Operators
-      // opt into dual-key enrichment by setting
-      // `supportsDefaultDenyMarker: true` on their backend.
-      const backendSupportsDualKey =
-        (config.backend as unknown as { readonly supportsDefaultDenyMarker?: boolean })
-          .supportsDefaultDenyMarker === true;
-
+      // Single-key fallback (legacy backends without the marker flag):
+      // use only the plain tool id. Safe — avoids hard-denying via
+      // unmarked fall-through. Construction emitted a warning so
+      // operators know enrichment isn't enforced.
       const resource = enrichedResource;
       let trackingResource = enrichedResource;
       let query = enrichedQuery;
@@ -1889,24 +1925,22 @@ export function createPermissionsMiddleware(
         // `bash:git push --force`. Distinct argv → distinct hash → fresh
         // prompt.
         //
-        // Backward-compat: also accept legacy plain-tool-id grants, but
-        // ONLY for benign commands. A legacy blanket `bash` grant must
-        // not silently authorize `!complex` forms (redirections,
-        // pipelines, command substitution) or dangerous-pattern matches
-        // (sudo, python -c, bash -c, etc.) that the new ratchet is
-        // supposed to re-prompt on. Operators keep their old grants for
-        // routine bash usage; dangerous/complex forms force a fresh
-        // approval.
+        // Legacy fallback is OFF by default: a blanket `bash` grant
+        // stored before prefix enrichment must not retroactively
+        // authorize newly-scoped commands. Operators migrating from
+        // pre-enrichment deployments can opt in via
+        // `legacyBashGrantFallback: true` to preserve existing grants
+        // during a rollout window. Even with the flag, `!complex`
+        // structural forms and dangerous-pattern matches always force
+        // a fresh approval.
         const hasExact = persistentStore.has(persistentUserId, persistentAid, grantKey);
-        const wantLegacyFallback =
-          grantKey !== request.toolId &&
-          persistentStore.has(persistentUserId, persistentAid, request.toolId);
         let hasLegacy = false;
-        if (wantLegacyFallback) {
-          // `resource` inside handleAskDecision is the enriched form
-          // (scoped at the wrapToolCall call site). `!complex` forms
-          // carry it as the policy key, so this check covers every
-          // compound/dangerous-complex form.
+        if (
+          !hasExact &&
+          config.legacyBashGrantFallback === true &&
+          grantKey !== request.toolId &&
+          persistentStore.has(persistentUserId, persistentAid, request.toolId)
+        ) {
           const rawForLegacy = config.resolveBashCommand?.(request.toolId, request.input) ?? "";
           const isComplexForm = resource === `${request.toolId}:${UNSAFE_PREFIX}`;
           const isDangerous =
