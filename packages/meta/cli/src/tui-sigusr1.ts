@@ -71,6 +71,45 @@ export function createSigusr1Handler(deps: Sigusr1HandlerDeps): () => void {
   };
 }
 
+// Module-level reference so `installEarlySigusr1Handler` and
+// `removeEarlySigusr1Handler` share the same listener identity across call
+// sites (bin.ts installs, tui-command.ts removes) without globals.
+// let: justified — set by install, cleared by remove, never mutated mid-call.
+let earlyHandler: (() => void) | null = null;
+
+/**
+ * Install a minimal `SIGUSR1` handler BEFORE the TUI bootstraps (#1906).
+ *
+ * Why: `runTuiCommand` installs the full graceful-shutdown handler only
+ * after ~4000 lines of startup work. A `SIGUSR1` arriving during that
+ * window would hit Bun/Node's default behavior (Node launches an
+ * inspector; Bun's default is implementation-defined) instead of the
+ * intended escape hatch. Installing a trivial exit-code handler first
+ * both masks the default and exits cleanly if the user targets the
+ * process during startup. `runTuiCommand` calls
+ * `removeEarlySigusr1Handler()` before registering its full handler.
+ *
+ * Idempotent: repeated calls do not install multiple listeners.
+ */
+export function installEarlySigusr1Handler(): void {
+  if (earlyHandler !== null) return;
+  const handler = (): void => {
+    process.exit(SIGUSR1_EXIT_CODE);
+  };
+  earlyHandler = handler;
+  process.on("SIGUSR1", handler);
+}
+
+/**
+ * Remove the early handler installed by `installEarlySigusr1Handler`.
+ * No-op if none was installed. Safe to call from cleanup paths.
+ */
+export function removeEarlySigusr1Handler(): void {
+  if (earlyHandler === null) return;
+  process.removeListener("SIGUSR1", earlyHandler);
+  earlyHandler = null;
+}
+
 /**
  * One-line startup hint printed before the TUI takes over the terminal.
  * Users see the process PID in their scrollback and know the exact `kill`

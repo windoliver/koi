@@ -1,6 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { constants as osConstants } from "node:os";
-import { createSigusr1Handler, generateTuiStartupHint, SIGUSR1_EXIT_CODE } from "./tui-sigusr1.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  installEarlySigusr1Handler,
+  removeEarlySigusr1Handler,
+  SIGUSR1_EXIT_CODE,
+} from "./tui-sigusr1.js";
 
 describe("createSigusr1Handler", () => {
   test("invokes shutdown with SIGUSR1 exit code and a reason string", () => {
@@ -64,6 +70,39 @@ describe("generateTuiStartupHint", () => {
 
   test("is pure — same pid yields same output", () => {
     expect(generateTuiStartupHint(42)).toBe(generateTuiStartupHint(42));
+  });
+});
+
+describe("installEarlySigusr1Handler / removeEarlySigusr1Handler", () => {
+  // Defensive: never leave a SIGUSR1 listener installed in the test process.
+  afterEach(() => {
+    removeEarlySigusr1Handler();
+  });
+
+  test("install adds exactly one SIGUSR1 listener", () => {
+    const before = process.listenerCount("SIGUSR1");
+    installEarlySigusr1Handler();
+    expect(process.listenerCount("SIGUSR1")).toBe(before + 1);
+  });
+
+  test("install is idempotent — calling twice does not stack listeners", () => {
+    installEarlySigusr1Handler();
+    const after1 = process.listenerCount("SIGUSR1");
+    installEarlySigusr1Handler();
+    expect(process.listenerCount("SIGUSR1")).toBe(after1);
+  });
+
+  test("remove clears the listener added by install", () => {
+    const baseline = process.listenerCount("SIGUSR1");
+    installEarlySigusr1Handler();
+    removeEarlySigusr1Handler();
+    expect(process.listenerCount("SIGUSR1")).toBe(baseline);
+  });
+
+  test("remove without a prior install is a safe no-op", () => {
+    const baseline = process.listenerCount("SIGUSR1");
+    expect(() => removeEarlySigusr1Handler()).not.toThrow();
+    expect(process.listenerCount("SIGUSR1")).toBe(baseline);
   });
 });
 

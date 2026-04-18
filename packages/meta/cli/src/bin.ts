@@ -140,6 +140,14 @@ switch (result.kind) {
     break;
   }
   case "tui": {
+    // Early SIGUSR1 handler (#1906) — installed BEFORE runTuiCommand's
+    // ~4000-line bootstrap so a `kill -USR1 <pid>` that lands during
+    // child startup exits cleanly instead of hitting the runtime default
+    // (Node opens an inspector on SIGUSR1; Bun's default is also not
+    // graceful shutdown). runTuiCommand calls removeEarlySigusr1Handler()
+    // before installing its full graceful-shutdown handler.
+    const { installEarlySigusr1Handler } = await import("./tui-sigusr1.js");
+    installEarlySigusr1Handler();
     const { runTuiCommand } = await import("./tui-command.js");
     await runTuiCommand(result.flags);
     process.exit(0);

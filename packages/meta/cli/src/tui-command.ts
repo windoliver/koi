@@ -94,7 +94,11 @@ import { createKoiRuntime, TUI_APPROVAL_TIMEOUT_MS } from "./runtime-factory.js"
 import { resumeSessionFromJsonl } from "./shared-wiring.js";
 import { createUnrefTimer } from "./sigint-handler.js";
 import { createTuiSigintHandler } from "./tui-graceful-sigint.js";
-import { createSigusr1Handler, generateTuiStartupHint } from "./tui-sigusr1.js";
+import {
+  createSigusr1Handler,
+  generateTuiStartupHint,
+  removeEarlySigusr1Handler,
+} from "./tui-sigusr1.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -4215,10 +4219,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   process.on("SIGINT", onProcessSigint);
   process.once("SIGTERM", onProcessSigterm);
   process.once("SIGHUP", onProcessSighup);
+  // Swap the early SIGUSR1 handler (installed by bin.ts to cover the
+  // bootstrap window — #1906) for the full graceful-shutdown handler.
+  // Doing this as remove-then-install instead of leaving both attached
+  // matters: the early handler calls `process.exit()` directly, so if it
+  // fired first it would kill the process before graceful shutdown runs.
+  removeEarlySigusr1Handler();
   // SIGUSR1 is explicitly `on` (not `once`) so a repeated signal after the
-  // handler has flipped idempotent still has a listener installed — Node's
-  // default for unhandled SIGUSR1 is to start the inspector, which would
-  // confuse supervisors probing for liveness during shutdown.
+  // handler has flipped idempotent still has a listener installed —
+  // unhandled SIGUSR1 otherwise defaults to inspector-launch / non-graceful
+  // exit depending on runtime, which confuses supervisors probing liveness.
   process.on("SIGUSR1", onProcessSigusr1);
 
   // Register stdin close listener and set tuiRunning BEFORE start() so
