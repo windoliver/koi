@@ -1199,6 +1199,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     return loadReference(name, entry.dirPath, refPath, {
       scanner,
       blockOnSeverity: resolvedConfig.blockOnSeverity,
+      skillsRoot: entry.skillsRoot,
       ...(resolvedConfig.onSecurityFinding !== undefined
         ? { onSecurityFinding: resolvedConfig.onSecurityFinding }
         : {}),

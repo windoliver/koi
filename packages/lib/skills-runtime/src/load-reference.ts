@@ -94,7 +94,10 @@ const SOURCE_EXTENSIONS = new Set<string>([
  */
 const ALLOWED_REFERENCE_EXTENSIONS = new Set<string>([
   ".md",
-  ".mdx",
+  // .mdx dropped in review #1896 round 13 — scanSkill() only runs on
+  // fenced Markdown code blocks, so MDX's inline JSX / expressions
+  // would reach the model unscanned. Re-add only with an MDX-aware
+  // scan path.
   ".ts",
   ".tsx",
   ".mts",
@@ -130,6 +133,16 @@ export interface LoadReferenceOptions {
   readonly blockOnSeverity?: Severity;
   /** Sub-threshold findings route here. */
   readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+  /**
+   * Configured skills root (review #1896 round 13). When provided, the
+   * skill directory's realpath must stay under the realpath of this root
+   * — mirrors the Tier 1 containment check in loader.ts. Without this,
+   * a skill directory swapped post-discovery for a symlink to an
+   * external tree would still pass Tier 2 (the check only verified
+   * `refPath` stayed under `dirPath`, not that `dirPath` stayed under
+   * `skillsRoot`).
+   */
+  readonly skillsRoot?: string;
 }
 
 /**
@@ -296,6 +309,30 @@ export async function loadReference(
         context: { name, dirPath },
       },
     };
+  }
+
+  // Skills-root containment (review #1896 round 13). Mirrors the Tier 1
+  // check in loader.ts. If an attacker replaces the discovered skill
+  // directory with a symlink to an external tree after discovery, the
+  // realpath no longer resolves inside the configured skillsRoot — and
+  // we must refuse to serve any reference from it, even if refPath
+  // itself stays in the swapped tree.
+  if (options?.skillsRoot !== undefined) {
+    let realRoot: string;
+    try {
+      realRoot = await realpath(options.skillsRoot);
+    } catch {
+      realRoot = options.skillsRoot;
+    }
+    const rootRel = relative(realRoot, realDir);
+    if (rootRel.startsWith("..") || isAbsolute(rootRel)) {
+      return validationError(
+        name,
+        refPath,
+        `Skill "${name}" directory escapes the skills root: ${realDir} is outside ${realRoot}`,
+        "PATH_TRAVERSAL",
+      );
+    }
   }
 
   // Parent-path boundary check (review #1896 round 3). `O_NOFOLLOW` on open

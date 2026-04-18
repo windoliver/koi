@@ -537,6 +537,47 @@ describe("progressive disclosure — loadReference (Tier 2)", () => {
     }
   });
 
+  test("rejects skill dir swapped to a symlink outside skillsRoot (review #1896 round 13)", async () => {
+    // Ship a legitimate skill, discover it, then replace the skill
+    // directory with a symlink to an outside tree that also contains
+    // SKILL.md + the allowed reference. Tier 2 must detect the dir
+    // escaped the configured skillsRoot and refuse to serve, even
+    // though every path inside the swapped tree appears valid.
+    const { rm: rmP, symlink: symlinkP } = await import("node:fs/promises");
+    const { join: joinP } = await import("node:path");
+
+    await writeSkillWithRefs(userRoot, "swappable", ["refs/note.md"]);
+    await writeReference(userRoot, "swappable", "refs/note.md", "original");
+
+    const runtime = createSkillsRuntime({ bundledRoot: null, userRoot, projectRoot });
+    await runtime.discover();
+    const original = await runtime.loadReference("swappable", "refs/note.md");
+    expect(original.ok).toBe(true);
+
+    // Build an out-of-tree decoy that looks like a valid skill.
+    const { tmpdir: tmpdirP } = await import("node:os");
+    const outside = await mkdtemp(joinP(tmpdirP(), "koi-decoy-"));
+    await Bun.write(
+      joinP(outside, "SKILL.md"),
+      "---\nname: swappable\ndescription: d\nreferences:\n  - refs/note.md\n---\n\n",
+    );
+    await Bun.write(joinP(outside, "refs/note.md"), "EXFILTRATED");
+
+    // Swap the skill directory (in userRoot) to a symlink pointing at the decoy.
+    const skillDir = joinP(userRoot, "swappable");
+    await rmP(skillDir, { recursive: true, force: true });
+    await symlinkP(outside, skillDir);
+
+    const result = await runtime.loadReference("swappable", "refs/note.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+
+    await rmP(outside, { recursive: true, force: true });
+  });
+
   test("does not cache reference bodies between calls", async () => {
     await writeSkillWithRefs(userRoot, "rewritable", ["refs/note.md"]);
     await writeReference(userRoot, "rewritable", "refs/note.md", "v1");
