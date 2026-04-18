@@ -190,7 +190,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
     searchCacheTtlMs > 0
       ? createLruCache<readonly WebSearchResult[]>(maxCacheEntries, searchCacheTtlMs)
       : undefined;
-  // Two coordinated structures protect the cache from concurrency races.
+  // Three coordinated structures protect the cache from concurrency races.
   //
   // `keyGenerations`: per-key monotonic counter bumped every time `noCache`
   // starts a refresh. In-flight requests capture the generation at start;
@@ -204,8 +204,16 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
   // (they still return useful data to their caller) but don't pollute
   // the cache with a representation that might be older than the refresh.
   // The noCache caller is the authoritative writer for its refresh cycle.
+  //
+  // `inFlightCount`: per-key total in-flight request count (any method,
+  // any caching intent). Used only to safely prune `keyGenerations`: we
+  // must not drop a generation counter while an older request could
+  // still try to write against its captured generation, because the
+  // `?? 0` fallback on a pruned key would treat that stale captured
+  // generation as current and wave it through.
   const keyGenerations = new Map<string, number>();
   const activeRefreshes = new Map<string, number>();
+  const inFlightCount = new Map<string, number>();
 
   return {
     providerName: config.searchProvider?.name,
@@ -239,6 +247,14 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const peerKey = peerMethod !== undefined ? `${peerMethod}:${normalizedUrl}` : undefined;
       const invalidationKeys =
         peerKey !== undefined ? ([cacheKey, peerKey] as const) : ([cacheKey] as const);
+
+      // Register this request as in-flight for every key whose
+      // generation state might be consulted by its write-back path.
+      // Pairs with a decrement via `releaseInFlightAndMaybePrune`.
+      for (const k of invalidationKeys) {
+        inFlightCount.set(k, (inFlightCount.get(k) ?? 0) + 1);
+      }
+
       // Key is eligible for caching if it's a GET/HEAD without custom headers
       // (headers like Accept, Range, or auth tokens change representation) and
       // without a request body (unusual for GET/HEAD but permitted by the
@@ -252,6 +268,43 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         !hasRequestBody &&
         (method === "GET" || method === "HEAD");
 
+      const actsAsRefresh =
+        noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD");
+
+      // --- Declare teardown helpers BEFORE the cache-hit early return
+      // so both the fast path and the full fetch path can call them.
+
+      const releaseRefreshSlot = (): void => {
+        if (!actsAsRefresh) return;
+        for (const k of invalidationKeys) {
+          const remaining = (activeRefreshes.get(k) ?? 0) - 1;
+          if (remaining <= 0) activeRefreshes.delete(k);
+          else activeRefreshes.set(k, remaining);
+        }
+      };
+
+      // Release the per-key in-flight count for this request. Safe to
+      // prune `keyGenerations` for a key only when NO request is still
+      // in flight against it — otherwise a stale captured generation
+      // from an older sibling, combined with the `?? 0` fallback on a
+      // pruned key, would read as "same generation" and let a
+      // superseded default writer repopulate the cache after a failed
+      // or non-cacheable noCache refresh. Also requires no active
+      // refresh and no live cache entry (either of those keeps state
+      // load-bearing for this or future requests).
+      const releaseInFlightAndMaybePrune = (): void => {
+        for (const k of invalidationKeys) {
+          const remaining = (inFlightCount.get(k) ?? 0) - 1;
+          if (remaining <= 0) inFlightCount.delete(k);
+          else inFlightCount.set(k, remaining);
+
+          if (inFlightCount.has(k)) continue;
+          if (activeRefreshes.has(k)) continue;
+          if (fetchCache !== undefined && fetchCache.getEntry(k) !== undefined) continue;
+          keyGenerations.delete(k);
+        }
+      };
+
       // `noCache` bumps the per-key generation *before* any read or
       // eviction and registers itself as an active refresh. The bump
       // invalidates any default writer that started before us (their
@@ -260,8 +313,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       // still in flight — the noCache caller is the authoritative
       // writer for this refresh cycle. Both the requested method and
       // its GET/HEAD peer are invalidated+fenced together.
-      const actsAsRefresh =
-        noCache && fetchCache !== undefined && (method === "GET" || method === "HEAD");
       if (actsAsRefresh && fetchCache !== undefined) {
         for (const k of invalidationKeys) {
           keyGenerations.set(k, (keyGenerations.get(k) ?? 0) + 1);
@@ -270,7 +321,10 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         }
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
-        if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
+        if (cached !== undefined) {
+          releaseInFlightAndMaybePrune();
+          return { ok: true, value: { ...cached, cached: true } };
+        }
       }
 
       // Capture the generation AFTER any noCache bump. A default request
@@ -283,31 +337,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       // order backwards-rollback in every race we can model without
       // ETag/Last-Modified.
       const capturedGeneration = keyGenerations.get(cacheKey) ?? 0;
-
-      const releaseRefreshSlot = (): void => {
-        if (!actsAsRefresh) return;
-        for (const k of invalidationKeys) {
-          const remaining = (activeRefreshes.get(k) ?? 0) - 1;
-          if (remaining <= 0) activeRefreshes.delete(k);
-          else activeRefreshes.set(k, remaining);
-        }
-      };
-
-      // Prune the generation counter once this request has released its
-      // refresh slot (if any) and nothing else needs it for this key.
-      // Without this, a long-lived process using `noCache` across many
-      // unique URLs would accumulate unbounded entries in `keyGenerations`
-      // even though the actual response LRU stays capped at
-      // `maxCacheEntries`. Safe to drop when no refresh is in flight
-      // AND the key has no live cache entry — later writers that arrive
-      // start fresh from generation 0.
-      const pruneGenerationIfIdle = (): void => {
-        for (const k of invalidationKeys) {
-          if (activeRefreshes.has(k)) continue;
-          if (fetchCache !== undefined && fetchCache.getEntry(k) !== undefined) continue;
-          keyGenerations.delete(k);
-        }
-      };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
@@ -417,7 +446,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return catchFetchError(url, method, e);
       } finally {
         releaseRefreshSlot();
-        pruneGenerationIfIdle();
+        releaseInFlightAndMaybePrune();
       }
     },
 

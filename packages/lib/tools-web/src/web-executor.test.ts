@@ -1202,6 +1202,49 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
+  test("failed noCache after a preceding default miss: pre-refresh default cannot repopulate", async () => {
+    // Regression for #1903 post-merge review round 7: a default GET
+    // miss starts first and is still in flight. A noCache arrives,
+    // bumps the generation, evicts, then fails. The generation/
+    // in-flight bookkeeping must survive long enough that the older
+    // default's late write is still refused — otherwise an eager
+    // prune would let the pre-refresh default silently repopulate the
+    // cache with stale content after an explicit forced-fresh failed.
+    let callCount = 0;
+    let releaseDefault: (() => void) | undefined;
+    const defaultHeld = new Promise<void>((resolve) => {
+      releaseDefault = resolve;
+    });
+    const fetchFn = mock(async (): Promise<Response> => {
+      callCount++;
+      if (callCount === 1) {
+        await defaultHeld;
+        return new Response("v-default-stale", { status: 200 });
+      }
+      if (callCount === 2) throw new Error("origin down");
+      return new Response("v-followup", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    const defaultP = executor.fetch("https://example.com");
+    await Promise.resolve();
+
+    // noCache fires, bumps generation, attempts refresh, throws.
+    const forced = await executor.fetch("https://example.com", { noCache: true });
+    expect(forced.ok).toBe(false);
+
+    // Release the earlier default. Its captured generation is now
+    // stale; its write MUST be refused.
+    releaseDefault?.();
+    await defaultP;
+
+    // Cache must still be empty.
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) expect(followUp.value.cached).toBe(false);
+    expect(callCount).toBe(3);
+  });
+
   test("default miss starts before noCache: default's late write is superseded by refresh", async () => {
     // Regression for #1903 post-merge review round 5: a default GET miss
     // starts first and holds the write fence. A later `noCache` call
