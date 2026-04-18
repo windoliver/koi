@@ -6,6 +6,7 @@ import {
   isCtrlJ,
   isCtrlN,
   isCtrlP,
+  isCtrlS,
   isEnter,
   isEscape,
   isTab,
@@ -131,6 +132,24 @@ describe("isCtrlJ", () => {
 
   test("false for plain j", () => {
     expect(isCtrlJ(key("j"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isCtrlS
+// ---------------------------------------------------------------------------
+
+describe("isCtrlS", () => {
+  test("true for ctrl+s", () => {
+    expect(isCtrlS(key("s", { ctrl: true }))).toBe(true);
+  });
+
+  test("false for plain s", () => {
+    expect(isCtrlS(key("s"))).toBe(false);
+  });
+
+  test("false for ctrl+n", () => {
+    expect(isCtrlS(key("n", { ctrl: true }))).toBe(false);
   });
 });
 

@@ -420,9 +420,9 @@ bun run test --filter=@koi/memory-team-sync
 |---|--------|---------------|---------------|
 | Q49 | Model info display | `/model` or Ctrl+P → `model` | Shows model name + provider |
 | Q50 | Cost + token display | `/cost` then `/tokens` | Shows input/output tokens + cost (after ≥1 turn) |
-| Q51 | Compact history | `/compact` (after 5+ turns) | Message history summarized; turn count drops. Note: TUI uses tail-window slicing, NOT `@koi/context-manager` real compaction — real compaction is test-suite only |
+| Q51 | Compact history | `/compact` (after transcript > 4000 tokens AND > 6 messages — short conversations no-op by design) | Notice shows `original → compacted tokens, dropped N messages` (e.g. `[Compact: 27971 → 15423 tokens, dropped 6 messages]`). The `ctx N%` gauge in the status bar drops. The visible conversation and `T{n}` turn counter intentionally stay — `/compact` only shrinks the *next model call's* input (`runtimeHandle.transcript`), it does not rewrite scrollback. Short conversations read `[Compact: already compact (N tokens)]` (correct no-op) |
 | Q52 | Export session | `/export` (after ≥3 sessions) | Markdown file written |
-| Q53 | Rewind last turn | Send "Create file /tmp/rewind-test.txt" → `/rewind` | File edit undone; conversation rolled back |
+| Q53 | Rewind last turn | Send "Create file ./rewind-test.txt" → `/rewind` | File edit undone; conversation rolled back. Only `fs_edit` / `fs_write` ops inside workspace root are tracked — shell writes (Bash `echo >`) and writes outside workspace are NOT reversible |
 | Q54 | @-mention file completion | Type `@src/m` in input area | Overlay shows `src/math.ts` completion |
 | Q55 | Tool result expand/collapse | After any tool call, press Ctrl+E | All tool results toggle expanded ↔ collapsed |
 | Q56 | Prompt history | Press Up arrow after sending ≥2 prompts | Previous prompt appears in input |

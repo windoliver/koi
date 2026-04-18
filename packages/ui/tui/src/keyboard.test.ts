@@ -43,6 +43,7 @@ function makeCallbacks(): GlobalKeyCallbacks {
     onDismissModal: mock(() => {}),
     onBack: mock(() => {}),
     onNewSession: mock(() => {}),
+    onOpenSessions: mock(() => {}),
   };
 }
 
@@ -116,6 +117,52 @@ describe("handleGlobalKey — Ctrl+N", () => {
     const result = handleGlobalKey(key("n", { ctrl: true }), state, cbs);
     expect(result).toBe(false);
     expect(cbs.onNewSession).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGlobalKey — Ctrl+S
+// ---------------------------------------------------------------------------
+
+describe("handleGlobalKey — Ctrl+S", () => {
+  test("calls onOpenSessions on conversation view with no modal", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("s", { ctrl: true }), stateNoModal, cbs);
+    expect(result).toBe(true);
+    expect(cbs.onOpenSessions).toHaveBeenCalledTimes(1);
+    expect(cbs.onTogglePalette).not.toHaveBeenCalled();
+    expect(cbs.onNewSession).not.toHaveBeenCalled();
+  });
+
+  test("ignored when a modal is open", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("s", { ctrl: true }), stateWithModal, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onOpenSessions).not.toHaveBeenCalled();
+  });
+
+  test("ignored on non-conversation views", () => {
+    const state: TuiState = { ...createInitialState(), activeView: "trajectory" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("s", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onOpenSessions).not.toHaveBeenCalled();
+  });
+
+  test("ignored when slash overlay is active", () => {
+    const state: TuiState = { ...createInitialState(), slashQuery: "ses" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("s", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onOpenSessions).not.toHaveBeenCalled();
+  });
+
+  test("ignored when @-mention overlay is active", () => {
+    const state: TuiState = { ...createInitialState(), atQuery: "src/" };
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("s", { ctrl: true }), state, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onOpenSessions).not.toHaveBeenCalled();
   });
 });
 

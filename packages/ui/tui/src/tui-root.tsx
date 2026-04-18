@@ -304,6 +304,10 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:new");
         if (cmd !== undefined) handleCommandSelect(cmd);
       },
+      onOpenSessions: () => {
+        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:sessions");
+        if (cmd !== undefined) handleCommandSelect(cmd);
+      },
     });
   });
 

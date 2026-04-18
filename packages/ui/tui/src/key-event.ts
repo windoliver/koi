@@ -34,6 +34,10 @@ export function isCtrlJ(key: KeyEvent): boolean {
   return key.ctrl && key.name === "j";
 }
 
+export function isCtrlS(key: KeyEvent): boolean {
+  return key.ctrl && key.name === "s";
+}
+
 export function isBackspace(key: KeyEvent): boolean {
   return key.name === "backspace";
 }
