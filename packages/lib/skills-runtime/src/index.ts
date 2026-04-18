@@ -770,8 +770,10 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     //    This closes the race window: any concurrent caller arriving after this
     //    point will find the promise in loadInflight and join it.
     const promise: Promise<Result<SkillDefinition, KoiError>> = (async () => {
-      // Ensure discovery has run
-      const discoverResult = await discover();
+      // Ensure discovery has run. Use the internal helper so Tier 0
+      // telemetry (onMetadataInjected) is not re-fired by routine load()
+      // calls — review #1896 round 3.
+      const discoverResult = await discoverInternal();
       if (!discoverResult.ok) return discoverResult;
 
       // Issue #1722: blocked-at-discovery entries short-circuit with a
@@ -842,7 +844,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const loadAll = async (): Promise<
     Result<ReadonlyMap<string, Result<SkillDefinition, KoiError>>, KoiError>
   > => {
-    const discoverResult = await discover();
+    const discoverResult = await discoverInternal();
     if (!discoverResult.ok) {
       // Discovery failed — surface as outer Result error (Issue 3A)
       return { ok: false, error: discoverResult.error };
@@ -894,7 +896,7 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   const query = async (
     filter?: SkillQuery,
   ): Promise<Result<readonly SkillMetadata[], KoiError>> => {
-    const discoverResult = await discover();
+    const discoverResult = await discoverInternal();
     if (!discoverResult.ok) return discoverResult;
 
     // Linear scan over merged metadata (filesystem + external)
@@ -1033,7 +1035,9 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     refPath: string,
   ): Promise<Result<string, KoiError>> => {
     // Ensure discovery has run so we can locate the skill's directory.
-    const discoverResult = await discover();
+    // Internal variant — do not re-fire the onMetadataInjected hook from
+    // routine Tier 2 reads (review #1896 round 3).
+    const discoverResult = await discoverInternal();
     if (!discoverResult.ok) return discoverResult;
 
     // Prefer the filesystem entry (has the resolved dir). External (MCP)

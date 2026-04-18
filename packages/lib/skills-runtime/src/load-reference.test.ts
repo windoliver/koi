@@ -208,6 +208,24 @@ describe("loadReference — TOCTOU race (review #1896 round 2)", () => {
     }
   });
 
+  test("rejects a parent-directory symlink that escapes the skill dir (review #1896 round 3)", async () => {
+    // Ship a skill where `refs/` is a symlink pointing outside the skill dir.
+    // Without parent-component boundary validation, open(..., O_NOFOLLOW)
+    // would follow the parent symlink and expose existence / size / type
+    // oracles for arbitrary host paths via the error shape.
+    const dir = join(root, "s");
+    const outside = join(root, "outside-tree");
+    await Bun.write(join(outside, "secret.txt"), "SECRET");
+    await symlink(outside, join(dir, "refs"));
+
+    const result = await loadReference("s", dir, "refs/secret.txt");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+  });
+
   test("rejects a non-regular-file target (directory) with REFERENCE_NOT_FILE", async () => {
     const dir = join(root, "s");
     // Create an empty sub-directory with the same name as the requested ref.

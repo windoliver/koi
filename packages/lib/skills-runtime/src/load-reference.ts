@@ -38,7 +38,7 @@
 
 import { constants as fsConstants } from "node:fs";
 import { open, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
 import type { ScanFinding, Scanner } from "@koi/skill-scanner";
 import { type Severity, severityAtOrAbove } from "@koi/validation";
@@ -165,12 +165,53 @@ export async function loadReference(
     };
   }
 
+  // Parent-path boundary check (review #1896 round 3). `O_NOFOLLOW` on open
+  // only protects the *final* segment. A skill can still ship a symlink
+  // directory component (`refs -> /outside/tree`) and ask for
+  // `refs/secret.txt` — without this check we would resolve through the
+  // symlink and expose existence/size/type oracles for files outside the
+  // skill directory. Realpath the target's parent directory and require it
+  // to stay inside the skill's realpath.
+  const parentDir = dirname(joined);
+  try {
+    const realParent = await realpath(parentDir);
+    const parentRel = relative(realDir, realParent);
+    if (parentRel.startsWith("..") || isAbsolute(parentRel)) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" traverses a directory that escapes the skill directory`,
+        "PATH_TRAVERSAL",
+      );
+    }
+  } catch (cause: unknown) {
+    // Missing parent directory is a genuine NOT_FOUND, not a security issue.
+    const err = cause as NodeJS.ErrnoException;
+    if (err?.code === "ENOENT") {
+      return {
+        ok: false,
+        error: {
+          code: "NOT_FOUND",
+          message: `Reference "${refPath}" not found for skill "${name}"`,
+          retryable: false,
+          cause,
+          context: { name, refPath, resolvedPath: joined },
+        },
+      };
+    }
+    // Other failures (EACCES etc.) — fail closed as a traversal rejection so
+    // we never open through an unverifiable parent.
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" could not be boundary-verified`,
+      "PATH_TRAVERSAL",
+    );
+  }
+
   // Open the target once, with O_NOFOLLOW on the final segment. All
   // subsequent checks (size, content) run against this same descriptor so a
   // concurrent writer cannot swap files between checks (review #1896 round 2).
-  // O_NOFOLLOW only protects the final path component; the caller is
-  // responsible for ensuring parent directories are trusted, which is the
-  // case here because dirPath is the skill's own directory.
   const flags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW;
   let handle: Awaited<ReturnType<typeof open>>;
   try {

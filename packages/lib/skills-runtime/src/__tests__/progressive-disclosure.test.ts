@@ -58,6 +58,32 @@ describe("progressive disclosure — telemetry", () => {
     expect(counts).toEqual([2]);
   });
 
+  test("onMetadataInjected does NOT fire on internal discovery triggered by load/query/loadReference (review #1896 round 3)", async () => {
+    await writeSkill(userRoot, "alpha");
+    await writeReference(userRoot, "alpha", "refs/note.md", "ref content");
+
+    const counts: number[] = [];
+    const runtime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot,
+      projectRoot,
+      onMetadataInjected: (n) => counts.push(n),
+    });
+
+    // Single explicit discover fires once.
+    await runtime.discover();
+    expect(counts).toEqual([1]);
+
+    // Routine operations below must NOT re-fire the Tier 0 injection hook —
+    // integrations use this callback to meter/inject the listing, and a replay
+    // here would duplicate the full skill listing into context on every load.
+    await runtime.load("alpha");
+    await runtime.query();
+    await runtime.loadReference("alpha", "refs/note.md");
+
+    expect(counts).toEqual([1]);
+  });
+
   test("onSkillLoaded distinguishes cache-miss from cache-hit", async () => {
     await writeSkill(userRoot, "lazy-load");
 
