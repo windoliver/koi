@@ -1483,6 +1483,23 @@ export function createPermissionsMiddleware(
         }
         decision = combined;
       }
+      // Structural-complexity ratchet: `!complex` covers compound
+      // commands, redirections, subshells, command substitution, env
+      // -S, and anything canonicalPrefix could not safely reduce. A
+      // broad `allow: bash:*` must NOT silently authorize these —
+      // they can hide side effects or nested dangerous payloads. If
+      // the policy was allow, upgrade to ask for human review.
+      // Explicit deny still wins.
+      if (
+        decision.effect === "allow" &&
+        enrichedResource !== request.toolId &&
+        enrichedResource === `${request.toolId}:${UNSAFE_PREFIX}`
+      ) {
+        decision = {
+          effect: "ask",
+          reason: "complex/unparseable shell form requires review",
+        };
+      }
       // Dangerous-command ratchet: if the raw command matches ANY
       // DANGEROUS_PATTERN and the combined decision is "allow",
       // upgrade to "ask" so a human reviews it. This includes
