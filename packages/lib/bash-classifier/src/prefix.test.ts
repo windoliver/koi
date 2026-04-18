@@ -441,6 +441,25 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`git commit -m "added feature <x>"`)).toBe("git commit");
   });
 
+  // ------- loop-2 round 2: subshell / group grouping -------
+
+  test("subshell grouping `(…)` returns !complex", () => {
+    expect(canonicalPrefix("(sudo rm -rf /tmp)")).toBe("!complex");
+    expect(canonicalPrefix("(git push)")).toBe("!complex");
+  });
+
+  test("group command `{ …; }` returns !complex", () => {
+    expect(canonicalPrefix("{ sudo rm; }")).toBe("!complex");
+  });
+
+  test("nested grouped forms return !complex", () => {
+    expect(canonicalPrefix("((sudo rm))")).toBe("!complex");
+  });
+
+  test("grouping chars inside quoted strings do NOT trigger !complex", () => {
+    expect(canonicalPrefix(`echo "(not a group)"`)).toBe("echo");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that

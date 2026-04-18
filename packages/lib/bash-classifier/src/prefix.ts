@@ -441,6 +441,10 @@ function hasShellControlOperators(s: string): boolean {
     // >(...). These can perform side effects or hidden command execution
     // under a benign-looking prefix; fail closed.
     if (c === ">" || c === "<") return true;
+    // Subshell / group grouping: `(sudo rm)`, `{ sudo rm; }`. The shell
+    // still executes the inner command even though our token split
+    // would attach the grouping char to the head.
+    if (c === "(" || c === ")" || c === "{" || c === "}") return true;
   }
   return false;
 }

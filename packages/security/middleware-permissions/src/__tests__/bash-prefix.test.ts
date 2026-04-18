@@ -281,7 +281,7 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       requestApproval: approvalHandler,
     });
 
-    // 1st call: approve `bash:git status` with always-allow session
+    // 1st: approve EXACT command `git status` with always-allow session
     const r1 = await mw.wrapToolCall?.(
       ctx,
       makeToolRequest("bash", { command: "git status" }),
@@ -289,30 +289,37 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     );
     expect(r1?.output).toBe("ok");
 
-    // 2nd call: repeat `bash:git status` → session grant auto-approves (handler NOT called)
-    await mw.wrapToolCall?.(
-      ctx,
-      makeToolRequest("bash", { command: "git status --short" }),
-      noopHandler,
-    );
-    expect(approvals).toHaveLength(1); // still just the first
+    // 2nd: repeat THE SAME exact command → grant hit, handler not called
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git status" }), noopHandler);
+    expect(approvals).toHaveLength(1);
 
-    // 3rd call: DIFFERENT prefix `bash:rm` → handler must be consulted again.
-    // If the grant leaked, approvalHandler would not be called and the tool
-    // would auto-execute — bypassing human review for an unrelated command.
+    // 3rd: different argv of the same prefix (`git status --short`) must
+    // prompt again. Approving `git status` does NOT generalize to other
+    // argv combinations of the same command (Codex round 2).
+    await expect(
+      mw.wrapToolCall?.(
+        ctx,
+        makeToolRequest("bash", { command: "git status --short" }),
+        noopHandler,
+      ),
+    ).rejects.toThrow("not approved");
+    expect(approvals).toHaveLength(2);
+
+    // 4th: different prefix `rm` must also prompt.
     await expect(
       mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm -rf /tmp" }), noopHandler),
     ).rejects.toThrow("not approved");
-    expect(approvals).toHaveLength(2); // handler WAS consulted for rm
+    expect(approvals).toHaveLength(3);
   });
 
-  test("persistent always-allow grant is keyed on enriched resource", async () => {
-    // Simulate a persistent store that only knows one grant: `bash:git status`
+  test("persistent always-allow grant is keyed on exact-command hash (round 2 redesign)", async () => {
+    // Simulate a persistent store. Seeds are exact grantKeys produced by
+    // the middleware for specific commands.
     const grants = new Set<string>();
     const persistentApprovals = {
-      has: mock((_u: string, _a: string, toolId: string) => grants.has(toolId)),
-      grant: mock((_u: string, _a: string, toolId: string, _t: number) => {
-        grants.add(toolId);
+      has: mock((_u: string, _a: string, key: string) => grants.has(key)),
+      grant: mock((_u: string, _a: string, key: string, _t: number) => {
+        grants.add(key);
       }),
       revoke: mock(() => true),
       revokeAll: mock(() => {
@@ -322,15 +329,15 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
       close: mock(() => {}),
     };
 
-    // Pre-seed a grant for the enriched resource
-    grants.add("bash:git status");
-
     const backend: PermissionBackend = {
       check: () => ({ effect: "ask", reason: "review" }),
     };
 
     const approvalHandler = mock(
-      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({ kind: "deny", reason: "x" }),
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "always-allow",
+        scope: "always",
+      }),
     );
 
     const mw = createPermissionsMiddleware({
@@ -341,27 +348,31 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
 
     const ctx = makeTurnContext({ requestApproval: approvalHandler });
 
-    // `bash:git status` → persistent grant hit, auto-approved without prompting
+    // 1st call: approve `git status` → grant persisted for THIS exact command.
     await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git status" }), noopHandler);
-    expect(approvalHandler).not.toHaveBeenCalled();
+    expect(approvalHandler).toHaveBeenCalledTimes(1);
+    expect(persistentApprovals.grant).toHaveBeenCalledTimes(1);
 
-    // `bash:rm` → NOT granted, must prompt (handler returns deny)
-    await expect(
-      mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "rm foo" }), noopHandler),
-    ).rejects.toThrow();
+    // 2nd call: repeat the EXACT same command → persistent grant hit,
+    // handler NOT consulted again.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git status" }), noopHandler);
     expect(approvalHandler).toHaveBeenCalledTimes(1);
 
-    // Persistent store was queried with the enriched resource
-    expect(persistentApprovals.has).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      "bash:git status",
+    // 3rd call: different argv `git status --short` must prompt again.
+    // Codex round 2: approvals must NOT generalize across argv of the
+    // same prefix.
+    await mw.wrapToolCall?.(
+      ctx,
+      makeToolRequest("bash", { command: "git status --short" }),
+      noopHandler,
     );
-    expect(persistentApprovals.has).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      "bash:rm",
-    );
+    expect(approvalHandler).toHaveBeenCalledTimes(2);
+
+    // All three has() calls used grantKeys shaped `bash:<prefix>:<16hex>`.
+    const storedKeys = persistentApprovals.has.mock.calls.map((c) => c[2]);
+    for (const key of storedKeys) {
+      expect(key).toMatch(/^bash:[^:]+:[a-f0-9]{16}$/);
+    }
   });
 
   test("revokePersistentApproval removes enriched-resource grants", () => {

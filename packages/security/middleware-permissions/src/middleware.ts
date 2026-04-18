@@ -604,29 +604,45 @@ export function createPermissionsMiddleware(
    * string, the key is `<toolId>:<prefix>` (e.g. `bash:git push`). Returns
    * the plain tool name otherwise.
    */
-  function enrichResource(toolId: string, input: JsonObject | undefined): string {
-    if (config.resolveBashCommand === undefined || input === undefined) return toolId;
-    const raw = config.resolveBashCommand(toolId, input);
-    if (raw === undefined) return toolId;
-    const trimmed = raw.trim();
-    if (trimmed.length === 0) return toolId;
-    // canonicalPrefix handles wrapper/env normalization AND unwraps
-    // interpreter hops like `bash -c "sudo rm"` → `sudo rm` before prefixing.
-    const p = canonicalPrefix(trimmed);
-    if (p.length === 0) return toolId;
-    // The `!complex` sentinel covers every command containing shell control
-    // operators or redirections. Without a discriminator, any session or
-    // persistent `always-allow` grant for ONE compound command would be
-    // reused for every future compound command in scope — approving
-    // `echo hi >/tmp/x` would silently allow `curl ... | sh` later.
-    // Append a SHA-256 prefix of the raw command so each distinct complex
-    // command gets a distinct resource key while a repeat of the same
-    // command can still reuse its grant.
-    if (p === UNSAFE_PREFIX) {
-      const hash = computeStringHash(trimmed).slice(0, 16);
-      return `${toolId}:${p}:${hash}`;
+  /**
+   * Compute two distinct resource keys for a tool call:
+   *
+   *   `policy`  — `<toolId>:<prefix>` for non-`!complex` commands, or
+   *               `<toolId>:!complex:<hash>` for complex forms. Used for
+   *               backend rule matching and denial-tracker escalation so
+   *               policy rules like `allow: bash:git *` still work.
+   *   `grant`   — `<toolId>:<prefix>:<hash>` (always includes an
+   *               exact-command hash). Used for session and persistent
+   *               `always-allow` grants and for approval audit keys, so
+   *               approving `git status` does NOT auto-approve the
+   *               different argv `git status --short` or (worse)
+   *               `git push --force`.
+   *
+   * When `resolveBashCommand` is unconfigured or returns nothing, both
+   * keys fall back to the plain tool id (no enrichment, no change in
+   * behavior for non-bash tools).
+   */
+  function enrichResource(
+    toolId: string,
+    input: JsonObject | undefined,
+  ): { readonly policy: string; readonly grant: string } {
+    if (config.resolveBashCommand === undefined || input === undefined) {
+      return { policy: toolId, grant: toolId };
     }
-    return `${toolId}:${p}`;
+    const raw = config.resolveBashCommand(toolId, input);
+    if (raw === undefined) return { policy: toolId, grant: toolId };
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return { policy: toolId, grant: toolId };
+
+    const p = canonicalPrefix(trimmed);
+    if (p.length === 0) return { policy: toolId, grant: toolId };
+
+    const hash = computeStringHash(trimmed).slice(0, 16);
+    // Complex forms carry the hash in the policy key too — no single
+    // rule can accidentally cover every compound command.
+    const policy = p === UNSAFE_PREFIX ? `${toolId}:${p}:${hash}` : `${toolId}:${p}`;
+    const grant = `${toolId}:${p}:${hash}`;
+    return { policy, grant };
   }
 
   function queryForTool(
@@ -1342,7 +1358,7 @@ export function createPermissionsMiddleware(
       // the in-flight dedup key. (#1759 review round 6)
       // Resolve file path for fs tools so permission rules can match on context.path.
       const resolvedPath = config.resolveToolPath?.(request.toolId, request.input);
-      const resource = enrichResource(request.toolId, request.input);
+      const { policy: resource, grant: grantKey } = enrichResource(request.toolId, request.input);
       const query = queryForTool(ctx, resource, request.metadata, resolvedPath);
       const startMs = clock();
       const decision = await resolveDecision(query, ctx.session.sessionId as string);
@@ -1509,7 +1525,7 @@ export function createPermissionsMiddleware(
       if (decision.effect === "ask") {
         // Pass a dispatch callback so each approval path fires the outcome
         // BEFORE calling next(request) — ensures recording even if the tool throws.
-        return handleAskDecision(ctx, request, resource, next, decision, (d) => {
+        return handleAskDecision(ctx, request, resource, grantKey, next, decision, (d) => {
           void ctx.dispatchPermissionDecision?.(query, d);
         });
       }
@@ -1580,6 +1596,7 @@ export function createPermissionsMiddleware(
     ctx: TurnContext,
     request: ToolRequest,
     resource: string,
+    grantKey: string,
     next: ToolHandler,
     decision: PermissionDecision & { readonly effect: "ask" },
     dispatchApprovalOutcome?: (d: PermissionDecision) => void,
@@ -1606,9 +1623,12 @@ export function createPermissionsMiddleware(
     const persistentAid = persistentAgentId ?? ctx.session.agentId;
     if (persistentStore !== undefined && persistentUserId !== undefined) {
       try {
-        // Key persistent grants by the enriched resource so `always-allow` on
-        // `bash:git status` does not auto-approve unrelated `bash:rm`.
-        if (persistentStore.has(persistentUserId, persistentAid, resource)) {
+        // Key persistent grants by `grantKey` (exact-command hash) so
+        // approving `bash:git status` does not auto-approve the stricter
+        // `bash:git status --short` or the materially different
+        // `bash:git push --force`. Distinct argv → distinct hash → fresh
+        // prompt.
+        if (persistentStore.has(persistentUserId, persistentAid, grantKey)) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
             toolId: resource,
@@ -1647,14 +1667,12 @@ export function createPermissionsMiddleware(
     }
 
     // Check always-allowed set (from prior "always-allow" decisions).
-    // This is a per-tool session bypass — intentionally matches Claude Code's "a" key
-    // behavior where pressing "a" approves ALL future calls to that tool in the session.
-    // The user explicitly opted in by choosing "always-allow" over single "allow".
-    // Keyed by agentId+resource (enriched) so child/sub-agents cannot inherit
-    // a parent's approval and a grant for `bash:git status` does not leak to
-    // `bash:rm`. Falls through to the plain tool id when enrichment is off
-    // (resource === request.toolId).
-    const alwaysAllowKey = `${ctx.session.agentId}\0${resource}`;
+    // Session bypass is keyed by agentId + grantKey (exact-command
+    // hash). A user's "a" press approves THIS command + argv, not every
+    // later invocation of the same prefix. When enrichment is off,
+    // grantKey falls back to the plain tool id, preserving the original
+    // one-approve-per-tool behavior.
+    const alwaysAllowKey = `${ctx.session.agentId}\0${grantKey}`;
     const sessionAlwaysAllowed = alwaysAllowedBySession.get(ctx.session.sessionId as string);
     if (sessionAlwaysAllowed?.has(alwaysAllowKey)) {
       const alwaysAllowStartMs = clock();
@@ -1951,10 +1969,12 @@ export function createPermissionsMiddleware(
         });
       }
 
-      // Handle "always-allow" — add tool to session's always-allowed set.
-      // Keyed by agentId+resource (enriched) so sub-agents cannot inherit a
-      // parent's approval and a grant for `bash:git status` does not leak to
-      // `bash:rm`. For scope "always", also persist to durable storage (SQLite).
+      // Handle "always-allow" — add to session's always-allowed set.
+      // Keyed by agentId + grantKey (exact-command hash) so an approval
+      // covers THIS command + argv only. A different argv of the same
+      // prefix (e.g. `git push --force`) must prompt again. For scope
+      // "always", also persist to durable storage (SQLite) under the
+      // same exact-command grant key.
       if (approvalResult.kind === "always-allow") {
         const sid = ctx.session.sessionId as string;
         let allowed = alwaysAllowedBySession.get(sid);
@@ -1962,8 +1982,8 @@ export function createPermissionsMiddleware(
           allowed = new Set();
           alwaysAllowedBySession.set(sid, allowed);
         }
-        const grantKey = `${ctx.session.agentId}\0${resource}`;
-        allowed.add(grantKey);
+        const sessionGrantKey = `${ctx.session.agentId}\0${grantKey}`;
+        allowed.add(sessionGrantKey);
 
         // Persist to durable storage if scope is "always", store is configured,
         // and a real user identity exists. Anonymous sessions cannot create durable
@@ -1978,7 +1998,7 @@ export function createPermissionsMiddleware(
           grantUserId !== undefined
         ) {
           try {
-            persistentStore.grant(grantUserId, grantAgentId, resource, clock());
+            persistentStore.grant(grantUserId, grantAgentId, grantKey, clock());
           } catch {
             // Approval was given — execute the tool. Permanence just wasn't recorded.
           }

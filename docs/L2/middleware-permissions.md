@@ -234,18 +234,33 @@ because the resource always carries a hash suffix):
 
 With no rule on `bash:!complex*`, default-deny applies (fail-safe).
 
+### Two-key model: policy vs. grant
+
+To prevent a single human approval from generalizing across argv
+variants, the middleware computes TWO keys per tool call:
+
+| Key | Scope | Used for |
+|-----|-------|----------|
+| `policy` = `bash:<prefix>` | prefix-based | backend rule matching, denial tracker, escalation |
+| `grant` = `bash:<prefix>:<hash>` | exact-command (SHA-256 prefix of the raw command) | session `always-allow`, persistent `always-allow`, approval replay |
+
+So an operator rule `allow: bash:git *` still works, but a user's
+"always-allow" press on `git push origin main` covers ONLY that exact
+argv — not `git push --force`, not `git push origin other-branch`. A
+different argv re-prompts.
+
 Caveats:
 - Enrichment runs only at `wrapToolCall` (execution), not at tool-list
   filtering. The model still sees `bash` as available; individual commands
   are gated at execution time.
 - Returning `undefined` or an empty string from the resolver falls back to
   the plain tool name — safe default.
-- Denial tracking, soft-deny log, and `always-allow` grants (both session
-  and persistent) are keyed on the enriched resource, so policy decisions
-  on `bash:git push` do not leak to `bash:rm`.
+- Denial tracking + soft-deny log are keyed on the policy resource
+  (prefix-based), so escalation works across argv variants of the same
+  prefix.
 - `revokePersistentApproval(userId, agentId, resource)` expects the
-  enriched resource — use `listPersistentApprovals()` to discover stored
-  keys.
+  exact-command grant key — use `listPersistentApprovals()` to discover
+  stored keys.
 
 See `@koi/bash-classifier` for the `ARITY` table and `DANGEROUS_PATTERNS`
 registry.
