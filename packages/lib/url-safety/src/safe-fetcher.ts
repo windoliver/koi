@@ -551,12 +551,6 @@ export function createSafeFetcher(
     // a stream upload gets drained for a request that's going to throw — the
     // stream is already disturbed, the caller can't retry without rebuilding
     // the body, and we just wasted up to maxBufferedBodyBytes of memory.
-    //
-    // NOTE: Request objects store dispatcher/agent on internal symbols that
-    // can't be introspected from JS. We can only detect init-level transport
-    // here. Request-scoped transport state (if any) is preserved by passing
-    // the Request through to base on hop 0, documented on
-    // SafeFetcherOptions.trustCustomTransport.
     const carrierDispatcher = (init as Record<string, unknown> | undefined)?.["dispatcher"];
     const carrierAgent = (init as Record<string, unknown> | undefined)?.["agent"];
     if (!trustCustomTransport && (carrierDispatcher !== undefined || carrierAgent !== undefined)) {
@@ -564,6 +558,21 @@ export function createSafeFetcher(
         "url-safety: refused — a caller-supplied dispatcher/agent can bypass the validated address set; " +
           "drop the custom transport to use built-in IP pinning, or set trustCustomTransport: true to opt in explicitly " +
           "(only when the transport itself enforces an equivalent egress policy).",
+      );
+    }
+
+    // Request objects store dispatcher/agent/credentials on internal symbols
+    // JS can't introspect. Reconstructing would silently drop that transport
+    // state — a caller that built a Request specifically to force traffic
+    // through a proxy / mTLS agent / locked egress would fall back to the
+    // default network path. Passing through smuggles transport past the
+    // trustCustomTransport guard. Neither is fail-closed, so refuse Request
+    // inputs entirely unless the caller has explicitly opted in.
+    if (!trustCustomTransport && input instanceof Request) {
+      throw new Error(
+        "url-safety: refused — Request inputs may carry internal transport state (dispatcher, agent) " +
+          "that the wrapper can't inspect. Pass a URL string + init instead, or set " +
+          "trustCustomTransport: true to preserve the Request's transport explicitly.",
       );
     }
 

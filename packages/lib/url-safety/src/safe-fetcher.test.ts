@@ -360,7 +360,10 @@ describe("createSafeFetcher", () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/x", {
       headers: {
         Authorization: "Bearer stale",
@@ -379,7 +382,10 @@ describe("createSafeFetcher", () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/x", {
       headers: { Authorization: "Bearer stale" },
     });
@@ -479,35 +485,20 @@ describe("createSafeFetcher", () => {
     expect(calls).toHaveLength(3);
   });
 
-  test("passes Request through only when trustCustomTransport: true (hop 0)", async () => {
-    // Internal transport state (undici dispatcher on symbols, credentials,
-    // cache, etc.) sits on a Request where JS can't introspect it.
-    // Reconstructing drops that state — but preserving it bypasses the
-    // trustCustomTransport guard. Default (false) is fail-closed:
-    // reconstruct + pass URL. Opt-in (true) preserves the Request.
-
-    // Default: fail-closed, base sees a URL string, not a Request.
-    const seenDefault: string[] = [];
-    const fnDefault = (async (input: string | URL | Request) => {
-      seenDefault.push(input instanceof Request ? "Request" : "url");
+  test("Request passthrough with trustCustomTransport: true preserves Request", async () => {
+    // With opt-in, Request is passed through verbatim so internal transport
+    // state (undici dispatcher on symbols, credentials, cache) survives.
+    const seen: string[] = [];
+    const fn = (async (input: string | URL | Request) => {
+      seen.push(input instanceof Request ? "Request" : "url");
       return new Response("ok", { status: 200 });
     }) as typeof fetch;
-    const safeDefault = createSafeFetcher(fnDefault, { dnsResolver: publicResolver });
-    await safeDefault(new Request("https://public.example.com/x"));
-    expect(seenDefault).toEqual(["url"]);
-
-    // Opt-in: Request is passed through verbatim.
-    const seenTrust: string[] = [];
-    const fnTrust = (async (input: string | URL | Request) => {
-      seenTrust.push(input instanceof Request ? "Request" : "url");
-      return new Response("ok", { status: 200 });
-    }) as typeof fetch;
-    const safeTrust = createSafeFetcher(fnTrust, {
+    const safeFetch = createSafeFetcher(fn, {
       dnsResolver: publicResolver,
       trustCustomTransport: true,
     });
-    await safeTrust(new Request("https://public.example.com/x"));
-    expect(seenTrust).toEqual(["Request"]);
+    await safeFetch(new Request("https://public.example.com/x"));
+    expect(seen).toEqual(["Request"]);
   });
 
   test("preserves dispatcher/agent init options (proxy/egress transport, opt-in)", async () => {
@@ -533,7 +524,10 @@ describe("createSafeFetcher", () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/x", {
       headers: { "X-Trace": "abc" },
     });
@@ -541,11 +535,23 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["x-trace"]).toBe("abc");
   });
 
-  test("rejects Request with bodyUsed=true when no replacement body provided", async () => {
+  test("refuses Request inputs when trustCustomTransport is not set (fail-closed)", async () => {
     const { fn } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
     const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const req = new Request("https://public.example.com/x");
+    await expect(safeFetch(req)).rejects.toThrow(/Request inputs|internal transport/i);
+  });
+
+  test("rejects Request with bodyUsed=true when no replacement body provided", async () => {
+    const { fn } = recordingFetch({
+      "https://public.example.com/x": new Response("ok", { status: 200 }),
+    });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/x", {
       method: "POST",
       body: "payload",
@@ -560,7 +566,10 @@ describe("createSafeFetcher", () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/x": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/x", {
       method: "POST",
       body: "original",
@@ -625,7 +634,10 @@ describe("createSafeFetcher", () => {
       }),
       "https://public.example.com/final": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/upload", {
       method: "POST",
       body: "hello",
@@ -1118,7 +1130,10 @@ describe("createSafeFetcher", () => {
     const { fn, calls } = recordingFetch({
       "https://public.example.com/echo": new Response("ok", { status: 200 }),
     });
-    const safeFetch = createSafeFetcher(fn, { dnsResolver: publicResolver });
+    const safeFetch = createSafeFetcher(fn, {
+      dnsResolver: publicResolver,
+      trustCustomTransport: true,
+    });
     const req = new Request("https://public.example.com/echo", {
       method: "POST",
       body: "hello",

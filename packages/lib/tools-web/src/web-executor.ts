@@ -227,10 +227,27 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // Wrap fetchFn per-call so we can observe the final URL the safe
         // fetcher actually connects to (post-redirects, post-pin). Without
         // this, createSafeFetcher's internal loop is opaque to the executor.
+        // Track the LOGICAL URL of the final hop — the one the caller /
+        // redirect chain intended, before createSafeFetcher rewrites it to
+        // a validated IP for HTTP pinning. When the wrapper injects a Host
+        // header (its synthetic marker), reconstruct the authority from
+        // that value so finalUrl retains the original hostname contract.
         let lastRequestedUrl = url;
         const trackingFetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
-          lastRequestedUrl =
+          const wireUrl =
             typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+          const hostHdr = new Headers(init?.headers).get("host");
+          if (hostHdr !== null) {
+            try {
+              const logical = new URL(wireUrl);
+              logical.host = hostHdr;
+              lastRequestedUrl = logical.href;
+            } catch {
+              lastRequestedUrl = wireUrl;
+            }
+          } else {
+            lastRequestedUrl = wireUrl;
+          }
           return (fetchFn as typeof fetch)(input, init);
         }) as unknown as typeof fetch;
         const safeFetch = createSafeFetcher(trackingFetchFn, safeFetchOptions);
