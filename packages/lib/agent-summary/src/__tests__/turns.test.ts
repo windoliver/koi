@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import type { TranscriptEntry, TranscriptEntryId } from "@koi/core";
+import type { TranscriptEntry } from "@koi/core";
+import { transcriptEntryId } from "@koi/core";
 import { groupTurns, turnsToEntryRange } from "../turns.js";
 
 const entry = (id: string, role: TranscriptEntry["role"], content = ""): TranscriptEntry => ({
-  id: id as TranscriptEntryId,
+  id: transcriptEntryId(id),
   role,
   content,
   timestamp: 0,
@@ -71,17 +72,17 @@ describe("turnsToEntryRange", () => {
 
   test("returns full slice for valid range", () => {
     const r = turnsToEntryRange(turns, 0, 1);
-    expect(r.map((e) => e.id)).toEqual(["u1", "a1", "u2", "a2"]);
+    expect(r.map((e) => `${e.id}`)).toEqual(["u1", "a1", "u2", "a2"]);
   });
 
   test("single-turn slice", () => {
     const r = turnsToEntryRange(turns, 2, 2);
-    expect(r.map((e) => e.id)).toEqual(["u3"]);
+    expect(r.map((e) => `${e.id}`)).toEqual(["u3"]);
   });
 
   test("fromTurn=0 edge", () => {
     const r = turnsToEntryRange(turns, 0, 0);
-    expect(r.map((e) => e.id)).toEqual(["u1", "a1"]);
+    expect(r.map((e) => `${e.id}`)).toEqual(["u1", "a1"]);
   });
 
   test("toTurn=last edge", () => {
