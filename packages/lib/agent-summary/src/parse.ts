@@ -28,8 +28,8 @@ function contentSchema(): z.ZodType<ParsedContent> {
   const actionSchema = z.strictObject({
     kind: z.enum(["tool_call", "edit", "decision"]),
     name: z.string(),
-    paths: z.array(z.string()).optional(),
-    detail: z.string().optional(),
+    paths: z.array(z.string()).nullish(),
+    detail: z.string().nullish(),
   });
   return z.strictObject({
     goal: z.string(),

@@ -10766,4 +10766,58 @@ describe("Golden: @koi/agent-summary", () => {
       throw new Error("expected kind: clean");
     }
   });
+
+  test.each([
+    "high",
+    "medium",
+    "detailed",
+  ] as const)("replays recorded cassette (%s granularity) — real LLM output parses + validates", async (granularity) => {
+    const { createAgentSummary } = await import("@koi/agent-summary");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const cassetteRaw = readFileSync(
+      join(import.meta.dir, "..", "..", "fixtures", `agent-summary-${granularity}.cassette.json`),
+      "utf8",
+    );
+    const cassette = JSON.parse(cassetteRaw) as {
+      readonly transcript: {
+        readonly entries: readonly {
+          readonly id: string;
+          readonly role: string;
+          readonly content: string;
+          readonly timestamp: number;
+        }[];
+        readonly skipped: readonly unknown[];
+      };
+      readonly modelResponse: { readonly text: string };
+      readonly summary: {
+        readonly goal: string;
+        readonly status: "succeeded" | "partial" | "failed";
+      };
+    };
+
+    const transcript = {
+      load: () => ({ ok: true, value: cassette.transcript }),
+      loadPage: () => ({
+        ok: true,
+        value: { entries: [], total: 0, hasMore: false },
+      }),
+      compact: () => ({ ok: true, value: { preserved: 0 } }),
+    } as unknown as Parameters<typeof createAgentSummary>[0]["transcript"];
+
+    const summary = createAgentSummary({
+      transcript,
+      modelCall: async () => ({ text: cassette.modelResponse.text }),
+    });
+    const r = await summary.summarizeSession(`replay-${granularity}` as never, { granularity });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "clean") {
+      expect(r.value.summary.goal).toBeTruthy();
+      expect(r.value.summary.status).toBe(cassette.summary.status);
+      expect(r.value.summary.goal).toBe(cassette.summary.goal);
+    } else {
+      throw new Error(`expected kind: clean; got ${r.ok ? r.value.kind : r.error.code}`);
+    }
+  });
 });

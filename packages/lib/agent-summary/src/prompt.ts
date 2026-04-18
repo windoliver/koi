@@ -1,7 +1,7 @@
 import type { TranscriptEntry } from "@koi/core";
 import type { Focus, Granularity } from "./types.js";
 
-export const PROMPT_VERSION = 1;
+export const PROMPT_VERSION = 3;
 
 export interface BuildPromptInput {
   readonly granularity: Granularity;
@@ -28,14 +28,18 @@ const COMPACTION_NOTE =
 const STRICT_RETRY_SUFFIX =
   "Output MUST be valid JSON ONLY matching the schema. No prose, no analysis tags, no markdown fences.";
 
+const SCHEMA_SPEC =
+  'Schema: {"goal":string,"status":"succeeded"|"partial"|"failed","actions":[{"kind":"tool_call"|"edit"|"decision","name":string,"paths"?:string[],"detail"?:string}],"outcomes":string[],"errors":string[],"learnings":string[]}. All string arrays may be empty. No other top-level fields allowed.';
+
 export function buildPrompt(
   entries: readonly TranscriptEntry[],
   input: BuildPromptInput,
 ): BuiltPrompt {
   const focusFields = enabledFocusFields(input.focus);
   const system = [
-    "You summarize a Koi agent session into strict JSON with fields: goal, status, actions, outcomes, errors, learnings.",
-    `Focus: ${focusFields.join(", ")}.`,
+    "You summarize a Koi agent session. Output ONLY a single JSON object matching the schema below — no top-level fields other than the six listed.",
+    SCHEMA_SPEC,
+    `Emphasize these topics in your summary content: ${describeFocus(focusFields)}.`,
     GRANULARITY_HINT[input.granularity],
     `Stay under ~${input.maxTokens} tokens.`,
     input.hasCompactionPrefix ? COMPACTION_NOTE : "",
@@ -59,6 +63,18 @@ function enabledFocusFields(f: Required<Focus>): readonly string[] {
     "decisions",
   ];
   return names.filter((k) => f[k]);
+}
+
+const FOCUS_LABELS: Record<string, string> = {
+  goals: "user goals",
+  tool_calls: "tool invocations",
+  errors: "errors encountered",
+  files_changed: "files created or edited",
+  decisions: "decisions the agent made",
+};
+
+function describeFocus(fields: readonly string[]): string {
+  return fields.map((f) => FOCUS_LABELS[f] ?? f).join(", ");
 }
 
 function renderEntry(e: TranscriptEntry): string {
