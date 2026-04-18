@@ -756,6 +756,67 @@ describe("bash prefix — wrapper and path bypass hardening", () => {
     ).rejects.toThrow();
   });
 
+  test("legacy `allow: [bash]` keeps working when resolveBashCommand is enabled", async () => {
+    // A deployment with only a plain-tool allow rule. Enriched lookup
+    // for `bash:git push` misses (default-deny). Merge must respect
+    // the plain explicit allow rather than forcing a hard-deny.
+    const backend = createPatternPermissionBackend({
+      rules: { allow: ["bash"], deny: [], ask: [] },
+    });
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    // Plain `bash` allow + no enriched rule → allow (no surprise deny).
+    await mw.wrapToolCall?.(
+      makeTurnContext(),
+      makeToolRequest("bash", { command: "git push" }),
+      noopHandler,
+    );
+  });
+
+  test("legacy `ask: [bash]` still prompts when resolveBashCommand is enabled", async () => {
+    const backend = createPatternPermissionBackend({
+      rules: { allow: [], deny: [], ask: ["bash"] },
+    });
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "allow",
+      }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+    // Plain `ask` + no enriched rule → ask. Handler consulted.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+    expect(approvalHandler).toHaveBeenCalled();
+  });
+
+  test("legacy `ask: [group:runtime]` still prompts for bash via group expansion", async () => {
+    const backend = createPatternPermissionBackend({
+      rules: { allow: [], deny: [], ask: ["group:runtime"] },
+    });
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "allow",
+      }),
+    );
+    const mw = createPermissionsMiddleware({
+      backend,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+      bashVisibleTools: ["bash"],
+    });
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+    // group:runtime expands to ["exec", "spawn", "bash", "shell"].
+    // Plain `ask` for bash + no enriched rule → ask. Handler consulted.
+    await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: "git push" }), noopHandler);
+    expect(approvalHandler).toHaveBeenCalled();
+  });
+
   test("explicit deny on plain bash overrides bashVisibleTools (round 9)", async () => {
     // Operator explicitly writes `deny: ["bash"]`. Even with
     // bashVisibleTools enabled, the tool must NOT be offered to the

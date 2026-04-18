@@ -628,29 +628,33 @@ export function createPermissionsMiddleware(
   /**
    * Combine the plain-tool decision with the enriched-resource decision.
    *
-   * Plain-tool explicit rules (deny/ask/allow written directly against
-   * the tool id or a group expansion) take precedence — the operator
-   * wrote them intentionally, and prefix enrichment must not erase
-   * them. Default-deny on the plain side is ignored because it's just
-   * the fall-through behavior when no rule matched; the operator
-   * expressed their policy via the enriched prefix rules instead.
+   * Default-deny on EITHER side is treated as "no opinion" — the
+   * operator did not write a rule at that granularity, so the other
+   * side's explicit rule should take effect. Preserves legacy plain
+   * rules like `allow: ["bash"]` / `ask: ["group:runtime"]` when no
+   * enriched rule matches, and still enforces fine-grained prefix
+   * rules when the plain side is silent. When both are explicit,
+   * deny > ask > allow.
    */
   function strictestDecision(
     plain: PermissionDecision,
     enriched: PermissionDecision,
   ): PermissionDecision {
-    // Default-deny on plain: the operator did not write a plain-tool
-    // rule, so defer entirely to the enriched decision.
-    if (plain.effect === "deny" && isDefaultDeny(plain)) return enriched;
-    // Explicit plain deny always wins — operator said "no bash".
+    const plainOpinion = !(plain.effect === "deny" && isDefaultDeny(plain));
+    const enrichedOpinion = !(enriched.effect === "deny" && isDefaultDeny(enriched));
+
+    // Neither side opined — fall-through deny from either is fine.
+    if (!plainOpinion && !enrichedOpinion) return plain;
+    // Only one side opined — use it.
+    if (!plainOpinion) return enriched;
+    if (!enrichedOpinion) return plain;
+
+    // Both explicit: deny beats ask beats allow.
     if (plain.effect === "deny") return plain;
-    // Explicit plain ask beats enriched allow; deny-first on enriched
-    // still wins over plain ask.
-    if (plain.effect === "ask") {
-      return enriched.effect === "deny" ? enriched : plain;
-    }
-    // Plain allows: use the enriched decision (more specific).
-    return enriched;
+    if (enriched.effect === "deny") return enriched;
+    if (plain.effect === "ask") return plain;
+    if (enriched.effect === "ask") return enriched;
+    return plain;
   }
 
   function deriveBashKeys(
