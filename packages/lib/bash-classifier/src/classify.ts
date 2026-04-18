@@ -109,16 +109,24 @@ function splitSegments(cmdLine: string): readonly string[] {
  * segment of the input. Prevents `echo "sudo"` from matching the
  * `sudo` pattern: the word appears inside a quoted arg, not in a
  * command-head position.
+ *
+ * Uses `prefix()` to peel wrappers (`env`, `timeout`, `nohup`,
+ * `command`, `nice`, `/usr/bin/...`) before taking the head, so
+ * `env sudo rm` surfaces `sudo` and `timeout 30 python -c ...`
+ * surfaces `python`. Without this, broad `allow: bash:*` rules would
+ * silently authorize wrapper-prefixed dangerous commands.
  */
 function commandHeads(cmdLine: string): ReadonlySet<string> {
   const heads = new Set<string>();
   for (const seg of splitSegments(cmdLine)) {
     const tokens = shellTokenize(seg);
-    let i = 0;
-    // Skip leading VAR=value env assignments.
-    while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
-    const head = tokens[i];
-    if (head !== undefined && head.length > 0) heads.add(basename(head));
+    if (tokens.length === 0) continue;
+    const segPrefix = prefix(tokens);
+    if (segPrefix.length === 0) continue;
+    // prefix() returns a string like "sudo rm" (wrapper-peeled).
+    // Take the first whitespace-separated word and basename it.
+    const firstWord = segPrefix.split(/\s+/)[0];
+    if (firstWord !== undefined && firstWord.length > 0) heads.add(basename(firstWord));
   }
   return heads;
 }

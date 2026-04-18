@@ -149,6 +149,23 @@ describe("classifyCommand", () => {
     expect(classifyCommand(`printf '%s\\n' 'sudo anything'`).severity).toBeNull();
   });
 
+  test("wrapper-prefixed dangerous commands still match (loop-6)", () => {
+    // `env sudo rm`, `timeout 30 python -c …`, `command bash -c …`
+    // must surface the REAL executable to the commandPrefixes
+    // check — otherwise wrapping trivially defeats the ratchet.
+    expect(classifyCommand(`env sudo rm -rf /tmp`).severity).toBe("medium");
+    expect(classifyCommand(`timeout 30 sudo rm`).severity).toBe("medium");
+    expect(classifyCommand(`nohup sudo rm`).severity).toBe("medium");
+    expect(classifyCommand(`command sudo rm`).severity).toBe("medium");
+    expect(classifyCommand(`nice -n 10 sudo rm`).severity).toBe("medium");
+    expect(classifyCommand(`env FOO=1 timeout 30 python -c "import os"`).severity).toBe("high");
+    expect(classifyCommand(`command bash -c "sudo rm"`).severity).toBe("medium");
+    // Wrapper-hidden in a LATER segment (after && or ;) also detected.
+    expect(classifyCommand(`ls && env sudo rm`).matchedPatterns.map((p) => p.id)).toContain("sudo");
+    // Absolute-path sudo via trusted /usr/bin.
+    expect(classifyCommand(`env /usr/bin/sudo rm`).severity).toBe("medium");
+  });
+
   test("dangerous keywords in command position still match (loop-5)", () => {
     // Positive control: the scoping change did not break legitimate
     // detection. Each command has `sudo` or `eval` in executable
