@@ -51,13 +51,13 @@ declare function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<Saf
  *      credentials, referrer, etc.).
  *   6. On cross-origin redirects strips authorization / cookie /
  *      proxy-authorization / proxy-authenticate.
- *   7. HTTP pinning: when the validated hostname resolves to EXACTLY one
- *      IP, the outbound request is rewritten to that IP + Host header so
- *      the TCP socket cannot be rebound between check and connect. When
- *      multiple IPs are returned, the original hostname is used so that
- *      the runtime's normal multi-address failover still works (all IPs
- *      were already validated via isBlockedIp). HTTPS is never pinned
- *      (TLS SNI / cert verification).
+ *   7. HTTP pinning: after validation, rewrite the outbound URL to each
+ *      resolved IP (with a Host header preserving the original hostname)
+ *      so the TCP socket cannot be DNS-rebound between check and connect.
+ *      When multiple IPs pass validation, they are tried sequentially on
+ *      connect failure so multi-A/AAAA failover still works — each attempt
+ *      goes to an already-validated address, so rebind is not possible.
+ *      HTTPS is never pinned (TLS SNI / cert verification).
  *   8. Throws on block, on exceeding maxRedirects, or on oversized bodies.
  *
  * Default base is global fetch. Callers pass their own to inject for testing.

@@ -2,11 +2,13 @@
 
 **Layer:** L0-utility. Depends only on Node built-ins (`node:net`, `node:dns`). Zero `@koi/*` imports.
 
+> **Rollout status.** This PR adds the library only. No outbound HTTP path in the monorepo has been migrated onto `@koi/url-safety` yet — `@koi/tools-web/web_fetch` still uses its own `url-policy.ts`, and nothing else calls `createSafeFetcher`. Treat this package as a shared building block that consumers must opt into; installing it does not retroactively harden existing callers. The migration of `@koi/tools-web` is a follow-up PR.
+
 ---
 
 ## Purpose
 
-`@koi/url-safety` is the central fail-closed gate every outbound HTTP call in Koi passes through. It blocks private IPv4 and IPv6 ranges (RFC1918, loopback, link-local, CGNAT, multicast, reserved/documentation), cloud metadata endpoints reachable by hostname (`metadata.google.internal`, `instance-data.ec2.internal`, etc.) and by IP literal or DNS resolution (`169.254.169.254`, `fd00:ec2::254` via `fc00::/7`), and DNS-rebinding attacks by resolving the hostname and checking every returned A/AAAA record before permitting a request. `createSafeFetcher` narrows the attack surface further by re-running the same check on every redirect hop rather than trusting the final destination to be safe.
+`@koi/url-safety` is intended to become the central fail-closed gate for every outbound HTTP call in Koi. It blocks private IPv4 and IPv6 ranges (RFC1918, loopback, link-local, CGNAT, multicast, reserved/documentation), cloud metadata endpoints reachable by hostname (`metadata.google.internal`, `instance-data.ec2.internal`, etc.) and by IP literal or DNS resolution (`169.254.169.254`, `fd00:ec2::254` via `fc00::/7`), and DNS-rebinding attacks by resolving the hostname and checking every returned A/AAAA record before permitting a request. `createSafeFetcher` narrows the attack surface further by re-running the same check on every redirect hop rather than trusting the final destination to be safe.
 
 ---
 

@@ -231,6 +231,13 @@ function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
   return p.href;
 }
 
+// Methods safe to retry across validated IPs. Per RFC 7231 §4.2.2 these are
+// idempotent — a thrown fetch error on one IP can safely be re-sent to another.
+// POST/PUT-with-side-effect/PATCH are excluded: a thrown error is ambiguous
+// (the request may already have reached the first backend), so cross-IP
+// retry could duplicate writes.
+const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS", "DELETE"]);
+
 function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
   if (!check.ok) return undefined;
   if (check.resolvedIps.length === 0) return undefined;
@@ -266,6 +273,7 @@ async function fetchWithPin(
     return base(url, toInit(state));
   }
 
+  const canRetry = IDEMPOTENT_METHODS.has(state.method.toUpperCase());
   let lastError: unknown;
   for (const ip of check.ok ? check.resolvedIps : []) {
     const pinnedUrl = rewriteToIp(parsed, ip, state.headers);
@@ -275,6 +283,10 @@ async function fetchWithPin(
       // AbortError must propagate — never silently retry a cancelled request.
       if (e instanceof DOMException && e.name === "AbortError") throw e;
       lastError = e;
+      // Only retry across IPs for idempotent methods. A thrown fetch error
+      // on POST/PUT/PATCH is ambiguous (the request may already have been
+      // sent to the first backend); replaying it could double-submit.
+      if (!canRetry) throw e;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("url-safety: all pinned IPs failed");
@@ -320,6 +332,10 @@ export function createSafeFetcher(
 
       const location = response.headers.get("location");
       if (location === null) return response;
+
+      // Release the 3xx body so undici can reuse the connection. Without
+      // this, redirect-heavy or attacker-crafted chains pin sockets until GC.
+      await response.body?.cancel().catch(() => undefined);
 
       const nextUrl = new URL(location, state.url).href;
       rewriteForRedirect(state, response.status, nextUrl);
