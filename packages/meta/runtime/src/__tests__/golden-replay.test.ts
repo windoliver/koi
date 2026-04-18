@@ -2147,6 +2147,56 @@ describe("url-safety-block ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// url-safety-dns-block trajectory: exercises @koi/url-safety's DNS-resolved
+// IP check (the deeper defence line behind the DNS-free tool preflight).
+// `localtest.me` is a public DNS name that resolves to 127.0.0.1 — it
+// passes the tool's preflightBlockReason (not in BLOCKED_HOSTS / suffixes /
+// IP literals) but fails isSafeUrl once DNS returns the loopback address.
+// Locks in that the DNS-rebind defence reaches the model verbatim.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-dns-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step surfaces createSafeFetcher's resolved-IP rejection", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.tool_calls?.[0]?.arguments.url).toBe("http://localtest.me/");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim wording produced by createSafeFetcher wrapping isSafeUrl's
+    // resolved-IP rejection. The "url-safety:" prefix comes from
+    // safe-fetcher.ts; the "Host X resolves to blocked IP Y" template
+    // comes from safe-url.ts. Both must flow to the tool result unchanged.
+    expect(content).toContain("url-safety:");
+    expect(content).toContain("Host localtest.me resolves to blocked IP 127.0.0.1");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
