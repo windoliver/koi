@@ -125,7 +125,7 @@ function isBlockedV6(ip: string): boolean {
     }
   }
 
-  return isIP(ip) === 6 ? false : true;
+  return isIP(ip) !== 6;
 }
 
 export function isBlockedIp(ip: string): boolean {
