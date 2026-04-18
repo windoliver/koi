@@ -23,8 +23,12 @@ import { isIP } from "node:net";
  *   IPv6:
  *     ::/128          unspecified
  *     ::1/128         loopback
+ *     ::/96           IPv4-compatible (deprecated RFC4291 — URL parser
+ *                     canonicalises `[::127.0.0.1]` to `[::7f00:1]`, so
+ *                     re-check the embedded v4 the same way as IPv4-mapped)
  *     ::ffff:0:0/96   IPv4-mapped (extract and re-check the v4)
  *     64:ff9b::/96    NAT64 well-known prefix (RFC6052 — translates v4 into v6)
+ *     64:ff9b:1::/48  NAT64 local-use prefix (RFC8215 — site-local translator)
  *     100::/64        discard-only (RFC6666)
  *     2001::/32       Teredo tunnel (can embed arbitrary IPv4)
  *     2001:db8::/32   documentation / not routed (RFC3849)
@@ -176,10 +180,14 @@ function isBlockedV6(ip: string): boolean {
   }
 
   // 64:ff9b::/96 NAT64 well-known prefix — re-check embedded v4.
-  // Even public embedded v4 is treated as suspicious here because NAT64 reachability
-  // depends on a local gateway we shouldn't trust implicitly; conservative-block on
-  // private embedded target, which is the documented SSRF concern.
   if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0 && g3 === 0 && g4 === 0 && g5 === 0) {
+    if (isBlockedV4(v4FromGroups(g6, g7))) return true;
+  }
+
+  // 64:ff9b:1::/48 NAT64 local-use prefix (RFC8215) — v4 still in g6/g7.
+  // Network-Specific Prefix, lets sites deploy their own translator; any
+  // embedded private v4 is equally a rebind vector, so re-check the same way.
+  if (g0 === 0x0064 && g1 === 0xff9b && g2 === 0x0001) {
     if (isBlockedV4(v4FromGroups(g6, g7))) return true;
   }
 

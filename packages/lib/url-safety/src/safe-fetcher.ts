@@ -295,12 +295,14 @@ function rewriteToIp(originalUrl: URL, ip: string, headers: Headers): string {
   return p.href;
 }
 
-// Methods safe to retry across validated IPs. Per RFC 7231 §4.2.2 these are
-// idempotent — a thrown fetch error on one IP can safely be re-sent to another.
-// POST/PUT-with-side-effect/PATCH are excluded: a thrown error is ambiguous
-// (the request may already have reached the first backend), so cross-IP
-// retry could duplicate writes.
-const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS", "DELETE"]);
+// Methods safe to retry across validated IPs on a thrown fetch error.
+// Restricted to genuinely read-only verbs (GET/HEAD) and the CORS preflight
+// helper (OPTIONS). DELETE is idempotent in the HTTP spec but has real
+// side effects — a first-backend connect that failed after dispatch may
+// still have applied the delete, so replaying to a second IP could
+// double-apply destructive work. PUT/POST/PATCH always excluded for the
+// same ambiguous-failure reason.
+const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD", "OPTIONS"]);
 
 function shouldPinHttp(url: string, check: SafeUrlResult): URL | undefined {
   if (!check.ok) return undefined;

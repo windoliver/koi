@@ -97,6 +97,21 @@ describe("isBlockedIp — IPv6", () => {
     expect(isBlockedIp("::8.8.8.8")).toBe(false);
   });
 
+  test("blocks NAT64 local-use prefix (64:ff9b:1::/48) embedding private IPv4", () => {
+    // 64:ff9b:1::c0a8:1 → 192.168.0.1
+    expect(isBlockedIp("64:ff9b:1::c0a8:1")).toBe(true);
+    // 64:ff9b:1::7f00:1 → 127.0.0.1
+    expect(isBlockedIp("64:ff9b:1::7f00:1")).toBe(true);
+    // Dotted-decimal form — 64:ff9b:1::169.254.169.254
+    expect(isBlockedIp("64:ff9b:1::169.254.169.254")).toBe(true);
+  });
+
+  test("allows NAT64 local-use prefix embedding public IPv4", () => {
+    // 64:ff9b:1::1:1 → 0.1.0.1 — oh wait, that's 0.0.0.0/8, blocked. Use 8.8.8.8:
+    // 64:ff9b:1::808:808 → 8.8.8.8
+    expect(isBlockedIp("64:ff9b:1::808:808")).toBe(false);
+  });
+
   test("blocks NAT64 (64:ff9b::/96) embedding private IPv4", () => {
     // 64:ff9b::c0a8:1 → embeds 192.168.0.1 (RFC1918)
     expect(isBlockedIp("64:ff9b::c0a8:1")).toBe(true);

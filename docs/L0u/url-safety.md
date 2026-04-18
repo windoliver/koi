@@ -72,7 +72,9 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | `::/128` | Unspecified address |
 | `::1/128` | Loopback |
 | `::ffff:0:0/96` | IPv4-mapped — the embedded IPv4 is extracted and re-checked against the IPv4 table |
+| `::/96` | IPv4-compatible IPv6 (deprecated, RFC4291) — URL parser canonicalises `[::127.0.0.1]` to `[::7f00:1]`; re-check embedded v4 |
 | `64:ff9b::/96` | NAT64 well-known prefix (RFC6052) |
+| `64:ff9b:1::/48` | NAT64 local-use prefix (RFC8215) |
 | `100::/64` | Discard prefix (RFC6666) |
 | `2001::/32` | Teredo — embeds arbitrary IPv4; any private embedding is blocked |
 | `2001:db8::/32` | Documentation (RFC3849) |

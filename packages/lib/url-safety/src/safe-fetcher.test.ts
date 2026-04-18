@@ -372,6 +372,25 @@ describe("createSafeFetcher", () => {
     expect(calls[0]?.headers["host"]).toBe("dual.example.com");
   });
 
+  test("DELETE is NOT auto-retried across IPs (ambiguous destructive failure)", async () => {
+    const multiResolver = async (hostname: string): Promise<readonly string[]> => {
+      if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
+      throw new Error(`ENOTFOUND ${hostname}`);
+    };
+    const attempts: string[] = [];
+    const fn = (async (input: string | URL | Request) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      attempts.push(url);
+      throw new TypeError("ECONNRESET");
+    }) as unknown as typeof fetch;
+    const safeFetch = createSafeFetcher(fn, { dnsResolver: multiResolver });
+    await expect(
+      safeFetch("http://dual.example.com/resource", { method: "DELETE" }),
+    ).rejects.toThrow(/ECONNRESET/);
+    // Only one attempt — DELETE is not retried.
+    expect(attempts).toHaveLength(1);
+  });
+
   test("multi-IP pin throws if all IPs unreachable", async () => {
     const multiResolver = async (hostname: string): Promise<readonly string[]> => {
       if (hostname === "dual.example.com") return ["93.184.216.34", "93.184.216.35"];
