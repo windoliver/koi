@@ -6,12 +6,26 @@
  * reference docs, config templates) without injecting every file into context
  * at Tier 1 load time.
  *
- * Security model — mirrors the loader's path-traversal guard (loader.ts):
- * 1. `refPath` must be non-empty and free of null bytes
- * 2. `refPath` must not be absolute
- * 3. The realpath of the joined path must remain within the realpath of the
- *    skill directory. A `..` component or an escape-via-symlink both trip
- *    this check and surface as VALIDATION / PATH_TRAVERSAL.
+ * Security model — mirrors the loader's path-traversal guard (loader.ts)
+ * **and** extends it with the same fail-closed policies Tier 1 applies
+ * (review #1896 round 1):
+ *
+ * 1. Path hygiene
+ *    - `refPath` must be non-empty and free of null bytes
+ *    - `refPath` must not be absolute
+ *    - The realpath of the joined path must remain within the realpath of
+ *      the skill directory. `..` components or escape-via-symlink are
+ *      rejected as VALIDATION / PATH_TRAVERSAL.
+ * 2. Size ceiling (`maxBytes`, default 256 KB). Oversized files are rejected
+ *    up-front via stat — we never read them. Prevents a reference file
+ *    from exhausting context or memory, and bounds latency of retries.
+ * 3. Binary guard. If the first 1 KB of the file contains a NUL byte the
+ *    content is treated as binary and rejected. Tier 2 is a text-context
+ *    channel for the model; binary payloads are out of scope.
+ * 4. Security scan. When a `scanner` is provided the content is fed through
+ *    the same `scanSkill()` rules that gate Tier 1 (with `blockOnSeverity`).
+ *    A blocked reference returns PERMISSION — malicious payloads cannot be
+ *    hidden in a `references/` file and smuggled past the Tier 1 gate.
  *
  * Results are **not** cached. Reference fetches are one-shot — the agent
  * requests a file, the runtime reads it, hands back the content. A persistent
@@ -19,15 +33,38 @@
  * and complicate invalidation without saving meaningful I/O.
  */
 
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type { KoiError, Result } from "@koi/core";
+import type { ScanFinding, Scanner } from "@koi/skill-scanner";
+import { type Severity, severityAtOrAbove } from "@koi/validation";
 
 // Null-byte in a path is always adversarial — node itself throws, but catching
 // early lets us return a structured VALIDATION error rather than an opaque
 // internal failure.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: null byte is the intended literal
 const NULL_BYTE = /\u0000/;
+
+/**
+ * Default reference-file size ceiling. 256 KB is well above any prose
+ * reference or reasonable script, and well below the point where loading the
+ * file into a single model turn would noticeably squeeze the context window.
+ */
+export const DEFAULT_MAX_REFERENCE_BYTES: number = 256 * 1024;
+
+/** Number of leading bytes inspected for NUL to classify a file as binary. */
+const BINARY_SNIFF_BYTES = 1024;
+
+export interface LoadReferenceOptions {
+  /** Upper bound on file size. Files larger than this return VALIDATION without being read. */
+  readonly maxBytes?: number;
+  /** If provided, the content is scanned with `scanSkill()`. */
+  readonly scanner?: Scanner;
+  /** Severity threshold. Defaults to "HIGH" when a scanner is supplied. */
+  readonly blockOnSeverity?: Severity;
+  /** Sub-threshold findings route here. */
+  readonly onSecurityFinding?: (name: string, findings: readonly ScanFinding[]) => void;
+}
 
 function validationError(
   name: string,
@@ -52,12 +89,15 @@ function validationError(
  * @param name - skill name, used only for error context
  * @param dirPath - absolute path to the skill directory (as held in SkillMetadata)
  * @param refPath - relative POSIX path inside the skill directory
+ * @param options - size + scanner policy (see LoadReferenceOptions)
  */
 export async function loadReference(
   name: string,
   dirPath: string,
   refPath: string,
+  options?: LoadReferenceOptions,
 ): Promise<Result<string, KoiError>> {
+  const maxBytes = options?.maxBytes ?? DEFAULT_MAX_REFERENCE_BYTES;
   if (refPath.length === 0) {
     return validationError(
       name,
@@ -150,9 +190,35 @@ export async function loadReference(
     );
   }
 
+  // Size ceiling — stat first so an oversized payload is never read into memory.
+  let size: number;
   try {
-    const content = await Bun.file(realTarget).text();
-    return { ok: true, value: content };
+    const st = await stat(realTarget);
+    size = st.size;
+  } catch (cause: unknown) {
+    return {
+      ok: false,
+      error: {
+        code: "NOT_FOUND",
+        message: `Could not stat reference "${refPath}" for skill "${name}"`,
+        retryable: false,
+        cause,
+        context: { name, refPath, resolvedPath: realTarget },
+      },
+    };
+  }
+  if (size > maxBytes) {
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" exceeds size limit (${size} > ${maxBytes} bytes)`,
+      "REFERENCE_SIZE_LIMIT",
+    );
+  }
+
+  let content: string;
+  try {
+    content = await Bun.file(realTarget).text();
   } catch (cause: unknown) {
     return {
       ok: false,
@@ -165,4 +231,46 @@ export async function loadReference(
       },
     };
   }
+
+  // Binary guard — NUL byte in the leading window means the file is not
+  // text, so handing it to the model is at best useless and at worst a
+  // data-exfiltration or crash vector.
+  const prefix = content.slice(0, BINARY_SNIFF_BYTES);
+  if (prefix.includes("\u0000")) {
+    return validationError(
+      name,
+      refPath,
+      `Reference "${refPath}" for skill "${name}" appears to be binary`,
+      "REFERENCE_BINARY",
+    );
+  }
+
+  // Security scan — Tier 1 applies the same gate to SKILL.md bodies. A skill
+  // with clean frontmatter could otherwise hide dangerous prose in a
+  // references/*.md file and surface it through this API, which is exactly
+  // the attack Tier 2 must not enable. Fail closed on >= blockOnSeverity.
+  const scanner = options?.scanner;
+  if (scanner !== undefined) {
+    const threshold: Severity = options?.blockOnSeverity ?? "HIGH";
+    const report = scanner.scanSkill(content);
+    const blocking = report.findings.filter((f) => severityAtOrAbove(f.severity, threshold));
+    const subThreshold = report.findings.filter((f) => !severityAtOrAbove(f.severity, threshold));
+    if (subThreshold.length > 0) {
+      options?.onSecurityFinding?.(name, subThreshold);
+    }
+    if (blocking.length > 0) {
+      const summary = blocking.map((f) => `[${f.severity}] ${f.rule}: ${f.message}`).join("; ");
+      return {
+        ok: false,
+        error: {
+          code: "PERMISSION",
+          message: `Reference "${refPath}" for skill "${name}" blocked by security scan (${blocking.length} finding(s) at or above ${threshold}): ${summary}`,
+          retryable: false,
+          context: { name, refPath, blockOnSeverity: threshold, findings: blocking },
+        },
+      };
+    }
+  }
+
+  return { ok: true, value: content };
 }

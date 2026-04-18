@@ -1055,7 +1055,13 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       };
     }
 
-    return loadReference(name, entry.dirPath, refPath);
+    return loadReference(name, entry.dirPath, refPath, {
+      scanner,
+      blockOnSeverity: resolvedConfig.blockOnSeverity,
+      ...(resolvedConfig.onSecurityFinding !== undefined
+        ? { onSecurityFinding: resolvedConfig.onSecurityFinding }
+        : {}),
+    });
   };
 
   return {
