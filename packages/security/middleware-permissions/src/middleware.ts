@@ -425,7 +425,7 @@ export interface PermissionsMiddlewareHandle extends KoiMiddleware {
    * Returns the plain `toolId` when `resolveBashCommand` is not
    * configured, or when the raw command is empty.
    */
-  readonly computeBashGrantKey: (toolId: string, rawCommand: string) => string;
+  readonly computeBashGrantKey: (toolId: string, rawCommand: string, context?: string) => string;
   /**
    * Revoke all persistent always-allow grants.
    * No-op if no persistent store is configured.
@@ -660,21 +660,23 @@ export function createPermissionsMiddleware(
   function deriveBashKeys(
     toolId: string,
     rawCommand: string,
+    context?: string,
   ): { readonly policy: string; readonly grant: string } | null {
     const trimmed = rawCommand.trim();
     if (trimmed.length === 0) return null;
     const p = canonicalPrefix(trimmed);
     if (p.length === 0) return null;
-    // POLICY key: preserve the natural prefix so deny-first rules
-    // like `deny: bash:chmod*` still fire. Only structurally complex
-    // forms (compound operators, env -S, interpreter hops we can't
-    // unwrap, deep nesting) carry the `!complex` sentinel because
-    // `canonicalPrefix` itself returns UNSAFE_PREFIX for those.
-    // Dangerous-pattern detection is used ONLY to scope the grant key
-    // so approvals cannot generalize across distinct dangerous argv.
     const danger = classifyCommand(trimmed);
     const dangerous = danger.severity === "critical" || danger.severity === "high";
-    const hash = computeStringHash(trimmed).slice(0, 16);
+    // Hash covers the execution context (cwd / repo root / tenant)
+    // in addition to the command text. Without context-binding,
+    // approving `git push` in one repo silently authorizes the same
+    // text in a different repo/checkout/tenant. When the caller
+    // cannot supply stable context (undefined), hash degrades to
+    // command-only scope — documented as a caveat for deployments
+    // where approvals MUST be context-scoped.
+    const hashInput = context !== undefined ? `${context}\0${trimmed}` : trimmed;
+    const hash = computeStringHash(hashInput).slice(0, 16);
     // POLICY key for `!complex` is stable (no hash) so denial
     // tracking and soft-deny escalation aggregate across distinct
     // compound commands. An agent spamming different `bash -c` /
@@ -714,7 +716,8 @@ export function createPermissionsMiddleware(
     }
     const raw = config.resolveBashCommand(toolId, input);
     if (raw === undefined) return { policy: toolId, grant: toolId };
-    const derived = deriveBashKeys(toolId, raw);
+    const execContext = config.resolveBashContext?.(toolId, input);
+    const derived = deriveBashKeys(toolId, raw, execContext);
     return derived ?? { policy: toolId, grant: toolId };
   }
 
@@ -1737,15 +1740,15 @@ export function createPermissionsMiddleware(
       // break unrelated session-only approvals.
       return persistentStore.revoke(userId, agentId, grantKey);
     },
-    computeBashGrantKey(toolId: string, rawCommand: string): string {
+    computeBashGrantKey(toolId: string, rawCommand: string, context?: string): string {
       // Shares the exact key-derivation helper with enrichResource so
-      // that dangerous-pattern escalation (python -c, node -e, etc.)
-      // and `!complex` remapping are applied identically. Without
-      // this, the helper would produce `bash:python:<hash>` while the
-      // middleware actually stored `bash:!complex:<hash>`, and
-      // revocation would silently miss the real grant.
+      // that dangerous-pattern escalation, `!complex` remapping, and
+      // context-scoping are applied identically. Callers that need to
+      // revoke context-scoped grants must supply the same `context`
+      // value the middleware used when storing the grant (typically
+      // the return value of `resolveBashContext` for the active turn).
       if (config.resolveBashCommand === undefined) return toolId;
-      const derived = deriveBashKeys(toolId, rawCommand);
+      const derived = deriveBashKeys(toolId, rawCommand, context);
       return derived?.grant ?? toolId;
     },
     revokeAllPersistentApprovals(): void {
@@ -1809,14 +1812,31 @@ export function createPermissionsMiddleware(
         // `bash:git push --force`. Distinct argv → distinct hash → fresh
         // prompt.
         //
-        // Backward-compat: also accept legacy plain-tool-id grants so
-        // enabling `resolveBashCommand` on a deployment that already
-        // persisted approvals (keyed by plain `bash`) does not silently
-        // invalidate them. Operators can migrate at their own pace.
+        // Backward-compat: also accept legacy plain-tool-id grants, but
+        // ONLY for benign commands. A legacy blanket `bash` grant must
+        // not silently authorize `!complex` forms (redirections,
+        // pipelines, command substitution) or dangerous-pattern matches
+        // (sudo, python -c, bash -c, etc.) that the new ratchet is
+        // supposed to re-prompt on. Operators keep their old grants for
+        // routine bash usage; dangerous/complex forms force a fresh
+        // approval.
         const hasExact = persistentStore.has(persistentUserId, persistentAid, grantKey);
-        const hasLegacy =
+        const wantLegacyFallback =
           grantKey !== request.toolId &&
           persistentStore.has(persistentUserId, persistentAid, request.toolId);
+        let hasLegacy = false;
+        if (wantLegacyFallback) {
+          // `resource` inside handleAskDecision is the enriched form
+          // (scoped at the wrapToolCall call site). `!complex` forms
+          // carry it as the policy key, so this check covers every
+          // compound/dangerous-complex form.
+          const rawForLegacy = config.resolveBashCommand?.(request.toolId, request.input) ?? "";
+          const isComplexForm = resource === `${request.toolId}:${UNSAFE_PREFIX}`;
+          const isDangerous =
+            rawForLegacy.trim().length > 0 &&
+            classifyCommand(rawForLegacy.trim()).severity !== null;
+          hasLegacy = !isComplexForm && !isDangerous;
+        }
         if (hasExact || hasLegacy) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({

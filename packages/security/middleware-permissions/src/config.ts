@@ -150,6 +150,23 @@ export interface PermissionsMiddlewareConfig {
     | ((toolId: string, input: JsonObject) => string | undefined)
     | undefined;
   /**
+   * Optional context resolver for bash grant keys. Return a stable
+   * identifier for the execution environment — typically cwd, repo
+   * root, or a tenant/workspace id. The returned string is hashed
+   * into the grant key so approvals stay scoped to the context they
+   * were granted in. Without this, approving `git push` in one repo
+   * silently authorizes the same text in another repo/tenant.
+   *
+   * Receives the same arguments as `resolveBashCommand`. Return
+   * `undefined` to opt out of context-scoping for this invocation
+   * (grant key reverts to command-only scope — documented caveat).
+   *
+   * No effect when `resolveBashCommand` is not configured.
+   */
+  readonly resolveBashContext?:
+    | ((toolId: string, input: JsonObject) => string | undefined)
+    | undefined;
+  /**
    * Tool IDs that should stay visible to the model regardless of
    * model-time tool filtering. When set alongside `resolveBashCommand`,
    * prefix-based rules like `{ allow: ["bash:git push"] }` can be
@@ -333,6 +350,11 @@ export function validatePermissionsConfig(input: unknown): Result<PermissionsMid
   // resolveBashCommand — function if set
   if (config.resolveBashCommand !== undefined && typeof config.resolveBashCommand !== "function") {
     return fail("config.resolveBashCommand must be a function");
+  }
+
+  // resolveBashContext — function if set
+  if (config.resolveBashContext !== undefined && typeof config.resolveBashContext !== "function") {
+    return fail("config.resolveBashContext must be a function");
   }
 
   // bashVisibleTools — array of non-empty strings if set
