@@ -1468,17 +1468,27 @@ export function createPermissionsMiddleware(
       // caps, and audit records aggregate under the right bucket —
       // a plain `deny: bash` must aggregate across all subcommand
       // variants, not fragment into per-prefix buckets.
-      let resource = enrichedResource;
+      // `resource` is the observable identity — used for audit,
+      // reportDecision, and approval-step payloads. It stays on the
+      // enriched form so per-command governance is visible even
+      // when a legacy plain-tool rule ultimately produced the
+      // decision.
+      //
+      // `trackingResource` is the denial-tracker + soft-deny bucket.
+      // When a plain-tool deny wins, it aggregates subcommand
+      // variants under the plain id so retry caps and escalation
+      // fire consistently. When the enriched decision wins it uses
+      // the enriched resource for per-prefix fidelity.
+      const resource = enrichedResource;
+      let trackingResource = enrichedResource;
       let query = enrichedQuery;
       let decision = await resolveDecision(query, ctx.session.sessionId as string);
       if (enrichedResource !== request.toolId) {
         const plainQuery = queryForTool(ctx, request.toolId, request.metadata, resolvedPath);
         const plain = await resolveDecision(plainQuery, ctx.session.sessionId as string);
         const combined = strictestDecision(plain, decision);
-        // If the plain decision won, key tracking on the plain tool id
-        // so an agent rotating subcommands hits the same denial bucket.
         if (combined === plain) {
-          resource = request.toolId;
+          trackingResource = request.toolId;
           query = plainQuery;
         }
         decision = combined;
@@ -1588,7 +1598,7 @@ export function createPermissionsMiddleware(
             // Unkeyable context — cannot scope the soft-deny counter safely → fail closed.
             const hardened = hardConvertedDecision("unkeyable context — failing closed");
             getTracker(sessionId).record({
-              toolId: resource,
+              toolId: trackingResource,
               reason: decision.reason,
               timestamp: clock(),
               principal: ctx.session.agentId,
@@ -1615,7 +1625,7 @@ export function createPermissionsMiddleware(
           if (counter.countAndCap(turnScopedKey, cap) === "over_cap") {
             const hardened = hardConvertedDecision(`soft-deny retry cap ${cap} exceeded this turn`);
             getTracker(sessionId).record({
-              toolId: resource,
+              toolId: trackingResource,
               reason: decision.reason,
               timestamp: clock(),
               principal: ctx.session.agentId,
@@ -1635,7 +1645,7 @@ export function createPermissionsMiddleware(
 
           // Soft path: record in isolated SoftDenyLog (NOT DenialTracker).
           getSoftDenyLog(sessionId).record({
-            toolId: resource,
+            toolId: trackingResource,
             reason: decision.reason,
             timestamp: clock(),
             principal: ctx.session.agentId,
@@ -1663,7 +1673,7 @@ export function createPermissionsMiddleware(
 
         // Native hard path: record with origin: "native", dispatch original decision, throw.
         getTracker(sessionId).record({
-          toolId: resource,
+          toolId: trackingResource,
           reason: decision.reason,
           timestamp: clock(),
           principal: ctx.session.agentId,
@@ -1798,7 +1808,16 @@ export function createPermissionsMiddleware(
         // `bash:git status --short` or the materially different
         // `bash:git push --force`. Distinct argv → distinct hash → fresh
         // prompt.
-        if (persistentStore.has(persistentUserId, persistentAid, grantKey)) {
+        //
+        // Backward-compat: also accept legacy plain-tool-id grants so
+        // enabling `resolveBashCommand` on a deployment that already
+        // persisted approvals (keyed by plain `bash`) does not silently
+        // invalidate them. Operators can migrate at their own pace.
+        const hasExact = persistentStore.has(persistentUserId, persistentAid, grantKey);
+        const hasLegacy =
+          grantKey !== request.toolId &&
+          persistentStore.has(persistentUserId, persistentAid, request.toolId);
+        if (hasExact || hasLegacy) {
           const persistentStartMs = clock();
           getTracker(ctx.session.sessionId as string).record({
             toolId: resource,

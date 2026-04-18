@@ -324,6 +324,44 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     expect(approvals).toHaveLength(3);
   });
 
+  test("legacy plain-toolId persistent grants still authorize after enabling resolveBashCommand (loop-9)", async () => {
+    // Simulates a deployment that persisted an approval for plain
+    // `bash` before bash enrichment was enabled. Enabling
+    // resolveBashCommand must not silently invalidate that grant —
+    // the middleware falls back to the legacy plain-tool lookup if
+    // the new exact-command lookup misses.
+    const grants = new Set<string>(["bash"]); // pre-existing legacy grant
+    const persistentApprovals = {
+      has: mock((_u: string, _a: string, k: string) => grants.has(k)),
+      grant: mock(() => {}),
+      revoke: mock(() => true),
+      revokeAll: mock(() => grants.clear()),
+      list: mock(() => []),
+      close: mock(() => {}),
+    };
+    const approvalHandler = mock(
+      async (_req: ApprovalRequest): Promise<ApprovalDecision> => ({
+        kind: "deny",
+        reason: "should not prompt",
+      }),
+    );
+
+    const mw = createPermissionsMiddleware({
+      backend: { check: () => ({ effect: "ask", reason: "review" }) },
+      persistentApprovals,
+      resolveBashCommand: (_toolId, input) => input.command as string,
+    });
+
+    const ctx = makeTurnContext({ requestApproval: approvalHandler });
+
+    // Any bash command should hit the legacy plain-`bash` grant.
+    for (const cmd of ["git status", "npm run build", "ls -la"]) {
+      await mw.wrapToolCall?.(ctx, makeToolRequest("bash", { command: cmd }), noopHandler);
+    }
+    // Handler never consulted — legacy grant covered all three.
+    expect(approvalHandler).not.toHaveBeenCalled();
+  });
+
   test("persistent always-allow grant is keyed on exact-command hash (round 2 redesign)", async () => {
     // Simulate a persistent store. Seeds are exact grantKeys produced by
     // the middleware for specific commands.
@@ -380,11 +418,14 @@ describe("bash prefix — denial + approval tracking is scoped per prefix", () =
     );
     expect(approvalHandler).toHaveBeenCalledTimes(2);
 
-    // All three has() calls used grantKeys shaped `bash:<prefix>:<16hex>`.
+    // has() is called with BOTH the enriched grantKey and the plain
+    // toolId (loop-9 backward-compat lookup). Either exact-command
+    // grants OR legacy plain-tool grants authorize the call.
     const storedKeys = persistentApprovals.has.mock.calls.map((c) => c[2]);
-    for (const key of storedKeys) {
-      expect(key).toMatch(/^bash:[^:]+:[a-f0-9]{16}$/);
-    }
+    const hashedKeys = storedKeys.filter((k) => /^bash:[^:]+:[a-f0-9]{16}$/.test(k));
+    const plainKeys = storedKeys.filter((k) => k === "bash");
+    expect(hashedKeys.length).toBeGreaterThan(0);
+    expect(plainKeys.length).toBeGreaterThan(0);
   });
 
   test("computeBashGrantKey mirrors internal grant-key hashing", () => {
