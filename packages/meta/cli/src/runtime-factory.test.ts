@@ -17,7 +17,7 @@ import type { ApprovalHandler, KoiMiddleware, ModelAdapter } from "@koi/core";
 import { toolToken } from "@koi/core";
 import { MiddlewareRegistry, UnknownManifestMiddlewareError } from "./middleware-registry.js";
 import { RequiredMiddlewareError } from "./required-middleware.js";
-import { createKoiRuntime, MAX_TRAJECTORY_STEPS } from "./runtime-factory.js";
+import { createKoiRuntime, MAX_TRAJECTORY_STEPS, resolveMaxDurationMs } from "./runtime-factory.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +67,56 @@ afterEach(async () => {
     await runtimeHandle.runtime.dispose();
     runtimeHandle = null;
   }
+});
+
+describe("resolveMaxDurationMs — KOI_MAX_DURATION_MS coercion", () => {
+  const ORIGINAL = process.env.KOI_MAX_DURATION_MS;
+  const DEFAULT = 1_800_000;
+  const MAX_SAFE = 2_147_483_647;
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.KOI_MAX_DURATION_MS;
+    else process.env.KOI_MAX_DURATION_MS = ORIGINAL;
+  });
+
+  test("unset env → default 30m cap", () => {
+    delete process.env.KOI_MAX_DURATION_MS;
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("empty string → default (not disable-cap)", () => {
+    process.env.KOI_MAX_DURATION_MS = "";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("whitespace → default (not disable-cap)", () => {
+    process.env.KOI_MAX_DURATION_MS = "   ";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("literal '0' → disabled (clamped to setTimeout int32 max)", () => {
+    process.env.KOI_MAX_DURATION_MS = "0";
+    expect(resolveMaxDurationMs()).toBe(MAX_SAFE);
+  });
+
+  test("large value → passed through (within safe range)", () => {
+    process.env.KOI_MAX_DURATION_MS = "3600000";
+    expect(resolveMaxDurationMs()).toBe(3_600_000);
+  });
+
+  test("value above setTimeout safe range → clamped", () => {
+    process.env.KOI_MAX_DURATION_MS = String(Number.MAX_SAFE_INTEGER);
+    expect(resolveMaxDurationMs()).toBe(MAX_SAFE);
+  });
+
+  test("invalid (NaN) → default", () => {
+    process.env.KOI_MAX_DURATION_MS = "abc";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
+
+  test("negative → default", () => {
+    process.env.KOI_MAX_DURATION_MS = "-1000";
+    expect(resolveMaxDurationMs()).toBe(DEFAULT);
+  });
 });
 
 describe("createKoiRuntime — assembly", () => {

@@ -774,12 +774,19 @@ const DEFAULT_MAX_DURATION_MS = 1_800_000;
 // any realistic turn duration.
 const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
 
-function resolveMaxDurationMs(): number {
+/** @internal — exported for unit tests only; not part of the public API. */
+export function resolveMaxDurationMs(): number {
   const raw = process.env.KOI_MAX_DURATION_MS;
   if (raw === undefined) return DEFAULT_MAX_DURATION_MS;
-  const n = Number(raw);
+  // Strict parse: `Number("")` and `Number(" ")` both return 0, so a
+  // blank env var would silently hit the disable-cap path and turn a
+  // documented 30-min posture into effectively uncapped. Reject
+  // empty/whitespace and only honor a literal `"0"` as the sentinel.
+  const trimmed = raw.trim();
+  if (trimmed === "") return DEFAULT_MAX_DURATION_MS;
+  if (trimmed === "0") return MAX_SETTIMEOUT_SAFE_MS;
+  const n = Number(trimmed);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_MAX_DURATION_MS;
-  if (n === 0) return MAX_SETTIMEOUT_SAFE_MS;
   return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
 }
 
@@ -1817,15 +1824,25 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // for a stricter dollar-denominated cap.
       resetIterationBudgetPerRun: true,
       governance: {
-        iteration: {
-          maxTurns: 25,
-          // Per-submit wall-clock cap. Default 30 min matches CC's "let it
-          // run, user Ctrl-C" model. Override with KOI_MAX_DURATION_MS env
-          // var (e.g. `KOI_MAX_DURATION_MS=3600000` for 1h, or `0` to
-          // disable the cap entirely).
-          maxDurationMs: resolveMaxDurationMs(),
-          maxTokens: 1_000_000,
-        },
+        iteration: (() => {
+          const resolvedDuration = resolveMaxDurationMs();
+          return {
+            maxTurns: 25,
+            // Per-submit wall-clock cap. Default 30 min matches CC's "let it
+            // run, user Ctrl-C" model. Override with KOI_MAX_DURATION_MS env
+            // var (e.g. `KOI_MAX_DURATION_MS=3600000` for 1h, or `0` to
+            // disable the cap entirely).
+            maxDurationMs: resolvedDuration,
+            // Inactivity guard defaults to 5 min in the kernel, which
+            // would fire well before `maxDurationMs` on long idle model
+            // waits (deep thinking, slow-streaming providers). Pin it
+            // to the resolved duration so the wall-clock cap is the
+            // only kill path; callers that want a tighter inactivity
+            // cap can still override.
+            maxInactivityMs: resolvedDuration,
+            maxTokens: 1_000_000,
+          };
+        })(),
       },
     });
     // Hand the live runtime to the rotation closure above. The
