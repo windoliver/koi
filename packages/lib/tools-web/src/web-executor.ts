@@ -60,11 +60,21 @@ export interface WebFetchOptions {
   readonly timeoutMs?: number | undefined;
   readonly signal?: AbortSignal | undefined;
   /**
-   * When `true`, bypass the response LRU for both read and write on this
-   * call: the executor will not return a cached entry and will not insert
-   * the fresh response into the cache. Use this to force a revalidation
-   * when the caller needs live state (tool-surface equivalent of
-   * `Cache-Control: no-store`).
+   * Force-revalidation mode. Skips the cache *read* so the request always
+   * reaches origin, then reconciles the cache entry from the live response:
+   *
+   * - Cacheable success (200 without `no-store|no-cache|private`):
+   *   overwrites any stale entry so later default callers see the fresh
+   *   content without needing `noCache` themselves.
+   * - Non-cacheable response (e.g. 500, 206, or a cache-forbidding header):
+   *   evicts any prior entry. The origin has spoken and the old value is
+   *   now treated as known-stale.
+   * - Network error / abort / SSRF rejection: the prior entry is left
+   *   intact as a last-known-good fallback — the request never reached
+   *   origin, so we have no basis to invalidate.
+   *
+   * Use when verifying a just-changed page or refreshing after a known
+   * update.
    */
   readonly noCache?: boolean | undefined;
 }
@@ -184,21 +194,14 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
       const cacheKey = `${method}:${normalizedUrl}`;
       // Key is eligible for caching if it's a GET/HEAD without custom headers
       // (headers like Accept, Range, or auth tokens change representation).
-      // Eligibility is independent of `noCache` — a forced-fresh call still
-      // invalidates the key, and a cacheable fresh response still overwrites
-      // it, so later default callers cannot read stale content behind us.
+      // `noCache` only flips the *read* side — reconciliation still runs
+      // once we know what the live response looks like (see below).
       const keyCacheable =
         fetchCache !== undefined && !hasCustomHeaders && (method === "GET" || method === "HEAD");
 
-      if (keyCacheable && fetchCache !== undefined) {
-        if (noCache) {
-          // Proactive eviction: if the fresh fetch then fails, the next
-          // default caller must not be handed the now-known-stale entry.
-          fetchCache.delete(cacheKey);
-        } else {
-          const cached = fetchCache.get(cacheKey);
-          if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
-        }
+      if (keyCacheable && fetchCache !== undefined && !noCache) {
+        const cached = fetchCache.get(cacheKey);
+        if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
@@ -268,10 +271,18 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // failures (4xx/5xx), partial content (206), and any response marked
         // `Cache-Control: no-store|no-cache|private` would otherwise become
         // sticky for the TTL and mask recovery from every subsequent caller.
-        // A successful `noCache` fetch still writes through so subsequent
-        // default callers see the refreshed value instead of missing the key.
-        if (keyCacheable && fetchCache !== undefined && isCacheableResponse(fetchResult)) {
-          fetchCache.set(cacheKey, fetchResult);
+        //
+        // Reconciliation for `noCache`: we evict a pre-existing entry *only*
+        // once the live request reaches origin and returns a non-cacheable
+        // response — that's evidence the old value is stale. Transport
+        // errors/aborts never reach this block, so the prior entry stays as
+        // a last-known-good fallback.
+        if (keyCacheable && fetchCache !== undefined) {
+          if (isCacheableResponse(fetchResult)) {
+            fetchCache.set(cacheKey, fetchResult);
+          } else if (noCache) {
+            fetchCache.delete(cacheKey);
+          }
         }
 
         return { ok: true, value: fetchResult };

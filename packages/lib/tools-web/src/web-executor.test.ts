@@ -881,32 +881,54 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
-  test("failed noCache fetch evicts the prior entry (no stale fallback)", async () => {
-    // If the caller forces a live fetch and the origin fails, handing back
-    // the known-stale cached value would defeat the whole point. The prior
-    // entry must be gone so the next default caller hits the origin again.
+  test("noCache with non-cacheable response evicts the prior entry (known-stale)", async () => {
+    // If the caller forces a live fetch and origin returns something we
+    // can't cache (transient 5xx, 206, no-store), the prior entry is now
+    // known-stale. Evict so the next default caller hits origin again.
     let callCount = 0;
     const fetchFn = mock(async () => {
       callCount++;
-      // First call: 200 (primes cache). noCache call: 500 (not cacheable).
-      // Follow-up default call: 200 (fresh). Cache must have been evicted
-      // so follow-up is a miss, not a replay of the original "old".
-      const primed = callCount === 1;
-      return new Response(primed ? "old" : callCount === 2 ? "err" : "new", {
-        status: callCount === 2 ? 500 : 200,
-      });
+      if (callCount === 1) return new Response("old", { status: 200 });
+      if (callCount === 2) return new Response("err", { status: 500 });
+      return new Response("new", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
 
-    await executor.fetch("https://example.com"); // prime "old"
-    await executor.fetch("https://example.com", { noCache: true }); // 500 — evicts
+    await executor.fetch("https://example.com");
+    await executor.fetch("https://example.com", { noCache: true }); // 500 → evicts
     const followUp = await executor.fetch("https://example.com"); // must hit origin
 
     expect(callCount).toBe(3);
     if (followUp.ok) {
       expect(followUp.value.body).toBe("new");
       expect(followUp.value.cached).toBe(false);
+    }
+  });
+
+  test("noCache that aborts before reaching origin preserves prior entry", async () => {
+    // Regression for #1903 review round 3: a forced-fresh request that
+    // never makes it to the origin (caller abort, transport error, SSRF
+    // rejection) must not evict the last-known-good cached response.
+    let callCount = 0;
+    const fetchFn = mock(async () => {
+      callCount++;
+      if (callCount === 1) return new Response("good", { status: 200 });
+      // Subsequent attempts "fail" before returning a response.
+      throw new Error("network down");
+    }) as unknown as typeof globalThis.fetch;
+
+    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
+
+    await executor.fetch("https://example.com"); // prime "good"
+    const forced = await executor.fetch("https://example.com", { noCache: true });
+    expect(forced.ok).toBe(false);
+
+    const followUp = await executor.fetch("https://example.com");
+    if (followUp.ok) {
+      // Prior entry survived the failed refresh — still served from cache.
+      expect(followUp.value.body).toBe("good");
+      expect(followUp.value.cached).toBe(true);
     }
   });
 });
