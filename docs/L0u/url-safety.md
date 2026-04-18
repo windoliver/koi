@@ -35,7 +35,7 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | Field | Default | Purpose |
 |-------|---------|---------|
 | `allowPrivate` | `false` | Skip private IP and blocked-host checks. For tests and local dev only. Protocol allowlist still applies. |
-| `allowlistHosts` | — | Per-hostname bypass of `BLOCKED_HOSTS` and `isBlockedIp`. Takes precedence; DNS resolution is skipped for allowlisted hosts. |
+| `allowlistHosts` | — | Per-hostname bypass of `BLOCKED_HOSTS` and `isBlockedIp`. Takes precedence; DNS resolution is skipped for allowlisted hosts. A successful allowlist hit returns `resolvedIps: []` (empty array) — callers consuming `resolvedIps` on an OK result should account for this. |
 | `allowedProtocols` | `["http:", "https:"]` | Protocol allowlist. Set to `["https:"]` for HTTPS-only clients. |
 | `dnsResolver` | `dns.lookup` with `{ all: true }` | Injectable resolver for tests. Must return every A/AAAA record — returning a single record defeats DNS rebinding protection. |
 | `maxRedirects` (fetcher only) | `5` | Maximum redirect hops before throwing `url-safety: exceeded N redirects`. |
@@ -61,6 +61,7 @@ type DnsResolver = (hostname: string) => Promise<readonly string[]>;
 | `203.0.113.0/24` | TEST-NET-3 (RFC5737) |
 | `224.0.0.0/4` | Multicast |
 | `240.0.0.0/4` | Reserved for future use; covers broadcast (`255.255.255.255`) |
+| `255.255.255.255/32` | Limited broadcast (RFC919) — listed separately in `BLOCKED_CIDR_RANGES` even though `240.0.0.0/4` covers it mathematically |
 
 ### IPv6 blocked ranges
 
@@ -87,7 +88,7 @@ The full machine-readable list is exported as `BLOCKED_CIDR_RANGES` in `blocked.
 `isSafeUrl` runs these checks in order, short-circuiting on the first failure:
 
 1. **Parse** — `new URL(url)`. Any parse error → `ok: false`.
-2. **Protocol** — hostname must be in `allowedProtocols`. Default: `http:`, `https:`.
+2. **Protocol** — the URL's protocol must be in `allowedProtocols`. Default: `http:`, `https:`.
 3. **Hostname lowercased** — normalises before all subsequent checks.
 4. **Allowlist** — if `allowlistHosts` contains the bare hostname, return `ok: true` immediately (no DNS).
 5. **Blocked-hosts** — if `BLOCKED_HOSTS` contains the hostname, return `ok: false` (skipped when `allowPrivate`).
