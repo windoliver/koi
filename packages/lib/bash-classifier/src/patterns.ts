@@ -121,10 +121,10 @@ const CODE_EXEC: readonly DangerousPattern[] = [
   },
   {
     id: "shell-dash-c",
-    regex: /\b(?:ba|z)?sh\b\s+-c\b/,
+    regex: /\b(?:ba|z|da|a)?sh\b\s+-[a-zA-Z]*c\b/,
     category: "code-exec",
     severity: "medium",
-    message: "sh/bash/zsh -c executes an arbitrary command string",
+    message: "sh/bash/zsh/dash/ash -c executes an arbitrary command string",
     commandPrefixes: ["sh", "bash", "zsh", "dash", "ash"],
   },
   {
@@ -200,12 +200,14 @@ const MODULE_LOAD: readonly DangerousPattern[] = [
 
 const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
   {
+    // Covers `sudo`, `sudoedit`, `sudoreplay`, and other sudo-family
+    // entrypoints that cross the privilege boundary.
     id: "sudo",
-    regex: /\bsudo\b/,
+    regex: /\bsudo\w*\b/,
     category: "privilege-escalation",
     severity: "medium",
-    message: "sudo executes commands with elevated privileges",
-    commandPrefixes: ["sudo"],
+    message: "sudo (or sudoedit/sudoreplay) executes with elevated privileges",
+    commandPrefixes: ["sudo", "sudoedit", "sudoreplay"],
   },
   {
     // Bare `su` is still a privilege-boundary crossing (interactive

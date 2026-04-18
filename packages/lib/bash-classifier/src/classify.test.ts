@@ -162,6 +162,27 @@ describe("classifyCommand", () => {
     expect(classifyCommand(`bun --eval "Bun.spawn(['sudo'])"`).severity).toBe("high");
   });
 
+  test("dash/ash -c match shell-dash-c pattern (loop-8)", () => {
+    // dash and ash are full POSIX shells on BusyBox/Alpine. Their -c
+    // form is an arbitrary-string-eval hop just like bash -c and must
+    // ratchet through approval under broad bash allows.
+    expect(classifyCommand(`dash -c "sudo rm"`).severity).toBe("medium");
+    expect(classifyCommand(`ash -c "rm -rf /tmp"`).severity).toBe("medium");
+    expect(classifyCommand(`/bin/dash -c "foo"`).severity).toBe("medium");
+    // Composite -lc / -ic flags variant.
+    expect(classifyCommand(`dash -lc "sudo"`).severity).toBe("medium");
+  });
+
+  test("sudoedit / sudoreplay are privilege-escalation matches (loop-8)", () => {
+    // `sudoedit` is a root-write entrypoint; `sudoreplay` replays
+    // recorded sudo sessions (audit-trust boundary). Both cross the
+    // sudo trust boundary and must ratchet.
+    expect(classifyCommand(`sudoedit /etc/sudoers`).severity).toBe("medium");
+    expect(classifyCommand(`sudoedit /root/.ssh/authorized_keys`).severity).toBe("medium");
+    expect(classifyCommand(`sudoreplay user-session`).severity).toBe("medium");
+    expect(classifyCommand(`env sudoedit /etc/passwd`).severity).toBe("medium");
+  });
+
   test("bare `su` is a privilege-escalation match (loop-7)", () => {
     // `su` alone with no args is still an interactive privilege
     // crossing. The earlier regex required ` -` or ` <user>` after
