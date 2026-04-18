@@ -43,6 +43,28 @@ export function handleSelectOverlayKey(
   return false;
 }
 
+/**
+ * Same as `handleSelectOverlayKey`, but also calls `key.preventDefault()`
+ * when the key is consumed so Enter/Esc/arrows can't leak into a sibling
+ * textarea's buffer (e.g. InputArea's underlying OpenTUI <textarea>). Every
+ * `useKeyboard` callback that owns a focused overlay must route keys through
+ * this wrapper — the preventDefault invariant lives in one unit-testable
+ * place instead of being copy-pasted into each component.
+ */
+export function consumeSelectOverlayKey(
+  key: KeyEvent,
+  callbacks: {
+    readonly onClose: () => void;
+    readonly onSelect?: (() => void) | undefined;
+    readonly onMoveUp?: (() => void) | undefined;
+    readonly onMoveDown?: (() => void) | undefined;
+  },
+): boolean {
+  const consumed = handleSelectOverlayKey(key, callbacks);
+  if (consumed) key.preventDefault();
+  return consumed;
+}
+
 // ---------------------------------------------------------------------------
 // Scrollable list primitive
 // ---------------------------------------------------------------------------

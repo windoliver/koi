@@ -32,6 +32,12 @@ export CAPTURE_FILE="/tmp/koi-capture-${NAMESPACE}.txt"
 export HOOK_LOG="/tmp/koi-hook-log-${NAMESPACE}.txt"
 export KOI_HOME="/tmp/koi-home-${NAMESPACE}"
 mkdir -p "$KOI_HOME/.koi/sessions" "$KOI_HOME/.config/nexus-fs"
+
+# Expose operator-chosen tools (bun, node, etc.) to the Bash tool.
+# Faking HOME disables home-derived PATH detection for security reasons
+# (see packages/lib/tools-bash/src/exec.ts). KOI_BASH_EXTRA_PATH restores
+# the specific absolute dirs the Bash tool needs. Colon-separated.
+export KOI_BASH_EXTRA_PATH="$HOME/.bun/bin:/opt/homebrew/bin"
 ```
 
 ### 1.3 TUI Configuration
@@ -62,7 +68,7 @@ MCP servers configured via `.mcp.json` at project root or `~/.koi/.mcp.json`:
 
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 tmux capture-pane -t "$KOI_SESSION" -p | tail -30
 ```
@@ -75,7 +81,7 @@ tmux kill-session -t "$KOI_SESSION" 2>/dev/null
 rm -rf "$KOI_HOME/.koi/sessions" "$KOI_HOME/.koi/memory"
 mkdir -p "$KOI_HOME/.koi/sessions"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 sleep 2
 ```
 
@@ -619,7 +625,7 @@ const reportHandle = createReportMiddleware({
 **Setup**: launch TUI with goals.
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
    --goal 'Write unit tests for the math module' \
    --goal 'Ensure 100% test coverage'"
 ```
@@ -646,7 +652,7 @@ export KOI_FALLBACK_MODEL="anthropic/claude-3-haiku"
 # OR multiple fallbacks:
 export KOI_FALLBACK_MODEL="anthropic/claude-3-haiku,google/gemini-2.0-flash"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
@@ -673,7 +679,7 @@ export KOI_OTEL_ENABLED=true
 # Optional: set OTEL_TRACES_EXPORTER=console for stderr output
 # Or configure OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 for Jaeger/Zipkin
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |
@@ -702,7 +708,7 @@ git -C "$FIXTURE" add -A && git -C "$FIXTURE" commit -q -m "add broken test"
 
 ```bash
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui \
    --until-pass bun --until-pass test --max-iter 3 --allow-side-effects"
 ```
 
@@ -735,7 +741,7 @@ const memoryBackend = process.env.KOI_MEMORY_DIR
 export KOI_MEMORY_DIR="$KOI_HOME/.koi/memory"
 mkdir -p "$KOI_MEMORY_DIR"
 tmux new-session -d -s "$KOI_SESSION" \
-  "cd '$FIXTURE' && HOME='$KOI_HOME' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
+  "cd '$FIXTURE' && HOME='$KOI_HOME' KOI_BASH_EXTRA_PATH='$KOI_BASH_EXTRA_PATH' bun run '$REPO_ROOT/packages/meta/cli/src/bin.ts' tui"
 ```
 
 | Q | Prompt / Action | Tools Expected | Pass Criteria |

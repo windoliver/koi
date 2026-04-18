@@ -232,6 +232,25 @@ export interface KoiRuntimeConfig {
    */
   readonly permissionsDescription?: string | undefined;
   /**
+   * When `true`, the Bash AST-walker's `elicit` fallback auto-allows
+   * every prompt instead of going through the approval handler. The
+   * TUI passes this when `--yolo` is active so the TTP-classifier
+   * path does not re-prompt for commands the walker cannot parse
+   * (e.g. `cmd && cmd 2>&1` lists with redirects). Defaults to `false`.
+   */
+  readonly bashElicitAutoApprove?: boolean | undefined;
+  /**
+   * Default per-submit wall-clock cap in ms. When omitted the factory
+   * uses 1_800_000 (30 min) — matches the interactive TUI posture.
+   * Non-interactive hosts (`koi start`) pass a tighter value (300_000
+   * / 5 min) so a runaway active loop has a smaller blast radius.
+   *
+   * Always overridable via `KOI_MAX_DURATION_MS` env var. Use `0` in
+   * the env var to disable the cap entirely (clamped to setTimeout's
+   * int32 max, ~24.8 days).
+   */
+  readonly defaultMaxDurationMs?: number | undefined;
+  /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
    * and non-interactive callers). The TUI passes `TUI_APPROVAL_TIMEOUT_MS`
@@ -800,6 +819,52 @@ async function setupConfigHotReload(): Promise<ConfigHotReloadHandle | undefined
  * If you add a new caller, pass both fields explicitly and document
  * the chosen posture.
  */
+const DEFAULT_MAX_DURATION_MS = 1_800_000;
+/** Track the last invalid KOI_MAX_DURATION_MS we warned about so we
+ * don't spam the console across hot-reload / repeated factory calls. */
+// let justified: module-scoped memo for the diagnostic emitter.
+let lastWarnedInvalidEnv: string | undefined;
+// Node's setTimeout clamps delays above 2^31-1 to 1ms (emits
+// TimeoutOverflowWarning). The iteration guard passes `maxDurationMs`
+// directly into setTimeout, so any "effectively unlimited" sentinel
+// must stay within int32 range. 2^31-1 ms ≈ 24.8 days — well beyond
+// any realistic turn duration.
+const MAX_SETTIMEOUT_SAFE_MS = 2_147_483_647;
+
+// Strict unsigned-integer form. Rejects zero-equivalent aliases like
+// `"00"`, `"+0"`, `"-0"`, `"0.0"`, `"0e0"` — all of which Number()
+// coerces to 0 and would otherwise flip the cap off via the
+// `n === 0` branch.
+const UNSIGNED_INT_RE = /^(0|[1-9]\d*)$/;
+
+/** @internal — exported for unit tests only; not part of the public API. */
+export function resolveMaxDurationMs(hostDefault?: number): number {
+  const fallback = hostDefault ?? DEFAULT_MAX_DURATION_MS;
+  const raw = process.env.KOI_MAX_DURATION_MS;
+  if (raw === undefined) return fallback;
+  const trimmed = raw.trim();
+  // Strict parse: `Number("")` returns 0 and Number("00") also returns 0,
+  // either of which would flip the cap off silently. Require the raw
+  // string to match an unsigned decimal integer before trusting it.
+  if (!UNSIGNED_INT_RE.test(trimmed)) {
+    // Diagnostic: operator-supplied but unparseable. Warn once per
+    // distinct raw value so mistakes are visible without log spam.
+    if (lastWarnedInvalidEnv !== raw) {
+      lastWarnedInvalidEnv = raw;
+      // biome-ignore lint/suspicious/noConsole: operator-visible startup diagnostic.
+      console.warn(
+        `[koi] ignoring KOI_MAX_DURATION_MS=${JSON.stringify(raw)}: ` +
+          "expected an unsigned decimal integer (ms) or '0' to disable. " +
+          `Using default ${fallback}ms.`,
+      );
+    }
+    return fallback;
+  }
+  if (trimmed === "0") return MAX_SETTIMEOUT_SAFE_MS;
+  const n = Number(trimmed);
+  return Math.min(n, MAX_SETTIMEOUT_SAFE_MS);
+}
+
 export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRuntimeHandle> {
   const { modelAdapter, modelName, approvalHandler, cwd = process.cwd(), skillsRuntime } = config;
   // Stable host identifier — used as the persistentAgentId for permissions,
@@ -985,6 +1050,7 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // the task surface is vestigial and would only create
     // detector false-positive exposure.
     taskBoardTools: spawnStackActive,
+    ...(config.bashElicitAutoApprove === true ? { bashElicitAutoApprove: true } : {}),
     ...(config.onSpawnEvent !== undefined ? { onSpawnEvent: config.onSpawnEvent } : {}),
   };
   const earlyContext: import("./preset-stacks.js").StackActivationContext = {
@@ -1893,16 +1959,43 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       // a host wires real token pricing, also set `cost.maxCostUsd` here
       // for a stricter dollar-denominated cap.
       resetIterationBudgetPerRun: true,
-      governance: {
-        iteration: {
-          // Per-iteration UX budgets (reset on every run via
-          // resetIterationBudgetPerRun above):
-          maxTurns: 25, // matches DEFAULT_GOVERNANCE_CONFIG
-          maxDurationMs: 300_000, // 5 min per submit
-          // Cumulative spend ceiling (NOT reset by iteration_reset):
-          maxTokens: 1_000_000,
-        },
-      },
+      // The iteration guard (wired by the default guard extension) and
+      // the governance controller are separate enforcement paths. Both
+      // must see the same resolved duration or the tighter of the two
+      // wins — e.g. the guard's 5-min default would fire before the
+      // 30-min governance cap. Thread the resolved values into `limits`
+      // (guard) as well as `governance.iteration` (controller).
+      ...(() => {
+        const resolvedDuration = resolveMaxDurationMs(config.defaultMaxDurationMs);
+        // Pin `maxInactivityMs` to the resolved duration in all hosts
+        // so the two enforcement paths (wall-clock, inactivity) share
+        // one contract. Leaving inactivity at the engine's 5-min
+        // default made quiet model-think phases trip TIMEOUT well
+        // before the advertised cap. For `koi start` the resolved
+        // duration is 5 min anyway (via `defaultMaxDurationMs`), so
+        // this match is a no-op; for the interactive TUI it extends
+        // inactivity to 30 min, which is the intended posture.
+        return {
+          limits: {
+            maxTurns: 25,
+            maxDurationMs: resolvedDuration,
+            maxInactivityMs: resolvedDuration,
+            maxTokens: 1_000_000,
+          },
+          governance: {
+            iteration: {
+              maxTurns: 25,
+              // Per-submit wall-clock cap. TUI default 30 min; `koi start`
+              // default 5 min (via `defaultMaxDurationMs`). Override with
+              // KOI_MAX_DURATION_MS env var (e.g. `KOI_MAX_DURATION_MS=3600000`
+              // for 1h, or `0` to disable the cap entirely).
+              maxDurationMs: resolvedDuration,
+              maxInactivityMs: resolvedDuration,
+              maxTokens: 1_000_000,
+            },
+          },
+        };
+      })(),
     });
     // Hand the live runtime to the rotation closure above. The
     // engine never invokes `rotateSessionId` during construction

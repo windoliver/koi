@@ -69,7 +69,7 @@ function groupByTurn(steps: readonly TrajectoryStepSummary[]): readonly TurnGrou
     .map(([turnIndex, groupSteps]) => ({ turnIndex, steps: groupSteps }));
 }
 
-function computeTurnSummary(group: TurnGroup): TurnSummary {
+function computeTurnSummary(group: TurnGroup, displayIndex: number): TurnSummary {
   let totalMs = 0;
   let tokensIn = 0;
   let tokensOut = 0;
@@ -81,7 +81,12 @@ function computeTurnSummary(group: TurnGroup): TurnSummary {
     if (step.tokens?.completionTokens !== undefined) { tokensOut += step.tokens.completionTokens; hasTokens = true; }
     if (step.outcome === "failure") hasFailure = true;
   }
-  const label = group.turnIndex === 0 ? "Setup" : `Turn ${group.turnIndex}`;
+  // Raw turnIndex from the engine reflects adapter-internal turn IDs (may jump
+  // by the number of intervening sub-cycles). For the user-facing label we
+  // renumber sequentially: turnIndex === 0 stays "Setup", the rest become
+  // "Turn 1".."Turn N" in sort order. Raw index is preserved in `turnIndex`
+  // for callers that need to correlate with engine events.
+  const label = group.turnIndex === 0 ? "Setup" : `Turn ${displayIndex}`;
   return {
     turnIndex: group.turnIndex,
     label,
@@ -102,6 +107,19 @@ function formatDuration(ms: number | undefined): string {
   const rounded = Math.round(ms);
   if (rounded < 1000) return `${String(rounded).padStart(4)}ms`;
   return `${(rounded / 1000).toFixed(1).padStart(5)}s`;
+}
+
+/**
+ * Format step duration for the trajectory row.
+ *
+ * Middleware spans wrap the downstream chain (model/tool + other middleware),
+ * so their recorded durationMs is wall-clock span extent — not own CPU time.
+ * Prefix with `~` so users don't read "8.5s" as "this middleware burned 8.5s
+ * of CPU" when the downstream model was already 8.3s of that.
+ */
+function formatStepDuration(step: TrajectoryStepSummary): string {
+  const raw = formatDuration(step.durationMs);
+  return step.middlewareSpan !== undefined ? `~${raw.trimStart()}` : raw;
 }
 
 function outcomeColor(outcome: string | undefined): string {
@@ -273,7 +291,7 @@ function StepRow(props: {
         <text fg={props.isSelected() ? COLORS.white : COLORS.dim}>
           {props.step.identifier.slice(0, 36).padEnd(36)}
         </text>
-        <text fg={COLORS.dim}>{formatDuration(props.step.durationMs)}</text>
+        <text fg={COLORS.dim}>{formatStepDuration(props.step)}</text>
         <Show when={formatTokens(props.step)}>
           {(tok: () => string) => <text fg={COLORS.dim}>{` ${tok()}`}</text>}
         </Show>
@@ -377,11 +395,22 @@ export function TrajectoryView(): JSX.Element {
 
   // Flat list: turn headers interleaved with step rows for expanded turns.
   // Synthetic koi:tui_turn_start boundary steps are hidden — they're bookkeeping only.
+  //
+  // Turn display labels are renumbered sequentially (1..N) at render time.
+  // The raw `turnIndex` from engine events reflects adapter-internal sub-cycle
+  // counters and can jump non-monotonically (seen: 14, 29, 45, ...). Users
+  // expect Turn 1, 2, 3 for their prompts; counter goes up as `Setup` →
+  // `Turn 1` → `Turn 2` regardless of engine-side gaps.
   const flatItems = createMemo((): readonly FlatItem[] => {
     const result: FlatItem[] = [];
+    let displayCounter = 0;
     for (const group of turns()) {
       const visibleSteps = group.steps.filter((s) => s.identifier !== "koi:tui_turn_start");
-      result.push({ kind: "turn_header", summary: computeTurnSummary({ ...group, steps: visibleSteps }) });
+      if (group.turnIndex !== 0) displayCounter += 1;
+      result.push({
+        kind: "turn_header",
+        summary: computeTurnSummary({ ...group, steps: visibleSteps }, displayCounter),
+      });
       if (expandedTurns().has(group.turnIndex)) {
         for (const step of visibleSteps) {
           result.push({ kind: "step", step });

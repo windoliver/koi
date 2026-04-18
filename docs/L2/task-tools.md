@@ -238,3 +238,12 @@ instead of `task.updatedAt` alone. The new `startedAt` field is set by the board
 `pending → in_progress` transition and is NOT bumped by `update()` patches, so an
 `activeForm` mid-run patch no longer silently shortens the reported run duration.
 Backfilled for snapshots loaded from pre-field-existence versions.
+
+### Descriptor "use PROACTIVELY" guidance (phase-2 DX)
+
+`task_create`, `task_update`, and `task_list` descriptor text now
+explicitly instructs the agent to plan multi-step work with the
+task board without requiring an explicit user ask. Matches the CC
+`TodoWrite` parity tier: "use PROACTIVELY when..." / "Do NOT use
+when...". See `packages/lib/task-tools/src/tools/task-create.ts`,
+`task-update.ts`, `task-list.ts` for the current copy.
