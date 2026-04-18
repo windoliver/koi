@@ -78,11 +78,8 @@ function createGovernanceGuard(
 
       try {
         const response = await next(request);
-        // Spawn concurrency is tracked by the SpawnLedger in spawn-child.ts
-        // (acquire on spawn, release on child termination). No governance record
-        // needed here — recording { kind: "spawn" } without a corresponding
-        // spawn_release would make the counter monotonically increasing, turning
-        // maxFanOut into "max total spawns ever" instead of "max concurrent children".
+        // Spawn / spawn_release are recorded directly in spawn-child.ts against
+        // the parent's GovernanceController (paired with ledger acquire / release).
         await controller.record({ kind: "tool_success", toolName: request.toolId });
         return response;
       } catch (e: unknown) {
