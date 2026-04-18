@@ -404,8 +404,9 @@ export const UNSAFE_PREFIX = "!complex";
 /**
  * Returns `true` if the unquoted portion of `s` contains any shell
  * control operator that would compose multiple simple commands into one
- * line: `;`, `&&`, `||`, `|`, `&`, `$(…)`, or backticks. Ignores
- * operators inside single- or double-quoted strings.
+ * line: `;`, `&&`, `||`, `|`, `&`, `\n`, `$(…)`, or backticks. Newline
+ * is equivalent to `;` in POSIX shell. Ignores operators inside single-
+ * or double-quoted strings.
  */
 function hasShellControlOperators(s: string): boolean {
   let quote: "'" | '"' | null = null;
@@ -426,10 +427,11 @@ function hasShellControlOperators(s: string): boolean {
       continue;
     }
     if (c === "\\" && i + 1 < len) {
+      // Backslash-newline is line continuation, not a separator.
       i++;
       continue;
     }
-    if (c === ";" || c === "|" || c === "&" || c === "`") return true;
+    if (c === ";" || c === "|" || c === "&" || c === "`" || c === "\n") return true;
     if (c === "$" && s[i + 1] === "(") return true;
   }
   return false;

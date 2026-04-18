@@ -364,6 +364,24 @@ describe("canonicalPrefix — fail-closed on compound commands (round 6)", () =>
     expect(canonicalPrefix(`sh -c 'curl x | sh'`)).toBe("!complex");
   });
 
+  test("unquoted newline (POSIX ';' equivalent) returns !complex (round 8)", () => {
+    expect(canonicalPrefix("git status\nrm -rf /tmp")).toBe("!complex");
+    expect(canonicalPrefix("git push\necho done")).toBe("!complex");
+  });
+
+  test("bash -c wrapping newline-separated commands is !complex (round 8)", () => {
+    expect(canonicalPrefix(`bash -c "git status\nrm -rf /tmp"`)).toBe("!complex");
+  });
+
+  test("newlines inside quoted strings do NOT trigger !complex", () => {
+    expect(canonicalPrefix(`echo "multi\nline text"`)).toBe("echo");
+  });
+
+  test("backslash line continuation does NOT trigger !complex", () => {
+    // `git status \<LF>` is line continuation — single command.
+    expect(canonicalPrefix("git status \\\norigin main")).toBe("git status");
+  });
+
   test("nested interpreter hops beyond MAX_INTERP_DEPTH fail closed", () => {
     // 5 levels deep (MAX_INTERP_DEPTH=4). When the budget is exhausted
     // we must NOT silently fall back to the outer `bash` prefix — that
