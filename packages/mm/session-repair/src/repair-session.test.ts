@@ -353,7 +353,28 @@ describe("repairSession — interrupt repair", () => {
       msg("assistant", "we decided X"),
     ];
     const result = repairSession(messages);
-    const interruptIssues = result.issues.filter((i) => i.description.includes("consecutive user"));
+    const interruptIssues = result.issues.filter((i) => i.phase === "interrupt");
+    expect(interruptIssues.length).toBe(0);
+    expect(result.messages).toBe(messages);
+  });
+
+  test("does NOT fire between a resumed system-role entry and a real user turn", () => {
+    // Resumed system-role entries come through as senderId:"user" with
+    // metadata.resumedSystemRole=true (engine-injected context from a
+    // prior session, e.g. system:capabilities). They must not be
+    // rewritten as an interrupt.
+    const messages: readonly InboundMessage[] = [
+      {
+        senderId: "user",
+        content: [{ kind: "text", text: "[Restored system context]" }],
+        timestamp: 0,
+        metadata: { resumedSystemRole: true },
+      },
+      msg("user", "what can you do?"),
+      msg("assistant", "a lot"),
+    ];
+    const result = repairSession(messages);
+    const interruptIssues = result.issues.filter((i) => i.phase === "interrupt");
     expect(interruptIssues.length).toBe(0);
     expect(result.messages).toBe(messages);
   });
@@ -410,10 +431,10 @@ describe("repairSession — phase interactions", () => {
     const result = repairSession(messages);
 
     const dedupIssues = result.issues.filter((i) => i.phase === "dedup");
-    const orphanIssues = result.issues.filter((i) => i.phase === "orphan-tool");
+    const interruptIssues = result.issues.filter((i) => i.phase === "interrupt");
     expect(dedupIssues.length).toBe(0);
     // Two user→user gaps → two synthetic assistants inserted.
-    expect(orphanIssues.length).toBe(2);
+    expect(interruptIssues.length).toBe(2);
     expect(result.messages.map((m) => m.senderId)).toEqual([
       "user",
       "assistant",

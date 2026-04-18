@@ -50,20 +50,22 @@ export function needsRepair(messages: readonly InboundMessage[]): boolean {
       }
     }
 
-    // Two consecutive non-pinned, non-synthetic user messages →
-    // interrupt repair needed, regardless of content. Identical
-    // user retries ("continue" + "continue" after ESC) also need
-    // the synthetic-assistant separator — dedup no longer collapses
-    // them. Synthetic user messages (compaction summaries from
-    // resume) must not trigger interrupt repair; see
-    // `repairInterrupts` for the rationale.
+    // Two consecutive non-pinned, non-synthetic, non-resumed-system
+    // user messages → interrupt repair needed, regardless of content.
+    // Identical user retries ("continue" + "continue" after ESC) also
+    // need the synthetic-assistant separator — dedup no longer
+    // collapses them. Synthetic and resumed-system user messages
+    // (compaction summaries / restored system entries) must not
+    // trigger interrupt repair; see `repairInterrupts` for rationale.
     if (
       prev.senderId === "user" &&
       curr.senderId === "user" &&
       prev.pinned !== true &&
       curr.pinned !== true &&
       prev.metadata?.synthetic !== true &&
-      curr.metadata?.synthetic !== true
+      curr.metadata?.synthetic !== true &&
+      prev.metadata?.resumedSystemRole !== true &&
+      curr.metadata?.resumedSystemRole !== true
     ) {
       return true;
     }

@@ -4,7 +4,7 @@
 
 /** Describes a single repair action taken during session repair. */
 export interface RepairIssue {
-  readonly phase: "orphan-tool" | "dedup" | "merge";
+  readonly phase: "orphan-tool" | "dedup" | "merge" | "interrupt";
   readonly description: string;
   readonly index: number;
   readonly action: "removed" | "merged" | "inserted" | "kept";

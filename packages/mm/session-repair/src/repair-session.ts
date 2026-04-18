@@ -106,13 +106,15 @@ function repairInterrupts(
     const curr = messages[i];
     if (curr === undefined) continue;
     const prev = result[result.length - 1];
-    // Only non-pinned, non-synthetic pairs. Pinned user messages are
-    // system-injected context (manifest goals, etc.). Synthetic user
-    // messages are compaction summaries from `resumeFromTranscript`
-    // (metadata.synthetic=true, metadata.compacted=true) — adjacent to
-    // the first real user prompt they look like user/user but are NOT
-    // an interrupted turn; injecting the "fresh request" steer there
-    // would tell the model to ignore the summary it was given.
+    // Only non-pinned, non-synthetic, non-resumed-system pairs. Pinned
+    // user messages are system-injected context (manifest goals, etc.).
+    // Synthetic user messages are compaction summaries from
+    // `resumeFromTranscript` ({synthetic:true, compacted:true}). Resumed
+    // system-role entries come through as `senderId: "user"` with
+    // `metadata.resumedSystemRole === true` — they're engine-injected
+    // context from a prior session (system:capabilities, etc.), not
+    // user submits, and the "fresh request" steer would tell the model
+    // to ignore restored context it legitimately needs.
     if (
       prev !== undefined &&
       prev.senderId === "user" &&
@@ -120,7 +122,9 @@ function repairInterrupts(
       prev.pinned !== true &&
       curr.pinned !== true &&
       prev.metadata?.synthetic !== true &&
-      curr.metadata?.synthetic !== true
+      curr.metadata?.synthetic !== true &&
+      prev.metadata?.resumedSystemRole !== true &&
+      curr.metadata?.resumedSystemRole !== true
     ) {
       const synthetic: InboundMessage = {
         senderId: "assistant",
@@ -137,7 +141,7 @@ function repairInterrupts(
       result.push(synthetic);
       insertedCount++;
       issues.push({
-        phase: "orphan-tool",
+        phase: "interrupt",
         description: `Inserted synthetic assistant between consecutive user messages at index ${String(i)} (likely interrupted turn)`,
         index: i,
         action: "inserted",
