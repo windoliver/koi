@@ -31,7 +31,7 @@ Per-access tiers, not per-skill classification — every skill participates in a
 
 `load(name)` promotes a discovered skill to `SkillDefinition` by reading the full body, resolving includes, and running the security scanner. Results are cached in a bounded LRU (`cacheMaxBodies`, default `Infinity`). On eviction the runtime invokes `onSkillEvicted` so operators can observe cache pressure.
 
-`loadReference(name, refPath)` reads a single file inside the skill's own directory. `refPath` is a relative POSIX path (`scripts/run.sh`, `references/rules.md`). Five guardrails apply — identical in spirit to the Tier 1 gate so a benign SKILL.md cannot defer malicious content to a `references/*.md` file:
+`loadReference(name, refPath)` reads a single file inside the skill's own directory. `refPath` is a relative POSIX path with a supported extension (`references/rules.md`, `scripts/helper.ts`). Five guardrails apply — identical in spirit to the Tier 1 gate so a benign SKILL.md cannot defer malicious content to a `references/*.md` file:
 
 1. **Frontmatter allowlist (asymmetric revoke / expand)** — every surface-able path must be declared in SKILL.md's `references:` list (see below). A Tier 2 read is authorized only if the path appears in **both**:
    - The discovery-time snapshot (frozen until the next successful `discover()`), and
@@ -51,7 +51,7 @@ name: my-skill
 description: Does a thing.
 references:
   - references/rules.md
-  - scripts/run.sh
+  - scripts/helper.ts
 ---
 ```
 

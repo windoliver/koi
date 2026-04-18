@@ -327,6 +327,24 @@ export async function loadReference(
       );
     }
 
+    // Hardlink guard (review #1896 round 8). realpath / path-traversal
+    // checks prove the opened *pathname* is in-tree, but they don't
+    // prove the *inode* was created inside the skill directory. A
+    // malicious skill could hardlink `refs/note.md` to an out-of-tree
+    // file (e.g. `/etc/passwd` on the same filesystem): every path
+    // check still passes, and open() returns a valid fd for the
+    // external inode. Reject any reference whose inode has more than
+    // one path into it — ordinary skill reference files carry
+    // nlink === 1 by construction.
+    if (fst.nlink > 1) {
+      return validationError(
+        name,
+        refPath,
+        `Reference "${refPath}" for skill "${name}" has multiple hardlinks (nlink=${fst.nlink})`,
+        "REFERENCE_HARDLINKED",
+      );
+    }
+
     // Realpath-based boundary check uses the in-tree path that the
     // descriptor was opened against. Because we still hold the open fd,
     // the inode the descriptor points at cannot change under us — a swap

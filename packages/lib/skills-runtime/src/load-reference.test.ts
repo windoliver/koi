@@ -8,7 +8,7 @@
  * - Symlink escape: a file whose real path resolves outside the skill dir is rejected
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createScanner } from "@koi/skill-scanner";
@@ -242,6 +242,24 @@ describe("loadReference — TOCTOU race (review #1896 round 2)", () => {
     if (!result.ok) {
       expect(result.error.code).toBe("VALIDATION");
       expect(result.error.context).toMatchObject({ errorKind: "PATH_TRAVERSAL" });
+    }
+  });
+
+  test("rejects a hardlinked reference that points at an out-of-tree file (review #1896 round 8)", async () => {
+    // Create an out-of-tree target, hardlink it into the skill dir under
+    // an allowed extension, and confirm Tier 2 refuses to serve it even
+    // though every path / realpath / parent-symlink check passes.
+    const dir = join(root, "s");
+    const outside = join(root, "outside-target.md");
+    await Bun.write(outside, "OUT-OF-TREE-SECRET");
+    await Bun.write(join(dir, "refs", ".keep"), "");
+    await link(outside, join(dir, "refs", "hardlink.md"));
+
+    const result = await loadReference("s", dir, "refs/hardlink.md");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("VALIDATION");
+      expect(result.error.context).toMatchObject({ errorKind: "REFERENCE_HARDLINKED" });
     }
   });
 
