@@ -149,6 +149,29 @@ describe("classifyCommand", () => {
     expect(classifyCommand(`printf '%s\\n' 'sudo anything'`).severity).toBeNull();
   });
 
+  test("node/deno/bun --eval, --print, -p long-form aliases match (loop-7)", () => {
+    // -e was the only form caught before. Long-form equivalents
+    // (--eval, --print, short -p on node) are semantically the same
+    // arbitrary-code-exec surface and must also match.
+    expect(classifyCommand(`node --eval "require('fs').readFile('/etc/shadow')"`).severity).toBe(
+      "high",
+    );
+    expect(classifyCommand(`node --print "process.env"`).severity).toBe("high");
+    expect(classifyCommand(`node -p "require('child_process').exec('id')"`).severity).toBe("high");
+    expect(classifyCommand(`deno --eval "Deno.run({cmd:['sudo']})"`).severity).toBe("high");
+    expect(classifyCommand(`bun --eval "Bun.spawn(['sudo'])"`).severity).toBe("high");
+  });
+
+  test("bare `su` is a privilege-escalation match (loop-7)", () => {
+    // `su` alone with no args is still an interactive privilege
+    // crossing. The earlier regex required ` -` or ` <user>` after
+    // and missed the bare form.
+    expect(classifyCommand(`su`).severity).toBe("medium");
+    expect(classifyCommand(`su alice`).severity).toBe("medium");
+    expect(classifyCommand(`su -`).severity).toBe("medium");
+    expect(classifyCommand(`env timeout 5 su`).severity).toBe("medium");
+  });
+
   test("wrapper-prefixed dangerous commands still match (loop-6)", () => {
     // `env sudo rm`, `timeout 30 python -c …`, `command bash -c …`
     // must surface the REAL executable to the commandPrefixes

@@ -156,12 +156,12 @@ const MODULE_LOAD: readonly DangerousPattern[] = [
     commandPrefixes: ["python", "python2", "python3"],
   },
   {
-    // node / deno / bun -e inline string execution.
+    // node / deno / bun -e | --eval / --print inline string execution.
     id: "node-dash-e",
-    regex: /\b(?:node|deno|bun)\b[^#\n]*\s-e\b/,
+    regex: /\b(?:node|deno|bun)\b[^#\n]*\s(?:-e|--eval|--print|-p)\b/,
     category: "module-load",
     severity: "high",
-    message: "node/deno/bun -e evaluates an arbitrary script string",
+    message: "node/deno/bun inline-eval flag evaluates an arbitrary script string",
     commandPrefixes: ["node", "deno", "bun"],
   },
   {
@@ -208,8 +208,12 @@ const PRIVILEGE_ESCALATION: readonly DangerousPattern[] = [
     commandPrefixes: ["sudo"],
   },
   {
+    // Bare `su` is still a privilege-boundary crossing (interactive
+    // switch to root). Match any invocation regardless of args,
+    // since the command head is already scoped to `su` by
+    // commandPrefixes.
     id: "su",
-    regex: /\bsu\s+(?:-|\w)/,
+    regex: /\bsu\b/,
     category: "privilege-escalation",
     severity: "medium",
     message: "su switches to another user account",
