@@ -60,21 +60,24 @@ export interface WebFetchOptions {
   readonly timeoutMs?: number | undefined;
   readonly signal?: AbortSignal | undefined;
   /**
-   * Force-revalidation mode. Skips the cache *read* so the request always
-   * reaches origin, then reconciles the cache entry from the live response:
+   * Force-revalidation mode. Semantics: "do not serve stale, period."
    *
-   * - Cacheable success (200 without `no-store|no-cache|private`):
-   *   overwrites any stale entry so later default callers see the fresh
-   *   content without needing `noCache` themselves.
-   * - Non-cacheable response (e.g. 500, 206, or a cache-forbidding header):
-   *   evicts any prior entry. The origin has spoken and the old value is
-   *   now treated as known-stale.
-   * - Network error / abort / SSRF rejection: the prior entry is left
-   *   intact as a last-known-good fallback — the request never reached
-   *   origin, so we have no basis to invalidate.
+   * Evicts any pre-existing entry for the URL up front (so concurrent
+   * default readers during the refresh RTT miss cache and hit origin
+   * themselves) and issues a live request:
+   *
+   * - Cacheable success (200 within origin's declared freshness budget):
+   *   the new response is written to the cache. Later default callers
+   *   see the fresh content without needing `noCache` themselves.
+   * - Non-cacheable response (e.g. 500, 206, or a cache-forbidding
+   *   header) or any transport failure (network error, abort, SSRF
+   *   rejection): the key is left empty. The call returns the failure
+   *   to the caller; no stale fallback is served here or on the very
+   *   next default fetch. If stale-on-error graceful degradation is
+   *   needed, callers should simply not set `noCache`.
    *
    * Use when verifying a just-changed page or refreshing after a known
-   * update.
+   * update — cases where stale data is worse than no data.
    */
   readonly noCache?: boolean | undefined;
 }
@@ -206,41 +209,21 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         !hasRequestBody &&
         (method === "GET" || method === "HEAD");
 
-      // `noCache` also hides the entry from concurrent default callers
-      // while the refresh is in flight. We snapshot the pre-existing entry
-      // (value + its original expiry) and evict it so any reader arriving
-      // during the network RTT misses cache (and hits origin themselves)
-      // rather than being handed the known-to-be-revalidating value. On
-      // transport failure the snapshot is restored with its *remaining*
-      // lifetime — never a fresh full TTL — so repeated failed refreshes
-      // cannot keep a nearly-expired entry alive indefinitely.
-      let savedValue: WebFetchResult | undefined;
-      let savedExpiresAt = 0;
+      // `noCache` means "do not serve stale, period". We evict any prior
+      // entry up front so concurrent default readers during the refresh
+      // RTT miss cache and hit origin themselves, and — unlike earlier
+      // rounds of this patch — we never restore the snapshot on transport
+      // errors or policy rejections. That's the contract promised to the
+      // tool caller (`web_fetch` doc: "failed response leaves the key
+      // empty — no stale fallback") and the right default for interactive
+      // CLI verification. Callers who want stale-on-error graceful
+      // degradation can simply not set `noCache`.
       if (noCache && keyCacheable && fetchCache !== undefined) {
-        const snapshot = fetchCache.getEntry(cacheKey);
-        if (snapshot !== undefined) {
-          savedValue = snapshot.value;
-          savedExpiresAt = snapshot.expiresAt;
-          fetchCache.delete(cacheKey);
-        }
+        fetchCache.delete(cacheKey);
       } else if (keyCacheable && fetchCache !== undefined) {
         const cached = fetchCache.get(cacheKey);
         if (cached !== undefined) return { ok: true, value: { ...cached, cached: true } };
       }
-
-      const restoreSavedOnFailure = (): void => {
-        if (savedValue === undefined || fetchCache === undefined) return;
-        // Fence against concurrent writers: if another request repopulated
-        // the key (default reader missed cache and fetched origin, or a
-        // peer `noCache` refresh won the race), keep their value. Restoring
-        // our snapshot on top would resurrect stale content over a newer
-        // live response.
-        if (fetchCache.getEntry(cacheKey) !== undefined) return;
-        const remaining = savedExpiresAt - Date.now();
-        // Negative remaining = entry expired while the refresh was in
-        // flight. Do not resurrect it; leave the key empty.
-        if (remaining > 0) fetchCache.set(cacheKey, savedValue, remaining);
-      };
 
       const timeout = Math.min(options?.timeoutMs ?? defaultTimeout, MAX_TIMEOUT_MS);
       const controller = new AbortController();
@@ -250,7 +233,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         if (options?.signal) {
           if (options.signal.aborted) {
             clearTimeout(timer);
-            restoreSavedOnFailure();
             return abortedError();
           }
           options.signal.addEventListener("abort", () => controller.abort(), { once: true });
@@ -259,7 +241,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         // SSRF first pass: fast string-based pattern match before DNS
         if (isBlockedUrl(url)) {
           clearTimeout(timer);
-          restoreSavedOnFailure();
           return permissionError(`Access to private/internal URL blocked: ${url}`);
         }
 
@@ -267,7 +248,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         const dnsResult = await resolveAndValidateUrl(url, dnsResolver ?? defaultDnsResolver);
         if (dnsResult.blocked) {
           clearTimeout(timer);
-          restoreSavedOnFailure();
           return permissionError(`DNS validation blocked: ${dnsResult.reason}`);
         }
 
@@ -288,10 +268,7 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
 
         clearTimeout(timer);
 
-        if (!result.ok) {
-          restoreSavedOnFailure();
-          return result;
-        }
+        if (!result.ok) return result;
 
         const rawBody = await result.value.response.text();
         const truncated = rawBody.length > maxBodyChars;
@@ -334,7 +311,6 @@ export function createWebExecutor(config: WebExecutorConfig): WebExecutor {
         return { ok: true, value: fetchResult };
       } catch (e: unknown) {
         clearTimeout(timer);
-        restoreSavedOnFailure();
         return catchFetchError(url, method, e);
       }
     },

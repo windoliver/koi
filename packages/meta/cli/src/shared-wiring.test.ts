@@ -188,20 +188,26 @@ describe("resolveWebCacheTtlMs", () => {
     expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "0" })).toBe(0);
   });
 
-  test("ignores empty string override (falls back to default)", () => {
+  test("empty string falls back to the default (unset semantics)", () => {
     expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "" })).toBe(60_000);
   });
 
-  test("ignores non-numeric override (falls back to default)", () => {
-    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "abc" })).toBe(60_000);
+  test("throws on non-numeric values (fail loudly, don't mask typos)", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "abc" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
   });
 
-  test("ignores negative override (falls back to default)", () => {
-    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "-1" })).toBe(60_000);
+  test("throws on negative values", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "-1" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
   });
 
-  test("ignores non-integer override (falls back to default)", () => {
-    expect(resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "1.5" })).toBe(60_000);
+  test("throws on non-integer (fractional) values", () => {
+    expect(() => resolveWebCacheTtlMs({ KOI_WEB_CACHE_TTL_MS: "1.5" })).toThrow(
+      /Invalid KOI_WEB_CACHE_TTL_MS/,
+    );
   });
 });
 

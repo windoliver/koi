@@ -906,30 +906,31 @@ describe("createWebExecutor.fetch caching", () => {
     }
   });
 
-  test("noCache that aborts before reaching origin preserves prior entry", async () => {
-    // Regression for #1903 review round 3: a forced-fresh request that
-    // never makes it to the origin (caller abort, transport error, SSRF
-    // rejection) must not evict the last-known-good cached response.
+  test("noCache that fails before reaching origin leaves the key empty (no stale fallback)", async () => {
+    // Regression for #1903 review round 9: `noCache` promises "do not
+    // serve stale, period." A forced-fresh request that fails anywhere
+    // in the pipeline (caller abort, transport error, SSRF rejection)
+    // must return the error AND leave the key empty. Subsequent default
+    // callers must hit origin themselves — they must NOT be silently
+    // served the stale entry the forced-fresh call explicitly rejected.
     let callCount = 0;
     const fetchFn = mock(async () => {
       callCount++;
-      if (callCount === 1) return new Response("good", { status: 200 });
-      // Subsequent attempts "fail" before returning a response.
+      if (callCount === 1) return new Response("old", { status: 200 });
       throw new Error("network down");
     }) as unknown as typeof globalThis.fetch;
 
     const executor = createWebExecutor({ fetchFn, cacheTtlMs: 60_000, ...HTTPS_DEFAULTS });
 
-    await executor.fetch("https://example.com"); // prime "good"
+    await executor.fetch("https://example.com"); // prime "old"
     const forced = await executor.fetch("https://example.com", { noCache: true });
     expect(forced.ok).toBe(false);
 
     const followUp = await executor.fetch("https://example.com");
-    if (followUp.ok) {
-      // Prior entry survived the failed refresh — still served from cache.
-      expect(followUp.value.body).toBe("good");
-      expect(followUp.value.cached).toBe(true);
-    }
+    // Follow-up call must have hit origin (and failed again), not served
+    // the stale "old" value that was explicitly forced out.
+    expect(callCount).toBe(3);
+    expect(followUp.ok).toBe(false);
   });
 
   test("concurrent default reader during noCache refresh does not see stale entry", async () => {
@@ -1201,12 +1202,13 @@ describe("createWebExecutor.fetch caching", () => {
     if (second.ok) expect(second.value.cached).toBe(false);
   });
 
-  test("failed noCache restore does not overwrite a newer concurrent cache write", async () => {
-    // Regression for #1903 review round 6: if a concurrent default reader
-    // populates the cache with fresh content while a `noCache` refresh is
-    // in flight, and the refresh then fails, the snapshot must NOT be
-    // restored on top — that would resurrect stale content over a newer
-    // live response.
+  test("concurrent default writer during noCache refresh is not overwritten on failure", async () => {
+    // If a concurrent default reader fills the cache while the `noCache`
+    // refresh is in flight, and the refresh then fails, the failed
+    // refresh must leave the concurrent reader's fresh entry alone. With
+    // "no stale fallback" semantics this is the easy case — we evict
+    // up front and never restore, so whatever the concurrent writer put
+    // in is simply kept.
     let callCount = 0;
     let signalRefreshStarted: (() => void) | undefined;
     let releaseRefresh: (() => void) | undefined;
@@ -1220,13 +1222,10 @@ describe("createWebExecutor.fetch caching", () => {
       callCount++;
       if (callCount === 1) return new Response("old", { status: 200 });
       if (callCount === 2) {
-        // This is the `noCache` refresh. Let the concurrent writer run,
-        // then throw so the restore path fires.
         signalRefreshStarted?.();
         await refreshHeld;
         throw new Error("network down");
       }
-      // Concurrent default reader — succeeds with "new".
       return new Response("new", { status: 200 });
     }) as unknown as typeof globalThis.fetch;
 
@@ -1236,7 +1235,6 @@ describe("createWebExecutor.fetch caching", () => {
 
     const refreshP = executor.fetch("https://example.com", { noCache: true });
     await refreshStarted;
-    // Concurrent default reader wins the race and populates "new".
     const concurrent = await executor.fetch("https://example.com");
     if (concurrent.ok) expect(concurrent.value.body).toBe("new");
 
@@ -1244,44 +1242,11 @@ describe("createWebExecutor.fetch caching", () => {
     const forced = await refreshP;
     expect(forced.ok).toBe(false);
 
-    // The cache must still hold "new" — the failing refresh must not
-    // have restored the stale "old" on top.
     const followUp = await executor.fetch("https://example.com");
     if (followUp.ok) {
       expect(followUp.value.body).toBe("new");
       expect(followUp.value.cached).toBe(true);
     }
-  });
-
-  test("failed noCache restore preserves original expiry (no TTL extension loop)", async () => {
-    // Regression for #1903 review round 5: a nearly-expired entry must
-    // not be kept alive by repeated failed refresh attempts. Restore the
-    // snapshot with its *remaining* lifetime, never a fresh full TTL.
-    let callCount = 0;
-    const fetchFn = mock(async () => {
-      callCount++;
-      if (callCount === 1) return new Response("almost-stale", { status: 200 });
-      throw new Error("network down");
-    }) as unknown as typeof globalThis.fetch;
-
-    // Short TTL so we can watch the entry expire in real wall-clock time.
-    const executor = createWebExecutor({ fetchFn, cacheTtlMs: 500, ...HTTPS_DEFAULTS });
-
-    await executor.fetch("https://example.com"); // primes, 500ms TTL
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    // Forced refresh fails. With the bug, the snapshot would be restored
-    // with a fresh 500ms TTL — effectively extending total lifetime to
-    // ~800ms. Correct behavior restores only the ~200ms remaining.
-    const forced = await executor.fetch("https://example.com", { noCache: true });
-    expect(forced.ok).toBe(false);
-
-    await new Promise((resolve) => setTimeout(resolve, 350));
-
-    // >500ms after the original prime, before any bug-induced extension —
-    // the entry must already be gone so this call hits origin again.
-    await executor.fetch("https://example.com");
-    expect(callCount).toBeGreaterThanOrEqual(3);
   });
 });
 

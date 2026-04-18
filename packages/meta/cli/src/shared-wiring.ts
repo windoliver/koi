@@ -940,17 +940,32 @@ const DEFAULT_CLI_WEB_CACHE_TTL_MS = 60_000;
  *
  * Reads `KOI_WEB_CACHE_TTL_MS` and accepts any non-negative integer,
  * including `0` (explicit opt-out). Falls back to
- * `DEFAULT_CLI_WEB_CACHE_TTL_MS` when the variable is unset, empty,
- * negative, non-integer, or not a finite number — operators mistyping
- * the override get the safe default rather than a silently disabled cache.
+ * `DEFAULT_CLI_WEB_CACHE_TTL_MS` when the variable is unset or empty.
+ *
+ * **Throws** on malformed values (non-integer, negative, non-numeric).
+ * An operator trying to disable caching during an incident with a typo
+ * deserves a loud startup failure, not a silent 60-second stale-read
+ * window they have to notice by inspecting tool-result `cached` flags.
  *
  * Exported for unit testing; production call sites always pass `process.env`.
  */
 export function resolveWebCacheTtlMs(env: Readonly<Record<string, string | undefined>>): number {
   const raw = env.KOI_WEB_CACHE_TTL_MS;
   if (raw === undefined || raw === "") return DEFAULT_CLI_WEB_CACHE_TTL_MS;
-  const parsed = Number(raw);
-  if (!Number.isInteger(parsed) || parsed < 0) return DEFAULT_CLI_WEB_CACHE_TTL_MS;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid KOI_WEB_CACHE_TTL_MS="${raw}": must be a non-negative integer (milliseconds). ` +
+        `Unset to use the ${DEFAULT_CLI_WEB_CACHE_TTL_MS}ms default, or set to 0 to disable the web_fetch cache.`,
+    );
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(
+      `Invalid KOI_WEB_CACHE_TTL_MS="${raw}": must be a non-negative integer (milliseconds). ` +
+        `Unset to use the ${DEFAULT_CLI_WEB_CACHE_TTL_MS}ms default, or set to 0 to disable the web_fetch cache.`,
+    );
+  }
   return parsed;
 }
 
