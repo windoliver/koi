@@ -79,9 +79,14 @@ export function handleGlobalKey(
     return true;
   }
 
-  // Esc — dismiss modal or navigate back
+  // Esc priority:
+  //   1. agent streaming → interrupt (CC parity: Esc cancels generation)
+  //   2. modal open → dismiss
+  //   3. default → navigate back
   if (isEscape(event)) {
-    if (state.modal !== null) {
+    if (state.agentStatus === "processing") {
+      callbacks.onInterrupt();
+    } else if (state.modal !== null) {
       callbacks.onDismissModal();
     } else {
       callbacks.onBack();

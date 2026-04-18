@@ -635,3 +635,25 @@ The `/trajectory` view now shows MW decision summaries instead of `[ModelStream]
 > **Biome formatting pass (#1636):** No behavioral changes — auto-formatted by biome check --write.
 
 > **Spawn crash guard + record synthesis (#1855):** `set_spawn_terminal` no longer no-ops when no prior `spawn_requested` was recorded — it synthesizes a `finishedSpawns` record from fallback `agentName`/`description` metadata carried on the action. This recovers UI visibility for child agents whose `spawn_requested` dispatch was lost (e.g., `store.dispatch` threw). The `TuiAction` type gains optional `agentName` and `description` fields on `set_spawn_terminal`. Both reducer implementations (immutable `reduce.ts` and mutable `mutations.ts`) handle the synthesis path. The `onSpawnEvent` host callback in `tui-command.ts` is wrapped in try-catch as defense-in-depth.
+
+### Phase-2 DX polish
+
+StatusBar locked to `height: 1` / `flexShrink: 0` so chips can't
+bleed into the header row (fixed a regression where a multi-line
+`fs_write` chip pushed the status chips down over the session
+header).
+
+`tool-display` chip generation now excludes bulky arg keys
+(`content`, `text`, `body`, `old_string`, `new_string`, etc.) and
+caps remaining string values at 40 chars. Prevents header
+corruption from large tool payloads.
+
+`TrajectoryView` turn labels now use a sequential display counter
+instead of the raw iteration index, so labels read "Turn 1/2/3"
+instead of jumping to "Turn 14/29/45" when intermediate middleware
+spans land between turns. Middleware-wrap durations are prefixed
+with `~` to distinguish them from turn durations.
+
+ESC handling now has 3-priority dispatch in `keyboard.ts`: when
+agent status is `processing` ESC interrupts the stream; otherwise
+if a modal is open ESC dismisses it; otherwise ESC navigates back.

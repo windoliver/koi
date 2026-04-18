@@ -637,3 +637,14 @@ The TUI and `koi start` integrate the updated `@koi/permissions` + `@koi/middlew
 - See `docs/L2/permissions.md` for the rule schema, `docs/L2/middleware-permissions.md` for execute-time semantics (per-turn cap, filter-time visibility, `SoftDenyLog` / `DenialRecord` additions), and `docs/L3/runtime.md` for the runtime-layer summary.
 
 The rule loader (`rule-loader.ts`) preserves `on_deny` across every source tier, so operators who add soft rules via config files will see them honored by the CLI.
+
+### Phase-2 DX pass
+
+Rolled up nine DX fixes: StatusBar/TrajectoryView/tool-display TUI
+polish, ESC-to-interrupt in `keyboard.ts`, `--yolo` /
+`--dangerously-skip-permissions` flag (TUI auto-allow all tools +
+Bash AST-walker elicit bypass), host-scoped `defaultMaxDurationMs`
+(TUI=30m, `koi start`=5m) with strict `KOI_MAX_DURATION_MS` parse,
+and task-tools descriptor guidance for autonomous planning. L3
+wiring (integrated L2 set) is unchanged; see `docs/L2/task-tools.md`
+and `docs/L2/tui.md` for the underlying changes.

@@ -80,6 +80,83 @@ function repairOrphans(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 1b: Interrupt repair
+// ---------------------------------------------------------------------------
+
+/**
+ * Insert a synthetic assistant "[Turn interrupted]" marker between
+ * consecutive user messages. This happens when a stream was aborted
+ * (ESC / Ctrl-C / duration cap) before the engine recorded an assistant
+ * reply, so the next user submit lands immediately after the prior one.
+ *
+ * Without this, providers that require strict user/assistant alternation
+ * (Anthropic) reject the request, and providers that don't (OpenAI) silently
+ * merge the two user turns into one prompt so the model hallucinates a
+ * combined intent like "hellocontinue".
+ */
+function repairInterrupts(
+  messages: readonly InboundMessage[],
+  issues: RepairIssue[],
+): readonly InboundMessage[] {
+  if (messages.length < 2) return messages;
+  const result: InboundMessage[] = [];
+  // let justified: mutable per-iteration to scan adjacent pairs
+  let insertedCount = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const curr = messages[i];
+    if (curr === undefined) continue;
+    const prev = result[result.length - 1];
+    // Pinned user messages are system-injected context (manifest goals)
+    // and stacking them is by design — skip them entirely.
+    const pairable =
+      prev !== undefined &&
+      prev.senderId === "user" &&
+      curr.senderId === "user" &&
+      prev.pinned !== true &&
+      curr.pinned !== true;
+    if (pairable) {
+      // Classify the gap:
+      // - "restored-context": either side is engine-restored on resume
+      //   (compaction summary or resumedSystemRole entry). Role
+      //   alternation still needs fixing for providers that enforce it
+      //   (Anthropic), but we MUST NOT tell the model to ignore the
+      //   restored context.
+      // - "interrupt": both sides are real user submits → the prior
+      //   turn was aborted before any reply and the next submit lands
+      //   immediately after. Steer the model to treat the new message
+      //   as a fresh request.
+      const restoredContext =
+        prev.metadata?.synthetic === true ||
+        curr.metadata?.synthetic === true ||
+        prev.metadata?.resumedSystemRole === true ||
+        curr.metadata?.resumedSystemRole === true;
+      const syntheticText = restoredContext
+        ? "[Continuing.]"
+        : "[Previous turn was interrupted before any reply. Respond to the next user message as a fresh request — do not search for hidden context. If the new message is a follow-up referring back to the interrupted turn, you may acknowledge and resume; otherwise just answer it directly.]";
+      const synthetic: InboundMessage = {
+        senderId: "assistant",
+        content: [{ kind: "text", text: syntheticText }],
+        metadata: { synthetic: true, repairPhase: "interrupt" },
+        timestamp: curr.timestamp,
+        ...(curr.threadId !== undefined ? { threadId: curr.threadId } : {}),
+      };
+      result.push(synthetic);
+      insertedCount++;
+      issues.push({
+        phase: "interrupt",
+        description: restoredContext
+          ? `Inserted neutral separator between restored-context and user message at index ${String(i)} (role alternation)`
+          : `Inserted synthetic assistant between consecutive user messages at index ${String(i)} (likely interrupted turn)`,
+        index: i,
+        action: "inserted",
+      });
+    }
+    result.push(curr);
+  }
+  return insertedCount === 0 ? messages : result;
+}
+
+// ---------------------------------------------------------------------------
 // Phase 2: Dedup
 // ---------------------------------------------------------------------------
 
@@ -100,7 +177,14 @@ function dedup(
     const curr = messages[i];
     if (prev === undefined || curr === undefined) continue;
 
-    if (prev.senderId === curr.senderId) {
+    // User messages are never deduplicated. Two consecutive identical
+    // user submits ("continue" → ESC → "continue") are a real retry
+    // pattern, not a replay artifact; collapsing them silently loses
+    // the second turn and leaves interrupted sessions unrecoverable
+    // on the exact-same-input path. Phase 4 (repairInterrupts) handles
+    // the interrupt case by inserting a synthetic assistant between
+    // them instead.
+    if (prev.senderId === curr.senderId && curr.senderId !== "user") {
       // Lazy hashing: only hash when same-senderId adjacency found
       if (lastHash === undefined) {
         lastHash = computeContentHash(prev.content);
@@ -194,10 +278,16 @@ export function repairSession(messages: readonly InboundMessage[]): RepairResult
   // Phase 3: merge
   const afterMerge = merge(afterDedup, issues);
 
+  // Phase 4: interrupt repair — insert synthetic assistant between
+  // remaining consecutive user messages. Runs LAST so dedup/merge have
+  // already collapsed identical or mergeable pairs; anything left is a
+  // genuine user→user gap from an aborted turn.
+  const afterInterrupt = repairInterrupts(afterMerge, issues);
+
   // Zero-allocation fast path: if no issues, return original reference
   if (issues.length === 0) {
     return { messages, issues: [] };
   }
 
-  return { messages: afterMerge, issues };
+  return { messages: afterInterrupt, issues };
 }
