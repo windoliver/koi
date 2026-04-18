@@ -453,6 +453,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
   // this before committing so a stale async completion cannot repopulate
   // state after a reset.
   let runtimeGeneration = 0;
+  // Per-skill generation counters (review #1896 round 12). `invalidate(name)`
+  // bumps the entry for that skill so a concurrent load(name) whose async
+  // work finishes afterward refuses to write its stale body back to the
+  // cache. The runtime-wide `runtimeGeneration` covers reset and external-
+  // refresh, but not targeted invalidation — without this per-skill
+  // counter, `invalidate(name)` had no way to revoke an in-flight load.
+  const skillGeneration = new Map<string, number>();
+  const getSkillGeneration = (n: string): number => skillGeneration.get(n) ?? 0;
   // Projected metadata map cached to preserve reference identity across discover() calls.
   // Rebuilt whenever filesystem or external entries change.
   let discoveredMetaMap: ReadonlyMap<string, SkillMetadata> | undefined;
@@ -767,11 +775,14 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
     const inflight = loadInflight.get(name);
     if (inflight !== undefined) return inflight;
 
-    // Snapshot the runtime generation so we can suppress cache writes
-    // from load() calls whose async work finishes after a concurrent
-    // invalidate()/registerExternal() reset — review #1896 round 11.
+    // Snapshot the runtime + per-skill generation so we can suppress cache
+    // writes from load() calls whose async work finishes after a concurrent
+    // invalidate() / invalidate(name) / registerExternal() — review #1896
+    // rounds 11 and 12.
     const loadStartGeneration = runtimeGeneration;
-    const shouldCommit = (): boolean => runtimeGeneration === loadStartGeneration;
+    const loadStartSkillGen = getSkillGeneration(name);
+    const shouldCommit = (): boolean =>
+      runtimeGeneration === loadStartGeneration && getSkillGeneration(name) === loadStartSkillGen;
 
     // 3. Create the load promise and register it synchronously before any await.
     //    This closes the race window: any concurrent caller arriving after this
@@ -978,6 +989,11 @@ export function createSkillsRuntime(config?: SkillsRuntimeConfig): SkillsRuntime
       // untouched. We assign a fresh per-name generation so an in-flight
       // rescan's commit step can detect re-invalidations that raced with
       // its async window.
+      // Bump the per-skill generation (review #1896 round 12). Any load()
+      // that started before this call and finishes afterward will see the
+      // mismatch via shouldCommit() and refuse to write its stale body
+      // back into the cache.
+      skillGeneration.set(name, getSkillGeneration(name) + 1);
       cache.delete(name);
       loadInflight.delete(name);
       if (blockedEntry.has(name)) {

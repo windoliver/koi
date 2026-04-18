@@ -99,6 +99,35 @@ describe("progressive disclosure — telemetry", () => {
     // fresh load path, not a pre-reset cache hit.
   });
 
+  test("in-flight load() cannot repopulate cache after invalidate(name) (review #1896 round 12)", async () => {
+    // Targeted invalidation: start load("narrow"), immediately invalidate
+    // that specific skill, then verify the in-flight promise did NOT
+    // leak into the cache. Unrelated skills should be unaffected.
+    await writeSkill(userRoot, "narrow");
+    await writeSkill(userRoot, "unrelated");
+
+    const loadedEvents: SkillLoadedEvent[] = [];
+    const runtime = createSkillsRuntime({
+      bundledRoot: null,
+      userRoot,
+      projectRoot,
+      onSkillLoaded: (e) => loadedEvents.push(e),
+    });
+    await runtime.discover();
+
+    const inflight = runtime.load("narrow");
+    runtime.invalidate("narrow");
+    await inflight;
+
+    // Second load must NOT be a cache hit — the first load's result was
+    // suppressed by the per-skill generation bump.
+    loadedEvents.length = 0;
+    const fresh = await runtime.load("narrow");
+    expect(fresh.ok).toBe(true);
+    const narrowEvent = loadedEvents.find((e) => e.name === "narrow");
+    expect(narrowEvent?.cacheHit).toBe(false);
+  });
+
   test("in-flight load() cannot repopulate cache after registerExternal (review #1896 round 11)", async () => {
     const externalFirst: SkillMetadata = {
       name: "mcp-ref",
