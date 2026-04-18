@@ -396,4 +396,19 @@ describe("createFileSessionRegistry", () => {
     const fetched = await reader.get(record.workerId);
     expect(fetched).toEqual({ ...record, version: 1 });
   });
+
+  it("update persists signaledAt timestamp when provided", async () => {
+    const reg = createFileSessionRegistry({ dir });
+    await reg.register(makeRecord());
+    const at = Date.now();
+    const updated = await reg.update(workerId("w-1"), {
+      status: "terminating",
+      signaledAt: at,
+    });
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.value.signaledAt).toBe(at);
+    const fetched = await reg.get(workerId("w-1"));
+    expect(fetched?.signaledAt).toBe(at);
+  });
 });

@@ -25,6 +25,20 @@ import type {
   WorkerId,
 } from "@koi/core";
 
+/**
+ * Freshness window for honoring an operator `terminating` claim. A
+ * `crashed` event arriving within this window after `bg kill` wrote
+ * `signaledAt` is downgraded to `exited` (operator-initiated); a
+ * `crashed` that arrives later is treated as a genuine crash, so a
+ * stranded `terminating` claim from a killer that aborted partway
+ * cannot silently mask a real fault minutes or hours later.
+ *
+ * Sized to comfortably cover the default kill sequence (SIGTERM grace
+ * window + SIGKILL follow-up + supervisor restart backoff) without
+ * straying into "effectively forever" territory.
+ */
+const TERMINATING_FRESHNESS_MS = 30_000;
+
 export interface RegistryBridge {
   /** Stop the bridge and release the underlying watchAll iterator. */
   readonly close: () => Promise<void>;
@@ -83,7 +97,22 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
     // which is the conservative fallback.
     if (event.kind === "crashed") {
       const current = await registry.get(id);
-      if (current?.status === "terminating") status = "exited";
+      // Only honor the operator-intent downgrade when the `terminating`
+      // claim is recent (`signaledAt` within the freshness window). A
+      // stranded `terminating` record from a killer that died before
+      // sending the signal would otherwise silently convert a later
+      // genuine crash into `exited` forever — the freshness guard keeps
+      // the downgrade scoped to the kill sequence it was written for.
+      if (current?.status === "terminating") {
+        const signaledAt = current.signaledAt;
+        if (
+          signaledAt !== undefined &&
+          Number.isFinite(signaledAt) &&
+          Date.now() - signaledAt <= TERMINATING_FRESHNESS_MS
+        ) {
+          status = "exited";
+        }
+      }
     }
     const result = await registry.update(id, {
       status,

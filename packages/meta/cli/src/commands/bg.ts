@@ -245,8 +245,13 @@ async function runKill(
   // rely on (a) the lockfile-serialized claim to prove registry state
   // is current, and (b) post-signal identity re-verification before
   // any SIGKILL escalation.
+  // Stamp `signaledAt` alongside the terminating status so the bridge can
+  // time-bound its `crashed → exited` downgrade. Without a timestamp the
+  // bridge would honor any `terminating` record forever, letting a killer
+  // that aborted partway convert a later genuine crash into `exited`.
   const claim = await registry.update(workerId(id), {
     status: "terminating",
+    signaledAt: Date.now(),
     expectedVersion: record.version ?? 0,
     expectedPid: record.pid,
   });
@@ -465,15 +470,21 @@ async function runKill(
     finalized = true;
   }
   if (!finalized) return ExitCode.FAILURE;
-  // Restart-policy warning. Fires whenever we successfully terminated
-  // the original process — both on the happy path (we wrote exited)
-  // AND on the CAS-conflict branch (bridge beat us to a terminal
+  // Restart-policy warning (best-effort). Fires whenever we successfully
+  // terminated the original process — both on the happy path (we wrote
+  // exited) AND on the CAS-conflict branch (bridge beat us to a terminal
   // state). The CLI has no IPC to the supervisor and can't prevent
-  // transient/permanent respawn, but it CAN detect the symptom and
-  // tell the operator so they don't walk away thinking the session
-  // is dead. Brief poll — enough to catch a typical backoff window
-  // without meaningfully slowing the common single-process case.
-  await Bun.sleep(500);
+  // transient/permanent respawn, but it CAN detect the symptom and tell
+  // the operator so they don't walk away thinking the session is dead.
+  //
+  // Poll window is sized to cover the default supervisor backoff
+  // (`DEFAULT_WORKER_RESTART_POLICY.backoffBaseMs` = 1000ms) with a
+  // small headroom for scheduling jitter. Longer backoffs (e.g. a
+  // supervisor tuned to back off for 10s+) are out of scope — this is a
+  // warning, not a guarantee, and operators with custom restart policies
+  // should read `koi bg ps` explicitly rather than rely on the warning.
+  const RESPAWN_POLL_MS = 1_500;
+  await Bun.sleep(RESPAWN_POLL_MS);
   const afterRestartCheck = await registry.get(workerId(id));
   if (
     afterRestartCheck !== undefined &&

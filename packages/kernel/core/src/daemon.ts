@@ -217,6 +217,16 @@ export interface BackgroundSessionRecord {
    * absent (pre-CAS records or fresh registrations).
    */
   readonly version?: number | undefined;
+  /**
+   * Epoch-ms timestamp recorded when an off-path killer (`koi bg kill`)
+   * CAS-writes `status: "terminating"`. Used by `attachRegistry` to
+   * time-bound the `crashed → exited` downgrade: a bridge that sees a
+   * worker die shortly after this timestamp trusts the operator intent
+   * and writes `exited`; a `crashed` event arriving long after (because
+   * a prior kill stranded the record in `terminating`) is treated as a
+   * genuine crash so the fault classification survives.
+   */
+  readonly signaledAt?: number | undefined;
 }
 
 /**
@@ -268,6 +278,14 @@ export interface BackgroundSessionUpdate {
    * a stale `exitCode=137`).
    */
   readonly clearTerminal?: boolean;
+  /**
+   * Epoch-ms timestamp of operator kill intent. Off-path killers (`koi
+   * bg kill`) set this alongside `status: "terminating"` so a later
+   * `crashed` event arriving within the freshness window is downgraded
+   * to `exited` (operator-initiated), while a `crashed` arriving long
+   * after a stranded `terminating` claim is treated as a genuine crash.
+   */
+  readonly signaledAt?: number;
 }
 
 /**

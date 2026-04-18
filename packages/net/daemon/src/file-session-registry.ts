@@ -648,6 +648,7 @@ export function createFileSessionRegistry(config: FileSessionRegistryConfig): Fi
             ...(patch.logPath !== undefined && { logPath: patch.logPath }),
             ...(patch.pid !== undefined && { pid: patch.pid }),
             ...(patch.startedAt !== undefined && { startedAt: patch.startedAt }),
+            ...(patch.signaledAt !== undefined && { signaledAt: patch.signaledAt }),
             version: expectedVersion + 1,
           };
           // CAS: write tmp → re-read current persisted version → rename only
