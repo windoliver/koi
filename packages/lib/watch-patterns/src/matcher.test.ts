@@ -121,3 +121,72 @@ describe("createLineBufferedMatcher", () => {
     expect(seen).toHaveLength(1);
   });
 });
+
+describe("createLineBufferedMatcher — long lines", () => {
+  test("16 KB sliding window: match in last 8 KB is still detected", () => {
+    const seen: PatternMatch[] = [];
+    const m = buildMatcher([{ pattern: "NEEDLE", event: "needle" }], (x) => {
+      seen.push(x);
+    });
+    const filler = " ".repeat(32 * 1024);
+    m.writeStdout(TASK, filler);
+    m.writeStdout(TASK, "NEEDLE\n");
+    const needle = seen.find((s) => s.event === "needle");
+    expect(needle).toBeDefined();
+  });
+
+  test("first trim emits __watch_overflow__ exactly once per task", () => {
+    const seen: PatternMatch[] = [];
+    const m = buildMatcher([{ pattern: "x", event: "x" }], (x) => {
+      seen.push(x);
+    });
+    m.writeStdout(TASK, "y".repeat(32 * 1024));
+    m.writeStdout(TASK, "y".repeat(32 * 1024));
+    const overflows = seen.filter((s) => s.event === "__watch_overflow__");
+    expect(overflows).toHaveLength(1);
+  });
+
+  test("overflow emitted independently per stream", () => {
+    const seen: PatternMatch[] = [];
+    const m = buildMatcher([{ pattern: "x", event: "x" }], (x) => {
+      seen.push(x);
+    });
+    m.writeStdout(TASK, "y".repeat(32 * 1024));
+    m.writeStderr(TASK, "y".repeat(32 * 1024));
+    const stdoutOverflows = seen.filter(
+      (s) => s.event === "__watch_overflow__" && s.stream === "stdout",
+    );
+    const stderrOverflows = seen.filter(
+      (s) => s.event === "__watch_overflow__" && s.stream === "stderr",
+    );
+    expect(stdoutOverflows).toHaveLength(1);
+    expect(stderrOverflows).toHaveLength(1);
+  });
+});
+
+describe("createLineBufferedMatcher — scanner-error isolation", () => {
+  test("one pattern's scanner throwing does not block other patterns on the same line", () => {
+    // Construct CompiledPattern directly — bypass compilePatterns so we can use a mock regex that throws.
+    // This mirrors the matcher's internal contract and exercises the scanner-error catch path.
+    const throwingRegex = {
+      test: (): boolean => {
+        throw new Error("regex engine bug");
+      },
+    };
+    const workingRegex = { test: (line: string): boolean => line.includes("good") };
+    const compiled = [
+      { event: "broken", re: throwingRegex },
+      { event: "good", re: workingRegex },
+    ];
+
+    const seen: PatternMatch[] = [];
+    const m = createLineBufferedMatcher(compiled, (x) => {
+      seen.push(x);
+    });
+    m.writeStdout(TASK, "the good line\n");
+    const goodMatch = seen.find((s) => s.event === "good");
+    expect(goodMatch).toBeDefined();
+    const brokenMatch = seen.find((s) => s.event === "broken");
+    expect(brokenMatch).toBeUndefined();
+  });
+});
