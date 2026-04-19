@@ -949,12 +949,13 @@ describe("createOAuthAuthProvider", () => {
     expect(registerCalls).toBe(0);
   });
 
-  test("two providers sharing one URL converge after one re-registers", async () => {
-    // computeClientKey is name-independent — two aliases at the same
-    // URL share one persisted DCR record. If provider A invalidates and
-    // re-registers, provider B's NEXT getClient must read the repaired
-    // record from storage instead of returning a stale in-memory copy
-    // — otherwise B keeps building auth requests with the dead client_id.
+  test("two providers under the SAME alias converge after one re-registers", async () => {
+    // computeClientKey is keyed by (serverName, URL, redirectUri, authority).
+    // Two providers under the SAME alias (typical: same MCP server with
+    // multiple in-process consumers) share the persisted record. If
+    // provider A invalidates and re-registers, provider B's NEXT
+    // getClient must read the repaired record from storage instead of
+    // returning a stale in-memory copy.
     const storage = createMockStorage();
     const metadata = {
       issuer: "https://auth.example.com",
@@ -1016,8 +1017,9 @@ describe("createOAuthAuthProvider", () => {
         storage,
       });
 
-    const a = make("alias-a");
-    const b = make("alias-b");
+    // Same alias → both providers share the persisted DCR client key.
+    const a = make("shared");
+    const b = make("shared");
 
     // 1) Both providers warm up against the SAME shared client.
     nextRegisterId = "first";

@@ -165,22 +165,24 @@ describe("client info persistence", () => {
 
   const RU = "http://127.0.0.1:8912/callback";
 
-  test("computeClientKey is name-independent but scoped to (URL, redirectUri)", () => {
-    // Keying by URL + redirectUri ensures:
-    //  - alias renames with identical URL + port reuse the same client
-    //  - same URL with different callback ports get DIFFERENT clients
-    //    (they have incompatible redirect_uri contracts on the AS)
+  test("computeClientKey isolates by (serverName, URL, redirectUri, authority)", () => {
+    // Tenant isolation: two `.mcp.json` configs are distinct security
+    // principals even when they point at the same URL — each gets its
+    // own DCR registration. Earlier URL-only keying could
+    // cross-contaminate tenants that multiplex the same endpoint.
     const key = computeClientKey("my-server", "https://example.com", RU);
     expect(key).toMatch(/^mcp-oauth-client\|[a-f0-9]{16}$/);
     expect(key).not.toBe(computeServerKey("my-server", "https://example.com"));
-    // Alias rename, same URL + port → same client key.
-    expect(key).toBe(computeClientKey("renamed", "https://example.com", RU));
-    // Different URL → distinct key.
+    // Different alias (= different logical tenant) → distinct key.
+    expect(key).not.toBe(computeClientKey("renamed", "https://example.com", RU));
+    // Different URL → distinct.
     expect(key).not.toBe(computeClientKey("my-server", "https://other.com", RU));
-    // Same URL, different callback port → distinct key.
+    // Different callback port → distinct.
     expect(key).not.toBe(
       computeClientKey("my-server", "https://example.com", "http://127.0.0.1:9999/callback"),
     );
+    // Different authority → distinct.
+    expect(key).not.toBe(computeClientKey("my-server", "https://example.com", RU, "issuer-a"));
   });
 
   test("readClientInfo returns undefined when nothing stored", async () => {

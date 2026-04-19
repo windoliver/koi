@@ -89,17 +89,6 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   let cachedMetadata: AuthServerMetadata | undefined;
   let cachedClient: OAuthClientInfo | undefined;
   let tokenManager: TokenManager | undefined;
-  // Sticky terminal flag — set when getClient sees a non-retryable DCR
-  // failure (insecure registration_endpoint, confidential client,
-  // narrowed redirect_uris, etc.). The refresh path consults this so
-  // it can clear stored tokens and surface onReauthNeeded instead of
-  // looping forever on transient classification.
-  let lastDcrTerminal = false;
-  // True when getClient attempted a DCR registration that did not
-  // succeed (terminal OR transient). startAuthFlow uses this to
-  // suppress a `dcr_unavailable` overwrite of a more specific
-  // `dcr_failed` reason already reported inside getClient.
-  let lastDcrAttempted = false;
 
   async function getMetadata(): Promise<AuthServerMetadata | undefined> {
     if (cachedMetadata !== undefined) return cachedMetadata;
@@ -140,12 +129,30 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
    * key so concurrent flows cannot register two different clients and
    * overwrite each other.
    */
-  async function getClient(): Promise<OAuthClientInfo | undefined> {
+  /**
+   * Per-attempt classification returned by `getClient`. Replaces the
+   * earlier provider-global `lastDcrTerminal`/`lastDcrAttempted`
+   * latches — concurrent flows mutated those without synchronization,
+   * so one flow's reset could erase another flow's classification.
+   * Carrying the verdict in a return value makes each attempt's state
+   * lexically scoped and concurrency-safe.
+   */
+  type GetClientResult =
+    | { readonly kind: "ok"; readonly client: OAuthClientInfo }
+    | {
+        readonly kind: "no_client";
+        /** True when DCR was attempted (regardless of outcome). */
+        readonly dcrAttempted: boolean;
+        /** True when the DCR failure is non-retryable. */
+        readonly dcrTerminal: boolean;
+      };
+
+  async function getClient(): Promise<GetClientResult> {
     if (oauthConfig.clientId !== undefined) {
       if (cachedClient === undefined) {
         cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0 };
       }
-      return cachedClient;
+      return { kind: "ok", client: cachedClient };
     }
 
     // Phase 1: try the persisted client against the CACHED metadata
@@ -168,7 +175,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       );
       if (probe !== undefined && isClientFresh(probe, cachedMetadata)) {
         cachedClient = probe;
-        return probe;
+        return { kind: "ok", client: probe };
       }
     }
 
@@ -184,6 +191,13 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     }
     const authority = effectiveMetadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
+
+    // Attempt-local DCR classification. Captured by the withLock
+    // closure and mirrored into the returned GetClientResult below
+    // — replaces the earlier provider-global latches that races
+    // against concurrent flows could clobber.
+    let lockedDcrAttempted = false;
+    let lockedDcrTerminal = false;
 
     const resolved = await storage.withLock(lockKey, async () => {
       const stored = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
@@ -216,7 +230,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // (it refuses to send registration credentials over cleartext).
       // Convert that into a fail-closed terminal so the rest of the
       // auth flow returns false instead of crashing through the provider.
-      lastDcrAttempted = true;
+      lockedDcrAttempted = true;
       let result: Awaited<ReturnType<typeof registerDynamicClient>>;
       try {
         result = await registerDynamicClient({
@@ -227,7 +241,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         });
       } catch (e: unknown) {
         // Throws are non-HTTPS endpoints — terminal until operator fixes.
-        lastDcrTerminal = true;
+        lockedDcrTerminal = true;
         reportFailure({
           kind: "dcr_failed",
           serverName,
@@ -236,11 +250,10 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         return undefined;
       }
       if (!result.ok) {
-        lastDcrTerminal = result.terminal;
+        lockedDcrTerminal = result.terminal;
         reportFailure({ kind: "dcr_failed", serverName, detail: result.reason });
         return undefined;
       }
-      lastDcrTerminal = false;
 
       // writeClientInfo would re-enter withLock on the same key — we
       // already own it, so persist directly to avoid a self-deadlock.
@@ -252,7 +265,14 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     // checks see the current binding, but do NOT short-circuit the next
     // getClient call on it — see freshness rationale above.
     cachedClient = resolved;
-    return resolved;
+    if (resolved !== undefined) {
+      return { kind: "ok", client: resolved };
+    }
+    return {
+      kind: "no_client",
+      dcrAttempted: lockedDcrAttempted,
+      dcrTerminal: lockedDcrTerminal,
+    };
   }
 
   async function getTokenManager(): Promise<TokenManager> {
@@ -274,29 +294,30 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // a permanently unresolvable session instead of preserving dead
       // state forever.
       getClientId: async () => {
+        let result: GetClientResult;
         try {
-          const c = await getClient();
-          if (c !== undefined) return { kind: "ok", client: c };
+          result = await getClient();
         } catch {
           return { kind: "transient" };
         }
-        // Client could not be resolved. Distinguish:
-        //   - Discovery itself failed (metadata undefined): TRANSIENT.
-        //   - Discovery succeeded BUT no registration_endpoint AND no
-        //     static clientId: TERMINAL.
-        //   - DCR was attempted and returned a terminal failure: TERMINAL.
-        //   - Otherwise (transient registration failure): preserve.
-        const md = await getMetadata();
-        if (md === undefined) return { kind: "transient" };
-        if (oauthConfig.clientId === undefined && md.registrationEndpoint === undefined) {
-          const fresh = await refreshMetadata();
-          if (fresh?.registrationEndpoint !== undefined) {
-            return { kind: "transient" };
-          }
-          return { kind: "terminal" };
+        if (result.kind === "ok") {
+          return { kind: "ok", client: result.client };
         }
-        if (lastDcrTerminal) {
-          return { kind: "terminal" };
+        // No client. Use the per-attempt classification carried in the
+        // result instead of a shared latch — concurrent flows cannot
+        // race over each other's DCR verdict.
+        if (result.dcrTerminal) return { kind: "terminal" };
+        // Even if DCR wasn't attempted (no registration_endpoint), a
+        // truly-terminal classification needs a fresh discovery probe
+        // first to avoid stranding sessions on a transient cache.
+        if (!result.dcrAttempted) {
+          const md = await getMetadata();
+          if (md === undefined) return { kind: "transient" };
+          if (oauthConfig.clientId === undefined && md.registrationEndpoint === undefined) {
+            const fresh = await refreshMetadata();
+            if (fresh?.registrationEndpoint !== undefined) return { kind: "transient" };
+            return { kind: "terminal" };
+          }
         }
         return { kind: "transient" };
       },
@@ -370,33 +391,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   // --- Interactive auth flow ---
   const startAuthFlow = async (): Promise<boolean> => {
-    // Reset per-attempt failure latches so a previous attempt's DCR
-    // outcome cannot suppress structured-failure reporting on this
-    // one. Without this, a long-lived provider that ever attempted
-    // DCR would never re-emit `dcr_unavailable` even when the AS
-    // genuinely lost registration_endpoint between attempts.
-    lastDcrAttempted = false;
-    lastDcrTerminal = false;
-
     let metadata = await getMetadata();
     if (metadata === undefined) {
       reportFailure({ kind: "discovery_failed", serverName });
       return false;
     }
 
-    const client = await getClient();
-    if (client === undefined) {
+    const clientResult = await getClient();
+    if (clientResult.kind !== "ok") {
       // Suppress `dcr_unavailable` when getClient already attempted DCR
-      // and emitted a more specific `dcr_failed` reason (insecure
-      // endpoint, confidential client, narrowed redirect_uris, etc.).
-      // The CLI shows the last reported reason — overwriting a
-      // concrete DCR rejection with a generic "AS doesn't advertise
-      // registration" would tell operators to add `clientId` instead
-      // of fixing the actual server-side issue.
+      // and emitted a more specific `dcr_failed` reason. The
+      // attempt-local `dcrAttempted` flag carries the verdict for
+      // exactly this attempt — no shared latches that concurrent
+      // flows could clobber.
       //
       // Re-read metadata so the registration_endpoint check reflects
       // the post-recovery snapshot, not a stale pre-refresh one.
-      if (!lastDcrAttempted && oauthConfig.clientId === undefined) {
+      if (!clientResult.dcrAttempted && oauthConfig.clientId === undefined) {
         const post = await getMetadata();
         if (post?.registrationEndpoint === undefined) {
           reportFailure({ kind: "dcr_unavailable", serverName });
@@ -404,6 +415,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       }
       return false;
     }
+    const client = clientResult.client;
 
     // getClient() may have re-discovered metadata (degraded snapshot
     // recovery) and registered the client against the refreshed

@@ -347,33 +347,33 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
 }
 
 /**
- * Storage key for dynamically-registered client info. Keyed by the full
- * DCR identity contract — `serverUrl` + `redirectUri` + `authority` — so:
+ * Storage key for dynamically-registered client info. Keyed by the
+ * full DCR identity contract — `serverName` + `serverUrl` +
+ * `redirectUri` + `authority`.
  *
- *   1. Alias renames with identical URL + callback port + authority
- *      reuse the same registered client (no orphan churn on the AS).
- *   2. Two configs with the same URL but different callback ports get
- *      distinct records (the redirect_uri contract differs).
- *   3. Two configs with the same URL + port but different OAuth
- *      authorities (different `authServerMetadataUrl` / discovered
- *      issuer) get distinct records — one tenant's auth state cannot
- *      clobber another's.
+ * `serverName` IS part of the key by default: two separate `.mcp.json`
+ * entries for the same URL represent distinct logical principals
+ * (operators may multiplex the same endpoint by headers or by tenant
+ * and must not share OAuth state). The earlier URL-only keying
+ * created a tenant-isolation hazard whenever the same AS fronted
+ * multiple logical configs.
  *
- * `authority` is the discovered issuer when known, falling back to the
- * configured `authServerMetadataUrl`, falling back to empty (no
- * discriminator) when neither is available. The `serverName` parameter
- * is retained for symmetry with `computeServerKey()` but ignored.
+ * Tradeoff: renaming an alias invalidates the cached DCR registration
+ * (next auth re-registers). That is the safer default. Operators who
+ * want stable alias-independent caching can explicitly share
+ * registrations via a future opt-in config; we prefer leaking one
+ * DCR orphan on rename over cross-contaminating distinct tenants.
  *
- * Format: `mcp-oauth-client|{sha256(serverUrl + "|" + redirectUri + "|" + authority)[:16]}`.
+ * Format: `mcp-oauth-client|{sha256(serverName + "|" + serverUrl + "|" + redirectUri + "|" + authority)[:16]}`.
  */
 export function computeClientKey(
-  _serverName: string,
+  serverName: string,
   serverUrl: string,
   redirectUri: string,
   authority: string = "",
 ): string {
   const hash = createHash("sha256")
-    .update(`${serverUrl}|${redirectUri}|${authority}`)
+    .update(`${serverName}|${serverUrl}|${redirectUri}|${authority}`)
     .digest("hex")
     .substring(0, 16);
   return `mcp-oauth-client|${hash}`;
