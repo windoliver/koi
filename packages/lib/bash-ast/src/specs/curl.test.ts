@@ -209,6 +209,16 @@ describe("specCurl — refused flags / parse errors", () => {
     expect(result.cause).toBe("unsupported-form");
   });
 
+  test("-H value starting with -K is NOT misread as -K flag (regression)", () => {
+    const result = specCurl(["curl", "-H", "-Keep-Alive:true", "https://x"]);
+    expect(result.kind).toBe("complete");
+  });
+
+  test("-X value starting with -T is NOT misread as -T flag (regression)", () => {
+    const result = specCurl(["curl", "-X", "-TRACE", "https://x"]);
+    expect(result.kind).toBe("complete");
+  });
+
   test("--next refused", () => {
     expect(specCurl(["curl", "--next", "https://x"]).kind).toBe("refused");
   });

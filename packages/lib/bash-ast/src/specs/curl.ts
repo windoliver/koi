@@ -1,51 +1,51 @@
+import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, NetworkAccess, SpecResult } from "./types.js";
 
+// Refused-by-design value flags are listed in the allowlist so parseFlags
+// consumes their value tokens correctly (preventing other flags' values that
+// happen to start with `-K`/`-T` from being misread). Their presence in
+// `parsed.flags` after parseFlags triggers a post-parse `unsupported-form`
+// refusal.
 const CURL_ALLOW = {
-  bool: new Set(["O", "L", "s", "i"]),
-  value: new Set(["o", "output", "X", "d", "data", "H"]),
+  bool: new Set(["O", "L", "s", "i", "next"]),
+  value: new Set(["o", "output", "X", "d", "data", "H", "K", "config", "T", "upload-file"]),
 } as const satisfies FlagAllowlist;
 
+const REFUSED_FLAGS: ReadonlyMap<string, { readonly label: string; readonly reason: string }> =
+  new Map([
+    ["K", { label: "-K", reason: "rewrite request behavior" }],
+    ["config", { label: "--config", reason: "rewrite request behavior" }],
+    ["next", { label: "--next", reason: "rewrite request behavior" }],
+    ["T", { label: "-T", reason: "uploads local files; model with explicit reads" }],
+    [
+      "upload-file",
+      { label: "--upload-file", reason: "uploads local files; model with explicit reads" },
+    ],
+  ]);
+
 export function specCurl(argv: readonly string[]): SpecResult {
-  if (argv[0] !== "curl") {
+  if (!matchesCommand("curl", argv)) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `specCurl dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected "curl"`,
+      detail: `specCurl dispatched on argv[0]="${argv[0] ?? "<empty>"}", expected basename "curl"`,
     };
-  }
-
-  for (const tok of argv.slice(1)) {
-    if (
-      tok === "--config" ||
-      tok.startsWith("--config=") ||
-      tok === "-K" ||
-      tok.startsWith("-K") ||
-      tok === "--next"
-    ) {
-      return {
-        kind: "refused",
-        cause: "unsupported-form",
-        detail: `curl flag ${tok} can rewrite request behavior; refused`,
-      };
-    }
-    if (
-      tok === "-T" ||
-      tok.startsWith("-T") ||
-      tok === "--upload-file" ||
-      tok.startsWith("--upload-file=")
-    ) {
-      return {
-        kind: "refused",
-        cause: "unsupported-form",
-        detail: "curl -T/--upload-file uploads local files; refused (model with explicit reads)",
-      };
-    }
   }
 
   const parsed = parseFlags(argv, CURL_ALLOW);
   if (!parsed.ok) {
     return { kind: "refused", cause: "parse-error", detail: parsed.detail };
+  }
+
+  for (const [name, meta] of REFUSED_FLAGS) {
+    if (parsed.flags.has(name)) {
+      return {
+        kind: "refused",
+        cause: "unsupported-form",
+        detail: `curl flag ${meta.label} can ${meta.reason}; refused`,
+      };
+    }
   }
 
   if (parsed.positionals.length === 0) {
