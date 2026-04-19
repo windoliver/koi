@@ -60,7 +60,10 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     let closing = false;
     let closed = false;
     let inFlight = 0;
-    let drainResolve: (() => void) | undefined;
+    // Multiple close() callers may be waiting on drain. Collect all resolvers
+    // so every awaiter is resumed when inFlight hits zero.
+    const drainWaiters: Array<() => void> = [];
+    let closePromise: Promise<void> | undefined;
 
     function checkOpen(): void {
       if (closed) throw new Error("ArtifactStore is closed");
@@ -77,7 +80,10 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
           return await fn(...args);
         } finally {
           inFlight--;
-          if (inFlight === 0 && drainResolve) drainResolve();
+          if (inFlight === 0 && drainWaiters.length > 0) {
+            const waiters = drainWaiters.splice(0);
+            for (const w of waiters) w();
+          }
         }
       };
     }
@@ -110,18 +116,23 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
 
     const close = async (): Promise<void> => {
       if (closed) return;
+      // Memoize the first close's work so concurrent callers share it.
+      if (closePromise) return closePromise;
       closing = true;
-      // Wait for in-flight ops to drain. No timeout — a stuck blob I/O must
-      // finish before ownership is released; otherwise a new owner could race
-      // the old owner's pending writes.
-      if (inFlight > 0) {
-        await new Promise<void>((resolve) => {
-          drainResolve = resolve;
-        });
-      }
-      db?.close();
-      releaseLock();
-      closed = true;
+      closePromise = (async () => {
+        // Wait for in-flight ops to drain. No timeout — a stuck blob I/O must
+        // finish before ownership is released; otherwise a new owner could race
+        // the old owner's pending writes.
+        if (inFlight > 0) {
+          await new Promise<void>((resolve) => {
+            drainWaiters.push(resolve);
+          });
+        }
+        db?.close();
+        releaseLock();
+        closed = true;
+      })();
+      return closePromise;
     };
 
     return {

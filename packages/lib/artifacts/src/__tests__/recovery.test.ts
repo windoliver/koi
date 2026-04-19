@@ -34,9 +34,12 @@ describe("startup recovery", () => {
       `INSERT INTO artifacts (id, session_id, name, version, mime_type, size, content_hash, created_at, blob_ready)
        VALUES ('${artId}', 'sess_a', 'crashed.txt', 1, 'text/plain', 3, '${hash}', ${now}, ${artifactBlobReady})`,
     );
+    // Simulate a mid-save crash: the intent is bound to this specific artifact_id
+    // (post-save.ts's UPDATE pending_blob_puts SET artifact_id = ?).
     const intentId = `intent_${crypto.randomUUID()}`;
     db.exec(
-      `INSERT INTO pending_blob_puts (intent_id, hash, created_at) VALUES ('${intentId}', '${hash}', ${now})`,
+      `INSERT INTO pending_blob_puts (intent_id, hash, artifact_id, created_at)
+       VALUES ('${intentId}', '${hash}', '${artId}', ${now})`,
     );
     db.close();
     return artId;

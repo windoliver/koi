@@ -15,12 +15,52 @@
  * regardless of file size — per design review issue 15A.
  */
 
-import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 
 const HASH_HEX_LEN = 64; // SHA-256 hex
 const HASH_SHARD_LEN = 2;
 const STREAM_CHUNK = 64 * 1024; // 64 KiB streaming reads
+
+/**
+ * Best-effort directory fsync. Some platforms (Windows) don't support fsync
+ * on directories; those errors are swallowed since the Linux/macOS path is
+ * the primary target. On Linux/macOS a successful `fsync(dir_fd)` after a
+ * rename guarantees the rename is durable past power loss.
+ */
+function fsyncDirectory(dir: string): void {
+  try {
+    const fd = openSync(dir, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    /* best-effort — not every platform supports dir fsync */
+  }
+}
+
+function writeAndFsync(tmpPath: string, data: Uint8Array): void {
+  const fd = openSync(tmpPath, "w");
+  try {
+    let written = 0;
+    while (written < data.byteLength) {
+      written += writeSync(fd, data, written, data.byteLength - written);
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 /**
  * Compute the on-disk path for a blob with the given hash.
@@ -88,11 +128,12 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
   // files we instead pipe via stream. We use the streaming pattern unless
   // the file is small enough to amortize the syscall cost.
   if (file.size < STREAM_CHUNK * 4) {
-    // Small file: one read + write is cheaper than streaming setup.
+    // Small file: one read + write is cheaper than streaming setup. Write
+    // via openSync/writeSync/fsync so the blob is crash-durable.
     const buf = await file.arrayBuffer();
-    writeFileSync(tmp, new Uint8Array(buf));
+    writeAndFsync(tmp, new Uint8Array(buf));
   } else {
-    // Large file: stream chunks.
+    // Large file: stream chunks, then fsync the temp file.
     const handle = Bun.file(sourcePath);
     const writer = Bun.file(tmp).writer();
     const stream = handle.stream();
@@ -106,6 +147,13 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
       await writer.end();
     } finally {
       r.releaseLock();
+    }
+    // fsync the streamed temp file.
+    const fd = openSync(tmp, "r+");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
     }
   }
 
@@ -123,6 +171,9 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
     }
     throw err;
   }
+
+  // fsync the parent directory so the rename itself is durable.
+  fsyncDirectory(targetDir);
 
   return hash;
 }
@@ -149,7 +200,9 @@ export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Pro
   const target = join(targetDir, hash);
   const tmp = `${target}.tmp.${process.pid}.${crypto.randomUUID()}`;
 
-  writeFileSync(tmp, data);
+  // fsync-before-rename gives crash durability: the target path either
+  // resolves to the fully-written blob or to nothing (ENOENT).
+  writeAndFsync(tmp, data);
 
   try {
     renameSync(tmp, target);
@@ -161,6 +214,9 @@ export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Pro
     }
     throw err;
   }
+
+  // fsync the parent directory so the rename itself is durable.
+  fsyncDirectory(targetDir);
 
   return hash;
 }

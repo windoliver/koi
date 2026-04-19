@@ -101,9 +101,9 @@ export function createSaveArtifact(args: {
 
       // Insert artifact row (always blob_ready=0). Do NOT retire the intent
       // yet — we keep it as a durable recovery signal until post-commit repair
-      // promotes the row to blob_ready=1. If we crash between COMMIT and the
-      // blob_ready=1 UPDATE, startup recovery uses the surviving intent (plus
-      // the blob_ready=0 row) to resolve the state.
+      // promotes the row to blob_ready=1. The intent is also updated to point
+      // at this specific row's id so recovery can target it directly (not
+      // collapse by hash — spec §6.1).
       const newId = `art_${crypto.randomUUID()}`;
       args.db
         .query(
@@ -123,6 +123,11 @@ export function createSaveArtifact(args: {
           now,
           null, // Plan 3 stamps expires_at from policy.ttlMs
         );
+
+      // Bind the intent to the specific artifact row so recovery can target it.
+      args.db
+        .query("UPDATE pending_blob_puts SET artifact_id = ? WHERE intent_id = ?")
+        .run(newId, intentId);
 
       return { insertedId: newId, needsRePut };
     });

@@ -8,15 +8,21 @@
  * handles the two "crashed mid-save" shapes so saves never silently strand
  * invisible rows.
  *
+ * Recovery matches intents to artifact rows by `artifact_id` (populated by
+ * saveArtifact once its metadata tx inserts the row). This avoids the
+ * hash-collapse bug where a concurrent same-content save with a completed
+ * blob_ready=1 row would fool recovery into retiring the earlier save's
+ * intent — leaving the earlier row permanently blob_ready=0.
+ *
  * Behavior (per pending_blob_puts row, oldest first):
- *   - Matching blob_ready=1 row → intent is stale (save completed before
- *     retiring the intent). Delete intent.
- *   - Matching blob_ready=0 row → save committed metadata but crashed before
- *     the blob_ready=1 UPDATE. If the blob is present, promote. If the blob
- *     is missing, delete the row + tombstone the hash.
- *   - No matching artifact row → save crashed before its metadata tx
- *     committed. Delete intent. If no live ref to the hash exists, enqueue
- *     a tombstone so the orphan blob (if any) can be reclaimed.
+ *   - artifact_id IS NULL → save crashed before its metadata tx committed.
+ *     Tombstone the hash if no live ref, retire the intent.
+ *   - artifact_id set, row missing → row was externally deleted after the
+ *     intent was bound. Retire the intent.
+ *   - artifact_id set, row blob_ready=1 → save completed past the UPDATE but
+ *     before retiring the intent. Retire the intent.
+ *   - artifact_id set, row blob_ready=0 → crashed between COMMIT and the
+ *     UPDATE. If blob is present, promote. If missing, delete row + tombstone.
  */
 
 import type { Database } from "bun:sqlite";
@@ -25,10 +31,10 @@ import type { BlobStore } from "@koi/blob-cas";
 interface IntentRow {
   readonly intent_id: string;
   readonly hash: string;
+  readonly artifact_id: string | null;
 }
 
-interface MatchRow {
-  readonly id: string;
+interface TargetRow {
   readonly blob_ready: number;
 }
 
@@ -37,66 +43,74 @@ export async function runStartupRecovery(args: {
   readonly blobStore: BlobStore;
 }): Promise<void> {
   const intents = args.db
-    .query("SELECT intent_id, hash FROM pending_blob_puts ORDER BY created_at")
+    .query("SELECT intent_id, hash, artifact_id FROM pending_blob_puts ORDER BY created_at")
     .all() as ReadonlyArray<IntentRow>;
 
   for (const intent of intents) {
-    const match = args.db
-      .query(
-        "SELECT id, blob_ready FROM artifacts WHERE content_hash = ? ORDER BY blob_ready DESC LIMIT 1",
-      )
-      .get(intent.hash) as MatchRow | null;
-
-    if (match && match.blob_ready === 1) {
-      // Save completed but the intent retirement didn't run. Retire now.
-      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-      continue;
-    }
-
-    if (match && match.blob_ready === 0) {
-      // Crash between COMMIT and blob_ready=1 UPDATE.
-      const blobPresent = await args.blobStore.has(intent.hash);
-      if (blobPresent) {
-        args.db.query("UPDATE artifacts SET blob_ready = 1 WHERE id = ?").run(match.id);
-        args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-      } else {
-        // Blob missing. Row is unrecoverable — delete it and queue the
-        // (possibly orphan) hash for sweep.
-        args.db.transaction(() => {
-          args.db.query("DELETE FROM artifacts WHERE id = ?").run(match.id);
-          const stillReferenced = args.db
-            .query(`SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)`)
-            .get(intent.hash);
-          if (!stillReferenced) {
-            args.db
-              .query(
-                "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
-              )
-              .run(intent.hash, Date.now());
-          }
-          args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-        })();
-      }
-      continue;
-    }
-
-    // No artifact row references the hash — save crashed before its metadata
-    // tx committed. Tombstone the orphan blob (if any) and retire the intent.
-    args.db.transaction(() => {
-      const stillReferenced = args.db
-        .query(
-          `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
-                        OR EXISTS (SELECT 1 FROM pending_blob_puts WHERE hash = ? AND intent_id != ?)`,
-        )
-        .get(intent.hash, intent.hash, intent.intent_id);
-      if (!stillReferenced) {
-        args.db
+    // Case A: intent never bound to a row (save crashed before metadata tx).
+    if (intent.artifact_id === null) {
+      args.db.transaction(() => {
+        const stillReferenced = args.db
           .query(
-            "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
+                          OR EXISTS (SELECT 1 FROM pending_blob_puts
+                                      WHERE hash = ? AND intent_id != ?)`,
           )
-          .run(intent.hash, Date.now());
-      }
+          .get(intent.hash, intent.hash, intent.intent_id);
+        if (!stillReferenced) {
+          args.db
+            .query(
+              "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            )
+            .run(intent.hash, Date.now());
+        }
+        args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+      })();
+      continue;
+    }
+
+    // Intent is bound to a specific row. Look it up.
+    const target = args.db
+      .query("SELECT blob_ready FROM artifacts WHERE id = ?")
+      .get(intent.artifact_id) as TargetRow | null;
+
+    if (target === null) {
+      // Row was externally deleted. Nothing to repair.
       args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
-    })();
+      continue;
+    }
+
+    if (target.blob_ready === 1) {
+      // Save completed past the UPDATE; intent retirement was lost. Retire now.
+      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+      continue;
+    }
+
+    // target.blob_ready === 0 → crash between COMMIT and UPDATE blob_ready=1.
+    const blobPresent = await args.blobStore.has(intent.hash);
+    if (blobPresent) {
+      args.db.query("UPDATE artifacts SET blob_ready = 1 WHERE id = ?").run(intent.artifact_id);
+      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+    } else {
+      // Blob missing: row is unrecoverable. Delete + tombstone + retire intent.
+      args.db.transaction(() => {
+        args.db.query("DELETE FROM artifacts WHERE id = ?").run(intent.artifact_id);
+        const stillReferenced = args.db
+          .query(
+            `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
+                          OR EXISTS (SELECT 1 FROM pending_blob_puts
+                                      WHERE hash = ? AND intent_id != ?)`,
+          )
+          .get(intent.hash, intent.hash, intent.intent_id);
+        if (!stillReferenced) {
+          args.db
+            .query(
+              "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            )
+            .run(intent.hash, Date.now());
+        }
+        args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+      })();
+    }
   }
 }

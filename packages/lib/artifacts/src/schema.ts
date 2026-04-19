@@ -51,10 +51,18 @@ export const DDL_PENDING_BLOB_PUTS = `
 CREATE TABLE IF NOT EXISTS pending_blob_puts (
   intent_id   TEXT PRIMARY KEY,
   hash        TEXT NOT NULL,
+  artifact_id TEXT,                -- the specific row this intent covers;
+                                    -- NULL when the save crashed before its
+                                    -- metadata INSERT committed. Recovery
+                                    -- uses this to target the exact hidden
+                                    -- row rather than matching by hash
+                                    -- (which would collapse under concurrent
+                                    -- same-content saves — spec §6.1).
   created_at  INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_pending_puts_hash    ON pending_blob_puts(hash);
-CREATE INDEX IF NOT EXISTS idx_pending_puts_created ON pending_blob_puts(created_at);
+CREATE INDEX IF NOT EXISTS idx_pending_puts_hash        ON pending_blob_puts(hash);
+CREATE INDEX IF NOT EXISTS idx_pending_puts_created     ON pending_blob_puts(created_at);
+CREATE INDEX IF NOT EXISTS idx_pending_puts_artifact_id ON pending_blob_puts(artifact_id);
 ` as const;
 
 export const DDL_META = `
