@@ -260,11 +260,15 @@ export function acquireLock(dbPath: string, blobDir?: string): () => void {
 
   // Layer 1b: dbPath lock (skipped for :memory:).
   if (isInMemory(dbPath)) {
+    let released = false;
     const release = (): void => {
+      if (released) return;
+      released = true;
       if (blobLock !== undefined && blobLockPath !== undefined) {
         releaseLockFile(blobLock, blobLockPath);
         blobLock = undefined;
       }
+      process.removeListener("exit", release);
     };
     process.once("exit", release);
     return release;
@@ -292,6 +296,7 @@ export function acquireLock(dbPath: string, blobDir?: string): () => void {
       releaseLockFile(blobLock, blobLockPath);
       blobLock = undefined;
     }
+    process.removeListener("exit", release);
   };
 
   process.once("exit", release);

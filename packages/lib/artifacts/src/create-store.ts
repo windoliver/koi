@@ -13,6 +13,8 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { type BlobStore, createFilesystemBlobStore } from "@koi/blob-cas";
 import type { ArtifactId, SessionId } from "@koi/core";
 import { createDeleteArtifact } from "./delete.js";
@@ -55,6 +57,14 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     throw new Error(
       "ArtifactStoreConfig.policy is not enforced in Plan 2 — TTL, quota, and per-name retention land in Plan 3 (#1920). Do not pass a policy until it ships.",
     );
+  }
+
+  // Ensure the blob directory and the DB's containing directory exist
+  // before lock acquisition writes its tmp files. A brand-new store open
+  // should succeed without requiring the caller to pre-create directories.
+  mkdirSync(config.blobDir, { recursive: true });
+  if (config.dbPath !== ":memory:" && !config.dbPath.startsWith("file::memory:")) {
+    mkdirSync(dirname(config.dbPath), { recursive: true });
   }
 
   const releaseLock = acquireLock(config.dbPath, config.blobDir);

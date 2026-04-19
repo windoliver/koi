@@ -193,10 +193,20 @@ export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Pro
   try {
     renameSync(tmp, target);
   } catch (err) {
+    // Publish collision: another concurrent writer may have published the
+    // same hash after our hasBlob check but before our rename. On platforms
+    // where rename-over-existing fails (Windows, some FUSE), recover by
+    // checking the target and treating a hash-match as successful dedup.
     try {
       Bun.file(tmp).unlink?.();
     } catch {
       /* ignore */
+    }
+    if (hasBlob(blobDir, hash)) {
+      // A concurrent identical writer won. Their bytes are durable (CAS
+      // guarantees content equality by hash), our work is redundant but
+      // safe — treat as success.
+      return hash;
     }
     throw err;
   }
