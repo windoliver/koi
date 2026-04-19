@@ -9,7 +9,7 @@
  *   - `writeBlobFromFile` — stream-hash a source file, write the blob if new,
  *                            return the hash. Idempotent: writing the same
  *                            content twice is a no-op.
- *   - `readBlob(hash)`    — read a blob's bytes back (used by restore in PR3b)
+ *   - `readBlob(hash)`    — read a blob's bytes back
  *
  * Hashing is streaming via `Bun.CryptoHasher` so memory stays bounded
  * regardless of file size — per design review issue 15A.
@@ -128,9 +128,46 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
 }
 
 /**
+ * Hash in-memory bytes and write them to the CAS. Returns the hex hash.
+ *
+ * Idempotent: if the blob already exists in the CAS, this is a no-op on disk —
+ * the bytes are hashed but no copy is performed. Atomic rename ensures no
+ * partial blobs are ever visible.
+ */
+export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Promise<string> {
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(data);
+  const hash = hasher.digest("hex");
+
+  if (hasBlob(blobDir, hash)) {
+    return hash;
+  }
+
+  const targetDir = join(blobDir, hash.slice(0, HASH_SHARD_LEN));
+  mkdirSync(targetDir, { recursive: true });
+
+  const target = join(targetDir, hash);
+  const tmp = `${target}.tmp.${process.pid}.${crypto.randomUUID()}`;
+
+  writeFileSync(tmp, data);
+
+  try {
+    renameSync(tmp, target);
+  } catch (err) {
+    try {
+      Bun.file(tmp).unlink?.();
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+
+  return hash;
+}
+
+/**
  * Read a blob's bytes back from the CAS. Returns `undefined` if the blob
- * does not exist. Used by the restore protocol (PR 3b) to write blobs back
- * to their original paths.
+ * does not exist.
  */
 export async function readBlob(blobDir: string, hash: string): Promise<Uint8Array | undefined> {
   if (!hasBlob(blobDir, hash)) return undefined;

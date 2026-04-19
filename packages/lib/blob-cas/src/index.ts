@@ -1,1 +1,7 @@
-export { blobPath, hasBlob, readBlob, writeBlobFromFile } from "./cas-store.js";
+export {
+  blobPath,
+  hasBlob,
+  readBlob,
+  writeBlobFromBytes,
+  writeBlobFromFile,
+} from "./cas-store.js";
