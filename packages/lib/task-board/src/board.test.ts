@@ -1752,4 +1752,107 @@ describe("metadata.delegatedTo pending-only invariant", () => {
     if (!r5.ok) return;
     expect(r5.value.get(taskItemId("a"))?.metadata?.delegatedTo).toBe("fresh-worker");
   });
+
+  // ---------------------------------------------------------------------------
+  // createdBy — stamped at add, persists through terminal transitions
+  // ---------------------------------------------------------------------------
+
+  describe("createdBy", () => {
+    test("createdBy is stamped at add and persists through kill", () => {
+      const board = createTaskBoard();
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      // Add with createdBy
+      const r1 = board.add({
+        id: taskItemId("task-x"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+      expect(r1.value.get(taskItemId("task-x"))?.createdBy).toBe(creator);
+
+      // Assign to worker — assignedTo changes but createdBy stays
+      const r2 = r1.value.assign(taskItemId("task-x"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+      expect(r2.value.get(taskItemId("task-x"))?.createdBy).toBe(creator);
+      expect(r2.value.get(taskItemId("task-x"))?.assignedTo).toBe(worker);
+
+      // Kill — createdBy persists (kill preserves assignedTo as-is; only fail/unassign clear it)
+      const r3 = r2.value.kill(taskItemId("task-x"));
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const killed = r3.value.get(taskItemId("task-x"));
+      expect(killed?.status).toBe("killed");
+      expect(killed?.createdBy).toBe(creator);
+    });
+
+    test("createdBy persists through failed transition", () => {
+      const board = createTaskBoard({ maxRetries: 0 });
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      const r1 = board.add({
+        id: taskItemId("task-y"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+
+      const r2 = r1.value.assign(taskItemId("task-y"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+
+      const err: KoiError = { code: "EXTERNAL", message: "boom", retryable: false };
+      const r3 = r2.value.fail(taskItemId("task-y"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      const failed = r3.value.get(taskItemId("task-y"));
+      expect(failed?.status).toBe("failed");
+      expect(failed?.createdBy).toBe(creator);
+      expect(failed?.assignedTo).toBeUndefined();
+    });
+
+    test("createdBy persists through retryable fail (pending reset)", () => {
+      const board = createTaskBoard({ maxRetries: 3 });
+      const creator = agentId("alice");
+      const worker = agentId("worker-1");
+
+      const r1 = board.add({
+        id: taskItemId("task-z"),
+        description: "Test task",
+        createdBy: creator,
+      });
+      expect(r1.ok).toBe(true);
+      if (!r1.ok) return;
+
+      const r2 = r1.value.assign(taskItemId("task-z"), worker);
+      expect(r2.ok).toBe(true);
+      if (!r2.ok) return;
+
+      const err: KoiError = { code: "EXTERNAL", message: "transient", retryable: true };
+      const r3 = r2.value.fail(taskItemId("task-z"), err);
+      expect(r3.ok).toBe(true);
+      if (!r3.ok) return;
+      // Back to pending — createdBy still set, assignedTo cleared
+      const retried = r3.value.get(taskItemId("task-z"));
+      expect(retried?.status).toBe("pending");
+      expect(retried?.createdBy).toBe(creator);
+      expect(retried?.assignedTo).toBeUndefined();
+    });
+
+    test("createdBy is undefined when not provided (backward compat)", () => {
+      const board = createTaskBoard();
+      const r = board.add({
+        id: taskItemId("legacy"),
+        description: "Legacy task without createdBy",
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.get(taskItemId("legacy"))?.createdBy).toBeUndefined();
+    });
+  });
 });

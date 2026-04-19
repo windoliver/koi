@@ -330,6 +330,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         subject: description.length > 80 ? `${description.slice(0, 77)}…` : description,
         description,
         activeForm: `Running: ${command.length > 60 ? `${command.slice(0, 57)}…` : command}`,
+        createdBy: agentId,
       });
       if (!addResult.ok) {
         return {

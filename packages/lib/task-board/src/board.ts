@@ -113,6 +113,7 @@ function inputToTask(input: TaskInput, now: number): Task {
     version: 0,
     dependencies: input.dependencies ?? [],
     status: "pending",
+    ...(input.createdBy !== undefined ? { createdBy: input.createdBy } : {}),
     ...(input.activeForm !== undefined ? { activeForm: input.activeForm } : {}),
     metadata: input.metadata,
     createdAt: now,
