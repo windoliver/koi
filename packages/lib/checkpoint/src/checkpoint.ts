@@ -109,6 +109,47 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
   const tracker = createInFlightTracker();
   const serializer = createRewindSerializer(tracker);
 
+  /**
+   * Persist the fileOps of a stopBlocked turn whose compensating rollback
+   * did NOT fully complete. Writes an "incomplete" status snapshot so
+   * operators retain an audit trail; parentNodeId is intentionally not
+   * advanced, so the chain head stays at the last fully-complete snapshot
+   * and subsequent turns fork from there. Soft-fail on persistence error
+   * — we've already logged; another persistence error would be logged
+   * via console.error and is not fatal.
+   */
+  async function persistIncompleteStopBlocked(
+    state: SessionState,
+    ctx: TurnContext,
+    fileOps: readonly FileOpRecord[],
+    unsuccessful: readonly unknown[],
+  ): Promise<void> {
+    try {
+      const parents = state.parentNodeId !== undefined ? [state.parentNodeId] : [];
+      const payload: CheckpointPayload = {
+        turnIndex: ctx.turnIndex,
+        userTurnIndex: state.userTurnCounter,
+        sessionId: ctx.session.sessionId as unknown as string,
+        fileOps: [...fileOps],
+        driftWarnings: [],
+        capturedAt: Date.now(),
+      };
+      const incompleteStatus: SnapshotStatus = "incomplete";
+      await store.put(state.chainId, payload, parents, {
+        [SNAPSHOT_STATUS_KEY]: incompleteStatus,
+        koi_stop_blocked: true,
+        koi_rollback_failed: true,
+        koi_rollback_unsuccessful_count: unsuccessful.length,
+        ...(ctx.stopGateReason !== undefined ? { koi_stop_reason: ctx.stopGateReason } : {}),
+      });
+    } catch (e: unknown) {
+      console.error(
+        "[koi:checkpoint] failed to persist incomplete snapshot for stopBlocked turn:",
+        e,
+      );
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Per-session state helpers (shared by capture and rewind)
   // -----------------------------------------------------------------------
@@ -313,32 +354,37 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     // "complete" snapshot — a later /rewind could land on partial state.
     //
     // If the interrupted turn already mutated the workspace, we actively
-    // apply compensating ops to roll the disk back before discarding the
-    // buffer. This keeps the filesystem consistent with the chain head
-    // (previous good snapshot) so a subsequent rewind has a well-defined
-    // base. Without this, silently dropping `fileOps` would leave disk
-    // out of sync with the chain head and make rewind compensation
-    // impossible.
+    // apply compensating ops to roll the disk back. When every op lands
+    // cleanly, the buffer is discarded and the chain head stays at the
+    // previous good snapshot. When any op fails (explicit error OR
+    // `skipped-missing-blob` — the target blob is gone so the restore
+    // couldn't run), we fail closed: preserve the fileOps by writing an
+    // `incomplete` marker snapshot so operators still have an audit
+    // trail + potential recovery path. The chain head (parentNodeId) is
+    // NOT advanced in either case.
     if (ctx.stopBlocked === true) {
-      if (fileOps.length > 0) {
-        try {
-          const compensating = fileOps
-            .slice()
-            .sort((a, b) => b.eventIndex - a.eventIndex)
-            .map(toCompensating);
-          const results = await applyCompensatingOps(compensating, config.blobDir, config.backends);
-          const failures = results.filter((r) => r.kind === "error");
-          if (failures.length > 0) {
-            // eslint-disable-next-line no-console -- intentional: operators need to know
-            console.error(
-              `[koi:checkpoint] failed to roll back ${failures.length} op(s) on stopBlocked turn:`,
-              failures,
-            );
-          }
-        } catch (e: unknown) {
-          // eslint-disable-next-line no-console -- intentional
-          console.error("[koi:checkpoint] compensating rollback threw on stopBlocked turn:", e);
+      if (fileOps.length === 0) return;
+      try {
+        const compensating = fileOps
+          .slice()
+          .sort((a, b) => b.eventIndex - a.eventIndex)
+          .map(toCompensating);
+        const results = await applyCompensatingOps(compensating, config.blobDir, config.backends);
+        const unsuccessful = results.filter(
+          (r) => r.kind === "error" || r.kind === "skipped-missing-blob",
+        );
+        if (unsuccessful.length > 0) {
+          console.error(
+            `[koi:checkpoint] rollback incomplete on stopBlocked turn — ${unsuccessful.length} op(s) not restored:`,
+            unsuccessful,
+          );
+          await persistIncompleteStopBlocked(state, ctx, fileOps, unsuccessful);
         }
+      } catch (e: unknown) {
+        console.error("[koi:checkpoint] compensating rollback threw on stopBlocked turn:", e);
+        await persistIncompleteStopBlocked(state, ctx, fileOps, [
+          { kind: "error", path: "<thrown>", cause: e },
+        ]);
       }
       return;
     }
