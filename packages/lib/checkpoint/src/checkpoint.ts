@@ -126,7 +126,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     ctx: TurnContext,
     fileOps: readonly FileOpRecord[],
     unsuccessful: readonly unknown[],
-  ): Promise<void> {
+  ): Promise<{ readonly ok: boolean }> {
     try {
       // Give the aborted turn its OWN userTurnIndex — writing it with the
       // previous prompt's counter would make `/rewind 1` from a subsequent
@@ -151,7 +151,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         return { kind: op.kind, path: op.path, eventIndex: op.eventIndex };
       });
       const incompleteStatus: SnapshotStatus = "incomplete";
-      await store.put(state.chainId, payload, parents, {
+      const putResult = await store.put(state.chainId, payload, parents, {
         [SNAPSHOT_STATUS_KEY]: incompleteStatus,
         koi_stop_blocked: true,
         koi_rollback_failed: true,
@@ -159,11 +159,23 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         koi_rollback_dropped_ops: droppedOps,
         ...(ctx.stopGateReason !== undefined ? { koi_stop_reason: ctx.stopGateReason } : {}),
       });
+      if (!putResult.ok) {
+        console.error(
+          "[koi:checkpoint] incomplete-snapshot persist returned error on stopBlocked turn:",
+          putResult.error,
+        );
+        // Undo the counter advance since the snapshot didn't actually land.
+        state.userTurnCounter -= 1;
+        return { ok: false };
+      }
+      return { ok: true };
     } catch (e: unknown) {
       console.error(
         "[koi:checkpoint] failed to persist incomplete snapshot for stopBlocked turn:",
         e,
       );
+      state.userTurnCounter -= 1;
+      return { ok: false };
     }
   }
 
@@ -407,7 +419,6 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const state = await getOrCreateSession(ctx.session.sessionId);
     const turnKey = String(ctx.turnId);
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
-    state.turnBuffers.delete(turnKey);
 
     // #1638 / stop-gate: a non-normal turn completion (activity-timeout
     // abort, stop-gate veto) must NOT advance the rewind chain head to a
@@ -420,8 +431,10 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     // `skipped-missing-blob` — the target blob is gone so the restore
     // couldn't run), we fail closed: preserve the fileOps by writing an
     // `incomplete` marker snapshot so operators still have an audit
-    // trail + potential recovery path. The chain head (parentNodeId) is
-    // NOT advanced in either case.
+    // trail + potential recovery path. If persistence ALSO fails (e.g.
+    // storage corruption), we retain the buffer in memory and flag the
+    // session as quarantined — subsequent capture writes are blocked
+    // until the buffer is either consumed or manually cleared.
     if (ctx.stopBlocked === true) {
       // Reset the continuation marker so the NEXT successful turn cannot
       // mistakenly fold into the turn BEFORE the aborted one. Without
@@ -432,31 +445,56 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // `/rewind` granularity. Aborted turns do not participate in the
       // "same-user-prompt" grouping.
       state.lastCaptureHadOps = false;
-      if (fileOps.length === 0) return;
+      if (fileOps.length === 0) {
+        state.turnBuffers.delete(turnKey);
+        return;
+      }
+      let rollbackCleanlyDone = false;
+      let unsuccessful: readonly unknown[] = [];
       try {
         const compensating = fileOps
           .slice()
           .sort((a, b) => b.eventIndex - a.eventIndex)
           .map(toCompensating);
         const results = await applyCompensatingOps(compensating, config.blobDir, config.backends);
-        const unsuccessful = results.filter(
+        unsuccessful = results.filter(
           (r) => r.kind === "error" || r.kind === "skipped-missing-blob",
         );
-        if (unsuccessful.length > 0) {
+        if (unsuccessful.length === 0) {
+          rollbackCleanlyDone = true;
+        } else {
           console.error(
             `[koi:checkpoint] rollback incomplete on stopBlocked turn — ${unsuccessful.length} op(s) not restored:`,
             unsuccessful,
           );
-          await persistIncompleteStopBlocked(state, ctx, fileOps, unsuccessful);
         }
       } catch (e: unknown) {
         console.error("[koi:checkpoint] compensating rollback threw on stopBlocked turn:", e);
-        await persistIncompleteStopBlocked(state, ctx, fileOps, [
-          { kind: "error", path: "<thrown>", cause: e },
-        ]);
+        unsuccessful = [{ kind: "error", path: "<thrown>", cause: e }];
+      }
+      if (rollbackCleanlyDone) {
+        state.turnBuffers.delete(turnKey);
+        return;
+      }
+      // Rollback did NOT fully apply. Try to persist an incomplete marker
+      // as the audit record; keep the buffer alive if persistence also
+      // fails so disk-vs-chain divergence can still be recovered.
+      const persistResult = await persistIncompleteStopBlocked(state, ctx, fileOps, unsuccessful);
+      if (persistResult.ok) {
+        state.turnBuffers.delete(turnKey);
+      } else {
+        console.error(
+          "[koi:checkpoint] rollback AND incomplete-snapshot persistence both failed on stopBlocked turn — " +
+            "retaining buffered fileOps in session state for potential recovery",
+        );
       }
       return;
     }
+
+    // Normal completed turn — safe to clear the per-turn buffer now that
+    // we've read `fileOps`. The stopBlocked branch above manages its own
+    // buffer lifecycle based on rollback/persistence outcome.
+    state.turnBuffers.delete(turnKey);
 
     // User-turn boundary detection. A single user prompt that invokes tools
     // typically produces two engine turns:
