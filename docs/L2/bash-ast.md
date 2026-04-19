@@ -139,16 +139,29 @@ access, and env mutations. Covers ten commands: `rm`, `cp`, `mv`,
 
 ### Public API
 
+**Permission consumers MUST use `evaluateBashCommand`** as the single
+entry point. It accounts for shell redirects and command-local env vars,
+which the raw `spec*(argv)` functions do NOT see. Calling raw specs
+from a permissions middleware is unsafe — `specCurl(argv)` will treat
+`curl https://x > /tmp/out` as if no file write happened.
+
 ```typescript
 import {
+  // Primary public API for permission consumers:
   type CommandSemantics,
-  type CommandSpec,
+  type EvaluateInput,
+  type EvaluateOptions,
   type NetworkAccess,
+  type Redirect,
   type SpecResult,
   BUILTIN_SPECS,
   createSpecRegistry,
-  lookupSpec,
+  evaluateBashCommand,
   registerSpec,
+  // Lower-level building blocks (advanced/test use; do NOT use directly
+  // for permission decisions — they drop redirect/env effects):
+  type CommandSpec,
+  lookupSpec,
   specRm, specCp, specMv, specChmod, specChown,
   specCurl, specWget, specTar, specScp, specSsh,
 } from "@koi/bash-ast";
@@ -177,14 +190,17 @@ reads / writes / hits on the network. **Consumers SHOULD use
 `evaluateBashCommand(simpleCommand, registry)` as the public entry
 point** — it:
 
-1. Refuses path-qualified `argv[0]` (`/bin/rm`, `./rm`, `/tmp/rm`):
-   consumers MUST canonicalize the executable identity (resolve symlinks,
-   allowlist trusted paths) and pass the **bare basename** as `argv[0]`
-   before calling. The spec layer cannot tell `/bin/rm` from `/tmp/rm`
-   from a basename match alone, so emitting builtin semantics for an
-   arbitrary path is unsafe — the canonicalization step is the
-   consumer's job.
-2. Looks up the spec by `argv[0]` exact-match against the registry.
+1. Refuses path-qualified `argv[0]` (`/bin/rm`, `./rm`, `/tmp/rm`)
+   UNLESS the consumer passes `options.verifiedBaseName` to assert
+   they have already canonicalized the executable identity (resolved
+   symlinks, allowlisted trusted paths). When provided, the verified
+   bare name overrides `argv[0]` for both registry lookup and the
+   spec dispatch. The spec layer cannot tell `/bin/rm` from `/tmp/rm`
+   from a basename match alone — that trust check is the consumer's
+   responsibility, and `verifiedBaseName` is the explicit opt-in so
+   forgetting it fails loudly.
+2. Looks up the spec by the resolved name (verifiedBaseName or
+   bare argv[0]) against the registry.
 3. Calls the spec with `argv`.
 4. Merges **modeled** redirects (`>`, `>>`, `<`, `&>`, `&>>`, `>|`) into
    `semantics.writes` / `semantics.reads`. **Here-strings (`<<<`) are

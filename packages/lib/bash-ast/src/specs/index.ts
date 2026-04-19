@@ -10,7 +10,12 @@ export { specChmod } from "./chmod.js";
 export { specChown } from "./chown.js";
 export { specCp } from "./cp.js";
 export { specCurl } from "./curl.js";
-export { type EvaluateInput, evaluateBashCommand, type Redirect } from "./evaluate.js";
+export {
+  type EvaluateInput,
+  type EvaluateOptions,
+  evaluateBashCommand,
+  type Redirect,
+} from "./evaluate.js";
 export { specMv } from "./mv.js";
 export { BUILTIN_SPECS, createSpecRegistry, lookupSpec, registerSpec } from "./registry.js";
 export { specRm } from "./rm.js";

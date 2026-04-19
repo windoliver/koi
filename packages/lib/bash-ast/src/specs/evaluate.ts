@@ -15,13 +15,14 @@ import type { CommandSemantics, CommandSpec, SpecResult } from "./types.js";
  *
  * Behavior:
  *   - `argv[0]` MUST be a bare command name. Path-qualified executables
- *     (`/bin/rm`, `/tmp/rm`, `./rm`) are REFUSED. The spec layer cannot
- *     distinguish `/bin/rm` from `/tmp/rm` (a wrapper) by basename alone,
- *     so emitting builtin semantics for an arbitrary path is unsafe.
- *     **Consumers MUST verify executable identity (canonicalize symlinks,
- *     resolve against a vetted PATH/allowlist) BEFORE calling this
- *     function and pass the bare name (or rewrite `argv[0]`).**
- *   - `argv[0]` not in `registry` → `refused`, `cause: "parse-error"`.
+ *     (`/bin/rm`, `/tmp/rm`, `./rm`) are REFUSED unless the consumer
+ *     passes `options.verifiedBaseName` to assert that they have already
+ *     verified the executable identity (canonicalized symlinks, vetted
+ *     PATH/allowlist). The spec layer cannot distinguish `/bin/rm` from
+ *     `/tmp/rm` (a wrapper) by basename alone — that trust check is the
+ *     consumer's responsibility, and `verifiedBaseName` is the explicit
+ *     opt-in so naively calling without verification fails loudly.
+ *   - Resolved command name not in `registry` → `refused`, `cause: "parse-error"`.
  *   - Spec returns `refused` → propagated.
  *   - Spec returns `complete` or `partial`:
  *       - Merge **modeled** redirects (`>`, `>>`, `<`, `&>`, `&>>`,
@@ -43,6 +44,25 @@ export interface EvaluateInput {
   readonly redirects: readonly Redirect[];
 }
 
+export interface EvaluateOptions {
+  /**
+   * Bare command name to dispatch with, after the consumer has verified
+   * `argv[0]`'s executable identity (canonicalized symlinks, allowlisted
+   * trusted paths). When set, `evaluateBashCommand` uses this name for
+   * registry lookup AND substitutes it into `argv[0]` for the spec call,
+   * accepting walker output where `argv[0]` is path-qualified.
+   *
+   * When omitted, `evaluateBashCommand` requires `argv[0]` to already be
+   * a bare command name; path-qualified `argv[0]` is refused so that
+   * forgetting the verification step fails loudly.
+   *
+   * Passing `verifiedBaseName` is the consumer's explicit assertion that
+   * the executable identity has been verified out of band; this package
+   * does NOT perform that check.
+   */
+  readonly verifiedBaseName?: string;
+}
+
 export interface Redirect {
   readonly op: string;
   readonly target: string;
@@ -57,29 +77,44 @@ const WRITE_OPS: ReadonlySet<string> = new Set([">", ">>", "&>", "&>>", ">|"]);
 export function evaluateBashCommand(
   cmd: EvaluateInput,
   registry: ReadonlyMap<string, CommandSpec>,
+  options?: EvaluateOptions,
 ): SpecResult {
-  // Bare command names only. Path-qualified `argv[0]` is refused so the
-  // spec layer never silently authorizes an arbitrary executable as a
-  // builtin. Consumers MUST canonicalize the executable identity and
-  // pass the bare name (see docstring).
+  // Resolve the bare command name. If the consumer has verified the
+  // executable identity, they pass `verifiedBaseName` and we accept any
+  // `argv[0]` (typically path-qualified walker output). Otherwise we
+  // require `argv[0]` to already be a bare command name — path-qualified
+  // input fails loudly so callers can't accidentally bless wrappers.
   const head = cmd.argv[0];
-  if (head === undefined || head === "" || head.includes("/")) {
-    return {
-      kind: "refused",
-      cause: "parse-error",
-      detail: `evaluateBashCommand requires a bare command name; got "${head ?? "<empty>"}". Consumer must canonicalize executable identity and pass the bare basename.`,
-    };
+  let resolvedName: string;
+  if (options?.verifiedBaseName !== undefined) {
+    resolvedName = options.verifiedBaseName;
+  } else {
+    if (head === undefined || head === "" || head.includes("/")) {
+      return {
+        kind: "refused",
+        cause: "parse-error",
+        detail: `evaluateBashCommand requires a bare command name; got "${head ?? "<empty>"}". Pass options.verifiedBaseName after consumer-side executable-identity verification.`,
+      };
+    }
+    resolvedName = head;
   }
-  const spec = registry.get(head);
+  const spec = registry.get(resolvedName);
   if (spec === undefined) {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: `no spec registered for command "${head}"`,
+      detail: `no spec registered for command "${resolvedName}"`,
     };
   }
 
-  const raw = spec(cmd.argv);
+  // The spec's own dispatch check is bare-name only. When the consumer
+  // passed a verifiedBaseName, swap argv[0] to that name so the spec
+  // dispatch matches.
+  const argvForSpec =
+    options?.verifiedBaseName !== undefined && head !== resolvedName
+      ? [resolvedName, ...cmd.argv.slice(1)]
+      : cmd.argv;
+  const raw = spec(argvForSpec);
   if (raw.kind === "refused") return raw;
 
   const redirectReads: string[] = [];

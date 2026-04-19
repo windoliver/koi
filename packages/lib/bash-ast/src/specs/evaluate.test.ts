@@ -116,6 +116,48 @@ describe("evaluateBashCommand — path-qualified argv[0] is REFUSED (consumer mu
   });
 });
 
+describe("evaluateBashCommand — verifiedBaseName opt-in", () => {
+  test("accepts /bin/rm when consumer passes verifiedBaseName", () => {
+    const result = evaluateBashCommand(input(["/bin/rm", "foo"]), BUILTIN_SPECS, {
+      verifiedBaseName: "rm",
+    });
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["foo"]);
+  });
+
+  test("accepts /usr/local/bin/curl when consumer passes verifiedBaseName", () => {
+    const result = evaluateBashCommand(
+      input(["/usr/local/bin/curl", "https://example.com/"]),
+      BUILTIN_SPECS,
+      { verifiedBaseName: "curl" },
+    );
+    expect(result.kind).toBe("complete");
+  });
+
+  test("verifiedBaseName overrides argv[0] for registry lookup", () => {
+    // Even if argv[0] is bare and matches a registered builtin, the
+    // verifiedBaseName takes precedence (consumer asserts the actual
+    // executable identity).
+    const result = evaluateBashCommand(input(["whatever"]), BUILTIN_SPECS, {
+      verifiedBaseName: "rm",
+    });
+    // argv[0] = "whatever" is NOT "rm" so specRm refuses on dispatch
+    // — but only because we substitute argv[0] = "rm" before calling
+    // the spec. So we expect refused-by-positional-missing.
+    expect(result.kind).toBe("refused");
+  });
+
+  test("verifiedBaseName not in registry → refused with that name in detail", () => {
+    const result = evaluateBashCommand(input(["/bin/git", "status"]), BUILTIN_SPECS, {
+      verifiedBaseName: "git",
+    });
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.detail).toContain("git");
+  });
+});
+
 describe("evaluateBashCommand — env vars downgrade to partial", () => {
   test("non-empty envVars downgrades complete → partial", () => {
     const result = evaluateBashCommand(
