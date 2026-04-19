@@ -378,6 +378,11 @@ export const executionStack: PresetStack = {
     let bashOutputBuffersRef: { current: Map<TaskItemId, BashOutputBuffer> } = {
       current: new Map(),
     };
+    // Tracks all TaskItemIds that ever had a buffer in the current session.
+    // Used by bufferReader to distinguish "evicted" (was in this set, now absent
+    // from the live map) from "never had a buffer" (not in this set at all).
+    // let: mutable — replaced (new Set) on session reset alongside bashOutputBuffersRef.
+    let everHadBufferRef: { current: Set<TaskItemId> } = { current: new Set() };
 
     // LRU eviction: maximum number of terminal-task buffers retained.
     // Live (in_progress) buffers are never evicted — only terminal ones count.
@@ -390,6 +395,7 @@ export const executionStack: PresetStack = {
       if (buf === undefined) {
         buf = createBashOutputBuffer({ maxBytes: MAX_OUTPUT_BYTES });
         bashOutputBuffersRef.current.set(id, buf);
+        everHadBufferRef.current.add(id);
       }
       return buf;
     }
@@ -445,6 +451,16 @@ export const executionStack: PresetStack = {
                 getWatchStore: () => watchPatternStoreRef.current,
                 getOutputBuffer: (id) => getOrCreateBuffer(id),
                 markOutputBufferTerminal: (id) => {
+                  // Guard against late finalizers from a pre-reset session: if this
+                  // taskId is not tracked by the current session's refs, it was spawned
+                  // before the last onResetSession — treat as stale and no-op.
+                  // After a reset, both refs are replaced with fresh empty collections,
+                  // so any pre-reset taskId will fail both checks.
+                  const currentBuffers = bashOutputBuffersRef.current;
+                  const currentEverHad = everHadBufferRef.current;
+                  if (!currentBuffers.has(id) && !currentEverHad.has(id)) {
+                    return;
+                  }
                   // Record this task as terminal (for LRU eviction order).
                   // The buffer is KEPT so postmortem reads (task_output matches_only,
                   // buffered-stdout on failed/killed) still work. Only evict when
@@ -453,7 +469,7 @@ export const executionStack: PresetStack = {
                   if (terminalBufferOrder.length > TERMINAL_BUFFER_RETAIN) {
                     const evictId = terminalBufferOrder.shift();
                     if (evictId !== undefined) {
-                      bashOutputBuffersRef.current.delete(evictId);
+                      currentBuffers.delete(evictId);
                     }
                   }
                 },
@@ -495,7 +511,13 @@ export const executionStack: PresetStack = {
             // Impact: pre-migration legacy tasks (createdBy === undefined) are no
             // longer readable by default. Run a migration to backfill createdBy
             // on existing task-board entries if access is needed.
-            bufferReader: (id) => bashOutputBuffersRef.current.get(id),
+            bufferReader: (id) => {
+              const buf = bashOutputBuffersRef.current.get(id);
+              if (buf !== undefined) return buf;
+              // Distinguish evicted (was allocated this session) from never-buffered.
+              if (everHadBufferRef.current.has(id)) return "evicted" as const;
+              return undefined;
+            },
           }).map((tool) =>
             createSingleToolProvider({
               name: `task-${tool.descriptor.name}`,
@@ -600,6 +622,7 @@ export const executionStack: PresetStack = {
         watchPatternStoreRef.current.dispose?.();
         watchPatternStoreRef = { current: createPendingMatchStore() };
         bashOutputBuffersRef = { current: new Map() };
+        everHadBufferRef = { current: new Set() };
         terminalBufferOrder = [];
       },
     };
