@@ -1667,7 +1667,7 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.includes("well-known")) {
         discoveryCalls += 1;
         // First call: degraded — registration_endpoint missing.
-        // Second call (forced by re-discovery on terminal path):
+        // Second call (forced by re-discovery before terminal):
         // recovered.
         const md: Record<string, string> = {
           issuer: "https://auth.example.com",
@@ -1679,6 +1679,19 @@ describe("createOAuthAuthProvider", () => {
         }
         endpointPresent = true; // recovered for next call
         return Promise.resolve(new Response(JSON.stringify(md), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ client_id: "recovered-cid", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
     }) as unknown as typeof fetch;
@@ -1694,9 +1707,9 @@ describe("createOAuthAuthProvider", () => {
     });
 
     // token() triggers refresh → DCR resolution → re-discovery before
-    // terminal. Re-discovery returns the recovered metadata, so the
-    // resolver returns transient instead of terminal. Tokens preserved.
-    expect(await provider.token()).toBeUndefined();
+    // terminal. Re-discovery returns the recovered metadata, DCR
+    // succeeds, refresh succeeds. Tokens preserved (rotated).
+    expect(await provider.token()).toBe("ok");
     // Both discovery calls fired (initial + forced refresh).
     expect(discoveryCalls).toBeGreaterThanOrEqual(2);
     // Tokens MUST still be there — the recovery path saved them.
@@ -1806,6 +1819,72 @@ describe("createOAuthAuthProvider", () => {
     // distinct from `discovery_failed`. Hosts route remediation
     // differently for each.
     expect(failures.map((f) => f.kind)).toContain("authorize_failed");
+  });
+
+  test("startAuthFlow re-discovers metadata before declaring DCR unavailable", async () => {
+    // Mirrors the refresh-path recovery: a stale cached metadata
+    // snapshot may have omitted registration_endpoint during a partial
+    // discovery rollout. startAuthFlow must NOT report dcr_unavailable
+    // until a fresh discovery confirms the AS still doesn't advertise
+    // DCR. Otherwise one transient degradation bricks interactive auth
+    // for the lifetime of the provider.
+    const storage = createMockStorage();
+    let discoveryCalls = 0;
+    let endpointPresent = false;
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        discoveryCalls += 1;
+        const md: Record<string, string> = {
+          issuer: "https://auth.example.com",
+          authorization_endpoint: "https://auth.example.com/authorize",
+          token_endpoint: "https://auth.example.com/token",
+        };
+        if (endpointPresent) {
+          md.registration_endpoint = "https://auth.example.com/register";
+        }
+        endpointPresent = true;
+        return Promise.resolve(new Response(JSON.stringify(md), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ client_id: "after-recovery", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "auth-recovery",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(true);
+    // Discovery fired twice — initial degraded + forced refresh.
+    expect(discoveryCalls).toBeGreaterThanOrEqual(2);
   });
 
   test("preserves persisted DCR client on local authorize failure (browser crash, timeout, cancel)", async () => {

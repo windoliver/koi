@@ -178,7 +178,17 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         }
       }
 
-      if (metadata?.registrationEndpoint === undefined) return undefined;
+      // Mirror the refresh-path behavior: a stale cached metadata
+      // snapshot may have omitted registration_endpoint during a
+      // partial discovery rollout. Force a re-discovery before
+      // declaring DCR unavailable so the AS gets a chance to recover
+      // in-process; otherwise one transient degradation would brick
+      // interactive auth for the lifetime of the provider.
+      let effectiveMetadata = metadata;
+      if (effectiveMetadata?.registrationEndpoint === undefined) {
+        effectiveMetadata = await refreshMetadata();
+      }
+      if (effectiveMetadata?.registrationEndpoint === undefined) return undefined;
 
       // registerDynamicClient throws on a non-HTTPS registration_endpoint
       // (it refuses to send registration credentials over cleartext).
@@ -187,10 +197,10 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       let result: Awaited<ReturnType<typeof registerDynamicClient>>;
       try {
         result = await registerDynamicClient({
-          registrationEndpoint: metadata.registrationEndpoint,
+          registrationEndpoint: effectiveMetadata.registrationEndpoint,
           redirectUri,
           clientName: serverName,
-          issuer: metadata.issuer,
+          issuer: effectiveMetadata.issuer,
         });
       } catch (e: unknown) {
         // Throws are non-HTTPS endpoints — terminal until operator fixes.
