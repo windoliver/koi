@@ -1,3 +1,4 @@
+export { createArtifactStore } from "./create-store.js";
 export type {
   Artifact,
   ArtifactError,
