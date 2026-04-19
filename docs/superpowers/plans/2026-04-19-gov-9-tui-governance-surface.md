@@ -344,27 +344,72 @@ Add to `packages/security/governance-defaults/src/__tests__/pattern-backend.test
 import { describe, expect, test } from "bun:test";
 import { createPatternBackend } from "../pattern-backend.js";
 
-describe("createPatternBackend describeRules", () => {
-  test("returns RuleDescriptor[] for configured rules", async () => {
+// NOTE: PatternRule shape is { match, decision, rule?, severity?, message? }
+// NOT { id, pattern, effect, description }. The mapping to RuleDescriptor is:
+//   id        = rule.rule ?? `pattern.${idx}`
+//   description = rule.message ?? rule.rule ?? "(no description)"
+//   effect    = rule.decision
+//   pattern   = describeMatch(rule.match)  e.g. "tool_call:toolId=Bash", "*"
+
+describe("describeRules", () => {
+  test("maps PatternRule fields to RuleDescriptor", async () => {
     const backend = createPatternBackend({
       rules: [
-        { id: "deny-rm-rf", pattern: "rm -rf /*", effect: "deny", description: "block dangerous shell" },
-        { id: "advise-curl", pattern: "curl *", effect: "advise", description: "warn on curl" },
+        {
+          match: { kind: "tool_call", toolId: "Bash" },
+          decision: "deny",
+          rule: "deny-bash",
+          message: "Bash tool denied by policy",
+        },
+        {
+          match: { kind: "model_call", model: "gpt-4o" },
+          decision: "allow",
+          rule: "allow-gpt4o",
+        },
       ],
     });
     const out = await backend.describeRules!();
     expect(out).toHaveLength(2);
     expect(out[0]).toEqual({
-      id: "deny-rm-rf",
-      description: "block dangerous shell",
+      id: "deny-bash",
+      description: "Bash tool denied by policy",
       effect: "deny",
-      pattern: "rm -rf /*",
+      pattern: "tool_call:toolId=Bash",
+    });
+    expect(out[1]).toEqual({
+      id: "allow-gpt4o",
+      description: "allow-gpt4o",
+      effect: "allow",
+      pattern: "model_call:model=gpt-4o",
     });
   });
 
-  test("returns empty array when backend has no rules", async () => {
+  test("returns empty array when backend has no rules and no defaultDeny", async () => {
     const backend = createPatternBackend({ rules: [] });
     expect(await backend.describeRules!()).toEqual([]);
+  });
+
+  test("synthesizes id from index when rule.rule omitted", async () => {
+    const backend = createPatternBackend({ rules: [{ match: {}, decision: "deny" }] });
+    const [d] = (await backend.describeRules!()) ?? [];
+    expect(d?.id).toBe("pattern.0");
+    expect(d?.description).toBe("(no description)");
+    expect(d?.pattern).toBe("*");
+  });
+
+  test("appends synthetic default-deny rule when defaultDeny is true", async () => {
+    const backend = createPatternBackend({
+      rules: [{ match: { kind: "tool_call" }, decision: "allow", rule: "allow-tools" }],
+      defaultDeny: true,
+    });
+    const out = (await backend.describeRules!()) ?? [];
+    expect(out).toHaveLength(2);
+    expect(out[1]).toEqual({
+      id: "default-deny",
+      description: "no rule matched and defaultDeny is enabled",
+      effect: "deny",
+      pattern: "*",
+    });
   });
 });
 ```
@@ -377,19 +422,49 @@ bun test packages/security/governance-defaults/src/__tests__/pattern-backend.tes
 
 - [ ] **Step 4: Implement `describeRules` in pattern-backend**
 
-In `pattern-backend.ts`, find the `return { evaluator, ... }` object inside `createPatternBackend` and add:
+Add `RuleDescriptor` to the type-only import block, then add two helpers above `createPatternBackend`:
 
 ```typescript
-    describeRules: () =>
-      config.rules.map((r) => ({
-        id: r.id,
-        description: r.description ?? r.id,
-        effect: r.effect,
-        pattern: r.pattern,
-      })),
+import type { RuleDescriptor, ... } from "@koi/core/governance-backend";
+
+function describeMatch(match: PatternMatch): string {
+  const selectors: string[] = [];
+  if (match.toolId !== undefined) selectors.push(`toolId=${match.toolId}`);
+  if (match.model !== undefined) selectors.push(`model=${match.model}`);
+  if (match.kind !== undefined) {
+    return selectors.length === 0 ? match.kind : `${match.kind}:${selectors.join(",")}`;
+  }
+  return selectors.length === 0 ? "*" : selectors.join(",");
+}
+
+function ruleToDescriptor(rule: PatternRule, idx: number): RuleDescriptor {
+  return {
+    id: rule.rule ?? `pattern.${idx}`,
+    description: rule.message ?? rule.rule ?? "(no description)",
+    effect: rule.decision,
+    pattern: describeMatch(rule.match),
+  };
+}
 ```
 
-If the backend stores rules in a different field, adapt the source accordingly. Verify type is `RuleDescriptor[]` by importing `import type { RuleDescriptor } from "@koi/core/governance-backend"`.
+Inside `createPatternBackend`, add `describeRules` alongside `evaluator` in the returned object:
+
+```typescript
+function describeRules(): readonly RuleDescriptor[] {
+  const out = rules.map((r, i) => ruleToDescriptor(r, i));
+  if (defaultDeny) {
+    return [...out, {
+      id: "default-deny",
+      description: "no rule matched and defaultDeny is enabled",
+      effect: "deny",
+      pattern: "*",
+    }];
+  }
+  return out;
+}
+
+return { evaluator: { evaluate }, describeRules };
+```
 
 - [ ] **Step 5: Run — expect PASS**
 
