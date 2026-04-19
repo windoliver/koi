@@ -160,3 +160,55 @@ describe("resolveNavCommand", () => {
     expect(resolveNavCommand("system:quit")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ToastOverlay integration
+// ---------------------------------------------------------------------------
+
+describe("TuiRoot — ToastOverlay", () => {
+  test("renders ToastOverlay with current toasts from store", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    // Initial state: no toasts → no toast glyphs in frame
+    expect(utils.captureCharFrame()).not.toContain("⚠");
+
+    utils.store.dispatch({
+      kind: "add_toast",
+      toast: {
+        id: "t1",
+        kind: "warn",
+        key: "test",
+        title: "Budget alert",
+        body: "$1.60 / $2.00",
+        ts: 0,
+      },
+    });
+    await utils.renderOnce();
+    expect(utils.captureCharFrame()).toContain("Budget alert");
+    expect(utils.captureCharFrame()).toContain("⚠");
+    utils.renderer.destroy();
+  });
+
+  test("ToastOverlay dispatches dismiss_toast when onDismiss fires", async () => {
+    const utils = await renderRoot();
+    await utils.renderOnce();
+    utils.store.dispatch({
+      kind: "add_toast",
+      toast: {
+        id: "t-fast",
+        kind: "info",
+        key: "test",
+        title: "x",
+        body: "y",
+        ts: 0,
+        autoDismissMs: 20,
+      },
+    });
+    await utils.renderOnce();
+    expect(utils.store.getState().toasts).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 200));
+    await utils.renderOnce();
+    expect(utils.store.getState().toasts).toHaveLength(0);
+    utils.renderer.destroy();
+  });
+});

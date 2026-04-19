@@ -34,6 +34,7 @@ import { CostDashboardView } from "./components/CostDashboardView.js";
 import { PluginsView } from "./components/PluginsView.js";
 import { TrajectoryView } from "./components/TrajectoryView.js";
 import { StatusBar } from "./components/StatusBar.js";
+import { ToastOverlay } from "./components/Toast.js";
 import { handleGlobalKey } from "./keyboard.js";
 import type { TuiStore } from "./state/store.js";
 import type { SessionSummary, TuiModal, TuiView } from "./state/types.js";
@@ -150,6 +151,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   const activeView = useTuiStore((s) => s.activeView);
   const modal = useTuiStore((s) => s.modal);
   const agentStatus = useTuiStore((s) => s.agentStatus);
+  const toasts = useTuiStore((s) => s.toasts);
 
   // #16: notify bridge when a turn completes (processing → idle transition)
   createEffect(
@@ -454,6 +456,11 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           focused={true}
         />
       </Show>
+      {/* Toast overlay — top-right transient notifications (gov-9). */}
+      <ToastOverlay
+        toasts={toasts()}
+        onDismiss={(id) => store.dispatch({ kind: "dismiss_toast", id })}
+      />
     </box>
   );
 }
