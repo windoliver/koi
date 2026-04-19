@@ -45,6 +45,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/test",
   "@koi/token-estimator",
   "@koi/tools-core",
+  "@koi/url-safety",
   "@koi/validation",
 ]);
 

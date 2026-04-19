@@ -47,6 +47,7 @@
       - "packages/**/test/**"
       - "packages/**/token-estimator/**"
       - "packages/**/tools-core/**"
+      - "packages/**/url-safety/**"
       - "packages/**/validation/**"
 
 "layer:L3":
@@ -96,4 +97,5 @@
       - "!packages/**/test/**"
       - "!packages/**/token-estimator/**"
       - "!packages/**/tools-core/**"
+      - "!packages/**/url-safety/**"
       - "!packages/**/validation/**"

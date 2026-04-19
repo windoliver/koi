@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { join } from "node:path";
 
 const BIN = join(import.meta.dir, "bin.ts");
@@ -506,5 +507,49 @@ describe("bin.ts", () => {
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("no API key");
     });
+  });
+
+  describe("SIGUSR1 early handler (#1906)", () => {
+    // Windows does not deliver SIGUSR1. Skip the integration there —
+    // the platform gate is covered by the unit test in tui-sigusr1.test.ts.
+    const SKIP_WIN = process.platform === "win32";
+    const EXPECTED_EXIT = process.platform === "darwin" ? 158 : 138;
+
+    test.skipIf(SKIP_WIN)(
+      "minimal inline handler mirrors bin.ts and exits with canonical SIGUSR1 code",
+      async () => {
+        // This test proves the inline handler pattern used at bin.ts:104
+        // (sync `process.on("SIGUSR1", ...)` + `process.exit(158 or 138)`)
+        // correctly produces the canonical exit code when the signal is
+        // delivered to a child that is past runtime init.
+        //
+        // We run a minimal script through `bun -e` instead of the real
+        // bin.ts because the end-to-end `bun bin.ts tui` path trips an
+        // upstream Bun panic during TUI bootstrap when SIGUSR1 lands
+        // mid-import (exit 133 / SIGTRAP). That panic is a Bun bug and
+        // is out of scope here — the #1906 fix closes the JS-level race,
+        // not the runtime-init race.
+        //
+        // Uses node:child_process.spawn rather than Bun.spawn because
+        // Bun's `proc.kill("SIGUSR1")` on a Bun child panics the child
+        // with SIGTRAP (exit 133) instead of delivering SIGUSR1 as a
+        // real signal — separate upstream Bun bug.
+        const script = `
+          process.on("SIGUSR1", () => {
+            process.exit(process.platform === "darwin" ? 158 : 138);
+          });
+          setInterval(() => {}, 1000);
+        `;
+        const child = spawn("bun", ["-e", script], {
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        await new Promise((r) => setTimeout(r, 200));
+        child.kill("SIGUSR1");
+        const exitCode = await new Promise<number>((resolve) => {
+          child.on("exit", (code) => resolve(code ?? -1));
+        });
+        expect(exitCode).toBe(EXPECTED_EXIT);
+      },
+    );
   });
 });

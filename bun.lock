@@ -543,7 +543,12 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
+    },
+    "packages/lib/url-safety": {
+      "name": "@koi/url-safety",
+      "version": "0.0.0",
     },
     "packages/lib/validation": {
       "name": "@koi/validation",
@@ -717,6 +722,7 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -1377,6 +1383,8 @@
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
+
+    "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 

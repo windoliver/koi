@@ -8,9 +8,6 @@
   "references": [
     {
       "path": "../../kernel/core"
-    },
-    {
-      "path": "../url-safety"
     }
   ]
 }

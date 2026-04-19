@@ -2099,6 +2099,104 @@ describe("web-fetch ATIF trajectory (golden file)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// url-safety-block trajectory: @koi/tools-web routed through @koi/url-safety.
+// Locks in the end-to-end block flow: web_fetch targets localhost, the tool's
+// createSafeFetcher rejects it, the executor maps the rejection to a
+// PERMISSION tool result, and the verbatim url-safety block wording reaches
+// the model. Any regression in this chain (renamed error codes, swallowed
+// block reason, retryable misclassification) flips at least one of these.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step returns PERMISSION with verbatim url-safety block reason", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    const firstCall = toolSteps[0]?.tool_calls?.[0];
+    expect(firstCall?.arguments.url).toBe("http://localhost:3000/admin");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim block-reason wording produced by @koi/url-safety's BLOCKED_HOSTS
+    // check must reach the tool result — this is the contract the model sees.
+    expect(content).toContain("Blocked host localhost");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// url-safety-dns-block trajectory: exercises @koi/url-safety's DNS-resolved
+// IP check (the deeper defence line behind the DNS-free tool preflight).
+// `localtest.me` is a public DNS name that resolves to 127.0.0.1 — it
+// passes the tool's preflightBlockReason (not in BLOCKED_HOSTS / suffixes /
+// IP literals) but fails isSafeUrl once DNS returns the loopback address.
+// Locks in that the DNS-rebind defence reaches the model verbatim.
+// ---------------------------------------------------------------------------
+
+describe("url-safety-dns-block ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with web_fetch in tool definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: {
+        readonly tool_definitions?: readonly { readonly name: string }[];
+      };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "web_fetch")).toBe(true);
+  });
+
+  test("web_fetch tool step surfaces createSafeFetcher's resolved-IP rejection", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/url-safety-dns-block.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly {
+          readonly function_name: string;
+          readonly arguments: { readonly url?: string };
+        }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+
+    const toolSteps = doc.steps.filter(
+      (s) => s.source === "tool" && s.tool_calls?.[0]?.function_name === "web_fetch",
+    );
+    expect(toolSteps.length).toBeGreaterThan(0);
+    expect(toolSteps[0]?.tool_calls?.[0]?.arguments.url).toBe("http://localtest.me/");
+
+    const content = toolSteps[0]?.observation?.results?.[0]?.content ?? "";
+    // Verbatim wording produced by createSafeFetcher wrapping isSafeUrl's
+    // resolved-IP rejection. The "url-safety:" prefix comes from
+    // safe-fetcher.ts; the "Host X resolves to blocked IP Y" template
+    // comes from safe-url.ts. Both must flow to the tool result unchanged.
+    expect(content).toContain("url-safety:");
+    expect(content).toContain("Host localtest.me resolves to blocked IP 127.0.0.1");
+    expect(content).toContain("PERMISSION");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L2 golden queries: @koi/permissions (2 queries)
 // ---------------------------------------------------------------------------
 
@@ -2509,7 +2607,9 @@ describe("Golden: @koi/channel-cli", () => {
 
 describe("Golden: @koi/tools-web", () => {
   test("SSRF protection blocks private IPs", async () => {
-    const { isBlockedIp } = await import("@koi/tools-web");
+    // isBlockedIp moved from @koi/tools-web to the shared @koi/url-safety
+    // L0u package during the url-policy migration.
+    const { isBlockedIp } = await import("@koi/url-safety");
 
     expect(isBlockedIp("127.0.0.1")).toBe(true);
     expect(isBlockedIp("10.0.0.1")).toBe(true);
@@ -2524,6 +2624,64 @@ describe("Golden: @koi/tools-web", () => {
     const result = htmlToMarkdown("<h1>Hello</h1><p>World</p>");
     expect(result).toContain("Hello");
     expect(result).toContain("World");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L2 golden queries: @koi/url-safety — SSRF/blocklist validator (standalone)
+// ---------------------------------------------------------------------------
+
+describe("Golden: @koi/url-safety", () => {
+  test("isSafeUrl blocks localhost/private hosts and IP literals, allows public", async () => {
+    const { isSafeUrl } = await import("@koi/url-safety");
+
+    // Host-name blocklist
+    const localhost = await isSafeUrl("http://localhost:3000/admin");
+    expect(localhost.ok).toBe(false);
+    if (!localhost.ok) {
+      expect(localhost.reason).toContain("Blocked host localhost");
+    }
+
+    // Loopback IP literal
+    const loopbackIp = await isSafeUrl("http://127.0.0.1/");
+    expect(loopbackIp.ok).toBe(false);
+
+    // RFC1918 IP literal
+    const rfc1918 = await isSafeUrl("http://10.0.0.1/");
+    expect(rfc1918.ok).toBe(false);
+
+    // Cloud metadata IP literal (169.254.169.254) — highest-risk SSRF target
+    const metadata = await isSafeUrl("http://169.254.169.254/latest/meta-data/");
+    expect(metadata.ok).toBe(false);
+
+    // Non-HTTP protocol
+    const fileUrl = await isSafeUrl("file:///etc/passwd");
+    expect(fileUrl.ok).toBe(false);
+  });
+
+  test("isBlockedIp classifies IPv4 + IPv6 SSRF ranges correctly", async () => {
+    const { isBlockedIp } = await import("@koi/url-safety");
+
+    // IPv4 — private, loopback, link-local, CGNAT, metadata
+    expect(isBlockedIp("127.0.0.1")).toBe(true);
+    expect(isBlockedIp("10.0.0.1")).toBe(true);
+    expect(isBlockedIp("192.168.1.1")).toBe(true);
+    expect(isBlockedIp("169.254.169.254")).toBe(true);
+    expect(isBlockedIp("100.64.0.1")).toBe(true);
+
+    // IPv4 — public (Google DNS, Cloudflare DNS)
+    expect(isBlockedIp("8.8.8.8")).toBe(false);
+    expect(isBlockedIp("1.1.1.1")).toBe(false);
+
+    // IPv6 — loopback, link-local, ULA, IPv4-mapped loopback, NAT64
+    expect(isBlockedIp("::1")).toBe(true);
+    expect(isBlockedIp("fe80::1")).toBe(true);
+    expect(isBlockedIp("fc00::1")).toBe(true);
+    expect(isBlockedIp("::ffff:127.0.0.1")).toBe(true);
+    expect(isBlockedIp("64:ff9b::a00:1")).toBe(true);
+
+    // IPv6 — public (Google public DNS v6)
+    expect(isBlockedIp("2001:4860:4860::8888")).toBe(false);
   });
 });
 
