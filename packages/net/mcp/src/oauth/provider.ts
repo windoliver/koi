@@ -143,19 +143,31 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return cachedClient;
     }
 
-    const metadata = await getMetadata();
+    // Pre-resolve metadata BEFORE computing the authority-scoped key.
+    // refreshMetadata may surface a different `issuer` than the cached
+    // snapshot (degraded discovery recovery, partial rollout). If we
+    // computed the lockKey against the stale issuer and then refreshed
+    // mid-flight, we'd write the new registration under the WRONG
+    // authority key — subsequent lookups under the recovered issuer
+    // would miss it, re-register, and leak orphans server-side.
+    //
+    // Force the recovery probe up-front when the cached snapshot lacks
+    // registration_endpoint so the entire withLock critical section
+    // operates on one consistent authority.
+    let effectiveMetadata = await getMetadata();
+    if (effectiveMetadata?.registrationEndpoint === undefined) {
+      effectiveMetadata = await refreshMetadata();
+    }
     // Discriminate persisted DCR records by OAuth authority so two
     // configs with the same MCP URL + port but different
     // `authServerMetadataUrl` (or different discovered issuer) get
-    // independent client records. Without this, one tenant's
-    // re-registration could clobber another's, or a stale clientId
-    // from one issuer could be sent to a different one.
-    const authority = metadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
+    // independent client records.
+    const authority = effectiveMetadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
 
     const resolved = await storage.withLock(lockKey, async () => {
       const stored = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
-      if (stored !== undefined && isClientFresh(stored, metadata)) {
+      if (stored !== undefined && isClientFresh(stored, effectiveMetadata)) {
         return stored;
       }
 
@@ -170,7 +182,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         const legacyKey = computeClientKey(serverName, serverUrl, redirectUri, "");
         if (legacyKey !== lockKey) {
           const legacy = await readClientInfo(storage, serverName, serverUrl, redirectUri, "");
-          if (legacy !== undefined && isClientFresh(legacy, metadata)) {
+          if (legacy !== undefined && isClientFresh(legacy, effectiveMetadata)) {
             await storage.set(lockKey, JSON.stringify(legacy));
             await storage.delete(legacyKey);
             return legacy;
@@ -178,16 +190,6 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         }
       }
 
-      // Mirror the refresh-path behavior: a stale cached metadata
-      // snapshot may have omitted registration_endpoint during a
-      // partial discovery rollout. Force a re-discovery before
-      // declaring DCR unavailable so the AS gets a chance to recover
-      // in-process; otherwise one transient degradation would brick
-      // interactive auth for the lifetime of the provider.
-      let effectiveMetadata = metadata;
-      if (effectiveMetadata?.registrationEndpoint === undefined) {
-        effectiveMetadata = await refreshMetadata();
-      }
       if (effectiveMetadata?.registrationEndpoint === undefined) return undefined;
 
       // registerDynamicClient throws on a non-HTTPS registration_endpoint
