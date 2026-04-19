@@ -82,6 +82,12 @@ export type GovernanceEvent =
   | { readonly kind: "spawn"; readonly depth: number }
   | { readonly kind: "spawn_release" }
   | { readonly kind: "forge"; readonly toolName?: string | undefined }
+  /**
+   * Emitted when a forge compilation finishes (success, failure, or abort) to
+   * decrement the concurrent `forge_depth` sensor. Must be paired with a prior
+   * `forge` emit or the counter drifts. Same discipline as spawn/spawn_release.
+   */
+  | { readonly kind: "forge_release" }
   | {
       readonly kind: "token_usage";
       readonly count: number;
