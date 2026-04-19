@@ -2,9 +2,18 @@ import type { KoiError, WatchPattern } from "@koi/core";
 import { validation } from "@koi/core";
 import { RE2 } from "re2-wasm";
 
+/** Minimal exec-result shape for extracting match span. */
+export interface ExecMatchResult {
+  readonly index: number;
+  readonly [n: number]: string | undefined;
+}
+
 export interface CompiledPattern {
   readonly event: string;
-  readonly re: { readonly test: (input: string) => boolean };
+  readonly re: {
+    readonly test: (input: string) => boolean;
+    readonly exec?: (input: string) => ExecMatchResult | null;
+  };
 }
 
 export type CompileResult =

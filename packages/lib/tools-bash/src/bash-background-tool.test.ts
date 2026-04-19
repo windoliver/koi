@@ -13,6 +13,7 @@ import { taskItemId } from "@koi/core";
 import { createPendingMatchStore } from "@koi/watch-patterns";
 import type { BashBackgroundToolConfig } from "./bash-background-tool.js";
 import { createBashBackgroundTool } from "./bash-background-tool.js";
+import { createBashOutputBuffer } from "./output-buffer.js";
 
 // ---------------------------------------------------------------------------
 // Minimal in-memory task board stub
@@ -223,5 +224,44 @@ describe("bash_background — watch_patterns functional", () => {
     expect(isStarted(result)).toBe(true);
     await new Promise<void>((r) => setTimeout(r, 400));
     expect(store.pending()).toBe(0);
+  });
+
+  test("matched lines are written to outputBuffer's side-buffer for task_output(matches_only)", async () => {
+    const store = createPendingMatchStore();
+    const buffer = createBashOutputBuffer({ maxBytes: 1_000_000 });
+
+    const tool = createBashBackgroundTool(
+      minimalConfig({
+        getWatchStore: () => store,
+        getOutputBuffer: () => buffer,
+      }),
+    );
+
+    const result = await tool.execute(
+      {
+        command: "echo 'server ready now'",
+        watch_patterns: [{ pattern: "ready", event: "ready" }],
+      },
+      {},
+    );
+
+    expect(isStarted(result)).toBe(true);
+
+    // Poll until the match lands in the buffer side-buffer.
+    for (let i = 0; i < 40 && buffer.queryMatches({}).entries.length === 0; i++) {
+      await new Promise<void>((r) => setTimeout(r, 50));
+    }
+
+    const res = buffer.queryMatches({});
+    expect(res.entries.length).toBeGreaterThan(0);
+    const entry = res.entries[0];
+    expect(entry).toBeDefined();
+    if (entry === undefined) throw new Error("entry must be defined");
+    expect(entry.event).toBe("ready");
+    expect(entry.line).toContain("ready");
+    expect(entry.matchSpanUnits.start).toBeGreaterThanOrEqual(0);
+    expect(entry.matchSpanUnits.end).toBeGreaterThan(entry.matchSpanUnits.start);
+    // The matched span should correspond to "ready" in the line.
+    expect(entry.line.slice(entry.matchSpanUnits.start, entry.matchSpanUnits.end)).toBe("ready");
   });
 });

@@ -23,6 +23,12 @@ interface StreamState {
 export function createLineBufferedMatcher(
   compiled: readonly CompiledPattern[],
   onMatch: (match: PatternMatch) => void,
+  onMatchWithLine?: (
+    match: PatternMatch,
+    line: string,
+    matchStart: number,
+    matchEnd: number,
+  ) => void,
 ): LineBufferedMatcher {
   let cancelled = false;
   const stdout: StreamState = { buffer: "", lineNumber: 0, overflowEmitted: false };
@@ -35,14 +41,23 @@ export function createLineBufferedMatcher(
     lineNumber: number,
   ): void {
     for (const cp of compiled) {
-      let matched = false;
+      let matchStart = -1;
+      let matchEnd = -1;
       try {
-        matched = cp.re.test(line);
+        if (onMatchWithLine !== undefined && cp.re.exec !== undefined) {
+          const execResult = cp.re.exec(line);
+          if (execResult === null) continue;
+          const matchedText = execResult[0];
+          if (matchedText === undefined) continue;
+          matchStart = execResult.index;
+          matchEnd = matchStart + matchedText.length;
+        } else {
+          if (!cp.re.test(line)) continue;
+        }
       } catch {
         // Scanner errors on this pattern: skip this pattern on this line.
         continue;
       }
-      if (!matched) continue;
       const match: PatternMatch = {
         taskId,
         event: cp.event,
@@ -54,6 +69,13 @@ export function createLineBufferedMatcher(
         onMatch(match);
       } catch {
         // Consumer errors must not break other patterns or the decode loop.
+      }
+      if (onMatchWithLine !== undefined && matchStart >= 0) {
+        try {
+          onMatchWithLine(match, line, matchStart, matchEnd);
+        } catch {
+          // Consumer errors must not break the dispatch loop.
+        }
       }
     }
   }

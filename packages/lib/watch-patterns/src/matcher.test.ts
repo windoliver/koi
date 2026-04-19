@@ -164,6 +164,55 @@ describe("createLineBufferedMatcher — long lines", () => {
   });
 });
 
+describe("createLineBufferedMatcher — onMatchWithLine callback", () => {
+  test("onMatchWithLine receives raw line + span when provided", () => {
+    const seen: Array<{ line: string; start: number; end: number; event: string }> = [];
+    const c = compilePatterns([{ pattern: "ready", event: "ready" }]);
+    if (!c.ok) throw new Error(c.error.message);
+    const m = createLineBufferedMatcher(
+      c.value,
+      () => {},
+      (match, line, start, end) => {
+        seen.push({ line, start, end, event: match.event });
+      },
+    );
+    m.writeStdout(TASK, "server is ready now\n");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.line).toBe("server is ready now");
+    const entry = seen[0];
+    expect(entry).toBeDefined();
+    if (entry === undefined) throw new Error("entry must be defined");
+    expect(entry.line.slice(entry.start, entry.end)).toBe("ready");
+    expect(entry.event).toBe("ready");
+  });
+
+  test("onMatchWithLine is not called when no match occurs", () => {
+    const seen: Array<{ line: string }> = [];
+    const c = compilePatterns([{ pattern: "ready", event: "ready" }]);
+    if (!c.ok) throw new Error(c.error.message);
+    const m = createLineBufferedMatcher(
+      c.value,
+      () => {},
+      (_match, line) => {
+        seen.push({ line });
+      },
+    );
+    m.writeStdout(TASK, "no match on this line\n");
+    expect(seen).toHaveLength(0);
+  });
+
+  test("existing callers without onMatchWithLine still work (backward compat)", () => {
+    const seen: string[] = [];
+    const c = compilePatterns([{ pattern: "ready", event: "ready" }]);
+    if (!c.ok) throw new Error(c.error.message);
+    const m = createLineBufferedMatcher(c.value, (match) => {
+      seen.push(match.event);
+    });
+    m.writeStdout(TASK, "server ready\n");
+    expect(seen).toEqual(["ready"]);
+  });
+});
+
 describe("createLineBufferedMatcher — scanner-error isolation", () => {
   test("one pattern's scanner throwing does not block other patterns on the same line", () => {
     // Construct CompiledPattern directly — bypass compilePatterns so we can use a mock regex that throws.
