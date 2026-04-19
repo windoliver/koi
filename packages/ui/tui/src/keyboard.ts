@@ -15,7 +15,7 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { isCtrlC, isCtrlN, isCtrlP, isEscape } from "./key-event.js";
+import { isCtrlC, isCtrlN, isCtrlP, isCtrlS, isEscape } from "./key-event.js";
 import type { TuiStore } from "./state/store.js";
 import type { TuiState } from "./state/types.js";
 
@@ -35,6 +35,8 @@ export interface GlobalKeyCallbacks {
   readonly onBack: () => void;
   /** Start a new session (Ctrl+N). */
   readonly onNewSession: () => void;
+  /** Open the sessions picker (Ctrl+S). */
+  readonly onOpenSessions: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -44,7 +46,7 @@ export interface GlobalKeyCallbacks {
 /**
  * Handle a global key event given current TUI state and callbacks.
  *
- * Priority order: Ctrl+P > Ctrl+N (guarded) > Ctrl+C > Esc.
+ * Priority order: Ctrl+P > Ctrl+N > Ctrl+S (guarded) > Ctrl+C > Esc.
  *
  * @returns `true` if the key was consumed, `false` if unhandled (pass-through).
  */
@@ -70,6 +72,19 @@ export function handleGlobalKey(
     state.atQuery === null
   ) {
     callbacks.onNewSession();
+    return true;
+  }
+
+  // Ctrl+S — open sessions picker (same guards as Ctrl+N so the shortcut
+  // doesn't hijack input when an overlay owns the key)
+  if (
+    isCtrlS(event) &&
+    state.modal === null &&
+    state.activeView === "conversation" &&
+    state.slashQuery === null &&
+    state.atQuery === null
+  ) {
+    callbacks.onOpenSessions();
     return true;
   }
 
