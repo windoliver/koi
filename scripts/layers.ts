@@ -47,6 +47,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/tools-core",
   "@koi/url-safety",
   "@koi/validation",
+  "@koi/watch-patterns",
 ]);
 
 export const L1_PACKAGES: ReadonlySet<string> = new Set([
