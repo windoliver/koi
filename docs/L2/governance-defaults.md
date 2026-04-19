@@ -195,3 +195,17 @@ Inherited from `@koi/governance-core`:
 - [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config
 - [`@koi/core/governance`](../../packages/kernel/core/src/governance.ts) — `GovernanceController`, `GovernanceEvent`, `GOVERNANCE_VARIABLES`
 - [`@koi/core/governance-backend`](../../packages/kernel/core/src/governance-backend.ts) — `GovernanceBackend`, `PolicyRequest`, `GovernanceVerdict`
+
+## `describeRules()` — backend introspection (gov-9)
+
+The pattern-backend implements the optional `describeRules?()` method on
+`GovernanceBackend` so `/governance` can render the active rule set:
+
+```typescript
+const backend = createPatternBackend({ rules: [...] });
+const descriptors = await backend.describeRules?.();
+// readonly { id: string; description: string; effect: "allow" | "deny" | "advise"; pattern?: string }[]
+```
+
+Backends that do not implement `describeRules` simply omit the rules section
+in the TUI view. Required for: `@koi/tui` `/governance` view.

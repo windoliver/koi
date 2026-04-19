@@ -36,3 +36,24 @@ Spawn-depth budget inheritance is the engine's responsibility (#1473). Parent re
 - URL / filesystem / credentials scope subsystem — follow-up package
 - Approval / deferral UX (three-tier allow/deny/ask) — requires L0 `GovernanceVerdict` extension
 - Persistent compliance storage — use `@koi/audit-sink-*`
+
+## Per-variable alert thresholds (gov-9)
+
+By default, `alertThresholds` (e.g., `[0.8, 0.95]`) applies uniformly to every
+sensor. For finer control, pass `perVariableThresholds`:
+
+```typescript
+createGovernanceMiddleware({
+  controller, backend, cost,
+  alertThresholds: [0.8, 0.95],          // global default
+  perVariableThresholds: {
+    cost_usd: [0.5, 0.75, 0.95],         // override for cost only
+    error_rate: [0.3, 0.5],              // earlier alerts on errors
+  },
+  onAlert: (pct, variable, reading) => { /* … */ },
+});
+```
+
+Lookup order: `perVariableThresholds[reading.name]` → `alertThresholds`. The
+`@koi/governance-core` alert tracker dedups per `(sessionId, variable, threshold)`,
+so adding more thresholds for one variable does NOT re-fire global ones.
