@@ -277,13 +277,17 @@ describe("bg kill", () => {
     // the same error and returns `false` (dead-pid carve-out). The
     // record's pid is arbitrary — no real process can be signaled
     // because `process.kill` itself is intercepted.
-    const killSpy = spyOn(process, "kill").mockImplementation(() => {
-      const err = new Error("kill ESRCH: no such process") as Error & {
-        code?: string;
-      };
-      err.code = "ESRCH";
-      throw err;
-    });
+    const killCalls: Array<readonly [number, string | number]> = [];
+    const killSpy = spyOn(process, "kill").mockImplementation(
+      (pid: number, sig?: number | string) => {
+        killCalls.push([pid, sig ?? 0] as const);
+        const err = new Error("kill ESRCH: no such process") as Error & {
+          code?: string;
+        };
+        err.code = "ESRCH";
+        throw err;
+      },
+    );
 
     const freshStamp = Date.now();
     await writeSession(dir, {
@@ -314,6 +318,16 @@ describe("bg kill", () => {
     // the test fails loud either way instead of passing on a
     // short-circuit path.
     expect(code).toBe(ExitCode.OK);
+    // Prove the SIGTERM path was actually exercised — otherwise the
+    // early dead-pid carve-out could short-circuit to the same
+    // (exited + preserved signaledAt) outcome without testing the
+    // claim→SIGTERM→finalize flow this regression is intended to
+    // cover. If processBirthFingerprint ever returned undefined on
+    // some host (ps unavailable), carve-out would run and this
+    // assertion would loudly fail instead of silently passing.
+    // We capture calls into a local array because `mockRestore()`
+    // (ran in the finally block) clears `killSpy.mock.calls` in Bun.
+    expect(killCalls).toContainEqual([1, "SIGTERM"]);
     const text = await Bun.file(join(dir, "w-resume.json")).text();
     const record = JSON.parse(text) as BackgroundSessionRecord;
     expect(record.status).toBe("exited");
