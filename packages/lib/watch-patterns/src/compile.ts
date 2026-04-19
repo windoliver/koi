@@ -1,17 +1,15 @@
-import type { WatchPattern } from "@koi/core";
+import type { KoiError, WatchPattern } from "@koi/core";
+import { validation } from "@koi/core";
 import { RE2 } from "re2-wasm";
 
 export interface CompiledPattern {
   readonly event: string;
-  readonly re: RE2;
+  readonly re: { readonly test: (input: string) => boolean };
 }
 
 export type CompileResult =
   | { readonly ok: true; readonly value: readonly CompiledPattern[] }
-  | {
-      readonly ok: false;
-      readonly error: { readonly code: "VALIDATION"; readonly message: string };
-    };
+  | { readonly ok: false; readonly error: KoiError };
 
 const MAX_PATTERN_CHARS = 256;
 const MAX_PATTERNS = 16;
@@ -65,5 +63,5 @@ export function compilePatterns(input: readonly WatchPattern[]): CompileResult {
 }
 
 function fail(message: string): CompileResult {
-  return { ok: false, error: { code: "VALIDATION", message } };
+  return { ok: false, error: validation(message) };
 }
