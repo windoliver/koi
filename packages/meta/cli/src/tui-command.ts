@@ -1368,6 +1368,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         }
       : {}),
     currentModelMiddleware,
+    // Resolve budgetConfig per turn so a mid-session model switch picks up
+    // the new model's context window immediately.
+    getCurrentModel: () => currentModelBox.current,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -4036,17 +4039,35 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // #10: @-mention file completion
     onAtQuery: handleAtQuery,
     // Model picker — host-side /models fetch (L2 TUI has no network code).
+    //
+    // Refuse when KOI_FALLBACK_MODEL is set: the model-router's target list
+    // is frozen at startup and its per-target `executeForTarget` overrides
+    // request.model with the configured target id, so a mid-session switch
+    // would succeed in the UI while the HTTP call still runs on the
+    // startup/fallback chain. Fail loudly instead of silently routing the
+    // wrong model. Unset KOI_FALLBACK_MODEL and restart to switch models.
     onFetchModels: (): Promise<FetchModelsResult> =>
-      fetchAvailableModels({
-        provider,
-        ...(baseUrl !== undefined ? { baseUrl } : {}),
-        apiKey,
-      }),
+      fallbackModels.length > 0
+        ? Promise.resolve({
+            ok: false,
+            error:
+              "Model switching is disabled while KOI_FALLBACK_MODEL is set. Unset the env var and restart koi tui to pick a different model.",
+          })
+        : fetchAvailableModels({
+            provider,
+            ...(baseUrl !== undefined ? { baseUrl } : {}),
+            apiKey,
+          }),
     // Model picker — mutate the current-model box so the next turn uses
     // the freshly picked model. The store's `modelName` is updated by
     // TuiRoot via the `model_switched` action; this callback updates the
     // middleware-side source of truth.
+    //
+    // No-op when the router is active — the fetcher above already
+    // short-circuited with an error, but guard here too so a stale
+    // selection from an earlier fetch cannot mutate the box.
     onModelSwitch: (model: string): void => {
+      if (fallbackModels.length > 0) return;
       currentModelBox.current = model;
       costBridge.setModelName(model);
     },

@@ -34,6 +34,7 @@ import { createNdjsonAuditSink } from "@koi/audit-sink-ndjson";
 import { createSqliteAuditSink } from "@koi/audit-sink-sqlite";
 import type { Checkpoint } from "@koi/checkpoint";
 import { createConfigManager } from "@koi/config";
+import type { BudgetConfig } from "@koi/context-manager";
 import type {
   ApprovalHandler,
   FileSystemBackend,
@@ -429,6 +430,14 @@ export interface KoiRuntimeConfig {
    * mid-session model switching without rebuilding the runtime.
    */
   readonly currentModelMiddleware?: KoiMiddleware | undefined;
+  /**
+   * Optional getter invoked per turn to resolve the active model id. When set,
+   * the transcript adapter resolves its `budgetConfig` via
+   * `budgetConfigForModel(getCurrentModel())` on every turn so a mid-session
+   * model switch picks up the new context-window limit immediately. When
+   * absent, budget is sized once from `config.modelName`.
+   */
+  readonly getCurrentModel?: () => string;
   /**
    * Pre-constructed model-router middleware. When provided, routes all model
    * calls through the failover chain before reaching the model adapter.
@@ -1245,14 +1254,24 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     maxTranscriptMessages: MAX_TRANSCRIPT_MESSAGES,
     maxTurns: DEFAULT_MAX_TURNS,
     ...(config.getGeneration !== undefined ? { getGeneration: config.getGeneration } : {}),
-    budgetConfig: budgetConfigForModel(
-      modelName,
-      // KOI_COMPACTION_WINDOW: override context window size for testing compaction
-      // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
-      process.env.KOI_COMPACTION_WINDOW !== undefined
-        ? Number(process.env.KOI_COMPACTION_WINDOW)
-        : undefined,
-    ),
+    // KOI_COMPACTION_WINDOW: override context window size for testing compaction
+    // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
+    budgetConfig:
+      config.getCurrentModel !== undefined
+        ? (): BudgetConfig =>
+            budgetConfigForModel(
+              // biome-ignore lint/style/noNonNullAssertion: narrowed above, satisfies exactOptionalPropertyTypes
+              config.getCurrentModel!(),
+              process.env.KOI_COMPACTION_WINDOW !== undefined
+                ? Number(process.env.KOI_COMPACTION_WINDOW)
+                : undefined,
+            )
+        : budgetConfigForModel(
+            modelName,
+            process.env.KOI_COMPACTION_WINDOW !== undefined
+              ? Number(process.env.KOI_COMPACTION_WINDOW)
+              : undefined,
+          ),
   });
 
   // --- @koi/middleware-exfiltration-guard: block secret exfiltration ---
