@@ -338,7 +338,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   // --- Interactive auth flow ---
   const startAuthFlow = async (): Promise<boolean> => {
-    const metadata = await getMetadata();
+    let metadata = await getMetadata();
     if (metadata === undefined) {
       reportFailure({ kind: "discovery_failed", serverName });
       return false;
@@ -355,6 +355,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         reportFailure({ kind: "dcr_unavailable", serverName });
       }
       return false;
+    }
+
+    // getClient() may have re-discovered metadata (degraded snapshot
+    // recovery) and registered the client against the refreshed
+    // authorization server. Re-read the cached metadata so the
+    // authorize/token endpoints we hit BELONG TO THE SAME ISSUER as
+    // the client_id. Without this, a freshly registered DCR client
+    // could be sent to stale authorize/token endpoints from the
+    // earlier degraded discovery.
+    const postClientMetadata = await getMetadata();
+    if (postClientMetadata !== undefined) {
+      metadata = postClientMetadata;
     }
 
     const pkce = createPkceChallenge();

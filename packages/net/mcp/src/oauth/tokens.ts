@@ -198,10 +198,6 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       await storage.withLock(storageKey, () => storage.delete(storageKey));
       return undefined;
     }
-    const currentMetadata = await resolveMetadata();
-    if (currentMetadata === undefined) {
-      return undefined;
-    }
 
     // Capture the refresh token we used — needed for compare-and-swap below
     const usedRefreshToken = tokens.refreshToken;
@@ -234,6 +230,18 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     }
     const refreshClientId: string | undefined =
       resolution.clientId === "" ? undefined : resolution.clientId;
+
+    // Read metadata AFTER client resolution. resolveClientId may have
+    // re-discovered metadata as part of its DCR recovery path (degraded
+    // snapshot recovery in the provider). The token endpoint we POST to
+    // MUST belong to the same issuer the client_id was registered
+    // with — otherwise we send a freshly registered client to a stale
+    // token endpoint from the earlier degraded discovery and get
+    // invalid_client / token loss.
+    const currentMetadata = await resolveMetadata();
+    if (currentMetadata === undefined) {
+      return undefined;
+    }
 
     let refreshResult = await refreshAccessToken(
       usedRefreshToken,
