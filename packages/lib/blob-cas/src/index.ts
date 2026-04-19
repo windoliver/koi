@@ -1,3 +1,5 @@
+export type { BlobStore } from "./blob-store.js";
+export { createFilesystemBlobStore } from "./blob-store.js";
 export {
   blobPath,
   hasBlob,
