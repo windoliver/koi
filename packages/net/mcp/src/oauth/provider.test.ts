@@ -1802,8 +1802,10 @@ describe("createOAuthAuthProvider", () => {
 
     // Must NOT throw — clean false return.
     await expect(provider.startAuthFlow()).resolves.toBe(false);
-    // Should report a structured failure for diagnostics.
-    expect(failures.length).toBeGreaterThan(0);
+    // Browser/callback failures are reported as `authorize_failed`,
+    // distinct from `discovery_failed`. Hosts route remediation
+    // differently for each.
+    expect(failures.map((f) => f.kind)).toContain("authorize_failed");
   });
 
   test("handleUnauthorized clears corrupt token storage and prompts re-auth", async () => {

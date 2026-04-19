@@ -380,9 +380,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     // structured signal, and fall through to the closed-fail return
     // below.
     let callbackResult: OAuthCallbackResult | undefined;
+    let lastAuthorizeError: unknown;
     try {
       callbackResult = await runtime.authorize(buildAuthUrl(state, true).toString(), redirectUri);
-    } catch {
+    } catch (firstErr: unknown) {
+      lastAuthorizeError = firstErr;
       // RFC 8707 compatibility: a legacy AS that rejects the unknown
       // `resource` query at the authorization endpoint surfaces here.
       // Retry once without `resource` only when we actually sent it.
@@ -392,13 +394,27 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
             buildAuthUrl(state, false).toString(),
             redirectUri,
           );
-        } catch {
+          lastAuthorizeError = undefined;
+        } catch (secondErr: unknown) {
           // Fall through; callbackResult stays undefined and we fail closed.
+          // Keep the FIRST error as the diagnostic (it's the one operators
+          // would see in their browser), but record the second too.
+          void secondErr;
         }
       }
     }
     if (callbackResult === undefined) {
-      reportFailure({ kind: "discovery_failed", serverName });
+      // Distinct from discovery_failed: local browser/callback failure
+      // (launch error, listener bind, timeout, user-cancel) — not an
+      // AS-side problem. Hosts route remediation differently for each.
+      reportFailure({
+        kind: "authorize_failed",
+        serverName,
+        detail:
+          lastAuthorizeError instanceof Error
+            ? lastAuthorizeError.message
+            : String(lastAuthorizeError ?? "runtime.authorize failed"),
+      });
       return false;
     }
 

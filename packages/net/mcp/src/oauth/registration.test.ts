@@ -300,6 +300,43 @@ describe("registerDynamicClient", () => {
     expect(attemptedDelete).toBe(false);
   });
 
+  test("rolls back orphan when 2xx response is missing client_id", async () => {
+    // The AS may have created the client and returned a successful
+    // status with management metadata, but a buggy / partial response
+    // omitted client_id. Without rolling back, every retry leaks
+    // another orphaned registration on the AS.
+    let deleteCalled = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        deleteCalled = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              // No client_id, but full management metadata.
+              registration_client_uri: "https://auth.example.com/register/headless",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    if (!info.ok) expect(info.terminal).toBe(true);
+    expect(deleteCalled).toBe(true);
+  });
+
   test("does NOT DELETE when registration_access_token is missing (no proof of ownership)", async () => {
     // An unauthenticated DELETE against a server-selected
     // /register/{id} path could trigger destructive semantics we

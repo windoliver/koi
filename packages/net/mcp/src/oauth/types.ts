@@ -82,7 +82,15 @@ export type OAuthFailureReason =
       readonly serverName: string;
       readonly invalidClient: boolean;
     }
-  | { readonly kind: "state_mismatch"; readonly serverName: string };
+  | { readonly kind: "state_mismatch"; readonly serverName: string }
+  /**
+   * runtime.authorize() rejected — local browser/callback failure
+   * (browser launch error, callback listener bind, callback timeout,
+   * user-cancelled). Distinct from `discovery_failed` so hosts can
+   * route remediation to local runtime (retry, instructions to open
+   * the URL manually) instead of incorrectly blaming the AS.
+   */
+  | { readonly kind: "authorize_failed"; readonly serverName: string; readonly detail: string };
 
 // ---------------------------------------------------------------------------
 // Token types

@@ -121,42 +121,36 @@ export async function registerDynamicClient(
     };
   }
 
+  // Capture the RFC 7592 client-management metadata BEFORE any
+  // post-2xx validation can early-return — a 201 may have created the
+  // client server-side even when the response is structurally invalid
+  // (e.g. missing client_id). Without rolling those back too, retries
+  // would leak a fresh orphan on every attempt.
+  //
+  // The URI is validated against the registration endpoint origin
+  // (HTTPS + same host + strict child path) and rollback requires both
+  // URI and bearer token — see isSafeManagementUri / rollback below.
+  const cleanupUri =
+    typeof data.registration_client_uri === "string" &&
+    isSafeManagementUri(data.registration_client_uri, registrationEndpoint)
+      ? data.registration_client_uri
+      : undefined;
+  const cleanupToken =
+    typeof data.registration_access_token === "string" ? data.registration_access_token : undefined;
+  const rollback = async (): Promise<void> => {
+    if (cleanupUri === undefined || cleanupToken === undefined) return;
+    await deleteRegisteredClient(cleanupUri, cleanupToken);
+  };
+
   try {
     if (typeof data.client_id !== "string" || data.client_id.length === 0) {
+      await rollback();
       return {
         ok: false,
         terminal: true,
         reason: "registration response missing client_id",
       };
     }
-
-    // Capture the RFC 7592 client-management metadata up front so any
-    // post-validation rejection below can attempt to delete the orphan.
-    // The URI is validated against the registration endpoint origin
-    // (HTTPS + same host) before any DELETE — a malicious or compromised
-    // AS could otherwise point `registration_client_uri` at an
-    // attacker-controlled host and exfiltrate the management token
-    // (SSRF / credential leak primitive).
-    const cleanupUri =
-      typeof data.registration_client_uri === "string" &&
-      isSafeManagementUri(data.registration_client_uri, registrationEndpoint)
-        ? data.registration_client_uri
-        : undefined;
-    const cleanupToken =
-      typeof data.registration_access_token === "string"
-        ? data.registration_access_token
-        : undefined;
-    // Rollback requires BOTH a safe management URI AND the bearer
-    // token issued for it. An unauthenticated DELETE against a
-    // server-selected `/register/*` path could trigger destructive
-    // semantics we did not consent to and crosses a trust boundary
-    // even within the same origin. Without proof of ownership of the
-    // just-created client, leave the orphan in place — server-side
-    // TTLs are the safer escape hatch.
-    const rollback = async (): Promise<void> => {
-      if (cleanupUri === undefined || cleanupToken === undefined) return;
-      await deleteRegisteredClient(cleanupUri, cleanupToken);
-    };
 
     // Require explicit confirmation of a public client.
     //
