@@ -16,14 +16,25 @@ export function specCurl(argv: readonly string[]): SpecResult {
   }
 
   for (const tok of argv.slice(1)) {
-    if (tok === "--config" || tok.startsWith("--config=") || tok === "-K" || tok === "--next") {
+    if (
+      tok === "--config" ||
+      tok.startsWith("--config=") ||
+      tok === "-K" ||
+      tok.startsWith("-K") ||
+      tok === "--next"
+    ) {
       return {
         kind: "refused",
         cause: "unsupported-form",
         detail: `curl flag ${tok} can rewrite request behavior; refused`,
       };
     }
-    if (tok === "-T" || tok === "--upload-file" || tok.startsWith("--upload-file=")) {
+    if (
+      tok === "-T" ||
+      tok.startsWith("-T") ||
+      tok === "--upload-file" ||
+      tok.startsWith("--upload-file=")
+    ) {
       return {
         kind: "refused",
         cause: "unsupported-form",

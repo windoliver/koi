@@ -149,6 +149,20 @@ describe("specCurl — refused flags / parse errors", () => {
     expect(specCurl(["curl", "-K", "/tmp/c", "https://x"]).kind).toBe("refused");
   });
 
+  test("attached -Kfile refused as unsupported-form (regression)", () => {
+    const result = specCurl(["curl", "-K/tmp/c", "https://x"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("unsupported-form");
+  });
+
+  test("attached -Tfile refused as unsupported-form (regression)", () => {
+    const result = specCurl(["curl", "-Tpayload.bin", "https://x"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("unsupported-form");
+  });
+
   test("--next refused", () => {
     expect(specCurl(["curl", "--next", "https://x"]).kind).toBe("refused");
   });
