@@ -136,12 +136,9 @@ export function createGovernanceBridge(config: GovernanceBridgeConfig): Governan
 }
 
 function ensureParentDir(path: string): void {
-  const dir = dirname(path);
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch {
-    // Directory exists or unwriteable — append will surface the real error.
-  }
+  // mkdirSync({ recursive: true }) is idempotent for EEXIST; real failures
+  // (EACCES, ENOTDIR) propagate at bridge construction time so callers see them.
+  mkdirSync(dirname(path), { recursive: true });
 }
 
 function tailEvict(path: string, maxLines: number): void {
