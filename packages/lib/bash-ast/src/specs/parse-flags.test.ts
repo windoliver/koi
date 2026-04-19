@@ -118,9 +118,24 @@ describe("parseFlags — refusals", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("bundled short flag mixing bool and value-flag rejects", () => {
+  test("attached value form accepts all-bool-char value (POSIX -tf → t='f')", () => {
+    // -t is a value flag; per POSIX every char after the head is the value,
+    // even if the chars happen to coincide with bool-flag names.
     const result = parseFlags(["cp", "-tf", "x"], allow);
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flags.get("t")).toBe("f");
+    expect(result.positionals).toEqual(["x"]);
+  });
+
+  test("attached value -oLi (value chars match bool flags) accepted", () => {
+    const result = parseFlags(["cmd", "-oLi"], {
+      bool: new Set(["L", "i"]),
+      value: new Set(["o"]),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flags.get("o")).toBe("Li");
   });
 
   test("long value flag missing its value", () => {

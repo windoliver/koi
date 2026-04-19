@@ -131,19 +131,12 @@ function consumeShort(
   }
 
   // Value-flag path: head char takes a value argument.
+  // POSIX semantics: once the head is a value-taking option, every remaining
+  // char in the token is the value, even if those chars happen to coincide
+  // with bool-flag names (e.g. `-oLi` is `-o` with value `Li`).
   if (allow.value.has(head)) {
     if (tok.length > 2) {
-      // Attached form: `-tVALUE`. Refuse if every remaining char is a known
-      // bool — that's the ambiguous mix case (e.g. `-tf` where f is a bool).
-      const rest = tok.slice(2);
-      const allBools = [...rest].every((ch) => allow.bool.has(ch));
-      if (allBools) {
-        return {
-          ok: false,
-          detail: `ambiguous bundle: -${head} as value-flag conflicts with bool-only interpretation of remaining chars "${rest}"`,
-        };
-      }
-      return { ok: true, flags: [[head, rest]], nextIndex: i };
+      return { ok: true, flags: [[head, tok.slice(2)]], nextIndex: i };
     }
     // Separate-arg form: `-t VALUE`
     const next = argv[i + 1];
