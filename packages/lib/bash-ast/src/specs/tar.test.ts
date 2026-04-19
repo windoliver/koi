@@ -33,11 +33,24 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
 
-  test("attached -CDIR form (no space) recognized (regression)", () => {
+  test("attached -CDIR form is recognized but refuses in -c mode (order-sensitive)", () => {
     const result = specTar(["tar", "-c", "-Cwork", "-fout.tar", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
-    expect(result.semantics.writes).toEqual(["out.tar"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
+    expect(result.detail).toMatch(/-C DIR/);
+  });
+
+  test("-C with -c refuses (order-sensitive operand rebase)", () => {
+    const result = specTar(["tar", "-c", "-C", "/etc", "-f", "out.tar", "passwd"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
+  });
+
+  test("-C with -t refuses (order-sensitive operand rebase)", () => {
+    const result = specTar(["tar", "-t", "-C", "/etc", "-f", "in.tar"]);
+    expect(result.kind).toBe("refused");
   });
 
   test("archive flag interleaved with files (regression: positional-independence)", () => {

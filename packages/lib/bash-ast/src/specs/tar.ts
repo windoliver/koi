@@ -88,6 +88,20 @@ export function specTar(argv: readonly string[]): SpecResult {
 
   const mode = modes[0];
 
+  // -C DIR rebases the file operands that follow it relative to DIR. The
+  // rebase is order-sensitive (multiple -C tokens may interleave between
+  // positionals) and our parseFlags loses that ordering. In modes whose
+  // result depends on positional file paths (-c, -t), refuse rather than
+  // misreport. -x mode is already partial regardless of -C, so allow it.
+  const hasC = parsed.flags.has("C");
+  if (hasC && (mode === "c" || mode === "t")) {
+    return {
+      kind: "refused",
+      cause: "parse-error",
+      detail: `tar -C DIR with -${mode} requires order-sensitive operand rebasing not modeled by this spec`,
+    };
+  }
+
   if (mode === "c") {
     const semantics = {
       reads: parsed.positionals,
