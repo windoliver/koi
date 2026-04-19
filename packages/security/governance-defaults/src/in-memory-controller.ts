@@ -349,12 +349,20 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
   // `forge_release` pair, same discipline as spawn / spawn_release. Hosts that
   // never emit `forge_release` will see forge_depth grow monotonically and
   // eventually trip — that is the intended fail-closed behavior.
+  //
+  // NOTE: forge_depth is NOT a cumulative forge-count ceiling. Sequential
+  // `forge` / `forge_release` pairs will keep forge_depth at 0 and never trip
+  // `forgeDepthLimit`. Use `forge_budget` (cumulative, never decrements) as
+  // the lifetime-forge safety cap. Configuring only `forgeDepthLimit` without
+  // a matching `forgeBudgetLimit` is a weak defense against runaway forge
+  // activity if the host emits release events.
   const forgeDepthVar: GovernanceVariable = {
     name: GOVERNANCE_VARIABLES.FORGE_DEPTH,
     read: () => state.forgeDepth,
     limit: forgeDepthLimit,
     retryable: false,
-    description: "Concurrent forge compile depth (paired with forge_release).",
+    description:
+      "Concurrent forge compile depth (paired with forge_release). For cumulative forge-count caps use forge_budget.",
     check: (): GovernanceCheck =>
       enforced(forgeDepthLimit) && state.forgeDepth >= forgeDepthLimit
         ? fail(

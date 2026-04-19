@@ -111,16 +111,20 @@ function createGovernanceGuard(
       const response = await next(request);
       if (response.usage !== undefined) {
         // Drop invalid fields per-side so one bogus value doesn't zero usage
-        // tracking on an otherwise valid adapter response.
-        const input = sanitizeTokenCount(response.usage.inputTokens);
-        const output = sanitizeTokenCount(response.usage.outputTokens);
-        const total = (input ?? 0) + (output ?? 0);
+        // tracking on an otherwise valid adapter response. Substitute 0 for
+        // invalid fields so both fields are always present — controllers that
+        // gate fallback cost pricing on `inputTokens !== undefined && outputTokens !== undefined`
+        // (e.g. engine-reconcile's built-in) would otherwise skip cost
+        // accumulation for partial events.
+        const input = sanitizeTokenCount(response.usage.inputTokens) ?? 0;
+        const output = sanitizeTokenCount(response.usage.outputTokens) ?? 0;
+        const total = input + output;
         if (total > 0) {
           await controller.record({
             kind: "token_usage",
             count: total,
-            ...(input !== undefined ? { inputTokens: input } : {}),
-            ...(output !== undefined ? { outputTokens: output } : {}),
+            inputTokens: input,
+            outputTokens: output,
           });
         }
       }
@@ -144,15 +148,13 @@ function createGovernanceGuard(
             if (input !== undefined) accInputTokens += input;
             if (output !== undefined) accOutputTokens += output;
           } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
-            // "done" carries the authoritative final usage — prefer it over
-            // incremental accumulation. Reset only when both fields are valid
-            // so a bogus authoritative reading can't clobber good incrementals.
+            // "done" carries the authoritative final usage — overwrite
+            // per-field so a single bogus side cannot discard the valid side
+            // nor clobber good incrementals with NaN.
             const input = sanitizeTokenCount(chunk.response.usage.inputTokens);
             const output = sanitizeTokenCount(chunk.response.usage.outputTokens);
-            if (input !== undefined && output !== undefined) {
-              accInputTokens = input;
-              accOutputTokens = output;
-            }
+            if (input !== undefined) accInputTokens = input;
+            if (output !== undefined) accOutputTokens = output;
           }
           yield chunk;
         }
