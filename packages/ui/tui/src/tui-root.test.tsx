@@ -189,7 +189,7 @@ describe("TuiRoot — ToastOverlay", () => {
     utils.renderer.destroy();
   });
 
-  test("ToastOverlay dispatches dismiss_toast when onDismiss fires", async () => {
+  test("auto-dismisses toast after autoDismissMs elapsed", async () => {
     const utils = await renderRoot();
     await utils.renderOnce();
     utils.store.dispatch({

@@ -456,7 +456,11 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
           focused={true}
         />
       </Show>
-      {/* Toast overlay — top-right transient notifications (gov-9). */}
+      {/* Toast overlay — top-right transient notifications (gov-9).
+          zIndex=100 intentionally exceeds MODAL_POSITION.zIndex (20)
+          so toasts remain visible over modals. Any new modal added
+          here MUST use MODAL_POSITION (or another zIndex < 100) to
+          preserve this ordering. */}
       <ToastOverlay
         toasts={toasts()}
         onDismiss={(id) => store.dispatch({ kind: "dismiss_toast", id })}
