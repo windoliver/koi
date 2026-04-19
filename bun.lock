@@ -350,6 +350,15 @@
         "@koi/errors": "workspace:*",
       },
     },
+    "packages/lib/middleware-turn-prelude": {
+      "name": "@koi/middleware-turn-prelude",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/task-board": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
+      },
+    },
     "packages/lib/model-registry": {
       "name": "@koi/model-registry",
       "version": "0.0.0",
@@ -1326,6 +1335,8 @@
     "@koi/middleware-strict-agentic": ["@koi/middleware-strict-agentic@workspace:packages/lib/middleware-strict-agentic"],
 
     "@koi/middleware-task-anchor": ["@koi/middleware-task-anchor@workspace:packages/lib/middleware-task-anchor"],
+
+    "@koi/middleware-turn-prelude": ["@koi/middleware-turn-prelude@workspace:packages/lib/middleware-turn-prelude"],
 
     "@koi/model-openai-compat": ["@koi/model-openai-compat@workspace:packages/mm/model-openai-compat"],
 
