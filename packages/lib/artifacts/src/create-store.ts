@@ -11,6 +11,7 @@
 
 import type { Database } from "bun:sqlite";
 import { type BlobStore, createFilesystemBlobStore } from "@koi/blob-cas";
+import { createGetArtifact } from "./get.js";
 import { acquireLock } from "./lock.js";
 import { createSaveArtifact } from "./save.js";
 import { openDatabase } from "./sqlite.js";
@@ -27,6 +28,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
 
     const saveArtifact = createSaveArtifact({ db, blobStore, config });
+    const getArtifact = createGetArtifact({ db, blobStore });
 
     const notImpl = async (): Promise<never> => {
       throw new Error("not implemented in Plan 2 skeleton");
@@ -42,7 +44,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
 
     return {
       saveArtifact,
-      getArtifact: notImpl,
+      getArtifact,
       listArtifacts: notImpl,
       deleteArtifact: notImpl,
       shareArtifact: notImpl,
