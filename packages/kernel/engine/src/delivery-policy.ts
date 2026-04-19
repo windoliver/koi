@@ -84,6 +84,12 @@ function extractOutputText(output: EngineOutput): string {
  * Accumulates text_delta and tool_call_end results as a fallback so output is not
  * lost when the final done.output.content is empty (matches createTextCollector logic).
  * Throws if no done event is received (stream ended prematurely).
+ *
+ * #1638: when the terminal done is a synthesized activity-timeout abort, the
+ * content is empty and the failure only lives in `output.metadata`. A
+ * deferred/on-demand child delivery must not represent that as an empty
+ * success — fold the termination metadata into a non-empty content block so
+ * the inbox item / RunReport captures the failure signal.
  */
 async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<EngineOutput> {
   let output: EngineOutput | undefined; // let: assigned inside for-await loop
@@ -108,6 +114,18 @@ async function consumeStream(stream: AsyncIterable<EngineEvent>): Promise<Engine
       "INTERNAL",
       "Child stream ended without a done event — delivery policy cannot extract output",
     );
+  }
+  // Preserve activity-timeout provenance when content is empty (#1638).
+  // Without this, a timed-out child appears as a blank completion in the
+  // parent inbox / RunReport, masking the failure operators need to see.
+  if (output.content.length === 0 && output.metadata?.terminatedBy === "activity-timeout") {
+    const reason = output.metadata.terminationReason ?? "unknown";
+    const elapsedMs = output.metadata.elapsedMs ?? 0;
+    const message =
+      textBuffer.length > 0
+        ? `${textBuffer}\n\n[Delivery failed: activity-timeout (${reason}) after ${elapsedMs}ms]`
+        : `[Delivery failed: activity-timeout (${reason}) after ${elapsedMs}ms]`;
+    return { ...output, content: [{ kind: "text", text: message }] };
   }
   // If done.output.content is empty, inject the accumulated incremental output.
   // This matches createTextCollector's fallback logic for batch-output engines.

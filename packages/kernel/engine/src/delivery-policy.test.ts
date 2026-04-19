@@ -251,6 +251,49 @@ describe("applyDeliveryPolicy — deferred", () => {
     expect(item?.mode).toBe("followup");
   });
 
+  test("activity-timeout synthesized done surfaces failure in inbox content (#1638)", async () => {
+    // A timed-out child previously delivered an empty inbox item because the
+    // synthesized `done` has `content: []` and the failure only lives in
+    // `metadata.terminatedBy` — consumeStream now folds that metadata into a
+    // non-empty content block so operators see the real termination reason.
+    const timeoutDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "interrupted",
+        metrics: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          durationMs: 120_000,
+        },
+        metadata: {
+          terminatedBy: "activity-timeout",
+          terminationReason: "idle",
+          elapsedMs: 120_000,
+          metricsSynthesized: true,
+        },
+      },
+    };
+    const spawnResult = createMockSpawnResult([
+      { kind: "turn_start", turnIndex: 0 },
+      { kind: "text_delta", delta: "partial thinking" },
+      timeoutDone,
+    ]);
+    const inbox = createMockInbox();
+    const handle = applyDeliveryPolicy({
+      spawnResult,
+      policy: { kind: "deferred" },
+      parentInbox: inbox,
+    });
+    await requireRunChild(handle)(dummyInput);
+    const item = inbox.items[0];
+    expect(item?.content).toContain("activity-timeout");
+    expect(item?.content).toContain("idle");
+    expect(item?.content).toContain("partial thinking");
+  });
+
   test("uses collect mode by default", async () => {
     const spawnResult = createMockSpawnResult([createDoneEvent("result")]);
     const inbox = createMockInbox();
