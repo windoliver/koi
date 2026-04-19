@@ -42,8 +42,22 @@ export interface TokenManagerOptions {
    * triggers DCR. A plain `token()` probe must be side-effect free —
    * otherwise reconnect retries can leak orphaned OAuth client
    * registrations on the authorization server.
+   *
+   * The result is a discriminated union so the refresh path can tell
+   * `transient` (network blip, registration timeout — preserve tokens
+   * for the next attempt) from `terminal` (no static clientId AND no
+   * usable registration_endpoint — there is no path to ever recover
+   * a client without operator intervention; clear tokens so
+   * `handleUnauthorized` can trigger re-auth instead of leaving the
+   * session permanently stuck with undeletable expired credentials).
    */
-  readonly getClientId?: (() => Promise<string | undefined>) | undefined;
+  readonly getClientId?:
+    | (() => Promise<
+        | { readonly kind: "ok"; readonly clientId: string }
+        | { readonly kind: "transient" }
+        | { readonly kind: "terminal" }
+      >)
+    | undefined;
   /**
    * RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
    * the refresh body MUST mirror the initial-auth choice exactly.
@@ -51,12 +65,13 @@ export interface TokenManagerOptions {
   readonly resource?: string | undefined;
   /**
    * Fired when the refresh endpoint responds with `error: "invalid_client"`.
-   * The provider uses this to drop a revoked DCR client_id before the
-   * next interactive auth attempt — without it, the first re-auth would
-   * reuse the dead client and fail again before the registration was
-   * finally cleared in the code-exchange path.
+   * Receives the exact `clientId` that was sent on the failing request
+   * so the provider can CAS-delete only that specific value. Reading a
+   * mutable provider cache here would race with concurrent flows that
+   * may have already re-registered a fresh client between the failing
+   * request and this callback.
    */
-  readonly onInvalidClient?: (() => Promise<void> | void) | undefined;
+  readonly onInvalidClient?: ((clientId: string) => Promise<void> | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,13 +89,21 @@ const REFRESH_TIMEOUT_MS = 15_000;
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
   const { serverName, serverUrl, storage, metadata, clientId, getClientId, onInvalidClient } =
     options;
-  // Lazy resolver fallback: when the caller provides a static `clientId`,
-  // wrap it in a getter so the refresh path is uniform. Both branches
-  // ultimately produce a `string | undefined` only inside refresh —
-  // never during the initial getTokens() probe.
-  const resolveClientId = async (): Promise<string | undefined> => {
+  // Lazy resolver fallback: static `clientId` is treated as always-ok.
+  // Returns the same discriminated union as the DCR path so the refresh
+  // flow has one branching point for transient/terminal/ok.
+  type ClientResolution =
+    | { readonly kind: "ok"; readonly clientId: string }
+    | { readonly kind: "transient" }
+    | { readonly kind: "terminal" };
+  const resolveClientId = async (): Promise<ClientResolution> => {
     if (getClientId !== undefined) return getClientId();
-    return clientId;
+    if (clientId !== undefined) return { kind: "ok", clientId };
+    // No static clientId AND no DCR resolver — refresh can still try
+    // (some ASes accept refresh without client_id for public clients).
+    // Treat absence as ok-with-empty so the existing path executes; the
+    // server's response will tell us if it's actually required.
+    return { kind: "ok", clientId: "" };
   };
   // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
   // callers — provider in particular — set `resource` to the effective
@@ -140,24 +163,31 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     // Resolve clientId LAZILY here — never during the no-tokens probe
     // above. For DCR-backed configs this triggers registration only
     // when there is something to refresh.
-    let refreshClientId: string | undefined;
+    let resolution: ClientResolution;
     try {
-      refreshClientId = await resolveClientId();
+      resolution = await resolveClientId();
     } catch {
-      refreshClientId = undefined;
+      // Resolver threw — treat as transient so a network blip cannot
+      // wipe a valid refresh token.
+      resolution = { kind: "transient" };
     }
 
-    // For DCR-backed configs (caller supplied a `getClientId` resolver),
-    // a missing client_id means the resolver failed transiently —
-    // network blip during discovery, registration timeout, etc. Sending
-    // a refresh without client_id would get classified as terminal 4xx
-    // and wipe a perfectly good refresh token. Return undefined (no
-    // current valid token) WITHOUT clearing stored state, so the next
-    // getAccessToken() attempt can re-resolve. Static-clientId callers
-    // fall through (their absence is operator intent, not transient).
-    if (refreshClientId === undefined && getClientId !== undefined) {
+    if (resolution.kind === "transient") {
+      // DCR resolver failed transiently. Preserve tokens; the next
+      // getAccessToken() attempt re-resolves.
       return undefined;
     }
+    if (resolution.kind === "terminal") {
+      // No static clientId AND no usable registration_endpoint — there
+      // is no path to ever refresh again without operator intervention.
+      // Clear stored tokens so the connection's 401 path can transition
+      // to auth-needed instead of leaving the session permanently stuck
+      // with undeletable expired credentials.
+      await storage.withLock(storageKey, () => storage.delete(storageKey));
+      return undefined;
+    }
+    const refreshClientId: string | undefined =
+      resolution.clientId === "" ? undefined : resolution.clientId;
 
     let refreshResult = await refreshAccessToken(
       usedRefreshToken,
@@ -187,12 +217,19 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     }
 
     // Surface invalid_client to the provider so it can drop the persisted
-    // DCR client BEFORE the next interactive auth — without this, the
-    // first re-auth would reuse the dead client_id and fail again before
-    // the registration was finally cleared in the code-exchange path.
-    if (!refreshResult.ok && refreshResult.invalidClient && onInvalidClient !== undefined) {
+    // DCR client BEFORE the next interactive auth. Pass the EXACT
+    // clientId we used on the failing request — reading a mutable
+    // provider cache here would race with concurrent flows that may
+    // have already re-registered a fresh client between the failing
+    // request and this callback firing.
+    if (
+      !refreshResult.ok &&
+      refreshResult.invalidClient &&
+      onInvalidClient !== undefined &&
+      refreshClientId !== undefined
+    ) {
       try {
-        await onInvalidClient();
+        await onInvalidClient(refreshClientId);
       } catch {
         // Callback failures must not mask the underlying refresh error.
       }

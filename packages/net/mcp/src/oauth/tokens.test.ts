@@ -435,7 +435,7 @@ describe("createTokenManager — refresh flow", () => {
       serverUrl: "https://mcp.example.com",
       storage,
       metadata: METADATA,
-      getClientId: async () => undefined,
+      getClientId: async () => ({ kind: "transient" }),
       resource: "https://mcp.example.com",
     });
     await tm.storeTokens({
@@ -445,10 +445,41 @@ describe("createTokenManager — refresh flow", () => {
     });
 
     expect(await tm.getAccessToken()).toBeUndefined();
-    // No refresh attempted (resolver returned undefined → preserve)
+    // No refresh attempted (resolver returned transient → preserve)
     expect(fetchCalled).toBe(0);
     // Refresh token MUST still be there for the next retry.
     expect(await tm.hasTokens()).toBe(true);
+  });
+
+  test("clears tokens when DCR resolver returns terminal", async () => {
+    // Distinct from the transient case: a terminal resolver result
+    // means there is no possible path to ever refresh — neither a
+    // configured static clientId nor a discoverable
+    // registration_endpoint. Leaving tokens in place would make
+    // handleUnauthorized think the session is recoverable forever,
+    // permanently stuck. Clear so onReauthNeeded fires.
+    let fetchCalled = 0;
+    globalThis.fetch = mock(() => {
+      fetchCalled += 1;
+      return Promise.resolve(new Response("nope", { status: 400 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      getClientId: async () => ({ kind: "terminal" }),
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    expect(fetchCalled).toBe(0);
+    expect(await tm.hasTokens()).toBe(false);
   });
 
   test("preserves tokens when DCR resolver throws", async () => {
@@ -552,15 +583,15 @@ describe("createTokenManager — refresh flow", () => {
       Promise.resolve(new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 })),
     ) as unknown as typeof fetch;
 
-    let callbackFired = 0;
+    let receivedClientId: string | undefined;
     const tm = createTokenManager({
       serverName: "s",
       serverUrl: "https://mcp.example.com",
       storage,
       metadata: METADATA,
       clientId: "c",
-      onInvalidClient: () => {
-        callbackFired += 1;
+      onInvalidClient: (cid: string) => {
+        receivedClientId = cid;
       },
     });
     await tm.storeTokens({
@@ -570,12 +601,16 @@ describe("createTokenManager — refresh flow", () => {
     });
 
     expect(await tm.getAccessToken()).toBeUndefined();
-    expect(callbackFired).toBe(1);
+    // The callback receives the EXACT client_id that was sent on the
+    // failing request — this prevents a stale flow from CAS-deleting
+    // a freshly registered client when concurrent provider activity
+    // has already updated cachedClient.
+    expect(receivedClientId).toBe("c");
   });
 
   test("does NOT fire onInvalidClient on invalid_grant or transient 5xx", async () => {
     let callbackFired = 0;
-    const onInvalidClient = (): void => {
+    const onInvalidClient = (_cid: string): void => {
       callbackFired += 1;
     };
 

@@ -214,18 +214,37 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       resource: resourceIndicator,
       // Lazy: a passive `token()` call with no stored tokens must NOT
       // trigger DCR. Resolution fires only inside the refresh path,
-      // when there is actually a token set worth rotating.
+      // when there is actually a token set worth rotating. The result
+      // distinguishes ok / transient / terminal so tokens.ts can clear
+      // a permanently unresolvable session instead of preserving dead
+      // state forever.
       getClientId: async () => {
-        const client = await getClient();
-        return client?.clientId;
+        try {
+          const client = await getClient();
+          if (client !== undefined) return { kind: "ok", clientId: client.clientId };
+        } catch {
+          return { kind: "transient" };
+        }
+        // No client and no path to resolve one. If the AS doesn't
+        // advertise a registration_endpoint (and there's no static
+        // configured clientId) we can never refresh — terminal.
+        // Otherwise registration was attempted and failed — also
+        // treat as transient so the next attempt can retry.
+        const md = await getMetadata();
+        if (oauthConfig.clientId === undefined && md?.registrationEndpoint === undefined) {
+          return { kind: "terminal" };
+        }
+        return { kind: "transient" };
       },
       // Forward refresh-time invalid_client signals to the DCR
-      // invalidator. Only invalidates when the cached client is DCR
-      // (registeredAt > 0); CAS on its clientId so a stale flow cannot
-      // delete a newer registration another process already repaired.
-      onInvalidClient: async () => {
+      // invalidator. tokens.ts passes the EXACT clientId that failed,
+      // not whatever cachedClient currently holds, so a concurrent
+      // re-registration cannot trick this path into deleting a fresh
+      // record. We still gate on registeredAt > 0 so static configured
+      // clients are never silently deleted.
+      onInvalidClient: async (failingClientId: string) => {
         if (cachedClient !== undefined && cachedClient.registeredAt > 0) {
-          await invalidateRegisteredClient(cachedClient.clientId);
+          await invalidateRegisteredClient(failingClientId);
         }
       },
     });
