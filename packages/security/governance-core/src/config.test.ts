@@ -84,4 +84,17 @@ describe("validateGovernanceConfig", () => {
     });
     expect(result.ok).toBe(false);
   });
+
+  test("validateGovernanceConfig rejects perVariableThresholds with non-array value", () => {
+    const result = validateGovernanceConfig({
+      backend: goodBackend,
+      controller: goodController,
+      cost: goodCost,
+      perVariableThresholds: { cost_usd: 0.5 as unknown as readonly number[] },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("cost_usd");
+    }
+  });
 });

@@ -24,6 +24,12 @@ export interface GovernanceMiddlewareConfig {
   readonly controller: GovernanceController;
   readonly cost: CostCalculator;
   readonly alertThresholds?: readonly number[];
+  /**
+   * Per-variable threshold overrides. When set for a variable, REPLACES
+   * `alertThresholds` for that variable — does not merge or extend.
+   * Validated by `validateGovernanceConfig`: each entry must be a non-empty
+   * array of numbers in the range (0, 1].
+   */
   readonly perVariableThresholds?: Record<string, readonly number[]>;
   readonly onAlert?: AlertCallback;
   readonly onViolation?: ViolationCallback;
@@ -78,7 +84,7 @@ export function validateGovernanceConfig(
       if (!Array.isArray(thresholds)) {
         return {
           ok: false,
-          error: err("perVariableThresholds[v] must be an array", { variable }),
+          error: err(`perVariableThresholds[${variable}] must be an array`, { variable }),
         };
       }
       for (const t of thresholds) {

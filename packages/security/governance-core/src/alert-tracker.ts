@@ -4,6 +4,11 @@ export type AlertCallback = (pctUsed: number, variable: string, reading: SensorR
 
 export interface AlertTrackerConfig {
   readonly thresholds: readonly number[];
+  /**
+   * Per-variable threshold overrides. When set for a variable, REPLACES
+   * `thresholds` entirely for that variable — does not merge or extend.
+   * Use `[0.5, 0.8, 0.95]` to fire at all three points.
+   */
   readonly perVariableThresholds?: Record<string, readonly number[]> | undefined;
 }
 
