@@ -3392,6 +3392,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // arrives during our `await` boundaries (token estimation +
             // microcompact) is rejected until we release it in `finally`.
             compactInProgress = true;
+            // Capture the reset generation synchronously. If `/clear`,
+            // `/new`, a session switch, or a rewind lands between the
+            // snapshot below and the splice, the pre-reset messages we
+            // snapshotted would be written back over the user's cleared
+            // transcript, resurrecting context they explicitly dropped.
+            // Re-check before splicing and bail on mismatch.
+            const compactResetGen = resetGeneration;
             try {
               // Snapshot current transcript. microcompact is pure — we splice the
               // result back into runtimeHandle.transcript below. The guards above
@@ -3435,6 +3442,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
                   store,
                   "compact-info",
                   "[Compact: aborted — a turn started mid-compaction]",
+                );
+                return;
+              }
+              // Reset-generation check: if `/clear`, `/new`, a session
+              // switch, or a rewind landed between our snapshot and this
+              // splice, writing `result.messages` back would resurrect
+              // pre-reset content the user explicitly cleared. Bail.
+              if (resetGeneration !== compactResetGen) {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  "[Compact: aborted — session was reset mid-compaction]",
                 );
                 return;
               }
