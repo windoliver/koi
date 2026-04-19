@@ -520,6 +520,25 @@ interface AuthServerMetadata {
     readonly registrationEndpoint?: string | undefined;
     readonly codeChallengeMethodsSupported?: readonly string[] | undefined;
 }
+/**
+ * Persisted OAuth client info — produced by configured \`clientId\` or by
+ * Dynamic Client Registration (RFC 7591). Stored separately from tokens
+ * so \`koi mcp logout\` does not force re-registration.
+ *
+ * Registered records carry the \`issuer\` and \`registrationEndpoint\` they
+ * were created under so a later change to discovery (different auth
+ * server) invalidates the cached client instead of silently using a
+ * client id against the wrong issuer.
+ */
+interface OAuthClientInfo {
+    readonly clientId: string;
+    /** Epoch ms when the client was persisted. 0 for configured static clients. */
+    readonly registeredAt: number;
+    /** Issuer the client was registered with (DCR only). Absent for configured static clients. */
+    readonly issuer?: string | undefined;
+    /** Registration endpoint used (DCR only). Absent for configured static clients. */
+    readonly registrationEndpoint?: string | undefined;
+}
 
 /**
  * OAuth authorization server metadata discovery.
@@ -632,7 +651,7 @@ interface TokenManagerOptions {
      */
     readonly clientId?: string | undefined;
     /**
-     * Lazy client_id resolver. Invoked exclusively from the refresh path so
+     * Lazy client resolver. Invoked exclusively from the refresh path so
      * that a passive \`getAccessToken()\` call with no stored tokens never
      * triggers DCR. A plain \`token()\` probe must be side-effect free —
      * otherwise reconnect retries can leak orphaned OAuth client
@@ -645,10 +664,16 @@ interface TokenManagerOptions {
      * a client without operator intervention; clear tokens so
      * \`handleUnauthorized\` can trigger re-auth instead of leaving the
      * session permanently stuck with undeletable expired credentials).
+     *
+     * The \`client\` payload carries the full \`OAuthClientInfo\` so the
+     * refresh path can pass it through to \`onInvalidClient\` unchanged —
+     * letting the provider invalidate against the exact authority the
+     * failing client was registered under, even if discovery has
+     * flipped to a different issuer in the meantime.
      */
     readonly getClientId?: (() => Promise<{
         readonly kind: "ok";
-        readonly clientId: string;
+        readonly client: OAuthClientInfo;
     } | {
         readonly kind: "transient";
     } | {
@@ -661,13 +686,15 @@ interface TokenManagerOptions {
     readonly resource?: string | undefined;
     /**
      * Fired when the refresh endpoint responds with \`error: "invalid_client"\`.
-     * Receives the exact \`clientId\` that was sent on the failing request
-     * so the provider can CAS-delete only that specific value. Reading a
-     * mutable provider cache here would race with concurrent flows that
-     * may have already re-registered a fresh client between the failing
-     * request and this callback.
+     * Receives the FULL OAuthClientInfo that was sent on the failing
+     * request — clientId AND issuer — so the provider can CAS-delete
+     * the exact stored record under the exact authority the client
+     * was registered with. Reading a mutable provider cache here, or
+     * recomputing the authority from current metadata, would race with
+     * concurrent flows that may have flipped issuers between the
+     * failing request and this callback.
      */
-    readonly onInvalidClient?: ((clientId: string) => Promise<void> | void) | undefined;
+    readonly onInvalidClient?: ((client: OAuthClientInfo) => Promise<void> | void) | undefined;
 }
 declare function createTokenManager(options: TokenManagerOptions): TokenManager;
 /**

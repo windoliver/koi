@@ -350,7 +350,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
     await storage.withLock(lockKey, async () => {
       const current = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
-      if (current !== undefined && current.clientId === expectedClient.clientId) {
+      // CAS on the full registration generation (clientId AND
+      // registeredAt). clientId alone is unsafe: an AS that
+      // deterministically re-issues the same client_id for the same
+      // software/redirect tuple would let a stale invalid_client
+      // callback match the string and delete a freshly repaired
+      // record. registeredAt is captured at registration time via
+      // Date.now(), so a newer registration has a strictly later
+      // timestamp than the failing one.
+      if (
+        current !== undefined &&
+        current.clientId === expectedClient.clientId &&
+        current.registeredAt === expectedClient.registeredAt
+      ) {
         await storage.delete(lockKey);
       }
     });
