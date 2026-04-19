@@ -158,6 +158,13 @@ describe("specCurl — file://", () => {
     expect(result.semantics.network).toEqual([]);
   });
 
+  test("file:// path is percent-decoded (regression: curl opens decoded fs path)", () => {
+    const result = specCurl(["curl", "file:///tmp/a%20b%21"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["/tmp/a b!"]);
+  });
+
   test("file://host/path → refused unsupported-form (non-empty authority)", () => {
     const result = specCurl(["curl", "file://host/path"]);
     expect(result.kind).toBe("refused");

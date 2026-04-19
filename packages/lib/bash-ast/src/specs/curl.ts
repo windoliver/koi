@@ -140,7 +140,20 @@ function dispatchUrl(raw: string): UrlDispatch {
           detail: "file:// with non-empty authority is ambiguous; use file:///<path>",
         };
       }
-      return { kind: "ok", read: url.pathname };
+      // URL.pathname keeps percent-encoded chars (`%20` etc.); curl opens
+      // the decoded filesystem path. Decode before emitting reads so
+      // path-based rules see the real filename.
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(url.pathname);
+      } catch (err) {
+        return {
+          kind: "refused",
+          cause: "parse-error",
+          detail: `invalid percent-encoding in file:// path '${url.pathname}': ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      return { kind: "ok", read: decoded };
     }
     default:
       return {
