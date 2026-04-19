@@ -62,6 +62,7 @@ import {
   DELEGATION,
   EVENTS,
   GOVERNANCE,
+  GOVERNANCE_ALLOW,
   MEMORY,
   runId,
   sessionId,
@@ -1801,14 +1802,14 @@ test("RuleDescriptor has required fields", () => {
 
 test("GovernanceBackend.describeRules is optional", () => {
   const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => ({ allowed: true }) },
+    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
   };
   expect(b.describeRules).toBeUndefined();
 });
 
 test("GovernanceBackend.describeRules can be implemented", async () => {
   const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => ({ allowed: true }) },
+    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
     describeRules: () => [
       { id: "r1", description: "test", effect: "advise" } satisfies RuleDescriptor,
     ],
