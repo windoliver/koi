@@ -671,7 +671,7 @@ jobs:
   ci:
     name: Build, Lint, Typecheck & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
