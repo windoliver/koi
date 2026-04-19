@@ -211,16 +211,16 @@ export async function registerDynamicClient(
  *
  *   1. URI must parse and use the `https:` scheme.
  *   2. Origin (scheme + host + port) must match the registration endpoint.
- *   3. Path must be the registration endpoint's own path or a sub-path
- *      of it. RFC 7592 §3 management URIs are typically
- *      `{registration_endpoint}/{client_id}` style; restricting to that
- *      shape blocks a malicious response from pointing rollback at an
- *      unrelated DELETE-capable endpoint on the same host (e.g., another
- *      API that shares the auth server's domain).
+ *   3. Path must be a STRICT child of the registration endpoint's path
+ *      (e.g. `{registration_endpoint}/{client_id}`) — NEVER equal to
+ *      the endpoint itself. Issuing an authenticated DELETE against
+ *      the collection endpoint could delete every registered client
+ *      (or trigger unspecified server behavior) depending on how the
+ *      AS implements the endpoint. Narrow to per-client management
+ *      resources so the blast radius is exactly one orphan.
  *
- * Without this validation a compromised registration response could
- * direct rollback at any DELETE-capable path on the same host and
- * exfiltrate the bearer management token.
+ * Without this validation a compromised or buggy registration response
+ * could direct rollback at any DELETE-capable path on the same host.
  */
 function isSafeManagementUri(candidate: string, registrationEndpoint: string): boolean {
   try {
@@ -228,10 +228,11 @@ function isSafeManagementUri(candidate: string, registrationEndpoint: string): b
     if (u.protocol !== "https:") return false;
     const reg = new URL(registrationEndpoint);
     if (u.origin !== reg.origin) return false;
-    // Path must be the registration endpoint path itself, or a child
-    // segment of it (typical `{registration_endpoint}/{client_id}`).
+    // Must be a strict sub-path — equality is rejected so rollback
+    // cannot target the registration collection endpoint itself.
     const regPath = reg.pathname.endsWith("/") ? reg.pathname : `${reg.pathname}/`;
-    return u.pathname === reg.pathname || u.pathname.startsWith(regPath);
+    if (u.pathname === reg.pathname) return false;
+    return u.pathname.startsWith(regPath) && u.pathname.length > regPath.length;
   } catch {
     return false;
   }

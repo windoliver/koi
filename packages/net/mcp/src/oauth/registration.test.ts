@@ -300,6 +300,45 @@ describe("registerDynamicClient", () => {
     expect(attemptedDelete).toBe(false);
   });
 
+  test("does NOT DELETE when registration_client_uri equals the registration endpoint (would target the collection)", async () => {
+    // A buggy or hostile AS could echo back the bare registration
+    // endpoint. Without strict-child validation, rollback would
+    // bearer-DELETE the collection itself — server-defined semantics
+    // could mean deleting every registered client. Refuse to send
+    // an authenticated DELETE against the endpoint itself.
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "collection-bait",
+              client_secret: "shh",
+              // BAD: same as registration endpoint, no per-client suffix.
+              registration_client_uri: "https://auth.example.com/register",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    expect(attemptedDelete).toBe(false);
+  });
+
   test("does NOT DELETE when registration_client_uri is on a different path on the same host", async () => {
     // Same-origin is necessary but not sufficient: the URI must be the
     // registration endpoint or a sub-path of it (RFC 7592

@@ -1757,6 +1757,36 @@ describe("createOAuthAuthProvider", () => {
     expect(secondExchangeHadResource).toBe(false);
   });
 
+  test("handleUnauthorized clears corrupt token storage and prompts re-auth", async () => {
+    // hasTokens() returns true on raw key existence, but parse may
+    // fail. Without clearing the corrupt blob, handleUnauthorized
+    // would see hasTokens=true and skip onReauthNeeded forever,
+    // trapping the operator in a sticky failure that no longer
+    // self-recovers.
+    const storage = createMockStorage();
+    const runtime = createMockRuntime();
+    const { computeServerKey } = await import("./tokens.js");
+    const key = computeServerKey("corrupt", "https://mcp.example.com");
+    await storage.set(key, "{not json{");
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    ) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "corrupt",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: { clientId: "static" },
+      runtime,
+      storage,
+    });
+
+    await provider.handleUnauthorized();
+
+    expect(await storage.get(key)).toBeUndefined();
+    expect(runtime.onReauthNeeded).toHaveBeenCalledWith("corrupt");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

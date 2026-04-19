@@ -162,8 +162,23 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   };
 
   const getAccessToken = async (): Promise<string | undefined> => {
-    // Read tokens under lock (fast — no network)
-    const tokens = await storage.withLock(storageKey, () => getTokens());
+    // Read tokens under lock (fast — no network). When the stored
+    // record is corrupt — raw key exists but JSON parse fails —
+    // delete it. handleUnauthorized uses hasTokens() as the
+    // transient/terminal discriminator; leaving a poisoned record in
+    // place would make it think the session is still recoverable
+    // and suppress onReauthNeeded forever.
+    const tokens = await storage.withLock(storageKey, async () => {
+      const parsed = await getTokens();
+      if (parsed === undefined) {
+        const raw = await storage.get(storageKey);
+        if (raw !== undefined) {
+          // Raw exists but couldn't parse → corrupt. Drop it.
+          await storage.delete(storageKey);
+        }
+      }
+      return parsed;
+    });
     if (tokens === undefined) return undefined;
 
     // Check if access token is still valid (no lock needed)
