@@ -32,7 +32,8 @@ function parseNumber(v: unknown): number | undefined {
   return undefined;
 }
 
-function normaliseModel(raw: RawModel): ModelEntry | undefined {
+function normaliseModel(raw: RawModel | null | undefined): ModelEntry | undefined {
+  if (raw === null || raw === undefined) return undefined;
   if (typeof raw.id !== "string" || raw.id.length === 0) return undefined;
   const entry: { -readonly [K in keyof ModelEntry]: ModelEntry[K] } = { id: raw.id };
   const ctx = parseNumber(raw.context_length);

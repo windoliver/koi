@@ -36,4 +36,57 @@ describe("fetchAvailableModels", () => {
     });
     expect(result.models[1]).toEqual({ id: "openai/gpt-5" });
   });
+
+  test("returns error on non-2xx", async () => {
+    const fetchMock = mock(async () => new Response("nope", { status: 401 }));
+    const result = await fetchAvailableModels({
+      provider: "openrouter",
+      apiKey: "sk-bad",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, error: "HTTP 401: " });
+  });
+
+  test("returns error on abort/timeout", async () => {
+    const fetchMock = mock(async (_url: string, init?: RequestInit) => {
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      });
+    });
+    const result = await fetchAvailableModels({
+      provider: "openrouter",
+      apiKey: "sk-test",
+      fetch: fetchMock as unknown as typeof fetch,
+      timeoutMs: 20,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/abort/i);
+  });
+
+  test("returns error for unknown provider without baseUrl", async () => {
+    const result = await fetchAvailableModels({
+      provider: "anthropic",
+      apiKey: "sk-test",
+    });
+    expect(result).toEqual({
+      ok: false,
+      error: 'No /models endpoint known for provider "anthropic"',
+    });
+  });
+
+  test("skips malformed entries without failing", async () => {
+    const fetchMock = mock(
+      async () =>
+        new Response(JSON.stringify({ data: [{ id: "" }, null, { id: "good/model" }] }), {
+          status: 200,
+        }),
+    );
+    const result = await fetchAvailableModels({
+      provider: "openrouter",
+      apiKey: "sk-test",
+      fetch: fetchMock as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: true, models: [{ id: "good/model" }] });
+  });
 });
