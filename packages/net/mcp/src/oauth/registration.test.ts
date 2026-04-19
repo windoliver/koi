@@ -644,6 +644,25 @@ describe("registerDynamicClient", () => {
     if (!info.ok) expect(info.terminal).toBe(true);
   });
 
+  test("classifies 408 / 425 / 429 as transient (retryable intermediary/throttling statuses)", async () => {
+    // Explicit retryable signals per HTTP / RFC 6585 / RFC 8470.
+    // Treating any as terminal would delete a valid refresh token
+    // on transient infrastructure failure.
+    for (const status of [408, 425, 429]) {
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response(`status ${status}`, { status })),
+      ) as unknown as typeof fetch;
+
+      const info = await registerDynamicClient({
+        registrationEndpoint: "https://auth.example.com/register",
+        redirectUri: "http://127.0.0.1:8912/callback",
+      });
+
+      expect(info.ok, `status ${status}`).toBe(false);
+      if (!info.ok) expect(info.terminal, `status ${status}`).toBe(false);
+    }
+  });
+
   test("classifies 429 (rate limit) as transient (so retries don't destroy state)", async () => {
     // Throttling clears on its own. Treating it as terminal would
     // delete a perfectly recoverable session and force operators

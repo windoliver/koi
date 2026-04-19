@@ -84,16 +84,22 @@ export async function registerDynamicClient(
   }
 
   if (!response.ok) {
-    // 5xx = transient (server-side hiccup). 429 and other retryable
-    // throttling responses also stay transient — they typically clear
-    // on retry without operator intervention. Other 4xx (400, 401,
-    // 403, 422 validation) = terminal: the AS rejected our request
-    // shape and we cannot succeed by retrying.
-    const isThrottled = response.status === 429;
-    const terminal = response.status < 500 && !isThrottled;
+    // Classify by intent, not by blanket 4xx/5xx cutoff:
+    // - 5xx: server-side hiccup → transient.
+    // - 408 Request Timeout, 425 Too Early, 429 Too Many Requests:
+    //   explicit retryable signals (HTTP / RFC 6585 / 8470) → transient.
+    // - Other 4xx (400, 401, 403, 422 validation rejection): the AS
+    //   rejected our request shape and retrying will not succeed
+    //   without operator intervention → terminal.
+    //
+    // Earlier "all 4xx terminal" classification swept in retryable
+    // intermediary statuses and forced logout on what should have
+    // been preserved for retry.
+    const retryableClientErrors = new Set<number>([408, 425, 429]);
+    const isTransient = response.status >= 500 || retryableClientErrors.has(response.status);
     return {
       ok: false,
-      terminal,
+      terminal: !isTransient,
       reason: `registration endpoint returned ${response.status}`,
     };
   }
