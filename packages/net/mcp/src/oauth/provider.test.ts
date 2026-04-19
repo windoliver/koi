@@ -1432,6 +1432,49 @@ describe("createOAuthAuthProvider", () => {
     expect(runtime.onReauthNeeded).toHaveBeenCalledWith("terminal-dcr");
   });
 
+  test("preserves DCR-backed tokens when discovery is transiently unavailable", async () => {
+    // Process restart with discovery briefly down: getMetadata returns
+    // undefined, getClient cannot validate the persisted DCR record,
+    // getClientId now reports `transient` (NOT terminal). Refresh
+    // path must preserve the refresh token so the next attempt — once
+    // discovery is back — can recover.
+    const storage = createMockStorage();
+    const { computeServerKey } = await import("./tokens.js");
+    await storage.set(
+      computeServerKey("flaky-discovery", "https://mcp.example.com"),
+      JSON.stringify({
+        accessToken: "expired",
+        refreshToken: "rt-precious",
+        expiresAt: Date.now() - 1000,
+      }),
+    );
+
+    // Discovery returns 404 → metadata = undefined.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    ) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "flaky-discovery",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {},
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    // Token call sees expired tokens, attempts refresh, hits transient
+    // discovery failure → returns undefined WITHOUT clearing storage.
+    const result = await provider.token();
+    expect(result).toBeUndefined();
+    // The refresh token MUST still be there for the next attempt.
+    const stored = await storage.get(
+      computeServerKey("flaky-discovery", "https://mcp.example.com"),
+    );
+    expect(stored).toBeDefined();
+    const parsed = JSON.parse(stored ?? "{}");
+    expect(parsed.refreshToken).toBe("rt-precious");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

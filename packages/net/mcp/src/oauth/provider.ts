@@ -231,15 +231,21 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
           return { kind: "transient" };
         }
         // Client could not be resolved. Distinguish:
-        //   - DCR truly unavailable (no static clientId AND no
-        //     registration_endpoint): terminal — no operator-free path.
+        //   - Discovery itself failed (metadata undefined): TRANSIENT.
+        //     A brief outage at process start cannot prove DCR is
+        //     permanently gone — wiping tokens here would force-logout
+        //     a recoverable session.
+        //   - Discovery succeeded BUT no registration_endpoint AND no
+        //     static clientId: TERMINAL — there is no operator-free
+        //     recovery path.
         //   - DCR was attempted and returned a terminal failure
         //     (insecure endpoint, confidential, narrowed redirect_uris):
-        //     terminal — operator must fix config or AS state.
+        //     TERMINAL — operator must fix config or AS state.
         //   - Otherwise (transient registration failure): preserve
         //     tokens for the next attempt to retry.
         const md = await getMetadata();
-        if (oauthConfig.clientId === undefined && md?.registrationEndpoint === undefined) {
+        if (md === undefined) return { kind: "transient" };
+        if (oauthConfig.clientId === undefined && md.registrationEndpoint === undefined) {
           return { kind: "terminal" };
         }
         if (lastDcrTerminal) {

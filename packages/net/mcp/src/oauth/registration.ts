@@ -210,18 +210,28 @@ export async function registerDynamicClient(
  * an authenticated DELETE to it. Constraints:
  *
  *   1. URI must parse and use the `https:` scheme.
- *   2. Origin (host) must match the registration endpoint that issued it.
+ *   2. Origin (scheme + host + port) must match the registration endpoint.
+ *   3. Path must be the registration endpoint's own path or a sub-path
+ *      of it. RFC 7592 §3 management URIs are typically
+ *      `{registration_endpoint}/{client_id}` style; restricting to that
+ *      shape blocks a malicious response from pointing rollback at an
+ *      unrelated DELETE-capable endpoint on the same host (e.g., another
+ *      API that shares the auth server's domain).
  *
- * A malicious or compromised registration response could otherwise
- * point `registration_client_uri` at an arbitrary host and turn rollback
- * into an SSRF + management-token exfiltration primitive.
+ * Without this validation a compromised registration response could
+ * direct rollback at any DELETE-capable path on the same host and
+ * exfiltrate the bearer management token.
  */
 function isSafeManagementUri(candidate: string, registrationEndpoint: string): boolean {
   try {
     const u = new URL(candidate);
     if (u.protocol !== "https:") return false;
     const reg = new URL(registrationEndpoint);
-    return u.host === reg.host;
+    if (u.origin !== reg.origin) return false;
+    // Path must be the registration endpoint path itself, or a child
+    // segment of it (typical `{registration_endpoint}/{client_id}`).
+    const regPath = reg.pathname.endsWith("/") ? reg.pathname : `${reg.pathname}/`;
+    return u.pathname === reg.pathname || u.pathname.startsWith(regPath);
   } catch {
     return false;
   }

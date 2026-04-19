@@ -151,9 +151,18 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     }
 
     // Try to refresh — outside the lock to avoid blocking concurrent readers
-    // during the 15s network call
-    if (tokens.refreshToken === undefined || metadata === undefined) {
+    // during the 15s network call.
+    //
+    // No refresh_token → terminal: nothing to rotate, session is dead.
+    // No metadata → TRANSIENT: discovery may have temporarily failed
+    // (process restart while AS is briefly unreachable). Preserve tokens
+    // so the next attempt can recover; do not destroy a refresh token
+    // we cannot prove is invalid.
+    if (tokens.refreshToken === undefined) {
       await storage.withLock(storageKey, () => storage.delete(storageKey));
+      return undefined;
+    }
+    if (metadata === undefined) {
       return undefined;
     }
 
