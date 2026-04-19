@@ -89,13 +89,15 @@ export function createVisibilityFilter(
   }
 
   return {
-    register: inner.register,
-    deregister: inner.deregister,
-    lookup: inner.lookup,
+    register: (entry) => inner.register(entry),
+    deregister: (id) => inner.deregister(id),
+    lookup: (id) => inner.lookup(id),
     list,
-    transition: inner.transition,
-    patch: inner.patch,
-    watch: inner.watch,
+    transition: (agentId, targetPhase, expectedGeneration, reason) =>
+      inner.transition(agentId, targetPhase, expectedGeneration, reason),
+    patch: (agentId, fields) => inner.patch(agentId, fields),
+    watch: (listener) => inner.watch(listener),
+    ...(inner.descriptor !== undefined ? { descriptor: (id) => inner.descriptor?.(id) } : {}),
     [Symbol.asyncDispose]: inner[Symbol.asyncDispose].bind(inner),
   };
 }

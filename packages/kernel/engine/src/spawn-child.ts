@@ -73,6 +73,22 @@ function createNoopChildHandle(childId: AgentId, name: string): ChildHandle {
 // ---------------------------------------------------------------------------
 
 export async function spawnChildAgent(options: SpawnChildOptions): Promise<SpawnChildResult> {
+  if (
+    options.spawnPolicy.totalProcessWarningAt !== undefined &&
+    options.spawnPolicy.totalProcessWarningAt >= options.spawnPolicy.maxTotalProcesses
+  ) {
+    throw KoiRuntimeError.from(
+      "VALIDATION",
+      `totalProcessWarningAt (${options.spawnPolicy.totalProcessWarningAt}) must be less than maxTotalProcesses (${options.spawnPolicy.maxTotalProcesses})`,
+      {
+        context: {
+          totalProcessWarningAt: options.spawnPolicy.totalProcessWarningAt,
+          maxTotalProcesses: options.spawnPolicy.maxTotalProcesses,
+        },
+      },
+    );
+  }
+
   // 1. Acquire ledger slot (tree-wide process count)
   //    Long-lived — released on child termination, not on tool call completion.
   //    Fan-out (short-lived) is handled by the spawn guard middleware.
@@ -103,6 +119,27 @@ export async function spawnChildAgent(options: SpawnChildOptions): Promise<Spawn
       retryable: true,
       context: { activeProcesses: active, maxTotalProcesses: cap },
     });
+  }
+
+  const totalProcessWarningAt = options.spawnPolicy.totalProcessWarningAt;
+  if (totalProcessWarningAt !== undefined && options.spawnPolicy.onWarning !== undefined) {
+    const active = options.spawnLedger.activeCount();
+    if (active === totalProcessWarningAt) {
+      try {
+        await Promise.resolve(
+          options.spawnPolicy.onWarning({
+            kind: "total_processes",
+            current: active,
+            limit: options.spawnLedger.capacity(),
+            warningAt: totalProcessWarningAt,
+          }),
+        );
+      } catch (e: unknown) {
+        const release = options.spawnLedger.release();
+        await release;
+        throw e;
+      }
+    }
   }
 
   // 2. Resolve inheritance config (backward compat: scopeChecker → inheritance.tools)

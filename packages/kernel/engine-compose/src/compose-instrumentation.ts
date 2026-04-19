@@ -340,11 +340,19 @@ function buildSpanTree(
 
 const DEFAULT_BUFFER_SIZE = 500;
 
+function resolveBufferSize(config: DebugInstrumentationConfig): number {
+  const bufferSize = config.bufferSize ?? DEFAULT_BUFFER_SIZE;
+  if (!Number.isInteger(bufferSize) || bufferSize <= 0) {
+    throw new Error(`bufferSize must be a positive integer, got ${String(bufferSize)}`);
+  }
+  return bufferSize;
+}
+
 /** Create the debug instrumentation instance for middleware timing. */
 export function createDebugInstrumentation(
   config: DebugInstrumentationConfig,
 ): DebugInstrumentation {
-  const bufferSize = config.bufferSize ?? DEFAULT_BUFFER_SIZE;
+  const bufferSize = resolveBufferSize(config);
   const traceBuffer = createDebugRingBuffer<DebugTurnTrace>(bufferSize);
   const spanAccumulators = new Map<number, RawSpan[]>();
   const resolverAccumulators = new Map<number, ResolverSpan[]>();
