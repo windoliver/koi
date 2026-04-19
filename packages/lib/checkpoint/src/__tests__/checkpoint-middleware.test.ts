@@ -324,12 +324,17 @@ describe("checkpoint middleware", () => {
     expect(after2.value.parentIds).toEqual([turn0NodeId]);
   });
 
-  test("rollback-failed stopBlocked snapshot gets its own userTurnIndex so rewind counts stay aligned (#1638)", async () => {
+  test("rollback-failed stopBlocked snapshot shares previous userTurnIndex to keep live chain contiguous (#1638)", async () => {
     // Regression: when compensating rollback fails and we persist an
-    // incomplete snapshot, it MUST claim its own userTurnIndex. Writing
-    // it with the previous prompt's counter would make /rewind 1 from a
-    // subsequent successful prompt skip past the aborted node and land
-    // on the pre-abort prompt, discarding an extra turn.
+    // incomplete marker, it must NOT advance userTurnCounter. The
+    // incomplete node is a sibling (parentNodeId not updated), so
+    // restore planning's by-count walk never traverses it. Bumping the
+    // counter would create a gap in the live chain's userTurnIndex
+    // sequence — `/rewind 1` from a subsequent successful turn targets
+    // userTurn = current-1, which would fall PAST the aborted marker
+    // into the pre-abort prompt when resolved against the live chain.
+    // Keep the marker tagged with the previous prompt's index so the
+    // live ancestor chain stays contiguous.
     const session = makeSession();
     const target = join(rig.workDir, "victim.txt");
     writeFileSync(target, "original");
@@ -362,14 +367,69 @@ describe("checkpoint middleware", () => {
     }
 
     // The incomplete snapshot must have a userTurnIndex STRICTLY GREATER
-    // than the previous successful prompt — otherwise /rewind 1 math
-    // would pull from a stale count and land past the aborted turn.
+    // The incomplete sibling marker reuses the previous successful
+    // prompt's userTurnIndex so the live ancestor chain stays
+    // contiguous; restore planning's by-count resolver only walks live
+    // ancestors, so this tag doesn't affect rewind targeting.
     const afterIncomplete = rig.store.head(chainId(String(session.sessionId)));
     expect(afterIncomplete.ok).toBe(true);
     if (!afterIncomplete.ok || afterIncomplete.value === undefined) {
       throw new Error("expected incomplete head");
     }
-    expect(afterIncomplete.value.data.userTurnIndex).toBeGreaterThan(turn0UserIndex);
+    expect(afterIncomplete.value.data.userTurnIndex).toBe(turn0UserIndex);
+  });
+
+  test("quarantine: wrapToolCall refuses tracked mutations after double-failure (#1638)", async () => {
+    // Simulate the rollback+persist double-failure by making the
+    // snapshot store throw on put AND failing rollback (missing blob).
+    // Subsequent tracked mutations must be refused until the session is
+    // repaired — otherwise captures would build on known-divergent disk.
+    const session = makeSession();
+    const target = join(rig.workDir, "dirty.txt");
+    writeFileSync(target, "original");
+
+    // Monkey-patch the store to fail put on the NEXT call only, so the
+    // incomplete-snapshot persistence attempt returns an error. The
+    // bootstrap put during getOrCreateSession must still succeed.
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal, establishes head.
+    await onAfter(makeTurn(session, 0));
+
+    // Drive wrapToolCall to record a fileOp for turn 1, then remove the
+    // blob dir (rollback will see skipped-missing-blob) and patch
+    // store.put to return an error result.
+    await wrap(blockedCtx, makeRequest("fs_edit", { path: target, content: "mod" }), async () => {
+      writeFileSync(target, "mod");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+
+    const originalPut = rig.store.put.bind(rig.store);
+    const putSpy = (() => {
+      throw new Error("simulated store failure");
+    }) as typeof rig.store.put;
+    Object.defineProperty(rig.store, "put", { value: putSpy, configurable: true });
+
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(blockedCtx); // triggers quarantine
+    } finally {
+      console.error = originalError;
+      Object.defineProperty(rig.store, "put", { value: originalPut, configurable: true });
+    }
+
+    // Subsequent tracked tool call must be refused with a quarantine error.
+    const nextCtx = makeTurn(session, 2);
+    await expect(
+      wrap(nextCtx, makeRequest("fs_write", { path: target, content: "new" }), async () => {
+        return PASSTHROUGH_RESPONSE;
+      }),
+    ).rejects.toThrow(/quarantined/);
   });
 
   test("stopBlocked turn resets continuation marker so next text turn gets its own userTurnIndex (#1638)", async () => {

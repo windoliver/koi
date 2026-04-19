@@ -80,6 +80,14 @@ interface SessionState {
    * and should share the prior's userTurnIndex.
    */
   lastCaptureHadOps: boolean;
+  /**
+   * Set when compensating rollback AND incomplete-snapshot persistence
+   * BOTH fail on a stopBlocked turn (#1638). The workspace is known to
+   * diverge from the last good snapshot and we have no audit record,
+   * so subsequent capture writes (wrapToolCall, normal onAfterTurn)
+   * fail closed until the session is repaired. Null = not quarantined.
+   */
+  quarantine: { readonly reason: string; readonly at: number } | null;
 }
 
 export interface CreateCheckpointInput {
@@ -128,13 +136,15 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     unsuccessful: readonly unknown[],
   ): Promise<{ readonly ok: boolean }> {
     try {
-      // Give the aborted turn its OWN userTurnIndex — writing it with the
-      // previous prompt's counter would make `/rewind 1` from a subsequent
-      // successful prompt skip past this node and land on the prior
-      // prompt, discarding more than the user intended. Advancing
-      // state.userTurnCounter keeps restore planning's by-count math
-      // aligned with the real turn ordering.
-      state.userTurnCounter += 1;
+      // Do NOT advance state.userTurnCounter: the incomplete marker is a
+      // sibling of the live ancestor chain (parentNodeId isn't updated),
+      // so restore planning's by-count walk on the live chain never
+      // traverses it. Bumping the counter would create a gap in the
+      // live chain's userTurnIndex sequence, which makes the by-count
+      // resolver fall past the aborted turn and over-rewind by one
+      // prompt. Reuse the current counter so the marker is tagged with
+      // the previous prompt's index; subsequent successful turns
+      // continue the contiguous sequence.
       const parents = state.parentNodeId !== undefined ? [state.parentNodeId] : [];
       const payload: CheckpointPayload = {
         turnIndex: ctx.turnIndex,
@@ -164,8 +174,6 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
           "[koi:checkpoint] incomplete-snapshot persist returned error on stopBlocked turn:",
           putResult.error,
         );
-        // Undo the counter advance since the snapshot didn't actually land.
-        state.userTurnCounter -= 1;
         return { ok: false };
       }
       return { ok: true };
@@ -174,7 +182,6 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         "[koi:checkpoint] failed to persist incomplete snapshot for stopBlocked turn:",
         e,
       );
-      state.userTurnCounter -= 1;
       return { ok: false };
     }
   }
@@ -285,6 +292,7 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         eventIndex: 0,
         userTurnCounter,
         lastCaptureHadOps: false,
+        quarantine: null,
       };
       sessions.set(sessionId, state);
     }
@@ -351,6 +359,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       }
 
       const state = await getOrCreateSession(sid);
+      // #1638 fail-closed: after a double-failure (rollback + persist)
+      // the session is quarantined — refuse further tracked mutations
+      // so the checkpoint chain cannot diverge further from disk. The
+      // untracked fast-path above has already returned, so only
+      // tracked tools (fs_edit, fs_write) are blocked here.
+      if (state.quarantine !== null) {
+        throw new Error(
+          `[koi:checkpoint] session ${sid} is quarantined: ${state.quarantine.reason}. ` +
+            "Repair the workspace and clear the quarantine before continuing.",
+        );
+      }
       const turnKey = String(ctx.turnId);
 
       // Pre-image (best-effort)
@@ -483,11 +502,31 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       if (persistResult.ok) {
         state.turnBuffers.delete(turnKey);
       } else {
+        // Double failure: workspace diverges from last good snapshot AND
+        // we have no durable audit record. Quarantine the session so
+        // subsequent tracked mutations / normal captures fail closed
+        // instead of compounding the divergence.
+        state.quarantine = {
+          reason: "rollback failed AND incomplete-snapshot persist failed on stopBlocked turn",
+          at: Date.now(),
+        };
         console.error(
           "[koi:checkpoint] rollback AND incomplete-snapshot persistence both failed on stopBlocked turn — " +
-            "retaining buffered fileOps in session state for potential recovery",
+            "session quarantined; subsequent captures will fail closed until repaired",
         );
       }
+      return;
+    }
+
+    // Normal-completion path: refuse to advance the chain for a
+    // quarantined session — any new capture would build on top of known-
+    // divergent disk state.
+    if (state.quarantine !== null) {
+      console.error(
+        `[koi:checkpoint] session ${state.chainId} is quarantined; skipping onAfterTurn capture:`,
+        state.quarantine.reason,
+      );
+      state.turnBuffers.delete(turnKey);
       return;
     }
 
