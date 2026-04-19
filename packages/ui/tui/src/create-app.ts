@@ -23,6 +23,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
+import { wireStdinResurrection } from "./stdin-resurrection.js";
 import type { FetchModelsResult, ModelEntry } from "./state/types.js";
 import { StoreContext } from "./store-context.js";
 import { computeLayoutTier } from "./theme.js";
@@ -259,6 +260,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
   // the renderer.once("destroy") registration that mountSolidRoot makes.
   // Called directly on stop() so we clean up without broadcasting a destroy event.
   let solidRootDispose: (() => void) | undefined;
+  // #1915 — dispose handle for the stdin-resurrection close watcher.
+  let disposeStdinResurrection: (() => void) | undefined;
 
   const handle: TuiAppHandle = {
     done(): Promise<void> {
@@ -341,6 +344,14 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
         activeRenderer = localRenderer;
         started = true;
 
+        // #1915 — rebind stdin if Bun's native reader destroys it mid-session.
+        // Only wires for the real stdin; skip when the caller injected a
+        // renderer (tests use a non-TTY stream, so resurrecting /dev/tty would
+        // be both wrong and unavailable).
+        if (injectedRenderer === undefined) {
+          ({ dispose: disposeStdinResurrection } = wireStdinResurrection(activeRenderer));
+        }
+
         // Decision 4A: auto-mount the Solid component tree.
         // createComponent is Solid's non-JSX API (identical to compiled JSX output).
         //
@@ -408,6 +419,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
           solidRootDispose = undefined;
           cleanupResize?.();
           cleanupResize = undefined;
+          disposeStdinResurrection?.();
+          disposeStdinResurrection = undefined;
           if (localRenderer !== injectedRenderer) {
             try {
               localRenderer.destroy();
@@ -512,6 +525,13 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
 
       cleanupResize?.();
       cleanupResize = undefined;
+
+      // #1915 — detach the stdin-resurrection watcher BEFORE renderer.destroy()
+      // so a legitimate stdin close during shutdown doesn't race into
+      // opening a replacement /dev/tty handle after we've already committed
+      // to tearing down.
+      disposeStdinResurrection?.();
+      disposeStdinResurrection = undefined;
 
       // Dispose the Solid reactive root (releases store subscriptions, keyboard
       // hooks, etc.). We captured the dispose function during start() by
