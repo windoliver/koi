@@ -163,7 +163,6 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     label: "Switch model",
     description: "Pick a model to use for the rest of this session",
     category: "system",
-    ctrlShortcut: "M",
   },
   {
     id: "system:cost",

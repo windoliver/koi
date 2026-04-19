@@ -63,6 +63,8 @@ export interface CostBridge {
   readonly exportJson: () => CostExportPayload;
   /** Update session context (e.g. after session reset). */
   readonly setSession: (sessionId: string, modelName: string, provider: string) => void;
+  /** Update only the active model name (mid-session switch). */
+  readonly setModelName: (modelName: string) => void;
   /** Stop the debounce timer. Call on shutdown. */
   readonly dispose: () => void;
 }
@@ -168,6 +170,10 @@ export async function createCostBridge(config: CostBridgeConfig): Promise<CostBr
       sessionId = newSessionId;
       modelName = newModelName;
       provider = newProvider;
+    },
+
+    setModelName(newModelName: string): void {
+      modelName = newModelName;
     },
 
     dispose(): void {

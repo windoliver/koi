@@ -4,7 +4,6 @@ import {
   isBackspace,
   isCtrlC,
   isCtrlJ,
-  isCtrlM,
   isCtrlN,
   isCtrlP,
   isCtrlS,
@@ -151,18 +150,6 @@ describe("isCtrlS", () => {
 
   test("false for ctrl+n", () => {
     expect(isCtrlS(key("n", { ctrl: true }))).toBe(false);
-  });
-});
-
-describe("isCtrlM", () => {
-  test("true for ctrl+m", () => {
-    expect(isCtrlM(key("m", { ctrl: true }))).toBe(true);
-  });
-  test("false for plain m", () => {
-    expect(isCtrlM(key("m"))).toBe(false);
-  });
-  test("false for ctrl+n", () => {
-    expect(isCtrlM(key("n", { ctrl: true }))).toBe(false);
   });
 });
 

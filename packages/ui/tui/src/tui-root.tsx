@@ -326,10 +326,6 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:sessions");
         if (cmd !== undefined) handleCommandSelect(cmd);
       },
-      onOpenModelPicker: () => {
-        const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "system:model-switch");
-        if (cmd !== undefined) handleCommandSelect(cmd);
-      },
     });
   });
 

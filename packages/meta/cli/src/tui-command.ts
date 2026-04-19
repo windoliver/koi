@@ -4042,6 +4042,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // middleware-side source of truth.
     onModelSwitch: (model: string): void => {
       currentModelBox.current = model;
+      costBridge.setModelName(model);
     },
   });
 
