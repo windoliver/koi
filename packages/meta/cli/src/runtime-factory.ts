@@ -423,6 +423,13 @@ export interface KoiRuntimeConfig {
    */
   readonly persistentApprovals?: ApprovalStore | undefined;
   /**
+   * Pre-constructed current-model override middleware. When provided, runs
+   * OUTER of `modelRouterMiddleware` and rewrites `request.model` to the
+   * host-owned mutable box's current value. Used by the TUI to implement
+   * mid-session model switching without rebuilding the runtime.
+   */
+  readonly currentModelMiddleware?: KoiMiddleware | undefined;
+  /**
    * Pre-constructed model-router middleware. When provided, routes all model
    * calls through the failover chain before reaching the model adapter.
    * Create via: createModelRouterMiddleware(createModelRouter(config, adapters))
@@ -1777,6 +1784,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
       hook: hookMw,
       permissions: permMw,
       exfiltrationGuard: exfiltrationGuardMw,
+      ...(config.currentModelMiddleware !== undefined
+        ? { currentModel: config.currentModelMiddleware }
+        : {}),
       ...(config.modelRouterMiddleware !== undefined
         ? { modelRouter: config.modelRouterMiddleware }
         : {}),

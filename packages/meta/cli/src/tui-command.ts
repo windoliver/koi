@@ -79,9 +79,11 @@ import { formatAtReferencesForModel, resolveAtReferences } from "./at-reference.
 import { createAuthInterceptor } from "./auth-interceptor.js";
 import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
+import { createCurrentModelMiddleware } from "./current-model-middleware.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
 import { loadManifestConfig } from "./manifest.js";
+import { type FetchModelsResult, fetchAvailableModels } from "./model-list-fetch.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
 import type { KoiRuntimeHandle } from "./runtime-factory.js";
@@ -1088,6 +1090,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // ---------------------------------------------------------------------------
 
   const store = createStore(createInitialState(modelName));
+
+  // Current-model middleware: holds a mutable box that the model-picker
+  // modal mutates via TuiRoot's `onModelSwitch` callback. Rewrites
+  // `request.model` on every turn so the next model stream uses the
+  // freshly picked model without rebuilding the runtime. Composed OUTER
+  // of `modelRouterMiddleware` so any fallback chain sees the latest
+  // host-picked model id.
+  const { middleware: currentModelMiddleware, box: currentModelBox } =
+    createCurrentModelMiddleware(modelName);
+
   // Persistent approval store — gracefully degrade if DB can't be opened
   // (corrupt file, permissions issue, etc.). TUI still works without it.
   // let: approvalStore is conditionally set based on DB availability
@@ -1355,6 +1367,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           bashElicitAutoApprove: true,
         }
       : {}),
+    currentModelMiddleware,
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -4016,6 +4029,20 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     onTurnComplete: handleTurnComplete,
     // #10: @-mention file completion
     onAtQuery: handleAtQuery,
+    // Model picker — host-side /models fetch (L2 TUI has no network code).
+    onFetchModels: (): Promise<FetchModelsResult> =>
+      fetchAvailableModels({
+        provider,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
+        apiKey,
+      }),
+    // Model picker — mutate the current-model box so the next turn uses
+    // the freshly picked model. The store's `modelName` is updated by
+    // TuiRoot via the `model_switched` action; this callback updates the
+    // middleware-side source of truth.
+    onModelSwitch: (model: string): void => {
+      currentModelBox.current = model;
+    },
   });
 
   if (!result.ok) {
