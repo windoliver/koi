@@ -94,9 +94,23 @@ export function createTurnPreludeMiddleware(config: TurnPreludeConfig): KoiMiddl
       next: ModelStreamHandler,
     ): AsyncIterable<ModelChunk> {
       const enriched = enrichWithPrelude(request, config);
-      // Task 2.4 adds terminal-chunk ack logic. For now, forward chunks
-      // without ack so the middleware at least compiles and routes correctly.
-      yield* next(enriched);
+      // Track whether ack has fired to guarantee exactly-once semantics.
+      // let is justified: mutable flag updated during stream iteration.
+      let acked = false;
+      for await (const chunk of next(enriched)) {
+        if (chunk.kind === "done" && !acked) {
+          // Ack BEFORE yielding so downstream teardown (iterator.return())
+          // cannot race with post-yield code.
+          config.getStore().ack(request);
+          acked = true;
+        }
+        yield chunk;
+      }
+      // Fallback: adapter ended naturally without an explicit "done" chunk.
+      // On error/abort the for-await throws and skips this line — correct.
+      if (!acked) {
+        config.getStore().ack(request);
+      }
     },
   };
 }

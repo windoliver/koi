@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  ModelChunk,
   ModelHandler,
   ModelRequest,
   ModelResponse,
   ModelStreamHandler,
+  PendingMatchStore,
   TaskItemId,
   TurnContext,
 } from "@koi/core";
@@ -71,6 +73,38 @@ function captureStream(): { handler: ModelStreamHandler; captured: ModelRequest[
     };
   };
   return { handler, captured };
+}
+
+function textChunk(text: string): ModelChunk {
+  return { kind: "text_delta", delta: text };
+}
+
+function doneChunk(): ModelChunk {
+  return { kind: "done", response: makeResponse() };
+}
+
+function isTextChunk(chunk: ModelChunk): boolean {
+  return chunk.kind === "text_delta";
+}
+
+function isDoneChunk(chunk: ModelChunk): boolean {
+  return chunk.kind === "done";
+}
+
+function getStatus(): undefined {
+  return undefined;
+}
+
+function record(store: PendingMatchStore, n: number): void {
+  for (let i = 0; i < n; i++) {
+    store.record({
+      taskId: TASK,
+      event: "ready",
+      stream: "stdout",
+      lineNumber: i + 1,
+      timestamp: Date.now() + i,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -293,5 +327,86 @@ describe("createTurnPreludeMiddleware", () => {
     expect(messages).toHaveLength(1);
     const first = messages[0];
     expect(first?.senderId).toBe("watch-patterns");
+  });
+});
+
+describe("createTurnPreludeMiddleware — wrapModelStream", () => {
+  test("ack fires on terminal chunk, before yielding it downstream", async () => {
+    const store = createPendingMatchStore();
+    record(store, 1);
+    const mw = createTurnPreludeMiddleware({ getStore: () => store, getTaskStatus: getStatus });
+
+    // pending() count observed at each chunk — captured inside the loop
+    let pendingDuringText = -1;
+    let pendingAfterDone = -1;
+
+    async function* source(): AsyncGenerator<ModelChunk> {
+      yield textChunk("hi");
+      yield doneChunk();
+    }
+
+    const iter = mw.wrapModelStream?.(
+      makeTurnCtx(),
+      makeRequest(),
+      source as unknown as ModelStreamHandler,
+    );
+    if (iter) {
+      for await (const chunk of iter) {
+        if (isTextChunk(chunk)) pendingDuringText = store.pending();
+        if (isDoneChunk(chunk)) pendingAfterDone = store.pending();
+      }
+    }
+    expect(pendingDuringText).toBe(1); // pending while mid-stream
+    expect(pendingAfterDone).toBe(0); // acked BEFORE done was yielded
+  });
+
+  test("ack skipped on mid-stream error — matches survive for retry", async () => {
+    const store = createPendingMatchStore();
+    record(store, 1);
+    const mw = createTurnPreludeMiddleware({ getStore: () => store, getTaskStatus: getStatus });
+
+    async function* failing(): AsyncGenerator<ModelChunk> {
+      yield textChunk("partial");
+      throw new Error("stream broke");
+    }
+
+    const iter = mw.wrapModelStream?.(
+      makeTurnCtx(),
+      makeRequest(),
+      failing as unknown as ModelStreamHandler,
+    );
+    const drain = async (): Promise<void> => {
+      if (iter) {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of iter) {
+          // drain
+        }
+      }
+    };
+    await expect(drain()).rejects.toThrow("stream broke");
+    expect(store.pending()).toBe(1); // no ack on error
+  });
+
+  test("stream without explicit terminal chunk — natural end triggers ack", async () => {
+    const store = createPendingMatchStore();
+    record(store, 1);
+    const mw = createTurnPreludeMiddleware({ getStore: () => store, getTaskStatus: getStatus });
+
+    async function* textOnly(): AsyncGenerator<ModelChunk> {
+      yield textChunk("hi");
+    }
+
+    const iter = mw.wrapModelStream?.(
+      makeTurnCtx(),
+      makeRequest(),
+      textOnly as unknown as ModelStreamHandler,
+    );
+    if (iter) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of iter) {
+        // drain
+      }
+    }
+    expect(store.pending()).toBe(0);
   });
 });
