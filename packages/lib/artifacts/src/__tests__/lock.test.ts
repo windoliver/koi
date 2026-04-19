@@ -35,4 +35,22 @@ describe("single-writer lock", () => {
     const release2 = acquireLock(dbPath);
     release2();
   });
+
+  test("stale lock from dead PID is recovered", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const dbPath = join(tmpDir, "store.db");
+    // Simulate a SIGKILL'd owner: write a lock file with a PID that doesn't
+    // exist. `99999999` is practically guaranteed to be unused.
+    writeFileSync(`${dbPath}.lock`, "99999999");
+    const release = acquireLock(dbPath);
+    release();
+  });
+
+  test("live PID in lock file blocks new acquirer", () => {
+    const { writeFileSync } = require("node:fs") as typeof import("node:fs");
+    const dbPath = join(tmpDir, "store.db");
+    // Use our own PID — definitely alive.
+    writeFileSync(`${dbPath}.lock`, String(process.pid));
+    expect(() => acquireLock(dbPath)).toThrow(/ArtifactStore already open by another process/);
+  });
 });

@@ -86,7 +86,8 @@ export function createSaveArtifact(args: {
         latest.blob_ready === 1 &&
         (latest.expires_at === null || latest.expires_at >= now)
       ) {
-        // Idempotent no-op. Retire intent.
+        // Idempotent no-op. Retire intent immediately — no artifact row was
+        // inserted for this intent, so the intent serves no recovery purpose.
         args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intentId);
         return { idempotentArtifactId: latest.id };
       }
@@ -98,7 +99,11 @@ export function createSaveArtifact(args: {
       const needsRePut = tomb !== null && tomb.claimed_at !== null;
       args.db.query("DELETE FROM pending_blob_deletes WHERE hash = ?").run(hash);
 
-      // Insert artifact row (always blob_ready=0)
+      // Insert artifact row (always blob_ready=0). Do NOT retire the intent
+      // yet — we keep it as a durable recovery signal until post-commit repair
+      // promotes the row to blob_ready=1. If we crash between COMMIT and the
+      // blob_ready=1 UPDATE, startup recovery uses the surviving intent (plus
+      // the blob_ready=0 row) to resolve the state.
       const newId = `art_${crypto.randomUUID()}`;
       args.db
         .query(
@@ -118,9 +123,6 @@ export function createSaveArtifact(args: {
           now,
           null, // Plan 3 stamps expires_at from policy.ttlMs
         );
-
-      // Retire intent atomically with the INSERT
-      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intentId);
 
       return { insertedId: newId, needsRePut };
     });
@@ -158,6 +160,9 @@ export function createSaveArtifact(args: {
     if (updateResult.changes === 0) {
       throw new Error(`saveArtifact: row ${newId} was reaped during repair; save is lost`);
     }
+
+    // Row is now durable. Retire the intent.
+    args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intentId);
 
     const row = args.db
       .query(`SELECT ${ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?`)

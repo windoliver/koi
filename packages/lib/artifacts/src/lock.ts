@@ -3,18 +3,44 @@
  * Prevents two writer processes from opening the same store concurrently.
  * :memory: databases skip this since they're process-local by definition.
  *
- * Implementation uses O_CREAT | O_EXCL (exclusive-create) semantics. The
- * gap vs a proper flock is that a process killed with SIGKILL (no exit
- * handler) can leave a stale lock file. Plan 4 hardens this with a PID
- * liveness check or a proper flock binding.
+ * Implementation uses O_CREAT | O_EXCL (exclusive-create) semantics, with a
+ * PID-liveness check to recover from SIGKILL'd owners that couldn't run the
+ * normal exit handler. A proper OS-backed flock is Plan 4's hardening — this
+ * file-based approach is sufficient for single-host deployments.
  */
 
-import { closeSync, existsSync, openSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
 const LOCK_SUFFIX = ".lock";
 
 function isInMemory(dbPath: string): boolean {
   return dbPath === ":memory:" || dbPath.startsWith("file::memory:");
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ESRCH") return false;
+    // EPERM means the pid exists but we lack permission — process is alive.
+    if ((err as NodeJS.ErrnoException)?.code === "EPERM") return true;
+    throw err;
+  }
+}
+
+function tryRemoveStaleLock(lockPath: string): boolean {
+  try {
+    const content = readFileSync(lockPath, "utf8").trim();
+    const pid = Number(content);
+    if (Number.isNaN(pid)) return false;
+    if (pidIsAlive(pid)) return false;
+    unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function acquireLock(dbPath: string): () => void {
@@ -29,9 +55,23 @@ export function acquireLock(dbPath: string): () => void {
     fd = openSync(lockPath, "wx");
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-      throw new Error("ArtifactStore already open by another process");
+      // Stale-lock recovery: if the recorded PID is dead, the previous owner
+      // crashed without cleanup. Remove the stale lock and retry once.
+      if (tryRemoveStaleLock(lockPath)) {
+        try {
+          fd = openSync(lockPath, "wx");
+        } catch (retryErr) {
+          if ((retryErr as NodeJS.ErrnoException)?.code === "EEXIST") {
+            throw new Error("ArtifactStore already open by another process");
+          }
+          throw retryErr;
+        }
+      } else {
+        throw new Error("ArtifactStore already open by another process");
+      }
+    } else {
+      throw err;
     }
-    throw err;
   }
 
   writeFileSync(fd, String(process.pid));
