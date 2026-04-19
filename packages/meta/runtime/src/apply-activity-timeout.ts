@@ -19,7 +19,14 @@
  * crash the runtime or strand cleanup.
  */
 
-import type { EngineAdapter, EngineEvent, EngineInput, ToolCallId } from "@koi/core";
+import type {
+  AbortReason,
+  EngineAdapter,
+  EngineEvent,
+  EngineInput,
+  EngineOutput,
+  ToolCallId,
+} from "@koi/core";
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -136,10 +143,16 @@ async function* wrapStream(
         if (ev === undefined) break;
         yield ev;
         if (ev.kind === "done") return;
-        if (state.terminated !== null) return;
       }
       if (state.pumpDone) {
         if (state.pumpError !== undefined) throw state.pumpError;
+        return;
+      }
+      if (state.terminated !== null) {
+        // Termination path has already enqueued its telemetry + synthesized
+        // terminal `done` (see checkTerm / scheduleWall). If the queue is
+        // drained and we reach here, no more events are coming — return
+        // instead of blocking on the waker.
         return;
       }
       await new Promise<void>((resolve) => {
@@ -269,8 +282,9 @@ function checkTerm(timers: Timers, deps: TimerDeps): void {
     type: ACTIVITY_TERMINATED_IDLE,
     data: { elapsedMs: elapsed },
   });
+  enqueue(deps.state, synthesizeTerminalDone("idle", elapsed));
   safeObserver("onTerminated:idle", () => deps.config.onTerminated?.("idle", elapsed));
-  deps.ctl.abort();
+  deps.ctl.abort("timeout" satisfies AbortReason);
 }
 
 function scheduleWall(timers: Timers, deps: TimerDeps): void {
@@ -285,11 +299,43 @@ function scheduleWall(timers: Timers, deps: TimerDeps): void {
       type: ACTIVITY_TERMINATED_WALL_CLOCK,
       data: { elapsedMs: elapsed },
     });
+    enqueue(deps.state, synthesizeTerminalDone("wall_clock", elapsed));
     safeObserver("onTerminated:wall_clock", () =>
       deps.config.onTerminated?.("wall_clock", elapsed),
     );
-    deps.ctl.abort();
+    deps.ctl.abort("timeout" satisfies AbortReason);
   }, deps.maxMs);
+}
+
+/**
+ * Synthesize a terminal `done` event so the wrapper honours the engine
+ * contract that every stream ends with `kind: "done"`. Downstream consumers
+ * (harness, loop, telemetry) key off `done.output.stopReason` and break if
+ * the stream truncates after a custom event.
+ *
+ * Metrics are zeroed because the wrapper does not track token accounting — the
+ * real counts live inside the adapter which has been aborted. The `metadata`
+ * surface carries the termination reason so downstream can distinguish a
+ * timeout-driven interrupt from a user-driven cancel.
+ */
+function synthesizeTerminalDone(reason: ActivityTerminationReason, elapsedMs: number): EngineEvent {
+  const output: EngineOutput = {
+    content: [],
+    stopReason: "interrupted",
+    metrics: {
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      turns: 0,
+      durationMs: elapsedMs,
+    },
+    metadata: {
+      terminatedBy: "activity-timeout",
+      terminationReason: reason,
+      elapsedMs,
+    },
+  };
+  return { kind: "done", output };
 }
 
 function clearAll(timers: Timers): void {

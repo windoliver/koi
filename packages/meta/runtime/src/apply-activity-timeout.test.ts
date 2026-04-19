@@ -392,6 +392,36 @@ describe("applyActivityTimeout", () => {
     expect(elapsed).toBeLessThan(500);
   });
 
+  test("idle-terminated stream still emits a terminal done with stopReason interrupted", async () => {
+    const wrapped = applyActivityTimeout(
+      idleAfterAdapter([{ kind: "text_delta", delta: "start" }]),
+      { idleWarnMs: 20, idleTerminateMs: 50 },
+    );
+    const events = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    const doneIdx = events.findIndex((e) => e.kind === "done");
+    const termIdx = events.findIndex((e) => isCustom(e, "activity.terminated.idle"));
+    expect(termIdx).toBeGreaterThanOrEqual(0);
+    expect(doneIdx).toBeGreaterThan(termIdx);
+    const done = events[doneIdx];
+    if (done === undefined || done.kind !== "done") throw new Error("expected done");
+    expect(done.output.stopReason).toBe("interrupted");
+    expect(done.output.metadata?.terminationReason).toBe("idle");
+    expect(done.output.metadata?.terminatedBy).toBe("activity-timeout");
+  });
+
+  test("wall-clock-terminated stream still emits a terminal done with stopReason interrupted", async () => {
+    const wrapped = applyActivityTimeout(activeAdapter(10, 100), { maxDurationMs: 40 });
+    const events = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    const done = events.find(
+      (e): e is EngineEvent & { readonly kind: "done" } => e.kind === "done",
+    );
+    expect(done).toBeDefined();
+    expect(done?.output.stopReason).toBe("interrupted");
+    expect(done?.output.metadata?.terminationReason).toBe("wall_clock");
+  });
+
   test("long-running tool execution (silent gap between tool_call_end and tool_result) is not idle", async () => {
     const callId = toolCallId("long-running-tool");
     let terminated = false;

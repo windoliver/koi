@@ -332,6 +332,8 @@ createRuntime({
 | `activity.terminated.idle` | idle past `idleTerminateMs` → stream aborts | `{ elapsedMs }` |
 | `activity.terminated.wall_clock` | `maxDurationMs` exceeded regardless of activity → stream aborts | `{ elapsedMs }` |
 
+**Terminal `done` contract.** On timeout the wrapper always yields a terminal `EngineEvent` of kind `done` with `output.stopReason: "interrupted"` and `output.metadata` carrying `{ terminatedBy: "activity-timeout", terminationReason: "idle" | "wall_clock", elapsedMs }`. Downstream consumers (harness, loop, telemetry) that key off `done.stopReason` see a clean terminal event and can distinguish a timeout-driven interrupt from a user cancel. The wrapper also calls `AbortController.abort("timeout")` so the inner adapter's `signal.reason` is set to the typed `AbortReason`.
+
 **Defaults and back-compat**
 
 - When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
