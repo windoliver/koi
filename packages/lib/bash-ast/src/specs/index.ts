@@ -11,7 +11,7 @@ export { specChown } from "./chown.js";
 export { specCp } from "./cp.js";
 export { specCurl } from "./curl.js";
 export { specMv } from "./mv.js";
-export { BUILTIN_SPECS, createSpecRegistry, registerSpec } from "./registry.js";
+export { BUILTIN_SPECS, createSpecRegistry, lookupSpec, registerSpec } from "./registry.js";
 export { specRm } from "./rm.js";
 export { specScp } from "./scp.js";
 export { specSsh } from "./ssh.js";
