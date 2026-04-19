@@ -3384,7 +3384,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               targetTokens,
               preserveRecent,
               HEURISTIC_ESTIMATOR,
-              modelName,
+              // Read live model from the middleware box so /compact after a
+              // model switch estimates against the currently-active model.
+              currentModelBox.current,
             );
             if (result.strategy === "noop") {
               dispatchNotice(
@@ -3790,6 +3792,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // state during runtime init / barrier waits. Cleared in the outer
       // finally so early-return guards below also release the latch.
       submitInProgress = true;
+      // Capture the reset generation synchronously so we can detect a
+      // `/clear` or `/new` (or any other `resetConversation()`) that lands
+      // during the preflight window. If the generation advances before we
+      // create the stream, abandon this submit — otherwise the captured
+      // `text` would execute AFTER the user's reset intent. `resetBarrier`
+      // alone is insufficient: a reset could complete between our await
+      // and stream creation without us noticing.
+      const submitResetGen = resetGeneration;
       try {
         // P2-A: block on runtime assembly if not yet ready.
         // First submit waits for createKoiRuntime to complete; subsequent
@@ -3810,11 +3820,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         // runtimeHandle is guaranteed non-null after runtimeReady resolves.
         // The await above sets runtimeHandle; if it threw, we returned early.
         if (runtimeHandle === null) return;
+        // Bail if a reset (e.g. `/clear`, `/new`) landed during runtime
+        // initialization. The submit was implicitly invalidated.
+        if (resetGeneration !== submitResetGen) return;
         const handle = runtimeHandle;
 
         // Wait for any pending session reset to complete before submitting.
         // Prevents hitting stale task board or trajectory state.
         await resetBarrier;
+        // Bail if a reset landed while we waited on the barrier (the barrier
+        // itself only signals completion, not invalidation of queued prompts).
+        if (resetGeneration !== submitResetGen) return;
 
         // Re-check `clearPersistFailed` after the barrier settles.
         // The early guard above could pass even though a `/clear`

@@ -1410,6 +1410,34 @@ describe("reduce — model picker actions", () => {
     });
     expect(next.modelName).toBe("anthropic/claude-opus-4-7");
   });
+
+  test("model_switched mirrors into sessionInfo.modelName when set", () => {
+    const state = stateWith({
+      modelName: "anthropic/claude-sonnet-4-6",
+      sessionInfo: {
+        modelName: "anthropic/claude-sonnet-4-6",
+        provider: "anthropic",
+        sessionName: "test",
+        sessionId: "abc123",
+      },
+    });
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.modelName).toBe("anthropic/claude-opus-4-7");
+    expect(next.sessionInfo?.sessionId).toBe("abc123");
+  });
+
+  test("model_switched leaves null sessionInfo untouched", () => {
+    const state = createInitialState("anthropic/claude-sonnet-4-6");
+    const next = reduce(state, {
+      kind: "model_switched",
+      model: "anthropic/claude-opus-4-7",
+    });
+    expect(next.sessionInfo).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

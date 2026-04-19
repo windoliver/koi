@@ -725,7 +725,13 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
     }
 
     case "model_switched": {
-      return { ...state, modelName: action.model };
+      // Keep `sessionInfo.modelName` in lockstep with the top-level
+      // `state.modelName` so diagnostics (doctor view, cost recording,
+      // transcript exports that read session metadata) see a single
+      // source of truth after a mid-session switch.
+      const nextSessionInfo =
+        state.sessionInfo === null ? null : { ...state.sessionInfo, modelName: action.model };
+      return { ...state, modelName: action.model, sessionInfo: nextSessionInfo };
     }
 
     case "set_connection_status":
