@@ -127,15 +127,18 @@ function violationFromRule(rule: PatternRule, idx: number): Violation {
 }
 
 function describeMatch(match: PatternMatch): string {
-  const selectors: string[] = [];
-  if (match.toolId !== undefined) selectors.push(`toolId=${match.toolId}`);
-  if (match.model !== undefined) selectors.push(`model=${match.model}`);
+  const selectors: readonly string[] = [
+    ...(match.toolId !== undefined ? [`toolId=${match.toolId}`] : []),
+    ...(match.model !== undefined ? [`model=${match.model}`] : []),
+  ];
   if (match.kind !== undefined) {
     return selectors.length === 0 ? match.kind : `${match.kind}:${selectors.join(",")}`;
   }
   return selectors.length === 0 ? "*" : selectors.join(",");
 }
 
+// The "(no description)" literal is intentional user-facing fallback text.
+// TUI renderers should display it verbatim — do NOT treat it as a sentinel.
 function ruleToDescriptor(rule: PatternRule, idx: number): RuleDescriptor {
   return {
     id: rule.rule ?? `pattern.${idx}`,
@@ -190,6 +193,10 @@ export function createPatternBackend(config: PatternBackendConfig): GovernanceBa
 
   function describeRules(): readonly RuleDescriptor[] {
     const out = rules.map((r, i) => ruleToDescriptor(r, i));
+    // `default-deny` is a reserved synthetic id. If a configured rule
+    // happens to use the same id and defaultDeny is true, the output
+    // will contain two entries with that id — the L0 contract does not
+    // guarantee uniqueness, and this is cheaper than validation here.
     if (defaultDeny) {
       return [
         ...out,
