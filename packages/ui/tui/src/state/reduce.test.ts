@@ -19,9 +19,11 @@ import {
 import type { PluginSummary, TuiAction, TuiAssistantBlock, TuiMessage, TuiState } from "./types.js";
 import {
   COMPACT_THRESHOLD,
+  MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
   MAX_TOOL_RESULT_BYTES,
+  MAX_VIOLATIONS_IN_MEMORY,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -3308,6 +3310,42 @@ describe("governance actions", () => {
     const next = reduce(initialState, { kind: "add_governance_alert", alert });
     expect(next.governance.alerts).toHaveLength(1);
     expect(next.governance.alerts[0]?.id).toBe("a1");
+  });
+
+  test("add_governance_alert caps at MAX_ALERTS_IN_MEMORY (oldest evicted)", () => {
+    let s = createInitialState();
+    for (let i = 0; i < MAX_ALERTS_IN_MEMORY + 5; i += 1) {
+      s = reduce(s, {
+        kind: "add_governance_alert",
+        alert: {
+          id: `a${i}`,
+          ts: i,
+          sessionId: "s",
+          variable: "cost_usd",
+          threshold: 0.8,
+          current: 1,
+          limit: 2,
+          utilization: 0.5,
+        },
+      });
+    }
+    expect(s.governance.alerts).toHaveLength(MAX_ALERTS_IN_MEMORY);
+    // Prepend + head-cap means newest at [0], oldest evicted.
+    expect(s.governance.alerts[0]?.id).toBe(`a${MAX_ALERTS_IN_MEMORY + 4}`);
+    expect(s.governance.alerts[MAX_ALERTS_IN_MEMORY - 1]?.id).toBe("a5");
+  });
+
+  test("add_governance_violation caps at MAX_VIOLATIONS_IN_MEMORY (oldest evicted)", () => {
+    let s = createInitialState();
+    for (let i = 0; i < MAX_VIOLATIONS_IN_MEMORY + 3; i += 1) {
+      s = reduce(s, {
+        kind: "add_governance_violation",
+        violation: { id: `v${i}`, ts: i, variable: "cost_usd", reason: "x" },
+      });
+    }
+    expect(s.governance.violations).toHaveLength(MAX_VIOLATIONS_IN_MEMORY);
+    expect(s.governance.violations[0]?.id).toBe(`v${MAX_VIOLATIONS_IN_MEMORY + 2}`);
+    expect(s.governance.violations[MAX_VIOLATIONS_IN_MEMORY - 1]?.id).toBe("v3");
   });
 
   test("clear_governance_alerts empties the alerts array", () => {
