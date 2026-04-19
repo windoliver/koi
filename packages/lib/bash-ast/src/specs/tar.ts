@@ -29,19 +29,31 @@ const MODE_FLAGS = ["x", "c", "t"] as const;
  * that pairs each positional file operand with the most recent `-C DIR`
  * effective base. Multiple `-C` tokens may interleave between positionals.
  *
- * Recognises `-C DIR` (separate), `-CDIR` (attached), and `--directory DIR` /
- * `--directory=DIR` long forms. Skips known flag tokens and their values.
- *
  *   tar -c -f out.tar a b           -> reads: [a, b]
  *   tar -c -C /etc -f out.tar a b   -> reads: [/etc/a, /etc/b]
  *   tar -c -C /etc passwd -C /var hosts -f out.tar -> reads: [/etc/passwd, /var/hosts]
+ *
+ * Honors `--` end-of-options (everything after is a positional even if it
+ * starts with `-`). Absolute paths (starting with `/`) are emitted as-is —
+ * tar reads them from the absolute location regardless of any active `-C`.
  */
 function collectCreateReads(argv: readonly string[]): readonly string[] {
   const reads: string[] = [];
   let base: string | undefined;
+  let cutoff = false;
   for (let i = 1; i < argv.length; i += 1) {
     const tok = argv[i];
     if (tok === undefined) continue;
+
+    if (cutoff) {
+      reads.push(rebase(tok, base));
+      continue;
+    }
+
+    if (tok === "--") {
+      cutoff = true;
+      continue;
+    }
 
     if (tok === "-C" || tok === "--directory") {
       const next = argv[i + 1];
@@ -69,9 +81,15 @@ function collectCreateReads(argv: readonly string[]): readonly string[] {
     if (tok.startsWith("--file=")) continue;
     if (tok.startsWith("-")) continue;
 
-    reads.push(base === undefined ? tok : `${base}/${tok}`);
+    reads.push(rebase(tok, base));
   }
   return reads;
+}
+
+function rebase(operand: string, base: string | undefined): string {
+  if (base === undefined) return operand;
+  if (operand.startsWith("/")) return operand;
+  return `${base}/${operand}`;
 }
 
 function expandTarBundles(argv: readonly string[]): readonly string[] {

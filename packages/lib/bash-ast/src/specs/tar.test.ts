@@ -73,6 +73,27 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.reads).toEqual(["in.tar"]);
   });
 
+  test("absolute operands are not rebased under -C (regression)", () => {
+    const result = specTar(["tar", "-c", "-C", "/safe", "-f", "out.tar", "/etc/shadow"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["/etc/shadow"]);
+  });
+
+  test("-- end-of-options preserves dash-prefixed operands as files (regression)", () => {
+    const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-secret", "-also"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["-secret", "-also"]);
+  });
+
+  test("-- after -C still rebases relative dash-prefixed operands", () => {
+    const result = specTar(["tar", "-c", "-C", "/etc", "-f", "out.tar", "--", "-secret"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["/etc/-secret"]);
+  });
+
   test("archive flag interleaved with files (regression: positional-independence)", () => {
     const result = specTar(["tar", "-c", "a.txt", "-f", "out.tar", "b.txt"]);
     expect(result.kind).toBe("complete");
