@@ -2943,7 +2943,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   };
 
   const submitQueue = createForegroundSubmitQueue(
-    { run: processSubmit },
+    {
+      run: processSubmit,
+      interrupt: async () => {
+        if (activeController !== null || store.getState().queuedSubmits.length > 0) {
+          submitQueue.clear();
+        }
+        abortActiveStream();
+        const inflightRun = activeRunPromise;
+        if (inflightRun !== null) {
+          try {
+            await inflightRun;
+          } catch {
+            /* already surfaced via store */
+          }
+        }
+      },
+    },
     {
       onEnqueue: (text) => {
         store.dispatch({ kind: "enqueue_submit", text });
@@ -2957,7 +2973,11 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     },
   );
 
-  const submitText = async (text: string): Promise<void> => {
+  const submitText = async (text: string, mode: "queue" | "interrupt" = "queue"): Promise<void> => {
+    if (mode === "interrupt") {
+      await submitQueue.interruptAndSubmit(text);
+      return;
+    }
     await submitQueue.submit(text);
   };
 

@@ -92,7 +92,7 @@ export interface TuiRootProps {
   /** Called when the user selects a session to resume. */
   readonly onSessionSelect: (sessionId: string) => void;
   /** Called when the user submits a message in the conversation view. */
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   /** Called when the user triggers Ctrl+C interrupt. */
   readonly onInterrupt: () => void;
   /** Called when the user responds to a permission prompt (y/n/a). */

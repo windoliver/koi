@@ -29,7 +29,7 @@ const SLASH_COMMANDS: readonly SlashCommand[] = COMMAND_DEFINITIONS.map((cmd) =>
 const MAX_HISTORY = 100;
 
 export interface ConversationViewProps {
-  readonly onSubmit: (text: string) => void;
+  readonly onSubmit: (text: string, mode?: "queue" | "interrupt") => void;
   readonly onSlashDetected: (query: string | null) => void;
   readonly onSlashSelect?: ((command: SlashCommand, args: string) => void) | undefined;
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
@@ -147,7 +147,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     }
   };
 
-  const handleSubmit = (text: string): void => {
+  const handleSubmit = (text: string, mode: "queue" | "interrupt" = "queue"): void => {
     if (text.trim() !== "") {
       // Add to history (deduplicate consecutive identical entries)
       const current = history();
@@ -158,7 +158,7 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
     // Reset history navigation
     historyIdx = -1;
     draft = "";
-    props.onSubmit(text);
+    props.onSubmit(text, mode);
   };
 
   /**

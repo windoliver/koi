@@ -98,4 +98,33 @@ describe("createForegroundSubmitQueue", () => {
     expect(calls).toEqual(["first"]);
     expect(queue.isRunning()).toBe(false);
   });
+
+  test("interruptAndSubmit aborts the active run, clears queued submits, and starts replacement", async () => {
+    const first = createDeferred();
+    const calls: string[] = [];
+    const interrupts: string[] = [];
+    const queue = createForegroundSubmitQueue({
+      run: async (text: string) => {
+        calls.push(text);
+        if (text === "first") {
+          await first.promise;
+        }
+      },
+      interrupt: async () => {
+        interrupts.push("interrupt");
+        first.resolve();
+      },
+    });
+
+    await queue.submit("first");
+    await queue.submit("second");
+
+    expect(await queue.interruptAndSubmit("replacement")).toBe("started");
+    await flushMicrotasks();
+
+    expect(interrupts).toEqual(["interrupt"]);
+    expect(calls).toEqual(["first", "replacement"]);
+    expect(queue.snapshot()).toEqual([]);
+    expect(queue.isRunning()).toBe(false);
+  });
 });

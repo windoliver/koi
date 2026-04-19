@@ -44,7 +44,7 @@ function kittyKey(name: string, mods?: { shift?: boolean; ctrl?: boolean }): Key
 describe("processInputKey — Kitty mode", () => {
   test("Enter submits current text", () => {
     const result = processInputKey(kittyKey("return"), "hello");
-    expect(result).toEqual({ kind: "submit", text: "hello" });
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "queue" });
   });
 
   test("Shift+Enter inserts newline in Kitty mode", () => {
@@ -54,12 +54,17 @@ describe("processInputKey — Kitty mode", () => {
 
   test("Enter submits even when text is multi-line", () => {
     const result = processInputKey(kittyKey("return"), "line1\nline2");
-    expect(result).toEqual({ kind: "submit", text: "line1\nline2" });
+    expect(result).toEqual({ kind: "submit", text: "line1\nline2", mode: "queue" });
   });
 
   test("Enter submits empty text", () => {
     const result = processInputKey(kittyKey("return"), "");
-    expect(result).toEqual({ kind: "submit", text: "" });
+    expect(result).toEqual({ kind: "submit", text: "", mode: "queue" });
+  });
+
+  test("Ctrl+Enter submits in interrupt mode", () => {
+    const result = processInputKey(kittyKey("return", { ctrl: true }), "hello");
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "interrupt" });
   });
 });
 
@@ -70,12 +75,17 @@ describe("processInputKey — Kitty mode", () => {
 describe("processInputKey — Legacy mode", () => {
   test("Enter always submits in legacy mode", () => {
     const result = processInputKey(key("return"), "hello");
-    expect(result).toEqual({ kind: "submit", text: "hello" });
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "queue" });
   });
 
   test("Shift+Enter submits in legacy mode (can't distinguish)", () => {
     const result = processInputKey(key("return", { shift: true }), "hello");
-    expect(result).toEqual({ kind: "submit", text: "hello" });
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "queue" });
+  });
+
+  test("Meta+Enter submits in interrupt mode", () => {
+    const result = processInputKey(key("return", { meta: true }), "hello");
+    expect(result).toEqual({ kind: "submit", text: "hello", mode: "interrupt" });
   });
 });
 
@@ -123,7 +133,7 @@ describe("processInputKey — line editing", () => {
 
   test("Ctrl+C submits empty (interrupt)", () => {
     const result = processInputKey(key("c", { ctrl: true }), "hello");
-    expect(result).toEqual({ kind: "submit", text: "" });
+    expect(result).toEqual({ kind: "submit", text: "", mode: "interrupt" });
   });
 });
 
