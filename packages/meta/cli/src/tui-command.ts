@@ -39,6 +39,7 @@ import type {
   AuditEntry,
   ContentBlock,
   EngineEvent,
+  GovernanceController,
   InboundMessage,
   JsonObject,
   RichTrajectoryStep,
@@ -47,7 +48,7 @@ import type {
   TranscriptEntry,
   TranscriptEntryId,
 } from "@koi/core";
-import { sessionId } from "@koi/core";
+import { GOVERNANCE, sessionId } from "@koi/core";
 import { formatCost, formatTokens } from "@koi/core/cost-tracker";
 import type { DisplayableResumedMessage } from "@koi/core/message";
 import { filterResumedMessagesForDisplay } from "@koi/core/message";
@@ -86,6 +87,7 @@ import { scrubSensitiveEnv } from "./commands/start.js";
 import { type CostBridge, createCostBridge } from "./cost-bridge.js";
 import { resolveApiConfig } from "./env.js";
 import { createFileCompletionHandler } from "./file-completions.js";
+import { createGovernanceBridge, type GovernanceBridge } from "./governance-bridge.js";
 import { loadManifestConfig } from "./manifest.js";
 import { initOtelSdk } from "./otel-bootstrap.js";
 import { decideResumeHint, formatPickerModeResumeHint, formatResumeHint } from "./resume-hint.js";
@@ -1642,6 +1644,31 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       return;
     }
     runtimeHandle = handle;
+    // Wire governance bridge when the agent has a GovernanceController
+    // component attached. In default sessions (no --max-spend or equivalent
+    // future flag), component() returns undefined and the bridge stays unset,
+    // leaving all governanceBridge?.xxx() call sites as no-ops.
+    try {
+      const governanceController = handle.runtime.agent.component<GovernanceController>(GOVERNANCE);
+      if (governanceController !== undefined) {
+        governanceBridge = createGovernanceBridge({
+          store,
+          controller: governanceController,
+          sessionId: tuiSessionId as string,
+          alertsPath: join(homedir(), ".koi", "governance-alerts.jsonl"),
+        });
+        // Seed up to 10 most-recent alerts from JSONL so /governance
+        // shows context across sessions instead of starting empty.
+        const recent = governanceBridge.loadRecentAlerts(10);
+        for (const alert of recent) {
+          store.dispatch({ kind: "add_governance_alert", alert });
+        }
+        // Initial snapshot push so the view has data before the first turn.
+        governanceBridge.pollSnapshot();
+      }
+    } catch (err: unknown) {
+      console.warn("[tui-command] governance bridge init failed:", err);
+    }
     // Prime the runtime's in-memory transcript with the resumed
     // messages. The runtime's context-window builder reads from this
     // array on every turn, so without this push the model would see
@@ -1748,6 +1775,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     modelName,
     provider,
   });
+
+  // --- Governance bridge: wire @koi/governance-core controller into TUI ---
+  // Conditional: only created when the host has a GovernanceController
+  // attached to the agent. In default sessions (no governance flags), the
+  // bridge is undefined and all governanceBridge?.xxx() call sites no-op.
+  // Future work (e.g. --max-spend CLI flag) will instantiate a controller
+  // and the bridge will start surfacing alerts in /governance.
+  // let: justified — set inside the optional block (runtimeReady.then), read by
+  // call sites below that execute after the runtime resolves.
+  let governanceBridge: GovernanceBridge | undefined;
 
   // ---------------------------------------------------------------------------
   // 4. Helpers
@@ -2488,6 +2525,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
         );
       }
     }
+    // Governance bridge dispose is a no-op (sync, no open handles), but
+    // calling it here keeps the pattern symmetric with future bridges that
+    // may hold timers or open file handles.
+    governanceBridge?.dispose();
     try {
       await appHandle?.stop();
       // Print the resume hint here — after the TUI renderer has
@@ -3457,6 +3498,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             tuiSessionId = newSid;
             viewedSessionId = newSid;
             costBridge.setSession(newSid as string, modelName, provider);
+            governanceBridge?.setSession(newSid as string);
             store.dispatch({
               kind: "set_session_info",
               modelName,
@@ -3723,6 +3765,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           dispatchNotice(store, "zoom-info", `[Zoom level: ${next}×]`);
           break;
         }
+        case "system:governance-reset":
+          // The TUI side already cleared its in-memory alerts via the
+          // optimistic dispatch from executeGovernanceReset() in tui-root.tsx.
+          // No-op placeholder for now — when a future PR exposes the alert
+          // tracker on the governance middleware handle, this case will reset
+          // its per-session dedup so onAlert can fire again for crossed thresholds.
+          break;
         default:
           // Surface unimplemented commands explicitly rather than silently no-oping.
           store.dispatch({
@@ -3951,6 +4000,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // back to it blocks writes (pre-existing safety contract).
           lastResetFailed = false;
           costBridge.setSession(targetSid as string, modelName, provider);
+          governanceBridge?.setSession(targetSid as string);
           store.dispatch({
             kind: "set_session_info",
             modelName,
@@ -4253,6 +4303,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             outputTokens: deltaOutput,
             costUsd: deltaCost,
           });
+          governanceBridge?.pollSnapshot();
         }
 
         // Refresh trajectory + decision ledger data after each turn.
