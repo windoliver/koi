@@ -37,11 +37,21 @@ function pidIsAlive(pid: number): boolean {
   }
 }
 
+function parseLockPid(content: string): number | undefined {
+  // New format: "PID:UUID". Back-compat: bare "PID" (older locks).
+  const trimmed = content.trim();
+  if (!trimmed) return undefined;
+  const pidStr = trimmed.includes(":") ? trimmed.split(":", 1)[0] : trimmed;
+  if (pidStr === undefined) return undefined;
+  const pid = Number(pidStr);
+  return Number.isFinite(pid) && pid > 0 ? pid : undefined;
+}
+
 function tryRemoveStaleLock(lockPath: string): boolean {
   try {
-    const content = readFileSync(lockPath, "utf8").trim();
-    const pid = Number(content);
-    if (Number.isNaN(pid)) return false;
+    const content = readFileSync(lockPath, "utf8");
+    const pid = parseLockPid(content);
+    if (pid === undefined) return false;
     if (pidIsAlive(pid)) return false;
     unlinkSync(lockPath);
     return true;

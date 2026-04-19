@@ -7,12 +7,24 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { BlobStore } from "@koi/blob-cas";
 
 const STORE_ID_KEY = "store_id";
 const SENTINEL_FILENAME = ".store-id";
+const SENTINEL_TMP_PREFIX = ".store-id.tmp";
+// UUID v4 format; reject any other sentinel value as corrupt.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function readStoreIdFromDb(db: Database): string | undefined {
   const row = db.query("SELECT value FROM meta WHERE key = ?").get(STORE_ID_KEY) as {
@@ -25,20 +37,30 @@ function readSentinelFromFs(blobDir: string): string | undefined {
   const path = join(blobDir, SENTINEL_FILENAME);
   if (!existsSync(path)) return undefined;
   const content = readFileSync(path, "utf8").trim();
-  return content || undefined;
+  if (!content) return undefined;
+  // A malformed sentinel (truncated / corrupted write / wrong format) is a
+  // corruption signal — reject rather than silently self-heal a garbage ID
+  // into the DB.
+  if (!UUID_RE.test(content)) {
+    throw new Error(
+      `Blob backend sentinel (${path}) contains a malformed store_id; operator must repair or reset explicitly`,
+    );
+  }
+  return content;
 }
 
 /**
- * Durably write the sentinel file. Uses open+write+fsync+close+fsync-dir
- * so bootstrap/self-heal survives power loss — a crash after the DB row
- * commits but before the sentinel is durable would otherwise leave the
- * store in the operator-repair branch (DB present, sentinel missing,
- * non-empty store).
+ * Durably write the sentinel file via tmp + fsync + rename + fsync-dir.
+ * Atomic replace guarantees the final pathname resolves to either the old
+ * complete contents or the new complete contents — never a torn partial —
+ * and fsync at each step guarantees durability under power loss.
  */
 function writeSentinelToFs(blobDir: string, id: string): void {
-  const path = join(blobDir, SENTINEL_FILENAME);
+  const target = join(blobDir, SENTINEL_FILENAME);
+  const tmp = join(blobDir, `${SENTINEL_TMP_PREFIX}.${process.pid}.${crypto.randomUUID()}`);
   const data = Buffer.from(id, "utf8");
-  const fd = openSync(path, "w");
+
+  const fd = openSync(tmp, "w");
   try {
     let written = 0;
     while (written < data.byteLength) {
@@ -48,7 +70,19 @@ function writeSentinelToFs(blobDir: string, id: string): void {
   } finally {
     closeSync(fd);
   }
-  // fsync the parent directory so the filename itself is durable.
+
+  try {
+    renameSync(tmp, target);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw err;
+  }
+
+  // fsync the parent directory so the rename itself is durable.
   try {
     const dirFd = openSync(blobDir, "r");
     try {

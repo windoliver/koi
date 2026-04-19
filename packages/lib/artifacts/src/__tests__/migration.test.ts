@@ -47,13 +47,13 @@ describe("schema migration", () => {
         intent_id TEXT PRIMARY KEY, hash TEXT NOT NULL, created_at INTEGER NOT NULL
       );
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO meta (key, value) VALUES ('store_id', 'legacy-uuid-1234');
+      INSERT INTO meta (key, value) VALUES ('store_id', '12345678-1234-1234-1234-123456789abc');
     `);
     db.close();
 
     // Seed the store-id sentinel on FS so pairing passes.
     const { writeFileSync } = await import("node:fs");
-    writeFileSync(join(blobDir, ".store-id"), "legacy-uuid-1234");
+    writeFileSync(join(blobDir, ".store-id"), "12345678-1234-1234-1234-123456789abc");
 
     // Open with the new code — migration must add the column and open must succeed.
     const store = await createArtifactStore({ dbPath, blobDir });

@@ -42,7 +42,7 @@ describe("store-id fingerprint", () => {
   test("both present + differ → throws 'paired with a different ArtifactStore'", async () => {
     const blobStore = createFilesystemBlobStore(blobDir);
     await ensureStoreIdPair({ db, blobDir, blobStore });
-    writeFileSync(join(blobDir, ".store-id"), "different-uuid");
+    writeFileSync(join(blobDir, ".store-id"), crypto.randomUUID());
     await expect(ensureStoreIdPair({ db, blobDir, blobStore })).rejects.toThrow(
       /paired with a different ArtifactStore/,
     );

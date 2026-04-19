@@ -36,12 +36,19 @@ describe("single-writer lock", () => {
     release2();
   });
 
-  test("stale lock from dead PID is recovered", async () => {
+  test("stale lock from dead PID (bare-PID legacy format) is recovered", async () => {
     const { writeFileSync } = await import("node:fs");
     const dbPath = join(tmpDir, "store.db");
-    // Simulate a SIGKILL'd owner: write a lock file with a PID that doesn't
-    // exist. `99999999` is practically guaranteed to be unused.
     writeFileSync(`${dbPath}.lock`, "99999999");
+    const release = acquireLock(dbPath);
+    release();
+  });
+
+  test("stale lock from dead PID (PID:UUID current format) is recovered", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const dbPath = join(tmpDir, "store.db");
+    // Simulates the real on-disk lock layout written by the acquire path.
+    writeFileSync(`${dbPath}.lock`, `99999999:${crypto.randomUUID()}`);
     const release = acquireLock(dbPath);
     release();
   });
