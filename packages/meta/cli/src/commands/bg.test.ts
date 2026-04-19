@@ -271,44 +271,52 @@ describe("bg kill", () => {
   // claim and the re-stamp would be misclassified as `crashed` even
   // though the original kill's signal is the proximate cause.
   it("resumed kill preserves a fresh pre-existing signaledAt stamp", async () => {
-    // Produce a guaranteed-dead PID by spawning a bun subprocess, waiting
-    // for it to exit, and using its reaped PID. A fixed sentinel like
-    // 99_999 can legitimately belong to a real process on the host;
-    // proceeding down `runKill`'s signal path against an unrelated live
-    // process would be a genuine safety regression (could SIGTERM an
-    // unrelated workload).
-    const shortLived = Bun.spawn(["bun", "-e", "process.exit(0)"], {
-      stdout: "ignore",
-      stderr: "ignore",
+    // Mock `process.kill` to throw ESRCH for any pid/signal combo. This
+    // decouples the test from host PID state: `sendSignal` translates
+    // ESRCH to `{kind: "gone"}` (no stamp) and `isProcessAlive` catches
+    // the same error and returns `false` (dead-pid carve-out). The
+    // record's pid is arbitrary — no real process can be signaled
+    // because `process.kill` itself is intercepted.
+    const killSpy = spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("kill ESRCH: no such process") as Error & {
+        code?: string;
+      };
+      err.code = "ESRCH";
+      throw err;
     });
-    const deadPid = shortLived.pid;
-    await shortLived.exited;
 
     const freshStamp = Date.now();
     await writeSession(dir, {
       workerId: workerId("w-resume"),
       status: "terminating",
-      pid: deadPid,
+      pid: 1, // Arbitrary — signaling is mocked, so no process is touched.
       signaledAt: freshStamp,
     });
 
-    const stderr: string[] = [];
-    const spy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
-      stderr.push(String(c));
+    const writes: string[] = [];
+    const stdoutSpy = spyOn(process.stdout, "write").mockImplementation((c: unknown) => {
+      writes.push(String(c));
       return true;
     });
+    const errSpy = spyOn(process.stderr, "write").mockImplementation(() => true);
+    let code: ExitCode | undefined;
     try {
-      await run(parseBgFlags(["kill", "w-resume", "--registry-dir", dir]));
+      code = await run(parseBgFlags(["kill", "w-resume", "--registry-dir", dir]));
     } finally {
-      spy.mockRestore();
+      stdoutSpy.mockRestore();
+      errSpy.mockRestore();
+      killSpy.mockRestore();
     }
 
-    // Kill returns early on fingerprint fail (no such PID in isProcessAlive
-    // either → dead-pid carve-out finalizes as exited). Either way, the
-    // signaledAt stamp on the post-claim record must still be fresh —
-    // the claim MUST have preserved it instead of clearing it.
+    // Outcome assertions: kill returns OK, writes exited with the
+    // preserved (fresh) `signaledAt`. If the claim had incorrectly
+    // cleared the stamp, the post-run record would be missing it —
+    // the test fails loud either way instead of passing on a
+    // short-circuit path.
+    expect(code).toBe(ExitCode.OK);
     const text = await Bun.file(join(dir, "w-resume.json")).text();
     const record = JSON.parse(text) as BackgroundSessionRecord;
+    expect(record.status).toBe("exited");
     expect(record.signaledAt).toBe(freshStamp);
-  });
+  }, 15_000);
 });
