@@ -22,6 +22,7 @@ export type {
   LedgerAuditEntry,
   LedgerSources,
   McpServerInfo,
+  ModelEntry,
   PermissionPromptData,
   PermissionRiskLevel,
   PlanTask,
