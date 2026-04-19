@@ -204,8 +204,12 @@ export async function writeBlobFromBytes(blobDir: string, data: Uint8Array): Pro
     }
     if (hasBlob(blobDir, hash)) {
       // A concurrent identical writer won. Their bytes are durable (CAS
-      // guarantees content equality by hash), our work is redundant but
-      // safe — treat as success.
+      // guarantees content equality by hash). BUT the winner may not yet
+      // have run its parent-directory fsync — if we return now and the
+      // caller flips blob_ready=1, a power loss between rename and winner's
+      // dir-fsync could lose the rename. Perform the dir-fsync ourselves
+      // before declaring success so our return is always safely durable.
+      fsyncDirectory(targetDir);
       return hash;
     }
     throw err;
