@@ -1,3 +1,4 @@
+import { posixBasename } from "./posix-basename.js";
 import type { CommandSemantics, CommandSpec, SpecResult } from "./types.js";
 
 /**
@@ -87,6 +88,26 @@ export function evaluateBashCommand(
   const head = cmd.argv[0];
   let resolvedName: string;
   if (options?.verifiedBaseName !== undefined) {
+    // Sanity check: the verified attestation MUST match argv[0]'s
+    // basename. This catches blatant misuse (passing the wrong name)
+    // but does NOT and CANNOT verify executable identity — that is the
+    // consumer's process-level responsibility (allowlist trusted paths,
+    // canonicalize symlinks, pin PATH).
+    if (head === undefined || head === "") {
+      return {
+        kind: "refused",
+        cause: "parse-error",
+        detail: "verifiedBaseName provided but argv[0] is empty",
+      };
+    }
+    const headBase = head.includes("/") ? posixBasename(head) : { ok: true as const, value: head };
+    if (!headBase.ok || headBase.value !== options.verifiedBaseName) {
+      return {
+        kind: "refused",
+        cause: "parse-error",
+        detail: `verifiedBaseName "${options.verifiedBaseName}" does not match argv[0] basename "${headBase.ok ? headBase.value : "<unparseable>"}"; refusing to dispatch under a different name`,
+      };
+    }
     resolvedName = options.verifiedBaseName;
   } else {
     if (head === undefined || head === "" || head.includes("/")) {

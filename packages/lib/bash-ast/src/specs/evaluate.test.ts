@@ -135,16 +135,19 @@ describe("evaluateBashCommand — verifiedBaseName opt-in", () => {
     expect(result.kind).toBe("complete");
   });
 
-  test("verifiedBaseName overrides argv[0] for registry lookup", () => {
-    // Even if argv[0] is bare and matches a registered builtin, the
-    // verifiedBaseName takes precedence (consumer asserts the actual
-    // executable identity).
+  test("verifiedBaseName must match argv[0]'s basename (sanity check)", () => {
+    const result = evaluateBashCommand(input(["/bin/cp", "src", "dst"]), BUILTIN_SPECS, {
+      verifiedBaseName: "rm",
+    });
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.detail).toMatch(/does not match argv\[0\] basename/);
+  });
+
+  test("verifiedBaseName must match bare argv[0] too", () => {
     const result = evaluateBashCommand(input(["whatever"]), BUILTIN_SPECS, {
       verifiedBaseName: "rm",
     });
-    // argv[0] = "whatever" is NOT "rm" so specRm refuses on dispatch
-    // — but only because we substitute argv[0] = "rm" before calling
-    // the spec. So we expect refused-by-positional-missing.
     expect(result.kind).toBe("refused");
   });
 
