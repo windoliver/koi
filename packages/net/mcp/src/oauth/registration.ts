@@ -146,8 +146,15 @@ export async function registerDynamicClient(
       typeof data.registration_access_token === "string"
         ? data.registration_access_token
         : undefined;
+    // Rollback requires BOTH a safe management URI AND the bearer
+    // token issued for it. An unauthenticated DELETE against a
+    // server-selected `/register/*` path could trigger destructive
+    // semantics we did not consent to and crosses a trust boundary
+    // even within the same origin. Without proof of ownership of the
+    // just-created client, leave the orphan in place — server-side
+    // TTLs are the safer escape hatch.
     const rollback = async (): Promise<void> => {
-      if (cleanupUri === undefined) return;
+      if (cleanupUri === undefined || cleanupToken === undefined) return;
       await deleteRegisteredClient(cleanupUri, cleanupToken);
     };
 

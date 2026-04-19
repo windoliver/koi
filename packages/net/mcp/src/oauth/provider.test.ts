@@ -1757,6 +1757,55 @@ describe("createOAuthAuthProvider", () => {
     expect(secondExchangeHadResource).toBe(false);
   });
 
+  test("startAuthFlow returns false (does NOT throw) on browser/callback failures", async () => {
+    // runtime.authorize is host-implemented and can fail for many
+    // reasons unrelated to OAuth: browser launch error, callback
+    // timeout, user-cancelled auth, listener bind error.
+    // startAuthFlow's contract is Promise<boolean> — it must fail
+    // closed, not propagate the exception out to the CLI.
+    const storage = createMockStorage();
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const failures: Array<{ kind: string }> = [];
+    const provider = createOAuthAuthProvider({
+      serverName: "browser-fail",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "static",
+        // Disable resource so retry shim doesn't run.
+        includeResourceParameter: false,
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: {
+        authorize: mock(async () => {
+          throw new Error("browser launch failed");
+        }),
+        onReauthNeeded: mock(async () => {}),
+        onAuthFailure: (r) => {
+          failures.push(r);
+        },
+      },
+      storage,
+    });
+
+    // Must NOT throw — clean false return.
+    await expect(provider.startAuthFlow()).resolves.toBe(false);
+    // Should report a structured failure for diagnostics.
+    expect(failures.length).toBeGreaterThan(0);
+  });
+
   test("handleUnauthorized clears corrupt token storage and prompts re-auth", async () => {
     // hasTokens() returns true on raw key existence, but parse may
     // fail. Without clearing the corrupt blob, handleUnauthorized

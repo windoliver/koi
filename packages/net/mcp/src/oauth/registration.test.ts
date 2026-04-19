@@ -300,6 +300,45 @@ describe("registerDynamicClient", () => {
     expect(attemptedDelete).toBe(false);
   });
 
+  test("does NOT DELETE when registration_access_token is missing (no proof of ownership)", async () => {
+    // An unauthenticated DELETE against a server-selected
+    // /register/{id} path could trigger destructive semantics we
+    // never consented to. Without the bearer management token issued
+    // for THIS specific client, we have no proof of ownership —
+    // safer to leave the orphan than to issue an unauthenticated
+    // destructive request across the trust boundary.
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "no-token",
+              client_secret: "shh",
+              registration_client_uri: "https://auth.example.com/register/no-token",
+              // NO registration_access_token — must skip cleanup.
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    expect(attemptedDelete).toBe(false);
+  });
+
   test("does NOT DELETE when registration_client_uri equals the registration endpoint (would target the collection)", async () => {
     // A buggy or hostile AS could echo back the bare registration
     // endpoint. Without strict-child validation, rollback would
@@ -460,6 +499,7 @@ describe("registerDynamicClient", () => {
               client_id: "narrowed",
               redirect_uris: ["http://127.0.0.1:7777/callback"],
               registration_client_uri: "https://auth.example.com/register/narrowed",
+              registration_access_token: "mgmt-token",
             }),
             { status: 201 },
           ),

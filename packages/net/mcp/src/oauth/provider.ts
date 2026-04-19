@@ -372,27 +372,34 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     // Generate a random state parameter for CSRF protection
     const state = crypto.randomUUID();
 
-    let callbackResult: OAuthCallbackResult;
+    // runtime.authorize is host-implemented (browser launch + local
+    // callback listener) and can fail for many reasons unrelated to
+    // OAuth: browser launch error, callback timeout, user-cancelled
+    // auth, listener bind error. startAuthFlow's contract is
+    // Promise<boolean> — never throw. Catch ALL failures, report a
+    // structured signal, and fall through to the closed-fail return
+    // below.
+    let callbackResult: OAuthCallbackResult | undefined;
     try {
       callbackResult = await runtime.authorize(buildAuthUrl(state, true).toString(), redirectUri);
-    } catch (firstErr: unknown) {
-      // Authorization-endpoint failure with `resource` enabled — try
-      // once without it before failing closed. A retry without
-      // `resource` cannot succeed if `resource` was disabled to begin
-      // with, so only retry when we actually sent it.
-      if (resourceIndicator === undefined) {
-        throw firstErr;
+    } catch {
+      // RFC 8707 compatibility: a legacy AS that rejects the unknown
+      // `resource` query at the authorization endpoint surfaces here.
+      // Retry once without `resource` only when we actually sent it.
+      if (resourceIndicator !== undefined) {
+        try {
+          callbackResult = await runtime.authorize(
+            buildAuthUrl(state, false).toString(),
+            redirectUri,
+          );
+        } catch {
+          // Fall through; callbackResult stays undefined and we fail closed.
+        }
       }
-      try {
-        callbackResult = await runtime.authorize(
-          buildAuthUrl(state, false).toString(),
-          redirectUri,
-        );
-      } catch {
-        // Both attempts failed — surface the original error so the
-        // caller's diagnostics still point at the real cause.
-        throw firstErr;
-      }
+    }
+    if (callbackResult === undefined) {
+      reportFailure({ kind: "discovery_failed", serverName });
+      return false;
     }
 
     // Validate state parameter to prevent CSRF attacks
