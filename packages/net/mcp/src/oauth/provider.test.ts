@@ -368,7 +368,12 @@ describe("createOAuthAuthProvider", () => {
     const { computeClientKey } = await import("./tokens.js");
     await storage.set(
       computeClientKey("reuse", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
-      JSON.stringify({ clientId: "prev-reg", registeredAt: 1 }),
+      JSON.stringify({
+        clientId: "prev-reg",
+        registeredAt: 1,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+      }),
     );
 
     const metadata = {
@@ -970,6 +975,108 @@ describe("createOAuthAuthProvider", () => {
     seenAuthClientIds.length = 0;
     await b.startAuthFlow();
     expect(seenAuthClientIds).toEqual(["second"]);
+  });
+
+  test("invalidates legacy DCR records that lack issuer/registration_endpoint binding", async () => {
+    // An installation upgraded from the earlier DCR shape (no issuer
+    // binding) must NOT keep reusing that unbound client_id forever —
+    // discovery may now point at a different AS, in which case the
+    // stale id would silently fail every auth/refresh until the
+    // operator manually wiped secure storage. Treat unbound DCR
+    // records as stale so the next attempt re-registers cleanly.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    await storage.set(
+      computeClientKey("legacy", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      JSON.stringify({
+        clientId: "legacy-unbound",
+        registeredAt: 1700000000, // DCR-registered, not static (registeredAt > 0)
+        // no issuer, no registrationEndpoint — the legacy shape
+      }),
+    );
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    let registerCalls = 0;
+    let authUrlClientId: string | undefined;
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        authUrlClientId = url.searchParams.get("client_id") ?? undefined;
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ client_id: "fresh-bound" }), { status: 201 }),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "legacy",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    await provider.startAuthFlow();
+    expect(registerCalls).toBe(1);
+    expect(authUrlClientId).toBe("fresh-bound");
+  });
+
+  test("returns false (does NOT throw) when registration_endpoint is non-HTTPS", async () => {
+    // registerDynamicClient throws on http:// to refuse credentials over
+    // cleartext. The provider must convert that into a fail-closed
+    // undefined so `koi mcp auth` reports a clean failure rather than
+    // surfacing an exception through the CLI.
+    const storage = createMockStorage();
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "http://auth.example.com/register", // INSECURE
+    };
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "insecure-dcr",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    // Must NOT throw — fail closed with false instead.
+    await expect(provider.startAuthFlow()).resolves.toBe(false);
   });
 
   test("returns false when no clientId and no registration_endpoint", async () => {

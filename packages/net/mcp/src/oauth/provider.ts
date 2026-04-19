@@ -119,12 +119,21 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
       if (metadata?.registrationEndpoint === undefined) return undefined;
 
-      const registered = await registerDynamicClient({
-        registrationEndpoint: metadata.registrationEndpoint,
-        redirectUri,
-        clientName: serverName,
-        issuer: metadata.issuer,
-      });
+      // registerDynamicClient throws on a non-HTTPS registration_endpoint
+      // (it refuses to send registration credentials over cleartext).
+      // Convert that into a fail-closed undefined so the rest of the
+      // auth flow returns false instead of crashing through the provider.
+      let registered: OAuthClientInfo | undefined;
+      try {
+        registered = await registerDynamicClient({
+          registrationEndpoint: metadata.registrationEndpoint,
+          redirectUri,
+          clientName: serverName,
+          issuer: metadata.issuer,
+        });
+      } catch {
+        return undefined;
+      }
       if (registered === undefined) return undefined;
 
       // writeClientInfo would re-enter withLock on the same key — we
@@ -298,23 +307,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
  * currently-discovered auth server. The `redirectUri` contract is
  * already enforced by the storage key (see `computeClientKey`) so two
  * configs with different callback ports get independent records rather
- * than fighting over one. A stored record with no issuer /
- * registration_endpoint (shape predates this check, or static config
- * was persisted by mistake) is treated as fresh so upgrades do not
- * force re-auth. Once any binding is recorded, a mismatch is a
- * migration event — re-register rather than send a stale client_id to
- * a different authorization server.
+ * than fighting over one.
+ *
+ * DCR records (`registeredAt > 0`) MUST carry both issuer and
+ * registration_endpoint bindings — anything else is legacy/unbound
+ * persistence from an earlier shape, and reusing it would silently
+ * send a stale `client_id` to whatever AS discovery now points at.
+ * Treat unbound DCR records as stale so the next auth attempt
+ * re-registers cleanly. Static records (`registeredAt === 0`) carry
+ * no bindings by design; their `clientId` is operator-managed and
+ * always fresh.
  */
 function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | undefined): boolean {
-  if (stored.issuer === undefined && stored.registrationEndpoint === undefined) {
-    return true;
-  }
+  if (stored.registeredAt === 0) return true;
   if (metadata === undefined) return false;
-  if (stored.issuer !== undefined && stored.issuer !== metadata.issuer) return false;
-  if (
-    stored.registrationEndpoint !== undefined &&
-    stored.registrationEndpoint !== metadata.registrationEndpoint
-  ) {
+  if (stored.issuer === undefined || stored.registrationEndpoint === undefined) return false;
+  if (stored.issuer !== metadata.issuer) return false;
+  if (stored.registrationEndpoint !== metadata.registrationEndpoint) {
     return false;
   }
   return true;
