@@ -71,6 +71,7 @@ export function applyActivityTimeout(
   adapter: EngineAdapter,
   config: ActivityTimeoutConfig,
 ): EngineAdapter {
+  validateActivityTimeoutConfig(config);
   if (!hasAnyTimeout(config)) {
     return adapter;
   }
@@ -82,25 +83,60 @@ export function applyActivityTimeout(
   };
 }
 
+/**
+ * Reject invalid durations up front so a misconfigured value cannot silently
+ * remove the timeout guard. Negative values throw; `0` is accepted as
+ * "fire on next tick" (preserves legacy `streamTimeoutMs: 0` behaviour
+ * where `AbortSignal.timeout(0)` aborted immediately); `Infinity` is the
+ * documented opt-out for no wall-clock cap.
+ */
+function validateActivityTimeoutConfig(config: ActivityTimeoutConfig): void {
+  const fields: readonly [string, number | undefined][] = [
+    ["idleWarnMs", config.idleWarnMs],
+    ["idleTerminateMs", config.idleTerminateMs],
+    ["maxDurationMs", config.maxDurationMs],
+  ];
+  for (const [name, value] of fields) {
+    if (value === undefined) continue;
+    if (Number.isNaN(value)) {
+      throw new Error(`activityTimeout.${name} must be a number, got NaN`);
+    }
+    if (Number.isFinite(value) && value < 0) {
+      throw new Error(
+        `activityTimeout.${name} must be >= 0 or Number.POSITIVE_INFINITY, got ${value}`,
+      );
+    }
+  }
+}
+
 function hasAnyTimeout(config: ActivityTimeoutConfig): boolean {
-  return isPositiveFinite(config.idleWarnMs) || isPositiveFinite(config.maxDurationMs);
+  return isSchedulable(config.idleWarnMs) || isSchedulable(config.maxDurationMs);
 }
 
 function resolveTerminateMs(config: ActivityTimeoutConfig): number | undefined {
-  if (!isPositiveFinite(config.idleWarnMs)) return undefined;
+  if (!isSchedulable(config.idleWarnMs)) return undefined;
   const explicit = config.idleTerminateMs;
-  if (isPositiveFinite(explicit)) return explicit;
+  if (isSchedulable(explicit)) return explicit;
   return config.idleWarnMs * 2;
 }
 
 /**
- * `setTimeout(Infinity)` overflows to ~1ms in Node/Bun rather than disabling
- * the timer, so non-finite durations must be treated as "no timer" — this is
- * also the documented opt-out for callers who want no wall-clock cap:
- * `maxDurationMs: Number.POSITIVE_INFINITY`.
+ * A duration is schedulable iff it is a finite, non-negative number.
+ *
+ * - `setTimeout(Infinity)` overflows to ~1ms in Node/Bun rather than disabling
+ *   the timer, so non-finite durations must be treated as "no timer" — this is
+ *   the documented opt-out for callers who want no wall-clock cap:
+ *   `maxDurationMs: Number.POSITIVE_INFINITY`.
+ * - Zero is a valid schedulable delay (fires on the next tick) to preserve the
+ *   legacy `streamTimeoutMs: 0` semantic — any negative input is rejected up
+ *   front by `validateActivityTimeoutConfig`.
  */
-function isPositiveFinite(n: number | undefined): n is number {
-  return n !== undefined && Number.isFinite(n) && n > 0;
+function isSchedulable(n: number | undefined): n is number {
+  // Accept 0 as a schedulable delay (fires on the next tick) — this preserves
+  // the legacy `AbortSignal.timeout(0)` semantic where `streamTimeoutMs: 0`
+  // aborted the stream immediately. Negative values are rejected at
+  // validation time. `Infinity` is the documented opt-out — not schedulable.
+  return n !== undefined && Number.isFinite(n) && n >= 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +158,7 @@ async function* wrapStream(
     lastActivity: startedAt,
     warnFired: false,
     pendingTools: new Set<ToolCallId>(),
+    currentTurnIndex: null,
     terminated: null,
     pumpDone: false,
     pumpError: undefined,
@@ -134,7 +171,21 @@ async function* wrapStream(
 
   const deps: TimerDeps = { state, config, now, warnMs, terminateMs, maxMs, startedAt, ctl };
   const timers = armTimers(deps);
-  const pump = pumpInner(adapter, { ...input, signal }, state, now);
+
+  function onActivity(ev: EngineEvent): void {
+    const wasWarnFired = state.warnFired;
+    recordActivity(state, ev, now);
+    // checkWarn intentionally does not re-arm itself after firing (see its
+    // comment — otherwise setTimeout(0) would busy-loop while idle exceeds
+    // warnMs). When activity resets `warnFired`, we must arm the next cycle
+    // here so a subsequent idle stretch still gets a fresh warning +
+    // termination window.
+    if (wasWarnFired && timers.warnTimer === null && isSchedulable(deps.warnMs)) {
+      scheduleWarn(timers, deps);
+    }
+  }
+
+  const pump = pumpInner(adapter, { ...input, signal }, state, onActivity);
 
   try {
     while (true) {
@@ -182,6 +233,8 @@ interface WrapperState {
   warnFired: boolean;
   /** Tool call IDs that have started (tool_call_start) but not yet ended (tool_call_end). */
   readonly pendingTools: Set<ToolCallId>;
+  /** Index of the currently-open turn (from turn_start); null between turns. */
+  currentTurnIndex: number | null;
   terminated: { readonly reason: ActivityTerminationReason; readonly elapsedMs: number } | null;
   pumpDone: boolean;
   pumpError: unknown;
@@ -213,8 +266,8 @@ interface TimerDeps {
 
 function armTimers(deps: TimerDeps): Timers {
   const timers: Timers = { warnTimer: null, termTimer: null, wallTimer: null };
-  if (isPositiveFinite(deps.warnMs)) scheduleWarn(timers, deps);
-  if (isPositiveFinite(deps.maxMs)) scheduleWall(timers, deps);
+  if (isSchedulable(deps.warnMs)) scheduleWarn(timers, deps);
+  if (isSchedulable(deps.maxMs)) scheduleWall(timers, deps);
   return timers;
 }
 
@@ -228,7 +281,7 @@ function idleElapsed(state: WrapperState, now: () => number): number {
 }
 
 function scheduleWarn(timers: Timers, deps: TimerDeps): void {
-  if (!isPositiveFinite(deps.warnMs)) return;
+  if (!isSchedulable(deps.warnMs)) return;
   const remaining = deps.warnMs - idleElapsed(deps.state, deps.now);
   const delay = Math.max(remaining, 0);
   timers.warnTimer = setTimeout(() => checkWarn(timers, deps), delay);
@@ -241,6 +294,7 @@ function checkWarn(timers: Timers, deps: TimerDeps): void {
 
   const elapsed = idleElapsed(deps.state, deps.now);
   if (elapsed < deps.warnMs) {
+    // Activity must have happened since the last check — resume polling.
     scheduleWarn(timers, deps);
     return;
   }
@@ -253,13 +307,13 @@ function checkWarn(timers: Timers, deps: TimerDeps): void {
     safeObserver("onIdleWarn", () => deps.config.onIdleWarn?.(info));
     if (timers.termTimer === null) scheduleTerm(timers, deps);
   }
-
-  // Re-arm so subsequent idle stretches (after recovery) get a fresh warning cycle.
-  scheduleWarn(timers, deps);
+  // Do NOT re-arm here: re-arming while idleElapsed >= warnMs would busy-loop
+  // via setTimeout(0). `onActivity` re-arms the warn cycle after recovery, so
+  // subsequent idle stretches still get a fresh warning + termination window.
 }
 
 function scheduleTerm(timers: Timers, deps: TimerDeps): void {
-  if (!isPositiveFinite(deps.terminateMs)) return;
+  if (!isSchedulable(deps.terminateMs)) return;
   const remaining = deps.terminateMs - idleElapsed(deps.state, deps.now);
   const delay = Math.max(remaining, 0);
   timers.termTimer = setTimeout(() => checkTerm(timers, deps), delay);
@@ -272,39 +326,49 @@ function checkTerm(timers: Timers, deps: TimerDeps): void {
 
   const elapsed = idleElapsed(deps.state, deps.now);
   if (elapsed < deps.terminateMs) {
-    // Activity (or a tool call) reset the idle clock — leave term disarmed;
-    // the warn timer will re-arm termination if a future idle stretch fires.
+    // Activity (or a tool call) reset the idle clock — reschedule for the
+    // remaining time in the current idle stretch so we still terminate if
+    // the stream goes idle again and stays idle.
+    scheduleTerm(timers, deps);
     return;
   }
-  deps.state.terminated = { reason: "idle", elapsedMs: elapsed };
-  enqueue(deps.state, {
-    kind: "custom",
-    type: ACTIVITY_TERMINATED_IDLE,
-    data: { elapsedMs: elapsed },
-  });
-  enqueue(deps.state, synthesizeTerminalDone("idle", elapsed));
-  safeObserver("onTerminated:idle", () => deps.config.onTerminated?.("idle", elapsed));
-  deps.ctl.abort("timeout" satisfies AbortReason);
+  terminate(deps, "idle", elapsed);
 }
 
 function scheduleWall(timers: Timers, deps: TimerDeps): void {
-  if (!isPositiveFinite(deps.maxMs)) return;
+  if (!isSchedulable(deps.maxMs)) return;
   timers.wallTimer = setTimeout(() => {
     timers.wallTimer = null;
     if (deps.state.terminated !== null) return;
     const elapsed = deps.now() - deps.startedAt;
-    deps.state.terminated = { reason: "wall_clock", elapsedMs: elapsed };
-    enqueue(deps.state, {
-      kind: "custom",
-      type: ACTIVITY_TERMINATED_WALL_CLOCK,
-      data: { elapsedMs: elapsed },
-    });
-    enqueue(deps.state, synthesizeTerminalDone("wall_clock", elapsed));
-    safeObserver("onTerminated:wall_clock", () =>
-      deps.config.onTerminated?.("wall_clock", elapsed),
-    );
-    deps.ctl.abort("timeout" satisfies AbortReason);
+    terminate(deps, "wall_clock", elapsed);
   }, deps.maxMs);
+}
+
+/**
+ * Emit the termination envelope: custom telemetry event, a synthesized
+ * `turn_end` if we were mid-turn (so the CLI transcript bridge and other
+ * turn-scoped state-flushing consumers can finalize), a synthesized terminal
+ * `done`, then abort the adapter with a typed `AbortReason`. Idempotent —
+ * guarded by `state.terminated` at the call sites.
+ */
+function terminate(deps: TimerDeps, reason: ActivityTerminationReason, elapsed: number): void {
+  deps.state.terminated = { reason, elapsedMs: elapsed };
+  const customType = reason === "idle" ? ACTIVITY_TERMINATED_IDLE : ACTIVITY_TERMINATED_WALL_CLOCK;
+  enqueue(deps.state, { kind: "custom", type: customType, data: { elapsedMs: elapsed } });
+  if (deps.state.currentTurnIndex !== null) {
+    // Synthesize the missing turn_end so downstream session/transcript
+    // consumers (see docs/L3/runtime.md and the CLI engine-adapter) flush
+    // staged user/assistant/tool state instead of dropping the in-flight turn.
+    enqueue(deps.state, {
+      kind: "turn_end",
+      turnIndex: deps.state.currentTurnIndex,
+    });
+    deps.state.currentTurnIndex = null;
+  }
+  enqueue(deps.state, synthesizeTerminalDone(reason, elapsed));
+  safeObserver(`onTerminated:${reason}`, () => deps.config.onTerminated?.(reason, elapsed));
+  deps.ctl.abort("timeout" satisfies AbortReason);
 }
 
 /**
@@ -365,12 +429,12 @@ async function pumpInner(
   adapter: EngineAdapter,
   input: EngineInput,
   state: WrapperState,
-  now: () => number,
+  onActivity: (ev: EngineEvent) => void,
 ): Promise<void> {
   try {
     for await (const ev of adapter.stream(input)) {
       if (state.terminated !== null) break;
-      recordActivity(state, ev, now);
+      onActivity(ev);
       enqueue(state, ev);
       if (ev.kind === "done") break;
     }
@@ -401,7 +465,10 @@ function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number)
     state.pendingTools.add(ev.callId);
   } else if (ev.kind === "tool_result") {
     state.pendingTools.delete(ev.callId);
+  } else if (ev.kind === "turn_start") {
+    state.currentTurnIndex = ev.turnIndex;
   } else if (ev.kind === "turn_end") {
+    state.currentTurnIndex = null;
     // Belt-and-suspenders: a turn cannot end with in-flight tool calls. Drop
     // any stragglers so an error path that swallowed tool_result cannot strand
     // idle accounting forever.

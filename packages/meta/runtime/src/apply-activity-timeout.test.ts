@@ -257,12 +257,15 @@ describe("applyActivityTimeout", () => {
 
   test("second idle stretch after recovery still fires warning + termination (re-arm regression)", async () => {
     let warnCount = 0;
+    // idleWarnMs=25, idleTerminateMs=200. Sleep(60) is plenty > warn (25) and
+    // well below terminate (200), so the first idle stretch produces a
+    // warning but no termination before the adapter yields "b".
     const adapter: EngineAdapter = {
       engineId: "resume-then-idle",
       capabilities: { text: true, images: false, files: false, audio: false },
       async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
         yield { kind: "text_delta", delta: "a" };
-        await sleep(60); // first warn fires (> idleWarnMs=25), before terminate (50ms)
+        await sleep(60);
         yield { kind: "text_delta", delta: "b" }; // recovery — resets warnFired
         // Hang until aborted — second idle stretch must be detected.
         await new Promise<void>((resolve) => {
@@ -273,7 +276,7 @@ describe("applyActivityTimeout", () => {
 
     const wrapped = applyActivityTimeout(adapter, {
       idleWarnMs: 25,
-      idleTerminateMs: 60,
+      idleTerminateMs: 200,
       onIdleWarn: () => {
         warnCount += 1;
       },
@@ -420,6 +423,87 @@ describe("applyActivityTimeout", () => {
     expect(done).toBeDefined();
     expect(done?.output.stopReason).toBe("interrupted");
     expect(done?.output.metadata?.terminationReason).toBe("wall_clock");
+  });
+
+  test("mid-turn timeout synthesizes turn_end before terminal done for transcript flush", async () => {
+    const adapter: EngineAdapter = {
+      engineId: "mid-turn",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 7 };
+        yield { kind: "text_delta", delta: "partial" };
+        // Hang mid-turn — no turn_end, no tool_result.
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { idleWarnMs: 20, idleTerminateMs: 50 });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    const termIdx = out.findIndex((e) => isCustom(e, "activity.terminated.idle"));
+    const turnEndIdx = out.findIndex((e) => e.kind === "turn_end");
+    const doneIdx = out.findIndex((e) => e.kind === "done");
+
+    expect(termIdx).toBeGreaterThanOrEqual(0);
+    expect(turnEndIdx).toBeGreaterThan(termIdx);
+    expect(doneIdx).toBeGreaterThan(turnEndIdx);
+
+    const turnEnd = out[turnEndIdx];
+    if (turnEnd === undefined || turnEnd.kind !== "turn_end") throw new Error("expected turn_end");
+    expect(turnEnd.turnIndex).toBe(7);
+  });
+
+  test("no synthetic turn_end emitted when termination lands between turns", async () => {
+    const adapter: EngineAdapter = {
+      engineId: "between-turns",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 1 };
+        yield { kind: "text_delta", delta: "hi" };
+        yield { kind: "turn_end", turnIndex: 1 };
+        // Idle here — no new turn_start. Timeout should NOT synthesize a
+        // stray turn_end because we are not inside an open turn.
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { idleWarnMs: 20, idleTerminateMs: 50 });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    const turnEnds = out.filter((e) => e.kind === "turn_end");
+    // Only the real turn_end from the adapter — no synthetic duplicate.
+    expect(turnEnds).toHaveLength(1);
+  });
+
+  test("applyActivityTimeout throws on negative duration", () => {
+    expect(() => applyActivityTimeout({} as unknown as EngineAdapter, { idleWarnMs: -1 })).toThrow(
+      /idleWarnMs/,
+    );
+    expect(() =>
+      applyActivityTimeout({} as unknown as EngineAdapter, { maxDurationMs: -5 }),
+    ).toThrow(/maxDurationMs/);
+  });
+
+  test("applyActivityTimeout accepts 0 as immediate abort (legacy parity)", async () => {
+    // `streamTimeoutMs: 0` previously mapped to `AbortSignal.timeout(0)` which
+    // aborts on the next tick. Preserve that: maxDurationMs=0 must still
+    // engage the wrapper and fire wall-clock termination.
+    const adapter: EngineAdapter = {
+      engineId: "immediate",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+    const wrapped = applyActivityTimeout(adapter, { maxDurationMs: 0 });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+    expect(out.some((e) => isCustom(e, "activity.terminated.wall_clock"))).toBe(true);
   });
 
   test("long-running tool execution (silent gap between tool_call_end and tool_result) is not idle", async () => {
