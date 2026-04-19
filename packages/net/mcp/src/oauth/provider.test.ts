@@ -1360,6 +1360,78 @@ describe("createOAuthAuthProvider", () => {
     expect(failures.map((f) => f.kind)).toContain("discovery_failed");
   });
 
+  test("handleUnauthorized clears tokens + prompts re-auth on terminal DCR failure", async () => {
+    // Recovery story: 401 mid-session → handleUnauthorized refreshes
+    // → DCR resolution returns terminal (insecure registration_endpoint,
+    // confidential client, narrowed redirect_uris). Without terminal
+    // propagation, tokens.ts would treat that as transient and
+    // preserve dead state forever, leaving the connection in a
+    // permanent auth-needed loop without ever telling the host to
+    // re-auth. With this fix, terminal clears tokens so
+    // onReauthNeeded fires.
+    const storage = createMockStorage();
+    const runtime: OAuthRuntime = {
+      authorize: mock(async () => ({ code: "c", state: "s" })),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    // DCR returns a confidential registration → terminal.
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        // Confidential registration — terminal failure.
+        return Promise.resolve(
+          new Response(JSON.stringify({ client_id: "confidential", client_secret: "shh" }), {
+            status: 201,
+          }),
+        );
+      }
+      // Refresh path — should never be reached because client resolves terminal.
+      return Promise.resolve(new Response("nope", { status: 400 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "terminal-dcr",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    // Pre-store expired tokens with a refresh token. The session looks
+    // recoverable from secure storage but DCR cannot succeed.
+    const { computeServerKey } = await import("./tokens.js");
+    await storage.set(
+      computeServerKey("terminal-dcr", "https://mcp.example.com"),
+      JSON.stringify({
+        accessToken: "expired",
+        refreshToken: "rt",
+        expiresAt: Date.now() - 1000,
+      }),
+    );
+
+    await provider.handleUnauthorized();
+
+    // Tokens MUST be cleared (dead session, no recovery path).
+    expect(
+      await storage.get(computeServerKey("terminal-dcr", "https://mcp.example.com")),
+    ).toBeUndefined();
+    // Host MUST be prompted to re-auth.
+    expect(runtime.onReauthNeeded).toHaveBeenCalledWith("terminal-dcr");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

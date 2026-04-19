@@ -33,8 +33,8 @@ describe("registerDynamicClient", () => {
       clientName: "test-server",
     });
 
-    expect(info).toBeDefined();
-    expect(info?.clientId).toBe("registered-123");
+    expect(info.ok).toBe(true);
+    if (info.ok) expect(info.info.clientId).toBe("registered-123");
   });
 
   test("accepts 200 response with client_id", async () => {
@@ -51,7 +51,8 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info?.clientId).toBe("ok-200");
+    expect(info.ok).toBe(true);
+    if (info.ok) expect(info.info.clientId).toBe("ok-200");
   });
 
   test("rejects confidential clients (server returned a client_secret)", async () => {
@@ -73,7 +74,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("rejects registrations that omit token_endpoint_auth_method (RFC 7591 default = confidential)", async () => {
@@ -91,7 +92,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("rejects confidential auth methods (e.g. client_secret_basic)", async () => {
@@ -112,7 +113,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("records issuer + registration endpoint on successful registration", async () => {
@@ -130,8 +131,11 @@ describe("registerDynamicClient", () => {
       issuer: "https://auth.example.com",
     });
 
-    expect(info?.issuer).toBe("https://auth.example.com");
-    expect(info?.registrationEndpoint).toBe("https://auth.example.com/register");
+    expect(info.ok).toBe(true);
+    if (info.ok) {
+      expect(info.info.issuer).toBe("https://auth.example.com");
+      expect(info.info.registrationEndpoint).toBe("https://auth.example.com/register");
+    }
   });
 
   test("rejects non-HTTPS registration endpoints", async () => {
@@ -153,7 +157,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("returns undefined when response is missing client_id", async () => {
@@ -166,7 +170,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("rejects registrations whose returned redirect_uris do not include ours", async () => {
@@ -191,7 +195,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 
   test("accepts registrations whose returned redirect_uris include ours", async () => {
@@ -213,7 +217,8 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info?.clientId).toBe("ok");
+    expect(info.ok).toBe(true);
+    if (info.ok) expect(info.info.clientId).toBe("ok");
   });
 
   test("rolls back orphaned client via RFC 7592 DELETE on confidential rejection", async () => {
@@ -252,7 +257,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
     expect(deleteCalled).toBe(true);
     expect(deleteAuth).toBe("Bearer mgmt-token");
   });
@@ -290,7 +295,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
     // Cross-origin management URI must NOT trigger the DELETE.
     expect(attemptedDelete).toBe(false);
   });
@@ -324,7 +329,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
     expect(attemptedDelete).toBe(false);
   });
 
@@ -356,7 +361,7 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
     expect(deleteCalled).toBe(true);
   });
 
@@ -368,6 +373,6 @@ describe("registerDynamicClient", () => {
       redirectUri: "http://127.0.0.1:8912/callback",
     });
 
-    expect(info).toBeUndefined();
+    expect(info.ok).toBe(false);
   });
 });

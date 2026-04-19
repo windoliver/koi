@@ -29,14 +29,28 @@ export interface RegisterClientOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Registers a public OAuth client. Throws on non-HTTPS endpoints (prevents
- * registration credentials from flowing over cleartext). Returns undefined
- * for any other failure — callers decide whether to fall back to configured
- * clientId or fail closed.
+ * Discriminated result for `registerDynamicClient`. `terminal` failures
+ * cannot succeed on retry without operator action — refresh paths that
+ * see one should clear tokens and prompt re-auth, not preserve the
+ * dead session forever. `transient` failures (network, 5xx, timeout)
+ * may recover on the next attempt; preserve state.
+ */
+export type RegisterClientResult =
+  | { readonly ok: true; readonly info: OAuthClientInfo }
+  | { readonly ok: false; readonly terminal: boolean; readonly reason: string };
+
+/**
+ * Registers a public OAuth client. Returns a discriminated result so
+ * callers can distinguish terminal misconfiguration (insecure endpoint,
+ * confidential registration, narrowed redirect_uris, malformed
+ * response) from transient outages (network, 5xx, timeout). Throws on
+ * non-HTTPS endpoints (prevents registration credentials from flowing
+ * over cleartext) — the throw is itself a terminal condition the
+ * caller should classify as `terminal`.
  */
 export async function registerDynamicClient(
   options: RegisterClientOptions,
-): Promise<OAuthClientInfo | undefined> {
+): Promise<RegisterClientResult> {
   const { registrationEndpoint, redirectUri, clientName, issuer } = options;
 
   if (!registrationEndpoint.startsWith("https://")) {
@@ -62,7 +76,17 @@ export async function registerDynamicClient(
       signal: AbortSignal.timeout(REGISTRATION_TIMEOUT_MS),
     });
 
-    if (!response.ok) return undefined;
+    if (!response.ok) {
+      // 4xx = terminal (AS rejected our registration request). 5xx =
+      // transient (try later). The body may carry a richer reason but
+      // we don't need to parse it for classification.
+      const terminal = response.status < 500;
+      return {
+        ok: false,
+        terminal,
+        reason: `registration endpoint returned ${response.status}`,
+      };
+    }
 
     const data = (await response.json()) as {
       readonly client_id?: unknown;
@@ -74,7 +98,11 @@ export async function registerDynamicClient(
     };
 
     if (typeof data.client_id !== "string" || data.client_id.length === 0) {
-      return undefined;
+      return {
+        ok: false,
+        terminal: true,
+        reason: "registration response missing client_id",
+      };
     }
 
     // Capture the RFC 7592 client-management metadata up front so any
@@ -109,7 +137,11 @@ export async function registerDynamicClient(
     // Also reject any returned `client_secret` defensively.
     if (typeof data.client_secret === "string" || data.token_endpoint_auth_method !== "none") {
       await rollback();
-      return undefined;
+      return {
+        ok: false,
+        terminal: true,
+        reason: "registration response is confidential (client_secret or non-`none` auth method)",
+      };
     }
 
     // Validate the AS's accepted redirect URI contract. RFC 7591 §3.2.1
@@ -123,18 +155,27 @@ export async function registerDynamicClient(
       const accepted = data.redirect_uris.filter((u): u is string => typeof u === "string");
       if (!accepted.includes(redirectUri)) {
         await rollback();
-        return undefined;
+        return {
+          ok: false,
+          terminal: true,
+          reason: "registration response narrowed redirect_uris away from ours",
+        };
       }
     }
 
     return {
-      clientId: data.client_id,
-      registeredAt: Date.now(),
-      issuer,
-      registrationEndpoint,
+      ok: true,
+      info: {
+        clientId: data.client_id,
+        registeredAt: Date.now(),
+        issuer,
+        registrationEndpoint,
+      },
     };
   } catch {
-    return undefined;
+    // Network error, AbortSignal timeout, malformed JSON — transient.
+    // Operator action cannot fix these; the next attempt may succeed.
+    return { ok: false, terminal: false, reason: "network or parsing error" };
   }
 }
 

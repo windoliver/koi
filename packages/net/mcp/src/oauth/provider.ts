@@ -88,6 +88,12 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   let cachedMetadata: AuthServerMetadata | undefined;
   let cachedClient: OAuthClientInfo | undefined;
   let tokenManager: TokenManager | undefined;
+  // Sticky terminal flag — set when getClient sees a non-retryable DCR
+  // failure (insecure registration_endpoint, confidential client,
+  // narrowed redirect_uris, etc.). The refresh path consults this so
+  // it can clear stored tokens and surface onReauthNeeded instead of
+  // looping forever on transient classification.
+  let lastDcrTerminal = false;
 
   async function getMetadata(): Promise<AuthServerMetadata | undefined> {
     if (cachedMetadata !== undefined) return cachedMetadata;
@@ -162,17 +168,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
       // registerDynamicClient throws on a non-HTTPS registration_endpoint
       // (it refuses to send registration credentials over cleartext).
-      // Convert that into a fail-closed undefined so the rest of the
+      // Convert that into a fail-closed terminal so the rest of the
       // auth flow returns false instead of crashing through the provider.
-      let registered: OAuthClientInfo | undefined;
+      let result: Awaited<ReturnType<typeof registerDynamicClient>>;
       try {
-        registered = await registerDynamicClient({
+        result = await registerDynamicClient({
           registrationEndpoint: metadata.registrationEndpoint,
           redirectUri,
           clientName: serverName,
           issuer: metadata.issuer,
         });
       } catch (e: unknown) {
+        // Throws are non-HTTPS endpoints — terminal until operator fixes.
+        lastDcrTerminal = true;
         reportFailure({
           kind: "dcr_failed",
           serverName,
@@ -180,20 +188,17 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         });
         return undefined;
       }
-      if (registered === undefined) {
-        reportFailure({
-          kind: "dcr_failed",
-          serverName,
-          detail:
-            "registration response rejected (confidential client, narrowed redirect_uris, or non-2xx status)",
-        });
+      if (!result.ok) {
+        lastDcrTerminal = result.terminal;
+        reportFailure({ kind: "dcr_failed", serverName, detail: result.reason });
         return undefined;
       }
+      lastDcrTerminal = false;
 
       // writeClientInfo would re-enter withLock on the same key — we
       // already own it, so persist directly to avoid a self-deadlock.
-      await storage.set(lockKey, JSON.stringify(registered));
-      return registered;
+      await storage.set(lockKey, JSON.stringify(result.info));
+      return result.info;
     });
 
     // Refresh the in-memory cache so onInvalidClient + post-revocation
@@ -225,13 +230,19 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         } catch {
           return { kind: "transient" };
         }
-        // No client and no path to resolve one. If the AS doesn't
-        // advertise a registration_endpoint (and there's no static
-        // configured clientId) we can never refresh — terminal.
-        // Otherwise registration was attempted and failed — also
-        // treat as transient so the next attempt can retry.
+        // Client could not be resolved. Distinguish:
+        //   - DCR truly unavailable (no static clientId AND no
+        //     registration_endpoint): terminal — no operator-free path.
+        //   - DCR was attempted and returned a terminal failure
+        //     (insecure endpoint, confidential, narrowed redirect_uris):
+        //     terminal — operator must fix config or AS state.
+        //   - Otherwise (transient registration failure): preserve
+        //     tokens for the next attempt to retry.
         const md = await getMetadata();
         if (oauthConfig.clientId === undefined && md?.registrationEndpoint === undefined) {
+          return { kind: "terminal" };
+        }
+        if (lastDcrTerminal) {
           return { kind: "terminal" };
         }
         return { kind: "transient" };
