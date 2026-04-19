@@ -52,8 +52,9 @@ describe("GovernanceView", () => {
     await utils.renderOnce();
     const frame = utils.captureCharFrame();
     expect(frame).toContain("Recent alerts");
-    expect(frame).toContain("cost_usd");
-    expect(frame).toContain("80%");
+    // "crossed 80%" only appears in the alert format string, not the sensor table.
+    expect(frame).toContain("cost_usd crossed 80%");
+    expect(frame).toContain("1.60 / 2.00");
     utils.renderer.destroy();
   });
 

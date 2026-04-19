@@ -29,6 +29,7 @@ export const GovernanceView: Component<GovernanceViewProps> = (props) => {
   const empty = (): boolean =>
     props.slice.snapshot === null &&
     props.slice.alerts.length === 0 &&
+    props.slice.violations.length === 0 &&
     props.slice.rules.length === 0 &&
     props.slice.capabilities.length === 0;
 
@@ -102,6 +103,14 @@ const SensorTable: Component<{ readonly readings: readonly SensorReading[] }> = 
   </box>
 );
 
+/**
+ * Render a single rule as `[effect] id — description`. The `pattern` field
+ * on RuleDescriptor is deliberately not rendered here — backends like the
+ * pattern-backend produce verbose selector strings (e.g.,
+ * "tool_call:toolId=Bash") that take significant column width and provide
+ * little value beyond what the rule id already conveys. Add it back when
+ * a backend ships pattern strings the user genuinely needs to read.
+ */
 const RuleRow: Component<{ readonly rule: RuleDescriptor }> = (p) => (
   <box flexDirection="row" gap={1}>
     <text fg={effectColor(p.rule.effect)}>{`[${p.rule.effect}]`}</text>
@@ -116,8 +125,10 @@ function pad(s: string, w: number): string {
 }
 
 function formatNum(n: number): string {
-  if (Number.isInteger(n)) return String(n);
+  // Order matters: round before integer-check so 99.999 doesn't render
+  // as "100.00" while 100.0 renders as "100" (visual jump at the boundary).
   if (n >= 100) return String(Math.round(n));
+  if (Number.isInteger(n)) return String(n);
   return n.toFixed(2);
 }
 
