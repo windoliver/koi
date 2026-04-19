@@ -1808,30 +1808,29 @@ describe("createOAuthAuthProvider", () => {
     expect(failures.map((f) => f.kind)).toContain("authorize_failed");
   });
 
-  test("invalidates DCR client when authorize_failed (auth-endpoint rejection of stale client)", async () => {
-    // An AS that rejects stale DCR client_id at the authorization
-    // endpoint surfaces as runtime.authorize() rejecting. Without
-    // self-heal, the persisted record stays in storage and every
-    // subsequent `koi mcp auth` retries with the same dead client_id
-    // forever. Provider must clear the DCR record so the next attempt
-    // re-registers.
+  test("preserves persisted DCR client on local authorize failure (browser crash, timeout, cancel)", async () => {
+    // runtime.authorize() rejecting does NOT prove the persisted
+    // DCR client_id is stale — it covers purely local failures (browser
+    // launch error, callback listener bind, timeout, user cancel).
+    // Auto-deleting the DCR record on every such failure would leak
+    // orphaned registrations on every browser hiccup and burn DCR
+    // rate-limit budget. A genuinely revoked client_id surfaces later
+    // as `invalid_client` at the token endpoint — handled there.
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
     const clientKey = computeClientKey(
-      "stale-dcr",
+      "browser-cancel",
       "https://mcp.example.com",
       "http://127.0.0.1:8912/callback",
       "https://auth.example.com",
     );
-    await storage.set(
-      clientKey,
-      JSON.stringify({
-        clientId: "revoked",
-        registeredAt: 1700000000,
-        issuer: "https://auth.example.com",
-        registrationEndpoint: "https://auth.example.com/register",
-      }),
-    );
+    const record = JSON.stringify({
+      clientId: "still-healthy",
+      registeredAt: 1700000000,
+      issuer: "https://auth.example.com",
+      registrationEndpoint: "https://auth.example.com/register",
+    });
+    await storage.set(clientKey, record);
 
     const metadata = {
       issuer: "https://auth.example.com",
@@ -1845,16 +1844,15 @@ describe("createOAuthAuthProvider", () => {
     ) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
-      serverName: "stale-dcr",
+      serverName: "browser-cancel",
       serverUrl: "https://mcp.example.com",
       oauthConfig: {
-        // Disable resource so retry shim doesn't run.
         includeResourceParameter: false,
         authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
       },
       runtime: {
         authorize: mock(async () => {
-          throw new Error("AS rejected client_id at authorize endpoint");
+          throw new Error("user closed browser");
         }),
         onReauthNeeded: mock(async () => {}),
       },
@@ -1863,8 +1861,8 @@ describe("createOAuthAuthProvider", () => {
 
     const ok = await provider.startAuthFlow();
     expect(ok).toBe(false);
-    // Stale DCR record cleared; next attempt will re-register.
-    expect(await storage.get(clientKey)).toBeUndefined();
+    // DCR record MUST be preserved — next attempt can reuse it.
+    expect(await storage.get(clientKey)).toBe(record);
   });
 
   test("handleUnauthorized clears corrupt token storage and prompts re-auth", async () => {

@@ -54,6 +54,7 @@ interface ExternalServerConfig {
         readonly clientId?: string;
         readonly callbackPort?: number;
         readonly authServerMetadataUrl?: string;
+        readonly includeResourceParameter?: boolean;
         readonly xaa?: boolean;
     };
     readonly name?: string;
@@ -83,6 +84,7 @@ interface McpOAuthExternalConfig {
     readonly clientId?: string | undefined;
     readonly callbackPort?: number | undefined;
     readonly authServerMetadataUrl?: string | undefined;
+    readonly includeResourceParameter?: boolean | undefined;
 }
 interface HttpServerConfig {
     readonly kind: "http";
@@ -426,6 +428,14 @@ interface McpOAuthConfig {
     readonly clientId?: string | undefined;
     readonly callbackPort?: number | undefined;
     readonly authServerMetadataUrl?: string | undefined;
+    /**
+     * RFC 8707 \`resource\` parameter. Defaults to \`true\` (spec-compliant MCP
+     * 2025-03-26). Set \`false\` for legacy authorization servers that reject
+     * the \`resource\` parameter with \`invalid_target\`/\`invalid_request\` —
+     * operators can then opt out on a per-server basis rather than hitting
+     * an unrecoverable auth failure.
+     */
+    readonly includeResourceParameter?: boolean | undefined;
 }
 /**
  * Interactive OAuth runtime — injected by the host application.
@@ -452,7 +462,48 @@ interface OAuthRuntime {
      * The host decides how to present this (TUI prompt, CLI message, etc.).
      */
     readonly onReauthNeeded: (serverName: string) => Promise<void>;
+    /**
+     * Optional structured-failure observer. Fires when the provider takes a
+     * fail-closed branch — discovery failure, DCR rejection (insecure
+     * endpoint, confidential client, narrowed redirect_uris, missing
+     * registration_endpoint), or token-exchange failure. Lets hosts surface
+     * actionable diagnostics instead of a generic "auth failed" message.
+     * Implementations MUST NOT throw — failures here cannot affect the
+     * underlying auth flow.
+     */
+    readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
+/** Discriminated failure reasons for \`OAuthRuntime.onAuthFailure\`. */
+type OAuthFailureReason = {
+    readonly kind: "discovery_failed";
+    readonly serverName: string;
+} | {
+    readonly kind: "dcr_unavailable";
+    readonly serverName: string;
+} | {
+    readonly kind: "dcr_failed";
+    readonly serverName: string;
+    readonly detail: string;
+} | {
+    readonly kind: "exchange_failed";
+    readonly serverName: string;
+    readonly invalidClient: boolean;
+} | {
+    readonly kind: "state_mismatch";
+    readonly serverName: string;
+}
+/**
+ * runtime.authorize() rejected — local browser/callback failure
+ * (browser launch error, callback listener bind, callback timeout,
+ * user-cancelled). Distinct from \`discovery_failed\` so hosts can
+ * route remediation to local runtime (retry, instructions to open
+ * the URL manually) instead of incorrectly blaming the AS.
+ */
+ | {
+    readonly kind: "authorize_failed";
+    readonly serverName: string;
+    readonly detail: string;
+};
 /** Persisted OAuth token set. */
 interface OAuthTokens {
     readonly accessToken: string;
@@ -558,15 +609,65 @@ interface TokenManagerOptions {
     readonly serverName: string;
     readonly serverUrl: string;
     readonly storage: SecureStorage;
+    /**
+     * Eager metadata snapshot. Mutually exclusive with \`getMetadata\` —
+     * \`getMetadata\` is preferred for long-lived providers because it
+     * lets refresh re-discover after a transient outage at construction
+     * time without rebuilding the manager.
+     */
     readonly metadata?: AuthServerMetadata | undefined;
+    /**
+     * Lazy metadata resolver. Invoked per-refresh attempt so a provider
+     * created while discovery was briefly unavailable can recover once
+     * discovery starts succeeding — without this, a manager built with
+     * \`metadata: undefined\` would skip every refresh forever even after
+     * the AS came back online.
+     */
+    readonly getMetadata?: (() => Promise<AuthServerMetadata | undefined>) | undefined;
+    /**
+     * Eager client_id, when known up-front (configured static client). Mutually
+     * exclusive with \`getClientId\` — \`getClientId\` is preferred for DCR flows
+     * because it lets the token manager resolve (and trigger registration)
+     * lazily, only when a refresh actually needs a client.
+     */
     readonly clientId?: string | undefined;
     /**
-     * RFC 8707 resource indicator. When set, sent alongside refresh requests
-     * so the authorization server can bind the rotated access token to the
-     * same MCP server URL used during initial authorization. Defaults to
-     * \`serverUrl\` via \`createTokenManager\`.
+     * Lazy client_id resolver. Invoked exclusively from the refresh path so
+     * that a passive \`getAccessToken()\` call with no stored tokens never
+     * triggers DCR. A plain \`token()\` probe must be side-effect free —
+     * otherwise reconnect retries can leak orphaned OAuth client
+     * registrations on the authorization server.
+     *
+     * The result is a discriminated union so the refresh path can tell
+     * \`transient\` (network blip, registration timeout — preserve tokens
+     * for the next attempt) from \`terminal\` (no static clientId AND no
+     * usable registration_endpoint — there is no path to ever recover
+     * a client without operator intervention; clear tokens so
+     * \`handleUnauthorized\` can trigger re-auth instead of leaving the
+     * session permanently stuck with undeletable expired credentials).
+     */
+    readonly getClientId?: (() => Promise<{
+        readonly kind: "ok";
+        readonly clientId: string;
+    } | {
+        readonly kind: "transient";
+    } | {
+        readonly kind: "terminal";
+    }>) | undefined;
+    /**
+     * RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
+     * the refresh body MUST mirror the initial-auth choice exactly.
      */
     readonly resource?: string | undefined;
+    /**
+     * Fired when the refresh endpoint responds with \`error: "invalid_client"\`.
+     * Receives the exact \`clientId\` that was sent on the failing request
+     * so the provider can CAS-delete only that specific value. Reading a
+     * mutable provider cache here would race with concurrent flows that
+     * may have already re-registered a fresh client between the failing
+     * request and this callback.
+     */
+    readonly onInvalidClient?: ((clientId: string) => Promise<void> | void) | undefined;
 }
 declare function createTokenManager(options: TokenManagerOptions): TokenManager;
 /**

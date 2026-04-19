@@ -407,6 +407,15 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // Distinct from discovery_failed: local browser/callback failure
       // (launch error, listener bind, timeout, user-cancel) — not an
       // AS-side problem. Hosts route remediation differently for each.
+      //
+      // We do NOT invalidate the persisted DCR client here: a local
+      // launch/timeout/cancel failure is not evidence that the
+      // client_id is stale, and auto-deleting on every local failure
+      // would leak orphaned registrations on every browser hiccup.
+      // A genuinely stale DCR client will either surface as
+      // `invalid_client` at token exchange (handled via CAS) or
+      // require explicit operator action — `koi mcp logout` followed
+      // by a fresh `koi mcp auth` re-triggers DCR cleanly.
       reportFailure({
         kind: "authorize_failed",
         serverName,
@@ -415,18 +424,6 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
             ? lastAuthorizeError.message
             : String(lastAuthorizeError ?? "runtime.authorize failed"),
       });
-      // Self-heal stale DCR clients rejected at the authorization
-      // endpoint (revoked client, redirect_uri mismatch surfaced as
-      // an early reject). Without this, the persisted record stays
-      // in storage and every subsequent `koi mcp auth` retries with
-      // the same dead client_id forever. CAS on the failing
-      // clientId so a concurrent flow's freshly-registered record is
-      // not wiped. Trade-off: a transient browser failure on a
-      // healthy DCR client also triggers re-registration — one extra
-      // round-trip; orphans expire via server-side TTL.
-      if (client.registeredAt > 0) {
-        await invalidateRegisteredClient(client.clientId);
-      }
       return false;
     }
 

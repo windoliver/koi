@@ -111,7 +111,18 @@ async function runAuth(flags: McpFlags): Promise<ExitCode> {
 
   try {
     const storage = createSecureStorage();
-    const runtime = createCliOAuthRuntime();
+    const baseRuntime = createCliOAuthRuntime();
+
+    // Capture the last structured failure reported by the provider so
+    // we can give the operator a specific remediation message rather
+    // than the old catch-all "could not discover authorization server".
+    let lastFailure: { readonly kind: string; readonly detail?: string | undefined } | undefined;
+    const runtime = {
+      ...baseRuntime,
+      onAuthFailure: (reason: { readonly kind: string; readonly detail?: string | undefined }) => {
+        lastFailure = reason;
+      },
+    };
 
     const provider = createOAuthAuthProvider({
       serverName,
@@ -133,9 +144,42 @@ async function runAuth(flags: McpFlags): Promise<ExitCode> {
       return ExitCode.OK;
     }
 
-    return fail(flags, "OAuth flow failed — could not discover authorization server");
+    return fail(flags, describeOAuthFailure(lastFailure));
   } catch (e: unknown) {
     return fail(flags, e instanceof Error ? e.message : String(e));
+  }
+}
+
+/**
+ * Map a structured OAuth failure reason to an operator-actionable
+ * message. Falls back to a generic message when the provider did not
+ * emit a reason (e.g. older runtime implementations).
+ */
+function describeOAuthFailure(
+  reason: { readonly kind: string; readonly detail?: string | undefined } | undefined,
+): string {
+  if (reason === undefined) {
+    return "OAuth flow failed — no structured reason reported";
+  }
+  switch (reason.kind) {
+    case "discovery_failed":
+      return "OAuth flow failed — could not discover the authorization server. Verify the server URL and `authServerMetadataUrl`.";
+    case "dcr_unavailable":
+      return "OAuth flow failed — authorization server does not advertise `registration_endpoint` and no static `clientId` is configured. Add `clientId` to the server's oauth config.";
+    case "dcr_failed":
+      return `OAuth flow failed — dynamic client registration was rejected${
+        reason.detail !== undefined ? `: ${reason.detail}` : ""
+      }.`;
+    case "exchange_failed":
+      return "OAuth flow failed — authorization code exchange was rejected by the token endpoint. Re-run auth; if the issue persists, try `koi mcp logout` to reset stored state.";
+    case "state_mismatch":
+      return "OAuth flow failed — state parameter mismatch (possible CSRF). Retry authentication.";
+    case "authorize_failed":
+      return `OAuth flow failed — browser/callback step did not complete${
+        reason.detail !== undefined ? `: ${reason.detail}` : ""
+      }. Retry the command.`;
+    default:
+      return `OAuth flow failed — ${reason.kind}`;
   }
 }
 
