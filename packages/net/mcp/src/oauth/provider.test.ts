@@ -1587,12 +1587,13 @@ describe("createOAuthAuthProvider", () => {
     expect(exchangeCalls).toBe(1);
   });
 
-  test("retries authorization without resource when authorize() throws (legacy AS rejects at auth endpoint)", async () => {
-    // Some legacy ASes reject the unknown `resource` query parameter
-    // at the authorization endpoint itself, before the redirect ever
-    // happens. The host's runtime.authorize then rejects with a
-    // browser error. The provider must retry once without `resource`
-    // to give the same login a chance to succeed.
+  test("does NOT auto-retry authorize() on generic exceptions (prevents duplicate browser launches)", async () => {
+    // runtime.authorize throws for many reasons: local listener bind,
+    // user cancel, browser timeout, AS error redirect. Auto-retrying
+    // would launch a second browser for every ordinary cancel —
+    // duplicating OS-level UI and masking the original cause.
+    // Operators on legacy ASes that reject `resource` at /authorize
+    // set `oauth.includeResourceParameter: false` explicitly.
     const storage = createMockStorage();
     const metadata = {
       issuer: "https://auth.example.com",
@@ -1600,15 +1601,11 @@ describe("createOAuthAuthProvider", () => {
       token_endpoint: "https://auth.example.com/token",
     };
 
-    const seenAuthUrls: string[] = [];
+    let authorizeCalls = 0;
     const runtime: OAuthRuntime = {
-      authorize: mock(async (authUrl: string) => {
-        seenAuthUrls.push(authUrl);
-        const url = new URL(authUrl);
-        if (url.searchParams.has("resource")) {
-          throw new Error("authorization endpoint rejected resource");
-        }
-        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      authorize: mock(async () => {
+        authorizeCalls += 1;
+        throw new Error("user cancelled");
       }),
       onReauthNeeded: mock(async () => {}),
     };
@@ -1618,16 +1615,11 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.includes("well-known")) {
         return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
       }
-      if (urlStr.includes("/token")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
-        );
-      }
       return Promise.resolve(new Response(null, { status: 404 }));
     }) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
-      serverName: "auth-endpoint-rejects",
+      serverName: "cancel-no-retry",
       serverUrl: "https://mcp.example.com",
       oauthConfig: {
         clientId: "static",
@@ -1637,11 +1629,8 @@ describe("createOAuthAuthProvider", () => {
       storage,
     });
 
-    const ok = await provider.startAuthFlow();
-    expect(ok).toBe(true);
-    expect(seenAuthUrls.length).toBe(2);
-    expect(new URL(seenAuthUrls[0] ?? "").searchParams.has("resource")).toBe(true);
-    expect(new URL(seenAuthUrls[1] ?? "").searchParams.has("resource")).toBe(false);
+    await expect(provider.startAuthFlow()).resolves.toBe(false);
+    expect(authorizeCalls).toBe(1);
   });
 
   test("re-discovers metadata before declaring DCR terminally unavailable", async () => {

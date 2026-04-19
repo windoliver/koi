@@ -474,34 +474,31 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     };
 
     // runtime.authorize is host-implemented (browser launch + local
-    // callback listener) and can fail for many reasons unrelated to
-    // OAuth: browser launch error, callback timeout, user-cancelled
-    // auth, listener bind error. startAuthFlow's contract is
+    // callback listener) and can fail for many reasons: browser
+    // launch error, callback timeout, user-cancelled auth, listener
+    // bind error, AS error redirect. startAuthFlow's contract is
     // Promise<boolean> — never throw. Catch ALL failures, report a
     // structured signal, and fall through to the closed-fail return
     // below.
+    //
+    // We do NOT auto-retry with `resource` stripped. Earlier versions
+    // did, but runtime.authorize's rejection is structurally
+    // indistinguishable between a real RFC 8707 rejection at /authorize
+    // and a local failure (user cancel, browser timeout). An automatic
+    // retry would launch a second browser flow for every ordinary
+    // cancel/timeout, masking the original cause. Operators on legacy
+    // ASes that reject `resource` at /authorize must set
+    // `oauth.includeResourceParameter: false` explicitly — the
+    // token-exchange path still detects `invalid_target` there and
+    // retries without `resource` because the failure is structured
+    // (RFC 6749 §5.2 error code in the response body).
+    const attempt = buildAuthAttempt(true);
     let callbackResult: OAuthCallbackResult | undefined;
     let lastAuthorizeError: unknown;
-    let attempt = buildAuthAttempt(true);
     try {
       callbackResult = await runtime.authorize(attempt.url, redirectUri);
-    } catch (firstErr: unknown) {
-      lastAuthorizeError = firstErr;
-      // RFC 8707 compatibility: a legacy AS that rejects the unknown
-      // `resource` query at the authorization endpoint surfaces here.
-      // Retry once without `resource` only when we actually sent it.
-      // Use a FRESH state + PKCE so a delayed callback from the
-      // first browser flow cannot satisfy this retry.
-      if (resourceIndicator !== undefined) {
-        attempt = buildAuthAttempt(false);
-        try {
-          callbackResult = await runtime.authorize(attempt.url, redirectUri);
-          lastAuthorizeError = undefined;
-        } catch (secondErr: unknown) {
-          // Fall through; callbackResult stays undefined and we fail closed.
-          void secondErr;
-        }
-      }
+    } catch (err: unknown) {
+      lastAuthorizeError = err;
     }
     if (callbackResult === undefined) {
       // Distinct from discovery_failed: local browser/callback failure

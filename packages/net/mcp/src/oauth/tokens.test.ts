@@ -204,6 +204,37 @@ describe("client info persistence", () => {
     expect(await readClientInfo(storage, "s", "https://x", RU)).toBeUndefined();
   });
 
+  test("readClientInfo rejects parseable-but-malformed blobs (schema validation)", async () => {
+    // Parseable JSON that doesn't match OAuthClientInfo shape must be
+    // rejected — otherwise an empty-clientId or non-numeric
+    // registeredAt blob would be passed straight into auth/token
+    // requests and strand the server on an unusable record.
+    const key = computeClientKey("s", "https://x", RU);
+    const cases = [
+      // missing clientId
+      '{"registeredAt":1}',
+      // empty clientId
+      '{"clientId":"","registeredAt":1}',
+      // non-numeric registeredAt
+      '{"clientId":"abc","registeredAt":"nope"}',
+      // non-string issuer
+      '{"clientId":"abc","registeredAt":1,"issuer":42}',
+      // non-string generation
+      '{"clientId":"abc","registeredAt":1,"generation":[]}',
+      // array, not object
+      "[]",
+      // primitive
+      '"abc"',
+    ];
+    for (const blob of cases) {
+      await storage.set(key, blob);
+      expect(
+        await readClientInfo(storage, "s", "https://x", RU),
+        `should reject: ${blob}`,
+      ).toBeUndefined();
+    }
+  });
+
   test("writeClientInfo persists issuer + registration_endpoint binding", async () => {
     await writeClientInfo(storage, "s", "https://x", RU, {
       clientId: "public",

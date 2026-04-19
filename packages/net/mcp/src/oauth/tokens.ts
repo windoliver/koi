@@ -393,7 +393,21 @@ export function computeClientKey(
   return `mcp-oauth-client|${hash}`;
 }
 
-/** Read persisted `OAuthClientInfo` for a (server, redirect, authority) triple; undefined when absent or corrupt. */
+/**
+ * Read persisted `OAuthClientInfo` for a (server, redirect, authority)
+ * triple. Returns undefined when:
+ *   - no record exists
+ *   - the blob does not parse as JSON
+ *   - the parsed blob does not validate against the OAuthClientInfo
+ *     shape (non-string clientId, non-number registeredAt, invalid
+ *     types on optional fields)
+ *
+ * Blind `as OAuthClientInfo` casting was unsafe: a parseable-but-
+ * malformed blob (missing clientId, non-numeric registeredAt) would
+ * be accepted and later sent in auth/token requests, stranding the
+ * server on an unusable record until operator-driven storage surgery.
+ * Schema-reject forces re-registration on the next auth attempt.
+ */
 export async function readClientInfo(
   storage: SecureStorage,
   serverName: string,
@@ -403,11 +417,28 @@ export async function readClientInfo(
 ): Promise<OAuthClientInfo | undefined> {
   const raw = await storage.get(computeClientKey(serverName, serverUrl, redirectUri, authority));
   if (raw === undefined) return undefined;
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as OAuthClientInfo;
+    parsed = JSON.parse(raw);
   } catch {
     return undefined;
   }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.clientId !== "string" || obj.clientId.length === 0) return undefined;
+  if (typeof obj.registeredAt !== "number" || !Number.isFinite(obj.registeredAt)) return undefined;
+  if (obj.generation !== undefined && typeof obj.generation !== "string") return undefined;
+  if (obj.issuer !== undefined && typeof obj.issuer !== "string") return undefined;
+  if (obj.registrationEndpoint !== undefined && typeof obj.registrationEndpoint !== "string") {
+    return undefined;
+  }
+  return {
+    clientId: obj.clientId,
+    registeredAt: obj.registeredAt,
+    generation: obj.generation as string | undefined,
+    issuer: obj.issuer as string | undefined,
+    registrationEndpoint: obj.registrationEndpoint as string | undefined,
+  };
 }
 
 /**
