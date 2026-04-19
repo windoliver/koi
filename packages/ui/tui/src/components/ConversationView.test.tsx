@@ -91,7 +91,7 @@ describe("ConversationView — rendering", () => {
     renderer.destroy();
   });
 
-  test("renders queued submit chip when queued submits exist", async () => {
+  test("renders queued submits inline when queued submits exist", async () => {
     const store = createStore({
       ...createInitialState(),
       queuedSubmits: ["first", "second"],
@@ -110,7 +110,9 @@ describe("ConversationView — rendering", () => {
     );
     await renderOnce();
     const frame = captureCharFrame();
-    expect(frame).toContain("queued: 2");
+    expect(frame).toContain("You (queued):");
+    expect(frame).toContain("first");
+    expect(frame).toContain("Press up to edit queued messages");
     renderer.destroy();
   });
 });

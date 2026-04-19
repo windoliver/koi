@@ -10,7 +10,7 @@
 
 import type { SyntaxStyle, TreeSitterClient } from "@opentui/core";
 import type { JSX } from "solid-js";
-import { createEffect, createSignal, on, Show, useContext } from "solid-js";
+import { createEffect, createSignal, For, on, Show, useContext } from "solid-js";
 import { COMMAND_DEFINITIONS } from "../commands/command-definitions.js";
 import { matchCommands, parseSlashCommand, type SlashCommand } from "../commands/slash-detection.js";
 import type { ClipboardImage } from "../utils/clipboard.js";
@@ -214,8 +214,22 @@ export function ConversationView(props: ConversationViewProps): JSX.Element {
         </box>
       </Show>
       <Show when={queuedSubmits().length > 0}>
-        <box paddingLeft={1} flexShrink={0}>
-          <text fg={COLORS.amber}>{`queued: ${queuedSubmits().length}`}</text>
+        <box flexDirection="column" flexShrink={0} gap={1}>
+          <For each={queuedSubmits()}>
+            {(text, index) => (
+              <box flexDirection="column">
+                <text fg={COLORS.blueAccent}>
+                  <b>{index() === 0 ? "You (queued):" : "You (queued next):"}</b>
+                </text>
+                <box paddingLeft={2}>
+                  <text fg={COLORS.textSecondary}>{text}</text>
+                </box>
+              </box>
+            )}
+          </For>
+          <box paddingLeft={1}>
+            <text fg={COLORS.textMuted}>Press up to edit queued messages</text>
+          </box>
         </box>
       </Show>
       <InputArea
