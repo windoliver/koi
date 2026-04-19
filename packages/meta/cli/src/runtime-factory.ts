@@ -46,6 +46,7 @@ import type {
   SessionTranscript,
 } from "@koi/core";
 import { agentId as makeAgentId } from "@koi/core";
+import { DEFAULT_PRICING, resolvePricing } from "@koi/cost-aggregator";
 import type { DecisionLedgerReader } from "@koi/decision-ledger";
 import { createDecisionLedger } from "@koi/decision-ledger";
 import type { KoiRuntime } from "@koi/engine";
@@ -206,6 +207,36 @@ export const TUI_PLAN_PERSIST_ALLOW_RULES: readonly SourcedRule[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// Cost config helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve governance cost config from the user's --max-spend flag and the
+ * configured model name. When pricing is known, sets per-token rates so the
+ * controller's per-token-fallback formula accumulates spend. When unknown,
+ * only the limit is set — the cap will display in /governance but won't fire
+ * until pricing is wired or the host computes costUsd externally.
+ */
+function resolveCostConfig(
+  maxCostUsd: number,
+  modelName: string,
+): {
+  readonly maxCostUsd: number;
+  readonly costPerInputToken: number;
+  readonly costPerOutputToken: number;
+} {
+  const pricing = resolvePricing(modelName, DEFAULT_PRICING);
+  if (pricing === undefined) {
+    console.warn(
+      `[koi runtime] --max-spend $${maxCostUsd} set but model "${modelName}" has no pricing in DEFAULT_PRICING; ` +
+        `cap will display but won't accumulate. Add pricing via cost-aggregator's DEFAULT_PRICING table.`,
+    );
+    return { maxCostUsd, costPerInputToken: 0, costPerOutputToken: 0 };
+  }
+  return { maxCostUsd, costPerInputToken: pricing.input, costPerOutputToken: pricing.output };
+}
+
+// ---------------------------------------------------------------------------
 // Config & return types
 // ---------------------------------------------------------------------------
 
@@ -267,6 +298,16 @@ export interface KoiRuntimeConfig {
    * int32 max, ~24.8 days).
    */
   readonly defaultMaxDurationMs?: number | undefined;
+  /**
+   * Maximum cumulative spend in USD before the governance controller
+   * fires a violation. When >0, the runtime resolves per-token pricing
+   * for `modelName` via @koi/cost-aggregator's DEFAULT_PRICING and
+   * configures `governance.cost.{maxCostUsd,costPerInputToken,costPerOutputToken}`.
+   * Unknown models log a warning and set only the limit (per-token
+   * rates stay at 0; cap won't fire but the value surfaces in /governance).
+   * 0 (default) keeps cost tracking disabled.
+   */
+  readonly maxSpendUsd?: number | undefined;
   /**
    * Approval timeout in ms for permission "ask" decisions. Defaults to
    * the middleware's 30s fail-closed posture (suitable for agent-to-agent
@@ -2052,6 +2093,9 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
               maxInactivityMs: resolvedDuration,
               maxTokens: 1_000_000,
             },
+            ...(config.maxSpendUsd !== undefined && config.maxSpendUsd > 0
+              ? { cost: resolveCostConfig(config.maxSpendUsd, modelName) }
+              : {}),
           },
         };
       })(),

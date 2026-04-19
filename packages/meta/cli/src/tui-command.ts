@@ -1533,6 +1533,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     skillsRuntime: skillRuntime,
     ...(approvalStore !== undefined ? { persistentApprovals: approvalStore } : {}),
     ...(flags.goal.length > 0 ? { goals: flags.goal } : {}),
+    ...(flags.maxSpendUsd > 0 ? { maxSpendUsd: flags.maxSpendUsd } : {}),
     // Manifest-driven opt-in for preset stacks + plugins. Omitted
     // when the user didn't pass --manifest, in which case the
     // factory defaults to activating every stack / every discovered
