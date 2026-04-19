@@ -57,3 +57,37 @@ describe("specChmod — refused", () => {
     expect(specChmod(["ls", "755", "x"]).kind).toBe("refused");
   });
 });
+
+describe("specChmod — symbolic modes that begin with - (regression)", () => {
+  test("-x as mode (permission removal)", () => {
+    const result = specChmod(["chmod", "-x", "file"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["file"]);
+  });
+
+  test("-w as mode", () => {
+    const result = specChmod(["chmod", "-w", "dir"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["dir"]);
+  });
+
+  test("-rwx as mode (compound permission removal)", () => {
+    const result = specChmod(["chmod", "-rwx", "file"]);
+    expect(result.kind).toBe("complete");
+  });
+
+  test("-R -x dir (recursive permission removal)", () => {
+    const result = specChmod(["chmod", "-R", "-x", "dir"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.reason).toBe("recursive-subtree-root");
+    expect(result.semantics.writes).toEqual(["dir"]);
+  });
+
+  test("`+x` and `=r` modes still work (don't start with -)", () => {
+    expect(specChmod(["chmod", "+x", "file"]).kind).toBe("complete");
+    expect(specChmod(["chmod", "=r", "file"]).kind).toBe("complete");
+  });
+});
