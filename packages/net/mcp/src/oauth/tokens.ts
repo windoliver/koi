@@ -132,9 +132,9 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   const resolveClientId = async (): Promise<ClientResolution> => {
     if (getClientId !== undefined) return getClientId();
     if (clientId !== undefined) {
-      return { kind: "ok", client: { clientId, registeredAt: 0 } };
+      return { kind: "ok", client: { clientId, registeredAt: 0, generation: "" } };
     }
-    return { kind: "ok", client: { clientId: "", registeredAt: 0 } };
+    return { kind: "ok", client: { clientId: "", registeredAt: 0, generation: "" } };
   };
   // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
   // callers — provider in particular — set `resource` to the effective

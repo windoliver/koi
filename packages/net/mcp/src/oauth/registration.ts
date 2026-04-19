@@ -194,6 +194,11 @@ export async function registerDynamicClient(
       info: {
         clientId: data.client_id,
         registeredAt: Date.now(),
+        // Opaque per-registration generation token. Random UUID so
+        // CAS invalidation cannot match a different registration that
+        // happens to share the same client_id (deterministic reissue)
+        // or land in the same wall-clock millisecond (fast retries).
+        generation: crypto.randomUUID(),
         issuer,
         registrationEndpoint,
       },

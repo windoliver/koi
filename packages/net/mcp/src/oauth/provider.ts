@@ -150,7 +150,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   async function getClient(): Promise<GetClientResult> {
     if (oauthConfig.clientId !== undefined) {
       if (cachedClient === undefined) {
-        cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0 };
+        cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0, generation: "" };
       }
       return { kind: "ok", client: cachedClient };
     }
@@ -371,18 +371,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
     await storage.withLock(lockKey, async () => {
       const current = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
-      // CAS on the full registration generation (clientId AND
-      // registeredAt). clientId alone is unsafe: an AS that
-      // deterministically re-issues the same client_id for the same
-      // software/redirect tuple would let a stale invalid_client
-      // callback match the string and delete a freshly repaired
-      // record. registeredAt is captured at registration time via
-      // Date.now(), so a newer registration has a strictly later
-      // timestamp than the failing one.
+      // CAS on the opaque per-registration `generation` token.
+      // clientId alone is unsafe (some ASes deterministically reissue
+      // the same client_id) and registeredAt alone is non-unique
+      // under fast retries (Date.now() can collide in the same
+      // millisecond). The generation is a random UUID issued at
+      // registration time — collision probability is effectively
+      // zero, so a stale invalidation cannot match a fresher record.
+      //
+      // Empty/undefined generation is the legacy shape (records
+      // persisted before this field existed, or static clients) —
+      // never CAS-delete those. Operators clear them via storage
+      // surgery / a future `koi mcp reset-client` subcommand.
       if (
         current !== undefined &&
-        current.clientId === expectedClient.clientId &&
-        current.registeredAt === expectedClient.registeredAt
+        current.generation !== undefined &&
+        current.generation !== "" &&
+        current.generation === expectedClient.generation
       ) {
         await storage.delete(lockKey);
       }
