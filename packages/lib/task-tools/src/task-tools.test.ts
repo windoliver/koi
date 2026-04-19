@@ -1190,6 +1190,37 @@ describe("task_output — ACL", () => {
     expect(r.kind).not.toBe("permission_denied");
   });
 
+  test("legacy task with createdBy undefined: legacyReadOwner omitted — deny-by-default (no ?? agentId fallback)", async () => {
+    // Regression: previously config.legacyReadOwner ?? agentId silently made every
+    // agent its own legacy owner, reopening the ACL for runtimes that omit legacyReadOwner.
+    // Now legacyReadOwner defaults to undefined → legacy reads deny.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-no-owner");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy no owner",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // No legacyReadOwner configured — every caller should be denied.
+    const noOwnerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-caller"),
+      // legacyReadOwner deliberately omitted
+    });
+    const r = (await exec(noOwnerTools.output, { task_id: "legacy-task-no-owner" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("permission_denied");
+    expect(typeof r.reason).toBe("string");
+  });
+
   test("legacy task with createdBy undefined: legacyReadOwner set to different agent — denied", async () => {
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();

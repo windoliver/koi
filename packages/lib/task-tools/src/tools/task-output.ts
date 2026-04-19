@@ -93,15 +93,16 @@ export function createTaskOutputTool(
 
       // Read ACL: allow when caller is the creator or the current assignee.
       // Legacy tasks (createdBy === undefined) are readable only by legacyReadOwner
-      // (defaults to the session agentId) — fail-closed otherwise so pre-migration
-      // records do not become universally readable in multi-agent sessions.
+      // when it is explicitly configured AND matches the caller. If legacyReadOwner
+      // is not configured (undefined), legacy reads deny — fail-closed by default.
+      // The CLI execution preset always passes legacyReadOwner: agentId explicitly.
       const isCreator = task.createdBy === agentId;
       const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
-      const legacyReadOwner = config.legacyReadOwner ?? agentId;
+      const effectiveLegacyOwner = config.legacyReadOwner; // undefined by default
       const isLegacyReadable =
         task.createdBy === undefined &&
-        legacyReadOwner !== undefined &&
-        legacyReadOwner === agentId;
+        effectiveLegacyOwner !== undefined &&
+        effectiveLegacyOwner === agentId;
       if (!isCreator && !isAssignee && !isLegacyReadable) {
         const deniedResponse: TaskOutputResponse = {
           kind: "permission_denied",
