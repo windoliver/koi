@@ -484,7 +484,17 @@ export const executionStack: PresetStack = {
         ? createTaskTools({
             board: taskBoard,
             agentId,
-            legacyReadOwner: agentId,
+            // legacyReadOwner is intentionally unset (undefined by default).
+            // The CLI preset does NOT know whether the runtime is single-agent
+            // or multi-agent. Auto-binding legacyReadOwner to agentId would make
+            // each agent its own legacy owner in multi-agent runtimes, silently
+            // reopening the ACL the round-3 fix was designed to close.
+            // Runtimes that need legacy-task reads (tasks persisted before createdBy
+            // existed) must wire legacyReadOwner explicitly at their composition
+            // layer (typically to a single session/primary agent identity).
+            // Impact: pre-migration legacy tasks (createdBy === undefined) are no
+            // longer readable by default. Run a migration to backfill createdBy
+            // on existing task-board entries if access is needed.
             bufferReader: (id) => bashOutputBuffersRef.current.get(id),
           }).map((tool) =>
             createSingleToolProvider({
