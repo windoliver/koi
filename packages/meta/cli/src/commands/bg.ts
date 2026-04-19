@@ -245,13 +245,15 @@ async function runKill(
   // rely on (a) the lockfile-serialized claim to prove registry state
   // is current, and (b) post-signal identity re-verification before
   // any SIGKILL escalation.
-  // Stamp `signaledAt` alongside the terminating status so the bridge can
-  // time-bound its `crashed → exited` downgrade. Without a timestamp the
-  // bridge would honor any `terminating` record forever, letting a killer
-  // that aborted partway convert a later genuine crash into `exited`.
+  // Claim identity WITHOUT stamping `signaledAt`. Operator-intent
+  // freshness is deferred to the post-SIGTERM stamp below — stamping
+  // here would let any pre-signal failure (fingerprint drift, `ps`
+  // unavailable, caller crash) leave a fresh "intent" marker on a
+  // record where no signal was ever sent. The bridge would then
+  // downgrade a later genuine crash to `exited` within the 30s
+  // window, silently masking real faults.
   const claim = await registry.update(workerId(id), {
     status: "terminating",
-    signaledAt: Date.now(),
     expectedVersion: record.version ?? 0,
     expectedPid: record.pid,
   });
@@ -354,6 +356,26 @@ async function runKill(
     return ExitCode.FAILURE;
   }
 
+  // Stamp `signaledAt` NOW — after we've actually sent SIGTERM. The bridge
+  // uses this as a bounded freshness marker: any `crashed` event it
+  // observes within the freshness window with a recent stamp is
+  // downgraded to `exited` (operator-initiated). Stamping here (rather
+  // than in the initial claim) guarantees a failed pre-signal path
+  // never leaves an intent marker on a record where no signal was sent.
+  // A CAS conflict here is harmless — it means the bridge already wrote
+  // a terminal state, which the finalize CAS below will correctly
+  // preserve. There is a tiny window between SIGTERM and this stamp
+  // where a near-instant crash could beat us and be recorded as
+  // `crashed` instead of `exited`; that is the fail-safe direction
+  // (reporting a kill as a crash is noisy but never silently masks a
+  // real fault).
+  const stamp = await registry.update(workerId(id), {
+    signaledAt: Date.now(),
+    expectedVersion: claimedVersion,
+    expectedPid: record.pid,
+  });
+  const stampedVersion = stamp.ok ? (stamp.value.version ?? 0) : claimedVersion;
+
   // Give the process a short window to exit cleanly. If it doesn't respond
   // within the deadline, escalate to SIGKILL so operators never wait
   // indefinitely on a wedged worker.
@@ -432,16 +454,16 @@ async function runKill(
     return ExitCode.OK;
   }
 
-  // Finalize: write terminal status conditioned on the claim we just
-  // committed. The expected version here is the one returned by the claim
-  // (not the initial lookup) so the CAS acts against the "terminating"
-  // record we just wrote. If a concurrent bridge update slipped in and
-  // already marked the worker exited/crashed, CAS fails and we preserve
-  // the bridge's classification verbatim rather than rewriting it.
+  // Finalize: write terminal status conditioned on our most recent
+  // successful CAS (`stampedVersion` — advanced past the `claimedVersion`
+  // baseline by the post-SIGTERM `signaledAt` stamp when it committed).
+  // If a concurrent bridge update slipped in and already marked the
+  // worker exited/crashed, CAS fails and we preserve the bridge's
+  // classification verbatim rather than rewriting it.
   const updated = await registry.update(workerId(id), {
     status: "exited",
     endedAt: Date.now(),
-    expectedVersion: claimedVersion,
+    expectedVersion: stampedVersion,
     expectedPid: record.pid,
   });
   let finalized = false;
@@ -477,26 +499,33 @@ async function runKill(
   // transient/permanent respawn, but it CAN detect the symptom and tell
   // the operator so they don't walk away thinking the session is dead.
   //
-  // Poll window is sized to cover the default supervisor backoff
-  // (`DEFAULT_WORKER_RESTART_POLICY.backoffBaseMs` = 1000ms) with a
-  // small headroom for scheduling jitter. Longer backoffs (e.g. a
-  // supervisor tuned to back off for 10s+) are out of scope — this is a
-  // warning, not a guarantee, and operators with custom restart policies
-  // should read `koi bg ps` explicitly rather than rely on the warning.
-  const RESPAWN_POLL_MS = 1_500;
-  await Bun.sleep(RESPAWN_POLL_MS);
-  const afterRestartCheck = await registry.get(workerId(id));
-  if (
-    afterRestartCheck !== undefined &&
-    (afterRestartCheck.status === "running" || afterRestartCheck.status === "starting") &&
-    afterRestartCheck.pid !== record.pid
-  ) {
-    process.stderr.write(
-      `Note: session ${id} was respawned by the supervisor's restart policy ` +
-        `(new pid ${afterRestartCheck.pid}). \`koi bg kill\` signals a single process; ` +
-        `to prevent respawn, configure the supervisor with a 'temporary' restart policy ` +
-        `or stop the supervisor itself.\n`,
-    );
+  // Poll structure: bounded loop with early exit on respawn detection.
+  // The budget is sized to cover the default supervisor backoff
+  // (`DEFAULT_WORKER_RESTART_POLICY.backoffBaseMs` = 1000ms) through
+  // a second exponential attempt (backoff = 2000ms at `attempts=1`),
+  // because a worker whose previous crash already consumed one retry
+  // would otherwise respawn AFTER the CLI had exited without a warning
+  // — which the round-12 review surfaced as a user-visible safety
+  // regression on unstable workers, not just on custom policies.
+  // Longer backoffs (attempt 2+ = 4s+, or operator-tuned ceilings) are
+  // still out of scope; this is a warning, not a guarantee, and
+  // operators should cross-check with `koi bg ps`.
+  const RESPAWN_POLL_BUDGET_MS = 4_000;
+  const RESPAWN_POLL_INTERVAL_MS = 250;
+  const pollDeadline = Date.now() + RESPAWN_POLL_BUDGET_MS;
+  while (Date.now() < pollDeadline) {
+    await Bun.sleep(RESPAWN_POLL_INTERVAL_MS);
+    const check = await registry.get(workerId(id));
+    if (check === undefined) continue;
+    if (check.pid !== record.pid && (check.status === "running" || check.status === "starting")) {
+      process.stderr.write(
+        `Note: session ${id} was respawned by the supervisor's restart policy ` +
+          `(new pid ${check.pid}). \`koi bg kill\` signals a single process; ` +
+          `to prevent respawn, configure the supervisor with a 'temporary' restart policy ` +
+          `or stop the supervisor itself.\n`,
+      );
+      break;
+    }
   }
   return ExitCode.OK;
 }

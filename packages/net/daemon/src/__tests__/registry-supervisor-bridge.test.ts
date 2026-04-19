@@ -285,6 +285,63 @@ describe("attachRegistry", () => {
     await bridge.close();
   });
 
+  it("keeps crashed when signaledAt is a future timestamp (clock skew / corruption)", async () => {
+    // A `signaledAt` in the future produces a negative `Date.now() -
+    // signaledAt`. Without a lower-bound check, that trivially satisfies
+    // `age <= TERMINATING_FRESHNESS_MS` and the bridge would downgrade a
+    // genuine crash forever. Defense against NTP step, DST shifts,
+    // manual edits, or attacker-planted records.
+    const { backend, crash } = createFakeBackend();
+    const supResult = createSupervisor({
+      maxWorkers: 4,
+      shutdownDeadlineMs: 1000,
+      backends: { "in-process": backend },
+      restart: {
+        restart: "temporary",
+        maxRestarts: 0,
+        maxRestartWindowMs: 1000,
+        backoffBaseMs: 10,
+        backoffCeilingMs: 100,
+      },
+    });
+    if (!supResult.ok) return;
+    const supervisor = supResult.value;
+
+    const registry = createFileSessionRegistry({ dir });
+    const bridge = attachRegistry({ supervisor, registry });
+
+    const id = workerId("w-future-sig");
+    await registry.register({
+      workerId: id,
+      agentId: agentId("a"),
+      pid: 999,
+      status: "starting",
+      startedAt: Date.now(),
+      logPath: "",
+      command: ["noop"],
+      backendKind: "in-process",
+    });
+    await supervisor.start({
+      workerId: id,
+      agentId: agentId("a"),
+      command: ["noop"],
+    });
+    await waitForStatus(registry, id, "running");
+
+    // Future timestamp — age would be negative.
+    const claim = await registry.update(id, {
+      status: "terminating",
+      signaledAt: Date.now() + 24 * 60 * 60 * 1000, // 1d in the future
+    });
+    expect(claim.ok).toBe(true);
+
+    crash(id);
+    await waitForStatus(registry, id, "crashed");
+
+    await supervisor.shutdown("test-done");
+    await bridge.close();
+  });
+
   it("keeps crashed when terminating claim has no signaledAt", async () => {
     // Legacy / hand-edited records may carry status=terminating without a
     // signaledAt timestamp. Without proof of recency the bridge must treat

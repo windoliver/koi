@@ -103,14 +103,20 @@ export function attachRegistry(config: AttachRegistryConfig): RegistryBridge {
       // sending the signal would otherwise silently convert a later
       // genuine crash into `exited` forever — the freshness guard keeps
       // the downgrade scoped to the kill sequence it was written for.
+      //
+      // Age must be both upper- and LOWER-bounded: an unbounded-below
+      // check would accept a negative age produced by wall-clock
+      // rollback (NTP step, DST nonsense, corrupt/future `signaledAt`
+      // from a manual edit) and silently mask genuine crashes for as
+      // long as the clock stayed behind. Require `age >= 0` so any
+      // non-monotonic clock movement fails safe to `crashed`.
       if (current?.status === "terminating") {
         const signaledAt = current.signaledAt;
-        if (
-          signaledAt !== undefined &&
-          Number.isFinite(signaledAt) &&
-          Date.now() - signaledAt <= TERMINATING_FRESHNESS_MS
-        ) {
-          status = "exited";
+        if (signaledAt !== undefined && Number.isFinite(signaledAt)) {
+          const age = Date.now() - signaledAt;
+          if (age >= 0 && age <= TERMINATING_FRESHNESS_MS) {
+            status = "exited";
+          }
         }
       }
     }
