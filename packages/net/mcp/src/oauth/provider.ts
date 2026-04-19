@@ -95,6 +95,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   // it can clear stored tokens and surface onReauthNeeded instead of
   // looping forever on transient classification.
   let lastDcrTerminal = false;
+  // True when getClient attempted a DCR registration that did not
+  // succeed (terminal OR transient). startAuthFlow uses this to
+  // suppress a `dcr_unavailable` overwrite of a more specific
+  // `dcr_failed` reason already reported inside getClient.
+  let lastDcrAttempted = false;
 
   async function getMetadata(): Promise<AuthServerMetadata | undefined> {
     if (cachedMetadata !== undefined) return cachedMetadata;
@@ -143,25 +148,40 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return cachedClient;
     }
 
-    // Pre-resolve metadata BEFORE computing the authority-scoped key.
-    // refreshMetadata may surface a different `issuer` than the cached
-    // snapshot (degraded discovery recovery, partial rollout). If we
-    // computed the lockKey against the stale issuer and then refreshed
-    // mid-flight, we'd write the new registration under the WRONG
-    // authority key — subsequent lookups under the recovered issuer
-    // would miss it, re-register, and leak orphans server-side.
-    //
-    // Force the recovery probe up-front when the cached snapshot lacks
-    // registration_endpoint so the entire withLock critical section
-    // operates on one consistent authority.
-    let effectiveMetadata = await getMetadata();
+    // Phase 1: try the persisted client against the CACHED metadata
+    // snapshot first — without forcing rediscovery. This protects
+    // already-onboarded servers during a partial discovery outage:
+    // if discovery temporarily lost `registration_endpoint` but the
+    // stored client still validates against the cached issuer, we
+    // can keep using it without paying for (and potentially failing
+    // on) a rediscovery. The probe is unlocked because reads are
+    // race-tolerant; the lock-protected write path below re-reads.
+    const cachedMetadata = await getMetadata();
+    const cachedAuthority = cachedMetadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
+    if (cachedMetadata !== undefined) {
+      const probe = await readClientInfo(
+        storage,
+        serverName,
+        serverUrl,
+        redirectUri,
+        cachedAuthority,
+      );
+      if (probe !== undefined && isClientFresh(probe, cachedMetadata)) {
+        cachedClient = probe;
+        return probe;
+      }
+    }
+
+    // Phase 2: stored-client miss (or stale). Force a rediscovery when
+    // the cached snapshot lacks registration_endpoint — a degraded
+    // partial-rollout snapshot may have lost it, and we need a fresh
+    // metadata document before declaring DCR unavailable. The
+    // entire withLock critical section below operates on the
+    // post-refresh authority so reads/writes are consistent.
+    let effectiveMetadata = cachedMetadata;
     if (effectiveMetadata?.registrationEndpoint === undefined) {
       effectiveMetadata = await refreshMetadata();
     }
-    // Discriminate persisted DCR records by OAuth authority so two
-    // configs with the same MCP URL + port but different
-    // `authServerMetadataUrl` (or different discovered issuer) get
-    // independent client records.
     const authority = effectiveMetadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
 
@@ -196,6 +216,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // (it refuses to send registration credentials over cleartext).
       // Convert that into a fail-closed terminal so the rest of the
       // auth flow returns false instead of crashing through the provider.
+      lastDcrAttempted = true;
       let result: Awaited<ReturnType<typeof registerDynamicClient>>;
       try {
         result = await registerDynamicClient({
@@ -348,13 +369,21 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
     const client = await getClient();
     if (client === undefined) {
-      // No configured clientId AND no usable registration_endpoint to
-      // DCR against — nothing we can do without operator intervention.
-      // The dcr_failed report (when applicable) was already fired
-      // inside getClient; emit dcr_unavailable when the AS simply
-      // doesn't advertise registration.
-      if (oauthConfig.clientId === undefined && metadata.registrationEndpoint === undefined) {
-        reportFailure({ kind: "dcr_unavailable", serverName });
+      // Suppress `dcr_unavailable` when getClient already attempted DCR
+      // and emitted a more specific `dcr_failed` reason (insecure
+      // endpoint, confidential client, narrowed redirect_uris, etc.).
+      // The CLI shows the last reported reason — overwriting a
+      // concrete DCR rejection with a generic "AS doesn't advertise
+      // registration" would tell operators to add `clientId` instead
+      // of fixing the actual server-side issue.
+      //
+      // Re-read metadata so the registration_endpoint check reflects
+      // the post-recovery snapshot, not a stale pre-refresh one.
+      if (!lastDcrAttempted && oauthConfig.clientId === undefined) {
+        const post = await getMetadata();
+        if (post?.registrationEndpoint === undefined) {
+          reportFailure({ kind: "dcr_unavailable", serverName });
+        }
       }
       return false;
     }
