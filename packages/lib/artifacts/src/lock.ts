@@ -50,7 +50,13 @@ function tryRemoveStaleLock(lockPath: string): boolean {
   }
 }
 
-function acquireLockFile(lockPath: string): number {
+interface AcquiredLock {
+  readonly fd: number;
+  readonly token: string;
+}
+
+function acquireLockFile(lockPath: string): AcquiredLock {
+  const token = `${process.pid}:${crypto.randomUUID()}`;
   let fd: number;
   try {
     fd = openSync(lockPath, "wx");
@@ -72,17 +78,18 @@ function acquireLockFile(lockPath: string): number {
       throw err;
     }
   }
-  return fd;
+  // Write the owner token (PID:UUID) so release can verify ownership before
+  // unlinking. The UUID ensures uniqueness even across PID reuse.
+  writeFileSync(fd, token);
+  return { fd, token };
 }
 
-function releaseLockFile(fd: number, lockPath: string): void {
+function releaseLockFile(lock: AcquiredLock, lockPath: string): void {
   // CRITICAL ordering: unlink BEFORE closing the fd. On POSIX, unlink-while-
   // open is safe — the pathname is removed immediately, but our fd remains
   // valid. If we close first, a successor process can acquire the same path
   // via O_EXCL before we unlink, and our unlink then silently deletes the
-  // successor's lock file (reopening concurrent-writer races). On Windows,
-  // unlink-while-open may fail; the fallback close-then-unlink is still
-  // usable there, with a narrower race window.
+  // successor's lock file (reopening concurrent-writer races).
   let unlinkedSuccessfully = false;
   try {
     if (existsSync(lockPath)) {
@@ -93,15 +100,24 @@ function releaseLockFile(fd: number, lockPath: string): void {
     /* Windows may refuse unlink-while-open; fall through to close + retry. */
   }
   try {
-    closeSync(fd);
+    closeSync(lock.fd);
   } catch {
     /* ignore close errors */
   }
   if (!unlinkedSuccessfully) {
-    // Windows fallback: unlink after close. Race window exists but tiny;
-    // main targets are POSIX.
+    // Windows fallback: close has completed, so the file may now be unlinkable.
+    // A successor could have already acquired the path via O_EXCL in that
+    // window, so we MUST verify the on-disk token still matches ours before
+    // removing it. Otherwise we'd delete the successor's lock.
     try {
-      if (existsSync(lockPath)) unlinkSync(lockPath);
+      if (existsSync(lockPath)) {
+        const onDisk = readFileSync(lockPath, "utf8").trim();
+        if (onDisk === lock.token) {
+          unlinkSync(lockPath);
+        }
+        // If the on-disk token differs, a successor has claimed the path;
+        // leave their lock alone.
+      }
     } catch {
       /* ignore — another process may have already cleaned up */
     }
@@ -111,20 +127,19 @@ function releaseLockFile(fd: number, lockPath: string): void {
 export function acquireLock(dbPath: string, blobDir?: string): () => void {
   // Layer 1a: blobDir lock (always, if provided). Covers :memory: DBs so
   // two in-memory stores cannot share one blob backend.
-  let blobLockFd: number | undefined;
+  let blobLock: AcquiredLock | undefined;
   let blobLockPath: string | undefined;
   if (blobDir !== undefined) {
     blobLockPath = join(blobDir, BLOBDIR_LOCK_NAME);
-    blobLockFd = acquireLockFile(blobLockPath);
-    writeFileSync(blobLockFd, String(process.pid));
+    blobLock = acquireLockFile(blobLockPath);
   }
 
   // Layer 1b: dbPath lock (skipped for :memory:).
   if (isInMemory(dbPath)) {
     const release = (): void => {
-      if (blobLockFd !== undefined && blobLockPath !== undefined) {
-        releaseLockFile(blobLockFd, blobLockPath);
-        blobLockFd = undefined;
+      if (blobLock !== undefined && blobLockPath !== undefined) {
+        releaseLockFile(blobLock, blobLockPath);
+        blobLock = undefined;
       }
     };
     process.once("exit", release);
@@ -133,27 +148,25 @@ export function acquireLock(dbPath: string, blobDir?: string): () => void {
 
   const lockPath = `${dbPath}${LOCK_SUFFIX}`;
 
-  let fd: number;
+  let dbLock: AcquiredLock;
   try {
-    fd = acquireLockFile(lockPath);
+    dbLock = acquireLockFile(lockPath);
   } catch (err) {
     // Failed to acquire dbPath lock — release the blobDir lock we grabbed.
-    if (blobLockFd !== undefined && blobLockPath !== undefined) {
-      releaseLockFile(blobLockFd, blobLockPath);
+    if (blobLock !== undefined && blobLockPath !== undefined) {
+      releaseLockFile(blobLock, blobLockPath);
     }
     throw err;
   }
-
-  writeFileSync(fd, String(process.pid));
 
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
-    releaseLockFile(fd, lockPath);
-    if (blobLockFd !== undefined && blobLockPath !== undefined) {
-      releaseLockFile(blobLockFd, blobLockPath);
-      blobLockFd = undefined;
+    releaseLockFile(dbLock, lockPath);
+    if (blobLock !== undefined && blobLockPath !== undefined) {
+      releaseLockFile(blobLock, blobLockPath);
+      blobLock = undefined;
     }
   };
 

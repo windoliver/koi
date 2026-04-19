@@ -7,7 +7,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { BlobStore } from "@koi/blob-cas";
 
@@ -28,8 +28,37 @@ function readSentinelFromFs(blobDir: string): string | undefined {
   return content || undefined;
 }
 
+/**
+ * Durably write the sentinel file. Uses open+write+fsync+close+fsync-dir
+ * so bootstrap/self-heal survives power loss — a crash after the DB row
+ * commits but before the sentinel is durable would otherwise leave the
+ * store in the operator-repair branch (DB present, sentinel missing,
+ * non-empty store).
+ */
 function writeSentinelToFs(blobDir: string, id: string): void {
-  writeFileSync(join(blobDir, SENTINEL_FILENAME), id, "utf8");
+  const path = join(blobDir, SENTINEL_FILENAME);
+  const data = Buffer.from(id, "utf8");
+  const fd = openSync(path, "w");
+  try {
+    let written = 0;
+    while (written < data.byteLength) {
+      written += writeSync(fd, data, written, data.byteLength - written);
+    }
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  // fsync the parent directory so the filename itself is durable.
+  try {
+    const dirFd = openSync(blobDir, "r");
+    try {
+      fsyncSync(dirFd);
+    } finally {
+      closeSync(dirFd);
+    }
+  } catch {
+    /* Windows doesn't support fsync on directories; tolerate. */
+  }
 }
 
 function writeStoreIdToDb(db: Database, id: string): void {
