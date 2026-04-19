@@ -14,6 +14,14 @@ describe("specCp — -T form (complete)", () => {
     expect(specCp(["cp", "-T", "a"]).kind).toBe("refused");
     expect(specCp(["cp", "-T", "a", "b", "c"]).kind).toBe("refused");
   });
+
+  test("conflicting -T and -t DIR refused (regression)", () => {
+    const result = specCp(["cp", "-T", "-t", "/restricted", "src", "dst"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
+    expect(result.detail).toMatch(/mutually exclusive/);
+  });
 });
 
 describe("specCp — -t DIR form (complete)", () => {
