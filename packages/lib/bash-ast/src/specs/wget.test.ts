@@ -66,6 +66,14 @@ describe("specWget — refused", () => {
     expect(specWget(["wget", "--input-file", "list.txt"]).kind).toBe("refused");
   });
 
+  test("`-O -i` (output filename that looks like -i) is NOT misread (regression)", () => {
+    // The `-i` here is the value of `-O`, not the input-file flag.
+    const result = specWget(["wget", "-O", "-i", "https://example.com/x"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual(["-i"]);
+  });
+
   test("no URL", () => {
     expect(specWget(["wget"]).kind).toBe("refused");
   });

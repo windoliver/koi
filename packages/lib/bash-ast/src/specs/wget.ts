@@ -2,10 +2,20 @@ import { matchesCommand } from "./dispatch-name.js";
 import { type FlagAllowlist, parseFlags } from "./parse-flags.js";
 import type { CommandSemantics, NetworkAccess, SpecResult } from "./types.js";
 
+// `i` and `input-file` are listed in the value allowlist so parseFlags
+// consumes their values correctly (preventing other flags' values that
+// happen to look like `-i...` from being misread). Their presence in
+// `parsed.flags` after parsing triggers a post-parse `unsupported-form`
+// refusal.
 const WGET_ALLOW = {
   bool: new Set(["q", "c", "N"]),
-  value: new Set(["O"]),
+  value: new Set(["O", "i", "input-file"]),
 } as const satisfies FlagAllowlist;
+
+const REFUSED_FLAGS: ReadonlyMap<string, string> = new Map([
+  ["i", "-i"],
+  ["input-file", "--input-file"],
+]);
 
 export function specWget(argv: readonly string[]): SpecResult {
   if (!matchesCommand("wget", argv)) {
@@ -16,19 +26,19 @@ export function specWget(argv: readonly string[]): SpecResult {
     };
   }
 
-  for (const tok of argv.slice(1)) {
-    if (tok === "-i" || tok === "--input-file" || tok.startsWith("--input-file=")) {
-      return {
-        kind: "refused",
-        cause: "unsupported-form",
-        detail: "wget -i/--input-file reads URLs from a file; refused",
-      };
-    }
-  }
-
   const parsed = parseFlags(argv, WGET_ALLOW);
   if (!parsed.ok) {
     return { kind: "refused", cause: "parse-error", detail: parsed.detail };
+  }
+
+  for (const [name, label] of REFUSED_FLAGS) {
+    if (parsed.flags.has(name)) {
+      return {
+        kind: "refused",
+        cause: "unsupported-form",
+        detail: `wget ${label} reads URLs from a file; refused`,
+      };
+    }
   }
 
   if (parsed.positionals.length === 0) {
