@@ -137,6 +137,69 @@ describe("createVisibilityFilter", () => {
       filtered.watch(listener);
       expect(inner.watch).toHaveBeenCalledWith(listener);
     });
+
+    test("delegated methods preserve receiver context", async () => {
+      const entries: RegistryEntry[] = [entry("agent-a")];
+      const inner = {
+        entries,
+        async register(
+          this: { entries: RegistryEntry[] },
+          e: RegistryEntry,
+        ): Promise<RegistryEntry> {
+          this.entries.push(e);
+          return e;
+        },
+        async deregister(
+          this: { entries: RegistryEntry[] },
+          id: RegistryEntry["agentId"],
+        ): Promise<boolean> {
+          const index = this.entries.findIndex((e) => e.agentId === id);
+          if (index < 0) return false;
+          this.entries.splice(index, 1);
+          return true;
+        },
+        async lookup(
+          this: { entries: RegistryEntry[] },
+          id: RegistryEntry["agentId"],
+        ): Promise<RegistryEntry | undefined> {
+          return this.entries.find((e) => e.agentId === id);
+        },
+        async list(
+          this: { entries: RegistryEntry[] },
+          _filter?: RegistryFilter,
+          _visibility?: VisibilityContext,
+        ): Promise<readonly RegistryEntry[]> {
+          return this.entries;
+        },
+        async transition() {
+          return {
+            ok: false as const,
+            error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+          };
+        },
+        async patch() {
+          return {
+            ok: false as const,
+            error: { code: "NOT_FOUND" as const, message: "stub", retryable: false },
+          };
+        },
+        watch() {
+          return () => {};
+        },
+        async [Symbol.asyncDispose]() {},
+      } as unknown as AgentRegistry;
+      const perms = createStubPermissions(() => ({ effect: "allow" }));
+      const filtered = createVisibilityFilter(inner, perms);
+
+      const found = await filtered.lookup(agentId("agent-a"));
+      expect(found?.agentId).toBe(agentId("agent-a"));
+
+      await filtered.register(entry("agent-b"));
+      expect((await filtered.list()).map((e) => e.agentId)).toEqual([
+        agentId("agent-a"),
+        agentId("agent-b"),
+      ]);
+    });
   });
 
   // -----------------------------------------------------------------------
