@@ -59,6 +59,7 @@ export function createGovernanceMiddleware(config: GovernanceMiddlewareConfig): 
   const { backend, controller, cost, onAlert, onViolation, onUsage } = config;
   const alertTracker = createAlertTracker({
     thresholds: config.alertThresholds ?? DEFAULT_ALERT_THRESHOLDS,
+    perVariableThresholds: config.perVariableThresholds,
   });
 
   let requestCounter = 0;

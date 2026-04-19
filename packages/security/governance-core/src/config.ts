@@ -24,6 +24,7 @@ export interface GovernanceMiddlewareConfig {
   readonly controller: GovernanceController;
   readonly cost: CostCalculator;
   readonly alertThresholds?: readonly number[];
+  readonly perVariableThresholds?: Record<string, readonly number[]>;
   readonly onAlert?: AlertCallback;
   readonly onViolation?: ViolationCallback;
   readonly onUsage?: UsageCallback;
@@ -66,6 +67,30 @@ export function validateGovernanceConfig(
           ok: false,
           error: err("alertThresholds must be numbers in (0, 1]", { threshold: t }),
         };
+      }
+    }
+  }
+  if (c.perVariableThresholds !== undefined) {
+    if (typeof c.perVariableThresholds !== "object" || c.perVariableThresholds === null) {
+      return { ok: false, error: err("perVariableThresholds must be an object") };
+    }
+    for (const [variable, thresholds] of Object.entries(c.perVariableThresholds)) {
+      if (!Array.isArray(thresholds)) {
+        return {
+          ok: false,
+          error: err("perVariableThresholds[v] must be an array", { variable }),
+        };
+      }
+      for (const t of thresholds) {
+        if (typeof t !== "number" || !Number.isFinite(t) || t <= 0 || t > 1) {
+          return {
+            ok: false,
+            error: err("perVariableThresholds value must be in (0, 1]", {
+              variable,
+              threshold: t,
+            }),
+          };
+        }
       }
     }
   }

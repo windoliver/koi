@@ -4,6 +4,7 @@ export type AlertCallback = (pctUsed: number, variable: string, reading: SensorR
 
 export interface AlertTrackerConfig {
   readonly thresholds: readonly number[];
+  readonly perVariableThresholds?: Record<string, readonly number[]> | undefined;
 }
 
 export interface AlertTracker {
@@ -16,8 +17,21 @@ export interface AlertTracker {
 }
 
 export function createAlertTracker(config: AlertTrackerConfig): AlertTracker {
-  const sortedThresholds = [...config.thresholds].sort((a, b) => a - b);
+  const sortedGlobal = [...config.thresholds].sort((a, b) => a - b);
+  const sortedPerVar = new Map<string, readonly number[]>();
+  if (config.perVariableThresholds !== undefined) {
+    for (const [v, ts] of Object.entries(config.perVariableThresholds)) {
+      sortedPerVar.set(
+        v,
+        [...ts].sort((a, b) => a - b),
+      );
+    }
+  }
   const fired = new Map<string, Set<string>>();
+
+  function thresholdsFor(variable: string): readonly number[] {
+    return sortedPerVar.get(variable) ?? sortedGlobal;
+  }
 
   function firedKey(variable: string, threshold: number): string {
     return `${variable}@${threshold}`;
@@ -36,7 +50,7 @@ export function createAlertTracker(config: AlertTrackerConfig): AlertTracker {
       if (onAlert === undefined) return;
       const firedSet = getFiredSet(sessionId);
       for (const reading of snapshot.readings) {
-        for (const threshold of sortedThresholds) {
+        for (const threshold of thresholdsFor(reading.name)) {
           const key = firedKey(reading.name, threshold);
           if (reading.utilization >= threshold && !firedSet.has(key)) {
             firedSet.add(key);

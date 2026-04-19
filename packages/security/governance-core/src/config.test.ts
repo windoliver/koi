@@ -64,4 +64,24 @@ describe("validateGovernanceConfig", () => {
   test("DEFAULT_ALERT_THRESHOLDS is [0.8, 0.95]", () => {
     expect(DEFAULT_ALERT_THRESHOLDS).toEqual([0.8, 0.95]);
   });
+
+  test("validateGovernanceConfig accepts valid perVariableThresholds", () => {
+    const result = validateGovernanceConfig({
+      backend: goodBackend,
+      controller: goodController,
+      cost: goodCost,
+      perVariableThresholds: { cost_usd: [0.5, 0.95] },
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("validateGovernanceConfig rejects perVariableThresholds value > 1", () => {
+    const result = validateGovernanceConfig({
+      backend: goodBackend,
+      controller: goodController,
+      cost: goodCost,
+      perVariableThresholds: { cost_usd: [1.5] },
+    });
+    expect(result.ok).toBe(false);
+  });
 });

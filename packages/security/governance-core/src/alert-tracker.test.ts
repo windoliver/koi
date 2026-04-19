@@ -62,4 +62,43 @@ describe("createAlertTracker", () => {
     tracker.checkAndFire("s1", snapshot("cost_usd", 0.9, 1), onAlert);
     expect(onAlert).toHaveBeenCalledTimes(1);
   });
+
+  test("per-variable thresholds override global thresholds", () => {
+    const fired: Array<[number, string]> = [];
+    const tracker = createAlertTracker({
+      thresholds: [0.8],
+      perVariableThresholds: { cost_usd: [0.5, 0.95] },
+    });
+    const snap: GovernanceSnapshot = {
+      timestamp: Date.now(),
+      healthy: true,
+      violations: [],
+      readings: [
+        { name: "cost_usd", current: 0.55, limit: 1.0, utilization: 0.55 },
+        { name: "turn_count", current: 8, limit: 10, utilization: 0.8 },
+      ],
+    };
+    tracker.checkAndFire("s1", snap, (pct, v) => fired.push([pct, v]));
+    expect(fired).toEqual([
+      [0.55, "cost_usd"],
+      [0.8, "turn_count"],
+    ]);
+  });
+
+  test("per-variable threshold dedup is independent from global", () => {
+    const fired: string[] = [];
+    const tracker = createAlertTracker({
+      thresholds: [0.8],
+      perVariableThresholds: { cost_usd: [0.8] },
+    });
+    const snap: GovernanceSnapshot = {
+      timestamp: Date.now(),
+      healthy: true,
+      violations: [],
+      readings: [{ name: "cost_usd", current: 0.85, limit: 1.0, utilization: 0.85 }],
+    };
+    tracker.checkAndFire("s1", snap, (_, v) => fired.push(v));
+    tracker.checkAndFire("s1", snap, (_, v) => fired.push(v));
+    expect(fired).toEqual(["cost_usd"]);
+  });
 });
