@@ -350,7 +350,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     }
 
     // Exchange authorization code for tokens
-    const exchange = await exchangeCode(
+    let exchange = await exchangeCode(
       callbackResult.code,
       pkce.verifier,
       redirectUri,
@@ -358,6 +358,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       client.clientId,
       resourceIndicator,
     );
+
+    // RFC 8707 compatibility shim mirrored from the refresh path: if we
+    // sent `resource` and the AS rejected it (`invalid_target` /
+    // `invalid_request`), retry the exchange once without `resource`
+    // before failing closed. Without this, fresh auth against a legacy
+    // AS hard-fails on every login even though the same server may have
+    // worked before this branch added the default `resource`.
+    if (!exchange.ok && exchange.resourceRejected && resourceIndicator !== undefined) {
+      exchange = await exchangeCode(
+        callbackResult.code,
+        pkce.verifier,
+        redirectUri,
+        metadata.tokenEndpoint,
+        client.clientId,
+        undefined,
+      );
+    }
 
     if (!exchange.ok) {
       // Only invalidate the persisted DCR client on an explicit
@@ -467,10 +484,16 @@ function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | u
  * from any other failure (transient 5xx, timeout, malformed response,
  * resource rejection) so the provider can self-heal a revoked DCR
  * client without churning healthy registrations on unrelated outages.
+ * `resourceRejected` lets the caller retry once without RFC 8707
+ * `resource` against a legacy AS, mirroring the refresh-path shim.
  */
 type ExchangeResult =
   | { readonly ok: true; readonly tokens: OAuthTokens }
-  | { readonly ok: false; readonly invalidClient: boolean };
+  | {
+      readonly ok: false;
+      readonly invalidClient: boolean;
+      readonly resourceRejected: boolean;
+    };
 
 async function exchangeCode(
   code: string,
@@ -503,8 +526,12 @@ async function exchangeCode(
     });
 
     if (!response.ok) {
-      const invalidClient = await isInvalidClientResponse(response);
-      return { ok: false, invalidClient };
+      const errorCode = await readExchangeErrorCode(response);
+      return {
+        ok: false,
+        invalidClient: errorCode === "invalid_client",
+        resourceRejected: errorCode === "invalid_target" || errorCode === "invalid_request",
+      };
     }
 
     const data = (await response.json()) as {
@@ -516,7 +543,7 @@ async function exchangeCode(
     };
 
     if (typeof data.access_token !== "string") {
-      return { ok: false, invalidClient: false };
+      return { ok: false, invalidClient: false, resourceRejected: false };
     }
 
     return {
@@ -531,22 +558,21 @@ async function exchangeCode(
       },
     };
   } catch {
-    return { ok: false, invalidClient: false };
+    return { ok: false, invalidClient: false, resourceRejected: false };
   }
 }
 
 /**
- * RFC 6749 §5.2 token-error responses always carry an `error` field. If
- * the body is unparseable or the field is absent, default to "not
- * invalid_client" so transient framing problems do not destroy the
- * persisted DCR client. invalid_client is the only value that
- * unambiguously signals the client identity has been rejected.
+ * Read RFC 6749 §5.2 token-error `error` field. Returns undefined when
+ * the body is unparseable or the field is absent so transient framing
+ * problems do not get misclassified as client revocation or resource
+ * rejection.
  */
-async function isInvalidClientResponse(response: Response): Promise<boolean> {
+async function readExchangeErrorCode(response: Response): Promise<string | undefined> {
   try {
     const body = (await response.clone().json()) as { readonly error?: unknown };
-    return body.error === "invalid_client";
+    return typeof body.error === "string" ? body.error : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

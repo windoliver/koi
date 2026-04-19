@@ -1539,6 +1539,58 @@ describe("createOAuthAuthProvider", () => {
     expect(await provider.token()).toBe("fresh");
   });
 
+  test("retries exchange without resource on invalid_target (legacy-AS compatibility)", async () => {
+    // Mirror of the refresh-path RFC 8707 shim. A legacy AS that
+    // rejects `resource` with invalid_target on initial auth should
+    // not hard-fail every login — the provider retries the code
+    // exchange once without `resource`, just like refresh does.
+    const storage = createMockStorage();
+    let exchangeCalls = 0;
+    let secondExchangeHadResource: boolean | undefined;
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        exchangeCalls += 1;
+        const body = new URLSearchParams((init?.body as string) ?? "");
+        if (exchangeCalls === 1) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "invalid_target" }), { status: 400 }),
+          );
+        }
+        secondExchangeHadResource = body.has("resource");
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "legacy-fresh-auth",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "static",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(true);
+    expect(exchangeCalls).toBe(2);
+    expect(secondExchangeHadResource).toBe(false);
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",
