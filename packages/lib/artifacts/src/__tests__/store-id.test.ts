@@ -101,4 +101,28 @@ describe("store-id fingerprint", () => {
       /missing on a non-empty store/,
     );
   });
+
+  test("both missing + blob backend already has blobs → refuses to bootstrap", async () => {
+    // Seed the blob backend with a pre-existing blob (as if from a previous
+    // store whose DB was lost). Self-healing/bootstrap must NOT claim these
+    // bytes as our own — sweep would eventually delete them.
+    const blobStore = createFilesystemBlobStore(blobDir);
+    await blobStore.put(new TextEncoder().encode("previous-owner"));
+    await expect(ensureStoreIdPair({ db, blobDir, blobStore })).rejects.toThrow(
+      /missing on a non-empty store/,
+    );
+  });
+
+  test("DB present + sentinel missing + blob backend has blobs → refuses to heal", async () => {
+    // Seed with a real pair, then corrupt: remove the sentinel AND seed extra
+    // blobs that we shouldn't claim. Even with empty DB rows, non-empty blob
+    // backend blocks auto-heal.
+    const blobStore = createFilesystemBlobStore(blobDir);
+    await ensureStoreIdPair({ db, blobDir, blobStore });
+    rmSync(join(blobDir, ".store-id"));
+    await blobStore.put(new TextEncoder().encode("previous-owner-bytes"));
+    await expect(ensureStoreIdPair({ db, blobDir, blobStore })).rejects.toThrow(
+      /missing store-id sentinel/,
+    );
+  });
 });

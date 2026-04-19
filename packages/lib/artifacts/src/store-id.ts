@@ -45,6 +45,13 @@ function dbHasArtifactsOrPending(db: Database): boolean {
   return counts.total > 0;
 }
 
+async function blobStoreHasAnyBlobs(blobStore: BlobStore): Promise<boolean> {
+  for await (const _hash of blobStore.list()) {
+    return true;
+  }
+  return false;
+}
+
 export async function ensureStoreIdPair(args: {
   readonly db: Database;
   readonly blobDir: string;
@@ -61,11 +68,16 @@ export async function ensureStoreIdPair(args: {
   }
 
   // Asymmetric / missing cases. A one-sided store_id is only safe to self-
-  // heal when the store is provably empty — that matches the crashed-mid-
+  // heal when BOTH sides are provably empty — that matches the crashed-mid-
   // bootstrap shape where the first side was written but the second side
-  // didn't land before the process died. If the store contains any artifacts
-  // or pending work, a missing side is operator-grade repair.
-  const storeIsEmpty = !dbHasArtifactsOrPending(args.db);
+  // didn't land before the process died. If either SQLite OR the blob
+  // backend has any content, a missing side is operator-grade repair:
+  //   - DB non-empty → metadata exists, sentinel loss is restore territory
+  //   - Blob backend non-empty → a previous store owned those bytes, and
+  //     self-healing would silently re-pair them to this DB, letting later
+  //     sweeps delete them
+  const storeIsEmpty =
+    !dbHasArtifactsOrPending(args.db) && !(await blobStoreHasAnyBlobs(args.blobStore));
 
   if (dbId !== undefined && sentinelId === undefined) {
     if (storeIsEmpty) {
