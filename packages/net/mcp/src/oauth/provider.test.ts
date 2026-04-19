@@ -1475,6 +1475,70 @@ describe("createOAuthAuthProvider", () => {
     expect(parsed.refreshToken).toBe("rt-precious");
   });
 
+  test("refresh recovers after discovery comes back online (no manager rebuild)", async () => {
+    // Critical regression: if a provider was first invoked while
+    // discovery was down, the cached TokenManager used to capture
+    // metadata=undefined and then skip every refresh forever — even
+    // after discovery recovered. The fix passes a lazy getMetadata()
+    // resolver to TokenManager so each refresh re-discovers.
+    const storage = createMockStorage();
+    const { computeServerKey } = await import("./tokens.js");
+    await storage.set(
+      computeServerKey("recovers", "https://mcp.example.com"),
+      JSON.stringify({
+        accessToken: "expired",
+        refreshToken: "rt",
+        expiresAt: Date.now() - 1000,
+      }),
+    );
+
+    const goodMetadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    let discoveryUp = false;
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(
+          discoveryUp
+            ? new Response(JSON.stringify(goodMetadata), { status: 200 })
+            : new Response(null, { status: 503 }),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "fresh" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "recovers",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "static",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    // 1) Discovery is down at first call → token() returns undefined
+    //    transient, but does NOT clear the refresh token.
+    expect(await provider.token()).toBeUndefined();
+    const stored = await storage.get(computeServerKey("recovers", "https://mcp.example.com"));
+    expect(stored).toBeDefined();
+
+    // 2) Discovery recovers. The SAME provider instance must now
+    //    succeed on refresh — without rebuilding the manager.
+    discoveryUp = true;
+    expect(await provider.token()).toBe("fresh");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

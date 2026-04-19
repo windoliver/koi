@@ -210,12 +210,15 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   async function getTokenManager(): Promise<TokenManager> {
     if (tokenManager !== undefined) return tokenManager;
-    const metadata = await getMetadata();
+    // Pass `getMetadata` (lazy) instead of the snapshot. A provider
+    // built while discovery was briefly down would otherwise capture
+    // metadata: undefined into the cached manager and skip every
+    // refresh forever, even after discovery recovered.
     tokenManager = createTokenManager({
       serverName,
       serverUrl,
       storage,
-      metadata,
+      getMetadata,
       resource: resourceIndicator,
       // Lazy: a passive `token()` call with no stored tokens must NOT
       // trigger DCR. Resolution fires only inside the refresh path,

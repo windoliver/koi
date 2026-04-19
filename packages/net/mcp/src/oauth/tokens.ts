@@ -28,7 +28,21 @@ export interface TokenManagerOptions {
   readonly serverName: string;
   readonly serverUrl: string;
   readonly storage: SecureStorage;
+  /**
+   * Eager metadata snapshot. Mutually exclusive with `getMetadata` —
+   * `getMetadata` is preferred for long-lived providers because it
+   * lets refresh re-discover after a transient outage at construction
+   * time without rebuilding the manager.
+   */
   readonly metadata?: AuthServerMetadata | undefined;
+  /**
+   * Lazy metadata resolver. Invoked per-refresh attempt so a provider
+   * created while discovery was briefly unavailable can recover once
+   * discovery starts succeeding — without this, a manager built with
+   * `metadata: undefined` would skip every refresh forever even after
+   * the AS came back online.
+   */
+  readonly getMetadata?: (() => Promise<AuthServerMetadata | undefined>) | undefined;
   /**
    * Eager client_id, when known up-front (configured static client). Mutually
    * exclusive with `getClientId` — `getClientId` is preferred for DCR flows
@@ -89,6 +103,13 @@ const REFRESH_TIMEOUT_MS = 15_000;
 export function createTokenManager(options: TokenManagerOptions): TokenManager {
   const { serverName, serverUrl, storage, metadata, clientId, getClientId, onInvalidClient } =
     options;
+  // Resolve metadata fresh on each refresh so a manager built while
+  // discovery was briefly down can recover. Falls back to the
+  // construction-time snapshot when no resolver was supplied.
+  const resolveMetadata = async (): Promise<AuthServerMetadata | undefined> => {
+    if (options.getMetadata !== undefined) return options.getMetadata();
+    return metadata;
+  };
   // Lazy resolver fallback: static `clientId` is treated as always-ok.
   // Returns the same discriminated union as the DCR path so the refresh
   // flow has one branching point for transient/terminal/ok.
@@ -162,7 +183,8 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       await storage.withLock(storageKey, () => storage.delete(storageKey));
       return undefined;
     }
-    if (metadata === undefined) {
+    const currentMetadata = await resolveMetadata();
+    if (currentMetadata === undefined) {
       return undefined;
     }
 
@@ -200,7 +222,7 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
 
     let refreshResult = await refreshAccessToken(
       usedRefreshToken,
-      metadata.tokenEndpoint,
+      currentMetadata.tokenEndpoint,
       refreshClientId,
       resource,
     );
@@ -219,7 +241,7 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     ) {
       refreshResult = await refreshAccessToken(
         usedRefreshToken,
-        metadata.tokenEndpoint,
+        currentMetadata.tokenEndpoint,
         refreshClientId,
         undefined,
       );
