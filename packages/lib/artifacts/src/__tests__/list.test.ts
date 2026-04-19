@@ -25,13 +25,14 @@ describe("listArtifacts", () => {
   });
 
   async function save(sid: string, name: string, text: string, tags?: readonly string[]) {
-    const r = await store.saveArtifact({
+    const input = {
       sessionId: sessionId(sid),
       name,
       data: new TextEncoder().encode(text),
       mimeType: "text/plain",
-      tags,
-    });
+      ...(tags !== undefined ? { tags } : {}),
+    };
+    const r = await store.saveArtifact(input);
     if (!r.ok) throw new Error(`save failed: ${JSON.stringify(r.error)}`);
     return r.value;
   }
