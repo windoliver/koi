@@ -63,13 +63,20 @@ export function specCurl(argv: readonly string[]): SpecResult {
     if (dispatched.read !== undefined) reads.push(dispatched.read);
   }
 
-  // -o / --output and -d / --data may appear multiple times; collapsing to
-  // parsed.flags.get(...) would under-report writes/reads. Scan argv directly
-  // to capture every occurrence.
-  for (const outValue of collectRepeatedFlag(argv, "o", "output")) {
+  // -o / --output and -d / --data may appear multiple times; the regular
+  // parsed.flags.get(...) only retains the LAST occurrence and would
+  // under-report writes/reads. Use valueOccurrences (collected during the
+  // real parse) so values that belong to other flags are not misread.
+  for (const outValue of [
+    ...(parsed.valueOccurrences.get("o") ?? []),
+    ...(parsed.valueOccurrences.get("output") ?? []),
+  ]) {
     writes.push(outValue);
   }
-  for (const dataValue of collectRepeatedFlag(argv, "d", "data")) {
+  for (const dataValue of [
+    ...(parsed.valueOccurrences.get("d") ?? []),
+    ...(parsed.valueOccurrences.get("data") ?? []),
+  ]) {
     if (dataValue.startsWith("@")) reads.push(dataValue.slice(1));
   }
 
@@ -83,46 +90,6 @@ export function specCurl(argv: readonly string[]): SpecResult {
     return { kind: "partial", semantics, reason: reasons.join(";") };
   }
   return { kind: "complete", semantics };
-}
-
-/**
- * Walk argv and collect every value passed to a value-taking flag whose
- * short form is `-<short>` (e.g. `-d`) and long form is `--<long>` (e.g.
- * `--data`). Recognises all standard forms:
- *   `-<short> VALUE` (separate)
- *   `-<short>VALUE`  (attached short, no space)
- *   `--<long> VALUE` (separate long)
- *   `--<long>=VALUE` (long with equals)
- */
-function collectRepeatedFlag(
-  argv: readonly string[],
-  short: string,
-  long: string,
-): readonly string[] {
-  const out: string[] = [];
-  const shortPrefix = `-${short}`;
-  const longExact = `--${long}`;
-  const longEq = `--${long}=`;
-  for (let i = 1; i < argv.length; i += 1) {
-    const tok = argv[i];
-    if (tok === undefined) continue;
-    if (tok === shortPrefix || tok === longExact) {
-      const next = argv[i + 1];
-      if (next !== undefined) {
-        out.push(next);
-        i += 1;
-      }
-      continue;
-    }
-    if (tok.startsWith(shortPrefix) && tok.length > shortPrefix.length && !tok.startsWith("--")) {
-      out.push(tok.slice(shortPrefix.length));
-      continue;
-    }
-    if (tok.startsWith(longEq)) {
-      out.push(tok.slice(longEq.length));
-    }
-  }
-  return out;
 }
 
 interface UrlDispatchOk {

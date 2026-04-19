@@ -122,6 +122,22 @@ describe("specCurl — http(s)", () => {
     if (result.kind !== "complete") return;
     expect(result.semantics.reads).toEqual(["payload.bin"]);
   });
+
+  test("value of -X that looks like -d... is NOT misread as -d (regression)", () => {
+    // `-X` is a value flag; its argument is the next token. Even if that
+    // token starts with `-d`, it's the HTTP method string, not a -d flag.
+    const result = specCurl(["curl", "-X", "-d@hack", "https://x"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual([]);
+  });
+
+  test("value of -H that looks like -o... is NOT misread as -o (regression)", () => {
+    const result = specCurl(["curl", "-H", "-o/tmp/leak", "https://x"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual([]);
+  });
 });
 
 describe("specCurl — ftp(s)", () => {

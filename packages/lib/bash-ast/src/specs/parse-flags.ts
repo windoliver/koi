@@ -25,14 +25,32 @@ export type ParseFlagsResult =
   | {
       readonly ok: true;
       readonly flags: ReadonlyMap<string, string | true>;
+      /**
+       * Every occurrence of every value-taking flag, in argv order. Use
+       * `.get(name) ?? []` to read all values for a repeating flag (e.g.
+       * curl `-d`/`-o`); the regular `flags.get(name)` only retains the
+       * last occurrence.
+       */
+      readonly valueOccurrences: ReadonlyMap<string, readonly string[]>;
       readonly positionals: readonly string[];
     }
   | { readonly ok: false; readonly detail: string };
 
 export function parseFlags(argv: readonly string[], allow: FlagAllowlist): ParseFlagsResult {
   const flags = new Map<string, string | true>();
+  const valueOccurrences = new Map<string, string[]>();
   const positionals: string[] = [];
   let cutoff = false; // justified let: mutable parser state machine
+
+  function recordValue(name: string, value: string): void {
+    flags.set(name, value);
+    const list = valueOccurrences.get(name);
+    if (list === undefined) {
+      valueOccurrences.set(name, [value]);
+    } else {
+      list.push(value);
+    }
+  }
 
   for (let i = 1; i < argv.length; i += 1) {
     // justified let: index mutation in loop
@@ -52,7 +70,8 @@ export function parseFlags(argv: readonly string[], allow: FlagAllowlist): Parse
     if (tok.startsWith("--")) {
       const longResult = consumeLong(tok, argv, i, allow);
       if (!longResult.ok) return longResult;
-      flags.set(longResult.name, longResult.value);
+      if (typeof longResult.value === "string") recordValue(longResult.name, longResult.value);
+      else flags.set(longResult.name, longResult.value);
       i = longResult.nextIndex;
       continue;
     }
@@ -60,7 +79,10 @@ export function parseFlags(argv: readonly string[], allow: FlagAllowlist): Parse
     if (tok.startsWith("-") && tok.length > 1) {
       const shortResult = consumeShort(tok, argv, i, allow);
       if (!shortResult.ok) return shortResult;
-      for (const [name, value] of shortResult.flags) flags.set(name, value);
+      for (const [name, value] of shortResult.flags) {
+        if (typeof value === "string") recordValue(name, value);
+        else flags.set(name, value);
+      }
       i = shortResult.nextIndex;
       continue;
     }
@@ -68,7 +90,7 @@ export function parseFlags(argv: readonly string[], allow: FlagAllowlist): Parse
     positionals.push(tok);
   }
 
-  return { ok: true, flags, positionals };
+  return { ok: true, flags, valueOccurrences, positionals };
 }
 
 interface LongOk {
