@@ -203,6 +203,49 @@ describe("createRuntime", () => {
     expect(abortedAtInvocation).toBe(false);
   });
 
+  test("activityTimeout-aborted stream propagates stopBlocked via synthetic turn_end", async () => {
+    // The runtime-level activity-timeout wrapper (#1638) emits a synthetic
+    // turn_end with `stopBlocked: true` before the terminal done. Consumers
+    // that process the event stream (notably createKoi's engine loop) use
+    // this marker to run onAfterTurn with ctx.stopBlocked=true, so
+    // middleware does NOT treat the aborted turn as a successful
+    // completion.
+    //
+    // (The runtime's own session finalizer running onAfterTurn without
+    // stopBlocked is a pre-existing behaviour that predates this change
+    // and applies to every interruption path — user cancel, errors, etc.
+    // Reliable stopBlocked propagation through the finalizer requires a
+    // bigger refactor tracked separately.)
+    const hangingAdapter: EngineAdapter = {
+      engineId: "hanging",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "text_delta", delta: "start" };
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const runtime = createRuntime({
+      adapter: hangingAdapter,
+      activityTimeout: { idleWarnMs: 20, idleTerminateMs: 50 },
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
+      events.push(ev);
+      if (events.length > 20) break;
+    }
+
+    const turnEnd = events.find(
+      (e): e is EngineEvent & { readonly kind: "turn_end" } => e.kind === "turn_end",
+    );
+    expect(turnEnd).toBeDefined();
+    expect(turnEnd?.stopBlocked).toBe(true);
+  });
+
   test("activityTimeout replaces wall-clock with inactivity-based termination", async () => {
     let terminated: { reason: string; elapsedMs: number } | undefined;
     const hangingAdapter: EngineAdapter = {
