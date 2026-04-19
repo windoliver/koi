@@ -3265,7 +3265,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           });
           break;
         case "system:model": {
-          const lines = [`Model: ${modelName}`, `Provider: ${provider}`];
+          const lines = [`Model: ${currentModelBox.current}`, `Provider: ${provider}`];
           if (fallbackModels.length > 0) {
             lines.push(`Fallback: ${fallbackModels.join(", ")}`);
           }
