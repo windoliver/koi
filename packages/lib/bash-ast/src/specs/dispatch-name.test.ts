@@ -6,9 +6,10 @@ describe("matchesCommand", () => {
     expect(matchesCommand("rm", ["rm", "foo"])).toBe(true);
   });
 
-  test("matches absolute path-qualified command", () => {
-    expect(matchesCommand("rm", ["/bin/rm", "foo"])).toBe(true);
-    expect(matchesCommand("curl", ["/usr/local/bin/curl", "url"])).toBe(true);
+  test("REJECTS absolute path-qualified command (basename match is unsafe; /tmp/rm could be a wrapper)", () => {
+    expect(matchesCommand("rm", ["/bin/rm", "foo"])).toBe(false);
+    expect(matchesCommand("curl", ["/usr/local/bin/curl", "url"])).toBe(false);
+    expect(matchesCommand("rm", ["/tmp/rm", "foo"])).toBe(false);
   });
 
   test("REJECTS relative path-qualified command (likely wrapper)", () => {

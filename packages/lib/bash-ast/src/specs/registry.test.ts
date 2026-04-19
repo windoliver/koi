@@ -100,9 +100,10 @@ describe("lookupSpec", () => {
     expect(lookupSpec(BUILTIN_SPECS, "rm")).toBeDefined();
   });
 
-  test("matches absolute path-qualified command (regression)", () => {
-    expect(lookupSpec(BUILTIN_SPECS, "/bin/rm")).toBeDefined();
-    expect(lookupSpec(BUILTIN_SPECS, "/usr/local/bin/curl")).toBeDefined();
+  test("REJECTS absolute path-qualified command (consumer must verify executable identity)", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "/bin/rm")).toBeUndefined();
+    expect(lookupSpec(BUILTIN_SPECS, "/usr/local/bin/curl")).toBeUndefined();
+    expect(lookupSpec(BUILTIN_SPECS, "/tmp/rm")).toBeUndefined();
   });
 
   test("REJECTS relative path-qualified command (likely wrapper)", () => {
@@ -111,15 +112,11 @@ describe("lookupSpec", () => {
     expect(lookupSpec(BUILTIN_SPECS, "../bin/tar")).toBeUndefined();
   });
 
-  test("returns the SAME function whether bare or path-qualified", () => {
-    expect(lookupSpec(BUILTIN_SPECS, "/bin/rm")).toBe(lookupSpec(BUILTIN_SPECS, "rm"));
-  });
-
   test("returns undefined for unregistered command", () => {
     expect(lookupSpec(BUILTIN_SPECS, "git")).toBeUndefined();
   });
 
-  test("returns undefined for argv0 = '/' (no basename)", () => {
+  test("returns undefined for argv0 = '/' (path-qualified)", () => {
     expect(lookupSpec(BUILTIN_SPECS, "/")).toBeUndefined();
   });
 

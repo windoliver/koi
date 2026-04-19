@@ -76,11 +76,11 @@ describe("specRm — refused", () => {
     expect(result.cause).toBe("parse-error");
   });
 
-  test("accepts path-qualified /bin/rm (regression)", () => {
+  test("REJECTS path-qualified /bin/rm (consumer must canonicalize and pass bare name)", () => {
     const result = specRm(["/bin/rm", "foo"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
-    expect(result.semantics.writes).toEqual(["foo"]);
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
   });
 
   test("REJECTS relative path-qualified ./rm (likely wrapper)", () => {

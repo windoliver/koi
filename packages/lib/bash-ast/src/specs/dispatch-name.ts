@@ -1,30 +1,17 @@
-import { posixBasename } from "./posix-basename.js";
-
 /**
- * Returns `true` when `argv[0]` should dispatch to the spec for `expected`.
+ * Returns `true` when `argv[0]` is exactly the bare `expected` command name.
  *
- * Accepts:
- *   - bare command names: `rm`, `cp`, `curl`
- *   - absolute system paths: `/bin/rm`, `/usr/bin/curl`, `/usr/local/bin/tar`
+ * Path-qualified executables (`/bin/rm`, `/tmp/rm`, `./rm`, `../bin/rm`) are
+ * REFUSED — the spec layer cannot tell `/usr/bin/curl` from `/tmp/curl` (a
+ * wrapper) just from a basename match, and reporting builtin semantics for
+ * an arbitrary executable can hide side effects that the wrapper performs.
  *
- * Refuses:
- *   - relative paths: `./rm`, `../bin/rm`, `bin/curl` (likely user wrappers
- *     that shouldn't inherit trusted builtin semantics; consumer should
- *     handle these via exact-argv `Run(...)` rules)
- *   - empty/undefined argv[0]
- *   - any argv[0] whose basename is the empty string or `/`
- *
- * NOTE: even for absolute paths, this helper only checks the basename. A
- * consumer that uses these specs for authorization MUST additionally verify
- * the executable identity (canonicalize symlinks, allowlist paths, etc.).
- * `/usr/local/bin/curl` may be a wrapper masquerading as the system curl.
- * The spec layer cannot distinguish; that is a consumer-side concern.
+ * Consumers that want to dispatch a path-qualified invocation to a builtin
+ * spec MUST first verify the executable identity (canonicalize symlinks,
+ * resolve against a vetted PATH/allowlist) and then pass the bare command
+ * name to the spec. The spec layer intentionally does not perform that
+ * trust check.
  */
 export function matchesCommand(expected: string, argv: readonly string[]): boolean {
-  const head = argv[0];
-  if (head === undefined || head === "") return false;
-  if (!head.includes("/")) return head === expected;
-  if (!head.startsWith("/")) return false;
-  const base = posixBasename(head);
-  return base.ok && base.value === expected;
+  return argv[0] === expected;
 }

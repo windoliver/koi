@@ -3,7 +3,6 @@ import { specChown } from "./chown.js";
 import { specCp } from "./cp.js";
 import { specCurl } from "./curl.js";
 import { specMv } from "./mv.js";
-import { posixBasename } from "./posix-basename.js";
 import { specRm } from "./rm.js";
 import { specScp } from "./scp.js";
 import { specSsh } from "./ssh.js";
@@ -71,23 +70,20 @@ export function registerSpec(reg: Map<string, CommandSpec>, name: string, fn: Co
 }
 
 /**
- * Look up a spec for `argv[0]`. Accepts bare command names (`rm`) and
- * absolute system paths (`/bin/rm`); refuses relative paths (`./rm`,
- * `../bin/rm`) which are likely user wrappers and should not inherit
- * trusted builtin semantics. See `matchesCommand` for the full policy.
+ * Look up a spec by bare command name. Path-qualified `argv[0]`
+ * (`/bin/rm`, `./rm`, `../bin/rm`) returns `undefined` — the spec layer
+ * cannot tell `/usr/bin/curl` from `/tmp/curl` (a wrapper) and emitting
+ * builtin semantics for an arbitrary executable can hide side effects.
  *
- * NOTE: even for absolute paths, this only checks the basename. A
- * consumer using these specs for authorization MUST additionally verify
- * the executable identity (canonicalize symlinks, allowlist paths).
+ * Consumers that want to dispatch path-qualified executables MUST first
+ * verify the executable identity (canonicalize symlinks, resolve against
+ * a vetted PATH/allowlist) and then call `lookupSpec(reg, "rm")` with
+ * the bare name. This boundary is intentional.
  */
 export function lookupSpec(
   reg: ReadonlyMap<string, CommandSpec>,
   argv0: string | undefined,
 ): CommandSpec | undefined {
-  if (argv0 === undefined || argv0 === "") return undefined;
-  if (!argv0.includes("/")) return reg.get(argv0);
-  if (!argv0.startsWith("/")) return undefined;
-  const base = posixBasename(argv0);
-  if (!base.ok) return undefined;
-  return reg.get(base.value);
+  if (argv0 === undefined || argv0 === "" || argv0.includes("/")) return undefined;
+  return reg.get(argv0);
 }
