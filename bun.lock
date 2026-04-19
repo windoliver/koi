@@ -559,6 +559,13 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/watch-patterns": {
+      "name": "@koi/watch-patterns",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/meta/cli": {
       "name": "@koi-agent/cli",
       "version": "0.1.0",
@@ -1388,6 +1395,8 @@
     "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
+
+    "@koi/watch-patterns": ["@koi/watch-patterns@workspace:packages/lib/watch-patterns"],
 
     "@manypkg/find-root": ["@manypkg/find-root@1.1.0", "", { "dependencies": { "@babel/runtime": "^7.5.5", "@types/node": "^12.7.1", "find-up": "^4.1.0", "fs-extra": "^8.1.0" } }, "sha512-mki5uBvhHzO8kYYix/WRy2WX8S3B5wdVSc9D6KcU5lQNglP2yt58/VfLuAK49glRXChosY8ap2oJ1qgma3GUVA=="],
 
