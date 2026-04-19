@@ -30,21 +30,36 @@ const HASH_HEX_LEN = 64; // SHA-256 hex
 const HASH_SHARD_LEN = 2;
 
 /**
- * Best-effort directory fsync. Some platforms (Windows) don't support fsync
- * on directories; those errors are swallowed since the Linux/macOS path is
- * the primary target. On Linux/macOS a successful `fsync(dir_fd)` after a
- * rename guarantees the rename is durable past power loss.
+ * Directory fsync. On Linux/macOS (the primary targets) a successful
+ * `fsync(dir_fd)` after a rename guarantees the rename is durable past
+ * power loss. Some platforms (notably Windows) don't support directory
+ * fsync and report a specific error code; those are swallowed. REAL I/O
+ * errors (EIO, ENOSPC, EDQUOT, etc.) propagate — a silent return on those
+ * would let callers mark artifact metadata durable when the rename hasn't
+ * actually landed on stable storage.
  */
+const DIR_FSYNC_UNSUPPORTED_CODES = new Set(["ENOSYS", "EINVAL", "EACCES", "EPERM", "EBADF"]);
+
 function fsyncDirectory(dir: string): void {
+  let fd: number;
   try {
-    const fd = openSync(dir, "r");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
+    fd = openSync(dir, "r");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== undefined && DIR_FSYNC_UNSUPPORTED_CODES.has(code)) return;
+    throw err;
+  }
+  try {
+    fsyncSync(fd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== undefined && DIR_FSYNC_UNSUPPORTED_CODES.has(code)) {
+      // Platform doesn't support fsync on the directory — tolerate.
+    } else {
+      throw err;
     }
-  } catch {
-    /* best-effort — not every platform supports dir fsync */
+  } finally {
+    closeSync(fd);
   }
 }
 
@@ -150,10 +165,19 @@ export async function writeBlobFromFile(blobDir: string, sourcePath: string): Pr
   try {
     renameSync(tmp, target);
   } catch (err) {
+    // Concurrent-identical-writer collision: on platforms where rename-over-
+    // existing fails, recover by checking the target and treating a hash-
+    // match as successful dedup (CAS guarantees identical bytes for the
+    // same hash). fsync the parent dir so our return is durable regardless
+    // of whether the winner has already done it.
     try {
       Bun.file(tmp).unlink?.();
     } catch {
       /* ignore */
+    }
+    if (hasBlob(blobDir, hash)) {
+      fsyncDirectory(targetDir);
+      return hash;
     }
     throw err;
   }
