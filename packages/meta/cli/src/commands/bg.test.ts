@@ -271,11 +271,24 @@ describe("bg kill", () => {
   // claim and the re-stamp would be misclassified as `crashed` even
   // though the original kill's signal is the proximate cause.
   it("resumed kill preserves a fresh pre-existing signaledAt stamp", async () => {
+    // Produce a guaranteed-dead PID by spawning a bun subprocess, waiting
+    // for it to exit, and using its reaped PID. A fixed sentinel like
+    // 99_999 can legitimately belong to a real process on the host;
+    // proceeding down `runKill`'s signal path against an unrelated live
+    // process would be a genuine safety regression (could SIGTERM an
+    // unrelated workload).
+    const shortLived = Bun.spawn(["bun", "-e", "process.exit(0)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const deadPid = shortLived.pid;
+    await shortLived.exited;
+
     const freshStamp = Date.now();
     await writeSession(dir, {
       workerId: workerId("w-resume"),
       status: "terminating",
-      pid: 99_999, // No process with this PID — ps fingerprint fail-closed path.
+      pid: deadPid,
       signaledAt: freshStamp,
     });
 
