@@ -31,6 +31,8 @@ export function createListArtifacts(args: {
       ? [ctx.sessionId, ctx.sessionId]
       : [ctx.sessionId];
 
+    params.push(now);
+
     let nameClause = "";
     if (filter.name !== undefined) {
       nameClause = "AND name = ?";
@@ -45,7 +47,6 @@ export function createListArtifacts(args: {
          ${nameClause}
        ORDER BY session_id, name, version DESC
     `;
-    params.push(now);
 
     const rows = args.db.query(sql).all(...params) as ArtifactRow[];
     const artifacts = rows.map(rowToArtifact);
