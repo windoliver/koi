@@ -116,13 +116,22 @@ export function createTaskOutputTool(
         if (reader === undefined) {
           return EMPTY_MATCHES_RESULT;
         }
-        return reader.queryMatches({
-          ...(typeof parsed.data.event === "string" ? { event: parsed.data.event } : {}),
-          ...(parsed.data.stream !== undefined ? { stream: parsed.data.stream } : {}),
-          ...(typeof parsed.data.match_offset === "string"
-            ? { offset: parsed.data.match_offset }
-            : {}),
-        });
+        try {
+          return reader.queryMatches({
+            ...(typeof parsed.data.event === "string" ? { event: parsed.data.event } : {}),
+            ...(parsed.data.stream !== undefined ? { stream: parsed.data.stream } : {}),
+            ...(typeof parsed.data.match_offset === "string"
+              ? { offset: parsed.data.match_offset }
+              : {}),
+          });
+        } catch (err: unknown) {
+          const reason = err instanceof Error ? err.message : String(err);
+          const validationFailedResponse: TaskOutputResponse = {
+            kind: "validation_failed",
+            reason: `Invalid matches_only cursor: ${reason}`,
+          };
+          return validationFailedResponse;
+        }
       }
 
       // Exhaustive switch — TS enforces all TaskStatus cases are handled

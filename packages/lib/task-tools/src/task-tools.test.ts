@@ -1387,4 +1387,60 @@ describe("task_output — matches_only", () => {
     expect(r.stdout).toBe("buffered stdout");
     expect(r.stderr).toBe("buffered stderr");
   });
+
+  test("matches_only with a stale cross-filter cursor returns validation_failed", async () => {
+    // Use a buffer that throws on cursor mismatch, mimicking parseCursor in output-buffer.ts
+    const throwingBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "", stderr: "", truncated: false };
+      },
+      queryMatches(q) {
+        if (q.offset !== undefined) {
+          // Simulate parseCursor throwing on filter mismatch
+          throw new Error(
+            `cursor filter mismatch: cursor encodes event="" stream="" but query has event="${q.event ?? ""}" stream="${q.stream ?? ""}"`,
+          );
+        }
+        return {
+          kind: "matches",
+          entries: [],
+          cursor: `s=0&e=${q.event ?? ""}`,
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: () => throwingBuffer,
+    });
+
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    // First call with event filter to get a cursor
+    const first = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      event: "ready",
+    })) as { kind: string; cursor: string };
+    expect(first.kind).toBe("matches");
+
+    // Reuse the cursor on a DIFFERENT filter — should return validation_failed
+    const r = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      event: "error",
+      match_offset: first.cursor,
+    })) as { kind: string; reason: string };
+    expect(r.kind).toBe("validation_failed");
+    expect(typeof r.reason).toBe("string");
+    expect(r.reason).toContain("cursor");
+  });
 });

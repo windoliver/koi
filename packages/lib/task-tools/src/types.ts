@@ -94,6 +94,10 @@ export type TaskOutputResponse =
   | {
       readonly kind: "permission_denied";
       readonly reason: string;
+    }
+  | {
+      readonly kind: "validation_failed";
+      readonly reason: string;
     };
 
 /** Serializable output chunk data (no methods). */
