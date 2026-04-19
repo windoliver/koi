@@ -23,6 +23,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
+import type { FetchModelsResult } from "./state/types.js";
 import { StoreContext } from "./store-context.js";
 import { computeLayoutTier } from "./theme.js";
 import { TuiRoot } from "./tui-root.js";
@@ -113,6 +114,16 @@ export interface CreateTuiAppConfig {
    * and dispatch set_at_results back to the store. Null = overlay dismissed.
    */
   readonly onAtQuery?: ((query: string | null) => void) | undefined;
+  /**
+   * Called when the model picker opens. Host performs the provider /models
+   * fetch and resolves the typed result; TuiRoot dispatches model_picker_fetched.
+   */
+  readonly onFetchModels?: (() => Promise<FetchModelsResult>) | undefined;
+  /**
+   * Called when the user selects a model in the picker. Host mutates the
+   * current-model middleware box so subsequent turns use the new model.
+   */
+  readonly onModelSwitch?: ((model: string) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +228,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
     syntaxStyle,
     treeSitterClient,
     onAtQuery,
+    onFetchModels,
+    onModelSwitch,
   } = config;
 
   let started = false;
@@ -382,6 +395,8 @@ export function createTuiApp(config: CreateTuiAppConfig): Result<TuiAppHandle, T
                     syntaxStyle,
                     treeSitterClient,
                     onAtQuery,
+                    onFetchModels,
+                    onModelSwitch,
                   });
                 },
               }),

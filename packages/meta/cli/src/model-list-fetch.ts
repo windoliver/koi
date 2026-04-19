@@ -1,4 +1,6 @@
-import type { ModelEntry } from "@koi/tui";
+import type { FetchModelsResult, ModelEntry } from "@koi/tui";
+
+export type { FetchModelsResult };
 
 export interface FetchModelsOptions {
   readonly provider: string;
@@ -7,10 +9,6 @@ export interface FetchModelsOptions {
   readonly fetch?: typeof fetch | undefined;
   readonly timeoutMs?: number | undefined;
 }
-
-export type FetchModelsResult =
-  | { readonly ok: true; readonly models: readonly ModelEntry[] }
-  | { readonly ok: false; readonly error: string };
 
 const PROVIDER_DEFAULT_BASE_URLS: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1",

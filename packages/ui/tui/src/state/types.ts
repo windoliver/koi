@@ -126,6 +126,15 @@ export interface ModelEntry {
   readonly pricingOut?: number | undefined;
 }
 
+/**
+ * Result of a provider `/models` fetch. Lives in L2 TUI types so the host
+ * (L3 CLI) can inject a fetch callback without creating a reverse
+ * dependency from @koi/tui to @koi-agent/cli.
+ */
+export type FetchModelsResult =
+  | { readonly ok: true; readonly models: readonly ModelEntry[] }
+  | { readonly ok: false; readonly error: string };
+
 /** Transient overlay that preserves the underlying view. */
 export type TuiModal =
   | { readonly kind: "command-palette"; readonly query: string }

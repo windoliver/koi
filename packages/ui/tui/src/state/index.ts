@@ -18,6 +18,7 @@ export type {
   AgentStatus,
   ConnectionStatus,
   CumulativeMetrics,
+  FetchModelsResult,
   LayoutTier,
   LedgerAuditEntry,
   LedgerSources,
