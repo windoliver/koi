@@ -355,7 +355,9 @@ describe("createOAuthAuthProvider", () => {
 
     // Registered client persisted under the client-info key
     const { computeClientKey } = await import("./tokens.js");
-    const storedClient = await storage.get(computeClientKey("dyn", "https://mcp.example.com"));
+    const storedClient = await storage.get(
+      computeClientKey("dyn", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+    );
     expect(storedClient).toBeDefined();
     const parsed = JSON.parse(storedClient ?? "{}");
     expect(parsed.clientId).toBe("dyn-123");
@@ -365,7 +367,7 @@ describe("createOAuthAuthProvider", () => {
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
     await storage.set(
-      computeClientKey("reuse", "https://mcp.example.com"),
+      computeClientKey("reuse", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
       JSON.stringify({ clientId: "prev-reg", registeredAt: 1 }),
     );
 
@@ -497,7 +499,9 @@ describe("createOAuthAuthProvider", () => {
     // Both providers must agree on the persisted client id — only one
     // registration should have actually been committed to storage.
     const { computeClientKey } = await import("./tokens.js");
-    const stored = map.get(computeClientKey("race", "https://mcp.example.com"));
+    const stored = map.get(
+      computeClientKey("race", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+    );
     expect(stored).toBeDefined();
     const { clientId } = JSON.parse(stored ?? "{}");
     expect(["dyn-1", "dyn-2"]).toContain(clientId);
@@ -512,7 +516,7 @@ describe("createOAuthAuthProvider", () => {
     // Persist a client bound to an old issuer that no longer matches
     // the currently-discovered authorization server.
     await storage.set(
-      computeClientKey("migrated", "https://mcp.example.com"),
+      computeClientKey("migrated", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
       JSON.stringify({
         clientId: "stale-client",
         registeredAt: 1,
@@ -575,24 +579,30 @@ describe("createOAuthAuthProvider", () => {
     expect(authUrlClientId).toBe("fresh-client");
 
     // Persisted record is rewritten with the new issuer binding.
-    const stored = await storage.get(computeClientKey("migrated", "https://mcp.example.com"));
+    const stored = await storage.get(
+      computeClientKey("migrated", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+    );
     const parsed = JSON.parse(stored ?? "{}");
     expect(parsed.clientId).toBe("fresh-client");
     expect(parsed.issuer).toBe("https://new-auth.example.com");
   });
 
-  test("invalidates persisted DCR client when callbackPort (redirectUri) changes", async () => {
+  test("same-URL configs with different callback ports get independent DCR records", async () => {
+    // The client-info key is scoped to (serverUrl, redirectUri) so
+    // running one config on :8912 and another on :9999 does NOT fight
+    // over a single shared record — each port gets its own registration
+    // that honors the AS's exact-match redirect_uri contract. A stored
+    // record for port 8912 is invisible to a provider on port 9999.
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
-    // Persist a client registered against the OLD callback port.
+    // Persist a record under the :8912 key. Should remain untouched.
     await storage.set(
-      computeClientKey("port-flip", "https://mcp.example.com"),
+      computeClientKey("port-8912", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
       JSON.stringify({
-        clientId: "stale-port",
+        clientId: "port-8912-client",
         registeredAt: 1,
         issuer: "https://auth.example.com",
         registrationEndpoint: "https://auth.example.com/register",
-        redirectUri: "http://127.0.0.1:8912/callback",
       }),
     );
 
@@ -635,14 +645,9 @@ describe("createOAuthAuthProvider", () => {
     }) as unknown as typeof fetch;
 
     const provider = createOAuthAuthProvider({
-      serverName: "port-flip",
+      serverName: "port-9999",
       serverUrl: "https://mcp.example.com",
       oauthConfig: {
-        // Operator changed the callback port — stored DCR client was
-        // registered against :8912 but the new redirectUri is :9999, so
-        // most ASes will reject the next code exchange with
-        // invalid_grant. The provider must re-register instead of
-        // reusing a stale registration.
         callbackPort: 9999,
         authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
       },
@@ -651,13 +656,24 @@ describe("createOAuthAuthProvider", () => {
     });
 
     await provider.startAuthFlow();
+    // Provider on port 9999 ran its own DCR — its key is distinct from
+    // the pre-seeded :8912 record.
     expect(registerCalls).toBe(1);
     expect(authUrlClientId).toBe("fresh-port");
 
-    const stored = await storage.get(computeClientKey("port-flip", "https://mcp.example.com"));
-    const parsed = JSON.parse(stored ?? "{}");
-    expect(parsed.clientId).toBe("fresh-port");
-    expect(parsed.redirectUri).toBe("http://127.0.0.1:9999/callback");
+    const port9999Stored = await storage.get(
+      computeClientKey("port-9999", "https://mcp.example.com", "http://127.0.0.1:9999/callback"),
+    );
+    const port9999Parsed = JSON.parse(port9999Stored ?? "{}");
+    expect(port9999Parsed.clientId).toBe("fresh-port");
+
+    // Critical: the pre-seeded :8912 record is UNTOUCHED. Earlier
+    // shared-key logic would have overwritten it.
+    const port8912Stored = await storage.get(
+      computeClientKey("port-8912", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+    );
+    const port8912Parsed = JSON.parse(port8912Stored ?? "{}");
+    expect(port8912Parsed.clientId).toBe("port-8912-client");
   });
 
   test("invalidates persisted DCR client only on explicit invalid_client (not transient errors)", async () => {
@@ -674,7 +690,11 @@ describe("createOAuthAuthProvider", () => {
         )
         .then(async () => {
           const { computeClientKey } = await import("./tokens.js");
-          const clientKey = computeClientKey("revoked", "https://mcp.example.com");
+          const clientKey = computeClientKey(
+            "revoked",
+            "https://mcp.example.com",
+            "http://127.0.0.1:8912/callback",
+          );
           await storage.set(
             clientKey,
             JSON.stringify({
@@ -682,7 +702,6 @@ describe("createOAuthAuthProvider", () => {
               registeredAt: 1700000000,
               issuer: "https://auth.example.com",
               registrationEndpoint: "https://auth.example.com/register",
-              redirectUri: "http://127.0.0.1:8912/callback",
             }),
           );
         });
@@ -751,7 +770,11 @@ describe("createOAuthAuthProvider", () => {
       expect(ok, `${c.name}: startAuthFlow result`).toBe(false);
 
       const { computeClientKey } = await import("./tokens.js");
-      const clientKey = computeClientKey("revoked", "https://mcp.example.com");
+      const clientKey = computeClientKey(
+        "revoked",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+      );
       const stored = await storage.get(clientKey);
       if (c.shouldClearClient) {
         expect(stored, `${c.name}: client should be cleared`).toBeUndefined();
@@ -768,7 +791,11 @@ describe("createOAuthAuthProvider", () => {
     // mutate storage on its behalf.
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
-    const clientKey = computeClientKey("static", "https://mcp.example.com");
+    const clientKey = computeClientKey(
+      "static",
+      "https://mcp.example.com",
+      "http://127.0.0.1:8912/callback",
+    );
 
     const metadata = {
       issuer: "https://auth.example.com",

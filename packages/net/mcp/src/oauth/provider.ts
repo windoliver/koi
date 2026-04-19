@@ -109,11 +109,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     }
 
     const metadata = await getMetadata();
-    const lockKey = computeClientKey(serverName, serverUrl);
+    const lockKey = computeClientKey(serverName, serverUrl, redirectUri);
 
     const resolved = await storage.withLock(lockKey, async () => {
-      const stored = await readClientInfo(storage, serverName, serverUrl);
-      if (stored !== undefined && isClientFresh(stored, metadata, redirectUri)) {
+      const stored = await readClientInfo(storage, serverName, serverUrl, redirectUri);
+      if (stored !== undefined && isClientFresh(stored, metadata)) {
         return stored;
       }
 
@@ -157,12 +157,12 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         return client?.clientId;
       },
       // Forward refresh-time invalid_client signals to the DCR
-      // invalidator. The callback re-checks `cachedClient` so we only
-      // delete persisted state for clients we actually registered —
-      // configured static clients are operator-managed.
+      // invalidator. Only invalidates when the cached client is DCR
+      // (registeredAt > 0); CAS on its clientId so a stale flow cannot
+      // delete a newer registration another process already repaired.
       onInvalidClient: async () => {
         if (cachedClient !== undefined && cachedClient.registeredAt > 0) {
-          await invalidateRegisteredClient();
+          await invalidateRegisteredClient(cachedClient.clientId);
         }
       },
     });
@@ -181,18 +181,22 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   /**
    * Drop both the in-memory cache and the persisted record for a
    * dynamically-registered client so the next auth attempt re-runs DCR.
-   * Used when the AS rejects the client during token exchange or refresh
-   * — left unhandled, the bad client_id would survive `koi mcp logout`
-   * (which deliberately keeps client-info) and trap the operator in a
-   * loop. The delete runs under the same withLock the resolution path
-   * uses so cross-process concurrent flows cannot read a stale record
-   * while invalidation is in flight.
+   * CAS-gated on the `expectedClientId` that actually failed: a stale
+   * flow that started before another process repaired the shared record
+   * MUST NOT erase the newer valid registration. If the persisted
+   * clientId no longer matches what we used, only the in-memory cache
+   * is dropped — the next getClient call will pick up the fresh record.
    */
-  const invalidateRegisteredClient = async (): Promise<void> => {
+  const invalidateRegisteredClient = async (expectedClientId: string): Promise<void> => {
     cachedClient = undefined;
     tokenManager = undefined;
-    const lockKey = computeClientKey(serverName, serverUrl);
-    await storage.withLock(lockKey, () => storage.delete(lockKey));
+    const lockKey = computeClientKey(serverName, serverUrl, redirectUri);
+    await storage.withLock(lockKey, async () => {
+      const current = await readClientInfo(storage, serverName, serverUrl, redirectUri);
+      if (current !== undefined && current.clientId === expectedClientId) {
+        await storage.delete(lockKey);
+      }
+    });
   };
 
   // --- Interactive auth flow ---
@@ -247,11 +251,10 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // Only invalidate the persisted DCR client on an explicit
       // `invalid_client` signal — transient 5xx, timeouts, malformed
       // responses, or non-client errors must not destroy a healthy
-      // registration. logout deliberately keeps client-info, so over-
-      // aggressive deletion here would leak orphaned DCR clients on
-      // every transient outage.
+      // registration. CAS on the failing clientId so a stale flow
+      // cannot wipe a newer registration another process already wrote.
       if (exchange.invalidClient && client.registeredAt > 0) {
-        await invalidateRegisteredClient();
+        await invalidateRegisteredClient(client.clientId);
       }
       return false;
     }
@@ -292,24 +295,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
 /**
  * Returns true when a persisted DCR client is still valid against the
- * currently-discovered auth server AND the provider's current
- * `redirectUri`. A stored record with no issuer / registration_endpoint /
- * redirectUri (shape predates this check, or static config was persisted
- * by mistake) is treated as fresh so upgrades do not force re-auth. Once
- * any binding is recorded, a mismatch is a migration event — re-register
- * rather than send a stale client_id to a different authorization server
- * or under a different redirect URI contract.
+ * currently-discovered auth server. The `redirectUri` contract is
+ * already enforced by the storage key (see `computeClientKey`) so two
+ * configs with different callback ports get independent records rather
+ * than fighting over one. A stored record with no issuer /
+ * registration_endpoint (shape predates this check, or static config
+ * was persisted by mistake) is treated as fresh so upgrades do not
+ * force re-auth. Once any binding is recorded, a mismatch is a
+ * migration event — re-register rather than send a stale client_id to
+ * a different authorization server.
  */
-function isClientFresh(
-  stored: OAuthClientInfo,
-  metadata: AuthServerMetadata | undefined,
-  currentRedirectUri: string,
-): boolean {
-  if (
-    stored.issuer === undefined &&
-    stored.registrationEndpoint === undefined &&
-    stored.redirectUri === undefined
-  ) {
+function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | undefined): boolean {
+  if (stored.issuer === undefined && stored.registrationEndpoint === undefined) {
     return true;
   }
   if (metadata === undefined) return false;
@@ -318,9 +315,6 @@ function isClientFresh(
     stored.registrationEndpoint !== undefined &&
     stored.registrationEndpoint !== metadata.registrationEndpoint
   ) {
-    return false;
-  }
-  if (stored.redirectUri !== undefined && stored.redirectUri !== currentRedirectUri) {
     return false;
   }
   return true;

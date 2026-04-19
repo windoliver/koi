@@ -134,7 +134,6 @@ export async function registerDynamicClient(
       registeredAt: Date.now(),
       issuer,
       registrationEndpoint,
-      redirectUri,
     };
   } catch {
     return undefined;

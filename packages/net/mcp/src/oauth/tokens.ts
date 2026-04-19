@@ -245,27 +245,39 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
 }
 
 /**
- * Storage key for dynamically-registered client info. Keyed solely by
- * normalized `serverUrl` — alias renames or duplicate aliases pointing
- * at the same MCP server URL must reuse the same registered client.
- * Including `serverName` here previously caused config renames to
- * trigger new registrations and orphan the prior client on the AS.
- * Format: `mcp-oauth-client|{sha256(url)[:16]}`. The `serverName`
- * parameter is retained for symmetry with `computeServerKey()` but
- * deliberately ignored.
+ * Storage key for dynamically-registered client info. Keyed by the full
+ * DCR identity contract — `serverUrl` + `redirectUri` — so:
+ *
+ *   1. Alias renames with identical URL + callback port reuse the same
+ *      registered client (no orphan churn on the AS).
+ *   2. Two configs with the same URL but different `oauth.callbackPort`
+ *      get distinct client records instead of fighting over a single
+ *      shared record whose `redirect_uri` contract cannot satisfy both.
+ *
+ * Format: `mcp-oauth-client|{sha256(serverUrl + "|" + redirectUri)[:16]}`.
+ * The `serverName` parameter is retained for symmetry with
+ * `computeServerKey()` but deliberately ignored.
  */
-export function computeClientKey(_serverName: string, serverUrl: string): string {
-  const hash = createHash("sha256").update(serverUrl).digest("hex").substring(0, 16);
+export function computeClientKey(
+  _serverName: string,
+  serverUrl: string,
+  redirectUri: string,
+): string {
+  const hash = createHash("sha256")
+    .update(`${serverUrl}|${redirectUri}`)
+    .digest("hex")
+    .substring(0, 16);
   return `mcp-oauth-client|${hash}`;
 }
 
-/** Read persisted `OAuthClientInfo` for a server; undefined when absent or corrupt. */
+/** Read persisted `OAuthClientInfo` for a (server, redirect) pair; undefined when absent or corrupt. */
 export async function readClientInfo(
   storage: SecureStorage,
   serverName: string,
   serverUrl: string,
+  redirectUri: string,
 ): Promise<OAuthClientInfo | undefined> {
-  const raw = await storage.get(computeClientKey(serverName, serverUrl));
+  const raw = await storage.get(computeClientKey(serverName, serverUrl, redirectUri));
   if (raw === undefined) return undefined;
   try {
     return JSON.parse(raw) as OAuthClientInfo;
@@ -274,14 +286,15 @@ export async function readClientInfo(
   }
 }
 
-/** Persist `OAuthClientInfo` under the client-info storage key. */
+/** Persist `OAuthClientInfo` under the (server, redirect) client-info storage key. */
 export async function writeClientInfo(
   storage: SecureStorage,
   serverName: string,
   serverUrl: string,
+  redirectUri: string,
   info: OAuthClientInfo,
 ): Promise<void> {
-  const key = computeClientKey(serverName, serverUrl);
+  const key = computeClientKey(serverName, serverUrl, redirectUri);
   await storage.withLock(key, async () => {
     await storage.set(key, JSON.stringify(info));
   });

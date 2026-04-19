@@ -163,48 +163,53 @@ describe("client info persistence", () => {
     storage = createMockStorage();
   });
 
-  test("computeClientKey is name-independent (URL-only)", () => {
-    // Keying by URL — not server alias — ensures renaming a config
-    // entry or defining the same MCP URL under two names reuses the
-    // same DCR registration instead of orphaning a fresh client on
-    // the AS each time.
-    const clientKey = computeClientKey("my-server", "https://example.com");
-    const tokenKey = computeServerKey("my-server", "https://example.com");
-    expect(clientKey).toMatch(/^mcp-oauth-client\|[a-f0-9]{16}$/);
-    expect(clientKey).not.toBe(tokenKey);
-    // Two different aliases pointing at the same URL → same client key.
-    expect(clientKey).toBe(computeClientKey("renamed", "https://example.com"));
-    // Two aliases with the same name pointing at different URLs → distinct.
-    expect(clientKey).not.toBe(computeClientKey("my-server", "https://other.com"));
+  const RU = "http://127.0.0.1:8912/callback";
+
+  test("computeClientKey is name-independent but scoped to (URL, redirectUri)", () => {
+    // Keying by URL + redirectUri ensures:
+    //  - alias renames with identical URL + port reuse the same client
+    //  - same URL with different callback ports get DIFFERENT clients
+    //    (they have incompatible redirect_uri contracts on the AS)
+    const key = computeClientKey("my-server", "https://example.com", RU);
+    expect(key).toMatch(/^mcp-oauth-client\|[a-f0-9]{16}$/);
+    expect(key).not.toBe(computeServerKey("my-server", "https://example.com"));
+    // Alias rename, same URL + port → same client key.
+    expect(key).toBe(computeClientKey("renamed", "https://example.com", RU));
+    // Different URL → distinct key.
+    expect(key).not.toBe(computeClientKey("my-server", "https://other.com", RU));
+    // Same URL, different callback port → distinct key.
+    expect(key).not.toBe(
+      computeClientKey("my-server", "https://example.com", "http://127.0.0.1:9999/callback"),
+    );
   });
 
   test("readClientInfo returns undefined when nothing stored", async () => {
-    expect(await readClientInfo(storage, "s", "https://x")).toBeUndefined();
+    expect(await readClientInfo(storage, "s", "https://x", RU)).toBeUndefined();
   });
 
   test("writeClientInfo then readClientInfo round-trips", async () => {
-    await writeClientInfo(storage, "s", "https://x", {
+    await writeClientInfo(storage, "s", "https://x", RU, {
       clientId: "abc",
       registeredAt: 123,
     });
-    const back = await readClientInfo(storage, "s", "https://x");
+    const back = await readClientInfo(storage, "s", "https://x", RU);
     expect(back?.clientId).toBe("abc");
   });
 
   test("readClientInfo returns undefined for corrupt JSON", async () => {
-    const key = computeClientKey("s", "https://x");
+    const key = computeClientKey("s", "https://x", RU);
     await storage.set(key, "{not json");
-    expect(await readClientInfo(storage, "s", "https://x")).toBeUndefined();
+    expect(await readClientInfo(storage, "s", "https://x", RU)).toBeUndefined();
   });
 
   test("writeClientInfo persists issuer + registration_endpoint binding", async () => {
-    await writeClientInfo(storage, "s", "https://x", {
+    await writeClientInfo(storage, "s", "https://x", RU, {
       clientId: "public",
       registeredAt: 99,
       issuer: "https://auth.example.com",
       registrationEndpoint: "https://auth.example.com/register",
     });
-    const back = await readClientInfo(storage, "s", "https://x");
+    const back = await readClientInfo(storage, "s", "https://x", RU);
     expect(back?.issuer).toBe("https://auth.example.com");
     expect(back?.registrationEndpoint).toBe("https://auth.example.com/register");
   });
