@@ -17,7 +17,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "@koi/url-safety": "workspace:*"
   },
   "koi": {
     "optional": true

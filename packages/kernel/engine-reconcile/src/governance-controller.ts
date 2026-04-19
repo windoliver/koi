@@ -260,7 +260,9 @@ export function createGovernanceController(
         spawnCount = Math.max(0, spawnCount - 1);
         break;
       case "forge":
-        // Forge events tracked by L2-contributed variables
+      case "forge_release":
+        // Forge lifecycle (forge / forge_release pairing) tracked by
+        // L2-contributed variables (e.g. @koi/governance-defaults).
         break;
       case "token_usage":
         tokenUsage += event.count;

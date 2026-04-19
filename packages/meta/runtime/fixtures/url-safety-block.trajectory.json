@@ -1,0 +1,631 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "session_id": "url-safety-block",
+  "agent": {
+    "name": "golden-url-safety-block",
+    "model_name": "google/gemini-2.0-flash-001",
+    "tool_definitions": [
+      {
+        "name": "web_fetch",
+        "description": "Fetch a URL and return the response. HTML content is converted to text or markdown by default. Response body is truncated to ~50K chars. Private/internal URLs are blocked."
+      },
+      {
+        "name": "web_search",
+        "description": "Search the web for information. Returns a list of results with title, URL, and snippet. Requires a search backend to be configured in the executor."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 0,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:50.279Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connecting",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connecting",
+        "attempt": 1,
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 1,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:50.280Z",
+      "model_name": "mcp:test-mcp-server",
+      "message": "MCP transport: connected",
+      "duration_ms": 0,
+      "outcome": "success",
+      "extra": {
+        "type": "mcp_lifecycle",
+        "serverName": "test-mcp-server",
+        "transportState": "connected",
+        "__koi": {
+          "identifier": "mcp:test-mcp-server"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "timestamp": "2026-04-18T10:14:50.288Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "Use the web_fetch tool on \"http://localhost:3000/admin\" and copy the exact error message you receive back to me verbatim.",
+      "observation": {
+        "results": [
+          {
+            "content": ""
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 362,
+        "completion_tokens": 14
+      },
+      "duration_ms": 761,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 2,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return the response. HTML content is converted to text or markdown by default. Response body is truncated to ~50K chars. Private/internal URLs are blocked."
+          },
+          {
+            "name": "web_search",
+            "description": "Search the web for information. Returns a list of results with title, URL, and snippet. Requires a search backend to be configured in the executor."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "3404bd2f3ef65688ffb0075da423ee73f094533b15cdf978f54e2270f10a1f4d",
+        "turnIndex": 0
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "tool",
+      "timestamp": "2026-04-18T10:14:51.057Z",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_web_fetch_3",
+          "function_name": "web_fetch",
+          "arguments": {
+            "url": "http://localhost:3000/admin"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_web_fetch_3",
+            "content": "{\"error\":\"Access blocked: Blocked host localhost\",\"code\":\"PERMISSION\"}"
+          }
+        ]
+      },
+      "duration_ms": 1,
+      "outcome": "success"
+    },
+    {
+      "step_id": 4,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.058Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 765.9055840000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291056,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.063Z",
+      "model_name": "middleware:exfiltration-guard",
+      "message": "web_fetch({\"url\":\"http://localhost:3000/admin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.4243340000000444,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "location": "tool",
+            "toolId": "web_fetch",
+            "action": "clean",
+            "matchCount": 0
+          }
+        ],
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.064Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 764.584083,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 2,
+            "allowedCount": 2,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776507291055,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.065Z",
+      "model_name": "middleware:permissions",
+      "message": "web_fetch({\"url\":\"http://localhost:3000/admin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 2.1280000000001564,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapToolCall",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "execute",
+            "toolId": "web_fetch",
+            "toolInput": "{\"url\":\"http://localhost:3000/admin\"}",
+            "action": "allow",
+            "durationMs": 1,
+            "source": "policy"
+          }
+        ],
+        "_original_timestamp": 1776507291062,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.066Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 763.4301669999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291054,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 9,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.067Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 763.331416,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "turnIndex": 0,
+            "objectives": [
+              {
+                "text": "Use the web_fetch tool on \"http://localhost:3000/admin\" and copy the exact error message you receive back to me verbatim",
+                "completed": false
+              }
+            ],
+            "completedCount": 0,
+            "totalCount": 1,
+            "messageCount": 1,
+            "goalBlock": "## Active Goals\n\n- [ ] Use the web_fetch tool on \"http://localhost:3000/admin\" and copy the exact error message you receive back to me verbatim"
+          }
+        ],
+        "_original_timestamp": 1776507291053,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 10,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.068Z",
+      "model_name": "middleware:goal",
+      "message": "web_fetch({\"url\":\"http://localhost:3000/admin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.3735830000000533,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291061,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 11,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.069Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 763.0991250000001,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776507291052,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 12,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.070Z",
+      "model_name": "middleware:hooks",
+      "message": "web_fetch({\"url\":\"http://localhost:3000/admin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.359375,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "tool.before",
+            "toolId": "web_fetch",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776507291060,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 13,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.071Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 762.8158329999999,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291051,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 14,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.072Z",
+      "model_name": "middleware:semantic-retry",
+      "message": "web_fetch({\"url\":\"http://localhost:3000/admin\"})",
+      "observation": {
+        "results": [
+          {
+            "content": "allowed"
+          }
+        ]
+      },
+      "duration_ms": 1.026207999999997,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapToolCall",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291059,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 15,
+      "source": "agent",
+      "timestamp": "2026-04-18T10:14:51.073Z",
+      "model_name": "google/gemini-2.0-flash-001",
+      "message": "{\"error\":\"Access blocked: Blocked host localhost\",\"code\":\"PERMISSION\"}",
+      "observation": {
+        "results": [
+          {
+            "content": "Access blocked: Blocked host localhost\n"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 367,
+        "completion_tokens": 8
+      },
+      "duration_ms": 485,
+      "outcome": "success",
+      "extra": {
+        "totalMessages": 3,
+        "requestModel": "google/gemini-2.0-flash-001",
+        "toolCount": 2,
+        "tools": [
+          {
+            "name": "web_fetch",
+            "description": "Fetch a URL and return the response. HTML content is converted to text or markdown by default. Response body is truncated to ~50K chars. Private/internal URLs are blocked."
+          },
+          {
+            "name": "web_search",
+            "description": "Search the web for information. Returns a list of results with title, URL, and snippet. Requires a search backend to be configured in the executor."
+          }
+        ],
+        "responseModel": "google/gemini-2.0-flash-001",
+        "promptPrefixFingerprint": "3404bd2f3ef65688ffb0075da423ee73f094533b15cdf978f54e2270f10a1f4d",
+        "turnIndex": 1,
+        "_original_timestamp": 1776507291065
+      }
+    },
+    {
+      "step_id": 16,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.557Z",
+      "model_name": "middleware:exfiltration-guard",
+      "duration_ms": 495.6019170000002,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "exfiltration-guard",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 50,
+        "nextCalled": true,
+        "__koi": {
+          "identifier": "middleware:exfiltration-guard"
+        }
+      }
+    },
+    {
+      "step_id": 17,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.558Z",
+      "model_name": "middleware:permissions",
+      "duration_ms": 495.58566700000006,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "permissions",
+        "hook": "wrapModelStream",
+        "phase": "intercept",
+        "priority": 100,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "phase": "filter",
+            "totalTools": 2,
+            "allowedCount": 2,
+            "filteredCount": 0
+          }
+        ],
+        "_original_timestamp": 1776507291556,
+        "__koi": {
+          "identifier": "middleware:permissions"
+        }
+      }
+    },
+    {
+      "step_id": 18,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.559Z",
+      "model_name": "middleware:skill-injector",
+      "duration_ms": 495.47254199999975,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "skill-injector",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 300,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291555,
+        "__koi": {
+          "identifier": "middleware:skill-injector"
+        }
+      }
+    },
+    {
+      "step_id": 19,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.560Z",
+      "model_name": "middleware:goal",
+      "duration_ms": 495.4606670000003,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "goal",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 340,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291554,
+        "__koi": {
+          "identifier": "middleware:goal"
+        }
+      }
+    },
+    {
+      "step_id": 20,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.561Z",
+      "model_name": "middleware:hooks",
+      "duration_ms": 495.44491700000026,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 400,
+        "nextCalled": true,
+        "decisions": [
+          {
+            "event": "compact.before",
+            "hooksFired": 0,
+            "aggregated": "pass"
+          }
+        ],
+        "_original_timestamp": 1776507291553,
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    },
+    {
+      "step_id": 21,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.562Z",
+      "model_name": "middleware:semantic-retry",
+      "duration_ms": 495.33545800000024,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "semantic-retry",
+        "hook": "wrapModelStream",
+        "phase": "resolve",
+        "priority": 420,
+        "nextCalled": true,
+        "_original_timestamp": 1776507291552,
+        "__koi": {
+          "identifier": "middleware:semantic-retry"
+        }
+      }
+    },
+    {
+      "step_id": 22,
+      "source": "system",
+      "timestamp": "2026-04-18T10:14:51.563Z",
+      "model_name": "middleware:hooks",
+      "observation": {
+        "results": [
+          {
+            "content": "continue"
+          }
+        ]
+      },
+      "duration_ms": 0.05095800000026429,
+      "outcome": "success",
+      "extra": {
+        "type": "middleware_span",
+        "middlewareName": "hooks",
+        "hook": "onBeforeStop",
+        "phase": "resolve",
+        "priority": 400,
+        "stopGateResult": "continue",
+        "__koi": {
+          "identifier": "middleware:hooks"
+        }
+      }
+    }
+  ]
+}

@@ -213,6 +213,9 @@ function makeFlags(
     allowSideEffects: false,
     verifierInheritEnv: false,
     allowRemoteFs: overrides.allowRemoteFs ?? false,
+    headless: false,
+    allowTools: [],
+    maxDurationMs: undefined,
   };
 }
 

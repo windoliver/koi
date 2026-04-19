@@ -95,6 +95,10 @@
         "fast-check": "4.3.0",
       },
     },
+    "packages/lib/bash-classifier": {
+      "name": "@koi/bash-classifier",
+      "version": "0.0.0",
+    },
     "packages/lib/bash-security": {
       "name": "@koi/bash-security",
       "version": "0.0.0",
@@ -539,7 +543,12 @@
       "version": "0.0.0",
       "dependencies": {
         "@koi/core": "workspace:*",
+        "@koi/url-safety": "workspace:*",
       },
+    },
+    "packages/lib/url-safety": {
+      "name": "@koi/url-safety",
+      "version": "0.0.0",
     },
     "packages/lib/validation": {
       "name": "@koi/validation",
@@ -714,6 +723,7 @@
         "@koi/tools-builtin": "workspace:*",
         "@koi/tools-core": "workspace:*",
         "@koi/tools-web": "workspace:*",
+        "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
         "zod": "4.3.6",
       },
@@ -897,8 +907,10 @@
       "name": "@koi/middleware-permissions",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/bash-classifier": "workspace:*",
         "@koi/core": "workspace:*",
         "@koi/errors": "workspace:*",
+        "@koi/hash": "workspace:*",
       },
     },
     "packages/security/permissions": {
@@ -1203,6 +1215,8 @@
 
     "@koi/bash-ast": ["@koi/bash-ast@workspace:packages/lib/bash-ast"],
 
+    "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
+
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
@@ -1370,6 +1384,8 @@
     "@koi/tools-web": ["@koi/tools-web@workspace:packages/lib/tools-web"],
 
     "@koi/tui": ["@koi/tui@workspace:packages/ui/tui"],
+
+    "@koi/url-safety": ["@koi/url-safety@workspace:packages/lib/url-safety"],
 
     "@koi/validation": ["@koi/validation@workspace:packages/lib/validation"],
 

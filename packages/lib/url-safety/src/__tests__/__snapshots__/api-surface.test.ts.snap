@@ -1,0 +1,167 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`@koi/url-safety API surface . has stable type surface 1`] = `
+"/**
+ * Frozen blocklists consumed by ip-classify.ts (for matching) and exported
+ * as public data so governance / tools-browser can extend policy.
+ *
+ * Two classes of IPv6 coverage exist and the distinction is LOAD-BEARING for
+ * downstream policy: some prefixes are blocked wholesale, others are
+ * re-checked against their embedded IPv4 address. Use the correct constant.
+ *
+ * See the header comment in ip-classify.ts for the RFC rationale of each
+ * entry.
+ */
+declare const BLOCKED_HOSTS: readonly string[];
+/**
+ * Hostname suffixes reserved for internal / name-service use.
+ * \`.internal\` — informal but pervasive convention for private infrastructure
+ *   (also reserved by ICANN for internal-only use per IAB/ICANN advisories).
+ * \`.local\` — RFC6762 multicast DNS (mDNS), inherently network-local.
+ *
+ * Matched in \`isSafeUrl\` before DNS resolution, so a 302 redirect from a
+ * public site to \`service.internal\` / \`printer.local\` is blocked even if
+ * the caller's resolver could otherwise reach those names. Every callsite
+ * that uses the shared safe-fetcher / validator inherits this block.
+ */
+declare const BLOCKED_HOST_SUFFIXES: readonly string[];
+/**
+ * Ranges blocked wholesale — every address inside the CIDR is rejected.
+ */
+declare const BLOCKED_CIDR_RANGES: readonly string[];
+/**
+ * IPv6 prefixes that embed an IPv4 address. The classifier decodes the
+ * embedded v4 and re-runs the IPv4 blocklist against it — an address in
+ * these prefixes pointing at a PUBLIC v4 target is allowed (that's just
+ * legitimate translation traffic to a public host), while one pointing at
+ * a private v4 is rejected.
+ *
+ * Separated from \`BLOCKED_CIDR_RANGES\` so the two policy surfaces are
+ * distinguishable: a security auditor reading the constants can see
+ * exactly which ranges are full-block vs. embedded-v4-recheck.
+ */
+declare const EMBEDDED_V4_IPV6_PREFIXES: readonly string[];
+
+declare function isBlockedIp(ip: string): boolean;
+
+type DnsResolver = (hostname: string) => Promise<readonly string[]>;
+interface UrlSafetyOptions {
+    readonly allowPrivate?: boolean;
+    readonly allowlistHosts?: readonly string[];
+    readonly allowedProtocols?: readonly string[];
+    readonly dnsResolver?: DnsResolver;
+    /**
+     * Resolver selection for the built-in resolver. Default \`true\` uses
+     * \`dns.resolve4\` / \`dns.resolve6\` to query authoritative DNS and
+     * enumerate the full A/AAAA set — the strict rebinding-defence
+     * invariant. HTTPS requests rely on this: because \`createSafeFetcher\`
+     * cannot pin HTTPS to a specific IP, validating against the complete
+     * authoritative set is the only way to avoid approving a partial
+     * answer that later expands to include a blocked address.
+     *
+     * Set to \`false\` to delegate to \`dns.lookup({ all: true })\` — the same
+     * path \`fetch\` uses at connect time (honours \`/etc/hosts\`, NSS, mDNS,
+     * search domains). Useful for internal-name deployments where
+     * authoritative lookup would over-reject, at the cost of weaker
+     * rebinding defence.
+     *
+     * A caller-supplied \`dnsResolver\` overrides both paths.
+     */
+    readonly strictAuthoritativeDns?: boolean;
+    /**
+     * When \`true\` (the default), a real resolver error (TIMEOUT/SERVFAIL/etc.)
+     * on EITHER A or AAAA family is fatal. This closes the rebinding vector
+     * where a hostname's public A is approved while a blocked AAAA lookup
+     * transiently failed — the later HTTPS connect (which the wrapper can't
+     * pin) could still reach the unseen AAAA address.
+     *
+     * Set to \`false\` to accept single-family success and treat the other
+     * family's transient failure as "no records of this family". Useful
+     * for flaky-IPv6 environments, but re-opens the partial-coverage SSRF
+     * window. Only applies when the authoritative resolver is in use.
+     */
+    readonly requireFullDnsCoverage?: boolean;
+}
+type SafeUrlResult = {
+    readonly ok: true;
+    readonly hostname: string;
+    readonly resolvedIps: readonly string[];
+} | {
+    readonly ok: false;
+    readonly reason: string;
+};
+declare function isSafeUrl(url: string, options?: UrlSafetyOptions): Promise<SafeUrlResult>;
+
+/**
+ * createSafeFetcher — fetch wrapper that centralises SSRF defence.
+ *
+ * Behaviour:
+ *   1. Extracts the initial URL from the input (string | URL | Request).
+ *      Validates it via isSafeUrl BEFORE touching the body. A blocked or
+ *      malformed URL rejects immediately — no body bytes are read and no
+ *      memory is allocated for buffering.
+ *   2. If the URL passes, buffers any stream-backed body (ReadableStream,
+ *      Request.body) into a bounded Uint8Array so 307/308 redirects can
+ *      safely replay and Node 22 fetch doesn't require duplex: "half".
+ *      The buffer honours an abort signal passed via init.signal.
+ *   3. Manually follows redirects (redirect: "manual"). Each hop URL is
+ *      re-validated before the next fetch.
+ *   4. Rewrites method/body on redirects per Fetch spec:
+ *        303            → GET, drop body + Content-* headers
+ *        301/302 + POST → GET, drop body (browser-aligned)
+ *        307/308        → preserve method + body
+ *   5. Preserves Request metadata (method, headers, body, signal,
+ *      credentials, referrer, etc.).
+ *   6. On cross-origin redirects strips authorization / cookie /
+ *      proxy-authorization / proxy-authenticate.
+ *   7. HTTP pinning: after validation, rewrite the outbound URL to each
+ *      resolved IP (with a Host header preserving the original hostname)
+ *      so the TCP socket cannot be DNS-rebound between check and connect.
+ *      When multiple IPs pass validation, they are tried sequentially on
+ *      connect failure so multi-A/AAAA failover still works — each attempt
+ *      goes to an already-validated address, so rebind is not possible.
+ *      HTTPS is never pinned (TLS SNI / cert verification).
+ *   8. Throws on block, on exceeding maxRedirects, or on oversized bodies.
+ *
+ * Default base is global fetch. Callers pass their own to inject for testing.
+ */
+
+interface SafeFetcherOptions extends UrlSafetyOptions {
+    readonly maxRedirects?: number;
+    /**
+     * Maximum bytes to buffer from a stream-backed request body so that
+     * method-preserving redirects (307/308) can replay. Default: 10 MB.
+     * Set to 0 to disable buffering — stream bodies will then be rejected
+     * up front, matching strict-streaming semantics.
+     */
+    readonly maxBufferedBodyBytes?: number;
+    /**
+     * Opt-in acknowledgement that a caller-supplied \`dispatcher\` / \`agent\`
+     * controls the connection path independently of \`isSafeUrl\`. Default
+     * \`false\` fails closed on any request that combines this wrapper's
+     * SSRF guarantee with a transport that bypasses it. Set to \`true\`
+     * only if the transport itself applies equivalent destination-pinning
+     * (e.g., a locked-resolver egress proxy that enforces its own
+     * allowlist).
+     *
+     * Note: \`Request\` objects store internal dispatcher/agent state on
+     * symbols, which the wrapper cannot introspect. For Request inputs,
+     * always set \`trustCustomTransport: true\` (or attach transport via
+     * \`init\` instead of the Request) to make the trust decision explicit.
+     */
+    readonly trustCustomTransport?: boolean;
+    /**
+     * Opt-in for a caller-supplied \`Host\` header. Default \`false\` rejects
+     * any request that sets \`Host\` explicitly: on HTTPS the wrapper cannot
+     * pin to the validated IP, so a mismatched Host lets reverse proxies
+     * route the request to a different vhost/tenant than \`isSafeUrl\`
+     * approved. Only set \`true\` for trusted internal paths where the
+     * effective authority is validated elsewhere.
+     */
+    readonly allowCustomHost?: boolean;
+}
+declare function createSafeFetcher(base?: typeof fetch, options?: SafeFetcherOptions): typeof fetch;
+
+export { BLOCKED_CIDR_RANGES, BLOCKED_HOSTS, BLOCKED_HOST_SUFFIXES, type DnsResolver, EMBEDDED_V4_IPV6_PREFIXES, type SafeFetcherOptions, type SafeUrlResult, type UrlSafetyOptions, createSafeFetcher, isBlockedIp, isSafeUrl };
+"
+`;

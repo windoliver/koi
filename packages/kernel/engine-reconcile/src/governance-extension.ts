@@ -30,6 +30,21 @@ import type { GovernanceControllerBuilder } from "./governance-controller.js";
 
 const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent", "Spawn"]);
 
+/**
+ * Pre-sanitize token counts before calling `controller.record({ kind: "token_usage" })`.
+ *
+ * Controller-side accounting fails closed by dropping NaN/Infinity/negative
+ * values, which silently zeroes spend tracking. Surfacing those values at the
+ * engine boundary instead keeps a buggy adapter from poisoning the counters.
+ * Returns `undefined` for any non-finite or negative value so callers can drop
+ * the field and still record the valid counterpart.
+ */
+function sanitizeTokenCount(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Governance guard middleware
 // ---------------------------------------------------------------------------
@@ -78,11 +93,8 @@ function createGovernanceGuard(
 
       try {
         const response = await next(request);
-        // Spawn concurrency is tracked by the SpawnLedger in spawn-child.ts
-        // (acquire on spawn, release on child termination). No governance record
-        // needed here — recording { kind: "spawn" } without a corresponding
-        // spawn_release would make the counter monotonically increasing, turning
-        // maxFanOut into "max total spawns ever" instead of "max concurrent children".
+        // Spawn / spawn_release are recorded directly in spawn-child.ts against
+        // the parent's GovernanceController (paired with ledger acquire / release).
         await controller.record({ kind: "tool_success", toolName: request.toolId });
         return response;
       } catch (e: unknown) {
@@ -98,13 +110,21 @@ function createGovernanceGuard(
     ): Promise<ModelResponse> {
       const response = await next(request);
       if (response.usage !== undefined) {
-        const total = response.usage.inputTokens + response.usage.outputTokens;
+        // Drop invalid fields per-side so one bogus value doesn't zero usage
+        // tracking on an otherwise valid adapter response. Substitute 0 for
+        // invalid fields so both fields are always present — controllers that
+        // gate fallback cost pricing on `inputTokens !== undefined && outputTokens !== undefined`
+        // (e.g. engine-reconcile's built-in) would otherwise skip cost
+        // accumulation for partial events.
+        const input = sanitizeTokenCount(response.usage.inputTokens) ?? 0;
+        const output = sanitizeTokenCount(response.usage.outputTokens) ?? 0;
+        const total = input + output;
         if (total > 0) {
           await controller.record({
             kind: "token_usage",
             count: total,
-            inputTokens: response.usage.inputTokens,
-            outputTokens: response.usage.outputTokens,
+            inputTokens: input,
+            outputTokens: output,
           });
         }
       }
@@ -123,12 +143,18 @@ function createGovernanceGuard(
       try {
         for await (const chunk of next(request)) {
           if (chunk.kind === "usage") {
-            accInputTokens += chunk.inputTokens;
-            accOutputTokens += chunk.outputTokens;
+            const input = sanitizeTokenCount(chunk.inputTokens);
+            const output = sanitizeTokenCount(chunk.outputTokens);
+            if (input !== undefined) accInputTokens += input;
+            if (output !== undefined) accOutputTokens += output;
           } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
-            // "done" carries the authoritative final usage — prefer it over incremental accumulation
-            accInputTokens = chunk.response.usage.inputTokens;
-            accOutputTokens = chunk.response.usage.outputTokens;
+            // "done" carries the authoritative final usage — overwrite
+            // per-field so a single bogus side cannot discard the valid side
+            // nor clobber good incrementals with NaN.
+            const input = sanitizeTokenCount(chunk.response.usage.inputTokens);
+            const output = sanitizeTokenCount(chunk.response.usage.outputTokens);
+            if (input !== undefined) accInputTokens = input;
+            if (output !== undefined) accOutputTokens = output;
           }
           yield chunk;
         }
