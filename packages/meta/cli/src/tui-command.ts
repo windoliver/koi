@@ -1097,8 +1097,16 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // freshly picked model without rebuilding the runtime. Composed OUTER
   // of `modelRouterMiddleware` so any fallback chain sees the latest
   // host-picked model id.
-  const { middleware: currentModelMiddleware, box: currentModelBox } =
-    createCurrentModelMiddleware(modelName);
+  const { middleware: currentModelMiddleware, box: currentModelBox } = createCurrentModelMiddleware(
+    modelName,
+    (pickedModel) =>
+      createOpenAICompatAdapter({
+        apiKey,
+        ...(baseUrl !== undefined ? { baseUrl } : {}),
+        model: pickedModel,
+        ...reasoningCompat,
+      }),
+  );
 
   // Persistent approval store — gracefully degrade if DB can't be opened
   // (corrupt file, permissions issue, etc.). TUI still works without it.
@@ -3243,10 +3251,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             lastResetFailed = false;
             tuiSessionId = newSid;
             viewedSessionId = newSid;
-            costBridge.setSession(newSid as string, modelName, provider);
+            costBridge.setSession(newSid as string, currentModelBox.current, provider);
             store.dispatch({
               kind: "set_session_info",
-              modelName,
+              modelName: currentModelBox.current,
               provider,
               sessionName: "",
               sessionId: newSid,
@@ -3672,10 +3680,10 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // contaminated and the latch must stay sticky so switching
           // back to it blocks writes (pre-existing safety contract).
           lastResetFailed = false;
-          costBridge.setSession(targetSid as string, modelName, provider);
+          costBridge.setSession(targetSid as string, currentModelBox.current, provider);
           store.dispatch({
             kind: "set_session_info",
-            modelName,
+            modelName: currentModelBox.current,
             provider,
             sessionName: "",
             sessionId: targetSid,

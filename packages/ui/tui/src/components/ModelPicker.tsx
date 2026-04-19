@@ -7,10 +7,13 @@
  * dispatches selection / cancel through the injected callbacks.
  */
 
+import type { KeyEvent } from "@opentui/core";
+import { useKeyboard } from "@opentui/solid";
 import type { JSX } from "solid-js";
+import { Show, useContext } from "solid-js";
 import { fuzzyFilter } from "../commands/fuzzy-match.js";
 import type { ModelEntry } from "../state/types.js";
-import { useTuiStore } from "../store-context.js";
+import { StoreContext, useTuiStore } from "../store-context.js";
 import { COLORS, MODAL_POSITION } from "../theme.js";
 import { SelectOverlay } from "./SelectOverlay.js";
 
@@ -70,6 +73,7 @@ export function formatModelRow(m: ModelEntry): string {
 // ---------------------------------------------------------------------------
 
 export function ModelPicker(props: ModelPickerProps): JSX.Element {
+  const store = useContext(StoreContext);
   const modal = useTuiStore((s) => s.modal);
   const currentModel = useTuiStore((s) => s.modelName);
 
@@ -83,6 +87,38 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
 
   const getModelLabel = (m: ModelEntry): string =>
     m.id === currentModel() ? `* ${formatModelRow(m)}` : formatModelRow(m);
+
+  // Capture printable chars + Backspace to refine the query. Arrow keys and
+  // Enter are NOT prevented so SelectOverlay handles navigation/selection.
+  // Only dispatches while the model-picker modal owns the slot; a different
+  // modal taking over suppresses our writes.
+  useKeyboard((key: KeyEvent) => {
+    if (!props.focused) return;
+    if (key.name === "escape" || key.name === "return" || key.name === "tab") return;
+    if (store === undefined || store === null) return;
+    const current = store.getState().modal;
+    if (current?.kind !== "model-picker") return;
+
+    if (key.name === "backspace") {
+      key.preventDefault();
+      store.dispatch({ kind: "model_picker_set_query", query: current.query.slice(0, -1) });
+      return;
+    }
+    if (
+      key.sequence &&
+      key.sequence.length === 1 &&
+      !key.ctrl &&
+      !key.meta &&
+      key.name !== "return" &&
+      key.name !== "tab"
+    ) {
+      key.preventDefault();
+      store.dispatch({
+        kind: "model_picker_set_query",
+        query: current.query + key.sequence,
+      });
+    }
+  });
 
   return (
     <box
@@ -98,6 +134,15 @@ export function ModelPicker(props: ModelPickerProps): JSX.Element {
           <b>{"Models"}</b>
         </text>
         <text fg={COLORS.textMuted}>{" — select to switch, Esc to cancel"}</text>
+      </box>
+
+      {/* Search query display */}
+      <box paddingLeft={1} paddingBottom={1}>
+        <text fg={COLORS.textMuted}>{"> "}</text>
+        <text fg={COLORS.white}>{resolveModal().query}</text>
+        <Show when={props.focused}>
+          <text fg={COLORS.purple}>{"▌"}</text>
+        </Show>
       </box>
 
       {resolveModal().status === "loading" ? (

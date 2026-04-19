@@ -368,9 +368,25 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       pending = fetcher();
       cachedModelFetch = { fetcher, pending };
     }
-    void pending.then((result) => {
-      store.dispatch({ kind: "model_picker_fetched", result });
-    });
+    // Capture the promise we committed to so a later invalidation (e.g. the
+    // user reopens the picker after the failure below landed) can't racily
+    // clobber a fresher attempt.
+    const settled = pending;
+    void settled
+      .then((result) => {
+        // Invalidate the cache on failure so reopening the picker retries —
+        // transient outages (timeouts, auth blips) shouldn't stick for the
+        // rest of the process.
+        if (!result.ok && cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+        store.dispatch({ kind: "model_picker_fetched", result });
+      })
+      .catch(() => {
+        if (cachedModelFetch?.pending === settled) {
+          cachedModelFetch = null;
+        }
+      });
   };
 
   const handleModelSelect = (model: ModelEntry): void => {
