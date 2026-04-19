@@ -510,18 +510,22 @@ async function refreshAccessToken(
     });
 
     if (!response.ok) {
-      // 400/401 = terminal (invalid_grant, revoked token). 5xx = transient.
-      // RFC 6749 §5.2 token-error responses always carry an `error` field;
-      // parse it once so we can surface invalid_client + resource-related
-      // rejections distinctly without losing terminal/transient
-      // classification.
+      // Classification mirrors registration.ts:
+      // - 5xx → transient (server-side hiccup)
+      // - 408 / 425 / 429 → transient (HTTP / RFC 6585 / 8470 retryable)
+      // - 400 / 401 / 403 / 422 → terminal (invalid_grant, revoked
+      //   token, validation rejection — operator action required)
+      //
+      // RFC 6749 §5.2 token-error responses always carry an `error`
+      // field; parse it once on terminal responses so we can surface
+      // invalid_client + resource-related rejections distinctly.
       //
       // RFC 8707 §2: only `invalid_target` is the resource-parameter
       // rejection. `invalid_request` is the general OAuth catch-all
-      // (PKCE mismatch, malformed body, duplicated params) — replaying
-      // refresh on it could escalate a malformed request into harder-
-      // to-recover token loss while doubling endpoint traffic.
-      const terminal = response.status < 500;
+      // — never trigger automatic retry on it.
+      const retryableClientErrors = new Set<number>([408, 425, 429]);
+      const isTransient = response.status >= 500 || retryableClientErrors.has(response.status);
+      const terminal = !isTransient;
       const errorCode = terminal ? await readErrorCode(response) : undefined;
       return {
         ok: false,

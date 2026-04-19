@@ -389,6 +389,35 @@ describe("createTokenManager — refresh flow", () => {
     expect(await tm.hasTokens()).toBe(false);
   });
 
+  test("preserves tokens on retryable token-endpoint statuses (408, 425, 429)", async () => {
+    // Mirror of the DCR classification: explicit retryable signals
+    // (HTTP 408, RFC 8470 425, RFC 6585 429) MUST keep tokens — a
+    // transient throttle/intermediary timeout would otherwise wipe
+    // a valid refresh token and force re-auth.
+    for (const status of [408, 425, 429]) {
+      const localStorage = createMockStorage();
+      globalThis.fetch = mock(() =>
+        Promise.resolve(new Response(`status ${status}`, { status })),
+      ) as unknown as typeof fetch;
+
+      const tm = createTokenManager({
+        serverName: "s",
+        serverUrl: "https://mcp.example.com",
+        storage: localStorage,
+        metadata: METADATA,
+        clientId: "c",
+      });
+      await tm.storeTokens({
+        accessToken: "x",
+        refreshToken: "rt",
+        expiresAt: Date.now() - 1,
+      });
+
+      expect(await tm.getAccessToken(), `status ${status}`).toBeUndefined();
+      expect(await tm.hasTokens(), `status ${status} preserved`).toBe(true);
+    }
+  });
+
   test("preserves tokens on transient refresh failure (5xx)", async () => {
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response("upstream unavailable", { status: 503 })),
