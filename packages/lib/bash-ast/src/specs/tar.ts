@@ -172,6 +172,11 @@ export function specTar(argv: readonly string[]): SpecResult {
     // order-sensitive and may interleave with positionals, so we re-scan the
     // expanded argv directly to preserve ordering. parseFlags's flag map
     // would collapse repeated -C and lose positional ordering.
+    //
+    // Always partial: any positional MAY be a directory, in which case tar
+    // recursively reads every descendant — argv alone cannot tell. Reported
+    // operands act as subtree roots; the consumer rule is the same as for
+    // other recursive forms (a path rule on a root applies transitively).
     const reads = collectCreateReads(expandTarBundles(argv));
     const semantics = {
       reads,
@@ -179,7 +184,7 @@ export function specTar(argv: readonly string[]): SpecResult {
       network: [],
       envMutations: [],
     } as const satisfies CommandSemantics;
-    return { kind: "complete", semantics };
+    return { kind: "partial", semantics, reason: "recursive-subtree-root" };
   }
 
   if (mode === "t") {

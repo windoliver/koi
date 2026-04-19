@@ -4,47 +4,47 @@ import { specTar } from "./tar.js";
 describe("specTar — create (-c)", () => {
   test("returns complete with archive in writes and files in reads", () => {
     const result = specTar(["tar", "-c", "-f", "out.tar", "a.txt", "b.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt", "b.txt"]);
   });
 
   test("bundled -cf works", () => {
     const result = specTar(["tar", "-cf", "out.tar", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
   });
 
   test("attached -fFILE form (no space) works (regression)", () => {
     const result = specTar(["tar", "-c", "-fout.tar", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
 
   test("attached bundle -cfFILE form (no space) works (regression)", () => {
     const result = specTar(["tar", "-cfout.tar", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
 
   test("attached -CDIR rebases following operands (regression)", () => {
     const result = specTar(["tar", "-c", "-Cwork", "-fout.tar", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["work/a.txt"]);
   });
 
   test("-C with -c rebases following positionals (regression)", () => {
     const result = specTar(["tar", "-c", "-C", "/etc", "-f", "out.tar", "passwd"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["/etc/passwd"]);
   });
 
@@ -61,8 +61,8 @@ describe("specTar — create (-c)", () => {
       "/var",
       "log/syslog",
     ]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["/etc/passwd", "/var/log/syslog"]);
   });
 
@@ -75,22 +75,22 @@ describe("specTar — create (-c)", () => {
 
   test("absolute operands are not rebased under -C (regression)", () => {
     const result = specTar(["tar", "-c", "-C", "/safe", "-f", "out.tar", "/etc/shadow"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["/etc/shadow"]);
   });
 
   test("-- end-of-options preserves dash-prefixed operands as files (regression)", () => {
     const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-secret", "-also"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["-secret", "-also"]);
   });
 
   test("-- after -C still rebases relative dash-prefixed operands", () => {
     const result = specTar(["tar", "-c", "-C", "/etc", "-f", "out.tar", "--", "-secret"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["/etc/-secret"]);
   });
 
@@ -98,30 +98,30 @@ describe("specTar — create (-c)", () => {
     // The token `-cfsecret` after `--` is a literal filename, NOT a tar bundle.
     // It must reach the reads list as a single path, not split into `-c -fsecret`.
     const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-cfsecret"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["-cfsecret"]);
   });
 
   test("post-cutoff -Cdir-looking operand is not interpreted as -C (regression)", () => {
     const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-Cdir"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.reads).toEqual(["-Cdir"]);
   });
 
   test("archive flag interleaved with files (regression: positional-independence)", () => {
     const result = specTar(["tar", "-c", "a.txt", "-f", "out.tar", "b.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt", "b.txt"]);
   });
 
   test("archive flag before mode flag (regression)", () => {
     const result = specTar(["tar", "-f", "out.tar", "-c", "a.txt"]);
-    expect(result.kind).toBe("complete");
-    if (result.kind !== "complete") return;
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
