@@ -98,18 +98,16 @@ export async function registerDynamicClient(
       await deleteRegisteredClient(cleanupUri, cleanupToken);
     };
 
-    // Fail fast on confidential registrations. We requested
-    // `token_endpoint_auth_method: none` (public client + PKCE). If the AS
-    // returned a client_secret or a confidential auth method, the later
-    // token exchange and refresh paths — which only send client_id — would
-    // fail with invalid_client. Rather than silently persist credentials
-    // we can't use, drop the registration so callers fail closed at auth
-    // time with a clear "try again" signal.
-    if (
-      typeof data.client_secret === "string" ||
-      (typeof data.token_endpoint_auth_method === "string" &&
-        data.token_endpoint_auth_method !== "none")
-    ) {
+    // Require explicit confirmation of a public client.
+    //
+    // Per RFC 7591 §2, if `token_endpoint_auth_method` is omitted the
+    // server defaults to `client_secret_basic` (confidential). We only
+    // implement the public-client (`none`) path — token exchange and
+    // refresh send only `client_id` — so a confidential registration
+    // would later fail with `invalid_client`. Demand the AS echo
+    // `token_endpoint_auth_method === "none"` rather than guess.
+    // Also reject any returned `client_secret` defensively.
+    if (typeof data.client_secret === "string" || data.token_endpoint_auth_method !== "none") {
       await rollback();
       return undefined;
     }

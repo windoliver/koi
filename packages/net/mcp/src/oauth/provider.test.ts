@@ -327,7 +327,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registeredOnce = true;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "dyn-123" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "dyn-123", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -403,7 +406,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCalls += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "should-not-run" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "should-not-run", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -474,7 +480,10 @@ describe("createOAuthAuthProvider", () => {
         registerCounter += 1;
         const assigned = `dyn-${registerCounter}`;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: assigned }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: assigned, token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -557,7 +566,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCalls += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "fresh-client" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "fresh-client", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -638,7 +650,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCalls += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "fresh-port" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "fresh-port", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -860,7 +875,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCalls += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "should-not-run" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "should-not-run", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       return Promise.resolve(new Response(null, { status: 404 }));
@@ -918,7 +936,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCounter += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: nextRegisterId }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: nextRegisterId, token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {
@@ -977,6 +998,80 @@ describe("createOAuthAuthProvider", () => {
     expect(seenAuthClientIds).toEqual(["second"]);
   });
 
+  test("reuses persisted DCR client when discovery stops advertising registration_endpoint", async () => {
+    // An AS that disables DCR after we already have a client_id, or
+    // whose discovery temporarily drops registration_endpoint, must NOT
+    // brick our existing registration. The stored client_id is still
+    // valid at the authorize/token endpoints — registration_endpoint
+    // is only needed when we'd register a NEW client.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    await storage.set(
+      computeClientKey("no-more-dcr", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      JSON.stringify({
+        clientId: "still-valid",
+        registeredAt: 1700000000,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+      }),
+    );
+
+    // Discovery now omits registration_endpoint.
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    let registerCalls = 0;
+    let authUrlClientId: string | undefined;
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        authUrlClientId = url.searchParams.get("client_id") ?? undefined;
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCalls += 1;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ client_id: "wont-happen", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "no-more-dcr",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    await provider.startAuthFlow();
+    expect(registerCalls).toBe(0);
+    expect(authUrlClientId).toBe("still-valid");
+  });
+
   test("invalidates legacy DCR records that lack issuer/registration_endpoint binding", async () => {
     // An installation upgraded from the earlier DCR shape (no issuer
     // binding) must NOT keep reusing that unbound client_id forever —
@@ -1022,7 +1117,10 @@ describe("createOAuthAuthProvider", () => {
       if (urlStr.endsWith("/register")) {
         registerCalls += 1;
         return Promise.resolve(
-          new Response(JSON.stringify({ client_id: "fresh-bound" }), { status: 201 }),
+          new Response(
+            JSON.stringify({ client_id: "fresh-bound", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
         );
       }
       if (urlStr.includes("/token")) {

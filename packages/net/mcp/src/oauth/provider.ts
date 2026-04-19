@@ -309,21 +309,32 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
  * configs with different callback ports get independent records rather
  * than fighting over one.
  *
- * DCR records (`registeredAt > 0`) MUST carry both issuer and
- * registration_endpoint bindings — anything else is legacy/unbound
- * persistence from an earlier shape, and reusing it would silently
- * send a stale `client_id` to whatever AS discovery now points at.
- * Treat unbound DCR records as stale so the next auth attempt
- * re-registers cleanly. Static records (`registeredAt === 0`) carry
- * no bindings by design; their `clientId` is operator-managed and
- * always fresh.
+ * Issuer is the load-bearing check — DCR client_ids are issuer-scoped
+ * so any change there means the stored id no longer belongs to the
+ * authorization server we are about to talk to.
+ *
+ * `registration_endpoint` is checked only when current metadata
+ * advertises one. An AS that has disabled DCR (or whose discovery
+ * temporarily omits the endpoint) does NOT invalidate already-issued
+ * client_ids — they keep working at the authorize/token endpoints.
+ * Without this carve-out, a transient discovery degradation would
+ * brick every previously-registered client.
+ *
+ * DCR records (`registeredAt > 0`) MUST still carry the issuer
+ * binding — anything else is legacy/unbound persistence and a stale
+ * id reuse hazard, so treat it as stale and re-register cleanly.
+ * Static records (`registeredAt === 0`) bypass all checks; their
+ * `clientId` is operator-managed.
  */
 function isClientFresh(stored: OAuthClientInfo, metadata: AuthServerMetadata | undefined): boolean {
   if (stored.registeredAt === 0) return true;
   if (metadata === undefined) return false;
-  if (stored.issuer === undefined || stored.registrationEndpoint === undefined) return false;
-  if (stored.issuer !== metadata.issuer) return false;
-  if (stored.registrationEndpoint !== metadata.registrationEndpoint) {
+  if (stored.issuer === undefined || stored.issuer !== metadata.issuer) return false;
+  if (
+    metadata.registrationEndpoint !== undefined &&
+    stored.registrationEndpoint !== undefined &&
+    stored.registrationEndpoint !== metadata.registrationEndpoint
+  ) {
     return false;
   }
   return true;

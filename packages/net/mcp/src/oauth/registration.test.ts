@@ -17,7 +17,11 @@ describe("registerDynamicClient", () => {
       expect(body.response_types).toEqual(["code"]);
       return Promise.resolve(
         new Response(
-          JSON.stringify({ client_id: "registered-123", client_id_issued_at: 1700000000 }),
+          JSON.stringify({
+            client_id: "registered-123",
+            client_id_issued_at: 1700000000,
+            token_endpoint_auth_method: "none",
+          }),
           { status: 201 },
         ),
       );
@@ -35,7 +39,11 @@ describe("registerDynamicClient", () => {
 
   test("accepts 200 response with client_id", async () => {
     globalThis.fetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ client_id: "ok-200" }), { status: 200 })),
+      Promise.resolve(
+        new Response(JSON.stringify({ client_id: "ok-200", token_endpoint_auth_method: "none" }), {
+          status: 200,
+        }),
+      ),
     ) as unknown as typeof fetch;
 
     const info = await registerDynamicClient({
@@ -58,6 +66,24 @@ describe("registerDynamicClient", () => {
           status: 201,
         }),
       ),
+    ) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info).toBeUndefined();
+  });
+
+  test("rejects registrations that omit token_endpoint_auth_method (RFC 7591 default = confidential)", async () => {
+    // Per RFC 7591 §2, an omitted token_endpoint_auth_method defaults
+    // to client_secret_basic. We only implement the public-client path,
+    // so demand explicit confirmation rather than guess. Without this,
+    // a response with only client_id would later fail every token
+    // exchange / refresh with invalid_client.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ client_id: "ambiguous" }), { status: 201 })),
     ) as unknown as typeof fetch;
 
     const info = await registerDynamicClient({
@@ -91,7 +117,11 @@ describe("registerDynamicClient", () => {
 
   test("records issuer + registration endpoint on successful registration", async () => {
     globalThis.fetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ client_id: "pub" }), { status: 201 })),
+      Promise.resolve(
+        new Response(JSON.stringify({ client_id: "pub", token_endpoint_auth_method: "none" }), {
+          status: 201,
+        }),
+      ),
     ) as unknown as typeof fetch;
 
     const info = await registerDynamicClient({
@@ -170,6 +200,7 @@ describe("registerDynamicClient", () => {
         new Response(
           JSON.stringify({
             client_id: "ok",
+            token_endpoint_auth_method: "none",
             redirect_uris: ["http://127.0.0.1:8912/callback", "http://127.0.0.1:7777/callback"],
           }),
           { status: 201 },
