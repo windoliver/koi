@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeBlobFromFile } from "@koi/blob-cas";
 import type {
   FileDeleteResult,
   FileOpRecord,
@@ -21,7 +22,6 @@ import type {
   SnapshotNode,
   ToolCallId,
 } from "@koi/core";
-import { writeBlobFromFile } from "../cas-store.js";
 import {
   applyCompensatingOps,
   computeCompensatingOps,

@@ -34,6 +34,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeBlobFromFile } from "@koi/blob-cas";
 import type {
   CompensatingOp,
   JsonObject,
@@ -45,7 +46,6 @@ import type {
   TurnId,
 } from "@koi/core";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
-import { writeBlobFromFile } from "../cas-store.js";
 import { createCheckpoint } from "../checkpoint.js";
 import { applyCompensatingOps } from "../compensating-ops.js";
 import type { Checkpoint, CheckpointPayload, DriftDetector } from "../types.js";

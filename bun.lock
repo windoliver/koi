@@ -129,6 +129,7 @@
       "name": "@koi/checkpoint",
       "version": "0.0.0",
       "dependencies": {
+        "@koi/blob-cas": "workspace:*",
         "@koi/core": "workspace:*",
       },
       "devDependencies": {

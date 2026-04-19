@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeBlobFromFile } from "@koi/blob-cas";
 import type {
   ChainId,
   FileDeleteResult,
@@ -24,7 +25,6 @@ import type {
   ToolCallId,
 } from "@koi/core";
 import { createSnapshotStoreSqlite } from "@koi/snapshot-store-sqlite";
-import { writeBlobFromFile } from "../cas-store.js";
 import { runRestore } from "../restore-protocol.js";
 import type { CheckpointPayload } from "../types.js";
 

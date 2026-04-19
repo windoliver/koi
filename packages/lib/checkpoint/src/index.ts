@@ -8,7 +8,7 @@
  * protocol, /rewind slash command, in-flight queue) lands in a follow-up.
  */
 
-export { blobPath, hasBlob, readBlob, writeBlobFromFile } from "./cas-store.js";
+export { blobPath, hasBlob, readBlob, writeBlobFromFile } from "@koi/blob-cas";
 export type { CreateCheckpointInput } from "./checkpoint.js";
 export { createCheckpoint } from "./checkpoint.js";
 export type { CreateCheckpointMiddlewareInput } from "./checkpoint-middleware.js";
