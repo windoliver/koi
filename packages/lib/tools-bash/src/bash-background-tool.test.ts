@@ -226,12 +226,23 @@ describe("bash_background — watch_patterns functional", () => {
     expect(store.pending()).toBe(0);
   });
 
-  test("releaseOutputBuffer is called when task enters terminal state", async () => {
-    const released: TaskItemId[] = [];
+  test("markOutputBufferTerminal is called when task enters terminal state (buffer is kept)", async () => {
+    const markedTerminal: TaskItemId[] = [];
+    const buffers = new Map<TaskItemId, ReturnType<typeof createBashOutputBuffer>>();
+
     const tool = createBashBackgroundTool(
       minimalConfig({
-        releaseOutputBuffer: (id) => {
-          released.push(id);
+        getOutputBuffer: (id) => {
+          let buf = buffers.get(id);
+          if (buf === undefined) {
+            buf = createBashOutputBuffer({ maxBytes: 1_000_000 });
+            buffers.set(id, buf);
+          }
+          return buf;
+        },
+        markOutputBufferTerminal: (id) => {
+          markedTerminal.push(id);
+          // Intentionally do NOT delete from buffers — postmortem reads must still work.
         },
       }),
     );
@@ -241,13 +252,16 @@ describe("bash_background — watch_patterns functional", () => {
     if (!isStarted(result)) throw new Error("expected started");
     const taskId = result.taskId as TaskItemId;
 
-    // Poll until the subprocess exits and releaseOutputBuffer fires.
+    // Poll until the subprocess exits and markOutputBufferTerminal fires.
     // Timeout: 40 × 50ms = 2 seconds.
-    for (let i = 0; i < 40 && released.length === 0; i++) {
+    for (let i = 0; i < 40 && markedTerminal.length === 0; i++) {
       await new Promise<void>((r) => setTimeout(r, 50));
     }
 
-    expect(released).toContain(taskId);
+    // markOutputBufferTerminal must have fired with the correct task id.
+    expect(markedTerminal).toContain(taskId);
+    // Buffer must still exist for postmortem reads — not deleted by the tool.
+    expect(buffers.has(taskId)).toBe(true);
   });
 
   test("matched lines are written to outputBuffer's side-buffer for task_output(matches_only)", async () => {

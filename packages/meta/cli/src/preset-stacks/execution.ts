@@ -379,6 +379,12 @@ export const executionStack: PresetStack = {
       current: new Map(),
     };
 
+    // LRU eviction: maximum number of terminal-task buffers retained.
+    // Live (in_progress) buffers are never evicted — only terminal ones count.
+    const TERMINAL_BUFFER_RETAIN = 32;
+    // let: mutable — cleared on session reset alongside bashOutputBuffersRef.
+    let terminalBufferOrder: TaskItemId[] = [];
+
     function getOrCreateBuffer(id: TaskItemId): BashOutputBuffer {
       let buf = bashOutputBuffersRef.current.get(id);
       if (buf === undefined) {
@@ -438,8 +444,18 @@ export const executionStack: PresetStack = {
                 home: effectiveHome,
                 getWatchStore: () => watchPatternStoreRef.current,
                 getOutputBuffer: (id) => getOrCreateBuffer(id),
-                releaseOutputBuffer: (id) => {
-                  bashOutputBuffersRef.current.delete(id);
+                markOutputBufferTerminal: (id) => {
+                  // Record this task as terminal (for LRU eviction order).
+                  // The buffer is KEPT so postmortem reads (task_output matches_only,
+                  // buffered-stdout on failed/killed) still work. Only evict when
+                  // more than TERMINAL_BUFFER_RETAIN terminal buffers have accumulated.
+                  terminalBufferOrder.push(id);
+                  if (terminalBufferOrder.length > TERMINAL_BUFFER_RETAIN) {
+                    const evictId = terminalBufferOrder.shift();
+                    if (evictId !== undefined) {
+                      bashOutputBuffersRef.current.delete(evictId);
+                    }
+                  }
                 },
                 ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
@@ -574,6 +590,7 @@ export const executionStack: PresetStack = {
         watchPatternStoreRef.current.dispose?.();
         watchPatternStoreRef = { current: createPendingMatchStore() };
         bashOutputBuffersRef = { current: new Map() };
+        terminalBufferOrder = [];
       },
     };
   },

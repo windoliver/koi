@@ -138,14 +138,15 @@ export interface BashBackgroundToolConfig {
   /**
    * Called when a background task enters a terminal state (completed, failed, or aborted).
    *
-   * Use to remove the per-task output buffer from the session's buffer map, preventing
-   * unbounded memory accumulation in long-running sessions. Each background task retains
-   * ~1 MB + match entries until this callback is invoked.
+   * Use to signal that the per-task output buffer has transitioned to terminal state.
+   * The runtime may evict old terminal buffers (LRU) to bound memory, but live
+   * (in_progress) buffers are never evicted — postmortem reads for recently-terminal
+   * tasks remain available.
    *
    * Invoked from `runBackground`'s `finally` block, exactly once per task launch,
    * after matcher cleanup completes.
    */
-  readonly releaseOutputBuffer?: ((taskId: TaskItemId) => void) | undefined;
+  readonly markOutputBufferTerminal?: ((taskId: TaskItemId) => void) | undefined;
   /**
    * Live-output buffer per task — when provided, stdout/stderr bytes are mirrored
    * here so `task_output` can return partial output while a task is running and
@@ -430,7 +431,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
         matcher,
         store,
         callbacks,
-        config.releaseOutputBuffer,
+        config.markOutputBufferTerminal,
       ).finally(() => onSubprocessEnd?.());
 
       return {
@@ -469,7 +470,7 @@ async function runBackground(
   matcher: LineBufferedMatcher | undefined,
   store: PendingMatchStore | undefined,
   callbacks: SpawnBashCallbacks | undefined,
-  releaseOutputBuffer: ((taskId: TaskItemId) => void) | undefined,
+  markOutputBufferTerminal: ((taskId: TaskItemId) => void) | undefined,
 ): Promise<void> {
   const fullCommand = `set -euo pipefail\n${command}`;
   try {
@@ -567,10 +568,10 @@ async function runBackground(
         /* cancel errors must not break teardown */
       }
     }
-    // Release the per-task output buffer now that the task is in a terminal state.
-    // This prevents ~1 MB + match entries per task from accumulating indefinitely
-    // in long-running sessions.
-    releaseOutputBuffer?.(id);
+    // Signal that this task's output buffer has transitioned to terminal state.
+    // The runtime decides whether to evict the buffer (LRU) or keep it for
+    // postmortem reads — the tool itself never deletes the buffer.
+    markOutputBufferTerminal?.(id);
   }
 }
 
