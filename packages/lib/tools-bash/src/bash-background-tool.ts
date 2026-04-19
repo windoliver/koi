@@ -383,7 +383,7 @@ export function createBashBackgroundTool(config: BashBackgroundToolConfig): Tool
 
       // Compose onStdout/onStderr — matcher writer + buffer writer.
       // spawnBash and execSandboxed already accept SpawnBashCallbacks.
-      const callbacks: SpawnBashCallbacks | undefined = buildCallbacks(id, matcher, outputBuffer);
+      const callbacks: SpawnBashCallbacks | undefined = createCallbacks(id, matcher, outputBuffer);
 
       // Fire-and-forget: spawn subprocess, update task board on completion.
       // No await — returns the task ID to the agent immediately.
@@ -548,7 +548,7 @@ async function runBackground(
  * Returns `undefined` when neither side is active so the zero-pattern fast
  * path incurs no overhead vs. the pre-watch-patterns baseline.
  */
-function buildCallbacks(
+function createCallbacks(
   id: ReturnType<typeof taskItemId>,
   matcher: LineBufferedMatcher | undefined,
   buffer: BashOutputBuffer | undefined,
