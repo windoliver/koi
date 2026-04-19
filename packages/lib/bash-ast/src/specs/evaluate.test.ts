@@ -71,6 +71,46 @@ describe("evaluateBashCommand — redirects merged into semantics", () => {
     if (result.kind !== "partial") return;
     expect(result.reason).toBe("shell-redirect-fd-or-unknown-op");
   });
+
+  test("here-string `<<<` does NOT add target to reads (regression: target is inline data, not a path)", () => {
+    const result = evaluateBashCommand(
+      input(["rm", "foo"], [], [{ op: "<<<", target: "secret" }]),
+      BUILTIN_SPECS,
+    );
+    // `<<<` is unmodeled (inline stdin data), so the result is partial
+    // with no `secret` in reads.
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.reason).toBe("shell-redirect-fd-or-unknown-op");
+    expect(result.semantics.reads).toEqual([]);
+  });
+});
+
+describe("evaluateBashCommand — path-qualified argv[0]", () => {
+  test("accepts /bin/rm via basename normalization (consumer must pre-verify identity)", () => {
+    const result = evaluateBashCommand(input(["/bin/rm", "foo"]), BUILTIN_SPECS);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["foo"]);
+  });
+
+  test("accepts /usr/local/bin/curl via basename normalization", () => {
+    const result = evaluateBashCommand(
+      input(["/usr/local/bin/curl", "https://example.com/"]),
+      BUILTIN_SPECS,
+    );
+    expect(result.kind).toBe("complete");
+  });
+
+  test("refuses argv[0] with no derivable basename ('/')", () => {
+    const result = evaluateBashCommand(input(["/"]), BUILTIN_SPECS);
+    expect(result.kind).toBe("refused");
+  });
+
+  test("refuses unknown command name even after basename strip", () => {
+    const result = evaluateBashCommand(input(["/bin/git", "status"]), BUILTIN_SPECS);
+    expect(result.kind).toBe("refused");
+  });
 });
 
 describe("evaluateBashCommand — env vars downgrade to partial", () => {
