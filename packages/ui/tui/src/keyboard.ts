@@ -15,7 +15,7 @@
  */
 
 import type { KeyEvent } from "@opentui/core";
-import { isCtrlC, isCtrlN, isCtrlP, isCtrlS, isEscape } from "./key-event.js";
+import { isCtrlC, isCtrlM, isCtrlN, isCtrlP, isCtrlS, isEscape } from "./key-event.js";
 import type { TuiStore } from "./state/store.js";
 import type { TuiState } from "./state/types.js";
 
@@ -37,6 +37,8 @@ export interface GlobalKeyCallbacks {
   readonly onNewSession: () => void;
   /** Open the sessions picker (Ctrl+S). */
   readonly onOpenSessions: () => void;
+  /** Open the model picker (Ctrl+M). */
+  readonly onOpenModelPicker: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,18 @@ export function handleGlobalKey(
     state.atQuery === null
   ) {
     callbacks.onOpenSessions();
+    return true;
+  }
+
+  // Ctrl+M — open model picker (same guards as Ctrl+S)
+  if (
+    isCtrlM(event) &&
+    state.modal === null &&
+    state.activeView === "conversation" &&
+    state.slashQuery === null &&
+    state.atQuery === null
+  ) {
+    callbacks.onOpenModelPicker();
     return true;
   }
 

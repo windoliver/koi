@@ -38,6 +38,10 @@ export function isCtrlS(key: KeyEvent): boolean {
   return key.ctrl && key.name === "s";
 }
 
+export function isCtrlM(key: KeyEvent): boolean {
+  return key.ctrl && key.name === "m";
+}
+
 export function isBackspace(key: KeyEvent): boolean {
   return key.name === "backspace";
 }

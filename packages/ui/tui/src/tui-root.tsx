@@ -308,6 +308,8 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
         const cmd = COMMAND_DEFINITIONS.find((c) => c.id === "session:sessions");
         if (cmd !== undefined) handleCommandSelect(cmd);
       },
+      // Task 11 will replace this stub with the real model-picker modal wiring.
+      onOpenModelPicker: () => {},
     });
   });
 

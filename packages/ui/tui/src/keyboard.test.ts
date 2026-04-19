@@ -44,6 +44,7 @@ function makeCallbacks(): GlobalKeyCallbacks {
     onBack: mock(() => {}),
     onNewSession: mock(() => {}),
     onOpenSessions: mock(() => {}),
+    onOpenModelPicker: mock(() => {}),
   };
 }
 
@@ -163,6 +164,40 @@ describe("handleGlobalKey — Ctrl+S", () => {
     const result = handleGlobalKey(key("s", { ctrl: true }), state, cbs);
     expect(result).toBe(false);
     expect(cbs.onOpenSessions).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// handleGlobalKey — Ctrl+M
+// ---------------------------------------------------------------------------
+
+describe("handleGlobalKey — Ctrl+M", () => {
+  test("calls onOpenModelPicker on conversation view with no modal", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("m", { ctrl: true }), stateNoModal, cbs);
+    expect(result).toBe(true);
+    expect(cbs.onOpenModelPicker).toHaveBeenCalledTimes(1);
+  });
+  test("ignored when a modal is open", () => {
+    const cbs = makeCallbacks();
+    const result = handleGlobalKey(key("m", { ctrl: true }), stateWithModal, cbs);
+    expect(result).toBe(false);
+    expect(cbs.onOpenModelPicker).not.toHaveBeenCalled();
+  });
+  test("ignored on non-conversation views", () => {
+    const state: TuiState = { ...createInitialState(), activeView: "trajectory" };
+    const cbs = makeCallbacks();
+    expect(handleGlobalKey(key("m", { ctrl: true }), state, cbs)).toBe(false);
+  });
+  test("ignored when slash overlay is active", () => {
+    const state: TuiState = { ...createInitialState(), slashQuery: "mod" };
+    const cbs = makeCallbacks();
+    expect(handleGlobalKey(key("m", { ctrl: true }), state, cbs)).toBe(false);
+  });
+  test("ignored when @-mention overlay is active", () => {
+    const state: TuiState = { ...createInitialState(), atQuery: "src/" };
+    const cbs = makeCallbacks();
+    expect(handleGlobalKey(key("m", { ctrl: true }), state, cbs)).toBe(false);
   });
 });
 

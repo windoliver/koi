@@ -13,6 +13,7 @@ const KEYBINDINGS = [
   { key: "Ctrl+P", action: "Open command palette" },
   { key: "Ctrl+N", action: "Start a new session" },
   { key: "Ctrl+S", action: "Open sessions picker" },
+  { key: "Ctrl+M", action: "Switch model" },
   { key: "Ctrl+C", action: "Interrupt agent" },
   { key: "Esc", action: "Dismiss modal · back to conversation" },
   { key: "Enter", action: "Submit message" },
