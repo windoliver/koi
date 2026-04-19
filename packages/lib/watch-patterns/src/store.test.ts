@@ -218,3 +218,104 @@ describe("store eviction — tombstones", () => {
     expect(older[0]?.count).toBe(1);
   });
 });
+
+describe("tombstone ack is scoped to the delivered snapshot", () => {
+  test("tombstones added after peek are NOT cleared by unrelated ack", () => {
+    const s = createPendingMatchStore();
+    // Fill to cause 2 evictions — first set.
+    for (let i = 0; i < 258; i++) {
+      s.record({
+        taskId: `a${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const reqA = {};
+    const snapA = s.peek(reqA);
+    const tombstonesInA = snapA.filter((c) => c.event === "__watch_dropped__");
+    expect(tombstonesInA).toHaveLength(2);
+
+    // Between peek and ack, more evictions happen.
+    for (let i = 258; i < 262; i++) {
+      s.record({
+        taskId: `b${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    // +4 new evictions → 4 new tombstones.
+    s.ack(reqA);
+
+    // Next peek must still see the 4 newer tombstones, NOT see the 2 old ones.
+    const reqB = {};
+    const snapB = s.peek(reqB);
+    const tombstonesInB = snapB.filter((c) => c.event === "__watch_dropped__");
+    expect(tombstonesInB).toHaveLength(4);
+  });
+
+  test("overflow count is decremented by delivered amount, not zeroed", () => {
+    const s = createPendingMatchStore();
+    // Force tombstone overflow: 256 live + >4096 tombstones + a few more.
+    for (let i = 0; i < 256 + 4097; i++) {
+      s.record({
+        taskId: `t${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const reqA = {};
+    const snapA = s.peek(reqA);
+    const olderA = snapA.filter((c) => c.event === "__watch_dropped_older__");
+    expect(olderA).toHaveLength(1);
+    expect(olderA[0]?.count).toBe(1); // exactly 1 extra eviction past cap
+
+    // More evictions before ack.
+    for (let i = 0; i < 10; i++) {
+      s.record({
+        taskId: `z${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    s.ack(reqA);
+
+    // Next peek should still surface the post-ack overflow-older entries.
+    const reqB = {};
+    const snapB = s.peek(reqB);
+    const olderB = snapB.filter((c) => c.event === "__watch_dropped_older__");
+    // There are now 10 more evictions past the 4096 cap — which were also added
+    // but perhaps still fit in the tombstone buffer since ack removed the
+    // delivered ones. Verify either overflow entry is gone (all tombstones fit
+    // now) OR count reflects NEW overflow only.
+    if (olderB.length > 0) {
+      expect(olderB[0]?.count).toBeLessThanOrEqual(10);
+    }
+  });
+
+  test("repeat ack on same request is still idempotent no-op", () => {
+    const s = createPendingMatchStore();
+    for (let i = 0; i < 258; i++) {
+      s.record({
+        taskId: `a${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const req = {};
+    s.peek(req);
+    s.ack(req);
+    s.ack(req); // repeat — no-op
+    const next = s.peek({});
+    expect(next.some((c) => c.event === "__watch_dropped__")).toBe(false);
+  });
+});

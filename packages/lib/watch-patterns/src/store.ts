@@ -13,9 +13,12 @@ interface WindowState {
 interface Snapshot {
   readonly view: readonly CoalescedMatch[];
   readonly idsByKey: Map<string, readonly number[]>;
+  readonly tombstoneSeqsDelivered: readonly number[];
+  readonly tombstoneOverflowCountDelivered: number;
 }
 
 interface TombstoneEntry {
+  readonly seq: number;
   readonly firstMatch: PatternMatch;
   readonly lastTimestamp: number;
 }
@@ -28,20 +31,21 @@ export function createPendingMatchStore(): PendingMatchStore {
   const currentWindow = new Map<string, WindowState>();
   const snapshotCache = new WeakMap<TurnRequestKey, Snapshot>();
   const matchers = new Set<{ readonly cancel: () => void }>();
-  // let is justified: monotonically incremented counter (mutable by design)
+  // let is justified: monotonically incremented counters (mutable by design)
   let nextRecordId = 0;
+  let nextTombstoneSeq = 0;
   let disposed = false;
 
   const tombstones: TombstoneEntry[] = [];
   // let is justified: overflow counter that accumulates evictions beyond MAX_TOMBSTONES
   let tombstoneOverflowCount = 0;
 
-  function pushTombstone(entry: TombstoneEntry): void {
+  function pushTombstone(entry: Omit<TombstoneEntry, "seq">): void {
     if (tombstones.length >= MAX_TOMBSTONES) {
       tombstones.shift();
       tombstoneOverflowCount += 1;
     }
-    tombstones.push(entry);
+    tombstones.push({ seq: nextTombstoneSeq++, ...entry });
   }
 
   function snapshotWindow(): Snapshot {
@@ -65,7 +69,9 @@ export function createPendingMatchStore(): PendingMatchStore {
       idsByKey.set(key, Array.from(s.records.keys()));
     }
 
+    const tombstoneSeqsDelivered: number[] = [];
     for (const t of tombstones) {
+      tombstoneSeqsDelivered.push(t.seq);
       view.push({
         taskId: t.firstMatch.taskId,
         event: "__watch_dropped__",
@@ -75,6 +81,8 @@ export function createPendingMatchStore(): PendingMatchStore {
         lastTimestamp: t.lastTimestamp,
       });
     }
+
+    const tombstoneOverflowCountDelivered = tombstoneOverflowCount;
 
     if (tombstoneOverflowCount > 0 && tombstones.length > 0) {
       const sample = tombstones[0];
@@ -90,7 +98,7 @@ export function createPendingMatchStore(): PendingMatchStore {
       }
     }
 
-    return { view, idsByKey };
+    return { view, idsByKey, tombstoneSeqsDelivered, tombstoneOverflowCountDelivered };
   }
 
   return {
@@ -139,9 +147,19 @@ export function createPendingMatchStore(): PendingMatchStore {
       if (disposed) return;
       const snap = snapshotCache.get(request);
       if (!snap) return;
-      // Tombstones were delivered in the snapshot — clear them all on ack.
-      tombstones.length = 0;
-      tombstoneOverflowCount = 0;
+      // Remove only tombstones that were part of this snapshot — preserve later arrivals.
+      const deliveredSet = new Set(snap.tombstoneSeqsDelivered);
+      for (let i = tombstones.length - 1; i >= 0; i--) {
+        const t = tombstones[i];
+        if (t !== undefined && deliveredSet.has(t.seq)) {
+          tombstones.splice(i, 1);
+        }
+      }
+      // Decrement overflow by the delivered amount only; clamp to 0 defensively.
+      tombstoneOverflowCount = Math.max(
+        0,
+        tombstoneOverflowCount - snap.tombstoneOverflowCountDelivered,
+      );
       for (const [key, ids] of snap.idsByKey) {
         const state = currentWindow.get(key);
         if (!state) continue;
