@@ -1,2 +1,10 @@
-// Populated by subsequent tasks. Keeps the package buildable during scaffolding.
-export {};
+export type {
+  Artifact,
+  ArtifactError,
+  ArtifactFilter,
+  ArtifactStore,
+  ArtifactStoreConfig,
+  LifecyclePolicy,
+  Result,
+  SaveArtifactInput,
+} from "./types.js";
