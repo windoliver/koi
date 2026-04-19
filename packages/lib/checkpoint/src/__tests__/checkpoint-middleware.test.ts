@@ -258,6 +258,45 @@ describe("checkpoint middleware", () => {
     expect(parentOfTurn2).toBeDefined();
   });
 
+  test("stopBlocked turn resets continuation marker so next text turn gets its own userTurnIndex (#1638)", async () => {
+    // Regression: prior normal turn has fileOps (lastCaptureHadOps=true),
+    // then a stopBlocked turn in between, then a normal text-only turn.
+    // Without the fix, the text-only turn would fold into the pre-abort
+    // turn's userTurnIndex because lastCaptureHadOps stays true across
+    // the stopBlocked early-return — breaking /rewind granularity. The
+    // fix resets lastCaptureHadOps in the stopBlocked branch so the
+    // continuation heuristic cannot span an aborted turn.
+    const session = makeSession();
+    const target = join(rig.workDir, "tracked.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal turn that writes a file.
+    const turn0 = makeTurn(session, 0);
+    await wrap(turn0, makeRequest("fs_write", { path: target, content: "hi" }), async () => {
+      writeFileSync(target, "hi");
+      return PASSTHROUGH_RESPONSE;
+    });
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) throw new Error("expected turn 0 head");
+    const turn0UserIndex = after0.value.data.userTurnIndex;
+
+    // Turn 1: stopBlocked, no fileOps.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await onAfter(turn1);
+
+    // Turn 2: normal text-only turn. Must get a NEW userTurnIndex, not
+    // fold into turn 0's slot.
+    const turn2 = makeTurn(session, 2);
+    await onAfter(turn2);
+    const after2 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after2.ok).toBe(true);
+    if (!after2.ok || after2.value === undefined) throw new Error("expected turn 2 head");
+    expect(after2.value.data.userTurnIndex).toBeGreaterThan(turn0UserIndex);
+  });
+
   test("onAfterTurn rolls back mutations when stopBlocked after fs_write (#1638)", async () => {
     // Aborted turn that already mutated the workspace MUST either preserve
     // undo data or actively roll back. We chose active rollback: the

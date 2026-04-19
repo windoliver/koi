@@ -363,6 +363,15 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     // trail + potential recovery path. The chain head (parentNodeId) is
     // NOT advanced in either case.
     if (ctx.stopBlocked === true) {
+      // Reset the continuation marker so the NEXT successful turn cannot
+      // mistakenly fold into the turn BEFORE the aborted one. Without
+      // this, `lastCaptureHadOps` stays `true` from the prior normal
+      // turn's tool-call and the heuristic would treat a subsequent
+      // text-only turn as a continuation of the pre-abort turn,
+      // producing an incorrect shared `userTurnIndex` and breaking
+      // `/rewind` granularity. Aborted turns do not participate in the
+      // "same-user-prompt" grouping.
+      state.lastCaptureHadOps = false;
       if (fileOps.length === 0) return;
       try {
         const compensating = fileOps
