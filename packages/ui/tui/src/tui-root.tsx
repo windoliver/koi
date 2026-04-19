@@ -74,6 +74,23 @@ export function resolveNavCommand(commandId: string): TuiView | null {
   return NAV_VIEW_MAP[commandId] ?? null;
 }
 
+/**
+ * Side-effect plan for `system:governance-reset`:
+ * 1. Clear in-memory alerts in the TUI store.
+ * 2. Forward to the host via onCommand so the bridge can reset its
+ *    alert-tracker dedup state.
+ *
+ * Exported for testing — do not rely on this in external packages.
+ */
+export function executeGovernanceReset(
+  store: TuiStore,
+  onCommand: (commandId: string, args: string) => void,
+  args: string,
+): void {
+  store.dispatch({ kind: "clear_governance_alerts" });
+  onCommand("system:governance-reset", args);
+}
+
 function findCommandBySlashName(name: string): CommandDef | undefined {
   return COMMAND_DEFINITIONS.find(
     (c) => c.id.split(":")[1] === name || c.id === name,
@@ -355,10 +372,7 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
       return;
     }
     if (cmd.id === "system:governance-reset") {
-      // Clear in-memory alerts; the host bridge (Task 12) will additionally
-      // reset the alert-tracker dedup so re-crossings can fire again.
-      store.dispatch({ kind: "clear_governance_alerts" });
-      props.onCommand(cmd.id, args);
+      executeGovernanceReset(store, props.onCommand, args);
       return;
     }
     props.onCommand(cmd.id, args);
