@@ -28,6 +28,36 @@ describe("specCurl — http(s)", () => {
     expect(result.semantics.writes).toEqual(["out.bin"]);
   });
 
+  test("repeated -o accumulates all writes (regression)", () => {
+    const result = specCurl([
+      "curl",
+      "-o",
+      "a.bin",
+      "https://example.com/1",
+      "-o",
+      "/restricted/out",
+      "https://example.com/2",
+    ]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["a.bin", "/restricted/out"]);
+  });
+
+  test("mixed -o and --output forms accumulate", () => {
+    const result = specCurl([
+      "curl",
+      "-o",
+      "x.bin",
+      "--output",
+      "y.bin",
+      "--output=z.bin",
+      "https://example.com/",
+    ]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["x.bin", "y.bin", "z.bin"]);
+  });
+
   test("with -L sets partial curl-follows-redirects", () => {
     const result = specCurl(["curl", "-L", "https://example.com/"]);
     expect(result.kind).toBe("partial");

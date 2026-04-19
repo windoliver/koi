@@ -63,13 +63,13 @@ export function specCurl(argv: readonly string[]): SpecResult {
     if (dispatched.read !== undefined) reads.push(dispatched.read);
   }
 
-  const outFile = parsed.flags.get("o") ?? parsed.flags.get("output");
-  if (typeof outFile === "string") writes.push(outFile);
-
-  // -d / --data may appear multiple times; collapsing to parsed.flags.get(...)
-  // would under-report reads when multiple @file forms are passed. Scan argv
-  // directly to capture every occurrence.
-  for (const dataValue of collectDataValues(argv)) {
+  // -o / --output and -d / --data may appear multiple times; collapsing to
+  // parsed.flags.get(...) would under-report writes/reads. Scan argv directly
+  // to capture every occurrence.
+  for (const outValue of collectRepeatedFlag(argv, "o", "output")) {
+    writes.push(outValue);
+  }
+  for (const dataValue of collectRepeatedFlag(argv, "d", "data")) {
     if (dataValue.startsWith("@")) reads.push(dataValue.slice(1));
   }
 
@@ -85,12 +85,28 @@ export function specCurl(argv: readonly string[]): SpecResult {
   return { kind: "complete", semantics };
 }
 
-function collectDataValues(argv: readonly string[]): readonly string[] {
+/**
+ * Walk argv and collect every value passed to a value-taking flag whose
+ * short form is `-<short>` (e.g. `-d`) and long form is `--<long>` (e.g.
+ * `--data`). Recognises all standard forms:
+ *   `-<short> VALUE` (separate)
+ *   `-<short>VALUE`  (attached short, no space)
+ *   `--<long> VALUE` (separate long)
+ *   `--<long>=VALUE` (long with equals)
+ */
+function collectRepeatedFlag(
+  argv: readonly string[],
+  short: string,
+  long: string,
+): readonly string[] {
   const out: string[] = [];
+  const shortPrefix = `-${short}`;
+  const longExact = `--${long}`;
+  const longEq = `--${long}=`;
   for (let i = 1; i < argv.length; i += 1) {
     const tok = argv[i];
     if (tok === undefined) continue;
-    if (tok === "-d" || tok === "--data") {
+    if (tok === shortPrefix || tok === longExact) {
       const next = argv[i + 1];
       if (next !== undefined) {
         out.push(next);
@@ -98,12 +114,12 @@ function collectDataValues(argv: readonly string[]): readonly string[] {
       }
       continue;
     }
-    if (tok.startsWith("-d") && tok.length > 2 && !tok.startsWith("--")) {
-      out.push(tok.slice(2));
+    if (tok.startsWith(shortPrefix) && tok.length > shortPrefix.length && !tok.startsWith("--")) {
+      out.push(tok.slice(shortPrefix.length));
       continue;
     }
-    if (tok.startsWith("--data=")) {
-      out.push(tok.slice("--data=".length));
+    if (tok.startsWith(longEq)) {
+      out.push(tok.slice(longEq.length));
     }
   }
   return out;
