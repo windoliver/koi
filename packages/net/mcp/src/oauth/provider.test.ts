@@ -1237,6 +1237,129 @@ describe("createOAuthAuthProvider", () => {
     await expect(provider.startAuthFlow()).resolves.toBe(false);
   });
 
+  test("promotes legacy authority-less DCR record to authority-scoped key on first lookup", async () => {
+    // Upgrade migration: a previous build persisted DCR records under
+    // the no-authority key shape. The new authority-scoped lookup must
+    // probe the legacy key, validate freshness against current
+    // metadata, and promote the record so the operator does not get
+    // re-registered (orphaning the prior client server-side).
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+
+    // Seed legacy key (authority="") with a still-fresh record.
+    const legacyKey = computeClientKey(
+      "upgrade",
+      "https://mcp.example.com",
+      "http://127.0.0.1:8912/callback",
+      "",
+    );
+    await storage.set(
+      legacyKey,
+      JSON.stringify({
+        clientId: "legacy-but-good",
+        registeredAt: 1700000000,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+      }),
+    );
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    let registerCalls = 0;
+    let authUrlClientId: string | undefined;
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        authUrlClientId = url.searchParams.get("client_id") ?? undefined;
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCalls += 1;
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ client_id: "should-not-run", token_endpoint_auth_method: "none" }),
+            { status: 201 },
+          ),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "upgrade",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime,
+      storage,
+    });
+
+    await provider.startAuthFlow();
+    expect(registerCalls).toBe(0);
+    expect(authUrlClientId).toBe("legacy-but-good");
+
+    // Record promoted to new authority-scoped key, legacy key removed.
+    const newKey = computeClientKey(
+      "upgrade",
+      "https://mcp.example.com",
+      "http://127.0.0.1:8912/callback",
+      "https://auth.example.com",
+    );
+    expect(await storage.get(newKey)).toBeDefined();
+    expect(await storage.get(legacyKey)).toBeUndefined();
+  });
+
+  test("emits structured failure reasons via OAuthRuntime.onAuthFailure", async () => {
+    // Operators need actionable diagnostics, not a generic boolean false.
+    // Each fail-closed path must report a discriminant so hosts can
+    // surface the actual breakage mode.
+    const failures: Array<{ kind: string }> = [];
+    const onAuthFailure = mock((reason: { kind: string }) => {
+      failures.push(reason);
+    });
+
+    // Discovery returns 404 → discovery_failed.
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(null, { status: 404 })),
+    ) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "obs",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {},
+      runtime: {
+        authorize: mock(async () => ({ code: "c", state: "s" })),
+        onReauthNeeded: mock(async () => {}),
+        onAuthFailure,
+      },
+      storage: createMockStorage(),
+    });
+
+    await provider.startAuthFlow();
+    expect(failures.length).toBeGreaterThan(0);
+    expect(failures.map((f) => f.kind)).toContain("discovery_failed");
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

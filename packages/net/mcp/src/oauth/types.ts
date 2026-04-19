@@ -59,7 +59,30 @@ export interface OAuthRuntime {
    * The host decides how to present this (TUI prompt, CLI message, etc.).
    */
   readonly onReauthNeeded: (serverName: string) => Promise<void>;
+
+  /**
+   * Optional structured-failure observer. Fires when the provider takes a
+   * fail-closed branch — discovery failure, DCR rejection (insecure
+   * endpoint, confidential client, narrowed redirect_uris, missing
+   * registration_endpoint), or token-exchange failure. Lets hosts surface
+   * actionable diagnostics instead of a generic "auth failed" message.
+   * Implementations MUST NOT throw — failures here cannot affect the
+   * underlying auth flow.
+   */
+  readonly onAuthFailure?: ((reason: OAuthFailureReason) => void) | undefined;
 }
+
+/** Discriminated failure reasons for `OAuthRuntime.onAuthFailure`. */
+export type OAuthFailureReason =
+  | { readonly kind: "discovery_failed"; readonly serverName: string }
+  | { readonly kind: "dcr_unavailable"; readonly serverName: string }
+  | { readonly kind: "dcr_failed"; readonly serverName: string; readonly detail: string }
+  | {
+      readonly kind: "exchange_failed";
+      readonly serverName: string;
+      readonly invalidClient: boolean;
+    }
+  | { readonly kind: "state_mismatch"; readonly serverName: string };
 
 // ---------------------------------------------------------------------------
 // Token types

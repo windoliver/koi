@@ -20,6 +20,7 @@ import type {
   AuthServerMetadata,
   McpOAuthConfig,
   OAuthClientInfo,
+  OAuthFailureReason,
   OAuthRuntime,
   OAuthTokens,
 } from "./types.js";
@@ -68,6 +69,20 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
   const resourceIndicator: string | undefined =
     oauthConfig.includeResourceParameter === false ? undefined : serverUrl;
+
+  /**
+   * Best-effort fan-out to the host's structured-failure observer.
+   * Swallows all errors — observer failures cannot affect the underlying
+   * auth flow we are already failing closed on.
+   */
+  const reportFailure = (reason: OAuthFailureReason): void => {
+    if (runtime.onAuthFailure === undefined) return;
+    try {
+      runtime.onAuthFailure(reason);
+    } catch {
+      // Observer must not break auth flow.
+    }
+  };
 
   // Mutable state — justified: caches metadata + resolved client across token() calls
   let cachedMetadata: AuthServerMetadata | undefined;
@@ -124,6 +139,25 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         return stored;
       }
 
+      // Migration probe: before triggering a fresh DCR, look for a
+      // record under the prior key shape (no authority). When found
+      // and still fresh against current metadata, promote it to the
+      // new authority-scoped key so an upgrade does not re-register
+      // (and orphan) every previously persisted client. The legacy
+      // record is deleted only after the new write succeeds so a
+      // crash leaves at least one copy intact.
+      if (stored === undefined && authority !== "") {
+        const legacyKey = computeClientKey(serverName, serverUrl, redirectUri, "");
+        if (legacyKey !== lockKey) {
+          const legacy = await readClientInfo(storage, serverName, serverUrl, redirectUri, "");
+          if (legacy !== undefined && isClientFresh(legacy, metadata)) {
+            await storage.set(lockKey, JSON.stringify(legacy));
+            await storage.delete(legacyKey);
+            return legacy;
+          }
+        }
+      }
+
       if (metadata?.registrationEndpoint === undefined) return undefined;
 
       // registerDynamicClient throws on a non-HTTPS registration_endpoint
@@ -138,10 +172,23 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
           clientName: serverName,
           issuer: metadata.issuer,
         });
-      } catch {
+      } catch (e: unknown) {
+        reportFailure({
+          kind: "dcr_failed",
+          serverName,
+          detail: e instanceof Error ? e.message : String(e),
+        });
         return undefined;
       }
-      if (registered === undefined) return undefined;
+      if (registered === undefined) {
+        reportFailure({
+          kind: "dcr_failed",
+          serverName,
+          detail:
+            "registration response rejected (confidential client, narrowed redirect_uris, or non-2xx status)",
+        });
+        return undefined;
+      }
 
       // writeClientInfo would re-enter withLock on the same key — we
       // already own it, so persist directly to avoid a self-deadlock.
@@ -221,13 +268,20 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   const startAuthFlow = async (): Promise<boolean> => {
     const metadata = await getMetadata();
     if (metadata === undefined) {
+      reportFailure({ kind: "discovery_failed", serverName });
       return false;
     }
 
     const client = await getClient();
     if (client === undefined) {
-      // No configured clientId AND no registration_endpoint to DCR against —
-      // nothing we can do without operator intervention. Fail closed.
+      // No configured clientId AND no usable registration_endpoint to
+      // DCR against — nothing we can do without operator intervention.
+      // The dcr_failed report (when applicable) was already fired
+      // inside getClient; emit dcr_unavailable when the AS simply
+      // doesn't advertise registration.
+      if (oauthConfig.clientId === undefined && metadata.registrationEndpoint === undefined) {
+        reportFailure({ kind: "dcr_unavailable", serverName });
+      }
       return false;
     }
 
@@ -252,6 +306,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
     // Validate state parameter to prevent CSRF attacks
     if (callbackResult.state !== state) {
+      reportFailure({ kind: "state_mismatch", serverName });
       return false;
     }
 
@@ -274,6 +329,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       if (exchange.invalidClient && client.registeredAt > 0) {
         await invalidateRegisteredClient(client.clientId);
       }
+      reportFailure({
+        kind: "exchange_failed",
+        serverName,
+        invalidClient: exchange.invalidClient,
+      });
       return false;
     }
 
