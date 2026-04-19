@@ -245,19 +245,25 @@ async function runKill(
   // rely on (a) the lockfile-serialized claim to prove registry state
   // is current, and (b) post-signal identity re-verification before
   // any SIGKILL escalation.
-  // Claim identity AND drop any stale `signaledAt` from a prior kill
-  // attempt. Operator-intent freshness is deferred to the post-SIGTERM
-  // stamp below — stamping here would let any pre-signal failure
-  // (fingerprint drift, `ps` unavailable, caller crash) leave a fresh
-  // "intent" marker on a record where no signal was ever sent. And
-  // without the explicit `clearSignaledAt` flag, the registry's
-  // merge-style update semantics would silently preserve any prior
-  // stamp left behind by an earlier aborted kill — so a subsequent
-  // ESRCH (no-op) kill could still keep that stale stamp alive inside
-  // the freshness window, defeating the downgrade guard entirely.
+  // Claim identity AND drop any stale `signaledAt` — but ONLY on a
+  // first-time claim (the record is not already `terminating`).
+  //
+  // On resume (`record.status === "terminating"`) there may be a fresh
+  // `signaledAt` that an earlier invocation of this command wrote
+  // post-SIGTERM and is still within the bridge's freshness window.
+  // An unconditional clear would erase that valid marker — a crash
+  // landing between this claim and our own post-SIGTERM re-stamp would
+  // then be misclassified as `crashed` (no fresh stamp present) even
+  // though the prior kill's signal was the proximate cause.
+  //
+  // The bridge's freshness guard (age <= TERMINATING_FRESHNESS_MS)
+  // already ignores stale stamps on its own, so preserving them on
+  // resume is safe: a stranded stamp from long ago never causes a
+  // spurious downgrade.
+  const isResume = record.status === "terminating";
   const claim = await registry.update(workerId(id), {
     status: "terminating",
-    clearSignaledAt: true,
+    ...(!isResume && { clearSignaledAt: true }),
     expectedVersion: record.version ?? 0,
     expectedPid: record.pid,
   });
@@ -483,6 +489,10 @@ async function runKill(
     expectedPid: record.pid,
   });
   let finalized = false;
+  // When a fast respawn beats our finalize CAS, the post-finalize poll
+  // below would re-emit the same warning. Track whether we've already
+  // warned so the poll stays silent on this specific signal.
+  let respawnWarned = false;
   if (!updated.ok) {
     if (updated.error.code === "CONFLICT") {
       const postFinal = await registry.get(workerId(id));
@@ -491,6 +501,24 @@ async function runKill(
           `Session ${id}: bridge recorded ${postFinal.status} during shutdown; leaving registry intact.\n`,
         );
         finalized = true;
+      } else if (postFinal !== undefined && postFinal.pid !== record.pid) {
+        // Fast respawn: the supervisor's restart policy spawned a
+        // replacement under the same `workerId` BEFORE our finalize
+        // CAS landed. That means the original process was genuinely
+        // terminated (our SIGTERM did its job) and the respawn is
+        // what we observe post-kill. Returning failure here would
+        // lie to the operator — the kill succeeded; the respawn is
+        // the separate restart-policy issue the warning is designed
+        // to surface.
+        process.stdout.write(`Session ${id} (pid ${record.pid}) terminated.\n`);
+        process.stderr.write(
+          `Note: session ${id} was respawned by the supervisor's restart policy ` +
+            `(new pid ${postFinal.pid}, status=${postFinal.status}). \`koi bg kill\` signals a single process; ` +
+            `to prevent respawn, configure the supervisor with a 'temporary' restart policy ` +
+            `or stop the supervisor itself.\n`,
+        );
+        finalized = true;
+        respawnWarned = true;
       } else {
         process.stderr.write(
           `Session ${id}: identity drifted during kill; refusing to overwrite (${updated.error.message}).\n`,
@@ -508,6 +536,7 @@ async function runKill(
     finalized = true;
   }
   if (!finalized) return ExitCode.FAILURE;
+  if (respawnWarned) return ExitCode.OK;
   // Restart-policy warning (best-effort). Fires whenever we successfully
   // terminated the original process — both on the happy path (we wrote
   // exited) AND on the CAS-conflict branch (bridge beat us to a terminal

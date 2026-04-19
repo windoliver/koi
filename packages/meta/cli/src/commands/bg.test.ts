@@ -263,4 +263,39 @@ describe("bg kill", () => {
       }
     }
   }, 15_000);
+
+  // Resumed-kill path: if the record is already `terminating` with a
+  // fresh `signaledAt` (e.g. operator ran `bg kill` twice; first call
+  // stamped but crashed before finalize), the second call's claim
+  // must NOT clear that stamp. Otherwise a crash landing between this
+  // claim and the re-stamp would be misclassified as `crashed` even
+  // though the original kill's signal is the proximate cause.
+  it("resumed kill preserves a fresh pre-existing signaledAt stamp", async () => {
+    const freshStamp = Date.now();
+    await writeSession(dir, {
+      workerId: workerId("w-resume"),
+      status: "terminating",
+      pid: 99_999, // No process with this PID — ps fingerprint fail-closed path.
+      signaledAt: freshStamp,
+    });
+
+    const stderr: string[] = [];
+    const spy = spyOn(process.stderr, "write").mockImplementation((c: unknown) => {
+      stderr.push(String(c));
+      return true;
+    });
+    try {
+      await run(parseBgFlags(["kill", "w-resume", "--registry-dir", dir]));
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Kill returns early on fingerprint fail (no such PID in isProcessAlive
+    // either → dead-pid carve-out finalizes as exited). Either way, the
+    // signaledAt stamp on the post-claim record must still be fresh —
+    // the claim MUST have preserved it instead of clearing it.
+    const text = await Bun.file(join(dir, "w-resume.json")).text();
+    const record = JSON.parse(text) as BackgroundSessionRecord;
+    expect(record.signaledAt).toBe(freshStamp);
+  });
 });
