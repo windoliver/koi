@@ -23,10 +23,13 @@ import type {
 } from "./types.js";
 import {
   COMPACT_THRESHOLD,
+  MAX_ALERTS_IN_MEMORY,
   MAX_FINISHED_SPAWNS,
   MAX_MESSAGES,
   MAX_SESSIONS,
   MAX_TOOL_RESULT_BYTES,
+  MAX_VIOLATIONS_IN_MEMORY,
+  MAX_VISIBLE_TOASTS,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -1058,6 +1061,46 @@ export function reduce(state: TuiState, action: TuiAction): TuiState {
         costBreakdown: action.breakdown,
         tokenRate: action.tokenRate ?? state.tokenRate,
       };
+
+    case "set_governance_snapshot":
+      return {
+        ...state,
+        governance: { ...state.governance, snapshot: action.snapshot },
+      };
+
+    case "add_governance_alert": {
+      const next = [action.alert, ...state.governance.alerts].slice(0, MAX_ALERTS_IN_MEMORY);
+      return { ...state, governance: { ...state.governance, alerts: next } };
+    }
+
+    case "add_governance_violation": {
+      const next = [action.violation, ...state.governance.violations].slice(
+        0,
+        MAX_VIOLATIONS_IN_MEMORY,
+      );
+      return { ...state, governance: { ...state.governance, violations: next } };
+    }
+
+    case "clear_governance_alerts":
+      return { ...state, governance: { ...state.governance, alerts: [] } };
+
+    case "set_governance_rules":
+      return { ...state, governance: { ...state.governance, rules: action.rules } };
+
+    case "set_governance_capabilities":
+      return {
+        ...state,
+        governance: { ...state.governance, capabilities: action.capabilities },
+      };
+
+    case "add_toast": {
+      const without = state.toasts.filter((t) => t.key !== action.toast.key);
+      const next = [...without, action.toast].slice(-MAX_VISIBLE_TOASTS);
+      return { ...state, toasts: next };
+    }
+
+    case "dismiss_toast":
+      return { ...state, toasts: state.toasts.filter((t) => t.id !== action.id) };
 
     default:
       return state;

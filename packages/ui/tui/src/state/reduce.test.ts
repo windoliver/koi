@@ -1,5 +1,6 @@
 // Cache-bust: snapshot regenerated for #1728 plugin summary state field.
 import { describe, expect, test } from "bun:test";
+import type { GovernanceSnapshot } from "@koi/core/governance";
 import { createInitialState } from "./initial.js";
 import { reduce } from "./reduce.js";
 import {
@@ -3271,5 +3272,147 @@ describe("reduce — set_plugin_summary", () => {
     const state = { ...createInitialState(), pluginSummary: summary };
     const next = reduce(state, { kind: "set_plugin_summary", summary });
     expect(next).toBe(state);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gov-9: governance + toast slices
+// ---------------------------------------------------------------------------
+
+describe("governance actions", () => {
+  test("set_governance_snapshot stores readings", () => {
+    const initialState = createInitialState();
+    const snap: GovernanceSnapshot = {
+      timestamp: 1,
+      healthy: true,
+      violations: [],
+      readings: [{ name: "turn_count", current: 5, limit: 10, utilization: 0.5 }],
+    };
+    const next = reduce(initialState, { kind: "set_governance_snapshot", snapshot: snap });
+    expect(next.governance.snapshot?.readings).toHaveLength(1);
+    expect(next.governance.snapshot?.readings[0]?.name).toBe("turn_count");
+  });
+
+  test("add_governance_alert appends and caps at MAX_ALERTS_IN_MEMORY", () => {
+    const initialState = createInitialState();
+    const alert = {
+      id: "a1",
+      ts: 1,
+      sessionId: "s",
+      variable: "cost_usd",
+      threshold: 0.8,
+      current: 1.6,
+      limit: 2,
+      utilization: 0.8,
+    };
+    const next = reduce(initialState, { kind: "add_governance_alert", alert });
+    expect(next.governance.alerts).toHaveLength(1);
+    expect(next.governance.alerts[0]?.id).toBe("a1");
+  });
+
+  test("clear_governance_alerts empties the alerts array", () => {
+    const initialState = createInitialState();
+    const seeded = reduce(initialState, {
+      kind: "add_governance_alert",
+      alert: {
+        id: "x",
+        ts: 0,
+        sessionId: "s",
+        variable: "cost_usd",
+        threshold: 0.8,
+        current: 1,
+        limit: 2,
+        utilization: 0.5,
+      },
+    });
+    expect(seeded.governance.alerts).toHaveLength(1);
+    const cleared = reduce(seeded, { kind: "clear_governance_alerts" });
+    expect(cleared.governance.alerts).toHaveLength(0);
+  });
+
+  test("add_governance_violation prepends and caps", () => {
+    const initialState = createInitialState();
+    const violation = { id: "v1", ts: 1, variable: "cost_usd", reason: "limit exceeded" };
+    const next = reduce(initialState, { kind: "add_governance_violation", violation });
+    expect(next.governance.violations).toHaveLength(1);
+    expect(next.governance.violations[0]?.id).toBe("v1");
+  });
+
+  test("set_governance_rules replaces the rules array", () => {
+    const initialState = createInitialState();
+    const next = reduce(initialState, {
+      kind: "set_governance_rules",
+      rules: [{ id: "r1", description: "test", effect: "deny" }],
+    });
+    expect(next.governance.rules).toHaveLength(1);
+    expect(next.governance.rules[0]?.id).toBe("r1");
+  });
+
+  test("set_governance_capabilities replaces the capabilities array", () => {
+    const initialState = createInitialState();
+    const next = reduce(initialState, {
+      kind: "set_governance_capabilities",
+      capabilities: [{ label: "governance", description: "tracks 5 sensors" }],
+    });
+    expect(next.governance.capabilities).toHaveLength(1);
+    expect(next.governance.capabilities[0]?.label).toBe("governance");
+  });
+});
+
+describe("toast actions", () => {
+  test("add_toast appends; dismiss_toast removes by id", () => {
+    const initialState = createInitialState();
+    const t = { id: "t1", kind: "warn" as const, key: "k", title: "x", body: "y", ts: 1 };
+    const a = reduce(initialState, { kind: "add_toast", toast: t });
+    expect(a.toasts).toHaveLength(1);
+    const b = reduce(a, { kind: "dismiss_toast", id: "t1" });
+    expect(b.toasts).toHaveLength(0);
+  });
+
+  test("add_toast fold-merges by key (same key replaces)", () => {
+    const initialState = createInitialState();
+    const t1 = {
+      id: "t1",
+      kind: "warn" as const,
+      key: "cost@0.8",
+      title: "x",
+      body: "1.6",
+      ts: 1,
+    };
+    const t2 = {
+      id: "t2",
+      kind: "warn" as const,
+      key: "cost@0.8",
+      title: "x",
+      body: "1.7",
+      ts: 2,
+    };
+    const a = reduce(initialState, { kind: "add_toast", toast: t1 });
+    const b = reduce(a, { kind: "add_toast", toast: t2 });
+    expect(b.toasts).toHaveLength(1);
+    expect(b.toasts[0]?.id).toBe("t2");
+    expect(b.toasts[0]?.body).toBe("1.7");
+  });
+
+  test("add_toast caps queue at MAX_VISIBLE_TOASTS", () => {
+    const initialState = createInitialState();
+    let s = initialState;
+    for (let i = 0; i < 5; i += 1) {
+      s = reduce(s, {
+        kind: "add_toast",
+        toast: {
+          id: `t${i}`,
+          kind: "info" as const,
+          key: `k${i}`,
+          title: "t",
+          body: "b",
+          ts: i,
+        },
+      });
+    }
+    // MAX_VISIBLE_TOASTS = 3 — only the 3 most-recent should remain
+    expect(s.toasts).toHaveLength(3);
+    expect(s.toasts[0]?.id).toBe("t2");
+    expect(s.toasts[2]?.id).toBe("t4");
   });
 });
