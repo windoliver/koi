@@ -30,6 +30,28 @@ describe("BUILTIN_SPECS", () => {
       expect(["complete", "partial", "refused"]).toContain(result.kind);
     }
   });
+
+  test("BUILTIN_SPECS is immutable at runtime — set/delete/clear throw", () => {
+    const noop: CommandSpec = () => ({ kind: "refused", cause: "parse-error", detail: "x" });
+    // Simulate a JS caller (or TS caller bypassing the ReadonlyMap type)
+    // attempting to mutate the singleton.
+    expect(() => {
+      // @ts-expect-error — set() is not on ReadonlyMap; we're proving the runtime guard.
+      BUILTIN_SPECS.set("git", noop);
+    }).toThrow(TypeError);
+    expect(() => {
+      // @ts-expect-error — delete() is not on ReadonlyMap; we're proving the runtime guard.
+      BUILTIN_SPECS.delete("rm");
+    }).toThrow(TypeError);
+    expect(() => {
+      // @ts-expect-error — clear() is not on ReadonlyMap; we're proving the runtime guard.
+      BUILTIN_SPECS.clear();
+    }).toThrow(TypeError);
+    // After all that, the table is unchanged.
+    expect(BUILTIN_SPECS.size).toBe(10);
+    expect(BUILTIN_SPECS.has("rm")).toBe(true);
+    expect(BUILTIN_SPECS.has("git")).toBe(false);
+  });
 });
 
 describe("createSpecRegistry", () => {

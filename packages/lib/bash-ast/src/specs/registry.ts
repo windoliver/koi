@@ -10,12 +10,7 @@ import { specTar } from "./tar.js";
 import type { CommandSpec } from "./types.js";
 import { specWget } from "./wget.js";
 
-/**
- * Read-only map of the ten builtin specs keyed by command name. Useful
- * for callers that only need lookup. Use `createSpecRegistry()` when
- * you need a mutable registry to register custom specs alongside.
- */
-export const BUILTIN_SPECS: ReadonlyMap<string, CommandSpec> = new Map<string, CommandSpec>([
+const BUILTIN_ENTRIES: ReadonlyArray<readonly [string, CommandSpec]> = [
   ["rm", specRm],
   ["cp", specCp],
   ["mv", specMv],
@@ -26,7 +21,35 @@ export const BUILTIN_SPECS: ReadonlyMap<string, CommandSpec> = new Map<string, C
   ["tar", specTar],
   ["scp", specScp],
   ["ssh", specSsh],
-]);
+];
+
+const _builtinBacking = new Map<string, CommandSpec>(BUILTIN_ENTRIES);
+
+const MUTATOR_NAMES: ReadonlySet<string> = new Set(["set", "delete", "clear"]);
+
+/**
+ * Read-only map of the ten builtin specs keyed by command name. Useful
+ * for callers that only need lookup. Use `createSpecRegistry()` when
+ * you need a mutable registry to register custom specs alongside.
+ *
+ * The exported value is a `Proxy` that throws on mutator methods so the
+ * `ReadonlyMap` typing is enforced at runtime — JS callers (or TS callers
+ * that cast away the type) cannot poison the builtin table for the whole
+ * process by calling `.set()` / `.delete()` / `.clear()`.
+ */
+export const BUILTIN_SPECS: ReadonlyMap<string, CommandSpec> = new Proxy(_builtinBacking, {
+  get(target, prop, _receiver) {
+    if (typeof prop === "string" && MUTATOR_NAMES.has(prop)) {
+      return () => {
+        throw new TypeError(
+          "BUILTIN_SPECS is immutable; use createSpecRegistry() to get a mutable copy",
+        );
+      };
+    }
+    const value = Reflect.get(target, prop, target);
+    return typeof value === "function" ? value.bind(target) : value;
+  },
+});
 
 /**
  * Returns a fresh mutable `Map` seeded with all ten builtins. Each
