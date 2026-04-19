@@ -45,9 +45,9 @@ describe("createArtifactStore (skeleton)", () => {
     await store.close();
   });
 
-  test("CRUD stubs throw 'not implemented'", async () => {
+  test("Plan-2 stubs throw 'not implemented' (getArtifact and peers)", async () => {
     const store = await createArtifactStore({ dbPath, blobDir });
-    await expect(store.saveArtifact({} as never)).rejects.toThrow(/not implemented/);
+    await expect(store.getArtifact({} as never, {} as never)).rejects.toThrow(/not implemented/);
     await store.close();
   });
 });

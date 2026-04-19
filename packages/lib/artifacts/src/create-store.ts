@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { type BlobStore, createFilesystemBlobStore } from "@koi/blob-cas";
 import { acquireLock } from "./lock.js";
+import { createSaveArtifact } from "./save.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
 import type { ArtifactStore, ArtifactStoreConfig } from "./types.js";
@@ -25,8 +26,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const blobStore: BlobStore = config.blobStore ?? createFilesystemBlobStore(config.blobDir);
     await ensureStoreIdPair({ db, blobDir: config.blobDir, blobStore });
 
-    // Task 9–13 will replace these with real implementations. Intentionally
-    // throwing so any accidental call during Plan 2 development is loud.
+    const saveArtifact = createSaveArtifact({ db, blobStore, config });
+
     const notImpl = async (): Promise<never> => {
       throw new Error("not implemented in Plan 2 skeleton");
     };
@@ -40,7 +41,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     };
 
     return {
-      saveArtifact: notImpl,
+      saveArtifact,
       getArtifact: notImpl,
       listArtifacts: notImpl,
       deleteArtifact: notImpl,
