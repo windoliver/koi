@@ -251,6 +251,46 @@ describe("applyDeliveryPolicy — deferred", () => {
     expect(item?.mode).toBe("followup");
   });
 
+  test("activity-timeout surfaces truncated=true + critical issue on on_demand RunReport (#1638)", async () => {
+    const timeoutDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "interrupted",
+        metrics: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          durationMs: 90_000,
+        },
+        metadata: {
+          terminatedBy: "activity-timeout",
+          terminationReason: "wall_clock",
+          elapsedMs: 90_000,
+          metricsSynthesized: true,
+          lastSeenTurnIndex: 3,
+        },
+      },
+    };
+    const spawnResult = createMockSpawnResult([timeoutDone]);
+    const store = createMockReportStore();
+    const handle = applyDeliveryPolicy({
+      spawnResult,
+      policy: { kind: "on_demand" },
+      reportStore: store,
+    });
+    await requireRunChild(handle)(dummyInput);
+    const report = store.reports[0];
+    expect(report?.duration.truncated).toBe(true);
+    expect(report?.issues).toHaveLength(1);
+    const issue = report?.issues[0];
+    expect(issue?.severity).toBe("critical");
+    expect(issue?.message).toContain("wall_clock");
+    expect(issue?.message).toContain("90000ms");
+    expect(issue?.turnIndex).toBe(3);
+  });
+
   test("activity-timeout synthesized done surfaces failure in inbox content (#1638)", async () => {
     // A timed-out child previously delivered an empty inbox item because the
     // synthesized `done` has `content: []` and the failure only lives in

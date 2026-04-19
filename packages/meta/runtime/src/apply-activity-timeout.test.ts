@@ -728,6 +728,44 @@ describe("applyActivityTimeout", () => {
     expect(done?.output.stopReason).toBe("completed");
   });
 
+  test("both Infinity — wrapper is identity no-op", async () => {
+    // Both opt-outs together should leave the adapter unwrapped so the
+    // consumer sees the raw stream. Verified by checking the wrapper
+    // returns the same adapter reference.
+    const adapter = activeAdapter(5, 2);
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: Number.POSITIVE_INFINITY,
+      maxDurationMs: Number.POSITIVE_INFINITY,
+    });
+    expect(wrapped).toBe(adapter);
+  });
+
+  test("user abort mid-warn does NOT emit terminated.idle afterwards", async () => {
+    // Regression: when a consumer aborts between the warning fire and
+    // the terminate threshold, the wrapper must not emit a synthetic
+    // terminated.idle — the consumer-initiated abort is the stop
+    // reason, not an activity timeout.
+    const caller = new AbortController();
+    const wrapped = applyActivityTimeout(
+      idleAfterAdapter([{ kind: "text_delta", delta: "start" }]),
+      { idleWarnMs: 25, idleTerminateMs: 200 },
+    );
+    const events: EngineEvent[] = [];
+    const pending = (async () => {
+      for await (const ev of wrapped.stream({ kind: "text", text: "x", signal: caller.signal })) {
+        events.push(ev);
+        // After seeing the warning, abort; we should never see
+        // activity.terminated.idle since the user cancelled first.
+        if (isCustom(ev, "activity.idle.warning")) {
+          setTimeout(() => caller.abort(), 5);
+        }
+      }
+    })();
+    await pending;
+    expect(events.some((e) => isCustom(e, "activity.idle.warning"))).toBe(true);
+    expect(events.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
+  });
+
   test("applyActivityTimeout throws when idleTerminateMs < idleWarnMs", () => {
     expect(() =>
       applyActivityTimeout({} as unknown as EngineAdapter, {
