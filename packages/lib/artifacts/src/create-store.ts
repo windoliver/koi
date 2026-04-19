@@ -16,6 +16,7 @@ import { createGetArtifact } from "./get.js";
 import { createListArtifacts } from "./list.js";
 import { acquireLock } from "./lock.js";
 import { createSaveArtifact } from "./save.js";
+import { createRevokeShare, createShareArtifact } from "./share.js";
 import { openDatabase } from "./sqlite.js";
 import { ensureStoreIdPair } from "./store-id.js";
 import type { ArtifactStore, ArtifactStoreConfig } from "./types.js";
@@ -33,10 +34,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     const getArtifact = createGetArtifact({ db, blobStore });
     const listArtifacts = createListArtifacts({ db });
     const deleteArtifact = createDeleteArtifact({ db });
-
-    const notImpl = async (): Promise<never> => {
-      throw new Error("not implemented in Plan 2 skeleton");
-    };
+    const shareArtifact = createShareArtifact({ db });
+    const revokeShare = createRevokeShare({ db });
 
     let closed = false;
     const close = async (): Promise<void> => {
@@ -51,8 +50,8 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       getArtifact,
       listArtifacts,
       deleteArtifact,
-      shareArtifact: notImpl,
-      revokeShare: notImpl,
+      shareArtifact,
+      revokeShare,
       close,
     };
   } catch (err) {
