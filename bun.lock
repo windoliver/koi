@@ -83,6 +83,14 @@
         "zod": "4.3.6",
       },
     },
+    "packages/lib/artifacts": {
+      "name": "@koi/artifacts",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/blob-cas": "workspace:*",
+        "@koi/core": "workspace:*",
+      },
+    },
     "packages/lib/bash-ast": {
       "name": "@koi/bash-ast",
       "version": "0.0.0",
@@ -106,9 +114,6 @@
     "packages/lib/blob-cas": {
       "name": "@koi/blob-cas",
       "version": "0.0.0",
-      "dependencies": {
-        "@koi/core": "workspace:*",
-      },
     },
     "packages/lib/channel-base": {
       "name": "@koi/channel-base",
@@ -1238,6 +1243,8 @@
     "@koi/agent-runtime": ["@koi/agent-runtime@workspace:packages/lib/agent-runtime"],
 
     "@koi/agent-summary": ["@koi/agent-summary@workspace:packages/lib/agent-summary"],
+
+    "@koi/artifacts": ["@koi/artifacts@workspace:packages/lib/artifacts"],
 
     "@koi/audit-sink-ndjson": ["@koi/audit-sink-ndjson@workspace:packages/security/audit-sink-ndjson"],
 
