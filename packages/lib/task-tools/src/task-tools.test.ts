@@ -1469,6 +1469,59 @@ describe("task_output — matches_only", () => {
     expect(r.reason).toMatch(/sequence/i);
   });
 
+  test("matches_only on terminal task with evicted buffer returns buffer_evicted", async () => {
+    // Simulate a task that reached terminal state but whose buffer was evicted from the LRU.
+    // bufferReader returns undefined (as if the entry was deleted from the Map).
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => undefined, // pretends buffer was evicted
+    });
+
+    const rc = await exec(tools.create, { subject: "Evicted", description: "Watch something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+    // Kill the task — now terminal (killed)
+    await exec(tools.stop, { task_id: id });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("buffer_evicted");
+    expect(typeof r.reason).toBe("string");
+    expect(r.reason).toContain("evicted");
+  });
+
+  test("matches_only on LIVE task with no buffer returns empty matches (not buffer_evicted)", async () => {
+    // Live (in_progress) task with no buffer yet — common case when no watch patterns have matched.
+    // Must return kind: "matches" with empty entries, NOT buffer_evicted.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => undefined, // no buffer — task hasn't matched anything yet
+    });
+
+    const rc = await exec(tools.create, { subject: "Live", description: "Still running" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
+  });
+
   test("matches_only with a stale cross-filter cursor returns validation_failed", async () => {
     // Use a buffer that throws on cursor mismatch, mimicking parseCursor in output-buffer.ts
     const throwingBuffer: import("@koi/core").TaskOutputReader = {

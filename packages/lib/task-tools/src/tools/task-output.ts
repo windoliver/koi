@@ -115,6 +115,18 @@ export function createTaskOutputTool(
       if (parsed.data.matches_only === true) {
         const reader = config.bufferReader?.(id);
         if (reader === undefined) {
+          // Distinguish evicted terminal buffer from live/unknown tasks with no buffer yet.
+          // A terminal task (completed/failed/killed) with no buffer means the LRU evicted
+          // it — matches may have been produced but are no longer retrievable.
+          // A live/pending task with no buffer genuinely has no matches yet.
+          const status = task.status;
+          if (status === "completed" || status === "failed" || status === "killed") {
+            const evictedResponse: TaskOutputResponse = {
+              kind: "buffer_evicted",
+              reason: `Output buffer for terminal task ${String(id)} has been evicted from the LRU cache. Matches may have been produced but are no longer retrievable.`,
+            };
+            return evictedResponse;
+          }
           return EMPTY_MATCHES_RESULT;
         }
         try {

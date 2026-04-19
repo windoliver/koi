@@ -98,6 +98,16 @@ export type TaskOutputResponse =
   | {
       readonly kind: "validation_failed";
       readonly reason: string;
+    }
+  | {
+      /**
+       * The task reached a terminal state (completed/failed/killed) and its
+       * output buffer has been evicted from the LRU cache. Distinguishes
+       * "task never produced matches" (kind: "matches", entries: []) from
+       * "matches may have been produced but are no longer retrievable".
+       */
+      readonly kind: "buffer_evicted";
+      readonly reason: string;
     };
 
 /** Serializable output chunk data (no methods). */
