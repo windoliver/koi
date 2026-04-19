@@ -10,7 +10,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -163,18 +163,15 @@ describe("checkpoint middleware", () => {
     expect(head.value?.data.fileOps).toEqual([]);
   });
 
-  test("onAfterTurn skips snapshot when ctx.stopBlocked === true (#1638)", async () => {
-    // Activity-timeout aborts and stop-gate vetoes arrive with stopBlocked.
-    // Writing a "complete" snapshot for a non-normal completion would
-    // advance the rewind chain head onto partial state — a subsequent
-    // /rewind could land on a corrupted snapshot. The guard fails closed
-    // by skipping the write entirely; any buffered fileOps are discarded.
+  test("onAfterTurn does not advance head for stopBlocked turns without fileOps (#1638)", async () => {
+    // Empty-fileOps stopBlocked turn: skip the write entirely. Head stays
+    // at the previous good snapshot; nothing to preserve since the turn
+    // never mutated the workspace.
     const session = makeSession();
     const normalCtx = makeTurn(session, 0);
     const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
     const onAfter = expectFn(rig.middleware.onAfterTurn);
 
-    // Turn 0 completes normally — head advances with turnIndex: 0.
     await onAfter(normalCtx);
     const afterNormal = rig.store.head(chainId(String(session.sessionId)));
     expect(afterNormal.ok).toBe(true);
@@ -184,16 +181,64 @@ describe("checkpoint middleware", () => {
     const turn0NodeId = afterNormal.value.nodeId;
     expect(afterNormal.value.data.turnIndex).toBe(0);
 
-    // Turn 1 is stopBlocked — onAfterTurn should NOT advance the chain.
     await onAfter(blockedCtx);
     const afterBlocked = rig.store.head(chainId(String(session.sessionId)));
     expect(afterBlocked.ok).toBe(true);
     if (!afterBlocked.ok || afterBlocked.value === undefined) {
       throw new Error("expected preserved head");
     }
-    // Head unchanged — still points at turn 0.
     expect(afterBlocked.value.nodeId).toBe(turn0NodeId);
     expect(afterBlocked.value.data.turnIndex).toBe(0);
+  });
+
+  test("onAfterTurn rolls back mutations when stopBlocked after fs_write (#1638)", async () => {
+    // Aborted turn that already mutated the workspace MUST either preserve
+    // undo data or actively roll back. We chose active rollback: the
+    // compensating op undoes the file mutation before discarding the
+    // buffer, keeping disk consistent with the unchanged chain head so
+    // any subsequent rewind has a well-defined base.
+    const session = makeSession();
+    const normalCtx = makeTurn(session, 0);
+    const blockedCtx: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    const target = join(rig.workDir, "timed-out.txt");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Anchor: a normal completed turn to establish a head.
+    await onAfter(normalCtx);
+    const headBefore = rig.store.head(chainId(String(session.sessionId)));
+    expect(headBefore.ok).toBe(true);
+    if (!headBefore.ok || headBefore.value === undefined) {
+      throw new Error("expected turn 0 head");
+    }
+    const turn0NodeId = headBefore.value.nodeId;
+
+    // The aborted turn writes a new file via fs_write.
+    await wrap(
+      blockedCtx,
+      makeRequest("fs_write", { path: target, content: "dirty" }),
+      async () => {
+        writeFileSync(target, "dirty");
+        return PASSTHROUGH_RESPONSE;
+      },
+    );
+
+    // Sanity: file exists before onAfterTurn runs.
+    expect(existsSync(target)).toBe(true);
+
+    await onAfter(blockedCtx);
+
+    // Chain head must NOT have advanced — stays at turn 0.
+    const headAfter = rig.store.head(chainId(String(session.sessionId)));
+    expect(headAfter.ok).toBe(true);
+    if (!headAfter.ok || headAfter.value === undefined) {
+      throw new Error("expected preserved head");
+    }
+    expect(headAfter.value.nodeId).toBe(turn0NodeId);
+
+    // Compensating rollback: "create" is undone by "delete" — the file
+    // written during the aborted turn must no longer exist.
+    expect(existsSync(target)).toBe(false);
   });
 
   test("fs_write that creates a new file is captured as a create record", async () => {

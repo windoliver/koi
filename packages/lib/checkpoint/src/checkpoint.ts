@@ -35,6 +35,7 @@ import type {
   TurnContext,
 } from "@koi/core";
 import { chainId, SNAPSHOT_STATUS_KEY, type SnapshotStatus } from "@koi/core";
+import { applyCompensatingOps, toCompensating } from "./compensating-ops.js";
 import { createGitStatusDriftDetector } from "./drift-detector.js";
 import {
   buildFileOpRecord,
@@ -307,13 +308,38 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     const fileOps = state.turnBuffers.get(turnKey) ?? [];
     state.turnBuffers.delete(turnKey);
 
-    // #1638 / stop-gate: skip snapshot capture for non-normal turn
-    // completions (activity-timeout aborts, stop-gate vetoes). Writing a
-    // SnapshotStatus "complete" here would advance the rewind chain head
-    // to a partial/interrupted turn, so a subsequent rewind could land on
-    // corrupted state. The buffered fileOps are already discarded above,
-    // so the partial work is not rolled forward.
+    // #1638 / stop-gate: a non-normal turn completion (activity-timeout
+    // abort, stop-gate veto) must NOT advance the rewind chain head to a
+    // "complete" snapshot — a later /rewind could land on partial state.
+    //
+    // If the interrupted turn already mutated the workspace, we actively
+    // apply compensating ops to roll the disk back before discarding the
+    // buffer. This keeps the filesystem consistent with the chain head
+    // (previous good snapshot) so a subsequent rewind has a well-defined
+    // base. Without this, silently dropping `fileOps` would leave disk
+    // out of sync with the chain head and make rewind compensation
+    // impossible.
     if (ctx.stopBlocked === true) {
+      if (fileOps.length > 0) {
+        try {
+          const compensating = fileOps
+            .slice()
+            .sort((a, b) => b.eventIndex - a.eventIndex)
+            .map(toCompensating);
+          const results = await applyCompensatingOps(compensating, config.blobDir, config.backends);
+          const failures = results.filter((r) => r.kind === "error");
+          if (failures.length > 0) {
+            // eslint-disable-next-line no-console -- intentional: operators need to know
+            console.error(
+              `[koi:checkpoint] failed to roll back ${failures.length} op(s) on stopBlocked turn:`,
+              failures,
+            );
+          }
+        } catch (e: unknown) {
+          // eslint-disable-next-line no-console -- intentional
+          console.error("[koi:checkpoint] compensating rollback threw on stopBlocked turn:", e);
+        }
+      }
       return;
     }
 
