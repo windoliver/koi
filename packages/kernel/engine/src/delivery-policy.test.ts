@@ -425,6 +425,50 @@ describe("applyDeliveryPolicy — on_demand", () => {
     expect(report0?.summary).toBe("analysis complete");
   });
 
+  test("activity-timeout run is reported as truncated with a critical issue (#1638)", async () => {
+    // Structured RunReport fields must reflect the timeout so consumers that
+    // aggregate by `duration.truncated` or `issues` (e.g. TUI summaries)
+    // don't mistake a timed-out child for a clean zero-token run.
+    const timeoutDone: EngineEvent = {
+      kind: "done",
+      output: {
+        content: [],
+        stopReason: "interrupted",
+        metrics: {
+          totalTokens: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          turns: 0,
+          durationMs: 120_000,
+        },
+        metadata: {
+          terminatedBy: "activity-timeout",
+          terminationReason: "idle",
+          elapsedMs: 120_000,
+          metricsSynthesized: true,
+          lastSeenTurnIndex: 2,
+        },
+      },
+    };
+    const spawnResult = createMockSpawnResult([timeoutDone]);
+    const store = createMockReportStore();
+    const handle = applyDeliveryPolicy({
+      spawnResult,
+      policy: { kind: "on_demand" },
+      reportStore: store,
+    });
+    await requireRunChild(handle)(dummyInput);
+    const report = store.reports[0];
+    expect(report?.duration.truncated).toBe(true);
+    expect(report?.issues.length).toBe(1);
+    const issue = report?.issues[0];
+    expect(issue?.severity).toBe("critical");
+    expect(issue?.message).toContain("activity-timeout");
+    expect(issue?.message).toContain("idle");
+    expect(issue?.turnIndex).toBe(2);
+    expect(issue?.resolved).toBe(false);
+  });
+
   test("populates RunReport metrics from engine output", async () => {
     const spawnResult = createMockSpawnResult([createDoneEvent("done")]);
     const store = createMockReportStore();

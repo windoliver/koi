@@ -16,6 +16,7 @@ import type {
   InboxComponent,
   InboxItem,
   InboxMode,
+  IssueEntry,
   ReportStore,
   RunReport,
 } from "@koi/core";
@@ -232,6 +233,26 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
       const text = extractOutputText(output);
       const childId = spawnResult.childPid.id;
 
+      // Propagate activity-timeout provenance into structured RunReport
+      // fields (#1638). Consumers like the TUI summarize reports via
+      // `issues` / `duration.truncated` / `cost` counts, not via the free
+      // summary text — if we left `truncated: false` and `issues: []`, a
+      // timed-out child would appear as a structurally clean run.
+      const isTimeout = output.metadata?.terminatedBy === "activity-timeout";
+      const timeoutIssues: readonly IssueEntry[] = isTimeout
+        ? [
+            {
+              severity: "critical" as const,
+              message: `Run interrupted by activity-timeout (${output.metadata?.terminationReason ?? "unknown"}) after ${output.metadata?.elapsedMs ?? 0}ms`,
+              turnIndex:
+                typeof output.metadata?.lastSeenTurnIndex === "number"
+                  ? Math.max(output.metadata.lastSeenTurnIndex, 0)
+                  : 0,
+              resolved: false,
+            },
+          ]
+        : [];
+
       const report: RunReport = {
         agentId: childId,
         sessionId: sessionId(`delivery-${childId}`),
@@ -243,11 +264,11 @@ export function applyDeliveryPolicy(config: ApplyDeliveryPolicyConfig): Delivery
           durationMs: output.metrics.durationMs,
           totalTurns: output.metrics.turns,
           totalActions: 0,
-          truncated: false,
+          truncated: isTimeout,
         },
         actions: [],
         artifacts: [],
-        issues: [],
+        issues: timeoutIssues,
         cost: {
           inputTokens: output.metrics.inputTokens,
           outputTokens: output.metrics.outputTokens,
