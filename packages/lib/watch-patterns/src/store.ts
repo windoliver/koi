@@ -1,5 +1,8 @@
 import type { CoalescedMatch, PatternMatch, PendingMatchStore, TurnRequestKey } from "@koi/core";
 
+const MAX_BUCKETS = 256;
+const MAX_TOMBSTONES = 4096;
+
 interface WindowState {
   count: number;
   lastTimestamp: number;
@@ -12,6 +15,11 @@ interface Snapshot {
   readonly idsByKey: Map<string, readonly number[]>;
 }
 
+interface TombstoneEntry {
+  readonly firstMatch: PatternMatch;
+  readonly lastTimestamp: number;
+}
+
 function keyOf(taskId: string, event: string, stream: "stdout" | "stderr"): string {
   return `${taskId}\u241F${event}\u241F${stream}`;
 }
@@ -20,8 +28,21 @@ export function createPendingMatchStore(): PendingMatchStore {
   const currentWindow = new Map<string, WindowState>();
   const snapshotCache = new WeakMap<TurnRequestKey, Snapshot>();
   const matchers = new Set<{ readonly cancel: () => void }>();
+  // let is justified: monotonically incremented counter (mutable by design)
   let nextRecordId = 0;
   let disposed = false;
+
+  const tombstones: TombstoneEntry[] = [];
+  // let is justified: overflow counter that accumulates evictions beyond MAX_TOMBSTONES
+  let tombstoneOverflowCount = 0;
+
+  function pushTombstone(entry: TombstoneEntry): void {
+    if (tombstones.length >= MAX_TOMBSTONES) {
+      tombstones.shift();
+      tombstoneOverflowCount += 1;
+    }
+    tombstones.push(entry);
+  }
 
   function snapshotWindow(): Snapshot {
     const view: CoalescedMatch[] = [];
@@ -43,6 +64,32 @@ export function createPendingMatchStore(): PendingMatchStore {
       });
       idsByKey.set(key, Array.from(s.records.keys()));
     }
+
+    for (const t of tombstones) {
+      view.push({
+        taskId: t.firstMatch.taskId,
+        event: "__watch_dropped__",
+        stream: t.firstMatch.stream,
+        firstMatch: t.firstMatch,
+        count: 0,
+        lastTimestamp: t.lastTimestamp,
+      });
+    }
+
+    if (tombstoneOverflowCount > 0 && tombstones.length > 0) {
+      const sample = tombstones[0];
+      if (sample !== undefined) {
+        view.push({
+          taskId: sample.firstMatch.taskId,
+          event: "__watch_dropped_older__",
+          stream: sample.firstMatch.stream,
+          firstMatch: sample.firstMatch,
+          count: tombstoneOverflowCount,
+          lastTimestamp: Date.now(),
+        });
+      }
+    }
+
     return { view, idsByKey };
   }
 
@@ -56,13 +103,29 @@ export function createPendingMatchStore(): PendingMatchStore {
         existing.count += 1;
         existing.lastTimestamp = match.timestamp;
         existing.records.set(id, match);
-      } else {
-        currentWindow.set(key, {
-          count: 1,
-          lastTimestamp: match.timestamp,
-          records: new Map([[id, match]]),
-        });
+        return;
       }
+      // New bucket — evict oldest if at cap.
+      if (currentWindow.size >= MAX_BUCKETS) {
+        const oldestIter = currentWindow.entries().next();
+        if (!oldestIter.done && oldestIter.value !== undefined) {
+          const [oldestKey, oldest] = oldestIter.value;
+          let firstId = Number.POSITIVE_INFINITY;
+          for (const rid of oldest.records.keys()) {
+            if (rid < firstId) firstId = rid;
+          }
+          const oldestFirstMatch = oldest.records.get(firstId);
+          if (oldestFirstMatch !== undefined) {
+            pushTombstone({ firstMatch: oldestFirstMatch, lastTimestamp: oldest.lastTimestamp });
+          }
+          currentWindow.delete(oldestKey);
+        }
+      }
+      currentWindow.set(key, {
+        count: 1,
+        lastTimestamp: match.timestamp,
+        records: new Map([[id, match]]),
+      });
     },
     peek(request) {
       if (disposed) return [];
@@ -76,6 +139,9 @@ export function createPendingMatchStore(): PendingMatchStore {
       if (disposed) return;
       const snap = snapshotCache.get(request);
       if (!snap) return;
+      // Tombstones were delivered in the snapshot — clear them all on ack.
+      tombstones.length = 0;
+      tombstoneOverflowCount = 0;
       for (const [key, ids] of snap.idsByKey) {
         const state = currentWindow.get(key);
         if (!state) continue;
@@ -107,6 +173,8 @@ export function createPendingMatchStore(): PendingMatchStore {
     dispose() {
       if (disposed) return;
       disposed = true;
+      tombstones.length = 0;
+      tombstoneOverflowCount = 0;
       for (const m of matchers) {
         try {
           m.cancel();
