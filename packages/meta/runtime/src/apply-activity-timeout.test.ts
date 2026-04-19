@@ -411,6 +411,34 @@ describe("applyActivityTimeout", () => {
     expect(done.output.stopReason).toBe("interrupted");
     expect(done.output.metadata?.terminationReason).toBe("idle");
     expect(done.output.metadata?.terminatedBy).toBe("activity-timeout");
+    // Consumers that persist metrics into RunReport must know the token
+    // counts are synthetic zeros rather than genuine zero-token runs.
+    expect(done.output.metadata?.metricsSynthesized).toBe(true);
+  });
+
+  test("synthesized done preserves last-seen turn index in metrics.turns", async () => {
+    // Run through turns 0 and 1 fully, start turn 2, then stall mid-turn.
+    const adapter: EngineAdapter = {
+      engineId: "multi-turn-stall",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "turn_end", turnIndex: 0 };
+        yield { kind: "turn_start", turnIndex: 1 };
+        yield { kind: "turn_end", turnIndex: 1 };
+        yield { kind: "turn_start", turnIndex: 2 };
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { idleWarnMs: 20, idleTerminateMs: 50 });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+    const done = out.find((e): e is EngineEvent & { readonly kind: "done" } => e.kind === "done");
+    expect(done).toBeDefined();
+    // Highest turn index observed was 2 → turns = 3 (0, 1, 2).
+    expect(done?.output.metrics.turns).toBe(3);
   });
 
   test("wall-clock-terminated stream still emits a terminal done with stopReason interrupted", async () => {

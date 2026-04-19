@@ -159,6 +159,7 @@ async function* wrapStream(
     warnFired: false,
     pendingTools: new Set<ToolCallId>(),
     currentTurnIndex: null,
+    lastSeenTurnIndex: null,
     terminated: null,
     pumpDone: false,
     pumpError: undefined,
@@ -235,6 +236,8 @@ interface WrapperState {
   readonly pendingTools: Set<ToolCallId>;
   /** Index of the currently-open turn (from turn_start); null between turns. */
   currentTurnIndex: number | null;
+  /** Highest turn index observed so far (from turn_start); null if no turn has started. */
+  lastSeenTurnIndex: number | null;
   terminated: { readonly reason: ActivityTerminationReason; readonly elapsedMs: number } | null;
   pumpDone: boolean;
   pumpError: unknown;
@@ -366,7 +369,7 @@ function terminate(deps: TimerDeps, reason: ActivityTerminationReason, elapsed: 
     });
     deps.state.currentTurnIndex = null;
   }
-  enqueue(deps.state, synthesizeTerminalDone(reason, elapsed));
+  enqueue(deps.state, synthesizeTerminalDone(deps.state, reason, elapsed));
   safeObserver(`onTerminated:${reason}`, () => deps.config.onTerminated?.(reason, elapsed));
   deps.ctl.abort("timeout" satisfies AbortReason);
 }
@@ -382,7 +385,17 @@ function terminate(deps: TimerDeps, reason: ActivityTerminationReason, elapsed: 
  * surface carries the termination reason so downstream can distinguish a
  * timeout-driven interrupt from a user-driven cancel.
  */
-function synthesizeTerminalDone(reason: ActivityTerminationReason, elapsedMs: number): EngineEvent {
+function synthesizeTerminalDone(
+  state: WrapperState,
+  reason: ActivityTerminationReason,
+  elapsedMs: number,
+): EngineEvent {
+  // Pre-termination turn index (if known) — `terminate()` clears
+  // `currentTurnIndex` after enqueueing the synthetic `turn_end`, so when we
+  // land here it may already be null. Capture the last observed turn from
+  // `lastSeenTurnIndex` instead so we can preserve a turn count across the
+  // interruption.
+  const lastTurn = state.lastSeenTurnIndex;
   const output: EngineOutput = {
     content: [],
     stopReason: "interrupted",
@@ -390,13 +403,20 @@ function synthesizeTerminalDone(reason: ActivityTerminationReason, elapsedMs: nu
       totalTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
-      turns: 0,
+      // Turns = highest observed turn index + 1 (turn indices are 0-based).
+      // When no turn has started yet, emit 0 rather than invent a turn count.
+      turns: lastTurn !== null ? lastTurn + 1 : 0,
       durationMs: elapsedMs,
     },
     metadata: {
       terminatedBy: "activity-timeout",
       terminationReason: reason,
       elapsedMs,
+      // Token counts are not observable from EngineEvent; consumers must
+      // treat them as unknown rather than as real zeros. `delivery-policy.ts`
+      // and other `RunReport` writers should check this flag before keying
+      // dashboards off `totalTokens === 0`.
+      metricsSynthesized: true,
     },
   };
   return { kind: "done", output };
@@ -467,6 +487,10 @@ function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number)
     state.pendingTools.delete(ev.callId);
   } else if (ev.kind === "turn_start") {
     state.currentTurnIndex = ev.turnIndex;
+    state.lastSeenTurnIndex =
+      state.lastSeenTurnIndex === null
+        ? ev.turnIndex
+        : Math.max(state.lastSeenTurnIndex, ev.turnIndex);
   } else if (ev.kind === "turn_end") {
     state.currentTurnIndex = null;
     // Belt-and-suspenders: a turn cannot end with in-flight tool calls. Drop

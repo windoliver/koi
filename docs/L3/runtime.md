@@ -337,9 +337,11 @@ createRuntime({
 **Defaults and back-compat**
 
 - When `activityTimeout` is omitted, the legacy `streamTimeoutMs` is mapped to `maxDurationMs` (default 120s wall-clock) — existing behaviour preserved byte-for-byte.
-- When `activityTimeout` is provided but `maxDurationMs` is not, the runtime fills in a 4h default (`DEFAULT_ACTIVITY_MAX_DURATION_MS`) so no stream is ever unbounded. Callers that genuinely want no wall-clock cap must set `maxDurationMs: Number.POSITIVE_INFINITY` explicitly.
+- When `activityTimeout` is provided but `maxDurationMs` is not, the runtime fills in the legacy 120s (`DEFAULT_STREAM_TIMEOUT_MS`), **not** the recommended 4h. This makes the migration from `streamTimeoutMs` → `activityTimeout` rollback-safe: the hard-stop budget does not silently widen. Callers that want the longer recommended cap must opt in explicitly via `maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS` (4h constant exported from `@koi/runtime`) or their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables the wall-clock bound.
 - When both `streamTimeoutMs` and `activityTimeout` are provided, `activityTimeout` wins outright.
 - `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
+
+**Partial metrics on timeout.** Token counts are not exposed on the `EngineEvent` stream, so a timed-out stream's synthesized `done.output.metrics` zeroes the token fields (`totalTokens`, `inputTokens`, `outputTokens`) and flags `done.output.metadata.metricsSynthesized: true`. `turns` reflects the highest observed turn index + 1 so downstream observability (e.g. `RunReport` persistence in `@koi/engine`) still captures the turn count; consumers must check the flag before keying dashboards off `totalTokens === 0`.
 
 **Recommended profiles**
 

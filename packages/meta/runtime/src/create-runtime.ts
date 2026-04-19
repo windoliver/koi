@@ -79,7 +79,7 @@ import { createFsAtifDelegate } from "./trajectory/fs-delegate.js";
 import { createNexusAtifDelegate } from "./trajectory/nexus-delegate.js";
 import { createNexusOutcomeDelegate } from "./trajectory/outcome-nexus-delegate.js";
 import type { RuntimeConfig, RuntimeHandle } from "./types.js";
-import { DEFAULT_ACTIVITY_MAX_DURATION_MS, DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
+import { DEFAULT_STREAM_TIMEOUT_MS } from "./types.js";
 
 const DEFAULT_AGENT_NAME = "koi-runtime";
 
@@ -1960,21 +1960,26 @@ function resolveFilesystemInput(
  * Back-compat bridge for #1638: when the caller only supplies the legacy
  * `streamTimeoutMs`, map it onto `activityTimeout.maxDurationMs` so existing
  * behaviour (hard wall-clock kill) is preserved. When `activityTimeout` is
- * provided, the deprecated field is ignored — but we still fill in a default
- * `maxDurationMs` (4h) if the caller omitted one, so no stream runs without a
- * rollback-safe wall-clock backstop. Callers that want no wall-clock cap must
- * set `maxDurationMs: Number.POSITIVE_INFINITY` (or a very large value) explicitly.
+ * provided, the deprecated field is ignored — but if the caller omitted
+ * `maxDurationMs` we still fill in the legacy `DEFAULT_STREAM_TIMEOUT_MS`
+ * (120s) rather than the larger recommended 4h bound. This keeps the
+ * migration path rollback-safe: a caller that adopts `activityTimeout`
+ * without picking an explicit wall-clock cap keeps the same hard-stop budget
+ * as before. Callers who want the recommended longer cap opt in explicitly:
+ *   maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS (4h)
+ * or pick their own value. `maxDurationMs: Number.POSITIVE_INFINITY` disables
+ * the wall-clock bound entirely.
  */
 function resolveActivityTimeoutConfig(
   activityTimeout: ActivityTimeoutConfig | undefined,
   streamTimeoutMs: number | undefined,
 ): ActivityTimeoutConfig {
+  const legacyWallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
   if (activityTimeout === undefined) {
-    const wallClockMs = streamTimeoutMs ?? DEFAULT_STREAM_TIMEOUT_MS;
-    return { maxDurationMs: wallClockMs };
+    return { maxDurationMs: legacyWallClockMs };
   }
   if (activityTimeout.maxDurationMs === undefined) {
-    return { ...activityTimeout, maxDurationMs: DEFAULT_ACTIVITY_MAX_DURATION_MS };
+    return { ...activityTimeout, maxDurationMs: legacyWallClockMs };
   }
   return activityTimeout;
 }
