@@ -1,2 +1,1 @@
-// Populated by subsequent tasks. Keeps the package buildable during scaffolding.
-export {};
+export { blobPath, hasBlob, readBlob, writeBlobFromFile } from "./cas-store.js";
