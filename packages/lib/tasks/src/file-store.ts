@@ -41,7 +41,6 @@
 import { mkdir, readdir, rename, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import type {
-  AgentId,
   Task,
   TaskBoardStore,
   TaskBoardStoreEvent,
@@ -72,25 +71,6 @@ export interface FileTaskBoardStoreConfig {
    * create overlapping stores on throwaway directories.
    */
   readonly lock?: boolean | undefined;
-  /**
-   * Agent ID to stamp as `createdBy` on legacy task records that lack the field.
-   *
-   * Pre-migration tasks persisted before `createdBy` existed will have
-   * `createdBy === undefined`. Without backfilling, they become permanently
-   * unreadable once ACL enforcement is enabled (the ACL fails closed on
-   * unknown creators). When provided, this agent is written as the synthetic
-   * creator at load time — the file on disk is NOT modified.
-   *
-   * **Single-agent CLI:** pass the session's primary `agentId`.
-   * **Multi-agent runtimes:** choose which agent becomes the legacy owner
-   * explicitly at store construction — fail-closed semantics are preserved for
-   * all other agents in the session.
-   *
-   * When omitted (`undefined`), the existing fail-closed behaviour is retained:
-   * tasks without `createdBy` are readable only via `legacyReadOwner` in the
-   * task tools layer.
-   */
-  readonly fallbackCreator?: AgentId | undefined;
 }
 
 /** Shape of the single-writer lock file. */
@@ -221,14 +201,20 @@ async function releaseLock(baseDir: string): Promise<void> {
 /**
  * Read and parse a task JSON file. Returns undefined on any error or invalid shape.
  *
- * @param fallbackCreator - When provided, synthesized as `createdBy` for legacy
- *   task records that lack the field. The file on disk is NOT modified; the
- *   backfill is in-memory only and applies once per load.
+ * Legacy tasks (missing `createdBy`) load with `createdBy === undefined`.
+ * The `task_output` ACL fails closed on undefined creator — such tasks are
+ * NOT readable until a one-time on-disk migration rewrites each task JSON with
+ * an explicit `createdBy` value. No in-memory backfill is performed here
+ * because doing so per-process produces authorization split-brain when two
+ * processes read the same file-backed task and independently choose different
+ * synthetic creators.
+ *
+ * **Migration path**: run a one-time script that reads each legacy task JSON
+ * and rewrites it with an explicit `createdBy` BEFORE attaching this store.
+ * The Koi distribution does not ship this migration because ownership is
+ * deployment-specific.
  */
-async function readTaskFile(
-  filePath: string,
-  fallbackCreator?: AgentId | undefined,
-): Promise<Task | undefined> {
+async function readTaskFile(filePath: string): Promise<Task | undefined> {
   try {
     const file = Bun.file(filePath);
     const raw: unknown = await file.json();
@@ -254,12 +240,9 @@ async function readTaskFile(
     if (!("subject" in obj) && typeof obj.description === "string") {
       obj.subject = obj.description;
     }
-    // Backfill createdBy for legacy records: only set when truly absent AND a
-    // fallback is configured. Existing values (even undefined) are NOT overwritten
-    // so new tasks that explicitly stamp createdBy are unaffected.
-    if (!("createdBy" in obj) && fallbackCreator !== undefined) {
-      obj.createdBy = fallbackCreator;
-    }
+    // createdBy is intentionally NOT backfilled. Legacy tasks without this
+    // field load with createdBy === undefined and fail closed via task_output
+    // ACL. See JSDoc above for the migration path.
     if (!isTask(raw)) return undefined;
     return raw;
   } catch {
@@ -281,7 +264,7 @@ async function readTaskFile(
 export async function createFileTaskBoardStore(
   config: FileTaskBoardStoreConfig,
 ): Promise<TaskBoardStore> {
-  const { baseDir, cleanOrphanedTmp = true, lock = true, fallbackCreator } = config;
+  const { baseDir, cleanOrphanedTmp = true, lock = true } = config;
 
   // Ensure base directory exists
   await mkdir(baseDir, { recursive: true });
@@ -342,7 +325,7 @@ export async function createFileTaskBoardStore(
   async function ensureCache(): Promise<void> {
     if (cachePopulated) return;
     const loadOne = async (id: TaskItemId): Promise<void> => {
-      const item = await readTaskFile(join(baseDir, taskFilename(id)), fallbackCreator);
+      const item = await readTaskFile(join(baseDir, taskFilename(id)));
       if (item !== undefined) {
         cache.set(id, item);
       } else {
@@ -385,7 +368,7 @@ export async function createFileTaskBoardStore(
       return undefined;
     }
     // Cache miss for a known ID — load from disk
-    const item = await readTaskFile(join(baseDir, taskFilename(id)), fallbackCreator);
+    const item = await readTaskFile(join(baseDir, taskFilename(id)));
     if (item !== undefined) {
       cache.set(id, item);
       corruptIds.delete(id); // File is now readable — clear corruption flag
@@ -401,7 +384,7 @@ export async function createFileTaskBoardStore(
     let existing = cache.get(item.id);
     if (existing === undefined && knownIds.has(item.id)) {
       const filePath = join(baseDir, taskFilename(item.id));
-      const onDisk = await readTaskFile(filePath, fallbackCreator);
+      const onDisk = await readTaskFile(filePath);
       if (onDisk !== undefined) {
         cache.set(item.id, onDisk);
         existing = onDisk;

@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Task } from "@koi/core";
-import { agentId, taskItemId } from "@koi/core";
+import { taskItemId } from "@koi/core";
 import { createFileTaskBoardStore } from "./file-store.js";
 import { runTaskBoardStoreContract } from "./task-board-store.contract.js";
 
@@ -135,9 +135,16 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
     expect(result?.subject).toBe("Old task");
   });
 
-  // FS-1g: Legacy task missing createdBy — backfilled with fallbackCreator at load time
-  test("loads legacy task file missing createdBy and backfills with fallbackCreator", async () => {
+  // FS-1g: Legacy task missing createdBy loads with createdBy === undefined (no implicit backfill)
+  test("legacy task file without createdBy loads with createdBy === undefined (no implicit backfill)", async () => {
     // Simulate a pre-migration task file that lacks createdBy entirely.
+    // The store must NOT synthesize createdBy in memory — doing so per-process
+    // would produce authorization split-brain when two processes read the same
+    // file-backed task and independently choose different synthetic creators.
+    //
+    // The task_output ACL fails closed on undefined creator. Callers needing
+    // legacy-read access must run an explicit on-disk migration that writes
+    // createdBy to each task JSON BEFORE this store sees the file.
     const legacyTask = {
       id: "task_1",
       subject: "Old task",
@@ -151,62 +158,11 @@ describe("createFileTaskBoardStore — filesystem-specific", () => {
     };
     await writeFile(join(testDir, "task_1.json"), JSON.stringify(legacyTask));
 
-    const fallback = agentId("alice");
-    const store = await createFileTaskBoardStore({ baseDir: testDir, fallbackCreator: fallback });
+    const store = await createFileTaskBoardStore({ baseDir: testDir });
     const result = await store.get(taskItemId("task_1"));
 
     expect(result).toBeDefined();
-    expect(result?.createdBy).toBe("alice");
-    await store[Symbol.asyncDispose]();
-  });
-
-  // FS-1h: task with existing createdBy — NOT overwritten by fallbackCreator
-  test("does NOT overwrite createdBy when present in the file", async () => {
-    const taskWithCreator = {
-      id: "task_1",
-      subject: "Owned task",
-      description: "Owned task",
-      status: "pending",
-      dependencies: [],
-      retries: 0,
-      version: 0,
-      createdAt: 0,
-      updatedAt: 0,
-      createdBy: "bob",
-    };
-    await writeFile(join(testDir, "task_1.json"), JSON.stringify(taskWithCreator));
-
-    const fallback = agentId("alice");
-    const store = await createFileTaskBoardStore({ baseDir: testDir, fallbackCreator: fallback });
-    const result = await store.get(taskItemId("task_1"));
-
-    expect(result).toBeDefined();
-    // bob's ownership must survive — alice is only the fallback for truly missing fields
-    expect(result?.createdBy).toBe("bob");
-    await store[Symbol.asyncDispose]();
-  });
-
-  // FS-1i: fallbackCreator also applies when ensureCache populates via list()
-  test("backfills createdBy via list() when fallbackCreator is set", async () => {
-    const legacyTask = {
-      id: "task_1",
-      subject: "Old task",
-      description: "Old task",
-      status: "pending",
-      dependencies: [],
-      retries: 0,
-      version: 0,
-      createdAt: 0,
-      updatedAt: 0,
-    };
-    await writeFile(join(testDir, "task_1.json"), JSON.stringify(legacyTask));
-
-    const fallback = agentId("session-agent");
-    const store = await createFileTaskBoardStore({ baseDir: testDir, fallbackCreator: fallback });
-    const all = await store.list();
-
-    expect(all).toHaveLength(1);
-    expect(all[0]?.createdBy).toBe("session-agent");
+    expect(result?.createdBy).toBeUndefined();
     await store[Symbol.asyncDispose]();
   });
 

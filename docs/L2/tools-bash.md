@@ -208,8 +208,20 @@ Shape: `task_output(taskId, { matches_only: true, event?, stream?, offset? })`
 `task_output` applies a creator/assignee ACL:
 - `task.createdBy === callerAgentId` → read allowed (creator always reads, across all terminal states).
 - `task.assignedTo === callerAgentId` → read allowed (current worker reads while assigned).
-- `task.createdBy === undefined` → open read (backward compat for legacy tasks pre-migration).
+- `task.createdBy === undefined` → **denied** (fail closed — see migration note below).
 - Otherwise → `{ kind: "permission_denied" }`.
+
+### Migrating pre-#1769 persisted tasks
+
+Tasks persisted via `@koi/tasks` file-backed storage before PR #1769 lack the
+`createdBy` field. After upgrade, these tasks are NOT readable via `task_output`
+(the ACL fails closed on undefined creator). If you need legacy-read access,
+run a one-time on-disk migration that rewrites each task JSON with an explicit
+`createdBy` value — the Koi distribution does not ship this migration because
+ownership is deployment-specific.
+
+The in-memory task store (`createMemoryTaskBoardStore`, the default for CLI and
+TUI sessions) has no legacy tasks.
 
 ### See also
 
