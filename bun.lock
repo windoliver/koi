@@ -528,6 +528,7 @@
         "@koi/bash-ast": "workspace:*",
         "@koi/bash-security": "workspace:*",
         "@koi/core": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
       },
     },
     "packages/lib/tools-builtin": {
