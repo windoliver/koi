@@ -188,9 +188,26 @@ Agent calls browser_click(ref=e3, snapshotId="old-abc")
 │  Dependencies                                       │
 │                                                     │
 │  @koi/core       (L0)   BrowserDriver, Result, etc. │
+│  @koi/browser-a11y (L0u) parseAriaYaml,             │
+│                         translatePlaywrightError,   │
+│                         VALID_ROLES (v2 change —    │
+│                         imports moved out of this   │
+│                         package into its own L0u)    │
 │  playwright      (ext)  chromium.launch(), Page API  │
 └─────────────────────────────────────────────────────┘
 ```
+
+**v2 note — a11y helpers live in `@koi/browser-a11y`**. Prior versions of this package re-exported `serializeA11yTree`, `parseAriaYaml`, `translatePlaywrightError`, `VALID_ROLES`, `isAriaRole`. In v2 those symbols were extracted into the L0u package `@koi/browser-a11y` so the new `@koi/browser-ext` driver can share them without pulling Playwright. Update imports:
+
+```typescript
+// OLD (v1)
+import { parseAriaYaml, translatePlaywrightError } from "@koi/browser-playwright";
+
+// NEW (v2)
+import { parseAriaYaml, translatePlaywrightError } from "@koi/browser-a11y";
+```
+
+`@koi/browser-playwright` now exports only the driver + detection surface: `createPlaywrightBrowserDriver`, `detectInstalledBrowsers`, `STEALTH_INIT_SCRIPT`, `PlaywrightDriverConfig`, `DetectedBrowser`.
 
 ### Module Responsibilities
 
@@ -583,7 +600,7 @@ const driver = createPlaywrightBrowserDriver({
 });
 ```
 
-### Connect to Existing Chrome via CDP
+### Connect to Existing Chrome via CDP HTTP endpoint
 
 ```typescript
 const driver = createPlaywrightBrowserDriver({
@@ -593,6 +610,21 @@ const driver = createPlaywrightBrowserDriver({
 // Reuse an already-running Chrome instance
 // (e.g., launched with --remote-debugging-port=9222)
 ```
+
+### Connect via CDP WebSocket endpoint (`wsEndpoint`)
+
+New in v2. Lets a third party (notably `@koi/browser-ext`) provide a loopback WebSocket that bridges CDP frames to a Chrome extension's `chrome.debugger` API through a Koi native-messaging host. Takes precedence over `cdpEndpoint` when both are set (a one-time warning is logged).
+
+```typescript
+const driver = createPlaywrightBrowserDriver({
+  wsEndpoint: "ws://127.0.0.1:45678/devtools/browser/abcd",
+});
+
+// Playwright calls chromium.connectOverCDP({ wsEndpoint })
+// No HTTP endpoint needed; caller owns the WebSocket server.
+```
+
+`browser`, `cdpEndpoint`, `wsEndpoint` are the three transport paths. Exactly one wins: `browser` > `wsEndpoint` > `cdpEndpoint` > (default: launch own Chromium). Stealth / userDataDir / launch options apply only to the default launch path.
 
 ### Multi-Tab Workflow
 
