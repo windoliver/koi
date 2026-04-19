@@ -103,6 +103,14 @@
       "name": "@koi/bash-security",
       "version": "0.0.0",
     },
+    "packages/lib/browser-a11y": {
+      "name": "@koi/browser-a11y",
+      "version": "0.0.0",
+      "dependencies": {
+        "@koi/core": "workspace:*",
+        "@koi/token-estimator": "workspace:*",
+      },
+    },
     "packages/lib/channel-base": {
       "name": "@koi/channel-base",
       "version": "0.0.0",
@@ -1217,6 +1225,8 @@
     "@koi/bash-classifier": ["@koi/bash-classifier@workspace:packages/lib/bash-classifier"],
 
     "@koi/bash-security": ["@koi/bash-security@workspace:packages/lib/bash-security"],
+
+    "@koi/browser-a11y": ["@koi/browser-a11y@workspace:packages/lib/browser-a11y"],
 
     "@koi/channel-base": ["@koi/channel-base@workspace:packages/lib/channel-base"],
 
