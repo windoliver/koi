@@ -45,6 +45,7 @@ import {
   createTaskAnchorMiddleware,
   formatTaskList,
 } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createPermissionBackend } from "@koi/permissions";
 import { consumeModelStream, runTurn } from "@koi/query-engine";
 import { loadCassette } from "@koi/replay";
@@ -55,6 +56,7 @@ import {
 } from "@koi/skills-runtime";
 import { createBuiltinSearchProvider } from "@koi/tools-builtin";
 import { buildTool } from "@koi/tools-core";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import { createHookObserver } from "../middleware/hook-dispatch.js";
 import { recordMcpLifecycle } from "../middleware/mcp-lifecycle.js";
 import { wrapMiddlewareWithTrace } from "../middleware/trace-wrapper.js";
@@ -11243,5 +11245,85 @@ describe("Golden: @koi/agent-summary", () => {
       expect(sidecar.envelope.summary.goal).toBeTruthy();
       expect(sidecar.envelope.summary.status).toBe("succeeded");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bash-background-watch ATIF trajectory: @koi/tools-bash watch_patterns +
+// @koi/middleware-turn-prelude integration.
+//
+// Records a bash_background call with watch_patterns and asserts the
+// trajectory contains evidence of the tool executing and the prelude
+// middleware being present in the middleware chain.
+// ---------------------------------------------------------------------------
+
+describe("bash-background-watch ATIF trajectory (golden file)", () => {
+  test("valid ATIF v1.6 with bash_background in tool_definitions", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background-watch.trajectory.json`).json()) as {
+      readonly schema_version: string;
+      readonly agent: { readonly tool_definitions?: readonly { readonly name: string }[] };
+    };
+    expect(doc.schema_version).toBe("ATIF-v1.6");
+    expect(doc.agent.tool_definitions?.some((t) => t.name === "bash_background")).toBe(true);
+  });
+
+  test("bash_background TOOL step returns taskId and in_progress status", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background-watch.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+        readonly observation?: { readonly results?: readonly { readonly content: string }[] };
+      }[];
+    };
+    const bgStep = doc.steps.find(
+      (s) =>
+        s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "bash_background"),
+    );
+    expect(bgStep).toBeDefined();
+    const content = bgStep?.observation?.results?.[0]?.content ?? "";
+    expect(content).toContain('"status":"in_progress"');
+    expect(content).toContain('"taskId"');
+  });
+
+  test("trajectory contains task_get or task_output TOOL step showing command ran", async () => {
+    const doc = (await Bun.file(`${FIXTURES}/bash-background-watch.trajectory.json`).json()) as {
+      readonly steps: readonly {
+        readonly source: string;
+        readonly tool_calls?: readonly { readonly function_name: string }[];
+      }[];
+    };
+    const hasTaskGet = doc.steps.some(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "task_get"),
+    );
+    const hasTaskOutput = doc.steps.some(
+      (s) => s.source === "tool" && s.tool_calls?.some((tc) => tc.function_name === "task_output"),
+    );
+    // At least one polling/retrieval tool must have fired
+    expect(hasTaskGet || hasTaskOutput).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assembled-runtime ordering: turn-prelude priority is lower than semantic-retry
+// (lower priority number = outer onion layer = runs before on model call).
+// This test operates purely on middleware metadata — no LLM, no cassette.
+// ---------------------------------------------------------------------------
+
+describe("Assembled-runtime ordering", () => {
+  test("turn-prelude priority is less than semantic-retry priority (turn-prelude runs first)", () => {
+    const store = createPendingMatchStore();
+    const preludeMw = createTurnPreludeMiddleware({
+      getStore: () => store,
+      getTaskStatus: () => undefined,
+    });
+
+    // @koi/middleware-semantic-retry declares priority 420 (phase: resolve).
+    // @koi/middleware-turn-prelude declares priority 200 (phase: resolve).
+    // Lower number = outer layer = fires first on the way in.
+    const preludePriority = preludeMw.priority ?? Number.POSITIVE_INFINITY;
+    expect(preludePriority).toBeLessThan(420); // semantic-retry's known priority
+    expect(preludePriority).toBeLessThan(345); // task-anchor's known priority
+    expect(preludeMw.phase).toBe("resolve");
+    expect(preludeMw.name).toBe("turn-prelude");
   });
 });

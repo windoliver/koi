@@ -720,6 +720,7 @@
         "@koi/middleware-semantic-retry": "workspace:*",
         "@koi/middleware-strict-agentic": "workspace:*",
         "@koi/middleware-task-anchor": "workspace:*",
+        "@koi/middleware-turn-prelude": "workspace:*",
         "@koi/model-openai-compat": "workspace:*",
         "@koi/model-router": "workspace:*",
         "@koi/outcome-evaluator": "workspace:*",
@@ -745,6 +746,7 @@
         "@koi/tools-web": "workspace:*",
         "@koi/url-safety": "workspace:*",
         "@koi/validation": "workspace:*",
+        "@koi/watch-patterns": "workspace:*",
         "zod": "4.3.6",
       },
       "devDependencies": {
