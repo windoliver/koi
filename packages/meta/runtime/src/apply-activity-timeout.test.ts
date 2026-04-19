@@ -416,8 +416,12 @@ describe("applyActivityTimeout", () => {
     expect(done.output.metadata?.metricsSynthesized).toBe(true);
   });
 
-  test("synthesized done preserves last-seen turn index in metrics.turns", async () => {
+  test("synthesized done zeros metrics and carries lastSeenTurnIndex in metadata", async () => {
     // Run through turns 0 and 1 fully, start turn 2, then stall mid-turn.
+    // metrics.turns must be 0 so downstream aggregators (delivery-policy
+    // RunReport, TUI cumulative metrics) do not inflate totals with
+    // placeholder numbers. The real last-observed turn lives in
+    // `metadata.lastSeenTurnIndex` for observability.
     const adapter: EngineAdapter = {
       engineId: "multi-turn-stall",
       capabilities: { text: true, images: false, files: false, audio: false },
@@ -437,8 +441,10 @@ describe("applyActivityTimeout", () => {
     const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
     const done = out.find((e): e is EngineEvent & { readonly kind: "done" } => e.kind === "done");
     expect(done).toBeDefined();
-    // Highest turn index observed was 2 → turns = 3 (0, 1, 2).
-    expect(done?.output.metrics.turns).toBe(3);
+    expect(done?.output.metrics.turns).toBe(0);
+    expect(done?.output.metrics.totalTokens).toBe(0);
+    expect(done?.output.metadata?.metricsSynthesized).toBe(true);
+    expect(done?.output.metadata?.lastSeenTurnIndex).toBe(2);
   });
 
   test("wall-clock-terminated stream still emits a terminal done with stopReason interrupted", async () => {
@@ -486,10 +492,20 @@ describe("applyActivityTimeout", () => {
     );
     expect(toolResult).toBeDefined();
     expect(toolResult?.callId).toBe(callId);
+    // Payload must follow the existing TOOL_EXECUTION_ERROR contract
+    // (top-level `code` + top-level `error`) so existing consumers like
+    // headless/run.ts classify it as a tool failure, not a success.
     const output = toolResult?.output as
-      | { readonly error?: { readonly code?: string } }
+      | {
+          readonly code?: string;
+          readonly error?: string;
+          readonly synthesizedBy?: string;
+          readonly terminationReason?: string;
+        }
       | undefined;
-    expect(output?.error?.code).toBe("TIMEOUT");
+    expect(output?.code).toBe("TOOL_EXECUTION_ERROR");
+    expect(typeof output?.error).toBe("string");
+    expect(output?.synthesizedBy).toBe("activity-timeout");
 
     const turnEnd = out.find(
       (e): e is EngineEvent & { readonly kind: "turn_end" } => e.kind === "turn_end",
@@ -530,6 +546,54 @@ describe("applyActivityTimeout", () => {
     // vetoes. Middleware that checks ctx.stopBlocked will skip committing
     // partial state as if the turn succeeded.
     expect(turnEnd.stopBlocked).toBe(true);
+  });
+
+  test("silent tool that finishes after turn_end is not classified as idle", async () => {
+    // The TUI has regression coverage for tools that keep running past
+    // turn_end (see packages/ui/tui/src/state/reduce.test.ts). Our wrapper
+    // must match that reality: pendingTools stays set until tool_result,
+    // regardless of whether turn_end fired in between.
+    const callId = toolCallId("post-turn-tool");
+    let terminated = false;
+    const adapter: EngineAdapter = {
+      engineId: "post-turn-tool",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "tool_call_start", toolName: "slow", callId };
+        yield { kind: "tool_call_end", callId, result: { name: "slow", arguments: {} } };
+        // Turn closes immediately but the tool keeps running silently.
+        yield { kind: "turn_end", turnIndex: 0 };
+        await sleep(150); // well past idleTerminateMs
+        yield { kind: "tool_result", callId, output: "done" };
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: 30,
+      idleTerminateMs: 60,
+      onTerminated: () => {
+        terminated = true;
+      },
+    });
+    const out = await collect(wrapped.stream({ kind: "text", text: "x" }));
+
+    expect(terminated).toBe(false);
+    expect(out.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
+    // The real tool_result from the adapter is passed through (no synthesis
+    // needed because the tool actually completed).
+    const realToolResult = out.find(
+      (e): e is EngineEvent & { readonly kind: "tool_result" } => e.kind === "tool_result",
+    );
+    expect(realToolResult?.output).toBe("done");
   });
 
   test("no synthetic turn_end emitted when termination lands between turns", async () => {

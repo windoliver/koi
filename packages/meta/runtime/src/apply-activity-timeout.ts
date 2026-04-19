@@ -374,15 +374,19 @@ function terminate(deps: TimerDeps, reason: ActivityTerminationReason, elapsed: 
   enqueue(deps.state, { kind: "custom", type: customType, data: { elapsedMs: elapsed } });
 
   for (const callId of deps.state.pendingTools) {
+    // Conform to the existing TOOL_EXECUTION_ERROR payload contract used by
+    // headless/CI consumers (see `packages/meta/cli/src/headless/run.ts`
+    // `isToolExecutionError`): top-level `code` + top-level `error` string.
+    // Extra fields (`synthesizedBy`, `terminationReason`) are additive and
+    // carried through by anything that walks the full object.
     enqueue(deps.state, {
       kind: "tool_result",
       callId,
       output: {
-        error: {
-          code: "TIMEOUT",
-          message: `Tool execution interrupted by activity timeout (${reason}) after ${elapsed}ms`,
-        },
+        code: "TOOL_EXECUTION_ERROR",
+        error: `Tool execution interrupted by activity timeout (${reason}) after ${elapsed}ms`,
         synthesizedBy: "activity-timeout",
+        terminationReason: reason,
       },
     });
   }
@@ -417,12 +421,13 @@ function synthesizeTerminalDone(
   reason: ActivityTerminationReason,
   elapsedMs: number,
 ): EngineEvent {
-  // Pre-termination turn index (if known) — `terminate()` clears
-  // `currentTurnIndex` after enqueueing the synthetic `turn_end`, so when we
-  // land here it may already be null. Capture the last observed turn from
-  // `lastSeenTurnIndex` instead so we can preserve a turn count across the
-  // interruption.
-  const lastTurn = state.lastSeenTurnIndex;
+  // Every accounting field is zeroed so downstream aggregators that do NOT
+  // inspect `metadata.metricsSynthesized` (e.g. `delivery-policy.ts`
+  // RunReport persistence, the TUI cumulative metrics reducer, NDJSON
+  // reporters) cannot be polluted by placeholder numbers. Consumers that
+  // want real per-run observability for a timed-out stream should read
+  // the metadata flags instead. `durationMs` is authoritative (measured)
+  // so aggregating it is strictly correct.
   const output: EngineOutput = {
     content: [],
     stopReason: "interrupted",
@@ -430,20 +435,20 @@ function synthesizeTerminalDone(
       totalTokens: 0,
       inputTokens: 0,
       outputTokens: 0,
-      // Turns = highest observed turn index + 1 (turn indices are 0-based).
-      // When no turn has started yet, emit 0 rather than invent a turn count.
-      turns: lastTurn !== null ? lastTurn + 1 : 0,
+      turns: 0,
       durationMs: elapsedMs,
     },
     metadata: {
       terminatedBy: "activity-timeout",
       terminationReason: reason,
       elapsedMs,
-      // Token counts are not observable from EngineEvent; consumers must
-      // treat them as unknown rather than as real zeros. `delivery-policy.ts`
-      // and other `RunReport` writers should check this flag before keying
-      // dashboards off `totalTokens === 0`.
+      // Token / turn counts above are synthetic zeros. Consumers that need
+      // real observability for a timed-out run should key off these flags
+      // rather than the metrics zeros.
       metricsSynthesized: true,
+      // Highest turn index we observed before termination, or -1 if none.
+      // Separate from metrics.turns so it doesn't inflate aggregates.
+      lastSeenTurnIndex: state.lastSeenTurnIndex ?? -1,
     },
   };
   return { kind: "done", output };
@@ -520,10 +525,13 @@ function recordActivity(state: WrapperState, ev: EngineEvent, now: () => number)
         : Math.max(state.lastSeenTurnIndex, ev.turnIndex);
   } else if (ev.kind === "turn_end") {
     state.currentTurnIndex = null;
-    // Belt-and-suspenders: a turn cannot end with in-flight tool calls. Drop
-    // any stragglers so an error path that swallowed tool_result cannot strand
-    // idle accounting forever.
-    state.pendingTools.clear();
+    // NB: do NOT clear pendingTools here. Tools can legitimately keep running
+    // past turn_end (the TUI has explicit coverage for this in
+    // `packages/ui/tui/src/state/reduce.test.ts` — search for
+    // "running tool after turn_end"). Clearing here would re-enter idle
+    // accounting while a real tool is still working silently. pendingTools
+    // stays set until the matching tool_result arrives or until the wall-
+    // clock backstop fires.
   }
 }
 

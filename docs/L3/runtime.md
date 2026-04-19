@@ -341,7 +341,9 @@ createRuntime({
 - When both `streamTimeoutMs` and `activityTimeout` are provided, `activityTimeout` wins outright.
 - `streamTimeoutMs` is now `@deprecated` in favour of `activityTimeout.maxDurationMs`.
 
-**Partial metrics on timeout.** Token counts are not exposed on the `EngineEvent` stream, so a timed-out stream's synthesized `done.output.metrics` zeroes the token fields (`totalTokens`, `inputTokens`, `outputTokens`) and flags `done.output.metadata.metricsSynthesized: true`. `turns` reflects the highest observed turn index + 1 so downstream observability (e.g. `RunReport` persistence in `@koi/engine`) still captures the turn count; consumers must check the flag before keying dashboards off `totalTokens === 0`.
+**Partial metrics on timeout.** Every accounting field in the synthesized `done.output.metrics` is zeroed (`totalTokens`, `inputTokens`, `outputTokens`, `turns`) so existing aggregators (`@koi/engine`'s `delivery-policy.ts` `RunReport` persistence, the TUI cumulative metrics reducer) cannot be polluted by placeholder numbers from a timed-out run. `durationMs` is authoritative (measured). The rich observability lives in `done.output.metadata`: `terminatedBy: "activity-timeout"`, `terminationReason: "idle" | "wall_clock"`, `elapsedMs`, `metricsSynthesized: true`, and `lastSeenTurnIndex` (highest observed `turn_start` index, or `-1` if none).
+
+**Mid-turn termination envelope.** When the wrapper fires mid-turn, it emits — in order — the `custom: activity.terminated.*` telemetry event, a synthesized `tool_result` for every in-flight tool (output shape: `{ code: "TOOL_EXECUTION_ERROR", error: string, synthesizedBy: "activity-timeout", terminationReason }` — conforms to the existing headless tool-error contract so consumers classify it as a failure), a synthesized `turn_end` with `stopBlocked: true` (reusing the stop-gate marker so `onAfterTurn` middleware does not persist partial state as a real completion), and finally the terminal synthesized `done`. Tools that legitimately keep running past `turn_end` are protected: `pendingTools` stays set until the matching `tool_result` arrives.
 
 **Recommended profiles**
 
