@@ -127,3 +127,94 @@ describe("createPendingMatchStore", () => {
     expect(s.pending()).toBe(2);
   });
 });
+
+describe("store eviction — tombstones", () => {
+  test("evicts oldest bucket at 257th distinct key and emits __watch_dropped__ tombstone", () => {
+    const s = createPendingMatchStore();
+    for (let i = 0; i < 257; i++) {
+      const taskId = `t${i}` as unknown as TaskItemId;
+      s.record({
+        taskId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const snap = s.peek({});
+    const live = snap.filter(
+      (c) => c.event !== "__watch_dropped__" && c.event !== "__watch_dropped_older__",
+    );
+    const tombstones = snap.filter((c) => c.event === "__watch_dropped__");
+    expect(live).toHaveLength(256);
+    expect(tombstones).toHaveLength(1);
+    expect(String(tombstones[0]?.taskId)).toBe("t0");
+  });
+
+  test("tombstones cleared after successful ack", () => {
+    const s = createPendingMatchStore();
+    for (let i = 0; i < 260; i++) {
+      s.record({
+        taskId: `t${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const req = {};
+    s.peek(req);
+    s.ack(req);
+    const next = s.peek({});
+    const tombstones = next.filter(
+      (c) => c.event === "__watch_dropped__" || c.event === "__watch_dropped_older__",
+    );
+    expect(tombstones).toHaveLength(0);
+  });
+
+  test("tombstone preserves original (taskId, event, stream) identity for targeted recovery", () => {
+    const s = createPendingMatchStore();
+    s.record({
+      taskId: "oldest_task" as unknown as TaskItemId,
+      event: "ready",
+      stream: "stderr",
+      lineNumber: 1,
+      timestamp: 0,
+    });
+    for (let i = 1; i < 257; i++) {
+      s.record({
+        taskId: `t${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const snap = s.peek({});
+    const tombstone = snap.find((c) => c.event === "__watch_dropped__");
+    expect(tombstone).toBeDefined();
+    expect(String(tombstone?.firstMatch.taskId)).toBe("oldest_task");
+    expect(tombstone?.firstMatch.event).toBe("ready");
+    expect(tombstone?.firstMatch.stream).toBe("stderr");
+  });
+
+  test("tombstone list bounded at 4096; __watch_dropped_older__ summarizes further drops", () => {
+    const s = createPendingMatchStore();
+    // Produce 256 + 4097 distinct buckets → 4097 evictions → 4096 tombstones + 1 older-marker.
+    for (let i = 0; i < 256 + 4097; i++) {
+      s.record({
+        taskId: `t${i}` as unknown as TaskItemId,
+        event: "e",
+        stream: "stdout",
+        lineNumber: 1,
+        timestamp: i,
+      });
+    }
+    const snap = s.peek({});
+    const tombstones = snap.filter((c) => c.event === "__watch_dropped__");
+    const older = snap.filter((c) => c.event === "__watch_dropped_older__");
+    expect(tombstones).toHaveLength(4096);
+    expect(older).toHaveLength(1);
+    expect(older[0]?.count).toBe(1);
+  });
+});
