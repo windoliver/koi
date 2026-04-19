@@ -1470,15 +1470,15 @@ describe("task_output — matches_only", () => {
   });
 
   test("matches_only on terminal task with evicted buffer returns buffer_evicted", async () => {
-    // Simulate a task that reached terminal state but whose buffer was evicted from the LRU.
-    // bufferReader returns undefined (as if the entry was deleted from the Map).
+    // Simulate a task whose buffer was LRU-evicted: bufferReader returns "evicted" literal.
+    // This is the tri-state contract: "evicted" means it existed then was dropped from the LRU.
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
     const tools = createNamedTaskTools({
       board,
       agentId: agentId("agent-1"),
-      bufferReader: (_id) => undefined, // pretends buffer was evicted
+      bufferReader: (_id) => "evicted" as const, // explicit eviction marker
     });
 
     const rc = await exec(tools.create, { subject: "Evicted", description: "Watch something" });
@@ -1494,6 +1494,36 @@ describe("task_output — matches_only", () => {
     expect(r.kind).toBe("buffer_evicted");
     expect(typeof r.reason).toBe("string");
     expect(r.reason).toContain("evicted");
+  });
+
+  test("matches_only on terminal task that never had a buffer returns empty matches", async () => {
+    // A task created via plain task_create (non-bash_background) that reaches a terminal
+    // state never had a buffer. bufferReader returns undefined (not "evicted").
+    // Must return kind: "matches" with empty entries — NOT buffer_evicted.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: (_id) => undefined, // never had a buffer — not evicted, just absent
+    });
+
+    const rc = await exec(tools.create, { subject: "NoBuffer", description: "Plain task" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+    // Kill the task — now terminal (killed)
+    await exec(tools.stop, { task_id: id });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    // Must NOT return buffer_evicted — the task simply never had a buffer
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
   });
 
   test("matches_only on LIVE task with no buffer returns empty matches (not buffer_evicted)", async () => {

@@ -172,13 +172,21 @@ export interface TaskToolsConfig {
   readonly outputReader?: TaskChunkReader | undefined;
   /**
    * Optional buffer reader factory for matches_only and buffered-snapshot reads.
-   * Returns a TaskOutputReader (snapshot + queryMatches) for the given task ID,
-   * or undefined if no buffer exists for that task.
+   *
+   * Tri-state return:
+   *   - `TaskOutputReader` instance: live buffer exists; serve snapshot or queryMatches.
+   *   - `"evicted"` literal: buffer existed but was LRU-evicted; matches may be lost.
+   *   - `undefined`: task never had a buffer (plain task_create, non-bash_background).
+   *
+   * The distinction between `"evicted"` and `undefined` drives the matches_only
+   * response: `"evicted"` → `buffer_evicted`, `undefined` → empty `matches` result.
    *
    * Structurally satisfied by BashOutputBuffer from @koi/tools-bash without
    * creating an L2→L2 import dependency — wire via dependency injection at L3/L4.
    */
-  readonly bufferReader?: ((taskId: TaskItemId) => TaskOutputReader | undefined) | undefined;
+  readonly bufferReader?:
+    | ((taskId: TaskItemId) => TaskOutputReader | "evicted" | undefined)
+    | undefined;
 }
 
 // Re-export TaskOutputReader from @koi/core so callers can reference it without

@@ -113,24 +113,24 @@ export function createTaskOutputTool(
 
       // matches_only path: return matched-line side-buffer entries
       if (parsed.data.matches_only === true) {
-        const reader = config.bufferReader?.(id);
-        if (reader === undefined) {
-          // Distinguish evicted terminal buffer from live/unknown tasks with no buffer yet.
-          // A terminal task (completed/failed/killed) with no buffer means the LRU evicted
-          // it — matches may have been produced but are no longer retrievable.
-          // A live/pending task with no buffer genuinely has no matches yet.
-          const status = task.status;
-          if (status === "completed" || status === "failed" || status === "killed") {
-            const evictedResponse: TaskOutputResponse = {
-              kind: "buffer_evicted",
-              reason: `Output buffer for terminal task ${String(id)} has been evicted from the LRU cache. Matches may have been produced but are no longer retrievable.`,
-            };
-            return evictedResponse;
-          }
+        const readerOrMarker = config.bufferReader?.(id);
+        if (readerOrMarker === undefined) {
+          // Task never had a buffer — plain task_create, non-bash_background, or live task
+          // with no watch-pattern matches yet. Return empty result (not an error).
           return EMPTY_MATCHES_RESULT;
         }
+        if (readerOrMarker === "evicted") {
+          // Buffer existed but was LRU-evicted — matches may have been produced but are
+          // no longer retrievable. Distinguish from "never had a buffer" above.
+          const evictedResponse: TaskOutputResponse = {
+            kind: "buffer_evicted",
+            reason: `Output buffer for task ${String(id)} has been evicted. Matches may have been produced but are no longer retrievable.`,
+          };
+          return evictedResponse;
+        }
+        // readerOrMarker is a TaskOutputReader instance — buffer is live.
         try {
-          return reader.queryMatches({
+          return readerOrMarker.queryMatches({
             ...(typeof parsed.data.event === "string" ? { event: parsed.data.event } : {}),
             ...(parsed.data.stream !== undefined ? { stream: parsed.data.stream } : {}),
             ...(typeof parsed.data.match_offset === "string"
@@ -173,7 +173,7 @@ export function createTaskOutputTool(
           }
           // If a bufferReader is wired, return buffered snapshot for in_progress
           const inProgressBuffer = config.bufferReader?.(id);
-          if (inProgressBuffer !== undefined) {
+          if (inProgressBuffer !== undefined && inProgressBuffer !== "evicted") {
             const snap = inProgressBuffer.snapshot();
             return {
               kind: "in_progress",
@@ -226,7 +226,7 @@ export function createTaskOutputTool(
         case "failed": {
           // Return buffered snapshot when available (terminal state — process has exited)
           const failedBuffer = config.bufferReader?.(id);
-          if (failedBuffer !== undefined) {
+          if (failedBuffer !== undefined && failedBuffer !== "evicted") {
             const snap = failedBuffer.snapshot();
             return {
               kind: "failed",
@@ -255,7 +255,7 @@ export function createTaskOutputTool(
         case "killed": {
           // Return buffered snapshot when available (terminal state — process has exited)
           const killedBuffer = config.bufferReader?.(id);
-          if (killedBuffer !== undefined) {
+          if (killedBuffer !== undefined && killedBuffer !== "evicted") {
             const snap = killedBuffer.snapshot();
             return {
               kind: "killed",
