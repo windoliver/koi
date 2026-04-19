@@ -1092,12 +1092,11 @@ describe("task_output — ACL", () => {
     await exec(workerTools.update, { task_id: id, status: "in_progress" });
 
     const r = (await exec(unrelatedTools.output, { task_id: id })) as {
-      ok: boolean;
-      error: string;
+      kind: string;
+      reason: string;
     };
-    expect(r.ok).toBe(false);
-    expect(typeof r.error).toBe("string");
-    expect(r.error).toContain("permission denied");
+    expect(r.kind).toBe("permission_denied");
+    expect(typeof r.reason).toBe("string");
   });
 
   test("creator reads killed task — succeeds (createdBy persists through kill)", async () => {
@@ -1118,8 +1117,8 @@ describe("task_output — ACL", () => {
     await exec(workerTools.update, { task_id: id, status: "in_progress" });
     await exec(workerTools.stop, { task_id: id });
 
-    const r = (await exec(unrelatedTools.output, { task_id: id })) as { ok: boolean };
-    expect(r.ok).toBe(false);
+    const r = (await exec(unrelatedTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("permission_denied");
   });
 
   test("creator reads failed task — succeeds", async () => {
@@ -1309,8 +1308,8 @@ describe("task_output — matches_only", () => {
     const r = (await exec(unrelatedTools.output, {
       task_id: id,
       matches_only: true,
-    })) as { ok: boolean };
-    expect(r.ok).toBe(false);
+    })) as { kind: string };
+    expect(r.kind).toBe("permission_denied");
   });
 
   test("bufferReader snapshot returned for in_progress when no offset reader", async () => {

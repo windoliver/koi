@@ -52,7 +52,13 @@ export interface TaskSummary {
 export type TaskOutputResponse =
   | { readonly kind: "not_found"; readonly taskId: TaskItemId }
   | { readonly kind: "pending"; readonly task: TaskSummary }
-  | { readonly kind: "in_progress"; readonly task: TaskSummary }
+  | {
+      readonly kind: "in_progress";
+      readonly task: TaskSummary;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
   | {
       readonly kind: "in_progress_output";
       readonly task: TaskSummary;
@@ -65,12 +71,29 @@ export type TaskOutputResponse =
       /** Present when resultSchemas is configured and validation fails. */
       readonly resultsValidationError?: string | undefined;
     }
-  | { readonly kind: "failed"; readonly task: Task; readonly error: KoiError }
-  | { readonly kind: "killed"; readonly task: Task }
+  | {
+      readonly kind: "failed";
+      readonly task: Task;
+      readonly error: KoiError;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
+  | {
+      readonly kind: "killed";
+      readonly task: Task;
+      readonly stdout?: string | undefined;
+      readonly stderr?: string | undefined;
+      readonly truncated?: boolean | undefined;
+    }
   | {
       readonly kind: "completed_no_result";
       readonly taskId: TaskItemId;
       readonly message: string;
+    }
+  | {
+      readonly kind: "permission_denied";
+      readonly reason: string;
     };
 
 /** Serializable output chunk data (no methods). */

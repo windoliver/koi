@@ -97,10 +97,11 @@ export function createTaskOutputTool(
       const isCreator = task.createdBy === undefined || task.createdBy === agentId;
       const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
       if (!isCreator && !isAssignee) {
-        return {
-          ok: false,
-          error: `Cannot read task '${parsed.data.task_id}': permission denied`,
+        const deniedResponse: TaskOutputResponse = {
+          kind: "permission_denied",
+          reason: "Not authorized to read this task's output.",
         };
+        return deniedResponse;
       }
 
       // matches_only path: return matched-line side-buffer entries
