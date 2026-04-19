@@ -45,9 +45,9 @@ describe("createArtifactStore (skeleton)", () => {
     await store.close();
   });
 
-  test("Plan-2 stubs throw 'not implemented' (listArtifacts and peers)", async () => {
+  test("Plan-2 stubs throw 'not implemented' (deleteArtifact and peers)", async () => {
     const store = await createArtifactStore({ dbPath, blobDir });
-    await expect(store.listArtifacts({} as never, {} as never)).rejects.toThrow(/not implemented/);
+    await expect(store.deleteArtifact({} as never, {} as never)).rejects.toThrow(/not implemented/);
     await store.close();
   });
 });
