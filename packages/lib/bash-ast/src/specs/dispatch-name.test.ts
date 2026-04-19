@@ -11,8 +11,11 @@ describe("matchesCommand", () => {
     expect(matchesCommand("curl", ["/usr/local/bin/curl", "url"])).toBe(true);
   });
 
-  test("matches relative path-qualified command", () => {
-    expect(matchesCommand("rm", ["./bin/rm", "foo"])).toBe(true);
+  test("REJECTS relative path-qualified command (likely wrapper)", () => {
+    expect(matchesCommand("rm", ["./rm", "foo"])).toBe(false);
+    expect(matchesCommand("rm", ["./bin/rm", "foo"])).toBe(false);
+    expect(matchesCommand("rm", ["../bin/rm", "foo"])).toBe(false);
+    expect(matchesCommand("rm", ["bin/rm", "foo"])).toBe(false);
   });
 
   test("rejects different command", () => {

@@ -105,8 +105,10 @@ describe("lookupSpec", () => {
     expect(lookupSpec(BUILTIN_SPECS, "/usr/local/bin/curl")).toBeDefined();
   });
 
-  test("matches relative path-qualified command", () => {
-    expect(lookupSpec(BUILTIN_SPECS, "./bin/tar")).toBeDefined();
+  test("REJECTS relative path-qualified command (likely wrapper)", () => {
+    expect(lookupSpec(BUILTIN_SPECS, "./rm")).toBeUndefined();
+    expect(lookupSpec(BUILTIN_SPECS, "./bin/tar")).toBeUndefined();
+    expect(lookupSpec(BUILTIN_SPECS, "../bin/tar")).toBeUndefined();
   });
 
   test("returns the SAME function whether bare or path-qualified", () => {

@@ -71,20 +71,22 @@ export function registerSpec(reg: Map<string, CommandSpec>, name: string, fn: Co
 }
 
 /**
- * Look up a spec for `argv[0]` honoring path-qualified invocations.
- * Walker output preserves the literal command token, so `/bin/rm` and
- * `rm` both need to dispatch to `specRm`. Strips any leading directory
- * segments via POSIX basename before consulting `reg`.
+ * Look up a spec for `argv[0]`. Accepts bare command names (`rm`) and
+ * absolute system paths (`/bin/rm`); refuses relative paths (`./rm`,
+ * `../bin/rm`) which are likely user wrappers and should not inherit
+ * trusted builtin semantics. See `matchesCommand` for the full policy.
  *
- * Returns `undefined` if argv[0] is missing, basename derivation fails
- * (e.g. argv[0] is `""` or `/`), or no spec is registered for the
- * resolved name.
+ * NOTE: even for absolute paths, this only checks the basename. A
+ * consumer using these specs for authorization MUST additionally verify
+ * the executable identity (canonicalize symlinks, allowlist paths).
  */
 export function lookupSpec(
   reg: ReadonlyMap<string, CommandSpec>,
   argv0: string | undefined,
 ): CommandSpec | undefined {
-  if (argv0 === undefined) return undefined;
+  if (argv0 === undefined || argv0 === "") return undefined;
+  if (!argv0.includes("/")) return reg.get(argv0);
+  if (!argv0.startsWith("/")) return undefined;
   const base = posixBasename(argv0);
   if (!base.ok) return undefined;
   return reg.get(base.value);

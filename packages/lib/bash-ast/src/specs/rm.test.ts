@@ -83,8 +83,10 @@ describe("specRm — refused", () => {
     expect(result.semantics.writes).toEqual(["foo"]);
   });
 
-  test("accepts relative path-qualified ./rm", () => {
+  test("REJECTS relative path-qualified ./rm (likely wrapper)", () => {
     const result = specRm(["./rm", "foo"]);
-    expect(result.kind).toBe("complete");
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.cause).toBe("parse-error");
   });
 });
