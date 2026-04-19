@@ -88,16 +88,20 @@ interface ByteBudget {
 /**
  * Stream a ReadableStream into a string, drawing from a shared ByteBudget.
  * Truncates when the shared budget is exhausted, enforcing a combined cap.
- * Calls onChunk for each decoded text chunk before truncation.
+ * Calls onChunk for EVERY decoded chunk, including after the budget is exhausted,
+ * so watch-pattern matching survives capture truncation.
  */
 export async function collectStream(
   stream: ReadableStream<Uint8Array>,
   budget: ByteBudget,
   onChunk?: (chunk: string) => void,
 ): Promise<{ text: string; truncated: boolean }> {
-  // One decoder per stream — shared TextDecoder state corrupts multi-byte sequences
-  // when stdout and stderr are decoded concurrently.
-  const decoder = new TextDecoder();
+  // Single streaming decoder for the callback path — preserves multi-byte
+  // codepoint continuity across chunk boundaries for the full byte stream.
+  const callbackDecoder = new TextDecoder();
+  // Separate streaming decoder for the capture path — operates only on
+  // budget-gated slices.
+  const captureDecoder = new TextDecoder();
   const reader = stream.getReader();
   let text = "";
   let truncated = false;
@@ -106,6 +110,20 @@ export async function collectStream(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
+      // Fire callback BEFORE any budget gating so watch-patterns matching
+      // continues past the capture-truncation boundary.
+      if (onChunk !== undefined) {
+        const decoded = callbackDecoder.decode(value, { stream: true });
+        if (decoded.length > 0) {
+          try {
+            onChunk(decoded);
+          } catch {
+            // Consumer errors must not break the drain loop — swallowed intentionally.
+          }
+        }
+      }
+
       if (budget.remaining <= 0) {
         // Budget exhausted — mark truncated but keep draining to prevent pipe-full deadlock.
         // A child blocked on write() will never exit if we stop reading.
@@ -113,10 +131,8 @@ export async function collectStream(
         continue;
       }
       const chunk = value.length <= budget.remaining ? value : value.slice(0, budget.remaining);
-      const chunkText = decoder.decode(chunk, { stream: true });
-      text += chunkText;
+      text += captureDecoder.decode(chunk, { stream: true });
       budget.remaining -= chunk.length;
-      onChunk?.(chunkText);
       if (value.length > chunk.length) {
         // This chunk exhausted the budget; mark truncated and keep draining.
         truncated = true;

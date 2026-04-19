@@ -186,6 +186,10 @@ export async function drainStream(
  *
  * The caller is responsible for prepending `set -euo pipefail\n` to `command`
  * if desired (the exec helper does not modify the command string).
+ *
+ * @param callbacks - Optional streaming callbacks. `onStdout` / `onStderr` fire
+ *   on every decoded chunk, including after the capture budget is exhausted.
+ *   Existing call sites that pass 8 args remain source-compatible.
  */
 export async function execSandboxed(
   adapter: SandboxAdapter,
@@ -196,6 +200,7 @@ export async function execSandboxed(
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
   env: Readonly<Record<string, string>> = SAFE_ENV,
+  callbacks?: SpawnBashCallbacks,
 ): Promise<ExecResult> {
   const start = Date.now();
   const instance = await adapter.create(profile);
@@ -206,6 +211,8 @@ export async function execSandboxed(
       timeoutMs,
       maxOutputBytes,
       ...(signal !== undefined ? { signal } : {}),
+      ...(callbacks?.onStdout !== undefined ? { onStdout: callbacks.onStdout } : {}),
+      ...(callbacks?.onStderr !== undefined ? { onStderr: callbacks.onStderr } : {}),
     });
     const truncated = r.truncated === true;
     return {
