@@ -171,6 +171,40 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
   // Per-session state helpers (shared by capture and rewind)
   // -----------------------------------------------------------------------
 
+  /**
+   * Resolve the live parent for a resumed session. When `store.head()`
+   * points at an `incomplete` marker (soft-fail or rollback-failed
+   * stopBlocked), walk up the `parentIds` chain to the nearest `complete`
+   * ancestor. Returns `undefined` when no complete ancestor exists (the
+   * bootstrap hasn't been written yet).
+   *
+   * Cycle guard: walk at most 64 hops — the chain is linear in practice,
+   * so a non-terminating traversal indicates corrupted metadata and
+   * should abort resolution rather than loop forever.
+   */
+  async function resolveLiveParent(
+    cid: ReturnType<typeof chainId>,
+    headResult: Awaited<ReturnType<typeof store.head>>,
+  ): Promise<NodeId | undefined> {
+    if (!headResult.ok || headResult.value === undefined) return undefined;
+    const maxHops = 64;
+    let node = headResult.value;
+    for (let hop = 0; hop < maxHops; hop += 1) {
+      const status = node.metadata[SNAPSHOT_STATUS_KEY];
+      if (status !== "incomplete") return node.nodeId;
+      const parentId = node.parentIds[0];
+      if (parentId === undefined) return undefined;
+      const parentResult = await store.get(parentId);
+      if (!parentResult.ok) return undefined;
+      node = parentResult.value;
+    }
+    // Metadata corruption — surface but don't crash.
+    console.error(
+      `[koi:checkpoint] resolveLiveParent exceeded ${maxHops} hops in chain ${cid}; treating as no parent`,
+    );
+    return undefined;
+  }
+
   async function getOrCreateSession(sessionId: SessionId): Promise<SessionState> {
     let state = sessions.get(sessionId);
     if (state === undefined) {
@@ -178,8 +212,15 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
       // Reads back the existing head if the session is being resumed from disk.
       // `await` is a no-op when the store impl is sync (e.g., SQLite).
       const headResult = await store.head(cid);
-      let parent =
-        headResult.ok && headResult.value !== undefined ? headResult.value.nodeId : undefined;
+      // On restart, the store's head may be an `incomplete` marker
+      // (persistence soft-fail or rollback-failed stopBlocked turn).
+      // Resuming from an incomplete marker would fork the chain off a
+      // non-restorable node and leave any still-dirty workspace state
+      // invisible to rewind. Walk back through parents to the most
+      // recent `complete` ancestor instead, keeping the incomplete
+      // markers as persisted audit records without making them part of
+      // the live capture chain.
+      let parent = await resolveLiveParent(cid, headResult);
 
       // Bootstrap: a brand-new session gets an initial empty snapshot so the
       // first real turn has a predecessor to rewind TO. Without this, the
@@ -212,15 +253,17 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
         }
       }
 
-      // Restore userTurnCounter from the existing head if resuming a chain.
-      // Otherwise start at 0 (bootstrap). On continuation-detection, we
-      // need to know whether the last capture had ops — we conservatively
-      // assume it did NOT when resuming (the resumed head's ops may or may
-      // not be known without fetching; treat as false so the next capture
-      // always starts a new user turn).
+      // Restore userTurnCounter from the LIVE parent (the complete
+      // ancestor we just resolved), not from the raw store head — the
+      // raw head might be an incomplete marker whose userTurnIndex we
+      // consumed for audit purposes. Using that value would cause the
+      // next successful turn to share an index with the aborted marker.
       let userTurnCounter = 0;
-      if (headResult.ok && headResult.value !== undefined) {
-        userTurnCounter = headResult.value.data.userTurnIndex ?? 0;
+      if (parent !== undefined) {
+        const parentResult = await store.get(parent);
+        if (parentResult.ok) {
+          userTurnCounter = parentResult.value.data.userTurnIndex ?? 0;
+        }
       }
 
       state = {

@@ -258,6 +258,72 @@ describe("checkpoint middleware", () => {
     expect(parentOfTurn2).toBeDefined();
   });
 
+  test("restart after rollback-failed stopBlocked resumes from last complete ancestor, not the incomplete head (#1638)", async () => {
+    // Setup: complete turn 0, then stopBlocked turn 1 with rollback
+    // failure → incomplete head persisted. Simulate a process restart by
+    // constructing a fresh middleware against the same store. The new
+    // instance must walk past the incomplete head to the last complete
+    // ancestor — otherwise the next turn would fork from a non-
+    // restorable node and any remaining dirty workspace state would be
+    // invisible to rewind.
+    const session = makeSession();
+    const target = join(rig.workDir, "victim.txt");
+    writeFileSync(target, "original");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal. Capture its nodeId — this should remain the live
+    // parent after restart.
+    const turn0 = makeTurn(session, 0);
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) {
+      throw new Error("expected turn 0 head");
+    }
+    const turn0NodeId = after0.value.nodeId;
+
+    // Turn 1: stopBlocked + rollback-failed → incomplete head.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await wrap(turn1, makeRequest("fs_edit", { path: target, content: "mod" }), async () => {
+      writeFileSync(target, "mod");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(turn1);
+    } finally {
+      console.error = originalError;
+    }
+
+    // Restart: build a second middleware against the SAME store. Any
+    // onAfterTurn on the new middleware must seed parentNodeId from the
+    // last complete ancestor (turn0), not the incomplete head.
+    const fresh = createCheckpointMiddleware({
+      store: rig.store,
+      config: {
+        blobDir: rig.blobDir,
+        driftDetector: NULL_DRIFT,
+      },
+    });
+
+    const turn2 = makeTurn(session, 2);
+    const freshOnAfter = expectFn(fresh.onAfterTurn);
+    await freshOnAfter(turn2);
+
+    // Turn 2's new snapshot must list turn0 as its parent, proving the
+    // restart walked past the incomplete marker.
+    const after2 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after2.ok).toBe(true);
+    if (!after2.ok || after2.value === undefined) {
+      throw new Error("expected turn 2 head");
+    }
+    expect(after2.value.parentIds).toEqual([turn0NodeId]);
+  });
+
   test("rollback-failed stopBlocked snapshot gets its own userTurnIndex so rewind counts stay aligned (#1638)", async () => {
     // Regression: when compensating rollback fails and we persist an
     // incomplete snapshot, it MUST claim its own userTurnIndex. Writing
