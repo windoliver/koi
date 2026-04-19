@@ -18,12 +18,13 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   openSync,
   readFileSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const LOCK_SUFFIX = ".lock";
 const BLOBDIR_LOCK_NAME = ".writer.lock";
@@ -80,43 +81,95 @@ interface AcquiredLock {
   readonly token: string;
 }
 
+/**
+ * Atomic lock acquisition via tmp-file + hardlink pattern:
+ *   1. Create a tmp file exclusively, write PID:UUID, fsync, close.
+ *   2. linkSync(tmp, lockPath) — atomic rename-like op that FAILS with
+ *      EEXIST if lockPath already exists. Either lockPath appears with
+ *      fully-written content, or it doesn't appear at all.
+ *   3. Unlink the tmp entry (the inode remains via the hardlink).
+ *
+ * The hardlink guarantees lockPath is never visible in a partial-content
+ * state — critical for tryRemoveStaleLock to reason about ownership
+ * without a race where a concurrent opener could delete a live-but-mid-
+ * write lock file.
+ */
 function acquireLockFile(lockPath: string): AcquiredLock {
   const token = `${process.pid}:${crypto.randomUUID()}`;
-  let fd: number;
+  const tokenBytes = Buffer.from(token, "utf8");
+  const dir = dirname(lockPath);
+  const tmpPath = join(dir, `.lock.tmp.${process.pid}.${crypto.randomUUID()}`);
+
+  // Write tmp file with token content, fsync, close.
+  const tmpFd = openSync(tmpPath, "wx");
   try {
-    fd = openSync(lockPath, "wx");
+    let written = 0;
+    while (written < tokenBytes.byteLength) {
+      written += writeSync(tmpFd, tokenBytes, written, tokenBytes.byteLength - written);
+    }
+    try {
+      fsyncSync(tmpFd);
+    } catch {
+      /* best-effort */
+    }
+  } finally {
+    closeSync(tmpFd);
+  }
+
+  // Atomically link tmp → lockPath. EEXIST on the target means someone else
+  // is the owner; try stale recovery once and retry.
+  let linkedOk = false;
+  try {
+    linkSync(tmpPath, lockPath);
+    linkedOk = true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-      if (tryRemoveStaleLock(lockPath)) {
-        try {
-          fd = openSync(lockPath, "wx");
-        } catch (retryErr) {
-          if ((retryErr as NodeJS.ErrnoException)?.code === "EEXIST") {
-            throw new Error("ArtifactStore already open by another process");
-          }
-          throw retryErr;
-        }
-      } else {
-        throw new Error("ArtifactStore already open by another process");
+    if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* best-effort */
       }
-    } else {
       throw err;
     }
   }
-  // Write the owner token (PID:UUID) so release can verify ownership before
-  // unlinking. The UUID ensures uniqueness even across PID reuse. fsync so
-  // a SIGKILL'd owner doesn't leave a zero-length file that would block
-  // future stale-lock recovery.
-  const tokenBytes = Buffer.from(token, "utf8");
-  let written = 0;
-  while (written < tokenBytes.byteLength) {
-    written += writeSync(fd, tokenBytes, written, tokenBytes.byteLength - written);
+
+  if (!linkedOk) {
+    if (tryRemoveStaleLock(lockPath)) {
+      try {
+        linkSync(tmpPath, lockPath);
+        linkedOk = true;
+      } catch (retryErr) {
+        try {
+          unlinkSync(tmpPath);
+        } catch {
+          /* best-effort */
+        }
+        if ((retryErr as NodeJS.ErrnoException)?.code === "EEXIST") {
+          throw new Error("ArtifactStore already open by another process");
+        }
+        throw retryErr;
+      }
+    } else {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* best-effort */
+      }
+      throw new Error("ArtifactStore already open by another process");
+    }
   }
+
+  // Clean up tmp entry; the lockPath hardlink keeps the inode alive.
   try {
-    fsyncSync(fd);
+    unlinkSync(tmpPath);
   } catch {
-    /* best-effort — not all fs support fsync on the fd we just opened with wx */
+    /* best-effort — tmp may already be gone */
   }
+
+  // Open the lockPath read-only so release has an fd to close in addition
+  // to unlinking. We keep fd mainly for symmetry with the prior API and for
+  // the windows-fallback close-then-unlink flow.
+  const fd = openSync(lockPath, "r");
   return { fd, token };
 }
 
