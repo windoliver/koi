@@ -5,7 +5,7 @@ import type { CommandSemantics, SpecResult } from "./types.js";
 
 const TAR_ALLOW = {
   bool: new Set(["x", "c", "t", "z", "j", "v"]),
-  value: new Set(["f", "C"]),
+  value: new Set(["f", "C", "file", "directory"]),
 } as const satisfies FlagAllowlist;
 
 const MODE_FLAGS = ["x", "c", "t"] as const;
@@ -156,12 +156,12 @@ export function specTar(argv: readonly string[]): SpecResult {
     };
   }
 
-  const archive = parsed.flags.get("f");
+  const archive = parsed.flags.get("f") ?? parsed.flags.get("file");
   if (typeof archive !== "string") {
     return {
       kind: "refused",
       cause: "parse-error",
-      detail: "tar requires -f FILE (stdin form not supported by this spec)",
+      detail: "tar requires -f/--file FILE (stdin form not supported by this spec)",
     };
   }
 

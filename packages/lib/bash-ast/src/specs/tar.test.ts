@@ -125,6 +125,35 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.writes).toEqual(["out.tar"]);
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
+
+  test("--file long form recognized (regression)", () => {
+    const result = specTar(["tar", "-c", "--file", "out.tar", "a.txt"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+    expect(result.semantics.reads).toEqual(["a.txt"]);
+  });
+
+  test("--file=VALUE long-equals form recognized", () => {
+    const result = specTar(["tar", "-c", "--file=out.tar", "a.txt"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+  });
+
+  test("--directory rebases following positionals (long-form regression)", () => {
+    const result = specTar(["tar", "-c", "--directory", "/etc", "-f", "out.tar", "passwd"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.reads).toEqual(["/etc/passwd"]);
+  });
+
+  test("--directory=DIR long-equals form rebases", () => {
+    const result = specTar(["tar", "-c", "--directory=/etc", "-f", "out.tar", "passwd"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.reads).toEqual(["/etc/passwd"]);
+  });
 });
 
 describe("specTar — list (-t)", () => {
