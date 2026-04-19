@@ -54,12 +54,20 @@ export interface CostBridge {
    * model that actually served the turn — snapshot at turn-start, not
    * mutable bridge state at turn-end. If omitted, the bridge's current
    * `modelName` is used (backwards-compatible; races with mid-turn switches).
+   *
+   * `metrics.pricingModel` decouples display attribution from pricing
+   * lookup. Use it when the display label is a synthetic bucket (e.g.
+   * `"<fallback-chain>"`) that has no entry in the pricing table — the
+   * bridge will estimate `costUsd` from `pricingModel` while still
+   * recording the entry under `modelName`. Omit to use `modelName` for
+   * both.
    */
   readonly recordEngineDone: (metrics: {
     readonly inputTokens: number;
     readonly outputTokens: number;
     readonly costUsd?: number | undefined;
     readonly modelName?: string | undefined;
+    readonly pricingModel?: string | undefined;
   }) => void;
   /** Force-push the current breakdown to the TUI store (skips debounce). */
   readonly flushBreakdown: () => void;
@@ -140,14 +148,21 @@ export async function createCostBridge(config: CostBridgeConfig): Promise<CostBr
       // fall back to the bridge's current value, which races with mid-turn
       // `setModelName()` calls from the picker.
       const effectiveModel = metrics.modelName ?? modelName;
+      // Decouple display attribution from pricing lookup: if the caller
+      // passes a synthetic bucket (e.g. `"<fallback-chain>"`) as
+      // `modelName`, the pricing table won't have an entry for it and the
+      // calculator would return 0. Use `pricingModel` for the price
+      // lookup when provided so real spend is still estimated even when
+      // the display bucket is synthetic.
+      const pricingLookupModel = metrics.pricingModel ?? effectiveModel;
       // Compute cost if not provided by the engine
       const costUsd =
         metrics.costUsd ??
-        calculator.calculateDetailed?.(effectiveModel, {
+        calculator.calculateDetailed?.(pricingLookupModel, {
           inputTokens: metrics.inputTokens,
           outputTokens: metrics.outputTokens,
         }) ??
-        calculator.calculate(effectiveModel, metrics.inputTokens, metrics.outputTokens);
+        calculator.calculate(pricingLookupModel, metrics.inputTokens, metrics.outputTokens);
 
       const entry: CostEntry = {
         inputTokens: metrics.inputTokens,

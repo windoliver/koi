@@ -1607,6 +1607,13 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
   // during init waits, letting `onModelSwitch` observe the in-flight submit
   // before the stream controller exists.
   let submitInProgress = false;
+  // let: compaction latch — `/compact` snapshots and splices the live
+  // runtime transcript across `await` boundaries (token estimation +
+  // microcompact). Must block `onSubmit` (and vice versa) for the full
+  // compact duration, not just the entry check, otherwise a submit can
+  // start after the initial guard and append messages that the splice
+  // then silently drops or duplicates.
+  let compactInProgress = false;
   // let: promise tracking the in-flight `drainEngineStream` call.
   // `resetConversation()` must await this before truncating or
   // overwriting the session file, otherwise the session-transcript
@@ -3371,7 +3378,7 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
             // duplicate messages and desync the next turn's context.
             // `submitInProgress` covers runtimeReady/resetBarrier;
             // `activeController` covers the stream itself.
-            if (activeController !== null || submitInProgress) {
+            if (activeController !== null || submitInProgress || compactInProgress) {
               store.dispatch({
                 kind: "add_error",
                 code: "COMPACT_IN_FLIGHT_TURN",
@@ -3381,58 +3388,82 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
-            // Snapshot current transcript. microcompact is pure — we splice the
-            // result back into runtimeHandle.transcript below. The guard above
-            // ensures no concurrent writer is running, so the snapshot is
-            // consistent.
-            const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
-            if (snapshot.length === 0) {
-              dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
-              return;
-            }
-            const originalTokens = await Promise.resolve(
-              HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
-            );
-            // Halve the current budget, or 4k, whichever is larger. Preserves
-            // the 6 most recent messages so the active thread stays coherent.
-            const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
-            const preserveRecent = 6;
-            const result = await microcompact(
-              snapshot,
-              targetTokens,
-              preserveRecent,
-              HEURISTIC_ESTIMATOR,
-              // Read live model from the middleware box so /compact after a
-              // model switch estimates against the currently-active model.
-              currentModelBox.current,
-            );
-            if (result.strategy === "noop") {
+            // Take the compact latch synchronously so a submit that
+            // arrives during our `await` boundaries (token estimation +
+            // microcompact) is rejected until we release it in `finally`.
+            compactInProgress = true;
+            try {
+              // Snapshot current transcript. microcompact is pure — we splice the
+              // result back into runtimeHandle.transcript below. The guards above
+              // plus the `compactInProgress` latch ensure no concurrent writer
+              // runs for the full compact duration, so the snapshot is consistent.
+              const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
+              if (snapshot.length === 0) {
+                dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
+                return;
+              }
+              const originalTokens = await Promise.resolve(
+                HEURISTIC_ESTIMATOR.estimateMessages(snapshot),
+              );
+              // Halve the current budget, or 4k, whichever is larger. Preserves
+              // the 6 most recent messages so the active thread stays coherent.
+              const targetTokens = Math.max(4000, Math.floor(originalTokens / 2));
+              const preserveRecent = 6;
+              const result = await microcompact(
+                snapshot,
+                targetTokens,
+                preserveRecent,
+                HEURISTIC_ESTIMATOR,
+                // Read live model from the middleware box so /compact after a
+                // model switch estimates against the currently-active model.
+                currentModelBox.current,
+              );
+              if (result.strategy === "noop") {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  `[Compact: already compact (${result.compactedTokens} tokens)]`,
+                );
+                return;
+              }
+              // Re-check the in-flight guards immediately before mutating
+              // the transcript. `compactInProgress` blocks new submits, but
+              // belt-and-suspenders: if somehow the state changed, bail
+              // without splicing rather than corrupt the live buffer.
+              if (activeController !== null || submitInProgress) {
+                dispatchNotice(
+                  store,
+                  "compact-info",
+                  "[Compact: aborted — a turn started mid-compaction]",
+                );
+                return;
+              }
+              runtimeHandle.transcript.splice(
+                0,
+                runtimeHandle.transcript.length,
+                ...result.messages,
+              );
+              const dropped = snapshot.length - result.messages.length;
+              const partial = result.strategy === "micro-truncate-partial";
+              // UI-only notice: the dropped messages are gone from the model's
+              // view. We deliberately do NOT insert a transcript marker —
+              // pinned markers accumulate across repeat /compact calls (pair
+              // rescue keeps them even when nothing else can be dropped), and
+              // a `system:*` senderId would leak a hidden privileged prompt
+              // into every subsequent turn while being filtered from /export
+              // and resume surfaces. The user-facing notice below is the
+              // durable record; /trajectory can surface compactions separately
+              // if needed later.
               dispatchNotice(
                 store,
                 "compact-info",
-                `[Compact: already compact (${result.compactedTokens} tokens)]`,
+                `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
+                  `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
+                  `${partial ? " (partial — still above target)" : ""}]`,
               );
-              return;
+            } finally {
+              compactInProgress = false;
             }
-            runtimeHandle.transcript.splice(0, runtimeHandle.transcript.length, ...result.messages);
-            const dropped = snapshot.length - result.messages.length;
-            const partial = result.strategy === "micro-truncate-partial";
-            // UI-only notice: the dropped messages are gone from the model's
-            // view. We deliberately do NOT insert a transcript marker —
-            // pinned markers accumulate across repeat /compact calls (pair
-            // rescue keeps them even when nothing else can be dropped), and
-            // a `system:*` senderId would leak a hidden privileged prompt
-            // into every subsequent turn while being filtered from /export
-            // and resume surfaces. The user-facing notice below is the
-            // durable record; /trajectory can surface compactions separately
-            // if needed later.
-            dispatchNotice(
-              store,
-              "compact-info",
-              `[Compact: ${result.originalTokens} → ${result.compactedTokens} tokens, ` +
-                `dropped ${dropped} message${dropped === 1 ? "" : "s"}` +
-                `${partial ? " (partial — still above target)" : ""}]`,
-            );
           })();
           break;
         case "session:export":
@@ -3796,12 +3827,22 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
       // OR while a prior submit is still in its preflight (runtimeReady /
       // resetBarrier) window — activeController is null during that window,
       // so `submitInProgress` is the authoritative in-flight signal.
+      // Also reject during `/compact` so the splice doesn't race with
+      // session-transcript appends from this submit.
       // The user can Ctrl+C (agent:interrupt) to abort the active stream first.
       if (activeController !== null || submitInProgress) {
         store.dispatch({
           kind: "add_error",
           code: "SUBMIT_IN_PROGRESS",
           message: "A response is already streaming. Press Ctrl+C to interrupt it first.",
+        });
+        return;
+      }
+      if (compactInProgress) {
+        store.dispatch({
+          kind: "add_error",
+          code: "SUBMIT_DURING_COMPACT",
+          message: "Cannot submit while /compact is in progress. Try again in a moment.",
         });
         return;
       }
@@ -4012,11 +4053,14 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // model may differ from `currentModelBox.current`. We don't yet
           // plumb the router's selected target back through the engine
           // events, so attribute fallback-routed turns to a distinct bucket
-          // ("<fallback-chain>") rather than silently mis-assigning them to
-          // the startup model. By-model breakdowns then visibly segregate
-          // approximated spend from true per-model attribution.
-          const modelAtTurnStart =
-            fallbackModels.length > 0 ? "<fallback-chain>" : currentModelBox.current;
+          // ("<fallback-chain>") for display. Price lookup, however, MUST
+          // use a real model id — the synthetic bucket has no pricing entry
+          // and would silently zero out the estimate. Use the primary
+          // (startup) model id as the pricing proxy until true per-target
+          // attribution is plumbed through.
+          const fallbackActive = fallbackModels.length > 0;
+          const modelAtTurnStart = fallbackActive ? "<fallback-chain>" : currentModelBox.current;
+          const pricingModelAtTurnStart = fallbackActive ? currentModelBox.current : undefined;
           const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
           activeRunPromise = drainPromise;
           const drainOutcome = await drainPromise;
@@ -4068,6 +4112,9 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               outputTokens: deltaOutput,
               costUsd: deltaCost,
               modelName: modelAtTurnStart,
+              ...(pricingModelAtTurnStart !== undefined
+                ? { pricingModel: pricingModelAtTurnStart }
+                : {}),
             });
           }
 
