@@ -30,6 +30,21 @@ import type { GovernanceControllerBuilder } from "./governance-controller.js";
 
 const DEFAULT_SPAWN_TOOL_IDS: readonly string[] = Object.freeze(["forge_agent", "Spawn"]);
 
+/**
+ * Pre-sanitize token counts before calling `controller.record({ kind: "token_usage" })`.
+ *
+ * Controller-side accounting fails closed by dropping NaN/Infinity/negative
+ * values, which silently zeroes spend tracking. Surfacing those values at the
+ * engine boundary instead keeps a buggy adapter from poisoning the counters.
+ * Returns `undefined` for any non-finite or negative value so callers can drop
+ * the field and still record the valid counterpart.
+ */
+function sanitizeTokenCount(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) return undefined;
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Governance guard middleware
 // ---------------------------------------------------------------------------
@@ -95,13 +110,17 @@ function createGovernanceGuard(
     ): Promise<ModelResponse> {
       const response = await next(request);
       if (response.usage !== undefined) {
-        const total = response.usage.inputTokens + response.usage.outputTokens;
+        // Drop invalid fields per-side so one bogus value doesn't zero usage
+        // tracking on an otherwise valid adapter response.
+        const input = sanitizeTokenCount(response.usage.inputTokens);
+        const output = sanitizeTokenCount(response.usage.outputTokens);
+        const total = (input ?? 0) + (output ?? 0);
         if (total > 0) {
           await controller.record({
             kind: "token_usage",
             count: total,
-            inputTokens: response.usage.inputTokens,
-            outputTokens: response.usage.outputTokens,
+            ...(input !== undefined ? { inputTokens: input } : {}),
+            ...(output !== undefined ? { outputTokens: output } : {}),
           });
         }
       }
@@ -120,12 +139,20 @@ function createGovernanceGuard(
       try {
         for await (const chunk of next(request)) {
           if (chunk.kind === "usage") {
-            accInputTokens += chunk.inputTokens;
-            accOutputTokens += chunk.outputTokens;
+            const input = sanitizeTokenCount(chunk.inputTokens);
+            const output = sanitizeTokenCount(chunk.outputTokens);
+            if (input !== undefined) accInputTokens += input;
+            if (output !== undefined) accOutputTokens += output;
           } else if (chunk.kind === "done" && chunk.response.usage !== undefined) {
-            // "done" carries the authoritative final usage — prefer it over incremental accumulation
-            accInputTokens = chunk.response.usage.inputTokens;
-            accOutputTokens = chunk.response.usage.outputTokens;
+            // "done" carries the authoritative final usage — prefer it over
+            // incremental accumulation. Reset only when both fields are valid
+            // so a bogus authoritative reading can't clobber good incrementals.
+            const input = sanitizeTokenCount(chunk.response.usage.inputTokens);
+            const output = sanitizeTokenCount(chunk.response.usage.outputTokens);
+            if (input !== undefined && output !== undefined) {
+              accInputTokens = input;
+              accOutputTokens = output;
+            }
           }
           yield chunk;
         }

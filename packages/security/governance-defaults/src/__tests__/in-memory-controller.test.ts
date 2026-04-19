@@ -375,12 +375,29 @@ describe("createInMemoryController", () => {
   });
 
   describe("record(forge)", () => {
-    test("forge_depth and forge_budget both increment per event (shared counter)", async () => {
+    test("forge_budget increments cumulatively; forge_depth tracks concurrent depth via pairing with forge_release", async () => {
       const controller = createInMemoryController({});
       await controller.record({ kind: "forge" });
       await controller.record({ kind: "forge", toolName: "build_tool" });
       expect(controller.reading("forge_depth")?.current).toBe(2);
       expect(controller.reading("forge_budget")?.current).toBe(2);
+
+      await controller.record({ kind: "forge_release" });
+      // depth drops; cumulative budget stays
+      expect(controller.reading("forge_depth")?.current).toBe(1);
+      expect(controller.reading("forge_budget")?.current).toBe(2);
+
+      await controller.record({ kind: "forge_release" });
+      expect(controller.reading("forge_depth")?.current).toBe(0);
+      expect(controller.reading("forge_budget")?.current).toBe(2);
+    });
+
+    test("forge_release clamps forge_depth to 0 (unpaired release is a no-op)", async () => {
+      const controller = createInMemoryController({});
+      await controller.record({ kind: "forge_release" });
+      await controller.record({ kind: "forge_release" });
+      expect(controller.reading("forge_depth")?.current).toBe(0);
+      expect(controller.reading("forge_budget")?.current).toBe(0);
     });
   });
 
