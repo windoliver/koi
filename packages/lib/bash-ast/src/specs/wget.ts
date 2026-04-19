@@ -67,7 +67,8 @@ export function specWget(argv: readonly string[]): SpecResult {
 
   const writes: string[] = [];
   const outFile = parsed.flags.get("O");
-  if (typeof outFile === "string") writes.push(outFile);
+  // `-O -` writes to stdout, not a file named "-". Drop the sentinel.
+  if (typeof outFile === "string" && outFile !== "-") writes.push(outFile);
 
   const semantics: CommandSemantics = { reads: [], writes, network, envMutations: [] };
   return { kind: "partial", semantics, reason: "wget-follows-redirects" };

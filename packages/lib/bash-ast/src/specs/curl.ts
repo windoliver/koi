@@ -67,22 +67,35 @@ export function specCurl(argv: readonly string[]): SpecResult {
   // parsed.flags.get(...) only retains the LAST occurrence and would
   // under-report writes/reads. Use valueOccurrences (collected during the
   // real parse) so values that belong to other flags are not misread.
+  // Special case: `-` means stdout/stdin (not a file path).
+  let stdioSentinel = false;
   for (const outValue of [
     ...(parsed.valueOccurrences.get("o") ?? []),
     ...(parsed.valueOccurrences.get("output") ?? []),
   ]) {
+    if (outValue === "-") {
+      stdioSentinel = true;
+      continue;
+    }
     writes.push(outValue);
   }
   for (const dataValue of [
     ...(parsed.valueOccurrences.get("d") ?? []),
     ...(parsed.valueOccurrences.get("data") ?? []),
   ]) {
-    if (dataValue.startsWith("@")) reads.push(dataValue.slice(1));
+    if (!dataValue.startsWith("@")) continue;
+    const file = dataValue.slice(1);
+    if (file === "-") {
+      stdioSentinel = true;
+      continue;
+    }
+    reads.push(file);
   }
 
   const reasons: string[] = [];
   if (parsed.flags.has("L")) reasons.push("curl-follows-redirects");
   if (parsed.flags.has("O")) reasons.push("curl-O-derived-basename");
+  if (stdioSentinel) reasons.push("curl-stdio-sentinel");
 
   const semantics: CommandSemantics = { reads, writes, network, envMutations: [] };
 

@@ -18,6 +18,13 @@ describe("specWget — http(s)", () => {
     expect(result.semantics.writes).toEqual(["out.bin"]);
   });
 
+  test("`-O -` is stdout sentinel, NOT a file write (regression)", () => {
+    const result = specWget(["wget", "-O", "-", "https://example.com/"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.semantics.writes).toEqual([]);
+  });
+
   test("port preserved in host", () => {
     const result = specWget(["wget", "https://example.com:8443/x"]);
     expect(result.kind).toBe("partial");

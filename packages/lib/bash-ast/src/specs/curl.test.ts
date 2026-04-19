@@ -123,6 +123,22 @@ describe("specCurl — http(s)", () => {
     expect(result.semantics.reads).toEqual(["payload.bin"]);
   });
 
+  test("`-o -` is stdout sentinel, NOT a file write (regression)", () => {
+    const result = specCurl(["curl", "-o", "-", "https://x"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.reason).toContain("curl-stdio-sentinel");
+    expect(result.semantics.writes).toEqual([]);
+  });
+
+  test("`-d @-` is stdin sentinel, NOT a file read (regression)", () => {
+    const result = specCurl(["curl", "-d", "@-", "https://x"]);
+    expect(result.kind).toBe("partial");
+    if (result.kind !== "partial") return;
+    expect(result.reason).toContain("curl-stdio-sentinel");
+    expect(result.semantics.reads).toEqual([]);
+  });
+
   test("value of -X that looks like -d... is NOT misread as -d (regression)", () => {
     // `-X` is a value flag; its argument is the next token. Even if that
     // token starts with `-d`, it's the HTTP method string, not a -d flag.
