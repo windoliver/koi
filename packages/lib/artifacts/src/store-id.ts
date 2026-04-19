@@ -60,25 +60,44 @@ export async function ensureStoreIdPair(args: {
     return dbId;
   }
 
+  // Asymmetric / missing cases. A one-sided store_id is only safe to self-
+  // heal when the store is provably empty — that matches the crashed-mid-
+  // bootstrap shape where the first side was written but the second side
+  // didn't land before the process died. If the store contains any artifacts
+  // or pending work, a missing side is operator-grade repair.
+  const storeIsEmpty = !dbHasArtifactsOrPending(args.db);
+
   if (dbId !== undefined && sentinelId === undefined) {
+    if (storeIsEmpty) {
+      writeSentinelToFs(args.blobDir, dbId);
+      return dbId;
+    }
     throw new Error(
       "Blob backend is missing store-id sentinel; operator must restore or reset explicitly",
     );
   }
 
   if (dbId === undefined && sentinelId !== undefined) {
+    if (storeIsEmpty) {
+      writeStoreIdToDb(args.db, sentinelId);
+      return sentinelId;
+    }
     throw new Error("Metadata DB is missing store-id; operator must restore or reset explicitly");
   }
 
   // Both missing — only safe to bootstrap if the store is provably empty.
-  if (dbHasArtifactsOrPending(args.db)) {
+  if (!storeIsEmpty) {
     throw new Error(
       "Store-id missing on a non-empty store; operator must restore or reset explicitly",
     );
   }
 
+  // Crash-safe bootstrap: write sentinel first, then DB row. If we crash
+  // after sentinel but before DB, next open sees sentinel-present/DB-missing
+  // with an empty store and self-heals. If we crash before sentinel, next
+  // open sees both-missing and retries bootstrap from scratch.
   const fresh = crypto.randomUUID();
-  writeStoreIdToDb(args.db, fresh);
   writeSentinelToFs(args.blobDir, fresh);
+  writeStoreIdToDb(args.db, fresh);
   return fresh;
 }

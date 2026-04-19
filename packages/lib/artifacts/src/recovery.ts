@@ -133,8 +133,26 @@ async function drainPendingIntents(args: {
       .get(intent.artifact_id) as TargetRow | null;
 
     if (target === null) {
-      // Row was externally deleted. Nothing to repair.
-      args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+      // Row was externally deleted after the intent was bound. The blob
+      // may still be on disk with no metadata references — tombstone it
+      // (if unreferenced) before retiring the intent so no orphan leaks.
+      args.db.transaction(() => {
+        const stillReferenced = args.db
+          .query(
+            `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
+                          OR EXISTS (SELECT 1 FROM pending_blob_puts
+                                      WHERE hash = ? AND intent_id != ?)`,
+          )
+          .get(intent.hash, intent.hash, intent.intent_id);
+        if (!stillReferenced) {
+          args.db
+            .query(
+              "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            )
+            .run(intent.hash, Date.now());
+        }
+        args.db.query("DELETE FROM pending_blob_puts WHERE intent_id = ?").run(intent.intent_id);
+      })();
       continue;
     }
 
