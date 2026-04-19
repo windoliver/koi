@@ -205,6 +205,7 @@ Append to `packages/kernel/core/src/__tests__/types.test.ts`:
 
 ```typescript
 import type { GovernanceBackend, RuleDescriptor } from "../governance-backend.js";
+import { GOVERNANCE_ALLOW } from "../index.js";
 
 test("RuleDescriptor has required fields", () => {
   const r: RuleDescriptor = {
@@ -219,14 +220,14 @@ test("RuleDescriptor has required fields", () => {
 
 test("GovernanceBackend.describeRules is optional", () => {
   const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => ({ allowed: true }) },
+    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
   };
   expect(b.describeRules).toBeUndefined();
 });
 
 test("GovernanceBackend.describeRules can be implemented", async () => {
   const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => ({ allowed: true }) },
+    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
     describeRules: () => [
       { id: "r1", description: "test", effect: "advise" } satisfies RuleDescriptor,
     ],
