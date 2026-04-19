@@ -480,6 +480,13 @@ export function createInMemoryController(config: InMemoryControllerConfig): InMe
         state.forgeDepth += 1;
         return;
       case "forge_release":
+        // Non-idempotent decrement mirrors spawn_release (PR #1904). Events
+        // carry no correlation ID, so duplicate or out-of-order releases
+        // cannot be distinguished from legitimate ones. Host callers MUST
+        // wrap compile lifecycle in try/finally with a single guarded
+        // release; otherwise `forge_depth` will drift downward and allow
+        // excess concurrent compiles. The clamp at 0 prevents runaway
+        // underflow but cannot prevent bypass from spurious releases.
         state.forgeDepth = Math.max(0, state.forgeDepth - 1);
         return;
       case "tool_error":
