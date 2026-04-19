@@ -453,6 +453,50 @@ describe("applyActivityTimeout", () => {
     expect(done?.output.metadata?.terminationReason).toBe("wall_clock");
   });
 
+  test("timeout during tool execution synthesizes error tool_result + stopBlocked turn_end", async () => {
+    const callId = toolCallId("hung-tool");
+    const adapter: EngineAdapter = {
+      engineId: "tool-hung",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "tool_call_start", toolName: "bash", callId };
+        yield { kind: "tool_call_end", callId, result: { name: "bash", arguments: {} } };
+        // Tool hangs past idleTerminateMs — should be killed.
+        await new Promise<void>((resolve) => {
+          input.signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { idleWarnMs: 20, idleTerminateMs: 50 });
+    // Since idle accounting is suspended while tool is in flight, the
+    // wrapper will not actually time the tool out via idle — add a wall
+    // bound so termination triggers in a bounded window.
+    const withWall = applyActivityTimeout(adapter, {
+      idleWarnMs: 20,
+      idleTerminateMs: 50,
+      maxDurationMs: 80,
+    });
+    const out = await collect(withWall.stream({ kind: "text", text: "x" }));
+    void wrapped; // silence unused warning
+
+    const toolResult = out.find(
+      (e): e is EngineEvent & { readonly kind: "tool_result" } => e.kind === "tool_result",
+    );
+    expect(toolResult).toBeDefined();
+    expect(toolResult?.callId).toBe(callId);
+    const output = toolResult?.output as
+      | { readonly error?: { readonly code?: string } }
+      | undefined;
+    expect(output?.error?.code).toBe("TIMEOUT");
+
+    const turnEnd = out.find(
+      (e): e is EngineEvent & { readonly kind: "turn_end" } => e.kind === "turn_end",
+    );
+    expect(turnEnd?.stopBlocked).toBe(true);
+  });
+
   test("mid-turn timeout synthesizes turn_end before terminal done for transcript flush", async () => {
     const adapter: EngineAdapter = {
       engineId: "mid-turn",
@@ -481,6 +525,11 @@ describe("applyActivityTimeout", () => {
     const turnEnd = out[turnEndIdx];
     if (turnEnd === undefined || turnEnd.kind !== "turn_end") throw new Error("expected turn_end");
     expect(turnEnd.turnIndex).toBe(7);
+    // stopBlocked = true prevents onAfterTurn hooks from treating this turn
+    // as a normal completion — same marker the engine uses for stop-gate
+    // vetoes. Middleware that checks ctx.stopBlocked will skip committing
+    // partial state as if the turn succeeded.
+    expect(turnEnd.stopBlocked).toBe(true);
   });
 
   test("no synthetic turn_end emitted when termination lands between turns", async () => {

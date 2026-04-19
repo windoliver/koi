@@ -349,23 +349,50 @@ function scheduleWall(timers: Timers, deps: TimerDeps): void {
 }
 
 /**
- * Emit the termination envelope: custom telemetry event, a synthesized
- * `turn_end` if we were mid-turn (so the CLI transcript bridge and other
- * turn-scoped state-flushing consumers can finalize), a synthesized terminal
- * `done`, then abort the adapter with a typed `AbortReason`. Idempotent —
- * guarded by `state.terminated` at the call sites.
+ * Emit the termination envelope in a single synchronous burst:
+ *
+ *   1. `custom: activity.terminated.*`  — telemetry marker.
+ *   2. `tool_result` for every pending (post-`tool_call_end`) tool with an
+ *      error payload — prevents orphaned `tool_call_start`/`tool_call_end`
+ *      records in transcripts and closes the tool lifecycle even if the
+ *      non-cooperative adapter never emits a late `tool_result` itself.
+ *   3. `turn_end` with `stopBlocked: true` when mid-turn — same marker the
+ *      engine already uses for stop-gate vetoes so `onAfterTurn` middleware
+ *      that inspects `ctx.stopBlocked` will NOT persist the turn as a real
+ *      completion. Turn-boundary consumers (CLI transcript bridge, session
+ *      persistence) still see the event and can flush staged state.
+ *   4. Terminal synthesized `done` with `stopReason: "interrupted"` and
+ *      `metadata.metricsSynthesized: true` so persistence layers know the
+ *      usage numbers are placeholders.
+ *
+ * Finally, the inner adapter is aborted with `AbortReason: "timeout"`.
+ * Idempotent — guarded by `state.terminated` at each call site.
  */
 function terminate(deps: TimerDeps, reason: ActivityTerminationReason, elapsed: number): void {
   deps.state.terminated = { reason, elapsedMs: elapsed };
   const customType = reason === "idle" ? ACTIVITY_TERMINATED_IDLE : ACTIVITY_TERMINATED_WALL_CLOCK;
   enqueue(deps.state, { kind: "custom", type: customType, data: { elapsedMs: elapsed } });
+
+  for (const callId of deps.state.pendingTools) {
+    enqueue(deps.state, {
+      kind: "tool_result",
+      callId,
+      output: {
+        error: {
+          code: "TIMEOUT",
+          message: `Tool execution interrupted by activity timeout (${reason}) after ${elapsed}ms`,
+        },
+        synthesizedBy: "activity-timeout",
+      },
+    });
+  }
+  deps.state.pendingTools.clear();
+
   if (deps.state.currentTurnIndex !== null) {
-    // Synthesize the missing turn_end so downstream session/transcript
-    // consumers (see docs/L3/runtime.md and the CLI engine-adapter) flush
-    // staged user/assistant/tool state instead of dropping the in-flight turn.
     enqueue(deps.state, {
       kind: "turn_end",
       turnIndex: deps.state.currentTurnIndex,
+      stopBlocked: true,
     });
     deps.state.currentTurnIndex = null;
   }
