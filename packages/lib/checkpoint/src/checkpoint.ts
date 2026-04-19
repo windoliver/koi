@@ -128,6 +128,13 @@ export function createCheckpoint(input: CreateCheckpointInput): Checkpoint {
     unsuccessful: readonly unknown[],
   ): Promise<void> {
     try {
+      // Give the aborted turn its OWN userTurnIndex — writing it with the
+      // previous prompt's counter would make `/rewind 1` from a subsequent
+      // successful prompt skip past this node and land on the prior
+      // prompt, discarding more than the user intended. Advancing
+      // state.userTurnCounter keeps restore planning's by-count math
+      // aligned with the real turn ordering.
+      state.userTurnCounter += 1;
       const parents = state.parentNodeId !== undefined ? [state.parentNodeId] : [];
       const payload: CheckpointPayload = {
         turnIndex: ctx.turnIndex,

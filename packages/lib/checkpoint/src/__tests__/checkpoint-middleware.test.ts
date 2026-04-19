@@ -258,6 +258,54 @@ describe("checkpoint middleware", () => {
     expect(parentOfTurn2).toBeDefined();
   });
 
+  test("rollback-failed stopBlocked snapshot gets its own userTurnIndex so rewind counts stay aligned (#1638)", async () => {
+    // Regression: when compensating rollback fails and we persist an
+    // incomplete snapshot, it MUST claim its own userTurnIndex. Writing
+    // it with the previous prompt's counter would make /rewind 1 from a
+    // subsequent successful prompt skip past the aborted node and land
+    // on the pre-abort prompt, discarding an extra turn.
+    const session = makeSession();
+    const target = join(rig.workDir, "victim.txt");
+    writeFileSync(target, "original");
+    const wrap = expectFn(rig.middleware.wrapToolCall);
+    const onAfter = expectFn(rig.middleware.onAfterTurn);
+
+    // Turn 0: normal.
+    const turn0 = makeTurn(session, 0);
+    await onAfter(turn0);
+    const after0 = rig.store.head(chainId(String(session.sessionId)));
+    expect(after0.ok).toBe(true);
+    if (!after0.ok || after0.value === undefined) throw new Error("expected turn 0 head");
+    const turn0UserIndex = after0.value.data.userTurnIndex;
+
+    // Turn 1: stopBlocked + fs_edit + missing blob → rollback fails →
+    // incomplete snapshot persisted.
+    const turn1: TurnContext = { ...makeTurn(session, 1), stopBlocked: true };
+    await wrap(turn1, makeRequest("fs_edit", { path: target, content: "modified" }), async () => {
+      writeFileSync(target, "modified");
+      return PASSTHROUGH_RESPONSE;
+    });
+    rmSync(rig.blobDir, { recursive: true, force: true });
+    mkdirSync(rig.blobDir, { recursive: true });
+    const originalError = console.error;
+    console.error = () => {};
+    try {
+      await onAfter(turn1);
+    } finally {
+      console.error = originalError;
+    }
+
+    // The incomplete snapshot must have a userTurnIndex STRICTLY GREATER
+    // than the previous successful prompt — otherwise /rewind 1 math
+    // would pull from a stale count and land past the aborted turn.
+    const afterIncomplete = rig.store.head(chainId(String(session.sessionId)));
+    expect(afterIncomplete.ok).toBe(true);
+    if (!afterIncomplete.ok || afterIncomplete.value === undefined) {
+      throw new Error("expected incomplete head");
+    }
+    expect(afterIncomplete.value.data.userTurnIndex).toBeGreaterThan(turn0UserIndex);
+  });
+
   test("stopBlocked turn resets continuation marker so next text turn gets its own userTurnIndex (#1638)", async () => {
     // Regression: prior normal turn has fileOps (lastCaptureHadOps=true),
     // then a stopBlocked turn in between, then a normal text-only turn.
