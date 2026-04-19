@@ -547,6 +547,214 @@ describe("createGovernanceExtension", () => {
     expect(reading?.current).toBe(30); // 20 + 10
   });
 
+  test("guard wrapModelCall drops NaN input field but records valid output", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() =>
+      Promise.resolve({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: Number.NaN, outputTokens: 20 },
+      } as ModelResponse),
+    );
+    await getWrapModelCall(guard)(ctx, { messages: [] }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(20);
+  });
+
+  test("guard wrapModelCall drops Infinity output field but keeps valid input", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() =>
+      Promise.resolve({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: 10, outputTokens: Number.POSITIVE_INFINITY },
+      } as ModelResponse),
+    );
+    await getWrapModelCall(guard)(ctx, { messages: [] }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(10);
+  });
+
+  test("guard wrapModelCall drops negative field but keeps valid counterpart", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() =>
+      Promise.resolve({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: -1, outputTokens: 20 },
+      } as ModelResponse),
+    );
+    await getWrapModelCall(guard)(ctx, { messages: [] }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(20);
+  });
+
+  test("guard wrapModelCall substitutes 0 for invalid field so cost_usd still accumulates", async () => {
+    // Regression for partial-sanitization bypass: engine-reconcile's built-in
+    // governance-controller gates fallback cost accumulation on both
+    // inputTokens AND outputTokens being defined. If the engine recorded only
+    // the valid side, cost_usd would stay at 0 for partial events. Engine must
+    // always pass both fields (0-substituted) so cost tracking is not silently
+    // disabled by a single bogus adapter field.
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 10_000, maxDurationMs: 300_000 },
+      cost: { maxCostUsd: 0, costPerInputToken: 0, costPerOutputToken: 0.001 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() =>
+      Promise.resolve({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: Number.NaN, outputTokens: 20 },
+      } as ModelResponse),
+    );
+    await getWrapModelCall(guard)(ctx, { messages: [] }, next);
+    // cost_usd = 20 * 0.001 = 0.02 — proving cost accumulation did NOT skip
+    // because inputTokens was dropped.
+    expect(builder.reading(GOVERNANCE_VARIABLES.COST_USD)?.current).toBeCloseTo(0.02);
+  });
+
+  test("guard wrapModelCall skips record when both token fields are invalid", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const next = mock(() =>
+      Promise.resolve({
+        content: "ok",
+        model: "test",
+        usage: { inputTokens: Number.NaN, outputTokens: -5 },
+      } as ModelResponse),
+    );
+    await getWrapModelCall(guard)(ctx, { messages: [] }, next);
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(0);
+  });
+
+  test("guard wrapModelStream done chunk overwrites accumulator per-field (bogus side preserves other)", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    // Incremental accumulated (10 input, 4 output). Done overrides output=30
+    // authoritatively but input=NaN is invalid — leaving prior incremental
+    // input=10 instead of zeroing the whole accumulator.
+    const chunks: readonly ModelChunk[] = [
+      { kind: "usage", inputTokens: 10, outputTokens: 4 },
+      {
+        kind: "done",
+        response: {
+          content: "ok",
+          model: "test",
+          usage: { inputTokens: Number.NaN, outputTokens: 30 },
+        },
+      },
+    ];
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      for (const chunk of chunks) yield chunk;
+    };
+    for await (const _chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+      // consume
+    }
+    // input preserves incremental 10; output overwritten by authoritative 30. total 40.
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(40);
+  });
+
+  test("guard wrapModelStream sanitizes per field and accumulates the valid portion", async () => {
+    const ext = createGovernanceExtension();
+    const builder = createGovernanceController({
+      iteration: { maxTurns: 25, maxTokens: 1000, maxDurationMs: 300000 },
+    });
+    const agent = mockAgent(builder);
+    const guardList = await ext.guards?.({
+      agentDepth: 0,
+      manifest: { name: "test", version: "0.0.0", model: { name: "test" } },
+      components: agent.components(),
+      agent,
+    });
+    const guard = guardList?.[0];
+    if (guard === undefined) throw new Error("guard not found");
+    const ctx = mockTurnContext();
+    const chunks: readonly ModelChunk[] = [
+      { kind: "usage", inputTokens: 10, outputTokens: 5 },
+      { kind: "usage", inputTokens: Number.NaN, outputTokens: 5 },
+      { kind: "done", response: { content: "ok", model: "test" } },
+    ];
+    const next: ModelStreamHandler = async function* (_req: ModelRequest) {
+      for (const chunk of chunks) yield chunk;
+    };
+    for await (const _chunk of getWrapModelStream(guard)(ctx, { messages: [] }, next)) {
+      // consume
+    }
+    // First chunk: 10+5 = 15. Second: NaN dropped, 5 added. Accumulated = 20.
+    expect(builder.reading(GOVERNANCE_VARIABLES.TOKEN_USAGE)?.current).toBe(20);
+  });
+
   test("guard wrapModelStream records zero usage when stream throws before any usage", async () => {
     const ext = createGovernanceExtension();
     const builder = createGovernanceController();
