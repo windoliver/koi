@@ -51,13 +51,26 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
-import type { AgentId, ApprovalHandler, KoiMiddleware, ManagedTaskBoard } from "@koi/core";
+import type {
+  AgentId,
+  ApprovalHandler,
+  KoiMiddleware,
+  ManagedTaskBoard,
+  TaskItemId,
+} from "@koi/core";
 import { createSingleToolProvider } from "@koi/core";
 import { createTaskAnchorMiddleware } from "@koi/middleware-task-anchor";
+import { createTurnPreludeMiddleware } from "@koi/middleware-turn-prelude";
 import { createOsAdapter, mergeProfile, restrictiveProfile } from "@koi/sandbox-os";
 import { createTaskTools } from "@koi/task-tools";
 import { createManagedTaskBoard, createMemoryTaskBoardStore } from "@koi/tasks";
-import { createBashBackgroundTool, createBashToolWithHooks } from "@koi/tools-bash";
+import type { BashOutputBuffer } from "@koi/tools-bash";
+import {
+  createBashBackgroundTool,
+  createBashOutputBuffer,
+  createBashToolWithHooks,
+} from "@koi/tools-bash";
+import { createPendingMatchStore } from "@koi/watch-patterns";
 import type { PresetStack, StackContribution } from "../preset-stacks.js";
 
 /** Key under `ctx.host` for the approval handler callback. */
@@ -349,6 +362,32 @@ export const executionStack: PresetStack = {
     // that skip background subprocesses still get the full
     // `task_*` tool set and the board stays in-memory for the
     // session.
+
+    // Maximum bytes of buffered bash output retained per task.
+    // Matches the default for incremental streaming (1 MB).
+    const MAX_OUTPUT_BYTES = 1_000_000;
+
+    // --- Watch-pattern store (rotated on session reset, like boardRef) ---
+    // let: mutable — replaced on session reset so the new session starts
+    // with an empty pending-match window.
+    let watchPatternStoreRef = { current: createPendingMatchStore() };
+
+    // --- Per-task output buffers (cleared on session reset) ---
+    // Keyed by TaskItemId. Created lazily by getOrCreateBuffer().
+    // let: mutable — replaced (new Map) on session reset.
+    let bashOutputBuffersRef: { current: Map<TaskItemId, BashOutputBuffer> } = {
+      current: new Map(),
+    };
+
+    function getOrCreateBuffer(id: TaskItemId): BashOutputBuffer {
+      let buf = bashOutputBuffersRef.current.get(id);
+      if (buf === undefined) {
+        buf = createBashOutputBuffer({ maxBytes: MAX_OUTPUT_BYTES });
+        bashOutputBuffersRef.current.set(id, buf);
+      }
+      return buf;
+    }
+
     // let: mutable — rotated on session reset
     let bgController = new AbortController();
     // let: mutable — incremented/decremented from async completions.
@@ -397,6 +436,8 @@ export const executionStack: PresetStack = {
                 elicit: bashElicit,
                 pathExtensions: effectivePaths,
                 home: effectiveHome,
+                getWatchStore: () => watchPatternStoreRef.current,
+                getOutputBuffer: (id) => getOrCreateBuffer(id),
                 ...(sandboxed ? { sandboxAdapter, sandboxProfile } : {}),
               }),
           })
@@ -421,7 +462,11 @@ export const executionStack: PresetStack = {
     // drops out.
     const taskToolProviders =
       taskBoardToolsEnabled && agentId !== undefined
-        ? createTaskTools({ board: taskBoard, agentId }).map((tool) =>
+        ? createTaskTools({
+            board: taskBoard,
+            agentId,
+            bufferReader: (id) => bashOutputBuffersRef.current.get(id),
+          }).map((tool) =>
             createSingleToolProvider({
               name: `task-${tool.descriptor.name}`,
               toolName: tool.descriptor.name,
@@ -444,8 +489,18 @@ export const executionStack: PresetStack = {
         ? [createTaskAnchorMiddleware({ getBoard: () => taskBoard.snapshot() })]
         : [];
 
+    // --- @koi/middleware-turn-prelude: inject pending watch-pattern matches ---
+    // Runs at phase 'resolve' priority 200 (outer than task-anchor 345,
+    // semantic-retry 420) so the enriched prelude is present on every retry.
+    // Uses getStore() so session rotation (watchPatternStoreRef swap) is
+    // transparent — the new store is picked up on the next model call.
+    const turnPreludeMiddleware = createTurnPreludeMiddleware({
+      getStore: () => watchPatternStoreRef.current,
+      getTaskStatus: (id) => boardRef.current.snapshot().get(id)?.status,
+    });
+
     return {
-      middleware: taskAnchorMiddleware,
+      middleware: [...taskAnchorMiddleware, turnPreludeMiddleware],
       providers: [
         ...(bashBackgroundProvider !== undefined ? [bashBackgroundProvider] : []),
         ...taskToolProviders,
@@ -508,6 +563,13 @@ export const executionStack: PresetStack = {
         if (newBoard !== undefined) {
           boardRef.current = newBoard;
         }
+
+        // 7. Rotate watch-pattern store and output buffers so the new session
+        //    starts with a clean slate. dispose() cancels any active matchers
+        //    in the old store (optional — guarded with ?. for future-proofing).
+        watchPatternStoreRef.current.dispose?.();
+        watchPatternStoreRef = { current: createPendingMatchStore() };
+        bashOutputBuffersRef = { current: new Map() };
       },
     };
   },

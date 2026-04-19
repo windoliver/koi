@@ -20,9 +20,9 @@ export interface MatchesResult {
 }
 
 export interface MatchQuery {
-  readonly event?: string;
-  readonly stream?: "stdout" | "stderr";
-  readonly offset?: string;
+  readonly event?: string | undefined;
+  readonly stream?: "stdout" | "stderr" | undefined;
+  readonly offset?: string | undefined;
 }
 
 export interface BashOutputBuffer {
