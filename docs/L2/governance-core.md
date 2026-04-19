@@ -54,6 +54,11 @@ createGovernanceMiddleware({
 });
 ```
 
+The `perVariableThresholds` field is added to `GovernanceMiddlewareConfig`
+(see `packages/security/governance-core/src/config.ts`). Validation is
+performed by `validateGovernanceConfig` and rejects values outside `(0, 1]`
+or non-array entries.
+
 Lookup order: `perVariableThresholds[reading.name]` → `alertThresholds`. The
 `@koi/governance-core` alert tracker dedups per `(sessionId, variable, threshold)`,
 so adding more thresholds for one variable does NOT re-fire global ones.

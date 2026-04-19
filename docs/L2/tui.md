@@ -674,12 +674,13 @@ exposes:
    alerts queue (max 3 visible). Fold-merge by `(variable, threshold)` key —
    re-firing the same key replaces rather than stacks.
 3. **`/governance` view** — full-screen, four sections:
-   - **Sensors** — table of `(variable, current, limit, utilization%, healthy?)`.
-   - **Recent alerts** — last 10 from `~/.koi/governance-alerts.jsonl` (capped at 200).
+   - **Sensors** — table of `(variable, current, limit, utilization%)`. Health is derived per-row from `utilization` against the configured alert thresholds, not a field on `SensorReading`.
+   - **Recent alerts** — view shows the 10 most recent alerts; the JSONL file is tail-evicted to 200 lines on bridge startup.
    - **Active rules** — from `backend.describeRules?()`; section omitted if backend doesn't expose them.
    - **Middleware capabilities** — `mw.describeCapabilities(ctx)` output for governance MW.
-4. **`/governance reset`** — clears the per-session `firedThresholds` set so
-   re-crossing fires alerts again. No state mutation beyond dedup tracking.
+4. **`/governance reset`** — clears the per-session alert dedup state in the
+   `@koi/governance-core` alert tracker so re-crossings fire alerts again.
+   No state mutation beyond dedup tracking.
 
 The TUI is read-only — it never calls `controller.record()` or mutates a
 backend. All updates flow from the host bridge via store actions.

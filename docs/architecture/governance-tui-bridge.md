@@ -1,6 +1,6 @@
 # Governance TUI bridge
 
-> Host owns the bridge, TUI is render-only — symmetric to the cost-bridge pattern in `packages/meta/cli/src/cost-bridge.ts`.
+> Host owns the bridge; TUI is render-only. The implementation pattern mirrors `packages/meta/cli/src/cost-bridge.ts` — read that source if you need a worked example.
 
 ## Inputs (subscriptions)
 
@@ -18,7 +18,7 @@ The bridge subscribes to `@koi/governance-core` callbacks:
 - `add_governance_violation { violation: GovernanceViolation }`
 - `clear_governance_alerts` (fired by `/governance reset`)
 - `set_governance_rules { rules: readonly RuleDescriptor[] }` — once at startup
-- `set_governance_capabilities { capabilities: CapabilityFragment }` — once at startup
+- `set_governance_capabilities { capabilities: readonly CapabilityFragmentLite[] }` — once at startup. `CapabilityFragmentLite` is a TUI-local `{ label, description }` type — the bridge maps the L1 `CapabilityFragment` returned by `mw.describeCapabilities(ctx)` to this lighter shape so the TUI never imports L1 types (layering rule).
 
 ## Persistence
 

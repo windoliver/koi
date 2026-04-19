@@ -190,12 +190,6 @@ Inherited from `@koi/governance-core`:
 
 ---
 
-## See Also
-
-- [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config
-- [`@koi/core/governance`](../../packages/kernel/core/src/governance.ts) — `GovernanceController`, `GovernanceEvent`, `GOVERNANCE_VARIABLES`
-- [`@koi/core/governance-backend`](../../packages/kernel/core/src/governance-backend.ts) — `GovernanceBackend`, `PolicyRequest`, `GovernanceVerdict`
-
 ## `describeRules()` — backend introspection (gov-9)
 
 The pattern-backend implements the optional `describeRules?()` method on
@@ -209,3 +203,9 @@ const descriptors = await backend.describeRules?.();
 
 Backends that do not implement `describeRules` simply omit the rules section
 in the TUI view. Required for: `@koi/tui` `/governance` view.
+
+## See Also
+
+- [`@koi/governance-core`](./governance-core.md) — middleware that consumes this config
+- [`@koi/core/governance`](../../packages/kernel/core/src/governance.ts) — `GovernanceController`, `GovernanceEvent`, `GOVERNANCE_VARIABLES`
+- [`@koi/core/governance-backend`](../../packages/kernel/core/src/governance-backend.ts) — `GovernanceBackend`, `PolicyRequest`, `GovernanceVerdict`
