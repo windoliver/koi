@@ -51,7 +51,7 @@ export interface TokenManagerOptions {
    */
   readonly clientId?: string | undefined;
   /**
-   * Lazy client_id resolver. Invoked exclusively from the refresh path so
+   * Lazy client resolver. Invoked exclusively from the refresh path so
    * that a passive `getAccessToken()` call with no stored tokens never
    * triggers DCR. A plain `token()` probe must be side-effect free —
    * otherwise reconnect retries can leak orphaned OAuth client
@@ -64,10 +64,16 @@ export interface TokenManagerOptions {
    * a client without operator intervention; clear tokens so
    * `handleUnauthorized` can trigger re-auth instead of leaving the
    * session permanently stuck with undeletable expired credentials).
+   *
+   * The `client` payload carries the full `OAuthClientInfo` so the
+   * refresh path can pass it through to `onInvalidClient` unchanged —
+   * letting the provider invalidate against the exact authority the
+   * failing client was registered under, even if discovery has
+   * flipped to a different issuer in the meantime.
    */
   readonly getClientId?:
     | (() => Promise<
-        | { readonly kind: "ok"; readonly clientId: string }
+        | { readonly kind: "ok"; readonly client: OAuthClientInfo }
         | { readonly kind: "transient" }
         | { readonly kind: "terminal" }
       >)
@@ -79,13 +85,15 @@ export interface TokenManagerOptions {
   readonly resource?: string | undefined;
   /**
    * Fired when the refresh endpoint responds with `error: "invalid_client"`.
-   * Receives the exact `clientId` that was sent on the failing request
-   * so the provider can CAS-delete only that specific value. Reading a
-   * mutable provider cache here would race with concurrent flows that
-   * may have already re-registered a fresh client between the failing
-   * request and this callback.
+   * Receives the FULL OAuthClientInfo that was sent on the failing
+   * request — clientId AND issuer — so the provider can CAS-delete
+   * the exact stored record under the exact authority the client
+   * was registered with. Reading a mutable provider cache here, or
+   * recomputing the authority from current metadata, would race with
+   * concurrent flows that may have flipped issuers between the
+   * failing request and this callback.
    */
-  readonly onInvalidClient?: ((clientId: string) => Promise<void> | void) | undefined;
+  readonly onInvalidClient?: ((client: OAuthClientInfo) => Promise<void> | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,19 +120,21 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
   };
   // Lazy resolver fallback: static `clientId` is treated as always-ok.
   // Returns the same discriminated union as the DCR path so the refresh
-  // flow has one branching point for transient/terminal/ok.
+  // flow has one branching point for transient/terminal/ok. Static
+  // clients have no DCR-issued issuer; we synthesize a record with
+  // registeredAt: 0 so onInvalidClient can detect it as static (and
+  // skip persistent-storage cleanup). Empty clientId means no client
+  // header at all — some ASes accept refresh without client_id.
   type ClientResolution =
-    | { readonly kind: "ok"; readonly clientId: string }
+    | { readonly kind: "ok"; readonly client: OAuthClientInfo }
     | { readonly kind: "transient" }
     | { readonly kind: "terminal" };
   const resolveClientId = async (): Promise<ClientResolution> => {
     if (getClientId !== undefined) return getClientId();
-    if (clientId !== undefined) return { kind: "ok", clientId };
-    // No static clientId AND no DCR resolver — refresh can still try
-    // (some ASes accept refresh without client_id for public clients).
-    // Treat absence as ok-with-empty so the existing path executes; the
-    // server's response will tell us if it's actually required.
-    return { kind: "ok", clientId: "" };
+    if (clientId !== undefined) {
+      return { kind: "ok", client: { clientId, registeredAt: 0 } };
+    }
+    return { kind: "ok", client: { clientId: "", registeredAt: 0 } };
   };
   // RFC 8707 resource indicator. Pass-through (no fallback to serverUrl):
   // callers — provider in particular — set `resource` to the effective
@@ -228,8 +238,9 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       await storage.withLock(storageKey, () => storage.delete(storageKey));
       return undefined;
     }
+    const resolvedClient = resolution.client;
     const refreshClientId: string | undefined =
-      resolution.clientId === "" ? undefined : resolution.clientId;
+      resolvedClient.clientId === "" ? undefined : resolvedClient.clientId;
 
     // Read metadata AFTER client resolution. resolveClientId may have
     // re-discovered metadata as part of its DCR recovery path (degraded
@@ -283,7 +294,7 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
       refreshClientId !== undefined
     ) {
       try {
-        await onInvalidClient(refreshClientId);
+        await onInvalidClient(resolvedClient);
       } catch {
         // Callback failures must not mask the underlying refresh error.
       }

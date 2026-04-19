@@ -622,8 +622,8 @@ describe("createTokenManager — refresh flow", () => {
       storage,
       metadata: METADATA,
       clientId: "c",
-      onInvalidClient: (cid: string) => {
-        receivedClientId = cid;
+      onInvalidClient: (client) => {
+        receivedClientId = client.clientId;
       },
     });
     await tm.storeTokens({
@@ -633,16 +633,16 @@ describe("createTokenManager — refresh flow", () => {
     });
 
     expect(await tm.getAccessToken()).toBeUndefined();
-    // The callback receives the EXACT client_id that was sent on the
-    // failing request — this prevents a stale flow from CAS-deleting
-    // a freshly registered client when concurrent provider activity
-    // has already updated cachedClient.
+    // The callback receives the EXACT client info that was sent on
+    // the failing request — including issuer — so the provider can
+    // CAS-delete the right authority-scoped key even if discovery
+    // has flipped between the failure and this callback.
     expect(receivedClientId).toBe("c");
   });
 
   test("does NOT fire onInvalidClient on invalid_grant or transient 5xx", async () => {
     let callbackFired = 0;
-    const onInvalidClient = (_cid: string): void => {
+    const onInvalidClient = (): void => {
       callbackFired += 1;
     };
 

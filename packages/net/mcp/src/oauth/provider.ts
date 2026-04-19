@@ -275,32 +275,20 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // state forever.
       getClientId: async () => {
         try {
-          const client = await getClient();
-          if (client !== undefined) return { kind: "ok", clientId: client.clientId };
+          const c = await getClient();
+          if (c !== undefined) return { kind: "ok", client: c };
         } catch {
           return { kind: "transient" };
         }
         // Client could not be resolved. Distinguish:
         //   - Discovery itself failed (metadata undefined): TRANSIENT.
-        //     A brief outage at process start cannot prove DCR is
-        //     permanently gone — wiping tokens here would force-logout
-        //     a recoverable session.
         //   - Discovery succeeded BUT no registration_endpoint AND no
-        //     static clientId: TERMINAL — there is no operator-free
-        //     recovery path.
-        //   - DCR was attempted and returned a terminal failure
-        //     (insecure endpoint, confidential, narrowed redirect_uris):
-        //     TERMINAL — operator must fix config or AS state.
-        //   - Otherwise (transient registration failure): preserve
-        //     tokens for the next attempt to retry.
+        //     static clientId: TERMINAL.
+        //   - DCR was attempted and returned a terminal failure: TERMINAL.
+        //   - Otherwise (transient registration failure): preserve.
         const md = await getMetadata();
         if (md === undefined) return { kind: "transient" };
         if (oauthConfig.clientId === undefined && md.registrationEndpoint === undefined) {
-          // Before declaring terminal, force a re-discovery — the cached
-          // document may have been a partial-rollout snapshot that
-          // omitted registration_endpoint, and the AS could have
-          // recovered since. Only return terminal if even a fresh
-          // discovery still lacks registration_endpoint.
           const fresh = await refreshMetadata();
           if (fresh?.registrationEndpoint !== undefined) {
             return { kind: "transient" };
@@ -313,14 +301,15 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
         return { kind: "transient" };
       },
       // Forward refresh-time invalid_client signals to the DCR
-      // invalidator. tokens.ts passes the EXACT clientId that failed,
-      // not whatever cachedClient currently holds, so a concurrent
-      // re-registration cannot trick this path into deleting a fresh
-      // record. We still gate on registeredAt > 0 so static configured
-      // clients are never silently deleted.
-      onInvalidClient: async (failingClientId: string) => {
-        if (cachedClient !== undefined && cachedClient.registeredAt > 0) {
-          await invalidateRegisteredClient(failingClientId);
+      // invalidator. tokens.ts passes the EXACT OAuthClientInfo that
+      // was sent on the failing request — clientId AND issuer — so
+      // we can CAS-delete the right authority-scoped key even if
+      // discovery has flipped between the failure and this callback.
+      // Static configured clients (registeredAt === 0) are never
+      // silently deleted.
+      onInvalidClient: async (failingClient: OAuthClientInfo) => {
+        if (failingClient.registeredAt > 0) {
+          await invalidateRegisteredClient(failingClient);
         }
       },
     });
@@ -339,21 +328,29 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   /**
    * Drop both the in-memory cache and the persisted record for a
    * dynamically-registered client so the next auth attempt re-runs DCR.
+   *
    * CAS-gated on the `expectedClientId` that actually failed: a stale
    * flow that started before another process repaired the shared record
    * MUST NOT erase the newer valid registration. If the persisted
    * clientId no longer matches what we used, only the in-memory cache
    * is dropped — the next getClient call will pick up the fresh record.
+   *
+   * The authority used to derive the storage key MUST be the one the
+   * failing client_id was registered under, NOT a fresh recomputation
+   * from current metadata. Discovery may have flipped issuers between
+   * the failed token request and this cleanup; recomputing here would
+   * delete the wrong key and leave the revoked client persisted under
+   * the original authority forever. Persisted records carry their
+   * `issuer` so we can reconstruct the original key exactly.
    */
-  const invalidateRegisteredClient = async (expectedClientId: string): Promise<void> => {
+  const invalidateRegisteredClient = async (expectedClient: OAuthClientInfo): Promise<void> => {
     cachedClient = undefined;
     tokenManager = undefined;
-    const metadata = await getMetadata();
-    const authority = metadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
+    const authority = expectedClient.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
     await storage.withLock(lockKey, async () => {
       const current = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
-      if (current !== undefined && current.clientId === expectedClientId) {
+      if (current !== undefined && current.clientId === expectedClient.clientId) {
         await storage.delete(lockKey);
       }
     });
@@ -361,6 +358,14 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   // --- Interactive auth flow ---
   const startAuthFlow = async (): Promise<boolean> => {
+    // Reset per-attempt failure latches so a previous attempt's DCR
+    // outcome cannot suppress structured-failure reporting on this
+    // one. Without this, a long-lived provider that ever attempted
+    // DCR would never re-emit `dcr_unavailable` even when the AS
+    // genuinely lost registration_endpoint between attempts.
+    lastDcrAttempted = false;
+    lastDcrTerminal = false;
+
     let metadata = await getMetadata();
     if (metadata === undefined) {
       reportFailure({ kind: "discovery_failed", serverName });
@@ -520,7 +525,7 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       // registration. CAS on the failing clientId so a stale flow
       // cannot wipe a newer registration another process already wrote.
       if (exchange.invalidClient && client.registeredAt > 0) {
-        await invalidateRegisteredClient(client.clientId);
+        await invalidateRegisteredClient(client);
       }
       reportFailure({
         kind: "exchange_failed",
