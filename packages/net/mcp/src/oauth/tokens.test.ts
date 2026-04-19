@@ -414,6 +414,65 @@ describe("createTokenManager — refresh flow", () => {
     expect(await tm.hasTokens()).toBe(false);
   });
 
+  test("preserves tokens when DCR resolver returns undefined (transient failure)", async () => {
+    // Without this guard, a transient DCR failure would send a refresh
+    // request with no client_id, the AS would reject it with 4xx, and
+    // the terminal classification would wipe a perfectly good refresh
+    // token — turning a transient outage into permanent session loss.
+    let fetchCalled = 0;
+    globalThis.fetch = mock(() => {
+      fetchCalled += 1;
+      return Promise.resolve(new Response("nope", { status: 400 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      getClientId: async () => undefined,
+      resource: "https://mcp.example.com",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt-keep",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    // No refresh attempted (resolver returned undefined → preserve)
+    expect(fetchCalled).toBe(0);
+    // Refresh token MUST still be there for the next retry.
+    expect(await tm.hasTokens()).toBe(true);
+  });
+
+  test("preserves tokens when DCR resolver throws", async () => {
+    let fetchCalled = 0;
+    globalThis.fetch = mock(() => {
+      fetchCalled += 1;
+      return Promise.resolve(new Response("nope", { status: 400 }));
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      getClientId: async () => {
+        throw new Error("network");
+      },
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    expect(fetchCalled).toBe(0);
+    expect(await tm.hasTokens()).toBe(true);
+  });
+
   test("retries refresh without resource on invalid_target (RFC 8707 compatibility)", async () => {
     // Default RFC 8707 sends `resource` on every refresh. A legacy AS
     // that doesn't recognize it returns 4xx invalid_target. Treating

@@ -849,6 +849,102 @@ describe("createOAuthAuthProvider", () => {
     expect(registerCalls).toBe(0);
   });
 
+  test("two providers sharing one URL converge after one re-registers", async () => {
+    // computeClientKey is name-independent — two aliases at the same
+    // URL share one persisted DCR record. If provider A invalidates and
+    // re-registers, provider B's NEXT getClient must read the repaired
+    // record from storage instead of returning a stale in-memory copy
+    // — otherwise B keeps building auth requests with the dead client_id.
+    const storage = createMockStorage();
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    let registerCounter = 0;
+    let nextRegisterId = "first";
+    let exchangeShouldFail = false;
+    const seenAuthClientIds: string[] = [];
+
+    const runtime: OAuthRuntime = {
+      authorize: mock(async (authUrl: string) => {
+        const url = new URL(authUrl);
+        const cid = url.searchParams.get("client_id") ?? "";
+        seenAuthClientIds.push(cid);
+        return { code: "c", state: url.searchParams.get("state") ?? undefined };
+      }),
+      onReauthNeeded: mock(async () => {}),
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        registerCounter += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ client_id: nextRegisterId }), { status: 201 }),
+        );
+      }
+      if (urlStr.includes("/token")) {
+        if (exchangeShouldFail) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({ access_token: "ok" }), { status: 200 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const make = (alias: string): ReturnType<typeof createOAuthAuthProvider> =>
+      createOAuthAuthProvider({
+        serverName: alias,
+        serverUrl: "https://mcp.example.com",
+        oauthConfig: {
+          authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+        },
+        runtime,
+        storage,
+      });
+
+    const a = make("alias-a");
+    const b = make("alias-b");
+
+    // 1) Both providers warm up against the SAME shared client.
+    nextRegisterId = "first";
+    await a.startAuthFlow();
+    await b.startAuthFlow();
+    expect(registerCounter).toBe(1); // shared registration
+    expect(seenAuthClientIds).toEqual(["first", "first"]);
+
+    // 2) Provider A's exchange fails with invalid_client → A drops the
+    //    shared record from storage. The same startAuthFlow returns
+    //    false but does not re-register (the user has to retry).
+    exchangeShouldFail = true;
+    await a.startAuthFlow();
+    expect(registerCounter).toBe(1);
+
+    // 3) A retries (now succeeding); the re-register emits a NEW
+    //    client_id, persisted under the same shared key.
+    exchangeShouldFail = false;
+    nextRegisterId = "second";
+    await a.startAuthFlow();
+    expect(registerCounter).toBe(2);
+
+    // 4) Provider B's next getClient MUST pick up the repaired record
+    //    from storage, not return its stale in-memory cache pointing
+    //    at "first" — that was the bug.
+    seenAuthClientIds.length = 0;
+    await b.startAuthFlow();
+    expect(seenAuthClientIds).toEqual(["second"]);
+  });
+
   test("returns false when no clientId and no registration_endpoint", async () => {
     const metadata = {
       issuer: "https://auth.example.com",

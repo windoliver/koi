@@ -140,7 +140,24 @@ export function createTokenManager(options: TokenManagerOptions): TokenManager {
     // Resolve clientId LAZILY here — never during the no-tokens probe
     // above. For DCR-backed configs this triggers registration only
     // when there is something to refresh.
-    const refreshClientId = await resolveClientId();
+    let refreshClientId: string | undefined;
+    try {
+      refreshClientId = await resolveClientId();
+    } catch {
+      refreshClientId = undefined;
+    }
+
+    // For DCR-backed configs (caller supplied a `getClientId` resolver),
+    // a missing client_id means the resolver failed transiently —
+    // network blip during discovery, registration timeout, etc. Sending
+    // a refresh without client_id would get classified as terminal 4xx
+    // and wipe a perfectly good refresh token. Return undefined (no
+    // current valid token) WITHOUT clearing stored state, so the next
+    // getAccessToken() attempt can re-resolve. Static-clientId callers
+    // fall through (their absence is operator intent, not transient).
+    if (refreshClientId === undefined && getClientId !== undefined) {
+      return undefined;
+    }
 
     let refreshResult = await refreshAccessToken(
       usedRefreshToken,

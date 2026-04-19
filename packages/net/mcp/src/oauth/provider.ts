@@ -82,22 +82,29 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   /**
    * Resolve the effective OAuth client. Order:
-   * 1. Configured `clientId` (static, no persistence)
+   * 1. Configured `clientId` (static — safe to memoize, never changes)
    * 2. Persisted DCR result whose issuer + registration_endpoint still
    *    match the currently-discovered auth server
    * 3. Fresh DCR against the discovered `registration_endpoint`, persisted
    * Returns undefined when no client can be resolved — the caller fails closed.
    *
-   * Steps 2/3 run under a single `withLock` on the client-info storage key
-   * so concurrent flows cannot register two different clients and
-   * overwrite each other — the token manager would otherwise refresh
-   * against a different client than authorization used.
+   * For the DCR path we deliberately do NOT memoize: two provider
+   * instances pointing at the same MCP URL share one persisted client
+   * record (`computeClientKey` is name-independent). If one instance
+   * invalidates and re-registers the shared client, the other must
+   * pick up the repaired record on its next call rather than serve a
+   * stale in-memory copy. The withLock + storage round-trip is sub-ms
+   * for keychain reads — caching here is not worth the split-brain risk.
+   *
+   * Steps 2/3 run under a single `withLock` on the client-info storage
+   * key so concurrent flows cannot register two different clients and
+   * overwrite each other.
    */
   async function getClient(): Promise<OAuthClientInfo | undefined> {
-    if (cachedClient !== undefined) return cachedClient;
-
     if (oauthConfig.clientId !== undefined) {
-      cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0 };
+      if (cachedClient === undefined) {
+        cachedClient = { clientId: oauthConfig.clientId, registeredAt: 0 };
+      }
       return cachedClient;
     }
 
@@ -126,9 +133,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
       return registered;
     });
 
-    if (resolved === undefined) return undefined;
+    // Refresh the in-memory cache so onInvalidClient + post-revocation
+    // checks see the current binding, but do NOT short-circuit the next
+    // getClient call on it — see freshness rationale above.
     cachedClient = resolved;
-    return cachedClient;
+    return resolved;
   }
 
   async function getTokenManager(): Promise<TokenManager> {
