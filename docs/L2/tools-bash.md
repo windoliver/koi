@@ -205,17 +205,36 @@ Shape: `task_output(taskId, { matches_only: true, event?, stream?, offset? })`
 
 ### task_output authorization
 
-`task_output` applies a creator/assignee ACL:
+`task_output` applies a two-branch ACL keyed on whether `createdBy` is present:
+
+**Migrated tasks (`createdBy` is set):**
 - `task.createdBy === callerAgentId` → read allowed (creator always reads, across all terminal states).
 - `task.assignedTo === callerAgentId` → read allowed (current worker reads while assigned).
-- `task.createdBy === undefined` → **denied** (fail closed — see migration note below).
 - Otherwise → `{ kind: "permission_denied" }`.
+
+**Legacy tasks (`createdBy === undefined`):**
+- `assignedTo` is ignored entirely — pre-migration assignments are not trustworthy for authorization.
+- Only an explicit `legacyReadOwner` match unlocks reads: if `config.legacyReadOwner === callerAgentId`, read proceeds.
+- Otherwise → `{ kind: "legacy_unmigrated" }` (distinct from `permission_denied` — see below).
+
+### Legacy (pre-#1769) task response
+
+When a file-backed persisted task lacks `createdBy` (i.e., was persisted before PR #1769),
+`task_output` returns:
+
+```ts
+{ kind: "legacy_unmigrated"; reason: string }
+```
+
+This is distinct from `permission_denied`. Operators observing this response should run the
+documented migration. Persisted `assignedTo` on legacy tasks does NOT grant read access —
+only an explicit `legacyReadOwner` match unlocks reads.
 
 ### Migrating pre-#1769 persisted tasks
 
 Tasks persisted via `@koi/tasks` file-backed storage before PR #1769 lack the
 `createdBy` field. After upgrade, these tasks are NOT readable via `task_output`
-(the ACL fails closed on undefined creator). If you need legacy-read access,
+(the ACL returns `legacy_unmigrated` on undefined creator). If you need legacy-read access,
 run a one-time on-disk migration that rewrites each task JSON with an explicit
 `createdBy` value — the Koi distribution does not ship this migration because
 ownership is deployment-specific.

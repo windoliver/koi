@@ -96,6 +96,20 @@ export type TaskOutputResponse =
       readonly reason: string;
     }
   | {
+      /**
+       * The task predates the createdBy ownership field (persisted before PR #1769).
+       * Distinct from permission_denied: this is a schema-compat failure, not an ACL
+       * decision. Operators observing this response should run the on-disk migration
+       * (see docs/L2/tools-bash.md) to backfill createdBy, or configure legacyReadOwner
+       * on the task-tools runtime for a transitional read allowance.
+       *
+       * Persisted assignedTo on legacy tasks does NOT grant read access — only an
+       * explicit legacyReadOwner match unlocks reads.
+       */
+      readonly kind: "legacy_unmigrated";
+      readonly reason: string;
+    }
+  | {
       readonly kind: "validation_failed";
       readonly reason: string;
     }

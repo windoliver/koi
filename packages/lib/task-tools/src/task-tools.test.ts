@@ -1132,10 +1132,10 @@ describe("task_output — ACL", () => {
     expect(r.kind).toBe("failed");
   });
 
-  test("legacy task with createdBy undefined: fail-closed, any caller denied", async () => {
+  test("legacy task with createdBy undefined: fail-closed, any caller denied with legacy_unmigrated", async () => {
     // Simulate a pre-migration legacy task by adding directly to board without createdBy.
-    // The ACL now fails closed: until a migration backfills createdBy, these tasks are
-    // unreadable by any caller who is not the assignee.
+    // The ACL now returns legacy_unmigrated (not permission_denied) so operators can
+    // distinguish schema-compat failures from genuine ACL denials.
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
@@ -1161,7 +1161,7 @@ describe("task_output — ACL", () => {
       kind: string;
       reason: string;
     };
-    expect(r.kind).toBe("permission_denied");
+    expect(r.kind).toBe("legacy_unmigrated");
     expect(typeof r.reason).toBe("string");
   });
 
@@ -1193,7 +1193,7 @@ describe("task_output — ACL", () => {
   test("legacy task with createdBy undefined: legacyReadOwner omitted — deny-by-default (no ?? agentId fallback)", async () => {
     // Regression: previously config.legacyReadOwner ?? agentId silently made every
     // agent its own legacy owner, reopening the ACL for runtimes that omit legacyReadOwner.
-    // Now legacyReadOwner defaults to undefined → legacy reads deny.
+    // Now legacyReadOwner defaults to undefined → legacy reads return legacy_unmigrated.
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
@@ -1207,7 +1207,7 @@ describe("task_output — ACL", () => {
       // createdBy intentionally omitted
     });
 
-    // No legacyReadOwner configured — every caller should be denied.
+    // No legacyReadOwner configured — every caller should receive legacy_unmigrated.
     const noOwnerTools = createNamedTaskTools({
       board,
       agentId: agentId("agent-caller"),
@@ -1217,11 +1217,11 @@ describe("task_output — ACL", () => {
       kind: string;
       reason: string;
     };
-    expect(r.kind).toBe("permission_denied");
+    expect(r.kind).toBe("legacy_unmigrated");
     expect(typeof r.reason).toBe("string");
   });
 
-  test("legacy task with createdBy undefined: legacyReadOwner set to different agent — denied", async () => {
+  test("legacy task with createdBy undefined: legacyReadOwner set to different agent — legacy_unmigrated", async () => {
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
@@ -1235,14 +1235,92 @@ describe("task_output — ACL", () => {
       // createdBy intentionally omitted
     });
 
-    // legacyReadOwner is a DIFFERENT agent than the caller — must be denied
+    // legacyReadOwner is a DIFFERENT agent than the caller — must return legacy_unmigrated
     const callerTools = createNamedTaskTools({
       board,
       agentId: agentId("agent-caller"),
       legacyReadOwner: agentId("agent-session"),
     });
     const r = (await exec(callerTools.output, { task_id: "legacy-task-003" })) as { kind: string };
-    expect(r.kind).toBe("permission_denied");
+    expect(r.kind).toBe("legacy_unmigrated");
+  });
+
+  test("legacy task with assignedTo is NOT readable by assignee unless legacyReadOwner matches", async () => {
+    // ACL bypass regression: a legacy task (createdBy: undefined) that has assignedTo set
+    // must NOT be readable by the matching assignee. Pre-migration assignedTo is not
+    // trustworthy — only legacyReadOwner unlocks reads of unmigrated tasks.
+    // We simulate the legacy state by: adding a task without createdBy, then using
+    // board.assign() to set assignedTo — giving us createdBy=undefined AND assignedTo=worker.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-assigned");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy with assignee",
+      description: "Old task without createdBy but with assignedTo",
+      // createdBy intentionally omitted — simulates pre-migration persisted task
+    });
+    // Assign to "worker" via the board — sets assignedTo without touching createdBy
+    await board.assign(legacyId, agentId("worker"));
+
+    // Caller is the very same agent listed in assignedTo — but legacyReadOwner is absent.
+    // Must receive legacy_unmigrated, not success.
+    const workerTools = createNamedTaskTools({
+      board,
+      agentId: agentId("worker"),
+      // legacyReadOwner deliberately omitted
+    });
+    const r = (await exec(workerTools.output, { task_id: "legacy-task-assigned" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("legacy_unmigrated");
+    expect(typeof r.reason).toBe("string");
+  });
+
+  test("legacy task readable only when legacyReadOwner matches caller", async () => {
+    // When legacyReadOwner matches the caller, reads succeed.
+    // When legacyReadOwner is set to a different agent, the caller is denied.
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    const legacyId = mkId("legacy-task-owner-match");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy with assignee",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+    // Assign to "worker" — gives us createdBy=undefined AND assignedTo=worker
+    await board.assign(legacyId, agentId("worker"));
+
+    // alice is the legacyReadOwner — her read must succeed (returns pending/in_progress, not denied)
+    const aliceTools = createNamedTaskTools({
+      board,
+      agentId: agentId("alice"),
+      legacyReadOwner: agentId("alice"),
+    });
+    const aliceResult = (await exec(aliceTools.output, {
+      task_id: "legacy-task-owner-match",
+    })) as { kind: string };
+    expect(aliceResult.kind).not.toBe("legacy_unmigrated");
+    expect(aliceResult.kind).not.toBe("permission_denied");
+
+    // bob is not the legacyReadOwner — must receive legacy_unmigrated
+    const bobTools = createNamedTaskTools({
+      board,
+      agentId: agentId("bob"),
+      legacyReadOwner: agentId("alice"),
+    });
+    const bobResult = (await exec(bobTools.output, {
+      task_id: "legacy-task-owner-match",
+    })) as { kind: string };
+    expect(bobResult.kind).toBe("legacy_unmigrated");
   });
 });
 

@@ -91,24 +91,38 @@ export function createTaskOutputTool(
         return response;
       }
 
-      // Read ACL: allow when caller is the creator or the current assignee.
-      // Legacy tasks (createdBy === undefined) are readable only by legacyReadOwner
-      // when it is explicitly configured AND matches the caller. If legacyReadOwner
-      // is not configured (undefined), legacy reads deny — fail-closed by default.
-      // The CLI execution preset always passes legacyReadOwner: agentId explicitly.
-      const isCreator = task.createdBy === agentId;
-      const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
-      const effectiveLegacyOwner = config.legacyReadOwner; // undefined by default
-      const isLegacyReadable =
-        task.createdBy === undefined &&
-        effectiveLegacyOwner !== undefined &&
-        effectiveLegacyOwner === agentId;
-      if (!isCreator && !isAssignee && !isLegacyReadable) {
-        const deniedResponse: TaskOutputResponse = {
-          kind: "permission_denied",
-          reason: "Not authorized to read this task's output.",
-        };
-        return deniedResponse;
+      // Read ACL — two distinct branches by migration state:
+      //
+      // When createdBy is undefined (legacy task), do NOT consult assignedTo —
+      // pre-migration assignments are not trustworthy for authorization decisions.
+      // Only legacyReadOwner can unlock reads of legacy tasks.
+      //
+      // When createdBy is present (migrated task), apply the normal creator/assignee ACL.
+      const effectiveLegacyOwner = config.legacyReadOwner;
+
+      if (task.createdBy === undefined) {
+        const isLegacyReadable =
+          effectiveLegacyOwner !== undefined && effectiveLegacyOwner === agentId;
+        if (!isLegacyReadable) {
+          const legacyResponse: TaskOutputResponse = {
+            kind: "legacy_unmigrated",
+            reason:
+              "Task predates the createdBy ownership field and has not been migrated. " +
+              "Run the on-disk migration (see docs/L2/tools-bash.md) to backfill createdBy, " +
+              "or configure legacyReadOwner on the task-tools runtime.",
+          };
+          return legacyResponse;
+        }
+      } else {
+        const isCreator = task.createdBy === agentId;
+        const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
+        if (!isCreator && !isAssignee) {
+          const deniedResponse: TaskOutputResponse = {
+            kind: "permission_denied",
+            reason: "Not authorized to read this task's output.",
+          };
+          return deniedResponse;
+        }
       }
 
       // matches_only path: return matched-line side-buffer entries
