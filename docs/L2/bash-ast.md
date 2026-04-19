@@ -177,18 +177,28 @@ reads / writes / hits on the network. **Consumers SHOULD use
 `evaluateBashCommand(simpleCommand, registry)` as the public entry
 point** — it:
 
-1. Looks up the spec by bare basename of `argv[0]`.
-2. Calls the spec with `argv`.
-3. Merges **modeled** redirects (`>`, `>>`, `<`, `<<<`, `&>`, `&>>`,
-   `>|`) into `semantics.writes` / `semantics.reads`.
-4. Downgrades `complete` → `partial` with a reason when:
+1. Refuses path-qualified `argv[0]` (`/bin/rm`, `./rm`, `/tmp/rm`):
+   consumers MUST canonicalize the executable identity (resolve symlinks,
+   allowlist trusted paths) and pass the **bare basename** as `argv[0]`
+   before calling. The spec layer cannot tell `/bin/rm` from `/tmp/rm`
+   from a basename match alone, so emitting builtin semantics for an
+   arbitrary path is unsafe — the canonicalization step is the
+   consumer's job.
+2. Looks up the spec by `argv[0]` exact-match against the registry.
+3. Calls the spec with `argv`.
+4. Merges **modeled** redirects (`>`, `>>`, `<`, `&>`, `&>>`, `>|`) into
+   `semantics.writes` / `semantics.reads`. **Here-strings (`<<<`) are
+   inline stdin data, NOT a path** — `<<<`'s target is not added to
+   `reads`; instead the result is downgraded to `partial` with reason
+   `shell-redirect-fd-or-unknown-op` (we don't model inline stdin).
+5. Downgrades `complete` → `partial` with a reason when:
    - command-local env vars are set (`command-local-env-set`);
    - FD-duplication or other unmodeled redirect ops are present
      (`shell-redirect-fd-or-unknown-op`).
 
 A `complete` return from `evaluateBashCommand` is authoritative across
-argv + redirects + env. A `partial` return still requires a `Run(...)`
-co-rule per the existing soundness contract.
+argv + (modeled) redirects + env. A `partial` return still requires a
+`Run(...)` co-rule per the existing soundness contract.
 
 Raw `spec*(argv)` exports remain available for tests and custom
 pipelines that don't have `SimpleCommand` in hand, but consumers
