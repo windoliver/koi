@@ -73,16 +73,23 @@ export interface PlaywrightDriverConfig {
    * Ignored when `browser` is provided.
    */
   readonly cdpEndpoint?: string;
-  /** Run headless (default: true). Ignored when `browser` or `cdpEndpoint` is provided. */
+  /**
+   * Connect to a CDP WebSocket endpoint (e.g. ws://127.0.0.1:<port>/...). When set,
+   * takes precedence over `cdpEndpoint`. Used by `@koi/browser-ext` to connect via a
+   * loopback WebSocket bridged to a Chrome extension's chrome.debugger API through
+   * a Koi native messaging host.
+   */
+  readonly wsEndpoint?: string;
+  /** Run headless (default: true). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
   readonly headless?: boolean;
-  /** Browser launch timeout in ms (default: 30000). Ignored when `browser` or `cdpEndpoint` is provided. */
+  /** Browser launch timeout in ms (default: 30000). Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided. */
   readonly launchTimeout?: number;
   /**
    * Enable basic stealth mode (default: false).
    * Applies Chromium launch flags and injects navigator/chrome patches.
    * Covers common bot detection: navigator.webdriver, AutomationControlled flag,
    * navigator.plugins, navigator.languages, window.chrome runtime stub.
-   * Ignored when `browser` or `cdpEndpoint` is provided (caller controls stealth).
+   * Ignored when `browser`, `cdpEndpoint`, or `wsEndpoint` is provided (caller controls stealth).
    */
   readonly stealth?: boolean;
   /**
@@ -263,7 +270,7 @@ interface TabSnapshot {
 
 export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {}): BrowserDriver {
   // Whether we own the browser lifecycle (launched it ourselves)
-  const ownsLifecycle = !config.browser && !config.cdpEndpoint;
+  const ownsLifecycle = !config.browser && !config.cdpEndpoint && !config.wsEndpoint;
 
   let browser: Browser | null = config.browser ?? null;
   let browserContext: BrowserContext | null = null;
@@ -318,6 +325,17 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
     if (!browserInitPromise) {
       browserInitPromise = (async (): Promise<Browser> => {
         // intentional assignment: set promise cache once
+        if (config.wsEndpoint && config.cdpEndpoint) {
+          console.warn(
+            "[@koi/browser-playwright] Both wsEndpoint and cdpEndpoint were provided; wsEndpoint takes precedence.",
+          );
+        }
+        if (config.wsEndpoint) {
+          return chromium.connectOverCDP({
+            wsEndpoint: config.wsEndpoint,
+            timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
+          });
+        }
         if (config.cdpEndpoint) {
           return chromium.connectOverCDP(config.cdpEndpoint, {
             timeout: config.launchTimeout ?? LAUNCH_DEFAULT_MS,
@@ -356,7 +374,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
         let ctx: BrowserContext;
         // Persistent context path: userDataDir bypasses ensureBrowser() entirely.
         // chromium.launchPersistentContext() returns a BrowserContext directly.
-        if (config.userDataDir && !config.browser && !config.cdpEndpoint) {
+        if (config.userDataDir && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
           const launchArgs = config.stealth
             ? [
                 "--disable-blink-features=AutomationControlled",
@@ -372,8 +390,8 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           });
         } else {
           const b = await ensureBrowser();
-          // For CDP connections, reuse the default context if one exists
-          if (config.cdpEndpoint) {
+          // For CDP/WS connections, reuse the default context if one exists
+          if (config.cdpEndpoint || config.wsEndpoint) {
             const contexts = b.contexts();
             ctx = contexts[0] ?? (await b.newContext());
           } else {
@@ -381,7 +399,7 @@ export function createPlaywrightBrowserDriver(config: PlaywrightDriverConfig = {
           }
         }
         // Inject stealth script at context level — covers all pages and window.open() tabs
-        if (config.stealth && !config.browser && !config.cdpEndpoint) {
+        if (config.stealth && !config.browser && !config.cdpEndpoint && !config.wsEndpoint) {
           await ctx.addInitScript(STEALTH_INIT_SCRIPT);
         }
 
