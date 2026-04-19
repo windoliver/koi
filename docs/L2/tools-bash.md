@@ -210,7 +210,15 @@ Shape: `task_output(taskId, { matches_only: true, event?, stream?, offset? })`
 **Migrated tasks (`createdBy` is set):**
 - `task.createdBy === callerAgentId` → read allowed (creator always reads, across all terminal states).
 - `task.assignedTo === callerAgentId` → read allowed (current worker reads while assigned).
+- `task.lastAssignedTo === callerAgentId` → read allowed (most recent assignee — preserved across fail/kill/retry so the executing worker can inspect postmortem output after `assignedTo` is cleared).
 - Otherwise → `{ kind: "permission_denied" }`.
+
+### task_output read-ACL (migrated tasks)
+
+A caller is allowed to read when any of:
+- `callerAgentId === task.createdBy` (creator)
+- `callerAgentId === task.assignedTo` (current assignee)
+- `callerAgentId === task.lastAssignedTo` (most recent assignee — preserved across fail/kill/retry so the executing worker can inspect postmortem output)
 
 **Legacy tasks (`createdBy === undefined`):**
 - `assignedTo` is ignored entirely — pre-migration assignments are not trustworthy for authorization.

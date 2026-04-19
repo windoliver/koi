@@ -116,7 +116,8 @@ export function createTaskOutputTool(
       } else {
         const isCreator = task.createdBy === agentId;
         const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
-        if (!isCreator && !isAssignee) {
+        const isLastAssignee = task.lastAssignedTo !== undefined && task.lastAssignedTo === agentId;
+        if (!isCreator && !isAssignee && !isLastAssignee) {
           const deniedResponse: TaskOutputResponse = {
             kind: "permission_denied",
             reason: "Not authorized to read this task's output.",

@@ -306,7 +306,7 @@ function createBoardFromState(
   function transitionTask(
     taskId: TaskItemId,
     to: TaskStatus,
-    patch?: Partial<Pick<Task, "assignedTo" | "error">>,
+    patch?: Partial<Pick<Task, "assignedTo" | "lastAssignedTo" | "error">>,
   ): Result<{ readonly task: Task; readonly items: ReadonlyMap<TaskItemId, Task> }, KoiError> {
     const task = items.get(taskId);
     if (task === undefined) {
@@ -507,7 +507,10 @@ function createBoardFromState(
           }
         }
       }
-      const result = transitionTask(taskId, "in_progress", { assignedTo: agentId });
+      const result = transitionTask(taskId, "in_progress", {
+        assignedTo: agentId,
+        lastAssignedTo: agentId,
+      });
       if (!result.ok) return { ok: false, error: result.error };
       const newBoard = createBoardFromState(result.value.items, results, unreachableIds, config);
       emit(config, { kind: "task:assigned", taskId, agentId }, newBoard);

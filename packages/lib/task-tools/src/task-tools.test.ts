@@ -1322,6 +1322,42 @@ describe("task_output — ACL", () => {
     })) as { kind: string };
     expect(bobResult.kind).toBe("legacy_unmigrated");
   });
+
+  test("worker retains read after their task transitions to failed (lastAssignedTo ACL)", async () => {
+    // Agent creator creates task, agent worker is assigned, worker fails the task (terminal),
+    // worker then reads task_output → succeeds via lastAssignedTo ACL.
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    // Move to in_progress as worker
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    // Fail the task (terminal — non-retryable)
+    await exec(workerTools.update, { task_id: id, status: "failed", reason: "Crashed" });
+
+    // Worker reads after fail — assignedTo was cleared, but lastAssignedTo preserves access
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("failed");
+  });
+
+  test("worker retains read after retryable failure resets assignedTo", async () => {
+    // After a retryable failure the task goes back to pending with assignedTo=undefined.
+    // The worker that ran it should still be able to inspect the task via lastAssignedTo.
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    // Fail with retryable=true (triggers retry path — back to pending, assignedTo cleared)
+    await exec(workerTools.update, {
+      task_id: id,
+      status: "failed",
+      reason: "Transient",
+      retryable: true,
+    });
+
+    // Worker reads the now-pending (retried) task — should succeed via lastAssignedTo
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).not.toBe("permission_denied");
+  });
 });
 
 // ---------------------------------------------------------------------------
