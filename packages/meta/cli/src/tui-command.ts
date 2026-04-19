@@ -140,6 +140,28 @@ function dispatchNotice(store: TuiStore, _tag: string, text: string): void {
   store.dispatch({ kind: "add_info", message: text });
 }
 
+/**
+ * Defensive bounds on context-window values from provider `/models`.
+ *
+ * OpenRouter/OpenAI/Anthropic all report sane positive integers (8k..2M),
+ * but a broken provider, a forged response, or a future schema drift could
+ * send 0, negative, or pathological values. Both extremes break compaction:
+ * a tiny window forces thrash-truncation of every message; a huge window
+ * effectively disables compaction until the provider itself rejects the
+ * call. Validate before trusting.
+ *
+ * MIN=2048: below this, even a single system prompt + user turn overflows
+ * so the registry default is always safer. MAX=4_000_000: covers today's
+ * largest public windows (Anthropic's 1M) with headroom; anything larger
+ * is almost certainly a metadata bug.
+ */
+export function clampContextLength(raw: number | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  if (!Number.isFinite(raw) || !Number.isInteger(raw)) return undefined;
+  if (raw < 2048 || raw > 4_000_000) return undefined;
+  return raw;
+}
+
 /** Render a displayable transcript as a Markdown document for /export. */
 export function renderTranscriptMarkdown(
   messages: readonly DisplayableResumedMessage[],
@@ -4071,23 +4093,18 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // No-op when the router is active — the fetcher above already
     // short-circuited with an error, but guard here too so a stale
     // selection from an earlier fetch cannot mutate the box.
-    onModelSwitch: (model): void => {
-      if (fallbackModels.length > 0) return;
-      // Refuse mid-turn switches: a run in flight has already snapshotted
-      // its model at submit and may still issue additional HTTP calls
-      // (tool loops / retries). Mutating the box now would mix models
-      // within a single run and skew cost attribution.
-      if (store.getState().agentStatus === "processing") {
-        dispatchNotice(
-          store,
-          "model-switch-deferred",
-          "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
-        );
-        return;
-      }
+    onModelSwitch: (model): boolean => {
+      if (fallbackModels.length > 0) return false;
+      // Refuse mid-turn switches: `activeController` is the authoritative
+      // in-flight signal (set synchronously in onSubmit before any async
+      // work). Checking `agentStatus` here would leave a race window
+      // between submit and the first engine event that flips it to
+      // "processing".
+      if (activeController !== null) return false;
       currentModelBox.current = model.id;
-      currentModelBox.contextLength = model.contextLength;
+      currentModelBox.contextLength = clampContextLength(model.contextLength);
       costBridge.setModelName(model.id);
+      return true;
     },
   });
 

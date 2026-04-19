@@ -153,8 +153,12 @@ export interface TuiRootProps {
    * plumb per-model metadata — specifically `contextLength` — into the
    * runtime's per-turn budget resolution for models absent from the local
    * registry.
+   *
+   * Returns `true` when the switch was applied, `false` when the host
+   * refused (e.g. a run is still in flight). TuiRoot only dispatches
+   * `model_switched` and the success toast on a confirmed mutation.
    */
-  readonly onModelSwitch?: ((model: ModelEntry) => void) | undefined;
+  readonly onModelSwitch?: ((model: ModelEntry) => boolean | void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,22 +399,21 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   };
 
   const handleModelSelect = (model: ModelEntry): void => {
-    // Refuse mid-turn switches: a run in flight has already snapshotted its
-    // model at submit and may still issue additional HTTP calls (tool loops
-    // / retries). Mutating state now would mix models within a single run
-    // and skew cost attribution. Surface a notice instead of silently
-    // accepting a switch that won't apply.
-    if (store.getState().agentStatus === "processing") {
-      store.dispatch({ kind: "set_modal", modal: null });
+    store.dispatch({ kind: "set_modal", modal: null });
+    // Host owns the authoritative in-flight signal (e.g. AbortController).
+    // `agentStatus` lags the submit→first-event gap, so we defer the
+    // refusal decision to the host and react to its boolean result.
+    // When the host returns `undefined` (older callers) we assume success
+    // for backwards compatibility.
+    const applied = props.onModelSwitch?.(model);
+    if (applied === false) {
       store.dispatch({
         kind: "add_info",
         message: "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
       });
       return;
     }
-    props.onModelSwitch?.(model);
     store.dispatch({ kind: "model_switched", model: model.id });
-    store.dispatch({ kind: "set_modal", modal: null });
     store.dispatch({ kind: "add_info", message: `[Model switched to ${model.id}]` });
   };
 
