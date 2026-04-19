@@ -3363,10 +3363,28 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
               });
               return;
             }
+            // Refuse compaction while a submit is in flight or in its
+            // preflight window. `microcompact` snapshots + splices the
+            // runtime transcript, and the session-transcript middleware
+            // may append the in-flight turn's messages concurrently —
+            // running compact against that live buffer can drop or
+            // duplicate messages and desync the next turn's context.
+            // `submitInProgress` covers runtimeReady/resetBarrier;
+            // `activeController` covers the stream itself.
+            if (activeController !== null || submitInProgress) {
+              store.dispatch({
+                kind: "add_error",
+                code: "COMPACT_IN_FLIGHT_TURN",
+                message:
+                  "Cannot /compact while a turn is in flight. Press Ctrl+C to " +
+                  "interrupt the active stream first, then try /compact again.",
+              });
+              return;
+            }
             // Snapshot current transcript. microcompact is pure — we splice the
-            // result back into runtimeHandle.transcript below. /compact is a
-            // user-initiated command between turns, so there are no concurrent
-            // writers and the snapshot can't race with new appends.
+            // result back into runtimeHandle.transcript below. The guard above
+            // ensures no concurrent writer is running, so the snapshot is
+            // consistent.
             const snapshot: readonly InboundMessage[] = [...runtimeHandle.transcript];
             if (snapshot.length === 0) {
               dispatchNotice(store, "compact-info", "[Compact: conversation is empty]");
@@ -3988,7 +4006,17 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
           // attribution. If the user switches mid-turn via the picker, the
           // bridge's live `modelName` would race with the HTTP call that's
           // still in flight; pin to this value for this turn's recording.
-          const modelAtTurnStart = currentModelBox.current;
+          //
+          // Under `KOI_FALLBACK_MODEL` routing, `request.model` is rewritten
+          // per target inside the router middleware, so the actually-served
+          // model may differ from `currentModelBox.current`. We don't yet
+          // plumb the router's selected target back through the engine
+          // events, so attribute fallback-routed turns to a distinct bucket
+          // ("<fallback-chain>") rather than silently mis-assigning them to
+          // the startup model. By-model breakdowns then visibly segregate
+          // approximated spend from true per-model attribution.
+          const modelAtTurnStart =
+            fallbackModels.length > 0 ? "<fallback-chain>" : currentModelBox.current;
           const drainPromise = drainEngineStream(stream, store, batcher, controller.signal);
           activeRunPromise = drainPromise;
           const drainOutcome = await drainPromise;

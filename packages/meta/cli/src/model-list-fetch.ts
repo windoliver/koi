@@ -30,10 +30,27 @@ function parseNumber(v: unknown): number | undefined {
   return undefined;
 }
 
+// Model IDs cross a network trust boundary — a malicious or compromised
+// provider could return a string containing ANSI / terminal control
+// sequences, which would be rendered verbatim in the TUI (status bar,
+// picker list, /cost breakdown) and could clobber the user's terminal.
+// Accept only the charset real-world model IDs use: alphanumerics plus
+// `-_./:` (covering `provider/name`, `name-4.6`, `name:free` variants).
+// Cap length so a pathological response cannot fill the status bar.
+const MAX_MODEL_ID_LENGTH = 128;
+const MODEL_ID_ALLOWED = /^[A-Za-z0-9._:/@-]+$/;
+
+export function sanitizeModelId(raw: string): string | undefined {
+  if (raw.length === 0 || raw.length > MAX_MODEL_ID_LENGTH) return undefined;
+  return MODEL_ID_ALLOWED.test(raw) ? raw : undefined;
+}
+
 function normaliseModel(raw: RawModel | null | undefined): ModelEntry | undefined {
   if (raw === null || raw === undefined) return undefined;
-  if (typeof raw.id !== "string" || raw.id.length === 0) return undefined;
-  const entry: { -readonly [K in keyof ModelEntry]: ModelEntry[K] } = { id: raw.id };
+  if (typeof raw.id !== "string") return undefined;
+  const safeId = sanitizeModelId(raw.id);
+  if (safeId === undefined) return undefined;
+  const entry: { -readonly [K in keyof ModelEntry]: ModelEntry[K] } = { id: safeId };
   const ctx = parseNumber(raw.context_length);
   if (ctx !== undefined) entry.contextLength = ctx;
   const pIn = parseNumber(raw.pricing?.prompt);
