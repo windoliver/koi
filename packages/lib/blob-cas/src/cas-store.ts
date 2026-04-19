@@ -28,7 +28,6 @@ import { join } from "node:path";
 
 const HASH_HEX_LEN = 64; // SHA-256 hex
 const HASH_SHARD_LEN = 2;
-const STREAM_CHUNK = 64 * 1024; // 64 KiB streaming reads
 
 /**
  * Best-effort directory fsync. Some platforms (Windows) don't support fsync
@@ -97,73 +96,60 @@ export function hasBlob(blobDir: string, hash: string): boolean {
  * `await fileExists` before calling).
  */
 export async function writeBlobFromFile(blobDir: string, sourcePath: string): Promise<string> {
-  // Stream-hash the source file via Bun.CryptoHasher.
-  const file = Bun.file(sourcePath);
+  // Read the source ONCE, feeding bytes into both the hasher and the tmp
+  // file in a single pass. This guarantees the stored blob always matches
+  // the returned hash — a two-pass approach could race an external writer
+  // modifying the source between passes and store bytes that don't match
+  // the declared hash, violating CAS integrity.
+  const tmpDir = join(blobDir, "tmp");
+  mkdirSync(tmpDir, { recursive: true });
+  const tmpName = `incoming.${process.pid}.${crypto.randomUUID()}`;
+  const tmp = join(tmpDir, tmpName);
+
   const hasher = new Bun.CryptoHasher("sha256");
-  const reader = file.stream().getReader();
+  const file = Bun.file(sourcePath);
+
+  // Stream source → (hasher, tmpFd) simultaneously.
+  const tmpFd = openSync(tmp, "w");
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      hasher.update(value);
+    const reader = file.stream().getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        hasher.update(value);
+        let written = 0;
+        while (written < value.byteLength) {
+          written += writeSync(tmpFd, value, written, value.byteLength - written);
+        }
+      }
+    } finally {
+      reader.releaseLock();
     }
+    fsyncSync(tmpFd);
   } finally {
-    reader.releaseLock();
+    closeSync(tmpFd);
   }
+
   const hash = hasher.digest("hex");
 
-  // CAS dedup: if the blob already exists, we're done.
+  // CAS dedup: if the blob already exists, drop the tmp and return.
   if (hasBlob(blobDir, hash)) {
+    try {
+      Bun.file(tmp).unlink?.();
+    } catch {
+      /* ignore */
+    }
     return hash;
   }
 
-  // Otherwise, copy the source bytes into the CAS via tmp + rename for atomicity.
   const targetDir = join(blobDir, hash.slice(0, HASH_SHARD_LEN));
   mkdirSync(targetDir, { recursive: true });
-
   const target = join(targetDir, hash);
-  const tmp = `${target}.tmp.${process.pid}.${crypto.randomUUID()}`;
 
-  // Bun.file().arrayBuffer() reads the whole file into memory; for large
-  // files we instead pipe via stream. We use the streaming pattern unless
-  // the file is small enough to amortize the syscall cost.
-  if (file.size < STREAM_CHUNK * 4) {
-    // Small file: one read + write is cheaper than streaming setup. Write
-    // via openSync/writeSync/fsync so the blob is crash-durable.
-    const buf = await file.arrayBuffer();
-    writeAndFsync(tmp, new Uint8Array(buf));
-  } else {
-    // Large file: stream chunks, then fsync the temp file.
-    const handle = Bun.file(sourcePath);
-    const writer = Bun.file(tmp).writer();
-    const stream = handle.stream();
-    const r = stream.getReader();
-    try {
-      while (true) {
-        const { done, value } = await r.read();
-        if (done) break;
-        writer.write(value);
-      }
-      await writer.end();
-    } finally {
-      r.releaseLock();
-    }
-    // fsync the streamed temp file.
-    const fd = openSync(tmp, "r+");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-  }
-
-  // Atomic rename onto the final path. If another process already wrote
-  // the same hash between our hasBlob check and the rename, the rename
-  // simply replaces an identical file (CAS guarantees content equality).
   try {
     renameSync(tmp, target);
   } catch (err) {
-    // Best-effort cleanup of the tmp file on rename failure.
     try {
       Bun.file(tmp).unlink?.();
     } catch {
