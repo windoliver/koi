@@ -376,6 +376,78 @@ describe("registerDynamicClient", () => {
     expect(attemptedDelete).toBe(false);
   });
 
+  test("does NOT DELETE when registration_client_uri carries percent-encoded traversal", async () => {
+    // String-prefix-only validation can be bypassed by an encoded path
+    // traversal that the server-side router decodes after our check.
+    // `/register/%2e%2e/admin/users/42` would pass a naive
+    // startsWith("/register/") test but resolve to /admin/users/42 on
+    // the server. Reject anything containing percent-encoded slashes
+    // or dot segments.
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "traversal",
+              client_secret: "shh",
+              registration_client_uri: "https://auth.example.com/register/%2e%2e/admin/users/42",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    expect(attemptedDelete).toBe(false);
+  });
+
+  test("does NOT DELETE when registration_client_uri carries a query string or fragment", async () => {
+    let attemptedDelete = false;
+    globalThis.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (init?.method === "DELETE") {
+        attemptedDelete = true;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (urlStr.endsWith("/register")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              client_id: "with-query",
+              client_secret: "shh",
+              registration_client_uri: "https://auth.example.com/register/with-query?force=true",
+              registration_access_token: "mgmt-token",
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const info = await registerDynamicClient({
+      registrationEndpoint: "https://auth.example.com/register",
+      redirectUri: "http://127.0.0.1:8912/callback",
+    });
+
+    expect(info.ok).toBe(false);
+    expect(attemptedDelete).toBe(false);
+  });
+
   test("does NOT DELETE when registration_client_uri equals the registration endpoint (would target the collection)", async () => {
     // A buggy or hostile AS could echo back the bare registration
     // endpoint. Without strict-child validation, rollback would

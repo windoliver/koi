@@ -1808,6 +1808,65 @@ describe("createOAuthAuthProvider", () => {
     expect(failures.map((f) => f.kind)).toContain("authorize_failed");
   });
 
+  test("invalidates DCR client when authorize_failed (auth-endpoint rejection of stale client)", async () => {
+    // An AS that rejects stale DCR client_id at the authorization
+    // endpoint surfaces as runtime.authorize() rejecting. Without
+    // self-heal, the persisted record stays in storage and every
+    // subsequent `koi mcp auth` retries with the same dead client_id
+    // forever. Provider must clear the DCR record so the next attempt
+    // re-registers.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    const clientKey = computeClientKey(
+      "stale-dcr",
+      "https://mcp.example.com",
+      "http://127.0.0.1:8912/callback",
+      "https://auth.example.com",
+    );
+    await storage.set(
+      clientKey,
+      JSON.stringify({
+        clientId: "revoked",
+        registeredAt: 1700000000,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+      }),
+    );
+
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "stale-dcr",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        // Disable resource so retry shim doesn't run.
+        includeResourceParameter: false,
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: {
+        authorize: mock(async () => {
+          throw new Error("AS rejected client_id at authorize endpoint");
+        }),
+        onReauthNeeded: mock(async () => {}),
+      },
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(false);
+    // Stale DCR record cleared; next attempt will re-register.
+    expect(await storage.get(clientKey)).toBeUndefined();
+  });
+
   test("handleUnauthorized clears corrupt token storage and prompts re-auth", async () => {
     // hasTokens() returns true on raw key existence, but parse may
     // fail. Without clearing the corrupt blob, handleUnauthorized

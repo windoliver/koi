@@ -415,6 +415,18 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
             ? lastAuthorizeError.message
             : String(lastAuthorizeError ?? "runtime.authorize failed"),
       });
+      // Self-heal stale DCR clients rejected at the authorization
+      // endpoint (revoked client, redirect_uri mismatch surfaced as
+      // an early reject). Without this, the persisted record stays
+      // in storage and every subsequent `koi mcp auth` retries with
+      // the same dead client_id forever. CAS on the failing
+      // clientId so a concurrent flow's freshly-registered record is
+      // not wiped. Trade-off: a transient browser failure on a
+      // healthy DCR client also triggers re-registration — one extra
+      // round-trip; orphans expire via server-side TTL.
+      if (client.registeredAt > 0) {
+        await invalidateRegisteredClient(client.clientId);
+      }
       return false;
     }
 

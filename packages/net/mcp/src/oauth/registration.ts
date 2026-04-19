@@ -212,30 +212,72 @@ export async function registerDynamicClient(
  *
  *   1. URI must parse and use the `https:` scheme.
  *   2. Origin (scheme + host + port) must match the registration endpoint.
- *   3. Path must be a STRICT child of the registration endpoint's path
- *      (e.g. `{registration_endpoint}/{client_id}`) — NEVER equal to
- *      the endpoint itself. Issuing an authenticated DELETE against
- *      the collection endpoint could delete every registered client
- *      (or trigger unspecified server behavior) depending on how the
- *      AS implements the endpoint. Narrow to per-client management
- *      resources so the blast radius is exactly one orphan.
+ *   3. No query string or fragment — the management resource is the
+ *      whole URL identity, anything else is suspect.
+ *   4. Path must NOT contain percent-encoded slashes (`%2F`) or dot
+ *      segments (`%2e` / encoded `.`/`..`). Routers commonly decode
+ *      these AFTER our string compare, smuggling a path-traversal
+ *      target past a naive prefix check.
+ *   5. Decoded path segments must be either the literal registration
+ *      endpoint path or strictly extend it by one or more child
+ *      segments. Equality is rejected (would target the collection).
+ *   6. No `.` or `..` segments anywhere in the decoded path.
  *
- * Without this validation a compromised or buggy registration response
- * could direct rollback at any DELETE-capable path on the same host.
+ * Without these checks a compromised or buggy registration response
+ * could direct rollback at an unrelated DELETE-capable endpoint and
+ * exfiltrate the bearer management token.
  */
 function isSafeManagementUri(candidate: string, registrationEndpoint: string): boolean {
   try {
     const u = new URL(candidate);
     if (u.protocol !== "https:") return false;
+    if (u.search !== "" || u.hash !== "") return false;
+
     const reg = new URL(registrationEndpoint);
     if (u.origin !== reg.origin) return false;
-    // Must be a strict sub-path — equality is rejected so rollback
-    // cannot target the registration collection endpoint itself.
-    const regPath = reg.pathname.endsWith("/") ? reg.pathname : `${reg.pathname}/`;
-    if (u.pathname === reg.pathname) return false;
-    return u.pathname.startsWith(regPath) && u.pathname.length > regPath.length;
+
+    // Reject encoded slashes / dots so we cannot be confused by a
+    // server-side decoder that normalizes them after our prefix check.
+    const lower = u.pathname.toLowerCase();
+    if (lower.includes("%2f") || lower.includes("%5c") || lower.includes("%2e")) {
+      return false;
+    }
+
+    // Decode and split into segments so we can check shape structurally.
+    const decoded = decodeSafePathname(u.pathname);
+    if (decoded === undefined) return false;
+    const regDecoded = decodeSafePathname(reg.pathname);
+    if (regDecoded === undefined) return false;
+    if (decoded === regDecoded) return false;
+
+    const candidateSegments = decoded.split("/").filter((s) => s.length > 0);
+    const regSegments = regDecoded.split("/").filter((s) => s.length > 0);
+    if (candidateSegments.length <= regSegments.length) return false;
+    for (const [i, seg] of regSegments.entries()) {
+      if (candidateSegments[i] !== seg) return false;
+    }
+    // Forbid any traversal segment after the prefix.
+    for (const seg of candidateSegments.slice(regSegments.length)) {
+      if (seg === "." || seg === "..") return false;
+      if (seg.length === 0) return false;
+    }
+    return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Decode percent-encoded path safely. Returns undefined on malformed
+ * encodings so callers can fail-closed rather than substitute a
+ * potentially-different decoded value. Wrap separate from the URL
+ * parse so we surface decoding failures explicitly.
+ */
+function decodeSafePathname(pathname: string): string | undefined {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return undefined;
   }
 }
 
