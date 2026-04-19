@@ -75,6 +75,12 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     description: "View loaded plugins and discovery errors",
     category: "navigation",
   },
+  {
+    id: "nav:governance",
+    label: "Governance",
+    description: "View sensor readings, alerts, rules, and middleware capabilities",
+    category: "navigation",
+  },
 
   // ---- Agent ----
   {
@@ -182,12 +188,6 @@ export const COMMAND_DEFINITIONS: readonly CommandDef[] = [
     label: "Zoom",
     description: "Adjust terminal zoom level",
     category: "system",
-  },
-  {
-    id: "nav:governance",
-    label: "Governance",
-    description: "View sensor readings, alerts, rules, and middleware capabilities",
-    category: "navigation",
   },
   {
     id: "nav:mcp",
