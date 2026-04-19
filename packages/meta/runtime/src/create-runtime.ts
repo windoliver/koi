@@ -1693,22 +1693,9 @@ function composeMiddlewareIntoAdapter(
       const sessionStartPromise = runSessionHooks(sorted, "onSessionStart", ctx.session);
 
       const innerStream = adapter.stream(injectCallHandlers(input, callHandlers));
-      // Track whether the stream emitted a turn_end at any point. When it
-      // does, the engine's per-turn loop has already run onAfterTurn with
-      // the authoritative turn context (including stopBlocked for stop-gate
-      // vetoes and the #1638 activity-timeout termination path). The
-      // session finalizer below must NOT replay a second onAfterTurn with
-      // the generic stream-level context, since that would overwrite
-      // stopBlocked=true with stopBlocked=undefined and cause middleware
-      // (e.g. task-anchor) to treat the aborted turn as a completion.
-      // let: mutated during iteration; read in finalizer.
-      let sawTurnEnd = false;
       const initializedStream = (async function* (): AsyncIterable<EngineEvent> {
         await sessionStartPromise;
-        for await (const ev of innerStream) {
-          if (ev.kind === "turn_end") sawTurnEnd = true;
-          yield ev;
-        }
+        yield* innerStream;
       })();
       return wrapStreamWithFlush(
         initializedStream,
@@ -1760,17 +1747,12 @@ function composeMiddlewareIntoAdapter(
         async () => {
           // Deregister per-stream approval dispatch entry
           approvalDispatch?.delete(sid);
-          // Run session-end lifecycle hooks. onAfterTurn is ONLY invoked here
-          // as a catch-all for streams that end without emitting turn_end
-          // (e.g. adapter errors, early cancels, or stub paths). When a real
-          // turn_end was emitted — including the synthetic stopBlocked one
-          // from the activity-timeout wrapper (#1638) — the engine's per-turn
-          // loop already ran onAfterTurn with the correct context; re-running
-          // here with the stream-level minimal ctx would silently overwrite
-          // stopBlocked and poison state in middleware like task-anchor.
-          if (!sawTurnEnd) {
-            await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
-          }
+          // Run lifecycle hooks on ALL middleware for session end.
+          // NB: onAfterTurn here is the stream-level catch-all — it fires
+          // for direct `runtime.adapter.stream()` consumers that do not
+          // sit behind an engine layer dispatching onAfterTurn per-turn.
+          // Middleware like checkpoint relies on this invocation.
+          await runTurnHooks(sorted, "onAfterTurn", ctx).catch(noop);
           await runSessionHooks(sorted, "onSessionEnd", ctx.session).catch(noop);
         },
         onFlushError,

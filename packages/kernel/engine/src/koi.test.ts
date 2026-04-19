@@ -5428,6 +5428,52 @@ describe("createKoi stop gate", () => {
     expect(onAfterTurnCalls).toContainEqual({ turnIndex: 0, stopBlocked: true });
   });
 
+  test("#1638: adapter-emitted turn_end with stopBlocked propagates to onAfterTurn ctx", async () => {
+    // When applyActivityTimeout (or any other adapter-layer wrapper) injects
+    // a synthetic turn_end { stopBlocked: true } for a timed-out partial
+    // turn, createKoi must thread event.stopBlocked into the TurnContext
+    // passed to onAfterTurn. Otherwise middleware (checkpoint, task-anchor)
+    // would treat the aborted turn as a normal completion.
+    const observations: Array<{ readonly turnIndex: number; readonly stopBlocked: boolean }> = [];
+    const observerMw: KoiMiddleware = {
+      name: "observer",
+      describeCapabilities: () => undefined,
+      onAfterTurn: async (ctx) => {
+        observations.push({ turnIndex: ctx.turnIndex, stopBlocked: ctx.stopBlocked === true });
+      },
+    };
+
+    // Adapter emits a single turn_end carrying stopBlocked: true (the shape
+    // activity-timeout synthesizes mid-turn), followed by done.
+    const blockedAdapter: EngineAdapter = {
+      engineId: "stopblocked-adapter",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "turn_start", turnIndex: 0 };
+        yield { kind: "text_delta", delta: "partial" };
+        yield { kind: "turn_end", turnIndex: 0, stopBlocked: true };
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "interrupted",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const runtime = await createKoi({
+      manifest: testManifest(),
+      adapter: blockedAdapter,
+      middleware: [observerMw],
+    });
+
+    await collectEvents(runtime.run({ kind: "text", text: "hello" }));
+
+    expect(observations).toContainEqual({ turnIndex: 0, stopBlocked: true });
+  });
+
   test("retry adapter stream is created after turn boundary (not before)", async () => {
     const streamCreationOrder: string[] = [];
     const { middleware } = blockingStopMiddleware(1);

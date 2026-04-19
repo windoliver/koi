@@ -203,69 +203,7 @@ describe("createRuntime", () => {
     expect(abortedAtInvocation).toBe(false);
   });
 
-  test("session finalizer skips onAfterTurn when stream already emitted turn_end", async () => {
-    // When the stream emits turn_end, the engine's per-turn loop has already
-    // run onAfterTurn with the authoritative context (including stopBlocked
-    // for stop-gate vetoes and #1638 timeouts). The runtime finalizer's
-    // catch-all onAfterTurn must NOT replay with the stream-level minimal
-    // context, or it would silently overwrite stopBlocked and mis-commit
-    // partial state in middleware that keys off ctx.stopBlocked.
-    let onAfterTurnCallCount = 0;
-    const countingMw: KoiMiddleware = {
-      name: "counter",
-      phase: "observe",
-      priority: 100,
-      describeCapabilities: () => undefined,
-      wrapModelCall: async (_ctx, req, next) => next(req),
-      wrapToolCall: async (_ctx, req, next) => next(req),
-      onAfterTurn: async () => {
-        onAfterTurnCallCount += 1;
-      },
-    };
-
-    const emittingAdapter: EngineAdapter = {
-      engineId: "emits-turn-end",
-      capabilities: { text: true, images: false, files: false, audio: false },
-      // Terminals required so composeMiddlewareIntoAdapter wraps the adapter
-      // (including the stream finalizer path) — without them the finalizer
-      // is short-circuited and this test would vacuously pass.
-      terminals: {
-        modelCall: async () => ({ content: "", model: "test", finishReason: "stop" }),
-        toolCall: async () => ({ output: "" }),
-      },
-      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
-        yield { kind: "turn_start", turnIndex: 0 };
-        yield { kind: "turn_end", turnIndex: 0 };
-        yield {
-          kind: "done",
-          output: {
-            content: [],
-            stopReason: "completed",
-            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 1, durationMs: 0 },
-          },
-        };
-      },
-    };
-
-    const runtime = createRuntime({
-      adapter: emittingAdapter,
-      middleware: [countingMw],
-    });
-
-    for await (const _ev of runtime.adapter.stream({ kind: "text", text: "x" })) {
-      // drain
-    }
-    // Wait past the wrapper's 2s settle deadline so the finalizer has
-    // definitively run.
-    await new Promise<void>((resolve) => setTimeout(resolve, 2500));
-
-    // Exactly zero finalizer invocations: the engine's per-turn path is
-    // outside the runtime-level finalizer, so the counter stays 0. What we
-    // assert is that the catch-all did NOT add a redundant invocation.
-    expect(onAfterTurnCallCount).toBe(0);
-  });
-
-  test("session finalizer runs onAfterTurn when stream ended without turn_end", async () => {
+  test("session finalizer runs onAfterTurn at stream end (catch-all for direct consumers)", async () => {
     // For streams that never emit turn_end (adapter error, early abort,
     // stub path), the catch-all still fires so middleware lifecycle hooks
     // always see at least one invocation per session.
