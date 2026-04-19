@@ -17,6 +17,29 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.writes).toEqual(["out.tar"]);
   });
 
+  test("attached -fFILE form (no space) works (regression)", () => {
+    const result = specTar(["tar", "-c", "-fout.tar", "a.txt"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+    expect(result.semantics.reads).toEqual(["a.txt"]);
+  });
+
+  test("attached bundle -cfFILE form (no space) works (regression)", () => {
+    const result = specTar(["tar", "-cfout.tar", "a.txt"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+    expect(result.semantics.reads).toEqual(["a.txt"]);
+  });
+
+  test("attached -CDIR form (no space) recognized (regression)", () => {
+    const result = specTar(["tar", "-c", "-Cwork", "-fout.tar", "a.txt"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+  });
+
   test("archive flag interleaved with files (regression: positional-independence)", () => {
     const result = specTar(["tar", "-c", "a.txt", "-f", "out.tar", "b.txt"]);
     expect(result.kind).toBe("complete");

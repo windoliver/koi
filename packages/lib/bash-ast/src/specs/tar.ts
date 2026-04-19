@@ -10,32 +10,42 @@ const TAR_ALLOW = {
 const MODE_FLAGS = ["x", "c", "t"] as const;
 
 /**
- * Tar's idiomatic bundled forms (`-cf`, `-tf`, `-xf`, `-zcf`, `-jxf`, ...)
- * mix bool mode flags with the `-f` value flag. Pre-expand any short-flag
- * bundle that contains `f` (or `C`) into separate tokens so parseFlags can
- * handle the value extraction normally.
+ * Tar's idiomatic bundled forms mix bool mode flags with the `-f`/`-C`
+ * value flags. The bundle has shape `-<bools><valueFlag><attachedValue?>`:
+ * everything before the first value-flag char is bool flags, the value-flag
+ * char itself takes a value, and any chars after it are that value attached.
  *
- * `-cf`  → `-c -f`
- * `-zcf` → `-zc -f`
- * `-cfC` → `-c -f -C`
+ *   `-cf`         → `-c -f`              (no attached value; -f consumes next argv)
+ *   `-zcf`        → `-zc -f`
+ *   `-cfout.tar`  → `-c -fout.tar`       (attached value form)
+ *   `-fout.tar`   → `-fout.tar`          (already attached; passthrough)
+ *   `-CDIR`       → `-CDIR`              (passthrough)
+ *
+ * If no value flag is present, the bundle is left untouched for parseFlags
+ * to handle via its normal bool-bundle path.
  */
 function expandTarBundles(argv: readonly string[]): readonly string[] {
   const out: string[] = [];
   for (const tok of argv) {
     if (
-      tok.startsWith("-") &&
-      !tok.startsWith("--") &&
-      tok.length > 2 &&
-      (tok.includes("f") || tok.includes("C"))
+      !tok.startsWith("-") ||
+      tok.startsWith("--") ||
+      tok.length <= 2 ||
+      (!tok.includes("f") && !tok.includes("C"))
     ) {
-      const chars = tok.slice(1);
-      const valueChars = chars.split("").filter((c) => c === "f" || c === "C");
-      const boolChars = chars.split("").filter((c) => c !== "f" && c !== "C");
-      if (boolChars.length > 0) out.push(`-${boolChars.join("")}`);
-      for (const c of valueChars) out.push(`-${c}`);
-    } else {
       out.push(tok);
+      continue;
     }
+    const chars = tok.slice(1);
+    const valueIdx = [...chars].findIndex((c) => c === "f" || c === "C");
+    if (valueIdx === -1) {
+      out.push(tok);
+      continue;
+    }
+    const boolChars = chars.slice(0, valueIdx);
+    const tail = chars.slice(valueIdx);
+    if (boolChars.length > 0) out.push(`-${boolChars}`);
+    out.push(`-${tail}`);
   }
   return out;
 }
