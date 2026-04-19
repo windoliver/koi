@@ -94,6 +94,22 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.reads).toEqual(["/etc/-secret"]);
   });
 
+  test("post-cutoff bundle-shaped operand is not re-expanded (regression)", () => {
+    // The token `-cfsecret` after `--` is a literal filename, NOT a tar bundle.
+    // It must reach the reads list as a single path, not split into `-c -fsecret`.
+    const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-cfsecret"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["-cfsecret"]);
+  });
+
+  test("post-cutoff -Cdir-looking operand is not interpreted as -C (regression)", () => {
+    const result = specTar(["tar", "-c", "-f", "out.tar", "--", "-Cdir"]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["-Cdir"]);
+  });
+
   test("archive flag interleaved with files (regression: positional-independence)", () => {
     const result = specTar(["tar", "-c", "a.txt", "-f", "out.tar", "b.txt"]);
     expect(result.kind).toBe("complete");

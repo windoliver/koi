@@ -94,7 +94,17 @@ function rebase(operand: string, base: string | undefined): string {
 
 function expandTarBundles(argv: readonly string[]): readonly string[] {
   const out: string[] = [];
+  let cutoff = false;
   for (const tok of argv) {
+    if (cutoff) {
+      out.push(tok);
+      continue;
+    }
+    if (tok === "--") {
+      cutoff = true;
+      out.push(tok);
+      continue;
+    }
     if (
       !tok.startsWith("-") ||
       tok.startsWith("--") ||
