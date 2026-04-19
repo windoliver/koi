@@ -104,16 +104,38 @@ interface DrainResult {
 }
 
 /**
+ * Optional streaming callbacks for `spawnBash`.
+ *
+ * Callbacks fire on every decoded chunk from the respective stream, including
+ * after the capture budget is exhausted. This allows watch-patterns matching
+ * to observe the full byte stream even when stored output is truncated.
+ */
+export interface SpawnBashCallbacks {
+  readonly onStdout?: (chunk: string) => void;
+  readonly onStderr?: (chunk: string) => void;
+}
+
+/**
  * Drain a ReadableStream into a string, respecting a shared byte budget.
  * Keeps draining after budget is exhausted to prevent pipe-buffer deadlock.
+ *
+ * @param onChunk - Optional callback fired on every decoded chunk, including
+ *   after the capture budget is exhausted. Consumer errors are swallowed so
+ *   a misbehaving callback cannot break the drain loop.
  */
 export async function drainStream(
   stream: ReadableStream<Uint8Array> | null | undefined,
   budget: { remaining: number },
+  onChunk?: (chunk: string) => void,
 ): Promise<DrainResult> {
   if (stream == null) return { text: "", truncated: false, byteCount: 0 };
 
-  const decoder = new TextDecoder();
+  // Single streaming decoder for the callback path — preserves multi-byte
+  // codepoint continuity across chunk boundaries for the full byte stream.
+  const callbackDecoder = new TextDecoder();
+  // Separate streaming decoder for the capture path — operates only on
+  // budget-gated slices.
+  const captureDecoder = new TextDecoder();
   const reader = stream.getReader();
   let text = "";
   let truncated = false;
@@ -125,6 +147,19 @@ export async function drainStream(
       if (done) break;
       byteCount += value.length;
 
+      // Fire callback BEFORE any budget gating so watch-patterns matching
+      // continues past the capture-truncation boundary.
+      if (onChunk !== undefined) {
+        const decoded = callbackDecoder.decode(value, { stream: true });
+        if (decoded.length > 0) {
+          try {
+            onChunk(decoded);
+          } catch {
+            // Consumer errors must not break the drain loop — swallowed intentionally.
+          }
+        }
+      }
+
       if (budget.remaining <= 0) {
         // Budget exhausted — keep draining to unblock subprocess writes
         truncated = true;
@@ -132,7 +167,7 @@ export async function drainStream(
       }
 
       const chunk = value.length <= budget.remaining ? value : value.slice(0, budget.remaining);
-      text += decoder.decode(chunk, { stream: true });
+      text += captureDecoder.decode(chunk, { stream: true });
       budget.remaining -= chunk.length;
 
       if (value.length > chunk.length) {
@@ -195,6 +230,10 @@ export async function execSandboxed(
  *
  * Process group kill: `detached: true` puts bash in its own process group so
  * that `process.kill(-pid, signal)` terminates bash AND all descendants.
+ *
+ * @param callbacks - Optional streaming callbacks. `onStdout` / `onStderr` fire
+ *   on every decoded chunk, including after the capture budget is exhausted.
+ *   Existing call sites that pass 6 args remain source-compatible.
  */
 export async function spawnBash(
   command: string,
@@ -203,6 +242,7 @@ export async function spawnBash(
   maxOutputBytes: number,
   signal: AbortSignal | undefined,
   env: Readonly<Record<string, string>> = SAFE_ENV,
+  callbacks?: SpawnBashCallbacks,
 ): Promise<ExecResult> {
   const start = Date.now();
 
@@ -293,8 +333,8 @@ export async function spawnBash(
     });
   });
   const [stdoutResult, stderrResult] = await Promise.all([
-    drainStream(stdoutStream, budget),
-    drainStream(stderrStream, budget),
+    drainStream(stdoutStream, budget, callbacks?.onStdout),
+    drainStream(stderrStream, budget, callbacks?.onStderr),
   ]);
   const exitCode = await exited;
 
