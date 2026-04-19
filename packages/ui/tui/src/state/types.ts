@@ -121,9 +121,9 @@ export interface PermissionPromptData {
 /** Entry describing a model available for selection in the model picker. */
 export interface ModelEntry {
   readonly id: string;
-  readonly contextLength?: number;
-  readonly pricingIn?: number;
-  readonly pricingOut?: number;
+  readonly contextLength?: number | undefined;
+  readonly pricingIn?: number | undefined;
+  readonly pricingOut?: number | undefined;
 }
 
 /** Transient overlay that preserves the underlying view. */
@@ -137,7 +137,7 @@ export type TuiModal =
       readonly query: string;
       readonly status: "loading" | "ready" | "error";
       readonly models: readonly ModelEntry[];
-      readonly error?: string;
+      readonly error?: string | undefined;
     };
 
 // ---------------------------------------------------------------------------
