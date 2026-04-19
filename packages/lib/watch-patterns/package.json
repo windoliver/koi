@@ -18,6 +18,7 @@
     "test:api": "bun test src/__tests__/api-surface.test.ts"
   },
   "dependencies": {
-    "@koi/core": "workspace:*"
+    "@koi/core": "workspace:*",
+    "re2-wasm": "1.0.2"
   }
 }
