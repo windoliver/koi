@@ -42,6 +42,64 @@ export async function runStartupRecovery(args: {
   readonly db: Database;
   readonly blobStore: BlobStore;
 }): Promise<void> {
+  // Pass 1: walk pending_blob_puts (the normal case for Plan 2 saves).
+  await drainPendingIntents(args);
+
+  // Pass 2: sweep any blob_ready=0 rows that have NO remaining intent.
+  // This catches rows stranded by an earlier iteration's hash-collapse bug
+  // or by any external mutation that dropped the intent without resolving
+  // the row. Every hidden row is either promoted or reaped.
+  await drainOrphanedHiddenRows(args);
+}
+
+interface OrphanRow {
+  readonly id: string;
+  readonly content_hash: string;
+}
+
+async function drainOrphanedHiddenRows(args: {
+  readonly db: Database;
+  readonly blobStore: BlobStore;
+}): Promise<void> {
+  const rows = args.db
+    .query(
+      `SELECT id, content_hash FROM artifacts
+        WHERE blob_ready = 0
+          AND NOT EXISTS (SELECT 1 FROM pending_blob_puts WHERE artifact_id = artifacts.id)`,
+    )
+    .all() as ReadonlyArray<OrphanRow>;
+
+  for (const row of rows) {
+    const blobPresent = await args.blobStore.has(row.content_hash);
+    if (blobPresent) {
+      args.db
+        .query("UPDATE artifacts SET blob_ready = 1 WHERE id = ? AND blob_ready = 0")
+        .run(row.id);
+    } else {
+      args.db.transaction(() => {
+        args.db.query("DELETE FROM artifacts WHERE id = ?").run(row.id);
+        const stillReferenced = args.db
+          .query(
+            `SELECT 1 WHERE EXISTS (SELECT 1 FROM artifacts WHERE content_hash = ?)
+                          OR EXISTS (SELECT 1 FROM pending_blob_puts WHERE hash = ?)`,
+          )
+          .get(row.content_hash, row.content_hash);
+        if (!stillReferenced) {
+          args.db
+            .query(
+              "INSERT INTO pending_blob_deletes (hash, enqueued_at) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            )
+            .run(row.content_hash, Date.now());
+        }
+      })();
+    }
+  }
+}
+
+async function drainPendingIntents(args: {
+  readonly db: Database;
+  readonly blobStore: BlobStore;
+}): Promise<void> {
   const intents = args.db
     .query("SELECT intent_id, hash, artifact_id FROM pending_blob_puts ORDER BY created_at")
     .all() as ReadonlyArray<IntentRow>;

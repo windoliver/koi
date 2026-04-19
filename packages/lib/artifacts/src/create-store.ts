@@ -46,6 +46,16 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
       "ArtifactStoreConfig.blobStore is not supported in Plan 2 — use the default FS backend via blobDir. Plan 5 (#1922) adds pluggable backends with remote-backend sentinel pairing.",
     );
   }
+  if (config.policy !== undefined) {
+    // LifecyclePolicy (ttlMs / maxSessionBytes / maxVersionsPerName) is
+    // advertised on the config but no enforcement exists in Plan 2. Rather
+    // than silently ignore it and let callers assume retention/quota limits
+    // are active, reject the config explicitly. Plan 3 (#1920) adds full
+    // TTL + quota + retention admission + sweepArtifacts.
+    throw new Error(
+      "ArtifactStoreConfig.policy is not enforced in Plan 2 — TTL, quota, and per-name retention land in Plan 3 (#1920). Do not pass a policy until it ships.",
+    );
+  }
 
   const releaseLock = acquireLock(config.dbPath);
 
