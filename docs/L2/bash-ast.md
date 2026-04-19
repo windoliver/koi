@@ -147,11 +147,39 @@ import {
   type SpecResult,
   BUILTIN_SPECS,
   createSpecRegistry,
+  lookupSpec,
   registerSpec,
   specRm, specCp, specMv, specChmod, specChown,
   specCurl, specWget, specTar, specScp, specSsh,
 } from "@koi/bash-ast";
 ```
+
+### Dispatch contract — bare command names only
+
+Specs (and `lookupSpec`) accept **bare command names** only (`rm`, `curl`).
+Path-qualified `argv[0]` like `/bin/rm`, `/tmp/rm`, or `./rm` is REFUSED:
+the spec layer cannot distinguish the trusted system utility from a wrapper
+masquerading as it (`/tmp/rm` could be anything; even `/usr/local/bin/curl`
+might be a wrapper that performs extra I/O). Reporting builtin semantics
+for an arbitrary executable would silently bless its hidden side effects.
+
+**Consumer responsibility**: walker output (`SimpleCommand.argv[0]`) may
+be path-qualified. Before calling a spec, consumers MUST canonicalize the
+executable identity (resolve symlinks, allowlist trusted paths) and pass
+the **bare basename** to the spec or `lookupSpec`. The spec layer
+intentionally does not perform that trust check — it is the consumer's job.
+
+### Known limitations of this v1 API (deferred to follow-ups)
+
+- **`SimpleCommand.redirects` is not consumed.** `curl https://x > /tmp/out`
+  redirects stdout to a file the spec does not see; consumers MUST merge
+  redirect-derived writes/reads into the result before applying argv-aware
+  rules. A v2 API may take `SimpleCommand` instead of `argv`.
+- **`SimpleCommand.envVars` is not consumed.** Command-local env like
+  `HTTPS_PROXY=…`, `HOME=…`, `CURLOPT_*` can change egress hosts and read
+  paths. Consumers MUST treat any non-empty `envVars` on a spec'd command
+  as a signal to require an exact-argv `Run(...)` rule.
+
 
 ### `SpecResult` contract
 
