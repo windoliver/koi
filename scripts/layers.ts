@@ -19,6 +19,7 @@ export const L0U_PACKAGES: ReadonlySet<string> = new Set([
   "@koi/bash-ast",
   "@koi/bash-classifier",
   "@koi/bash-security",
+  "@koi/browser-a11y",
   "@koi/channel-base",
   "@koi/config",
   "@koi/context-manager",
