@@ -76,15 +76,35 @@ function acquireLockFile(lockPath: string): number {
 }
 
 function releaseLockFile(fd: number, lockPath: string): void {
+  // CRITICAL ordering: unlink BEFORE closing the fd. On POSIX, unlink-while-
+  // open is safe — the pathname is removed immediately, but our fd remains
+  // valid. If we close first, a successor process can acquire the same path
+  // via O_EXCL before we unlink, and our unlink then silently deletes the
+  // successor's lock file (reopening concurrent-writer races). On Windows,
+  // unlink-while-open may fail; the fallback close-then-unlink is still
+  // usable there, with a narrower race window.
+  let unlinkedSuccessfully = false;
+  try {
+    if (existsSync(lockPath)) {
+      unlinkSync(lockPath);
+      unlinkedSuccessfully = true;
+    }
+  } catch {
+    /* Windows may refuse unlink-while-open; fall through to close + retry. */
+  }
   try {
     closeSync(fd);
   } catch {
     /* ignore close errors */
   }
-  try {
-    if (existsSync(lockPath)) unlinkSync(lockPath);
-  } catch {
-    /* ignore — another process may have already cleaned up */
+  if (!unlinkedSuccessfully) {
+    // Windows fallback: unlink after close. Race window exists but tiny;
+    // main targets are POSIX.
+    try {
+      if (existsSync(lockPath)) unlinkSync(lockPath);
+    } catch {
+      /* ignore — another process may have already cleaned up */
+    }
   }
 }
 
