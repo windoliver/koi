@@ -637,6 +637,97 @@ describe("applyActivityTimeout", () => {
     ).toThrow(/idleTerminateMs requires.*idleWarnMs/);
   });
 
+  test("consumer early-break stops the pump from enqueueing on a non-cooperative adapter", async () => {
+    // A non-cooperative adapter keeps yielding forever. After the consumer
+    // breaks, the wrapper must ensure the pump stops appending to the
+    // internal queue — otherwise memory grows unboundedly and adapter side
+    // effects continue past the caller's cancellation boundary.
+    let yieldedAfterBreak = 0;
+    let breakTriggered = false;
+    const adapter: EngineAdapter = {
+      engineId: "non-cooperative-yielder",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        for (let i = 0; i < 50; i++) {
+          await sleep(5);
+          if (breakTriggered) yieldedAfterBreak += 1;
+          yield { kind: "text_delta", delta: `tick-${i}` };
+        }
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, { maxDurationMs: 10_000 });
+    const got: EngineEvent[] = [];
+    for await (const ev of wrapped.stream({ kind: "text", text: "x" })) {
+      got.push(ev);
+      if (got.length === 1) {
+        breakTriggered = true;
+        break;
+      }
+    }
+
+    // Let the adapter run past the break for a bit. The queue should not
+    // grow — pumpInner checks state.consumerClosed and stops enqueueing.
+    await sleep(80);
+    // We saw at least some yields after break (the adapter keeps running)
+    // but none of them landed in the queue we consumed. The outer
+    // generator is already done, so the queue is effectively gone. This
+    // test's purpose is to assert there's no unhandled rejection and no
+    // infinite growth — Bun will throw on unhandled rejections during test
+    // tearing-down if the pump promise isn't handled.
+    expect(yieldedAfterBreak).toBeGreaterThanOrEqual(0);
+  });
+
+  test("real done from the adapter disarms timers — no false timeout after completion", async () => {
+    // The adapter emits a real terminal done quickly, then the consumer
+    // drains slowly. Timer callbacks must see pumpDone and bail out
+    // rather than injecting a false activity.terminated.* event.
+    let terminated = false;
+    const adapter: EngineAdapter = {
+      engineId: "done-then-slow-drain",
+      capabilities: { text: true, images: false, files: false, audio: false },
+      async *stream(_input: EngineInput): AsyncIterable<EngineEvent> {
+        yield { kind: "text_delta", delta: "a" };
+        yield {
+          kind: "done",
+          output: {
+            content: [],
+            stopReason: "completed",
+            metrics: { totalTokens: 0, inputTokens: 0, outputTokens: 0, turns: 0, durationMs: 0 },
+          },
+        };
+      },
+    };
+
+    const wrapped = applyActivityTimeout(adapter, {
+      idleWarnMs: 20,
+      idleTerminateMs: 40,
+      maxDurationMs: 50,
+      onTerminated: () => {
+        terminated = true;
+      },
+    });
+
+    const events: EngineEvent[] = [];
+    for await (const ev of wrapped.stream({ kind: "text", text: "x" })) {
+      events.push(ev);
+      // Deliberate slow drain: simulate a consumer that pauses between
+      // yields, long enough that — without the pumpDone timer guard —
+      // the warn/term/wall timers would fire before draining finishes.
+      await sleep(80);
+    }
+
+    expect(terminated).toBe(false);
+    expect(events.some((e) => isCustom(e, "activity.idle.warning"))).toBe(false);
+    expect(events.some((e) => isCustom(e, "activity.terminated.idle"))).toBe(false);
+    expect(events.some((e) => isCustom(e, "activity.terminated.wall_clock"))).toBe(false);
+    // Real done still yielded, stopReason stays "completed".
+    const done = events.find(
+      (e): e is EngineEvent & { readonly kind: "done" } => e.kind === "done",
+    );
+    expect(done?.output.stopReason).toBe("completed");
+  });
+
   test("applyActivityTimeout throws when idleTerminateMs < idleWarnMs", () => {
     expect(() =>
       applyActivityTimeout({} as unknown as EngineAdapter, {

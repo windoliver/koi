@@ -191,6 +191,7 @@ async function* wrapStream(
     terminated: null,
     pumpDone: false,
     pumpError: undefined,
+    consumerClosed: false,
     queue: [],
     waker: null,
   };
@@ -240,8 +241,17 @@ async function* wrapStream(
       });
     }
   } finally {
+    // Tell the pump we are gone. A non-cooperative adapter that ignores
+    // abort will keep yielding, so pumpInner checks `consumerClosed` before
+    // enqueueing — prevents unbounded queue growth after the outer
+    // generator has finalized.
+    state.consumerClosed = true;
     clearAll(timers);
     ctl.abort();
+    // Wake any pump iteration that is mid-`await iter.next()` so the next
+    // step sees `consumerClosed` and exits the loop — without this, the
+    // pump has no reason to re-check state until the next event arrives.
+    wake(state);
     // Bounded wait for the inner pump to settle before releasing generator
     // finalization. The engine's lifecycle guard (kernel/engine/src/koi.ts
     // "poison after 5s" settle deadline) requires each run to settle before
@@ -279,6 +289,13 @@ interface WrapperState {
   terminated: { readonly reason: ActivityTerminationReason; readonly elapsedMs: number } | null;
   pumpDone: boolean;
   pumpError: unknown;
+  /**
+   * Set to `true` when the outer generator's `finally` runs (consumer either
+   * returned normally, broke early, or threw). Pump loop checks this to stop
+   * enqueueing — prevents unbounded queue growth when a non-cooperative
+   * adapter keeps yielding after the caller has stopped consuming.
+   */
+  consumerClosed: boolean;
   readonly queue: EngineEvent[];
   waker: (() => void) | null;
 }
@@ -332,6 +349,10 @@ function checkWarn(timers: Timers, deps: TimerDeps): void {
   timers.warnTimer = null;
   if (deps.warnMs === undefined) return;
   if (deps.state.terminated !== null) return;
+  // If the adapter has already completed, there is no more idle stretch to
+  // detect — bail out rather than injecting a false warning/termination
+  // for a stream that has already produced its terminal `done`.
+  if (deps.state.pumpDone) return;
 
   const elapsed = idleElapsed(deps.state, deps.now);
   if (elapsed < deps.warnMs) {
@@ -364,6 +385,7 @@ function checkTerm(timers: Timers, deps: TimerDeps): void {
   timers.termTimer = null;
   if (deps.terminateMs === undefined) return;
   if (deps.state.terminated !== null) return;
+  if (deps.state.pumpDone) return;
 
   const elapsed = idleElapsed(deps.state, deps.now);
   if (elapsed < deps.terminateMs) {
@@ -381,6 +403,11 @@ function scheduleWall(timers: Timers, deps: TimerDeps): void {
   timers.wallTimer = setTimeout(() => {
     timers.wallTimer = null;
     if (deps.state.terminated !== null) return;
+    // Adapter has already produced its terminal done — no need to
+    // wall-clock-kill a completed stream. Prevents a false
+    // `activity.terminated.wall_clock` event when the consumer is slow to
+    // drain the real done from the queue.
+    if (deps.state.pumpDone) return;
     const elapsed = deps.now() - deps.startedAt;
     terminate(deps, "wall_clock", elapsed);
   }, deps.maxMs);
@@ -523,10 +550,21 @@ async function pumpInner(
 ): Promise<void> {
   try {
     for await (const ev of adapter.stream(input)) {
-      if (state.terminated !== null) break;
+      // Stop on (a) internal termination, or (b) consumer has left. Without
+      // the consumerClosed guard, a non-cooperative adapter that ignores
+      // abort would keep yielding events and enqueueing into a queue
+      // nobody is reading — unbounded memory growth + continued side
+      // effects past the caller's cancellation boundary.
+      if (state.terminated !== null || state.consumerClosed) break;
       onActivity(ev);
-      enqueue(state, ev);
-      if (ev.kind === "done") break;
+      if (!state.consumerClosed) enqueue(state, ev);
+      if (ev.kind === "done") {
+        // Set pumpDone synchronously so any pending timer callback that
+        // fires after this point sees a completed run and bails out rather
+        // than injecting a false timeout event.
+        state.pumpDone = true;
+        break;
+      }
     }
   } catch (err) {
     // Swallow abort errors caused by our own termination; surface everything else.
