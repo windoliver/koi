@@ -57,7 +57,7 @@ export async function createArtifactStore(config: ArtifactStoreConfig): Promise<
     );
   }
 
-  const releaseLock = acquireLock(config.dbPath);
+  const releaseLock = acquireLock(config.dbPath, config.blobDir);
 
   let db: Database | undefined;
   try {

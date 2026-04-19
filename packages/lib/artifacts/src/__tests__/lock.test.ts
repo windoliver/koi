@@ -53,4 +53,24 @@ describe("single-writer lock", () => {
     writeFileSync(`${dbPath}.lock`, String(process.pid));
     expect(() => acquireLock(dbPath)).toThrow(/ArtifactStore already open by another process/);
   });
+
+  test("blobDir lock: two :memory: DBs cannot share one blobDir", () => {
+    // Both :memory: DBs skip the dbPath lock, but the blobDir lock still
+    // enforces single-owner on the persistent blob backend.
+    const release1 = acquireLock(":memory:", tmpDir);
+    expect(() => acquireLock(":memory:", tmpDir)).toThrow(
+      /ArtifactStore already open by another process/,
+    );
+    release1();
+    const release2 = acquireLock(":memory:", tmpDir);
+    release2();
+  });
+
+  test("blobDir lock: two FS DBs with same blobDir but different dbPath blocked", () => {
+    const db1 = join(tmpDir, "a.db");
+    const db2 = join(tmpDir, "b.db");
+    const release1 = acquireLock(db1, tmpDir);
+    expect(() => acquireLock(db2, tmpDir)).toThrow(/ArtifactStore already open by another process/);
+    release1();
+  });
 });

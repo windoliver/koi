@@ -1,7 +1,12 @@
 /**
- * Layer 1 of §3.0: exclusive advisory lock on <dbPath>.lock.
- * Prevents two writer processes from opening the same store concurrently.
- * :memory: databases skip this since they're process-local by definition.
+ * Layer 1 of §3.0: exclusive advisory locks on <dbPath>.lock AND
+ * <blobDir>/.writer.lock. Two locks close two separate cross-store races:
+ *   - dbPath lock: prevents two writer processes from opening the same
+ *     metadata DB concurrently.
+ *   - blobDir lock: prevents two metadata DBs (including :memory: DBs that
+ *     skip the dbPath lock) from sharing a single blob backend.
+ * :memory: databases skip the dbPath lock but STILL acquire the blobDir
+ * lock, closing the "two in-memory stores share one blobDir" hole.
  *
  * Implementation uses O_CREAT | O_EXCL (exclusive-create) semantics, with a
  * PID-liveness check to recover from SIGKILL'd owners that couldn't run the
@@ -10,8 +15,10 @@
  */
 
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const LOCK_SUFFIX = ".lock";
+const BLOBDIR_LOCK_NAME = ".writer.lock";
 
 function isInMemory(dbPath: string): boolean {
   return dbPath === ":memory:" || dbPath.startsWith("file::memory:");
@@ -43,20 +50,12 @@ function tryRemoveStaleLock(lockPath: string): boolean {
   }
 }
 
-export function acquireLock(dbPath: string): () => void {
-  if (isInMemory(dbPath)) {
-    return () => {};
-  }
-
-  const lockPath = `${dbPath}${LOCK_SUFFIX}`;
-
+function acquireLockFile(lockPath: string): number {
   let fd: number;
   try {
     fd = openSync(lockPath, "wx");
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-      // Stale-lock recovery: if the recorded PID is dead, the previous owner
-      // crashed without cleanup. Remove the stale lock and retry once.
       if (tryRemoveStaleLock(lockPath)) {
         try {
           fd = openSync(lockPath, "wx");
@@ -73,6 +72,57 @@ export function acquireLock(dbPath: string): () => void {
       throw err;
     }
   }
+  return fd;
+}
+
+function releaseLockFile(fd: number, lockPath: string): void {
+  try {
+    closeSync(fd);
+  } catch {
+    /* ignore close errors */
+  }
+  try {
+    if (existsSync(lockPath)) unlinkSync(lockPath);
+  } catch {
+    /* ignore — another process may have already cleaned up */
+  }
+}
+
+export function acquireLock(dbPath: string, blobDir?: string): () => void {
+  // Layer 1a: blobDir lock (always, if provided). Covers :memory: DBs so
+  // two in-memory stores cannot share one blob backend.
+  let blobLockFd: number | undefined;
+  let blobLockPath: string | undefined;
+  if (blobDir !== undefined) {
+    blobLockPath = join(blobDir, BLOBDIR_LOCK_NAME);
+    blobLockFd = acquireLockFile(blobLockPath);
+    writeFileSync(blobLockFd, String(process.pid));
+  }
+
+  // Layer 1b: dbPath lock (skipped for :memory:).
+  if (isInMemory(dbPath)) {
+    const release = (): void => {
+      if (blobLockFd !== undefined && blobLockPath !== undefined) {
+        releaseLockFile(blobLockFd, blobLockPath);
+        blobLockFd = undefined;
+      }
+    };
+    process.once("exit", release);
+    return release;
+  }
+
+  const lockPath = `${dbPath}${LOCK_SUFFIX}`;
+
+  let fd: number;
+  try {
+    fd = acquireLockFile(lockPath);
+  } catch (err) {
+    // Failed to acquire dbPath lock — release the blobDir lock we grabbed.
+    if (blobLockFd !== undefined && blobLockPath !== undefined) {
+      releaseLockFile(blobLockFd, blobLockPath);
+    }
+    throw err;
+  }
 
   writeFileSync(fd, String(process.pid));
 
@@ -80,15 +130,10 @@ export function acquireLock(dbPath: string): () => void {
   const release = (): void => {
     if (released) return;
     released = true;
-    try {
-      closeSync(fd);
-    } catch {
-      /* ignore close errors */
-    }
-    try {
-      if (existsSync(lockPath)) unlinkSync(lockPath);
-    } catch {
-      /* ignore — another process may have already cleaned up */
+    releaseLockFile(fd, lockPath);
+    if (blobLockFd !== undefined && blobLockPath !== undefined) {
+      releaseLockFile(blobLockFd, blobLockPath);
+      blobLockFd = undefined;
     }
   };
 
