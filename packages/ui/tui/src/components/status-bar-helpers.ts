@@ -27,7 +27,12 @@ export function mostStressedSensor(snapshot: GovernanceSnapshot | null): SensorR
 
 /** Compact "k" formatter for token-style counts (< 1000 → no suffix; >= 1000 → "12.5k"). */
 function formatCount(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  if (n >= 1000) {
+    const k = n / 1000;
+    // Whole-thousand values render as `100k` not `100.0k` — token limits
+    // are almost always round numbers; the `.0` suffix is noise.
+    return Number.isInteger(k) ? `${k}k` : `${k.toFixed(1)}k`;
+  }
   if (n >= 100) return String(Math.round(n));
   return n.toFixed(2);
 }
@@ -55,8 +60,14 @@ export function formatGovernanceChip(reading: SensorReading): string {
 }
 
 /**
- * Color tier for chip display. <0.5 = ok (green/dim), 0.5-0.8 = warn
- * (amber), >=0.8 = danger (red, with ⚠ glyph prefix in the renderer).
+ * Color tier for chip display. Boundaries are half-open intervals on
+ * utilization:
+ *   - `[0, 0.5)` → "ok"      (textMuted in renderer)
+ *   - `[0.5, 0.8)` → "warn"  (amber in renderer)
+ *   - `[0.8, ∞)` → "danger"  (red + ⚠ prefix in renderer)
+ *
+ * Setpoints set exactly at 0.5 / 0.8 land in the higher tier
+ * (warn / danger) — checking `>=` not `>`.
  */
 export function chipTier(util: number): "ok" | "warn" | "danger" {
   if (util >= 0.8) return "danger";

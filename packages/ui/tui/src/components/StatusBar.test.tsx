@@ -126,7 +126,13 @@ describe("formatGovernanceChip", () => {
   test("token_usage uses k suffix when >= 1000", () => {
     expect(
       formatGovernanceChip({ name: "token_usage", current: 12500, limit: 100000, utilization: 0.125 }),
-    ).toBe("tokens 12.5k/100.0k");
+    ).toBe("tokens 12.5k/100k");
+  });
+
+  test("token_usage formats fractional values with .Nk and whole values without .0", () => {
+    expect(
+      formatGovernanceChip({ name: "token_usage", current: 1500, limit: 50000, utilization: 0.03 }),
+    ).toBe("tokens 1.5k/50k");
   });
 
   test("generic variable uses utilization %", () => {
