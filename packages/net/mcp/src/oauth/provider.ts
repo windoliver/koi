@@ -109,10 +109,17 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     }
 
     const metadata = await getMetadata();
-    const lockKey = computeClientKey(serverName, serverUrl, redirectUri);
+    // Discriminate persisted DCR records by OAuth authority so two
+    // configs with the same MCP URL + port but different
+    // `authServerMetadataUrl` (or different discovered issuer) get
+    // independent client records. Without this, one tenant's
+    // re-registration could clobber another's, or a stale clientId
+    // from one issuer could be sent to a different one.
+    const authority = metadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
+    const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
 
     const resolved = await storage.withLock(lockKey, async () => {
-      const stored = await readClientInfo(storage, serverName, serverUrl, redirectUri);
+      const stored = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
       if (stored !== undefined && isClientFresh(stored, metadata)) {
         return stored;
       }
@@ -199,9 +206,11 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
   const invalidateRegisteredClient = async (expectedClientId: string): Promise<void> => {
     cachedClient = undefined;
     tokenManager = undefined;
-    const lockKey = computeClientKey(serverName, serverUrl, redirectUri);
+    const metadata = await getMetadata();
+    const authority = metadata?.issuer ?? oauthConfig.authServerMetadataUrl ?? "";
+    const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
     await storage.withLock(lockKey, async () => {
-      const current = await readClientInfo(storage, serverName, serverUrl, redirectUri);
+      const current = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
       if (current !== undefined && current.clientId === expectedClientId) {
         await storage.delete(lockKey);
       }
@@ -276,18 +285,27 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
 
   // --- 401 handling ---
   // On 401: try refreshing first (access token may have expired normally).
-  // Only clear tokens and prompt re-auth if refresh also fails.
+  // Only clear tokens / prompt re-auth on a TERMINAL refresh failure.
+  // Transient failures (network blip, DCR resolver miss, 5xx) leave the
+  // refresh token in place via tokens.ts; we detect that by re-checking
+  // hasTokens() and skipping the destructive path so a temporary outage
+  // can't force-logout an otherwise-healthy session.
   const handleUnauthorized = async (): Promise<void> => {
     const tm = await getTokenManager();
-    // Attempt to get a fresh access token via refresh
     const refreshed = await tm.getAccessToken();
     if (refreshed !== undefined) {
       // Refresh succeeded — the next reconnect will pick up the new token.
-      // No need to clear tokens or prompt user.
       return;
     }
-    // Refresh failed or no tokens — clear stale state and notify user
-    await tm.clearTokens();
+    // refreshed === undefined could mean either:
+    //   (a) terminal refresh failure → tokens.ts already cleared storage
+    //   (b) transient failure → tokens.ts deliberately preserved tokens
+    // Distinguish by inspecting storage. Only call clearTokens +
+    // onReauthNeeded in the (a) case so transient outages do not
+    // permanently delete a still-valid refresh token.
+    if (await tm.hasTokens()) {
+      return;
+    }
     await runtime.onReauthNeeded(serverName);
   };
 

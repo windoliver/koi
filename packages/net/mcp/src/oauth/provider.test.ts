@@ -359,7 +359,12 @@ describe("createOAuthAuthProvider", () => {
     // Registered client persisted under the client-info key
     const { computeClientKey } = await import("./tokens.js");
     const storedClient = await storage.get(
-      computeClientKey("dyn", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "dyn",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
     );
     expect(storedClient).toBeDefined();
     const parsed = JSON.parse(storedClient ?? "{}");
@@ -370,7 +375,12 @@ describe("createOAuthAuthProvider", () => {
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
     await storage.set(
-      computeClientKey("reuse", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "reuse",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
       JSON.stringify({
         clientId: "prev-reg",
         registeredAt: 1,
@@ -514,7 +524,12 @@ describe("createOAuthAuthProvider", () => {
     // registration should have actually been committed to storage.
     const { computeClientKey } = await import("./tokens.js");
     const stored = map.get(
-      computeClientKey("race", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "race",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
     );
     expect(stored).toBeDefined();
     const { clientId } = JSON.parse(stored ?? "{}");
@@ -529,8 +544,16 @@ describe("createOAuthAuthProvider", () => {
     const { computeClientKey } = await import("./tokens.js");
     // Persist a client bound to an old issuer that no longer matches
     // the currently-discovered authorization server.
+    // The migration test deliberately seeds against the OLD authority
+    // so the new discovered issuer triggers a re-register. Both keys
+    // (old + new) end up in storage during the test.
     await storage.set(
-      computeClientKey("migrated", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "migrated",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://old-auth.example.com",
+      ),
       JSON.stringify({
         clientId: "stale-client",
         registeredAt: 1,
@@ -596,8 +619,17 @@ describe("createOAuthAuthProvider", () => {
     expect(authUrlClientId).toBe("fresh-client");
 
     // Persisted record is rewritten with the new issuer binding.
+    // Provider re-registered against the NEW authority — that's a new
+    // key. The old-authority record stays put (graveyard) because each
+    // authority gets its own scope; nothing prunes it. Validate the
+    // fresh registration under the new authority key.
     const stored = await storage.get(
-      computeClientKey("migrated", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "migrated",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://new-auth.example.com",
+      ),
     );
     const parsed = JSON.parse(stored ?? "{}");
     expect(parsed.clientId).toBe("fresh-client");
@@ -614,7 +646,12 @@ describe("createOAuthAuthProvider", () => {
     const { computeClientKey } = await import("./tokens.js");
     // Persist a record under the :8912 key. Should remain untouched.
     await storage.set(
-      computeClientKey("port-8912", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "port-8912",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
       JSON.stringify({
         clientId: "port-8912-client",
         registeredAt: 1,
@@ -682,7 +719,12 @@ describe("createOAuthAuthProvider", () => {
     expect(authUrlClientId).toBe("fresh-port");
 
     const port9999Stored = await storage.get(
-      computeClientKey("port-9999", "https://mcp.example.com", "http://127.0.0.1:9999/callback"),
+      computeClientKey(
+        "port-9999",
+        "https://mcp.example.com",
+        "http://127.0.0.1:9999/callback",
+        "https://auth.example.com",
+      ),
     );
     const port9999Parsed = JSON.parse(port9999Stored ?? "{}");
     expect(port9999Parsed.clientId).toBe("fresh-port");
@@ -690,7 +732,12 @@ describe("createOAuthAuthProvider", () => {
     // Critical: the pre-seeded :8912 record is UNTOUCHED. Earlier
     // shared-key logic would have overwritten it.
     const port8912Stored = await storage.get(
-      computeClientKey("port-8912", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "port-8912",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
     );
     const port8912Parsed = JSON.parse(port8912Stored ?? "{}");
     expect(port8912Parsed.clientId).toBe("port-8912-client");
@@ -714,6 +761,7 @@ describe("createOAuthAuthProvider", () => {
             "revoked",
             "https://mcp.example.com",
             "http://127.0.0.1:8912/callback",
+            "https://auth.example.com",
           );
           await storage.set(
             clientKey,
@@ -794,6 +842,7 @@ describe("createOAuthAuthProvider", () => {
         "revoked",
         "https://mcp.example.com",
         "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
       );
       const stored = await storage.get(clientKey);
       if (c.shouldClearClient) {
@@ -815,6 +864,7 @@ describe("createOAuthAuthProvider", () => {
       "static",
       "https://mcp.example.com",
       "http://127.0.0.1:8912/callback",
+      "https://auth.example.com",
     );
 
     const metadata = {
@@ -1007,7 +1057,12 @@ describe("createOAuthAuthProvider", () => {
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
     await storage.set(
-      computeClientKey("no-more-dcr", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "no-more-dcr",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
       JSON.stringify({
         clientId: "still-valid",
         registeredAt: 1700000000,
@@ -1082,7 +1137,12 @@ describe("createOAuthAuthProvider", () => {
     const storage = createMockStorage();
     const { computeClientKey } = await import("./tokens.js");
     await storage.set(
-      computeClientKey("legacy", "https://mcp.example.com", "http://127.0.0.1:8912/callback"),
+      computeClientKey(
+        "legacy",
+        "https://mcp.example.com",
+        "http://127.0.0.1:8912/callback",
+        "https://auth.example.com",
+      ),
       JSON.stringify({
         clientId: "legacy-unbound",
         registeredAt: 1700000000, // DCR-registered, not static (registeredAt > 0)

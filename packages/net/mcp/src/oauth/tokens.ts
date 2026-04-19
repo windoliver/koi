@@ -246,38 +246,46 @@ export function computeServerKey(serverName: string, serverUrl: string): string 
 
 /**
  * Storage key for dynamically-registered client info. Keyed by the full
- * DCR identity contract — `serverUrl` + `redirectUri` — so:
+ * DCR identity contract — `serverUrl` + `redirectUri` + `authority` — so:
  *
- *   1. Alias renames with identical URL + callback port reuse the same
- *      registered client (no orphan churn on the AS).
- *   2. Two configs with the same URL but different `oauth.callbackPort`
- *      get distinct client records instead of fighting over a single
- *      shared record whose `redirect_uri` contract cannot satisfy both.
+ *   1. Alias renames with identical URL + callback port + authority
+ *      reuse the same registered client (no orphan churn on the AS).
+ *   2. Two configs with the same URL but different callback ports get
+ *      distinct records (the redirect_uri contract differs).
+ *   3. Two configs with the same URL + port but different OAuth
+ *      authorities (different `authServerMetadataUrl` / discovered
+ *      issuer) get distinct records — one tenant's auth state cannot
+ *      clobber another's.
  *
- * Format: `mcp-oauth-client|{sha256(serverUrl + "|" + redirectUri)[:16]}`.
- * The `serverName` parameter is retained for symmetry with
- * `computeServerKey()` but deliberately ignored.
+ * `authority` is the discovered issuer when known, falling back to the
+ * configured `authServerMetadataUrl`, falling back to empty (no
+ * discriminator) when neither is available. The `serverName` parameter
+ * is retained for symmetry with `computeServerKey()` but ignored.
+ *
+ * Format: `mcp-oauth-client|{sha256(serverUrl + "|" + redirectUri + "|" + authority)[:16]}`.
  */
 export function computeClientKey(
   _serverName: string,
   serverUrl: string,
   redirectUri: string,
+  authority: string = "",
 ): string {
   const hash = createHash("sha256")
-    .update(`${serverUrl}|${redirectUri}`)
+    .update(`${serverUrl}|${redirectUri}|${authority}`)
     .digest("hex")
     .substring(0, 16);
   return `mcp-oauth-client|${hash}`;
 }
 
-/** Read persisted `OAuthClientInfo` for a (server, redirect) pair; undefined when absent or corrupt. */
+/** Read persisted `OAuthClientInfo` for a (server, redirect, authority) triple; undefined when absent or corrupt. */
 export async function readClientInfo(
   storage: SecureStorage,
   serverName: string,
   serverUrl: string,
   redirectUri: string,
+  authority: string = "",
 ): Promise<OAuthClientInfo | undefined> {
-  const raw = await storage.get(computeClientKey(serverName, serverUrl, redirectUri));
+  const raw = await storage.get(computeClientKey(serverName, serverUrl, redirectUri, authority));
   if (raw === undefined) return undefined;
   try {
     return JSON.parse(raw) as OAuthClientInfo;
@@ -286,15 +294,21 @@ export async function readClientInfo(
   }
 }
 
-/** Persist `OAuthClientInfo` under the (server, redirect) client-info storage key. */
+/**
+ * Persist `OAuthClientInfo` under the (server, redirect, authority)
+ * client-info storage key. `authority` is optional (defaults to "") so
+ * existing callers without tenant scoping keep working — provider
+ * always passes the discovered issuer / configured authServerMetadataUrl.
+ */
 export async function writeClientInfo(
   storage: SecureStorage,
   serverName: string,
   serverUrl: string,
   redirectUri: string,
   info: OAuthClientInfo,
+  authority: string = "",
 ): Promise<void> {
-  const key = computeClientKey(serverName, serverUrl, redirectUri);
+  const key = computeClientKey(serverName, serverUrl, redirectUri, authority);
   await storage.withLock(key, async () => {
     await storage.set(key, JSON.stringify(info));
   });
