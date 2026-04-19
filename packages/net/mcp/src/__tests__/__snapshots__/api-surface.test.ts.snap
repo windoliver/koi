@@ -534,6 +534,22 @@ interface OAuthClientInfo {
     readonly clientId: string;
     /** Epoch ms when the client was persisted. 0 for configured static clients. */
     readonly registeredAt: number;
+    /**
+     * Opaque per-registration generation id (random UUID for DCR
+     * registrations; empty string for configured static clients).
+     * Used as the CAS discriminator on invalidation: \`clientId\` alone
+     * is unsafe when an AS deterministically reissues the same id, and
+     * \`registeredAt\` (Date.now()) is not strictly unique under fast
+     * retries — two registrations can land in the same millisecond.
+     * A UUID has effectively-zero collision probability.
+     *
+     * Optional for backward compatibility with records persisted before
+     * this field existed: legacy records without a generation are
+     * NEVER eligible for CAS-delete (the invalidator skips the delete
+     * when expectedClient.generation is undefined / current.generation
+     * is undefined). Operators must clear such records manually.
+     */
+    readonly generation?: string | undefined;
     /** Issuer the client was registered with (DCR only). Absent for configured static clients. */
     readonly issuer?: string | undefined;
     /** Registration endpoint used (DCR only). Absent for configured static clients. */

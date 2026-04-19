@@ -371,23 +371,37 @@ export function createOAuthAuthProvider(options: OAuthProviderOptions): OAuthAut
     const lockKey = computeClientKey(serverName, serverUrl, redirectUri, authority);
     await storage.withLock(lockKey, async () => {
       const current = await readClientInfo(storage, serverName, serverUrl, redirectUri, authority);
-      // CAS on the opaque per-registration `generation` token.
+      if (current === undefined) return;
+
+      // Primary CAS: opaque per-registration `generation` UUID.
       // clientId alone is unsafe (some ASes deterministically reissue
-      // the same client_id) and registeredAt alone is non-unique
-      // under fast retries (Date.now() can collide in the same
-      // millisecond). The generation is a random UUID issued at
-      // registration time — collision probability is effectively
-      // zero, so a stale invalidation cannot match a fresher record.
-      //
-      // Empty/undefined generation is the legacy shape (records
-      // persisted before this field existed, or static clients) —
-      // never CAS-delete those. Operators clear them via storage
-      // surgery / a future `koi mcp reset-client` subcommand.
-      if (
-        current !== undefined &&
+      // the same id) and registeredAt alone is non-unique under fast
+      // retries (Date.now() can collide in the same millisecond).
+      // A UUID has effectively-zero collision probability.
+      const haveBothGenerations =
         current.generation !== undefined &&
         current.generation !== "" &&
-        current.generation === expectedClient.generation
+        expectedClient.generation !== undefined &&
+        expectedClient.generation !== "";
+      if (haveBothGenerations) {
+        if (current.generation === expectedClient.generation) {
+          await storage.delete(lockKey);
+        }
+        return;
+      }
+
+      // Legacy fallback: records persisted before the `generation`
+      // field existed, or static-client synthesized records, won't
+      // carry a UUID. Without a fallback such legacy records could
+      // never self-heal after invalid_client — operators would be
+      // permanently stuck. Match on (clientId, registeredAt) as
+      // best-effort CAS. Weaker than UUID but strictly better than
+      // "never delete". New registrations written after this
+      // commit always carry a generation, so the weakened window
+      // is bounded to in-place upgrades.
+      if (
+        current.clientId === expectedClient.clientId &&
+        current.registeredAt === expectedClient.registeredAt
       ) {
         await storage.delete(lockKey);
       }

@@ -1947,6 +1947,64 @@ describe("createOAuthAuthProvider", () => {
     expect(await storage.get(clientKey)).toBe(record);
   });
 
+  test("CAS legacy fallback: records without `generation` invalidate on (clientId, registeredAt)", async () => {
+    // Records persisted by earlier builds of this PR lack the
+    // `generation` UUID. Without the legacy fallback, those records
+    // could never self-heal via invalid_client and operators would be
+    // permanently stuck. Match on (clientId, registeredAt) as
+    // best-effort CAS for legacy records.
+    const storage = createMockStorage();
+    const { computeClientKey } = await import("./tokens.js");
+    const legacyKey = computeClientKey(
+      "legacy-cas",
+      "https://mcp.example.com",
+      "http://127.0.0.1:8912/callback",
+      "https://auth.example.com",
+    );
+    await storage.set(
+      legacyKey,
+      JSON.stringify({
+        clientId: "legacy-revoked",
+        registeredAt: 1700000000,
+        issuer: "https://auth.example.com",
+        registrationEndpoint: "https://auth.example.com/register",
+      }),
+    );
+
+    const legacyMetadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+      registration_endpoint: "https://auth.example.com/register",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(legacyMetadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "invalid_client" }), { status: 401 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const legacyProvider = createOAuthAuthProvider({
+      serverName: "legacy-cas",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    await legacyProvider.startAuthFlow();
+    expect(await storage.get(legacyKey)).toBeUndefined();
+  });
+
   test("CAS invalidation keys on generation UUID so fresh registration survives stale invalid_client", async () => {
     // Reproduces the refined CAS scenario: a stale invalid_client
     // callback arrives AFTER another flow has already re-registered.
