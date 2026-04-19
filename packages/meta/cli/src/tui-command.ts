@@ -1370,7 +1370,12 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     currentModelMiddleware,
     // Resolve budgetConfig per turn so a mid-session model switch picks up
     // the new model's context window immediately.
-    getCurrentModel: () => currentModelBox.current,
+    getCurrentModel: () => ({
+      model: currentModelBox.current,
+      ...(currentModelBox.contextLength !== undefined
+        ? { contextLength: currentModelBox.contextLength }
+        : {}),
+    }),
     ...(modelRouterMiddleware !== undefined ? { modelRouterMiddleware } : {}),
     // TUI opts out of engine loop detection explicitly: the
     // per-submit iteration budget reset + governance caps below
@@ -4066,10 +4071,23 @@ export async function runTuiCommand(flags: TuiFlags): Promise<void> {
     // No-op when the router is active — the fetcher above already
     // short-circuited with an error, but guard here too so a stale
     // selection from an earlier fetch cannot mutate the box.
-    onModelSwitch: (model: string): void => {
+    onModelSwitch: (model): void => {
       if (fallbackModels.length > 0) return;
-      currentModelBox.current = model;
-      costBridge.setModelName(model);
+      // Refuse mid-turn switches: a run in flight has already snapshotted
+      // its model at submit and may still issue additional HTTP calls
+      // (tool loops / retries). Mutating the box now would mix models
+      // within a single run and skew cost attribution.
+      if (store.getState().agentStatus === "processing") {
+        dispatchNotice(
+          store,
+          "model-switch-deferred",
+          "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
+        );
+        return;
+      }
+      currentModelBox.current = model.id;
+      currentModelBox.contextLength = model.contextLength;
+      costBridge.setModelName(model.id);
     },
   });
 

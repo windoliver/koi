@@ -31,6 +31,12 @@ import type {
 
 export interface CurrentModelBox {
   current: string;
+  /**
+   * Optional per-model context-window size in tokens, from the picker's
+   * provider metadata. Used by runtime-factory's per-turn budget resolver
+   * when the active model isn't present in the local model registry.
+   */
+  contextLength?: number | undefined;
 }
 
 export interface CurrentModelMiddleware {

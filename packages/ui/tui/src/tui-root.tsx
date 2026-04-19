@@ -148,8 +148,13 @@ export interface TuiRootProps {
   /**
    * Called when the user selects a model in the picker. The host mutates
    * the current-model middleware box so subsequent turns use the new model.
+   *
+   * The full `ModelEntry` is forwarded (not just the id) so the host can
+   * plumb per-model metadata — specifically `contextLength` — into the
+   * runtime's per-turn budget resolution for models absent from the local
+   * registry.
    */
-  readonly onModelSwitch?: ((model: string) => void) | undefined;
+  readonly onModelSwitch?: ((model: ModelEntry) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +395,20 @@ export function TuiRoot(props: TuiRootProps): JSX.Element {
   };
 
   const handleModelSelect = (model: ModelEntry): void => {
-    props.onModelSwitch?.(model.id);
+    // Refuse mid-turn switches: a run in flight has already snapshotted its
+    // model at submit and may still issue additional HTTP calls (tool loops
+    // / retries). Mutating state now would mix models within a single run
+    // and skew cost attribution. Surface a notice instead of silently
+    // accepting a switch that won't apply.
+    if (store.getState().agentStatus === "processing") {
+      store.dispatch({ kind: "set_modal", modal: null });
+      store.dispatch({
+        kind: "add_info",
+        message: "[Cannot switch models while a turn is in flight — finish or Esc-interrupt first.]",
+      });
+      return;
+    }
+    props.onModelSwitch?.(model);
     store.dispatch({ kind: "model_switched", model: model.id });
     store.dispatch({ kind: "set_modal", modal: null });
     store.dispatch({ kind: "add_info", message: `[Model switched to ${model.id}]` });

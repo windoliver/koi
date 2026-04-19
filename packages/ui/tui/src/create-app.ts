@@ -23,7 +23,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import type { PermissionBridge } from "./bridge/permission-bridge.js";
 import type { TuiStore } from "./state/store.js";
-import type { FetchModelsResult } from "./state/types.js";
+import type { FetchModelsResult, ModelEntry } from "./state/types.js";
 import { StoreContext } from "./store-context.js";
 import { computeLayoutTier } from "./theme.js";
 import { TuiRoot } from "./tui-root.js";
@@ -123,7 +123,7 @@ export interface CreateTuiAppConfig {
    * Called when the user selects a model in the picker. Host mutates the
    * current-model middleware box so subsequent turns use the new model.
    */
-  readonly onModelSwitch?: ((model: string) => void) | undefined;
+  readonly onModelSwitch?: ((model: ModelEntry) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------

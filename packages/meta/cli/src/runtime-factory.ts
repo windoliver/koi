@@ -436,8 +436,15 @@ export interface KoiRuntimeConfig {
    * `budgetConfigForModel(getCurrentModel())` on every turn so a mid-session
    * model switch picks up the new context-window limit immediately. When
    * absent, budget is sized once from `config.modelName`.
+   *
+   * Return `{ model, contextLength? }`. `contextLength` overrides the
+   * model registry's default window — needed for switched-to models that
+   * aren't in the local registry; the picker knows the window from the
+   * provider's `/models` response.
    */
-  readonly getCurrentModel?: () => string;
+  readonly getCurrentModel?: () =>
+    | string
+    | { readonly model: string; readonly contextLength?: number | undefined };
   /**
    * Pre-constructed model-router middleware. When provided, routes all model
    * calls through the failover chain before reaching the model adapter.
@@ -1258,14 +1265,19 @@ export async function createKoiRuntime(config: KoiRuntimeConfig): Promise<KoiRun
     // without changing real model config. E.g.: KOI_COMPACTION_WINDOW=2000
     budgetConfig:
       config.getCurrentModel !== undefined
-        ? (): BudgetConfig =>
-            budgetConfigForModel(
-              // biome-ignore lint/style/noNonNullAssertion: narrowed above, satisfies exactOptionalPropertyTypes
-              config.getCurrentModel!(),
+        ? (): BudgetConfig => {
+            // biome-ignore lint/style/noNonNullAssertion: narrowed above, satisfies exactOptionalPropertyTypes
+            const resolved = config.getCurrentModel!();
+            const activeModel = typeof resolved === "string" ? resolved : resolved.model;
+            const activeWindow = typeof resolved === "string" ? undefined : resolved.contextLength;
+            const envOverride =
               process.env.KOI_COMPACTION_WINDOW !== undefined
                 ? Number(process.env.KOI_COMPACTION_WINDOW)
-                : undefined,
-            )
+                : undefined;
+            // Env override (test) wins; picker-provided window covers unknown
+            // models; registry default falls through.
+            return budgetConfigForModel(activeModel, envOverride ?? activeWindow);
+          }
         : budgetConfigForModel(
             modelName,
             process.env.KOI_COMPACTION_WINDOW !== undefined
