@@ -629,6 +629,23 @@ describe("applyActivityTimeout", () => {
     ).toThrow(/maxDurationMs/);
   });
 
+  test("applyActivityTimeout throws when idleTerminateMs is set without idleWarnMs", () => {
+    // idleTerminateMs is only armed after the warning fires, so on its own
+    // it would be silently ignored — reject up front.
+    expect(() =>
+      applyActivityTimeout({} as unknown as EngineAdapter, { idleTerminateMs: 60 }),
+    ).toThrow(/idleTerminateMs requires.*idleWarnMs/);
+  });
+
+  test("applyActivityTimeout throws when idleTerminateMs < idleWarnMs", () => {
+    expect(() =>
+      applyActivityTimeout({} as unknown as EngineAdapter, {
+        idleWarnMs: 100,
+        idleTerminateMs: 50,
+      }),
+    ).toThrow(/idleTerminateMs .* must be >=/);
+  });
+
   test("applyActivityTimeout accepts 0 as immediate abort (legacy parity)", async () => {
     // `streamTimeoutMs: 0` previously mapped to `AbortSignal.timeout(0)` which
     // aborts on the next tick. Preserve that: maxDurationMs=0 must still

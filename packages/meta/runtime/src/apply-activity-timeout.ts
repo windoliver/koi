@@ -85,10 +85,20 @@ export function applyActivityTimeout(
 
 /**
  * Reject invalid durations up front so a misconfigured value cannot silently
- * remove the timeout guard. Negative values throw; `0` is accepted as
- * "fire on next tick" (preserves legacy `streamTimeoutMs: 0` behaviour
- * where `AbortSignal.timeout(0)` aborted immediately); `Infinity` is the
- * documented opt-out for no wall-clock cap.
+ * remove or under-enforce the timeout guard. Rules:
+ *
+ * - Negative and `NaN` values throw (misconfigurations that would otherwise
+ *   be silently clamped by `setTimeout`).
+ * - `idleTerminateMs` without `idleWarnMs` throws — the terminate timer is
+ *   only armed after the warning fires, so `idleTerminateMs` on its own
+ *   would be completely ignored.
+ * - `idleTerminateMs < idleWarnMs` throws — the termination threshold must
+ *   be at or after the warning threshold or the configured "terminate
+ *   budget" is meaningless.
+ *
+ * `0` is accepted as an immediate-fire schedulable delay (preserves legacy
+ * `streamTimeoutMs: 0` / `AbortSignal.timeout(0)` semantics). `Infinity` is
+ * the documented opt-out for disabling a timer.
  */
 function validateActivityTimeoutConfig(config: ActivityTimeoutConfig): void {
   const fields: readonly [string, number | undefined][] = [
@@ -106,6 +116,24 @@ function validateActivityTimeoutConfig(config: ActivityTimeoutConfig): void {
         `activityTimeout.${name} must be >= 0 or Number.POSITIVE_INFINITY, got ${value}`,
       );
     }
+  }
+  if (config.idleTerminateMs !== undefined && config.idleWarnMs === undefined) {
+    throw new Error(
+      "activityTimeout.idleTerminateMs requires activityTimeout.idleWarnMs to be set — " +
+        "the termination timer is only armed after the warning fires",
+    );
+  }
+  if (
+    config.idleWarnMs !== undefined &&
+    config.idleTerminateMs !== undefined &&
+    Number.isFinite(config.idleWarnMs) &&
+    Number.isFinite(config.idleTerminateMs) &&
+    config.idleTerminateMs < config.idleWarnMs
+  ) {
+    throw new Error(
+      `activityTimeout.idleTerminateMs (${config.idleTerminateMs}) must be >= ` +
+        `activityTimeout.idleWarnMs (${config.idleWarnMs})`,
+    );
   }
 }
 
@@ -214,14 +242,24 @@ async function* wrapStream(
   } finally {
     clearAll(timers);
     ctl.abort();
-    // Deliberately DO NOT await the pump: a non-cooperative adapter that
-    // ignores its abort signal would otherwise hang generator finalization
-    // forever. The pump promise already has a rejection handler attached
-    // (via the assignment sink in pumpInner's catch/finally), and its queue
-    // writes after this point are harmless — the consumer is gone.
-    pump.catch(() => {});
+    // Bounded wait for the inner pump to settle before releasing generator
+    // finalization. The engine's lifecycle guard (kernel/engine/src/koi.ts
+    // "poison after 5s" settle deadline) requires each run to settle before
+    // the next begins; detaching the pump unconditionally would break that
+    // invariant when the inner adapter honours abort lazily. We race pump
+    // settlement against a short deadline so a non-cooperative adapter
+    // cannot hang finalization forever. 2s is well under the engine's 5s
+    // settle timeout and well over the typical abort-honouring latency
+    // (~ms).
+    await Promise.race([
+      pump.catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, PUMP_SETTLE_DEADLINE_MS)),
+    ]);
   }
 }
+
+/** Milliseconds to wait for the inner adapter's pump to settle on termination. */
+const PUMP_SETTLE_DEADLINE_MS = 2_000;
 
 // ---------------------------------------------------------------------------
 // Internal state
