@@ -8,6 +8,7 @@ import type {
   ManagedTaskBoard,
   Task,
   TaskItemId,
+  TaskOutputReader,
   TaskResult,
   TaskStatus,
 } from "@koi/core";
@@ -84,10 +85,11 @@ export interface OutputChunkData {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal interface for reading incremental task output.
+ * Minimal interface for reading incremental chunk-based task output.
  * Matches TaskRunner.readOutput() without depending on the full TaskRunner type.
+ * Used by task_output's `offset`-based incremental streaming path.
  */
-export interface TaskOutputReader {
+export interface TaskChunkReader {
   readonly readOutput: (
     taskId: TaskItemId,
     fromOffset?: number,
@@ -117,9 +119,22 @@ export interface TaskToolsConfig {
    */
   readonly resultSchemas?: Readonly<Record<string, ResultSchema>> | undefined;
   /**
-   * Optional output reader for incremental streaming reads.
+   * Optional chunk-based output reader for incremental streaming reads.
    * When provided, task_output accepts an `offset` parameter to return
    * delta output chunks for in_progress tasks.
    */
-  readonly outputReader?: TaskOutputReader | undefined;
+  readonly outputReader?: TaskChunkReader | undefined;
+  /**
+   * Optional buffer reader factory for matches_only and buffered-snapshot reads.
+   * Returns a TaskOutputReader (snapshot + queryMatches) for the given task ID,
+   * or undefined if no buffer exists for that task.
+   *
+   * Structurally satisfied by BashOutputBuffer from @koi/tools-bash without
+   * creating an L2→L2 import dependency — wire via dependency injection at L3/L4.
+   */
+  readonly bufferReader?: ((taskId: TaskItemId) => TaskOutputReader | undefined) | undefined;
 }
+
+// Re-export TaskOutputReader from @koi/core so callers can reference it without
+// importing directly from @koi/core when working with TaskToolsConfig.
+export type { TaskOutputReader };

@@ -1213,6 +1213,10 @@ export type {
   MatchEntry,
   PatternMatch,
   PendingMatchStore,
+  TaskOutputReader,
+  TaskOutputReaderMatchesResult,
+  TaskOutputReaderMatchQuery,
+  TaskOutputReaderSnapshot,
   TurnRequestKey,
   WatchPattern,
 } from "./watch-patterns/index.js";

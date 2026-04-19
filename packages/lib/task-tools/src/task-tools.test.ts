@@ -1038,3 +1038,294 @@ describe("task_output — offset reads", () => {
     expect(r.chunks).toHaveLength(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// task_output — creator/assignee ACL (createdBy-based read authorization)
+// ---------------------------------------------------------------------------
+
+describe("task_output — ACL", () => {
+  /**
+   * Set up a board where:
+   * - agent-creator creates the task
+   * - agent-worker is the one who picks it up (in_progress)
+   * - agent-unrelated is neither creator nor assignee
+   */
+  async function setupAcl() {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    // Creator tools — creates the task
+    const creatorTools = createNamedTaskTools({ board, agentId: agentId("agent-creator") });
+    // Worker tools — assigned when moving in_progress
+    const workerTools = createNamedTaskTools({ board, agentId: agentId("agent-worker") });
+    // Unrelated tools — neither creator nor assignee
+    const unrelatedTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+
+    return { board, creatorTools, workerTools, unrelatedTools };
+  }
+
+  test("creator reads in_progress task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("in_progress");
+  });
+
+  test("assignee reads in_progress task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(workerTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("in_progress");
+  });
+
+  test("unrelated agent reads in_progress task — permission denied", async () => {
+    const { creatorTools, workerTools, unrelatedTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(unrelatedTools.output, { task_id: id })) as {
+      ok: boolean;
+      error: string;
+    };
+    expect(r.ok).toBe(false);
+    expect(typeof r.error).toBe("string");
+    expect(r.error).toContain("permission denied");
+  });
+
+  test("creator reads killed task — succeeds (createdBy persists through kill)", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.stop, { task_id: id });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("killed");
+  });
+
+  test("unrelated agent reads killed task — permission denied", async () => {
+    const { creatorTools, workerTools, unrelatedTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.stop, { task_id: id });
+
+    const r = (await exec(unrelatedTools.output, { task_id: id })) as { ok: boolean };
+    expect(r.ok).toBe(false);
+  });
+
+  test("creator reads failed task — succeeds", async () => {
+    const { creatorTools, workerTools } = await setupAcl();
+    const rc = await exec(creatorTools.create, { subject: "Work", description: "Do something" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(workerTools.update, { task_id: id, status: "in_progress" });
+    await exec(workerTools.update, { task_id: id, status: "failed", reason: "Timed out" });
+
+    const r = (await exec(creatorTools.output, { task_id: id })) as { kind: string };
+    expect(r.kind).toBe("failed");
+  });
+
+  test("legacy task (createdBy undefined) — any caller reads", async () => {
+    // Simulate a legacy task by adding directly to board without createdBy
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const { taskItemId: mkId } = await import("@koi/core");
+
+    // Add a legacy task (no createdBy)
+    const legacyId = mkId("legacy-task-001");
+    await board.add({
+      id: legacyId,
+      subject: "Legacy",
+      description: "Old task without createdBy",
+      // createdBy intentionally omitted
+    });
+
+    // Any agent should be able to read
+    const anyTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+    const r = (await exec(anyTools.output, { task_id: "legacy-task-001" })) as { kind: string };
+    expect(r.kind).toBe("pending");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// task_output — matches_only + bufferReader
+// ---------------------------------------------------------------------------
+
+describe("task_output — matches_only", () => {
+  function makeEntry(
+    event: string,
+    stream: "stdout" | "stderr",
+    line: string,
+  ): import("@koi/core").MatchEntry {
+    return {
+      event,
+      stream,
+      lineNumber: 1,
+      timestamp: Date.now(),
+      line,
+      lineByteLength: line.length,
+      lineClippedPrefixBytes: 0,
+      lineClippedSuffixBytes: 0,
+      lineOriginalByteLength: line.length,
+      matchSpanUnits: { start: 0, end: line.length },
+    };
+  }
+
+  async function setupWithBuffer() {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    // In-memory mock buffer
+    const storedEntries: import("@koi/core").MatchEntry[] = [];
+
+    const mockBuffer: import("@koi/core").TaskOutputReader = {
+      snapshot() {
+        return { stdout: "buffered stdout", stderr: "buffered stderr", truncated: false };
+      },
+      queryMatches(q) {
+        const filtered = storedEntries.filter(
+          (e) =>
+            (q.event === undefined || e.event === q.event) &&
+            (q.stream === undefined || e.stream === q.stream),
+        );
+        return {
+          kind: "matches",
+          entries: filtered,
+          cursor: "s=0",
+          dropped_before_cursor: 0,
+          truncated: false,
+        };
+      },
+    };
+
+    const tools = createNamedTaskTools({
+      board,
+      agentId: agentId("agent-1"),
+      bufferReader: () => mockBuffer,
+    });
+
+    return { tools, storedEntries, board };
+  }
+
+  test("matches_only=true returns buffer entries", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("error", "stderr", "ERROR: something bad"));
+    storedEntries.push(makeEntry("ready", "stdout", "Server ready on port 3000"));
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(2);
+  });
+
+  test("matches_only=true with event filter narrows results", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("error", "stderr", "ERROR: something bad"));
+    storedEntries.push(makeEntry("ready", "stdout", "Server ready"));
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true, event: "ready" })) as {
+      kind: string;
+      entries: Array<{ event: string }>;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0]?.event).toBe("ready");
+  });
+
+  test("matches_only=true with stream filter narrows results", async () => {
+    const { tools, storedEntries } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    storedEntries.push(makeEntry("hit", "stdout", "from stdout"));
+    storedEntries.push(makeEntry("hit", "stderr", "from stderr"));
+
+    const r = (await exec(tools.output, {
+      task_id: id,
+      matches_only: true,
+      stream: "stdout",
+    })) as {
+      kind: string;
+      entries: Array<{ stream: string }>;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0]?.stream).toBe("stdout");
+  });
+
+  test("matches_only=true with no bufferReader returns empty result", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+    const tools = createNamedTaskTools({ board, agentId: agentId("agent-1") }); // no bufferReader
+
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id, matches_only: true })) as {
+      kind: string;
+      entries: unknown[];
+      cursor: string;
+    };
+    expect(r.kind).toBe("matches");
+    expect(r.entries).toHaveLength(0);
+    expect(r.cursor).toBe("s=0");
+  });
+
+  test("matches_only=true denied for unrelated agent", async () => {
+    const store = createMemoryTaskBoardStore();
+    const resultsDir = await freshResultsDir();
+    const board = await createManagedTaskBoard({ store, resultsDir });
+
+    const creatorTools = createNamedTaskTools({ board, agentId: agentId("agent-creator") });
+    const unrelatedTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
+
+    const rc = await exec(creatorTools.create, { subject: "Watch", description: "Watch patterns" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(creatorTools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(unrelatedTools.output, {
+      task_id: id,
+      matches_only: true,
+    })) as { ok: boolean };
+    expect(r.ok).toBe(false);
+  });
+
+  test("bufferReader snapshot returned for in_progress when no offset reader", async () => {
+    const { tools } = await setupWithBuffer();
+    const rc = await exec(tools.create, { subject: "Watch", description: "Watch" });
+    const id = (rc.task as Record<string, unknown>).id as string;
+    await exec(tools.update, { task_id: id, status: "in_progress" });
+
+    const r = (await exec(tools.output, { task_id: id })) as {
+      kind: string;
+      stdout?: string;
+      stderr?: string;
+    };
+    expect(r.kind).toBe("in_progress");
+    expect(r.stdout).toBe("buffered stdout");
+    expect(r.stderr).toBe("buffered stderr");
+  });
+});

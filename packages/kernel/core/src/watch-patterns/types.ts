@@ -59,3 +59,41 @@ export interface PendingMatchStore {
   readonly unregisterMatcher: (matcher: { readonly cancel: () => void }) => void;
   readonly dispose?: () => void | Promise<void>;
 }
+
+// ---------------------------------------------------------------------------
+// TaskOutputReader — L0 interface for reading buffered output from a task.
+// Structurally satisfied by BashOutputBuffer without an import dependency.
+// ---------------------------------------------------------------------------
+
+/** Snapshot of buffered stdout/stderr output for a task. */
+export interface TaskOutputReaderSnapshot {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+}
+
+/** Paginated result of a matched-line query from the side-buffer. */
+export interface TaskOutputReaderMatchesResult {
+  readonly kind: "matches";
+  readonly entries: readonly MatchEntry[];
+  readonly cursor: string;
+  readonly dropped_before_cursor: number;
+  readonly truncated: boolean;
+}
+
+/** Filter parameters for a matched-line query. */
+export interface TaskOutputReaderMatchQuery {
+  readonly event?: string | undefined;
+  readonly stream?: "stdout" | "stderr" | undefined;
+  readonly offset?: string | undefined;
+}
+
+/**
+ * Minimal interface for reading buffered output from a running or terminal task.
+ * Structurally satisfied by `BashOutputBuffer` from `@koi/tools-bash` without
+ * creating an L2→L2 import dependency.
+ */
+export interface TaskOutputReader {
+  readonly snapshot: () => TaskOutputReaderSnapshot;
+  readonly queryMatches: (q: TaskOutputReaderMatchQuery) => TaskOutputReaderMatchesResult;
+}
