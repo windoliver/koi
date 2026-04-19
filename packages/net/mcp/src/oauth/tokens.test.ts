@@ -509,6 +509,38 @@ describe("createTokenManager — refresh flow", () => {
     expect(await tm.hasTokens()).toBe(true);
   });
 
+  test("does NOT retry refresh on generic invalid_request", async () => {
+    // RFC 8707 §2: only `invalid_target` ties to the resource parameter.
+    // Replaying refresh on the OAuth catch-all `invalid_request` could
+    // double traffic and escalate a malformed-request error into harder-
+    // to-recover token loss when the AS treats it as terminal.
+    let calls = 0;
+    globalThis.fetch = mock(() => {
+      calls += 1;
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: "invalid_request" }), { status: 400 }),
+      );
+    }) as unknown as typeof fetch;
+
+    const tm = createTokenManager({
+      serverName: "s",
+      serverUrl: "https://mcp.example.com",
+      storage,
+      metadata: METADATA,
+      clientId: "c",
+      resource: "https://mcp.example.com",
+    });
+    await tm.storeTokens({
+      accessToken: "x",
+      refreshToken: "rt",
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(await tm.getAccessToken()).toBeUndefined();
+    // Single attempt — must NOT replay.
+    expect(calls).toBe(1);
+  });
+
   test("retries refresh without resource on invalid_target (RFC 8707 compatibility)", async () => {
     // Default RFC 8707 sends `resource` on every refresh. A legacy AS
     // that doesn't recognize it returns 4xx invalid_target. Treating

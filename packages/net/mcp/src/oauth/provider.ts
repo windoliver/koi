@@ -530,7 +530,13 @@ async function exchangeCode(
       return {
         ok: false,
         invalidClient: errorCode === "invalid_client",
-        resourceRejected: errorCode === "invalid_target" || errorCode === "invalid_request",
+        // RFC 8707 §2: an AS that does not recognize the `resource`
+        // parameter returns `invalid_target`. `invalid_request` is
+        // RFC 6749's general catch-all (PKCE mismatch, malformed
+        // redirect, duplicated params) and MUST NOT trigger an
+        // automatic retry — replaying the auth code here would
+        // consume a single-use code and mask the real error.
+        resourceRejected: errorCode === "invalid_target",
       };
     }
 

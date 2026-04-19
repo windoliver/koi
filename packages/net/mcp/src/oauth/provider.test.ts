@@ -1539,6 +1539,51 @@ describe("createOAuthAuthProvider", () => {
     expect(await provider.token()).toBe("fresh");
   });
 
+  test("does NOT retry exchange on generic invalid_request (would consume single-use code)", async () => {
+    // RFC 8707 §2 ties resource rejection specifically to `invalid_target`.
+    // `invalid_request` is the OAuth catch-all — PKCE mismatch, malformed
+    // redirect, duplicated params. Replaying the auth code on
+    // invalid_request would consume the single-use code and mask the
+    // real error.
+    const storage = createMockStorage();
+    let exchangeCalls = 0;
+    const metadata = {
+      issuer: "https://auth.example.com",
+      authorization_endpoint: "https://auth.example.com/authorize",
+      token_endpoint: "https://auth.example.com/token",
+    };
+
+    globalThis.fetch = mock((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("well-known")) {
+        return Promise.resolve(new Response(JSON.stringify(metadata), { status: 200 }));
+      }
+      if (urlStr.includes("/token")) {
+        exchangeCalls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: "invalid_request" }), { status: 400 }),
+        );
+      }
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }) as unknown as typeof fetch;
+
+    const provider = createOAuthAuthProvider({
+      serverName: "single-use-guard",
+      serverUrl: "https://mcp.example.com",
+      oauthConfig: {
+        clientId: "static",
+        authServerMetadataUrl: "https://auth.example.com/.well-known/oauth-authorization-server",
+      },
+      runtime: createMockRuntime(),
+      storage,
+    });
+
+    const ok = await provider.startAuthFlow();
+    expect(ok).toBe(false);
+    // Critical: must NOT replay the auth code.
+    expect(exchangeCalls).toBe(1);
+  });
+
   test("retries exchange without resource on invalid_target (legacy-AS compatibility)", async () => {
     // Mirror of the refresh-path RFC 8707 shim. A legacy AS that
     // rejects `resource` with invalid_target on initial auth should

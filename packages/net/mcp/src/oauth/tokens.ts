@@ -436,13 +436,19 @@ async function refreshAccessToken(
       // parse it once so we can surface invalid_client + resource-related
       // rejections distinctly without losing terminal/transient
       // classification.
+      //
+      // RFC 8707 §2: only `invalid_target` is the resource-parameter
+      // rejection. `invalid_request` is the general OAuth catch-all
+      // (PKCE mismatch, malformed body, duplicated params) — replaying
+      // refresh on it could escalate a malformed request into harder-
+      // to-recover token loss while doubling endpoint traffic.
       const terminal = response.status < 500;
       const errorCode = terminal ? await readErrorCode(response) : undefined;
       return {
         ok: false,
         terminal,
         invalidClient: errorCode === "invalid_client",
-        resourceRejected: errorCode === "invalid_target" || errorCode === "invalid_request",
+        resourceRejected: errorCode === "invalid_target",
       };
     }
 
