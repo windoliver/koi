@@ -1789,32 +1789,40 @@ describe("ToolRequest.signal", () => {
 // RuleDescriptor + GovernanceBackend.describeRules (gov-9)
 // ---------------------------------------------------------------------------
 
-test("RuleDescriptor has required fields", () => {
-  const r: RuleDescriptor = {
-    id: "deny-prod-writes",
-    description: "Deny writes to production paths",
-    effect: "deny",
-    pattern: "/prod/**",
-  };
-  expect(r.id).toBe("deny-prod-writes");
-  expect(r.effect).toBe("deny");
-});
+describe("RuleDescriptor and GovernanceBackend.describeRules", () => {
+  test("RuleDescriptor has required fields", () => {
+    const r: RuleDescriptor = {
+      id: "deny-prod-writes",
+      description: "Deny writes to production paths",
+      effect: "deny",
+      pattern: "/prod/**",
+    };
+    expect(r.id).toBe("deny-prod-writes");
+    expect(r.effect).toBe("deny");
+  });
 
-test("GovernanceBackend.describeRules is optional", () => {
-  const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
-  };
-  expect(b.describeRules).toBeUndefined();
-});
+  test("GovernanceBackend.describeRules is optional", () => {
+    const b: GovernanceBackend = {
+      evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
+    };
+    expect(b.describeRules).toBeUndefined();
+  });
 
-test("GovernanceBackend.describeRules can be implemented", async () => {
-  const b: GovernanceBackend = {
-    evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
-    describeRules: () => [
-      { id: "r1", description: "test", effect: "advise" } satisfies RuleDescriptor,
-    ],
-  };
-  const rules = await b.describeRules?.();
-  expect(rules).toHaveLength(1);
-  expect(rules?.[0]?.id).toBe("r1");
+  test("GovernanceBackend.describeRules can be implemented", async () => {
+    const b: GovernanceBackend = {
+      evaluator: { evaluate: async () => GOVERNANCE_ALLOW },
+      describeRules: () => [
+        { id: "r1", description: "test", effect: "advise" } satisfies RuleDescriptor,
+      ],
+    };
+    const rules = await b.describeRules?.();
+    expect(rules).toHaveLength(1);
+    expect(rules?.[0]?.id).toBe("r1");
+  });
+
+  test("RuleDescriptor.effect rejects invalid literals", () => {
+    // @ts-expect-error — "block" is not a valid effect; must be "allow" | "deny" | "advise"
+    const _r: RuleDescriptor = { id: "x", description: "y", effect: "block" };
+    void _r;
+  });
 });
