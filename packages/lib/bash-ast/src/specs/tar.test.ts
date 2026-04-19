@@ -33,24 +33,44 @@ describe("specTar — create (-c)", () => {
     expect(result.semantics.reads).toEqual(["a.txt"]);
   });
 
-  test("attached -CDIR form is recognized but refuses in -c mode (order-sensitive)", () => {
+  test("attached -CDIR rebases following operands (regression)", () => {
     const result = specTar(["tar", "-c", "-Cwork", "-fout.tar", "a.txt"]);
-    expect(result.kind).toBe("refused");
-    if (result.kind !== "refused") return;
-    expect(result.cause).toBe("parse-error");
-    expect(result.detail).toMatch(/-C DIR/);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.writes).toEqual(["out.tar"]);
+    expect(result.semantics.reads).toEqual(["work/a.txt"]);
   });
 
-  test("-C with -c refuses (order-sensitive operand rebase)", () => {
+  test("-C with -c rebases following positionals (regression)", () => {
     const result = specTar(["tar", "-c", "-C", "/etc", "-f", "out.tar", "passwd"]);
-    expect(result.kind).toBe("refused");
-    if (result.kind !== "refused") return;
-    expect(result.cause).toBe("parse-error");
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["/etc/passwd"]);
   });
 
-  test("-C with -t refuses (order-sensitive operand rebase)", () => {
+  test("multiple -C tokens rebase later positionals (regression)", () => {
+    const result = specTar([
+      "tar",
+      "-c",
+      "-C",
+      "/etc",
+      "-f",
+      "out.tar",
+      "passwd",
+      "-C",
+      "/var",
+      "log/syslog",
+    ]);
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["/etc/passwd", "/var/log/syslog"]);
+  });
+
+  test("-C with -t is harmless (tar ignores; spec stays complete)", () => {
     const result = specTar(["tar", "-t", "-C", "/etc", "-f", "in.tar"]);
-    expect(result.kind).toBe("refused");
+    expect(result.kind).toBe("complete");
+    if (result.kind !== "complete") return;
+    expect(result.semantics.reads).toEqual(["in.tar"]);
   });
 
   test("archive flag interleaved with files (regression: positional-independence)", () => {

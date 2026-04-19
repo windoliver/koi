@@ -24,6 +24,56 @@ const MODE_FLAGS = ["x", "c", "t"] as const;
  * If no value flag is present, the bundle is left untouched for parseFlags
  * to handle via its normal bool-bundle path.
  */
+/**
+ * For tar `-c` (create) mode: ordered scan of an already-bundle-expanded argv
+ * that pairs each positional file operand with the most recent `-C DIR`
+ * effective base. Multiple `-C` tokens may interleave between positionals.
+ *
+ * Recognises `-C DIR` (separate), `-CDIR` (attached), and `--directory DIR` /
+ * `--directory=DIR` long forms. Skips known flag tokens and their values.
+ *
+ *   tar -c -f out.tar a b           -> reads: [a, b]
+ *   tar -c -C /etc -f out.tar a b   -> reads: [/etc/a, /etc/b]
+ *   tar -c -C /etc passwd -C /var hosts -f out.tar -> reads: [/etc/passwd, /var/hosts]
+ */
+function collectCreateReads(argv: readonly string[]): readonly string[] {
+  const reads: string[] = [];
+  let base: string | undefined;
+  for (let i = 1; i < argv.length; i += 1) {
+    const tok = argv[i];
+    if (tok === undefined) continue;
+
+    if (tok === "-C" || tok === "--directory") {
+      const next = argv[i + 1];
+      if (next !== undefined) {
+        base = next;
+        i += 1;
+      }
+      continue;
+    }
+    if (tok.startsWith("-C") && tok.length > 2 && !tok.startsWith("--")) {
+      base = tok.slice(2);
+      continue;
+    }
+    if (tok.startsWith("--directory=")) {
+      base = tok.slice("--directory=".length);
+      continue;
+    }
+
+    // Skip -f FILE (archive) and other flags + their values
+    if (tok === "-f" || tok === "--file") {
+      i += 1;
+      continue;
+    }
+    if (tok.startsWith("-f") && tok.length > 2 && !tok.startsWith("--")) continue;
+    if (tok.startsWith("--file=")) continue;
+    if (tok.startsWith("-")) continue;
+
+    reads.push(base === undefined ? tok : `${base}/${tok}`);
+  }
+  return reads;
+}
+
 function expandTarBundles(argv: readonly string[]): readonly string[] {
   const out: string[] = [];
   for (const tok of argv) {
@@ -88,23 +138,14 @@ export function specTar(argv: readonly string[]): SpecResult {
 
   const mode = modes[0];
 
-  // -C DIR rebases the file operands that follow it relative to DIR. The
-  // rebase is order-sensitive (multiple -C tokens may interleave between
-  // positionals) and our parseFlags loses that ordering. In modes whose
-  // result depends on positional file paths (-c, -t), refuse rather than
-  // misreport. -x mode is already partial regardless of -C, so allow it.
-  const hasC = parsed.flags.has("C");
-  if (hasC && (mode === "c" || mode === "t")) {
-    return {
-      kind: "refused",
-      cause: "parse-error",
-      detail: `tar -C DIR with -${mode} requires order-sensitive operand rebasing not modeled by this spec`,
-    };
-  }
-
   if (mode === "c") {
+    // -C DIR rebases following file operands relative to DIR; the rebase is
+    // order-sensitive and may interleave with positionals, so we re-scan the
+    // expanded argv directly to preserve ordering. parseFlags's flag map
+    // would collapse repeated -C and lose positional ordering.
+    const reads = collectCreateReads(expandTarBundles(argv));
     const semantics = {
-      reads: parsed.positionals,
+      reads,
       writes: [archive],
       network: [],
       envMutations: [],
@@ -113,6 +154,8 @@ export function specTar(argv: readonly string[]): SpecResult {
   }
 
   if (mode === "t") {
+    // -t mode positionals are filename patterns matched inside the archive,
+    // not local paths — `-C` is irrelevant to what `-t` reads from disk.
     const semantics = {
       reads: [archive],
       writes: [],
