@@ -21,17 +21,10 @@ import {
   linkSync,
   openSync,
   readFileSync,
-  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-
-// Stale-lock age threshold. If a lock file is older than this AND its PID
-// is still alive, assume PID reuse and recover it. Long-running correct
-// uses don't keep a lock for days without rewriting. Plan 4 replaces this
-// with OS-backed flock that's immune to PID reuse entirely.
-const STALE_LOCK_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const LOCK_SUFFIX = ".lock";
 const BLOBDIR_LOCK_NAME = ".writer.lock";
@@ -67,11 +60,13 @@ function tryRemoveStaleLock(lockPath: string): boolean {
   try {
     const content = readFileSync(lockPath, "utf8");
     const pid = parseLockPid(content);
-    // Unparseable or empty lock contents mean the previous owner crashed
-    // mid-write (or someone corrupted the file). Treat as stale rather than
-    // blocking every future open — the lock-file mechanism only claims
-    // advisory single-writer semantics, not crash-proof forensics.
     if (pid === undefined) {
+      // Unparseable content is only safe to treat as stale when the lock
+      // file was atomically published (tmp+linkSync path). The fallback path
+      // creates the lock file empty and then writes the token; an unparseable
+      // content observation in that window could be a live mid-write owner,
+      // not a crashed one. The caller (acquireLockFile) only invokes stale
+      // recovery on the atomic path, so empty-content == stale is safe here.
       unlinkSync(lockPath);
       return true;
     }
@@ -79,19 +74,11 @@ function tryRemoveStaleLock(lockPath: string): boolean {
       unlinkSync(lockPath);
       return true;
     }
-    // PID is alive — but PID reuse after a crash is a real failure mode.
-    // If the lock file is older than STALE_LOCK_AGE_MS, assume the original
-    // owner crashed long ago and the current PID is an unrelated process.
-    try {
-      const stat = statSync(lockPath);
-      const ageMs = Date.now() - stat.mtimeMs;
-      if (ageMs > STALE_LOCK_AGE_MS) {
-        unlinkSync(lockPath);
-        return true;
-      }
-    } catch {
-      /* ignore stat failures */
-    }
+    // PID is alive — fail closed. PID reuse after a crash can wedge the
+    // store until an operator deletes the lock file, but that's the only
+    // safe behavior: age-based eviction of a live-PID lock would evict
+    // legitimate long-running writers. Plan 4 adds OS-backed flock which
+    // is immune to PID reuse.
     return false;
   } catch {
     return false;
@@ -139,17 +126,13 @@ function acquireLockFile(lockPath: string): AcquiredLock {
   }
 
   // Atomically link tmp → lockPath. EEXIST means someone else is the owner;
-  // try stale recovery once and retry. Some filesystems (certain FUSE mounts,
-  // older SMB, some cloud fs) don't support hard links — detect ENOSYS /
-  // EPERM / EXDEV / ENOTSUP and fall back to the openSync(wx) pattern, which
-  // accepts a narrow partial-write race in exchange for availability. That
-  // race only affects the concurrent-stale-check interleaving and is a
-  // deliberate Plan 2 trade-off; Plan 4 adds flock.
-  const linkResult = tryPublishLockViaLink(tmpPath, lockPath);
-  if (linkResult.kind === "hardlinks_unsupported") {
-    const fd = publishLockViaOpenWxFallback(tmpPath, lockPath, tokenBytes);
-    return { fd, token };
-  }
+  // try stale recovery once and retry. If the filesystem doesn't support
+  // hard links (FUSE, some SMB, some cloud fs), fail closed with a clear
+  // error — the alternative (openSync(wx)+write) has a partial-write race
+  // that would weaken the single-writer invariant on exactly the backends
+  // most likely to have multiple writer processes. Plan 4 adds flock for
+  // universal support.
+  tryPublishLockViaLink(tmpPath, lockPath);
 
   // Clean up tmp entry; the lockPath hardlink keeps the inode alive.
   try {
@@ -164,14 +147,14 @@ function acquireLockFile(lockPath: string): AcquiredLock {
   return { fd, token };
 }
 
-type LinkPublishResult = { readonly kind: "linked" } | { readonly kind: "hardlinks_unsupported" };
-
 /**
  * Publish lockPath via linkSync. Handles EEXIST with one stale-recovery
- * retry. Returns "hardlinks_unsupported" when the filesystem doesn't allow
- * hard links so the caller can fall back to the non-atomic open(wx) path.
+ * retry. Throws if the filesystem doesn't support hard links — the atomic
+ * tmp+link protocol is the only safe path on Plan 2, and the narrow-race
+ * openSync(wx) fallback has been deliberately removed. Plan 4 adds flock
+ * for universal support.
  */
-function tryPublishLockViaLink(tmpPath: string, lockPath: string): LinkPublishResult {
+function tryPublishLockViaLink(tmpPath: string, lockPath: string): void {
   let linkedOk = false;
   try {
     linkSync(tmpPath, lockPath);
@@ -184,7 +167,9 @@ function tryPublishLockViaLink(tmpPath: string, lockPath: string): LinkPublishRe
       } catch {
         /* best-effort */
       }
-      return { kind: "hardlinks_unsupported" };
+      throw new Error(
+        `ArtifactStore: filesystem does not support hard links (code=${code}). Plan 2 requires hard-link-capable storage for safe single-writer enforcement. Plan 4 (#1921) adds flock for universal support.`,
+      );
     }
     if (code !== "EEXIST") {
       try {
@@ -221,60 +206,6 @@ function tryPublishLockViaLink(tmpPath: string, lockPath: string): LinkPublishRe
       throw new Error("ArtifactStore already open by another process");
     }
   }
-
-  return { kind: "linked" };
-}
-
-/**
- * Fallback for filesystems without hard-link support. Uses openSync(wx) to
- * exclusively create lockPath then writes the token. Accepts a narrow race
- * window between open and write where another opener could see zero-length
- * contents and misclassify as stale. Plan 4 replaces this with flock.
- */
-function publishLockViaOpenWxFallback(
-  tmpPath: string,
-  lockPath: string,
-  tokenBytes: Buffer,
-): number {
-  // Clean up the tmp file — we're not using it.
-  try {
-    unlinkSync(tmpPath);
-  } catch {
-    /* best-effort */
-  }
-
-  let fd: number;
-  try {
-    fd = openSync(lockPath, "wx");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException)?.code === "EEXIST") {
-      if (tryRemoveStaleLock(lockPath)) {
-        try {
-          fd = openSync(lockPath, "wx");
-        } catch (retryErr) {
-          if ((retryErr as NodeJS.ErrnoException)?.code === "EEXIST") {
-            throw new Error("ArtifactStore already open by another process");
-          }
-          throw retryErr;
-        }
-      } else {
-        throw new Error("ArtifactStore already open by another process");
-      }
-    } else {
-      throw err;
-    }
-  }
-
-  let written = 0;
-  while (written < tokenBytes.byteLength) {
-    written += writeSync(fd, tokenBytes, written, tokenBytes.byteLength - written);
-  }
-  try {
-    fsyncSync(fd);
-  } catch {
-    /* best-effort */
-  }
-  return fd;
 }
 
 function releaseLockFile(lock: AcquiredLock, lockPath: string): void {
