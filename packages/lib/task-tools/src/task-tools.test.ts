@@ -1132,8 +1132,10 @@ describe("task_output — ACL", () => {
     expect(r.kind).toBe("failed");
   });
 
-  test("legacy task (createdBy undefined) — any caller reads", async () => {
-    // Simulate a legacy task by adding directly to board without createdBy
+  test("legacy task with createdBy undefined: fail-closed, any caller denied", async () => {
+    // Simulate a pre-migration legacy task by adding directly to board without createdBy.
+    // The ACL now fails closed: until a migration backfills createdBy, these tasks are
+    // unreadable by any caller who is not the assignee.
     const store = createMemoryTaskBoardStore();
     const resultsDir = await freshResultsDir();
     const board = await createManagedTaskBoard({ store, resultsDir });
@@ -1145,13 +1147,17 @@ describe("task_output — ACL", () => {
       id: legacyId,
       subject: "Legacy",
       description: "Old task without createdBy",
-      // createdBy intentionally omitted
+      // createdBy intentionally omitted — simulates pre-migration persisted task
     });
 
-    // Any agent should be able to read
+    // Any agent (neither creator nor assignee) must be denied
     const anyTools = createNamedTaskTools({ board, agentId: agentId("agent-unrelated") });
-    const r = (await exec(anyTools.output, { task_id: "legacy-task-001" })) as { kind: string };
-    expect(r.kind).toBe("pending");
+    const r = (await exec(anyTools.output, { task_id: "legacy-task-001" })) as {
+      kind: string;
+      reason: string;
+    };
+    expect(r.kind).toBe("permission_denied");
+    expect(typeof r.reason).toBe("string");
   });
 });
 

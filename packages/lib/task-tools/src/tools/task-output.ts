@@ -88,13 +88,11 @@ export function createTaskOutputTool(
         return response;
       }
 
-      // Read ACL: allow when caller is the creator, the current assignee, or when
-      // createdBy is undefined (legacy task — reads open for backward compatibility).
-      //
-      // Rationale: the task ID is assumed already known by the caller (they got it
-      // from a prior task_create/task_list response), so the denied message does not
-      // reveal new information about creator/assignee identity.
-      const isCreator = task.createdBy === undefined || task.createdBy === agentId;
+      // Read ACL: allow when caller is the creator or the current assignee.
+      // Tasks with createdBy === undefined (pre-migration persisted tasks) are denied
+      // by default — the task-board migration must backfill createdBy before they
+      // become readable via task_output.
+      const isCreator = task.createdBy === agentId;
       const isAssignee = task.assignedTo !== undefined && task.assignedTo === agentId;
       if (!isCreator && !isAssignee) {
         const deniedResponse: TaskOutputResponse = {
